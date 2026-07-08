@@ -20,6 +20,10 @@ _Avoid_: Root note, category
 The current position in the card space for one interactive terminal view.
 _Avoid_: Cursor, current note
 
+**Edit caret**:
+The text insertion position inside a card being edited.
+_Avoid_: Edit cursor, pointer
+
 **Session**:
 One interactive terminal view with its own pointer and command bar.
 _Avoid_: Window, shell

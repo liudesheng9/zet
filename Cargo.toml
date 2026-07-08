@@ -1,6 +1,6 @@
 [package]
 name = "zt"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
@@ -11,4 +11,5 @@ tempfile = "3.14"
 
 [dev-dependencies]
 assert_cmd = "2.0"
+portable-pty = "0.9"
 predicates = "3.1"

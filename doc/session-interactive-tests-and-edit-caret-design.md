@@ -1,0 +1,195 @@
+# Session Interactive Tests and Edit Caret Design
+
+Status: design locked for implementation.
+
+## Grounded Facts
+
+- `zt` has two Session implementations today:
+  - `cmd_line_session`, used when stdin or stdout is not a terminal.
+  - `cmd_tui_session`, used when both stdin and stdout are terminals.
+- Existing integration tests spawn `zt` with piped stdin/stdout, so they exercise `cmd_line_session`, not the raw-mode crossterm TUI path.
+- The current TUI edit mode stores only a text buffer. It appends characters, appends newlines, and backspaces from the end.
+- The current TUI edit mode has no separate text insertion position, so direction keys cannot move the edit caret yet.
+- Existing project language reserves `Pointer` for the Session's current card position. In this design note, `edit caret` means the text insertion position inside TUI edit mode.
+- Current crates.io metadata shows `portable-pty` as a cross-platform PTY interface candidate. The checked expect-style crates `expectrl` and `rexpect` describe Unix-oriented terminal automation.
+
+## Locked Decisions
+
+- The work targets Session behavior, especially the interactive terminal path and TUI edit mode.
+- Tests should preserve the existing public Session contract from `doc/zt-note-system-design.md` and the issue notes under `doc/github-issues/`.
+- The direction-key feature is about the TUI edit caret, not the Session Pointer.
+- Interactive Session testing must include both real PTY-backed tests and model-level tests.
+- PTY-backed tests should be the majority of the new interactive Session coverage, because the raw-mode crossterm path is the path currently not covered by existing piped-stdin tests.
+- PTY-backed tests should cover the full user workflow matrix for the interactive Session, not only a startup smoke test.
+- Model-level tests should cover focused editor and Session-state behavior that would be brittle or slow to prove only through terminal escape sequences.
+- Session code should be split out of `src/main.rs` into an independent `src/session.rs` module.
+- The `session` module should own Session structure, Session command handling, TUI rendering/input handling, and TUI edit-caret behavior.
+- The existing command bar remains one-line append/backspace input. Direction-key caret movement is not required for the command bar.
+- TUI edit mode should use nano-like editor behavior as its interaction baseline.
+- The first locked edit-caret movement keys are `Left`, `Right`, `Up`, and `Down`.
+- Text insertion and backspace in TUI edit mode operate at the edit caret.
+- The PTY-backed workflow matrix must include at least one real PTY test for each interactive Session command and workflow: `zt root`, `zt go <location>`, `zt ls`, `zt help`, `zt stats`, `zt status`, `zt lsbk`, `zt q`, rendered link activation, `zt t`, `zt n`, `zt b`, `zt e`, edit save, edit cancel, edit validation retry, `zt del`, `zt mv`, service disconnect, and edit-lock blocking.
+- Edge cases that are awkward to drive through terminal escape sequences should stay in model-level or existing line-session tests.
+- First-pass nano-like edit mode must exactly support these operations: `Left`, `Right`, `Up`, `Down`, text insertion at the edit caret, `Backspace`, `Delete`, `Home`, `End`, `Enter`, `Ctrl+S`, and `Esc`.
+- Nano-like behavior outside those locked operations is deferred, including search, cut/paste buffers, paging commands, and mouse-based caret placement.
+- `src/main.rs` should call one public Session entrypoint from the new module: `session::run_session(root: PathBuf) -> Result<()>`.
+- Session internals should remain private to `src/session.rs`, with focused model helpers exposed to tests only under `#[cfg(test)]` if needed.
+- PTY tests must use a cross-platform Rust PTY approach where feasible and should run on both Windows and Unix-like systems.
+- PTY tests may skip only genuinely unsupported platform cases, and skips must be explicit rather than silently dropping all Windows coverage.
+- `Up` and `Down` in TUI edit mode should preserve a desired column like nano.
+- When vertical movement lands on a shorter line, the edit caret lands at the end of that line, but later vertical movement to a longer line should restore the desired column when possible.
+- First-pass TUI edit mode must support minimal viewport scrolling for buffers larger than the terminal.
+- The edit viewport does not need paging commands yet, but arrow movement and typing must keep the edit caret visible.
+- The repo should standardize on `portable-pty` for PTY tests unless a small Windows spike proves it cannot reliably drive this crossterm raw-mode workflow.
+- The first refactor should move only Session code into `src/session.rs`. Database, Card, Location, validation, and storage helpers should stay where they are unless compilation requires small visibility changes.
+- PTY tests should assert workflows with targeted waits for visible text and terminal state, not broad full-screen snapshots.
+- Exact edit-buffer and edit-caret semantics should be asserted with model-level tests.
+- When TUI edit mode opens, the edit caret starts at the beginning of the editable card text.
+- `Home` and `End` operate on the current logical text line, not on a visual wrapped terminal line.
+- `Backspace` at column 0 joins the current line with the previous line.
+- `Delete` at end-of-line joins the current line with the next line.
+- The edit-mode header should remain fixed while the editable text viewport scrolls.
+- After a successful `Ctrl+S` save or `Esc` cancel, the Session should immediately redraw the card view and return to normal command-bar input.
+- Exact edit-buffer and edit-caret model tests should live inside `src/session.rs` under `#[cfg(test)]`.
+- PTY workflow tests should live as integration tests.
+- The edit UI should show both command hints and the current edit-caret line/column.
+- Long logical lines should horizontally scroll rather than visually wrap in the first pass, matching the locked nano-like behavior for logical-line movement.
+- The editor must preserve trailing spaces and blank lines exactly on save, except for existing validation and reverse-link regeneration behavior.
+- PTY tests must use fresh isolated archive roots and service state per test.
+- The PTY workflow matrix should be split into focused workflow tests rather than one long end-to-end test.
+- Edit-caret line/column display should use 1-based coordinates.
+- User-facing edit-caret columns should count Unicode characters, not bytes and not terminal display cells, because cards may contain Chinese characters.
+- Terminal rendering may still use display-width calculation internally to place the visible caret correctly on screen.
+- `Tab` inserts a literal tab character.
+- PTY tests should run by default with `cargo test` unless the Windows spike proves they are too flaky.
+- Existing line-session tests should remain after PTY coverage is added because the piped fallback path remains a real Session path.
+- The edit model should treat one Rust `char` as one editable unit in the first pass. Full grapheme-cluster editing is deferred unless it proves necessary.
+- Horizontal scrolling should use terminal display cells for actual viewport placement so Chinese characters render without visible caret drift, while the UI reports character columns.
+- `Ctrl+C` inside TUI edit mode should cancel edit mode and return to the Session view. `zt q` remains the explicit Session exit command.
+- Pasted Windows `\r\n` line endings should normalize to `\n` inside the TUI editor, matching existing card text storage style.
+- PTY workflow tests should include Chinese text from the first pass, including at least one create/edit/save workflow.
+- Model-level edit-caret tests should include Chinese text from the first pass.
+- On malformed save failure, the edit caret should stay where it was at save time so the user does not lose editing context.
+- Validation errors should display in a fixed status line under the edit-mode header.
+- `Esc` should cancel immediately, matching the existing locked cancel behavior and avoiding a new confirmation flow.
+- `Ctrl+S` success should return directly to the Session card view. The redraw of the saved card is the success signal; no extra saved pause is needed.
+- PTY tests should verify user-visible edit-lock behavior. Model or filesystem checks may be used only as synchronization aids.
+- Rendered link activation should be tested through an actual PTY mouse-click path, with model-level hit testing only as supplemental coverage.
+- On service disconnect, the TUI Session should show `service disconnected` and exit immediately.
+- PTY tests should poll captured terminal output for readiness instead of relying on fixed sleeps.
+- PTY tests should use a fixed terminal size so coordinates, scrolling, and mouse clicks are deterministic.
+- Edit mode should reserve fixed rows for header, status/error, editable viewport, and footer/command hints. The editable viewport scrolls within the remaining rows.
+- Implementation should start with a tiny `portable-pty` Windows spike, then extract `src/session.rs`, then add the editor model and PTY workflow coverage.
+- `portable-pty` should be added as a dev-dependency only.
+- Refactor and behavior changes should be kept as separate commits or clearly separated implementation steps.
+- This design is locked after the implementation sequencing decisions. Reopen it only if implementation uncovers a contradiction.
+- Acceptance should include `cargo test` and one manual local TUI smoke run because PTY coverage still cannot prove every terminal rendering detail.
+- If the `portable-pty` Windows spike fails, implementation should pause until a Windows-capable PTY path is found. PTY coverage must not silently downgrade to Unix-only coverage.
+- During `src/session.rs` extraction, prefer narrow `pub(crate)` exports from existing code before creating broader storage or domain modules.
+- The edit model should be independent from crossterm events. Crossterm key events should translate into internal editor actions.
+- After the PTY spike, implementation should use red-first coverage for the editor model and at least one PTY workflow before changing behavior.
+- The manual local TUI smoke run should use a written checklist covering startup, Chinese card creation, edit-caret movement, save, reopen, link click, edit-lock behavior, and quit.
+- The manual smoke checklist should live in this design document.
+- The `portable-pty` spike passes only if it can start `zt`, read `ROOT`, send `zt q`, and observe a clean exit.
+- Chinese text coverage should include both title and body edits.
+- The editor model should expose test-only state inspection for line, column, viewport offset, and buffer text under `#[cfg(test)]`.
+- Existing line-session behavior should remain stable except where shared validation or save code requires a change.
+- The `src/session.rs` module should include both line-session and TUI-session paths because they share the Session entrypoint, Pointer handling, command routing, and registration behavior.
+- Model-level editor actions should use intent names such as `MoveLeft` and `Save`, not raw key names, so terminal-event translation stays separate from editor behavior.
+- PTY test helpers should live in `tests/support/pty.rs` so multiple PTY workflow tests can share spawn, read, write, and wait helpers.
+- PTY workflow tests that write card data should assert both terminal output and SQLite persistence.
+- The archived issue documents under `doc/github-issues/` should not be updated for this work. They are closed archive text; the new locked design document is the implementation authority.
+- PTY helper APIs should hide ANSI escape noise behind helpers such as `wait_for_text`.
+- PTY write helpers should send named key sequences such as `send_key(Key::Left)` instead of raw escape strings in each test.
+- The editor model should store text as `Vec<String>` lines plus line and character-column caret state, converting to and from a single `String` only at boundaries.
+- The edit model should keep the desired vertical column separately from the current column to support nano-like `Up` and `Down` movement across ragged lines.
+- Persistence assertions should read SQLite directly for exact saved text, while PTY output proves the UI path.
+- First-pass PTY workflow tests should cover happy paths before adding error-path PTY tests after the editor model is stable.
+- Editor model tests should cover boundary cases exhaustively, while PTY tests should sample representative workflows.
+- Implementation should stay with direct crossterm usage and should not introduce a new TUI framework.
+- Line/column display should use a simple format such as `Ln 1, Col 1`.
+- This design document should stop growing after these KISS guardrails unless implementation finds a contradiction.
+
+## Manual Smoke Checklist
+
+- Start the service and open a TUI Session with plain `zt`.
+- Create a card with Chinese text in both title and body.
+- Move the edit caret with `Left`, `Right`, `Up`, `Down`, `Home`, `End`, `Backspace`, and `Delete`.
+- Save, reopen the card, and verify the Chinese title/body and preserved spacing.
+- Create or open a rendered link and activate it with a mouse click.
+- Verify edit-lock behavior shows `edit in progress` from another command while editing.
+- Quit the Session with `zt q`.
+
+## Open Questions
+
+None currently identified.
+
+## Current Recommendation
+
+- Cover the PTY workflow matrix with real terminal tests and use model-level tests for exact edit-buffer transformations.
+- Treat nano-like editing as exact for the locked key operations only, not as a commitment to clone every nano feature in one pass.
+- Use one small public Session entrypoint and keep Session internals private.
+- Choose the smallest PTY harness that supports Windows and Unix-like systems well enough for interactive smoke tests.
+- The current recommended PTY candidate is `portable-pty`, unless a small spike proves it cannot drive this crossterm raw-mode workflow reliably on Windows.
+- Keep this change focused on extracting Session code only; avoid a broad storage/domain refactor unless compilation forces small visibility changes.
+- Prefer targeted PTY assertions for workflow tests and model-level assertions for exact buffer/caret semantics.
+- Start the edit caret at the beginning of the editable text, matching the current display from top to bottom and making PTY tests deterministic.
+- Treat `Home` and `End` as logical-line operations because this editor is plain text and first-pass wrapping/soft-line navigation would add unnecessary ambiguity.
+- Make `Backspace` at column 0 join with the previous line and `Delete` at end-of-line join with the next line, matching normal nano-like text editing.
+- Keep the edit-mode header fixed so save/cancel affordances remain visible even while the text viewport scrolls.
+- After save or cancel, return immediately to the Session card view and one-line command bar.
+- Put exact model-level editor tests inside `src/session.rs` under `#[cfg(test)]`; keep PTY workflow tests as integration tests.
+- Show command hints and edit-caret line/column in edit mode.
+- Horizontally scroll long logical lines in the first pass instead of soft-wrapping, because `Home`, `End`, and caret columns are defined on logical lines.
+- Preserve all text bytes representable as UTF-8 except for the existing validation/regeneration behavior, including trailing spaces and blank lines.
+- Use fresh isolated archive roots and service state per PTY test to keep failures diagnosable.
+- Split PTY coverage into focused workflow tests so a failure points to the broken behavior.
+- Use 1-based line/column display because it is user-facing and nano-like.
+- Count Unicode characters for user-facing line/column because cards may contain Chinese text; keep separate display-width math only for terminal cursor placement.
+- Let `Tab` insert a literal tab character.
+- Run PTY tests by default unless the Windows spike proves they are too flaky.
+- Keep line-session tests as regression coverage for the piped fallback path; do not delete them just because PTY coverage exists.
+- Treat one Rust `char` as one editable unit in the first pass; defer full grapheme-cluster editing unless it proves necessary.
+- Use terminal display cells for actual horizontal viewport placement so Chinese characters render without caret drift, while reporting character columns in the UI.
+- Let `Ctrl+C` cancel edit mode first, then return to the Session view; `zt q` remains the explicit Session exit command.
+- Normalize pasted CRLF to LF inside the TUI editor, matching existing card text storage style.
+- Include Chinese text in at least one PTY create/edit/save workflow and one model-level caret movement test.
+- On malformed save failure, keep the edit caret where it was at save time so the user does not lose editing context.
+- Show validation errors in a fixed status line under the edit-mode header.
+- Let `Esc` cancel immediately, matching the existing locked cancel behavior and avoiding a new confirmation flow.
+- Let the Session redraw of the saved card be the success signal; no extra saved pause is needed.
+- PTY tests should verify user-visible edit-lock behavior; model or filesystem checks can be used only as synchronization aids.
+- Test rendered link activation through an actual PTY mouse-click path, with model-level hit testing only as supplemental coverage.
+- On service disconnect, show `service disconnected` and exit immediately, matching the current TUI implementation shape.
+- PTY tests should poll captured output for readiness instead of relying on fixed sleeps.
+- Use a fixed terminal size in PTY tests so coordinates, scrolling, and mouse clicks are deterministic.
+- Reserve fixed rows for header, status/error, editable viewport, and footer/command hints; the viewport scrolls within the remaining rows.
+- Start implementation with a tiny `portable-pty` Windows spike, then extract `src/session.rs`, then add the editor model and PTY workflow coverage.
+- Add `portable-pty` as a dev-dependency only.
+- Keep refactor and behavior changes in separate commits or at least clearly separated implementation steps.
+- Treat the design as locked after sequencing is settled unless implementation uncovers a contradiction.
+- Acceptance should include `cargo test` and one manual local TUI smoke run because PTY coverage still cannot prove every terminal rendering detail.
+- If the `portable-pty` Windows spike fails, pause and find a Windows-capable PTY approach before continuing.
+- Use narrow `pub(crate)` exports during extraction instead of starting a broad storage/domain split.
+- Translate crossterm keys into internal editor actions so model tests can exercise behavior without terminal events.
+- Add failing model tests and at least one failing PTY workflow after the PTY spike and before behavior implementation.
+- Keep the manual smoke checklist in this design document.
+- Treat the PTY spike as passed only after `zt` starts, `ROOT` is observed, `zt q` is sent, and the process exits cleanly.
+- Include Chinese text in both title and body edit coverage.
+- Expose editor model state to tests only under `#[cfg(test)]`.
+- Keep existing line-session behavior stable unless shared validation/save code forces a narrow change.
+- Move both line-session and TUI-session code into `src/session.rs`.
+- Name editor model actions by intent, then map crossterm keys into those actions at the TUI boundary.
+- Put reusable PTY helpers under `tests/support/pty.rs`.
+- For write workflows, verify both the user-visible PTY path and the stored SQLite card text.
+- Leave closed issue archive files unchanged unless the user explicitly asks to revise archive text.
+- Hide terminal escape handling inside PTY helper methods.
+- Centralize key escape sequences behind named helper APIs.
+- Store editor text internally as lines plus caret state.
+- Track desired vertical column independently from the current column.
+- Read SQLite directly for exact persistence assertions.
+- Cover happy-path PTY workflows first, then add error-path PTY coverage after the editor model is stable.
+- Put exhaustive boundary coverage in editor model tests and keep PTY tests representative.
+- Keep the TUI implementation on direct crossterm.
+- Use simple line/column display text such as `Ln 1, Col 1`.
+- Stop expanding this design document unless implementation uncovers a contradiction.
