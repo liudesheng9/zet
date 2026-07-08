@@ -579,7 +579,7 @@ fn session_navigation_and_read_only_commands_use_the_session_pointer() {
         .success();
 
     home.cmd()
-        .write_stdin("zt go 0/0\nzt ls\nzt go 0/1\nzt root\nzt go 0/99\nzt stats\nzt q\n")
+        .write_stdin("  go 0/0  \nls\ngo 0/1\n\nfoo bar\nzt e\nzt\nroot\ngo 0/99\nstats\nq\n")
         .assert()
         .success()
         .stdout(predicate::str::contains("ROOT"))
@@ -588,6 +588,9 @@ fn session_navigation_and_read_only_commands_use_the_session_pointer() {
         .stdout(predicate::str::contains("direct: [[0/1]]"))
         .stdout(predicate::str::contains("0/1 Base"))
         .stdout(predicate::str::contains("location: 0/1"))
+        .stdout(predicate::str::contains("unknown session command: foo"))
+        .stdout(predicate::str::contains("unknown session command: zt"))
+        .stdout(predicate::str::contains("session commands must start").not())
         .stdout(predicate::str::contains("location `0/99` does not exist"))
         .stdout(predicate::str::contains("total: 3"));
 }
@@ -600,16 +603,16 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
     home.cmd()
         .write_stdin(
             concat!(
-                "zt t Session Topic\n",
+                "t Session Topic\n",
                 "Session Topic\n<--->\ndescription\n<--->\n",
                 "\x13",
-                "zt n\n",
+                "n\n",
                 "First\n<--->\nbody\n<--->\n",
                 "\x13",
-                "zt b\n",
+                "b\n",
                 "Side\n<--->\nside body\n<--->\n",
                 "\x13",
-                "zt q\n",
+                "q\n",
             )
             .as_bytes(),
         )
@@ -626,11 +629,11 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
     home.cmd()
         .write_stdin(
             concat!(
-                "zt go 0/1\n",
-                "zt n\n",
+                "go 0/1\n",
+                "n\n",
                 "Canceled\n<--->\nnot saved\n<--->\n",
                 "\x1b",
-                "zt q\n",
+                "q\n",
             )
             .as_bytes(),
         )
@@ -641,13 +644,13 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
     home.cmd()
         .write_stdin(
             concat!(
-                "zt go 0/1\n",
-                "zt e\n",
+                "go 0/1\n",
+                "e\n",
                 "Broken\n<--->\nmissing delimiter\n",
                 "\x13",
                 "Fixed\n<--->\nupdated body\n<--->\ndamaged reverse\n",
                 "\x13",
-                "zt q\n",
+                "q\n",
             )
             .as_bytes(),
         )
@@ -656,6 +659,20 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
         .stdout(predicate::str::contains("exactly two"));
     assert!(home.card_text("0/1").contains("updated body"));
     assert!(!home.card_text("0/1").contains("damaged reverse"));
+}
+
+#[test]
+fn session_topic_command_keeps_title_validation() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    home.cmd()
+        .write_stdin("t\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "topic title must be non-empty single-line text",
+        ));
 }
 
 #[test]
@@ -675,12 +692,12 @@ fn session_delete_and_move_use_pointer_confirmation_and_update_pointer() {
     home.cmd()
         .write_stdin(
             concat!(
-                "zt go 0/1|a\n",
-                "zt mv 0/2|a\n",
+                "go 0/1|a\n",
+                "mv 0/2|a\n",
                 "move\n",
-                "zt del\n",
+                "del\n",
                 "delete\n",
-                "zt q\n",
+                "q\n",
             )
             .as_bytes(),
         )
@@ -738,14 +755,14 @@ fn side_successor_labels_roll_over_from_z_to_aa() {
     home.configure_and_up();
     home.create_topic_and_base();
 
-    let mut input = String::from("zt go 0/1\n");
+    let mut input = String::from("go 0/1\n");
     for index in 1..=27 {
-        input.push_str("zt b\n");
+        input.push_str("b\n");
         input.push_str(&format!("Side {index}\n<--->\nbody {index}\n<--->\n"));
         input.push('\x13');
-        input.push_str("zt go 0/1\n");
+        input.push_str("go 0/1\n");
     }
-    input.push_str("zt q\n");
+    input.push_str("q\n");
 
     home.cmd().write_stdin(input).assert().success();
     assert!(home.location_exists("0/1|z"));
@@ -838,7 +855,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .stdin
         .as_mut()
         .expect("stdin")
-        .write_all(b"zt go 0/1\nzt e\n")
+        .write_all(b"go 0/1\ne\n")
         .expect("enter edit");
     home.wait_until(|| home.archive_root.join("zt.edit.lock").exists());
     home.cmd()
@@ -855,7 +872,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .stdin
         .as_mut()
         .expect("stdin")
-        .write_all(b"\x1bzt q\n")
+        .write_all(b"\x1bq\n")
         .expect("cancel and quit");
     let editing_output = editing.wait_with_output().expect("editing session");
     assert!(editing_output.status.success());
@@ -875,7 +892,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .stdin
         .as_mut()
         .expect("stdin")
-        .write_all(b"zt q\n")
+        .write_all(b"q\n")
         .expect("quit");
     let output = child.wait_with_output().expect("session output");
     assert!(output.status.success());
@@ -904,7 +921,7 @@ fn session_exits_when_service_disconnects() {
         .stdin
         .as_mut()
         .expect("stdin")
-        .write_all(b"zt status\n")
+        .write_all(b"status\n")
         .expect("poke session");
     let output = child.wait_with_output().expect("session output");
     assert!(output.status.success());

@@ -354,7 +354,7 @@ fn draw_tui(root: &Path, pointer: &Pointer, command: &str, message: &str) -> Res
     if !message.is_empty() {
         write_tui_plain_line(&mut stdout, &mut row, message)?;
     }
-    write_tui_plain_line(&mut stdout, &mut row, &format!("zt> {command}"))?;
+    write_tui_plain_line(&mut stdout, &mut row, &format!("> {command}"))?;
     stdout.flush()?;
     Ok(links)
 }
@@ -454,19 +454,37 @@ fn queue_tui_valid_link<W: Write>(
     Ok(())
 }
 
+fn normalize_session_command(line: &str) -> Option<Vec<&str>> {
+    let tokens: Vec<&str> = line.trim().split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(tokens.len() + 1);
+    parts.push("zt");
+    parts.extend(tokens);
+    Some(parts)
+}
+
+fn unknown_session_command(parts: &[&str]) -> String {
+    format!(
+        "unknown session command: {}",
+        parts.get(1).copied().unwrap_or_default()
+    )
+}
+
+fn session_help_text() -> &'static str {
+    "root | go <location> | ls | t <title> | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
+}
+
 fn handle_tui_command(
     root: &Path,
     pointer: &mut Pointer,
     line: &str,
     message: &mut String,
 ) -> Result<bool> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.is_empty() {
+    let Some(parts) = normalize_session_command(line) else {
         return Ok(true);
-    }
-    if parts.first() != Some(&"zt") {
-        bail!("session commands must start with `zt`");
-    }
+    };
     match parts.as_slice() {
         ["zt", "q"] => Ok(false),
         ["zt", "root"] => {
@@ -504,7 +522,7 @@ fn handle_tui_command(
             Ok(true)
         }
         ["zt", "help"] => {
-            *message = "zt root | zt go <location> | zt ls | zt t <title> | zt n | zt b | zt e | zt del | zt mv <new-location> | zt stats | zt status | zt lsbk | zt q".to_string();
+            *message = session_help_text().to_string();
             Ok(true)
         }
         ["zt", "t", title @ ..] => {
@@ -554,7 +572,7 @@ fn handle_tui_command(
             message.clear();
             Ok(true)
         }
-        _ => bail!("unknown session command"),
+        _ => bail!("{}", unknown_session_command(&parts)),
     }
 }
 
@@ -1094,13 +1112,9 @@ fn handle_session_command<R: BufRead>(
     line: &str,
     input: &mut R,
 ) -> Result<bool> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.is_empty() {
+    let Some(parts) = normalize_session_command(line) else {
         return Ok(true);
-    }
-    if parts.first() != Some(&"zt") {
-        bail!("session commands must start with `zt`");
-    }
+    };
     match parts.as_slice() {
         ["zt", "q"] => Ok(false),
         ["zt", "root"] => {
@@ -1132,7 +1146,7 @@ fn handle_session_command<R: BufRead>(
             Ok(true)
         }
         ["zt", "help"] => {
-            cmd_help()?;
+            println!("{}", session_help_text());
             Ok(true)
         }
         ["zt", "t", title @ ..] => {
@@ -1194,7 +1208,7 @@ fn handle_session_command<R: BufRead>(
             *pointer = Pointer::Card((*new_location).to_string());
             Ok(true)
         }
-        _ => bail!("unknown session command"),
+        _ => bail!("{}", unknown_session_command(&parts)),
     }
 }
 

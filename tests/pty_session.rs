@@ -140,7 +140,8 @@ fn terminal_session_starts_at_root_and_quits_cleanly() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt q");
+    session.wait_for_text(">");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 
@@ -154,7 +155,7 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt t 中文主题");
+    session.send_text("t 中文主题");
     session.send_enter();
     session.wait_for_text("edit mode");
 
@@ -165,19 +166,40 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
 
     session.wait_for_text("location: 0/0");
     session.wait_for_text("中文正文");
-    session.send_text("zt root");
+    session.send_text("root");
     session.send_enter();
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/0");
+    session.send_text("go 0/0");
     session.send_enter();
     session.wait_for_text("location: 0/0");
     session.wait_for_text("中文正文");
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 
     assert!(status.success(), "session exited with {status}");
     assert_eq!(home.card_text("0/0"), "中文主题\n<--->\n中文正文\n<--->\n");
+}
+
+#[test]
+fn terminal_session_topic_title_does_not_parse_shell_quotes() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("t \"Quoted Topic\"");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("location: 0/0");
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+
+    assert!(status.success(), "session exited with {status}");
+    assert_eq!(home.card_text("0/0"), "\"Quoted Topic\"\n<--->\n\n<--->\n");
 }
 
 #[test]
@@ -190,12 +212,12 @@ fn terminal_session_navigates_and_activates_rendered_links() {
     session.wait_for_text("ROOT");
     session.wait_for_text("0/0 Topic");
 
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
     session.wait_for_text("[[0/0]]");
 
-    session.send_text("zt go 9/9");
+    session.send_text("go 9/9");
     session.send_enter();
     session.wait_for_text("location `9/9` does not exist");
     session.wait_for_text("location: 0/1");
@@ -203,7 +225,7 @@ fn terminal_session_navigates_and_activates_rendered_links() {
     session.send_left_click(2, 5);
     session.wait_for_text("location: 0/0");
 
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
@@ -218,35 +240,43 @@ fn terminal_session_runs_read_only_commands() {
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
 
-    session.send_text("zt stats");
+    session.send_text("stats");
     session.send_enter();
     session.wait_for_text("total: 2 | topics: 1 | regular: 1");
 
-    session.send_text("zt status");
+    session.send_text("status");
     session.send_enter();
     session.wait_for_text("state: up | sessions: 1");
 
-    session.send_text("zt ls");
+    session.send_text("ls");
     session.send_enter();
     session.wait_for_text("0/0 Topic | 0/1 Base");
 
-    session.send_text("zt lsbk");
+    session.send_text("lsbk");
     session.send_enter();
     session.wait_for_text("no broken links");
 
-    session.send_text("zt help");
+    session.send_text("help");
     session.send_enter();
-    session.wait_for_text("zt root | zt go <location>");
+    session.wait_for_text("root | go <location>");
 
-    session.send_text("zt go 0/1");
+    session.send_text("foo bar");
+    session.send_enter();
+    session.wait_for_text("unknown session command: foo");
+
+    session.send_text("zt e");
+    session.send_enter();
+    session.wait_for_text("unknown session command: zt");
+
+    session.send_text("  go 0/1  ");
     session.send_enter();
     session.wait_for_text("location: 0/1");
 
-    session.send_text("zt root");
+    session.send_text("root");
     session.send_enter();
     session.wait_for_text("ROOT");
 
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
@@ -260,11 +290,11 @@ fn terminal_session_creates_direct_and_side_cards() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
 
-    session.send_text("zt n");
+    session.send_text("n");
     session.send_enter();
     session.wait_for_text("edit mode");
     session.send_text("Diret");
@@ -279,10 +309,10 @@ fn terminal_session_creates_direct_and_side_cards() {
     session.send_key(Key::CtrlS);
     session.wait_for_text("location: 0/2");
 
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
-    session.send_text("zt b");
+    session.send_text("b");
     session.send_enter();
     session.wait_for_text("edit mode");
     session.send_text("Side");
@@ -295,7 +325,7 @@ fn terminal_session_creates_direct_and_side_cards() {
     session.send_key(Key::CtrlS);
     session.wait_for_text("location: 0/1|a");
 
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 
@@ -313,7 +343,7 @@ fn terminal_session_exits_when_service_disconnects() {
     session.wait_for_text("ROOT");
     fs::remove_file(home.archive_root.join("zt.pid")).expect("disconnect service");
 
-    session.send_text("zt status");
+    session.send_text("status");
     session.send_enter();
     session.wait_for_text("service disconnected");
     let status = session.wait_for_exit();
@@ -329,25 +359,25 @@ fn terminal_session_moves_and_deletes_cards_with_confirmations() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1|a");
+    session.send_text("go 0/1|a");
     session.send_enter();
     session.wait_for_text("location: 0/1|a");
 
-    session.send_text("zt mv 0/2|a");
+    session.send_text("mv 0/2|a");
     session.send_enter();
     session.wait_for_text("move verification:");
     session.send_text("move");
     session.send_enter();
     session.wait_for_text("location: 0/2|a");
 
-    session.send_text("zt del");
+    session.send_text("del");
     session.send_enter();
     session.wait_for_text("delete verification:");
     session.send_text("delete");
     session.send_enter();
     session.wait_for_text("location: 0/2");
 
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 
@@ -365,30 +395,30 @@ fn terminal_delete_confirmation_does_not_duplicate_prompt_or_append_to_command_b
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1|a");
+    session.send_text("go 0/1|a");
     session.send_enter();
     session.wait_for_text("location: 0/1|a");
 
-    session.send_text("zt del");
+    session.send_text("del");
     session.send_enter();
     session.wait_for_text("type `delete` to confirm:");
     session.send_text("delete");
     session.send_enter();
     session.wait_for_text("location: 0/1");
 
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
 
     let output = session.plain_output();
     assert!(
-        !output.contains("zt> zt deldelete verification:"),
+        !output.contains("> deldelete verification:"),
         "delete verification was appended to the command bar:\n{}",
         output.escape_debug()
     );
     assert_eq!(
-        output.matches("zt> zt del").count(),
+        output.matches("> del").count(),
         1,
         "delete command was redrawn more than once:\n{}",
         output.escape_debug()
@@ -409,10 +439,10 @@ fn terminal_session_edit_lock_blocks_other_writes() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
-    session.send_text("zt e");
+    session.send_text("e");
     session.send_enter();
     session.wait_for_text("edit mode");
 
@@ -430,7 +460,7 @@ fn terminal_session_edit_lock_blocks_other_writes() {
 
     session.send_key(Key::Esc);
     session.wait_for_text("location: 0/1");
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
@@ -445,16 +475,16 @@ fn terminal_session_ctrl_c_cancels_edit_mode_without_exiting_session() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
-    session.send_text("zt e");
+    session.send_text("e");
     session.send_enter();
     session.wait_for_text("edit mode");
 
     session.send_key(Key::CtrlC);
     session.wait_for_text("location: 0/1");
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 
@@ -471,10 +501,10 @@ fn terminal_session_retries_invalid_edit_save_and_cancels_without_write() {
 
     let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
     session.wait_for_text("ROOT");
-    session.send_text("zt go 0/1");
+    session.send_text("go 0/1");
     session.send_enter();
     session.wait_for_text("location: 0/1");
-    session.send_text("zt e");
+    session.send_text("e");
     session.send_enter();
     session.wait_for_text("edit mode");
 
@@ -485,7 +515,7 @@ fn terminal_session_retries_invalid_edit_save_and_cancels_without_write() {
 
     session.send_key(Key::Esc);
     session.wait_for_text("location: 0/1");
-    session.send_text("zt q");
+    session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
 

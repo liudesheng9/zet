@@ -12,7 +12,7 @@ Build `zt` as a Rust CLI application backed by a per-user daemon and a SQLite da
 
 Cards are the canonical note item. A Topic is a special Card at `<topic>/0`; regular Cards live under that Topic with successor Locations such as `1/1`, `1/2`, `1/2|c`, and `1/2|c|4|b|b`. Direct successors use numeric segments. Side successors use lowercase Excel-style letter labels. Each Card stores a single text representation with three sections separated by `<--->`: title, body text, and generated reverse links.
 
-The primary user experience is an interactive terminal Session started by plain `zt`. It starts at `ROOT`, renders Topics and Cards, provides a one-line command bar, and uses a Session pointer for commands. Pointer-dependent card commands can also run from the shell with `--at <location>` while the service is up.
+The primary user experience is an interactive terminal Session started by plain `zt`. It starts at `ROOT`, renders Topics and Cards, provides a one-line command bar for bare Session subcommands, and uses a Session pointer for commands. Pointer-dependent card commands can also run from the shell with `--at <location>` while the service is up.
 
 The implementation must keep the design simple but strict: no GUI, no web UI, no initial text search, no structural link table, no schema migrations during the development period, and no force-stop command.
 
@@ -34,34 +34,34 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 14. As a user, I want plain `zt` to start an interactive Session only when the service is up, so that viewing and editing always use the daemon.
 15. As a user, I want a new Session to start at `ROOT`, so that startup is predictable.
 16. As a user, I want `ROOT` to show Topic locations and titles only, so that the first view stays compact.
-17. As a user, I want a one-line command bar, so that I can run `zt` commands without leaving the Session.
-18. As a user, I want command-bar commands to include the full `zt` prefix, so that session and shell syntax are consistent.
+17. As a user, I want a one-line command bar, so that I can run Session subcommands without leaving the Session.
+18. As a user, I want command-bar commands to omit the executable prefix, so that common Session commands are short.
 19. As a user, I want no command history in the command bar, so that the TUI stays simple.
-20. As a user, I want `zt q` and `Ctrl+C` to exit the Session, so that I can leave predictably.
-21. As a user, I want `zt root`, so that I can return to the Topic list.
-22. As a user, I want `zt go <location>`, so that I can jump to a known Card.
-23. As a user, I want `zt go` to reject missing or broken targets, so that the pointer never moves to nowhere.
-24. As a user, I want `zt help` in the shell and Session, so that I can see available commands for the current context.
-25. As a user, I want `zt stats` in the shell and Session, so that I can see total, Topic, and regular Card counts.
-26. As a user, I want `zt ls` in the Session, so that I can list Card locations and titles under the current Topic.
-27. As a user, I want to create a Topic with `zt t "Topic title"`, so that I can start a new root topic.
+20. As a user, I want `q` and `Ctrl+C` to exit the Session, so that I can leave predictably.
+21. As a user, I want `root`, so that I can return to the Topic list.
+22. As a user, I want `go <location>`, so that I can jump to a known Card.
+23. As a user, I want `go` to reject missing or broken targets, so that the pointer never moves to nowhere.
+24. As a user, I want shell `zt help` and Session `help`, so that I can see available commands for the current context.
+25. As a user, I want shell `zt stats` and Session `stats`, so that I can see total, Topic, and regular Card counts.
+26. As a user, I want `ls` in the Session, so that I can list Card locations and titles under the current Topic.
+27. As a user, I want to create a Topic with Session `t <title>` or shell `zt t "Topic title"`, so that I can start a new root topic.
 28. As a user, I want a Topic Card at `<topic>/0`, so that every Topic is addressable.
 29. As a user, I want Topic root numbers to be monotonic and not reused, so that deleted Topics do not cause confusing old references.
 30. As a user, I want Topic titles validated before creation, so that empty or multiline Topic titles are rejected early.
 31. As a user, I want Topic creation to enter edit mode, so that I can immediately add a description.
 32. As a user, I want Topic descriptions to reject link macros, so that Topics do not contain outbound links.
 33. As a user, I want Topic Cards to receive reverse links, so that Cards can refer back to Topics.
-34. As a user, I want `zt n` from a Topic to create `<topic>/1`, so that the first regular Card is predictable.
-35. As a user, I want `zt n` to reject if the direct successor already exists, so that each Card has only one direct successor.
-36. As a user, I want `zt n` from a regular Card ending in a number to increment that number, so that direct succession is clear.
-37. As a user, I want `zt n` from a Card ending in a side label to append `|1`, so that direct succession after a side branch is clear.
-38. As a user, I want `zt b` to create the next side successor, so that I can branch from a regular Card.
-39. As a user, I want `zt b` rejected on Topic Cards, so that Topics only have the first regular Card as their direct successor.
+34. As a user, I want `n` from a Topic to create `<topic>/1`, so that the first regular Card is predictable.
+35. As a user, I want `n` to reject if the direct successor already exists, so that each Card has only one direct successor.
+36. As a user, I want `n` from a regular Card ending in a number to increment that number, so that direct succession is clear.
+37. As a user, I want `n` from a Card ending in a side label to append `|1`, so that direct succession after a side branch is clear.
+38. As a user, I want `b` to create the next side successor, so that I can branch from a regular Card.
+39. As a user, I want `b` rejected on Topic Cards, so that Topics only have the first regular Card as their direct successor.
 40. As a user, I want side labels to continue `a..z, aa, ab...`, so that side successors are unbounded.
 41. As a user, I want new regular Cards created with two `<--->` separators, so that the title, body, and reverse-link sections are present.
 42. As a user, I want newly-created Cards to enter edit mode, so that creation and first content entry are one flow.
 43. As a user, I want cancel-before-first-save to discard a newly-created Card, so that empty accidental Cards are not left behind.
-44. As a user, I want `zt e` and shell `zt e --at <location>`, so that I can edit from the Session or shell.
+44. As a user, I want Session `e` and shell `zt e --at <location>`, so that I can edit from the Session or shell.
 45. As a user, I want shell edit to use `$EDITOR`, so that shell workflows fit my environment.
 46. As a user, I want shell edit to fail clearly when `$EDITOR` is not set, so that failures are actionable.
 47. As a user, I want TUI edit and shell edit to use the same validation and save pipeline, so that behavior is consistent.
@@ -76,9 +76,9 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 56. As a user, I want only one reverse-link line per source Card, so that repeated links from one Card do not spam backlinks.
 57. As a user, I want reverse-link lines to include source Location and title, so that backlinks are useful.
 58. As a user, I want generated reverse-link sections ignored during backlink computation, so that reverse links do not recursively create backlinks.
-59. As a user, I want `zt lsbk`, so that I can find broken link macros.
-60. As a user, I want `zt lsbk` to work in the Session and shell while service is up, so that broken links are easy to audit.
-61. As a user, I want `zt del` to show a verification chart, so that I know exactly what will be deleted.
+59. As a user, I want shell `zt lsbk`, so that I can find broken link macros from scripts.
+60. As a user, I want `lsbk` in the Session and `zt lsbk` in the shell while service is up, so that broken links are easy to audit.
+61. As a user, I want `del` to show a verification chart, so that I know exactly what will be deleted.
 62. As a user, I want regular deletion to require typing `delete`, so that destructive regular Card deletion is intentional.
 63. As a user, I want Topic deletion to require typing the Topic location, so that whole-topic deletion is harder to do by mistake.
 64. As a user, I want deleting a Topic to remove the entire Topic, so that no orphaned Cards remain under that Topic.
@@ -86,7 +86,7 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 66. As a user, I want deleting a side successor to compact later side-successor subtrees, so that side-label gaps are filled.
 67. As a user, I want delete compaction to rewrite affected link macros and regenerate reverse links, so that references remain consistent.
 68. As a user, I want the pointer to land on the parent after side-successor deletion, so that I remain near the changed structure.
-69. As a user, I want `zt mv --at <location> <new-location>` and Session `zt mv <new-location>`, so that I can move a Card subtree.
+69. As a user, I want `zt mv --at <location> <new-location>` and Session `mv <new-location>`, so that I can move a Card subtree.
 70. As a user, I want move rejected for Topic Cards, invalid Locations, self-subtree moves, skipped side labels, and destination conflicts, so that structural moves remain safe.
 71. As a user, I want move verification charts and `move` confirmation, so that structural rewrites are explicit.
 72. As a user, I want move to rewrite link macros and regenerate reverse links, so that existing references remain consistent.
@@ -121,11 +121,18 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 - Direct successors use numeric segments. A Card has at most one direct successor.
 - Side successors use lowercase Excel-style labels. A Card may have many side successors.
 - The public terms are `direct successor` and `side successor`.
-- `zt n` and `zt b` create Cards, enter edit mode, and discard unsaved first-save cancellations.
-- Pointer-dependent card commands can run in the Session command bar using the Session pointer or from the shell with `--at <location>`.
+- Session `n` and `b`, plus shell `zt n --at <location>` and `zt b --at <location>`, create Cards, enter edit mode, and discard unsaved first-save cancellations.
+- Pointer-dependent card commands can run as bare subcommands in the Session command bar using the Session pointer or from the shell with `--at <location>`.
+- Session command-bar input beginning with `zt`, such as `zt e`, is rejected as `unknown session command: zt` rather than accepted as an alias for the bare subcommand.
+- Other unknown Session command-bar input is rejected with `unknown session command: <first-token>`.
+- Blank or whitespace-only Session command-bar input is a no-op.
+- Session command-bar input is trimmed before command parsing.
+- Session `t <title>` uses the rest of the command-bar line as the title and does not add shell-style quote parsing.
+- Session `t` with no title uses the existing empty-topic-title validation path.
 - Shell card commands do not use an implicit pointer.
 - Shell editing uses `$EDITOR`, temporary `.zt.md` files, and deletes temporary files after save or cancel.
 - Session editing uses the TUI editor with `Ctrl+S` to save and `Esc` to cancel.
+- Session command parsing should use one shared input normalization path for both TUI and piped line-session handling.
 - TUI editing and shell editing share one validation and save pipeline.
 - The daemon tracks open Sessions and one global edit lock.
 - `zt down` refuses while Sessions are open. There is no force-stop command in the initial design.
@@ -155,7 +162,8 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 - Cover broken-link behavior, including newly introduced broken links versus pre-existing broken links.
 - Cover delete confirmation charts, Topic deletion, direct deletion, side-successor compaction, link rewriting, and pointer movement.
 - Cover move verification charts, destination validation, subtree moves, link rewriting, and pointer movement.
-- Cover `zt lsbk`, `zt stats`, `zt ls`, `zt help`, `zt go`, and `zt root` as user-visible command behavior.
+- Cover shell `zt lsbk` and `zt stats`, plus Session `lsbk`, `stats`, `ls`, `help`, `go`, and `root` as user-visible command behavior.
+- Existing PTY and line-session workflow tests should be updated from full-prefix Session input to bare input, with old-prefix coverage kept only for explicit refusal cases.
 - Treat nonzero shell exit codes and user-facing error text as part of the external contract.
 
 ## Out of Scope

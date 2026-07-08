@@ -28,7 +28,7 @@ Status: design locked for implementation.
 - TUI edit mode should use nano-like editor behavior as its interaction baseline.
 - The first locked edit-caret movement keys are `Left`, `Right`, `Up`, and `Down`.
 - Text insertion and backspace in TUI edit mode operate at the edit caret.
-- The PTY-backed workflow matrix must include at least one real PTY test for each interactive Session command and workflow: `zt root`, `zt go <location>`, `zt ls`, `zt help`, `zt stats`, `zt status`, `zt lsbk`, `zt q`, rendered link activation, `zt t`, `zt n`, `zt b`, `zt e`, edit save, edit cancel, edit validation retry, `zt del`, `zt mv`, service disconnect, and edit-lock blocking.
+- The PTY-backed workflow matrix must include at least one real PTY test for each interactive Session command and workflow: `root`, `go <location>`, `ls`, `help`, `stats`, `status`, `lsbk`, `q`, rendered link activation, `t <title>`, `n`, `b`, `e`, edit save, edit cancel, edit validation retry, `del`, `mv <new-location>`, service disconnect, and edit-lock blocking.
 - Edge cases that are awkward to drive through terminal escape sequences should stay in model-level or existing line-session tests.
 - First-pass nano-like edit mode must exactly support these operations: `Left`, `Right`, `Up`, `Down`, text insertion at the edit caret, `Backspace`, `Delete`, `Home`, `End`, `Enter`, `Ctrl+S`, and `Esc`.
 - Nano-like behavior outside those locked operations is deferred, including search, cut/paste buffers, paging commands, and mouse-based caret placement.
@@ -65,7 +65,7 @@ Status: design locked for implementation.
 - Existing line-session tests should remain after PTY coverage is added because the piped fallback path remains a real Session path.
 - The edit model should treat one Rust `char` as one editable unit in the first pass. Full grapheme-cluster editing is deferred unless it proves necessary.
 - Horizontal scrolling should use terminal display cells for actual viewport placement so Chinese characters render without visible caret drift, while the UI reports character columns.
-- `Ctrl+C` inside TUI edit mode should cancel edit mode and return to the Session view. `zt q` remains the explicit Session exit command.
+- `Ctrl+C` inside TUI edit mode should cancel edit mode and return to the Session view. `q` remains the explicit Session exit command.
 - Pasted Windows `\r\n` line endings should normalize to `\n` inside the TUI editor, matching existing card text storage style.
 - PTY workflow tests should include Chinese text from the first pass, including at least one create/edit/save workflow.
 - Model-level edit-caret tests should include Chinese text from the first pass.
@@ -90,7 +90,7 @@ Status: design locked for implementation.
 - After the PTY spike, implementation should use red-first coverage for the editor model and at least one PTY workflow before changing behavior.
 - The manual local TUI smoke run should use a written checklist covering startup, Chinese card creation, edit-caret movement, save, reopen, link click, edit-lock behavior, and quit.
 - The manual smoke checklist should live in this design document.
-- The `portable-pty` spike passes only if it can start `zt`, read `ROOT`, send `zt q`, and observe a clean exit.
+- The `portable-pty` spike passes only if it can start `zt`, read `ROOT`, send `q`, and observe a clean exit.
 - Chinese text coverage should include both title and body edits.
 - The editor model should expose test-only state inspection for line, column, viewport offset, and buffer text under `#[cfg(test)]`.
 - Existing line-session behavior should remain stable except where shared validation or save code requires a change.
@@ -118,7 +118,7 @@ Status: design locked for implementation.
 - Save, reopen the card, and verify the Chinese title/body and preserved spacing.
 - Create or open a rendered link and activate it with a mouse click.
 - Verify edit-lock behavior shows `edit in progress` from another command while editing.
-- Quit the Session with `zt q`.
+- Quit the Session with `q`.
 
 ## Open Questions
 
@@ -151,7 +151,7 @@ None currently identified.
 - Keep line-session tests as regression coverage for the piped fallback path; do not delete them just because PTY coverage exists.
 - Treat one Rust `char` as one editable unit in the first pass; defer full grapheme-cluster editing unless it proves necessary.
 - Use terminal display cells for actual horizontal viewport placement so Chinese characters render without caret drift, while reporting character columns in the UI.
-- Let `Ctrl+C` cancel edit mode first, then return to the Session view; `zt q` remains the explicit Session exit command.
+- Let `Ctrl+C` cancel edit mode first, then return to the Session view; `q` remains the explicit Session exit command.
 - Normalize pasted CRLF to LF inside the TUI editor, matching existing card text storage style.
 - Include Chinese text in at least one PTY create/edit/save workflow and one model-level caret movement test.
 - On malformed save failure, keep the edit caret where it was at save time so the user does not lose editing context.
@@ -174,7 +174,7 @@ None currently identified.
 - Translate crossterm keys into internal editor actions so model tests can exercise behavior without terminal events.
 - Add failing model tests and at least one failing PTY workflow after the PTY spike and before behavior implementation.
 - Keep the manual smoke checklist in this design document.
-- Treat the PTY spike as passed only after `zt` starts, `ROOT` is observed, `zt q` is sent, and the process exits cleanly.
+- Treat the PTY spike as passed only after `zt` starts, `ROOT` is observed, `q` is sent, and the process exits cleanly.
 - Include Chinese text in both title and body edit coverage.
 - Expose editor model state to tests only under `#[cfg(test)]`.
 - Keep existing line-session behavior stable unless shared validation/save code forces a narrow change.

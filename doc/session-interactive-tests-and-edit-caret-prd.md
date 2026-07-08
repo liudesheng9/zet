@@ -90,7 +90,7 @@ TUI edit mode will support nano-like first-pass editing: direction-key movement,
 
 - Use the highest available seam for interactive behavior: PTY-backed tests through the real terminal path.
 - Use model-level tests for exact edit-buffer, edit-caret, viewport, and boundary behavior.
-- The first PTY spike passes only if it can start a terminal Session, observe `ROOT`, send `zt q`, and observe clean exit.
+- The first PTY spike passes only if it can start a terminal Session, observe `ROOT`, send `q`, and observe clean exit.
 - PTY tests should use fresh isolated archive roots and service state per test.
 - PTY tests should use a fixed terminal size.
 - PTY tests should poll captured output for readiness rather than relying on fixed sleeps.

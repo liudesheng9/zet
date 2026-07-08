@@ -12,11 +12,15 @@ Status: design locked for initial implementation.
 - Running plain `zt` starts an interactive terminal session.
 - Running plain `zt` fails if the service is not up.
 - A new interactive terminal session starts with its pointer on `ROOT`.
-- Each interactive terminal session has a one-line command bar for `zt` commands.
-- Commands entered in the session command bar must include the full `zt` prefix, for example `zt n` or `zt e`.
+- Each interactive terminal session has a one-line command bar for Session subcommands.
+- Commands entered in the session command bar omit the executable prefix, for example `n` or `e`.
+- If a user enters `zt e` or another command beginning with `zt` inside a Session, the first token is treated as the requested Session subcommand and rejected with `unknown session command: zt`.
+- Other unknown Session command-bar input is rejected with `unknown session command: <first-token>`.
+- Blank or whitespace-only command-bar input is a no-op.
+- Command-bar input is trimmed before command parsing, so leading and trailing whitespace do not change the command.
 - Commands entered through a session command bar use that session's pointer.
 - The command bar does not support command history.
-- Card commands such as `zt n`, `zt b`, `zt e`, `zt del`, and `zt mv <new-location>` are available in the session command bar.
+- Card subcommands such as `t <title>`, `n`, `b`, `e`, `del`, and `mv <new-location>` are available in the session command bar.
 - Card commands entered through the session command bar use the session pointer.
 - Pointer-dependent card commands can also run as shell subcommands while the service is up by passing `--at <location>`.
 - Shell card commands do not use any implicit pointer.
@@ -33,16 +37,16 @@ Status: design locked for initial implementation.
 - Shell `zt t "Topic title"` prints the new topic location, for example `<topic>/0`, on successful save.
 - Shell `zt n --at <location>` and shell `zt b --at <location>` print the new card location after successful save.
 - If shell card creation enters editing and the user cancels before first save, `zt` discards the newly-created card.
-- `zt q` exits the interactive terminal session.
+- `q` exits the interactive terminal session.
 - `Ctrl+C` also closes the interactive terminal session without changing card data.
-- `zt root` moves the session pointer back to `ROOT`.
-- `zt go <location>` moves the session pointer to a typed location.
-- `zt go <location>` cannot jump to missing locations.
-- `zt go <location>` cannot jump to broken-link targets.
-- If `zt go <location>` is given a missing or broken location, it shows a one-line error and leaves the pointer unchanged.
-- `zt ls` is available in the session command bar.
-- `zt ls` lists cards under the current topic.
-- `zt ls` shows card locations and titles.
+- `root` moves the session pointer back to `ROOT`.
+- `go <location>` moves the session pointer to a typed location.
+- `go <location>` cannot jump to missing locations.
+- `go <location>` cannot jump to broken-link targets.
+- If `go <location>` is given a missing or broken location, it shows a one-line error and leaves the pointer unchanged.
+- `ls` is available in the session command bar.
+- `ls` lists cards under the current topic.
+- `ls` shows card locations and titles.
 - The initial design does not include text search.
 - The terminal view renders card links as highlighted selectable links, with mouse activation where the terminal supports it.
 - SQLite stores cards. Link relationships are not stored as relational data.
@@ -83,30 +87,34 @@ Status: design locked for initial implementation.
 - Example locations include `1/1`, `1/2`, `1/2|c`, and `1/2|c|4|b|b`.
 - `1/2|c|4|b|b` is read from `1/1` as: first direct successor, third side successor, fourth direct successor, second side successor, second side successor.
 - Under each topic, `<topic>/1` is the first regular card, and direct successors advance the numeric segment: `1/1 -> 1/2 -> 1/3`.
-- `zt t "Topic title"` creates only the topic card at `<topic>/0`.
-- `zt t "Topic title"` rejects empty topic titles before opening edit mode.
-- `zt t "Topic title"` rejects topic titles containing newline characters before opening edit mode.
-- After `zt t "Topic title"` creates `<topic>/0`, the pointer lands on `<topic>/0`.
-- After `zt t "Topic title"` creates a topic card, `zt` automatically enters edit mode for that topic card.
-- Creating the first regular card under a topic is done with `zt n`, which creates `<topic>/1`.
+- Session `t <title>` and shell `zt t "Topic title"` create only the topic card at `<topic>/0`.
+- Session `t <title>` uses the rest of the command-bar line as the title and does not add shell-style quote parsing.
+- Session `t My Topic` creates title `My Topic`.
+- Session `t "My Topic"` includes the quote characters in the title.
+- Topic creation rejects empty topic titles before opening edit mode.
+- Session `t` with no title uses the same empty-topic-title validation path.
+- Topic creation rejects topic titles containing newline characters before opening edit mode.
+- After Session `t <title>` creates `<topic>/0`, the pointer lands on `<topic>/0`.
+- After topic creation, `zt` automatically enters edit mode for that topic card.
+- Creating the first regular card under a topic is done with Session subcommand `n`, which creates `<topic>/1`.
 - In other cases, new-card creation requires the pointer to be on an existing card.
-- `zt n` creates the direct successor of the current card.
-- `zt n` from a topic card creates `<topic>/1`.
-- If the pointer is on a topic card and `<topic>/1` already exists, `zt n` rejects creation.
-- `zt n` from a regular card increments the last numeric segment when the current location ends with a number. For example, `1/1 -> 1/2` and `1/2|c|4 -> 1/2|c|5`.
-- `zt n` from a regular card appends `|1` when the current location ends with a side label. For example, `1/2|c -> 1/2|c|1`.
-- If the current card already has a direct successor, `zt n` rejects creation and shows the existing direct successor location.
-- `zt b` creates a side successor of the current card.
-- `zt b` appends the next available side label to the current location. For example, the first side successor of `1/2` is `1/2|a`, and the next is `1/2|b`.
-- `zt b` works the same way after nested direct-successor segments. For example, the first side successor of `1/2|c|4` is `1/2|c|4|a`.
-- `zt b` is not valid when the pointer is on a topic card.
-- After `zt b` creates a side successor, `zt` automatically enters edit mode for that side successor.
+- `n` creates the direct successor of the current card.
+- `n` from a topic card creates `<topic>/1`.
+- If the pointer is on a topic card and `<topic>/1` already exists, `n` rejects creation.
+- `n` from a regular card increments the last numeric segment when the current location ends with a number. For example, `1/1 -> 1/2` and `1/2|c|4 -> 1/2|c|5`.
+- `n` from a regular card appends `|1` when the current location ends with a side label. For example, `1/2|c -> 1/2|c|1`.
+- If the current card already has a direct successor, `n` rejects creation and shows the existing direct successor location.
+- `b` creates a side successor of the current card.
+- `b` appends the next available side label to the current location. For example, the first side successor of `1/2` is `1/2|a`, and the next is `1/2|b`.
+- `b` works the same way after nested direct-successor segments. For example, the first side successor of `1/2|c|4` is `1/2|c|4|a`.
+- `b` is not valid when the pointer is on a topic card.
+- After `b` creates a side successor, `zt` automatically enters edit mode for that side successor.
 - Side successor labels use lowercase `a` through `z`, then continue Excel-style as `aa`, `ab`, and so on.
 - Public UI and documentation use `direct successor` and `side successor`, not `direct success` or `side success`.
 - Users cannot manually choose a card location during normal card creation.
 - New regular cards are created as empty cards containing two `<--->` separators, giving the card its title, text, and reverse-link zones.
-- After `zt n` creates a regular card, `zt` automatically enters edit mode for that card.
-- `zt e` opens the current card for editing from reading mode.
+- After `n` creates a regular card, `zt` automatically enters edit mode for that card.
+- `e` opens the current card for editing from reading mode.
 - The reverse-link section is visible during editing.
 - Shell edit temporary files use the `.zt.md` extension.
 - Shell edit temporary files are deleted after successful save or cancel.
@@ -127,8 +135,8 @@ Status: design locked for initial implementation.
 - On every save, user edits to the reverse-link section are overwritten by generated reverse-link text.
 - On malformed save failure, `zt` stays in edit mode, shows a one-line error, and does not write the changes until the user fixes the card.
 - Deleting a card deletes that card and all of its successor cards.
-- `zt del` deletes the current card plus all of its successor cards.
-- `zt del` can delete a topic card.
+- `del` deletes the current card plus all of its successor cards.
+- `del` can delete a topic card.
 - Deleting a topic card removes the whole topic, including all cards under that topic.
 - After a topic card is deleted, that topic no longer exists.
 - Deleting a direct successor does not renumber direct successor locations.
@@ -136,13 +144,13 @@ Status: design locked for initial implementation.
 - When side successor deletion moves later side successor subtrees, affected link macros are rewritten to keep links consistent.
 - Side-successor compaction happens before broken-link reporting.
 - After side-successor compaction, only links to actually deleted cards become broken.
-- `zt del` verification charts show side-successor compaction mappings, for example `1/2|c -> 1/2|b`.
+- `del` verification charts show side-successor compaction mappings, for example `1/2|c -> 1/2|b`.
 - After deleting a side successor, the session pointer lands on the parent card.
 - Delete compaction regenerates reverse-link sections immediately as part of the delete operation.
 - Side-successor compaction moves whole later side-successor subtrees. For example, if `1/2|c` becomes `1/2|b`, then `1/2|c|4` becomes `1/2|b|4`.
-- Before deletion, `zt del` shows a verification chart of the cards that will be deleted.
-- The `zt del` verification chart shows the number of successor cards that will be deleted.
-- `zt del` requires confirmation before performing the deletion.
+- Before deletion, `del` shows a verification chart of the cards that will be deleted.
+- The `del` verification chart shows the number of successor cards that will be deleted.
+- `del` requires confirmation before performing the deletion.
 - Regular-card deletion requires the user to type `delete` to confirm.
 - Topic deletion requires the user to type the topic location, for example `1/0`, to confirm.
 - After deleting the current card, the session pointer moves to the parent location if it still exists.
@@ -150,23 +158,23 @@ Status: design locked for initial implementation.
 - Links to deleted cards remain in card text but become broken links.
 - Broken links cannot be jumped to from the interface.
 - `zt lsbk` lists all broken link macros.
-- `zt lsbk` is available inside a session command bar.
+- `lsbk` is available inside a session command bar.
 - `zt lsbk` is also available as a shell command while the service is up.
 - For each broken link, `zt lsbk` shows the source card location, source card title, broken target location, and the matching source text line containing the link macro.
 - Moving a card moves that card and all of its successor cards to the assigned location.
-- `zt mv <new-location>` moves the current card plus all successor cards to the assigned location.
-- `zt mv <new-location>` cannot move topic cards.
-- `zt mv <new-location>` rejects invalid locations.
-- `zt mv <new-location>` must preserve successor rules.
-- `zt mv <new-location>` cannot skip side-successor labels; moving to a side successor must use the next available side label for that parent.
-- `zt mv <new-location>` rejects moving a card into one of its own successor locations.
-- `zt mv <new-location>` rejects if any destination location already exists outside the moved subtree.
-- When `zt mv <new-location>` rejects because destination locations already exist, it shows the conflicting destination locations.
-- Before applying a move, `zt mv <new-location>` shows a verification chart.
+- `mv <new-location>` moves the current card plus all successor cards to the assigned location.
+- `mv <new-location>` cannot move topic cards.
+- `mv <new-location>` rejects invalid locations.
+- `mv <new-location>` must preserve successor rules.
+- `mv <new-location>` cannot skip side-successor labels; moving to a side successor must use the next available side label for that parent.
+- `mv <new-location>` rejects moving a card into one of its own successor locations.
+- `mv <new-location>` rejects if any destination location already exists outside the moved subtree.
+- When `mv <new-location>` rejects because destination locations already exist, it shows the conflicting destination locations.
+- Before applying a move, `mv <new-location>` shows a verification chart.
 - The move verification chart shows old-location to new-location mappings.
 - The move verification chart shows the number of moved cards.
 - The move verification chart shows the number of link macros that will be rewritten.
-- `zt mv <new-location>` requires the user to type `move` to confirm.
+- `mv <new-location>` requires the user to type `move` to confirm.
 - Moving cards rewrites link macros in stored card text so existing links keep pointing to the moved cards.
 - After moving the current card, the session pointer moves to the moved card's new location.
 - The system has a service lifecycle controlled by `zt up` and `zt down`.
@@ -217,11 +225,12 @@ Status: design locked for initial implementation.
 - Edit-lock failures show a clear `edit in progress` message.
 - Read-only shell commands can run while a card is being edited.
 - Read-only shell commands include `zt status`, `zt stats`, `zt lsbk`, `zt version`, and `zt config show`.
-- `zt stats` is available inside the session command bar.
-- `zt status` is available inside the session command bar.
+- `stats` is available inside the session command bar.
+- `status` is available inside the session command bar.
 - `zt help` is available as a shell command.
-- `zt help` is available inside the session command bar.
-- `zt help` shows only commands available for the current context.
+- Shell `zt help` shows shell command syntax only.
+- `help` is available inside the session command bar.
+- `help` inside a Session shows only bare Session subcommands available for the current context.
 - When the pointer is on `ROOT`, the interface shows all existing topics.
 - The `ROOT` view shows each topic's location and title.
 - The `ROOT` view does not show topic description previews.
