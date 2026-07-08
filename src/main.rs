@@ -1047,10 +1047,12 @@ struct DeleteResult {
     moved: BTreeMap<String, String>,
 }
 
-fn delete_card<F>(conn: &mut Connection, at: &str, mut confirm: F) -> Result<DeleteResult>
-where
-    F: FnMut(&str) -> Result<()>,
-{
+struct DeletePlan {
+    delete_set: BTreeSet<String>,
+    confirmation: String,
+}
+
+fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
     let card = load_card(conn, at)?;
     let delete_set = if card.is_topic {
         let topic = topic_id(&card.location)?;
@@ -1062,25 +1064,58 @@ where
     } else {
         descendant_locations(conn, at)?
     };
-    println!("delete verification:");
-    for location in &delete_set {
-        println!("delete {location}");
+    let confirmation = if card.is_topic {
+        at.to_string()
+    } else {
+        "delete".to_string()
+    };
+    Ok(DeletePlan {
+        delete_set,
+        confirmation,
+    })
+}
+
+fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
+    let mut lines = vec!["delete verification:".to_string()];
+    for location in &plan.delete_set {
+        lines.push(format!("delete {location}"));
     }
-    println!("successors: {}", delete_set.len().saturating_sub(1));
-    let confirmation = if card.is_topic { at } else { "delete" };
-    confirm(confirmation)?;
-    let compaction = side_compaction_mapping(conn, at, &delete_set)?;
+    lines.push(format!(
+        "successors: {}",
+        plan.delete_set.len().saturating_sub(1)
+    ));
+    lines
+}
+
+fn print_delete_verification(plan: &DeletePlan) {
+    for line in delete_verification_lines(plan) {
+        println!("{line}");
+    }
+}
+
+fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Result<DeleteResult> {
+    let compaction = side_compaction_mapping(conn, at, &plan.delete_set)?;
     let tx = conn.transaction()?;
-    for location in &delete_set {
+    for location in &plan.delete_set {
         tx.execute("DELETE FROM cards WHERE location = ?1", [location])?;
     }
     apply_location_mapping_tx(&tx, &compaction)?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
     Ok(DeleteResult {
-        deleted_count: delete_set.len(),
+        deleted_count: plan.delete_set.len(),
         moved: compaction,
     })
+}
+
+fn delete_card<F>(conn: &mut Connection, at: &str, mut confirm: F) -> Result<DeleteResult>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let plan = delete_plan(conn, at)?;
+    print_delete_verification(&plan);
+    confirm(&plan.confirmation)?;
+    apply_delete_plan(conn, at, plan)
 }
 
 fn read_confirmation<R: BufRead>(input: &mut R, expected: &str) -> Result<()> {
@@ -1186,6 +1221,11 @@ fn shell_move(at: &str, new_location: &str) -> Result<()> {
     Ok(())
 }
 
+struct MovePlan {
+    mapping: BTreeMap<String, String>,
+    rewritten_links: usize,
+}
+
 fn move_card<F>(
     conn: &mut Connection,
     at: &str,
@@ -1195,6 +1235,15 @@ fn move_card<F>(
 where
     F: FnMut(&str) -> Result<()>,
 {
+    let plan = move_plan(conn, at, new_location)?;
+    print_move_verification(&plan);
+    confirm("move")?;
+    let mapping = plan.mapping.clone();
+    apply_move_plan(conn, &plan)?;
+    Ok(mapping)
+}
+
+fn move_plan(conn: &Connection, at: &str, new_location: &str) -> Result<MovePlan> {
     let card = load_card(conn, at)?;
     if card.is_topic {
         bail!("topic cards cannot be moved");
@@ -1221,21 +1270,35 @@ where
             conflicts.join(", ")
         );
     }
-    println!("move verification:");
-    for (old, new) in &mapping {
-        println!("{old} -> {new}");
+    let rewritten_links = count_rewritten_links(conn, &mapping)?;
+    Ok(MovePlan {
+        mapping,
+        rewritten_links,
+    })
+}
+
+fn move_verification_lines(plan: &MovePlan) -> Vec<String> {
+    let mut lines = vec!["move verification:".to_string()];
+    for (old, new) in &plan.mapping {
+        lines.push(format!("{old} -> {new}"));
     }
-    println!("moved cards: {}", mapping.len());
-    println!(
-        "link macros rewritten: {}",
-        count_rewritten_links(conn, &mapping)?
-    );
-    confirm("move")?;
+    lines.push(format!("moved cards: {}", plan.mapping.len()));
+    lines.push(format!("link macros rewritten: {}", plan.rewritten_links));
+    lines
+}
+
+fn print_move_verification(plan: &MovePlan) {
+    for line in move_verification_lines(plan) {
+        println!("{line}");
+    }
+}
+
+fn apply_move_plan(conn: &mut Connection, plan: &MovePlan) -> Result<()> {
     let tx = conn.transaction()?;
-    apply_location_mapping_tx(&tx, &mapping)?;
+    apply_location_mapping_tx(&tx, &plan.mapping)?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
-    Ok(mapping)
+    Ok(())
 }
 
 fn validate_move_target(

@@ -138,6 +138,10 @@ impl PtySession {
     pub fn output(&self) -> String {
         self.output.lock().expect("output lock").clone()
     }
+
+    pub fn plain_output(&self) -> String {
+        strip_ansi(&self.output())
+    }
 }
 
 fn strip_ansi(input: &str) -> String {

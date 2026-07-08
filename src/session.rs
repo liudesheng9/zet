@@ -217,13 +217,13 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
     let mut pointer = Pointer::Root;
     let mut command = String::new();
     let mut message = String::new();
+    let mut links = draw_tui(&root, &pointer, &command, &message)?;
     loop {
         if !is_service_up(&root) {
             message = "service disconnected".to_string();
             draw_tui(&root, &pointer, &command, &message)?;
             break;
         }
-        let links = draw_tui(&root, &pointer, &command, &message)?;
         match crossterm::event::read()? {
             crossterm::event::Event::Key(key) if is_tui_input_key(&key) => match key.code {
                 crossterm::event::KeyCode::Char('c')
@@ -262,10 +262,13 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     } else {
                         message = format!("location `{target}` does not exist");
                     }
+                } else {
+                    continue;
                 }
             }
-            _ => {}
+            _ => continue,
         }
+        links = draw_tui(&root, &pointer, &command, &message)?;
     }
     Ok(())
 }
@@ -531,7 +534,9 @@ fn handle_tui_command(
             let at = current_card(pointer)?;
             let _lock = acquire_edit_lock(root)?;
             let mut conn = open_db(root)?;
-            delete_card(&mut conn, &at, tui_read_confirmation)?;
+            let plan = delete_plan(&conn, &at)?;
+            tui_read_confirmation(&plan.confirmation, &delete_verification_lines(&plan))?;
+            apply_delete_plan(&mut conn, &at, plan)?;
             *pointer = parent_location(&at)
                 .map(Pointer::Card)
                 .unwrap_or(Pointer::Root);
@@ -542,7 +547,9 @@ fn handle_tui_command(
             let at = current_card(pointer)?;
             let _lock = acquire_edit_lock(root)?;
             let mut conn = open_db(root)?;
-            move_card(&mut conn, &at, new_location, tui_read_confirmation)?;
+            let plan = move_plan(&conn, &at, new_location)?;
+            tui_read_confirmation("move", &move_verification_lines(&plan))?;
+            apply_move_plan(&mut conn, &plan)?;
             *pointer = Pointer::Card((*new_location).to_string());
             message.clear();
             Ok(true)
@@ -984,15 +991,14 @@ fn render_editor_line(line: &str, offset: usize, width: usize) -> String {
     out
 }
 
-fn tui_read_confirmation(expected: &str) -> Result<()> {
+fn tui_read_confirmation(expected: &str, lines: &[String]) -> Result<()> {
     let mut input = String::new();
+    let mut dirty = true;
     loop {
-        let mut stdout = io::stdout();
-        crossterm::queue!(
-            stdout,
-            crossterm::style::Print(format!("\ntype `{expected}` to confirm: {input}"))
-        )?;
-        stdout.flush()?;
+        if dirty {
+            draw_tui_confirmation(lines, expected, &input)?;
+            dirty = false;
+        }
         if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
             if !is_tui_input_key(&key) {
                 continue;
@@ -1007,12 +1013,37 @@ fn tui_read_confirmation(expected: &str) -> Result<()> {
                 crossterm::event::KeyCode::Esc => bail!("confirmation did not match"),
                 crossterm::event::KeyCode::Backspace => {
                     input.pop();
+                    dirty = true;
                 }
-                crossterm::event::KeyCode::Char(ch) => input.push(ch),
+                crossterm::event::KeyCode::Char(ch) => {
+                    input.push(ch);
+                    dirty = true;
+                }
                 _ => {}
             }
         }
     }
+}
+
+fn draw_tui_confirmation(lines: &[String], expected: &str, input: &str) -> Result<()> {
+    let mut stdout = io::stdout();
+    let mut row = 0_u16;
+    crossterm::queue!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveTo(0, 0)
+    )?;
+    for line in lines {
+        write_tui_plain_line(&mut stdout, &mut row, line)?;
+    }
+    row = row.saturating_add(1);
+    write_tui_plain_line(
+        &mut stdout,
+        &mut row,
+        &format!("type `{expected}` to confirm: {input}"),
+    )?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn tui_ls(root: &Path, pointer: &Pointer) -> Result<String> {

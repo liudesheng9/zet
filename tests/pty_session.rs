@@ -358,6 +358,50 @@ fn terminal_session_moves_and_deletes_cards_with_confirmations() {
 }
 
 #[test]
+fn terminal_delete_confirmation_does_not_duplicate_prompt_or_append_to_command_bar() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_move_fixture();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("zt go 0/1|a");
+    session.send_enter();
+    session.wait_for_text("location: 0/1|a");
+
+    session.send_text("zt del");
+    session.send_enter();
+    session.wait_for_text("type `delete` to confirm:");
+    session.send_text("delete");
+    session.send_enter();
+    session.wait_for_text("location: 0/1");
+
+    session.send_text("zt q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+
+    let output = session.plain_output();
+    assert!(
+        !output.contains("zt> zt deldelete verification:"),
+        "delete verification was appended to the command bar:\n{}",
+        output.escape_debug()
+    );
+    assert_eq!(
+        output.matches("zt> zt del").count(),
+        1,
+        "delete command was redrawn more than once:\n{}",
+        output.escape_debug()
+    );
+    assert_eq!(
+        output.matches("type `delete` to confirm: delete").count(),
+        1,
+        "final delete confirmation prompt was duplicated:\n{}",
+        output.escape_debug()
+    );
+}
+
+#[test]
 fn terminal_session_edit_lock_blocks_other_writes() {
     let home = TestHome::new();
     home.configure_and_up();
