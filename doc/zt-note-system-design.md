@@ -1,0 +1,252 @@
+# ZT Note System Design
+
+Status: design locked for initial implementation.
+
+## Locked So Far
+
+- The product is a local note system named `zt`.
+- The implementation language is Rust.
+- The interface is CLI only. A GUI and web interface are out of scope.
+- A card is the canonical term for one note item.
+- `zt` has an interactive terminal view for navigating cards.
+- Running plain `zt` starts an interactive terminal session.
+- Running plain `zt` fails if the service is not up.
+- A new interactive terminal session starts with its pointer on `ROOT`.
+- Each interactive terminal session has a one-line command bar for `zt` commands.
+- Commands entered in the session command bar must include the full `zt` prefix, for example `zt n` or `zt e`.
+- Commands entered through a session command bar use that session's pointer.
+- The command bar does not support command history.
+- Card commands such as `zt n`, `zt b`, `zt e`, `zt del`, and `zt mv <new-location>` are available in the session command bar.
+- Card commands entered through the session command bar use the session pointer.
+- Pointer-dependent card commands can also run as shell subcommands while the service is up by passing `--at <location>`.
+- Shell card commands do not use any implicit pointer.
+- Shell `zt n --at <location>` creates the direct successor of the card at `<location>`.
+- Shell `zt b --at <location>` creates the next side successor of the card at `<location>`.
+- Shell `zt e --at <location>` opens the card at `<location>` for editing.
+- Shell `zt e --at <location>` opens `$EDITOR`.
+- Shell `zt e --at <location>` fails with a clear error if `$EDITOR` is not set.
+- Shell `zt del --at <location>` deletes the card at `<location>` and its successors.
+- Shell `zt mv --at <location> <new-location>` moves the card at `<location>` and its successors to `<new-location>`.
+- Shell card commands are rejected while any interactive session is currently editing a card.
+- `zt t "Topic title"` can run as a shell command while the service is up.
+- Shell `zt t "Topic title"` opens `$EDITOR` immediately after creating the topic card.
+- Shell `zt t "Topic title"` prints the new topic location, for example `<topic>/0`, on successful save.
+- Shell `zt n --at <location>` and shell `zt b --at <location>` print the new card location after successful save.
+- If shell card creation enters editing and the user cancels before first save, `zt` discards the newly-created card.
+- `zt q` exits the interactive terminal session.
+- `Ctrl+C` also closes the interactive terminal session without changing card data.
+- `zt root` moves the session pointer back to `ROOT`.
+- `zt go <location>` moves the session pointer to a typed location.
+- `zt go <location>` cannot jump to missing locations.
+- `zt go <location>` cannot jump to broken-link targets.
+- If `zt go <location>` is given a missing or broken location, it shows a one-line error and leaves the pointer unchanged.
+- `zt ls` is available in the session command bar.
+- `zt ls` lists cards under the current topic.
+- `zt ls` shows card locations and titles.
+- The initial design does not include text search.
+- The terminal view renders card links as highlighted selectable links, with mouse activation where the terminal supports it.
+- SQLite stores cards. Link relationships are not stored as relational data.
+- SQLite stores only `location`, `is_topic`, and `text` for each card.
+- The SQLite table is named `cards`.
+- `location` is the SQLite primary key for `cards`.
+- `is_topic` is a boolean that distinguishes topic cards from regular cards.
+- `text` stores the card's editable text representation.
+- Save, delete, and move operations each run as one SQLite transaction.
+- The daemon enables SQLite WAL mode.
+- The initial development-period design does not include schema migrations.
+- During the development period, incompatible old schemas may be deleted instead of migrated.
+- A card stores link references in its own text.
+- A topic is a special card.
+- A topic card uses its title as the topic name.
+- A topic card may use its text as a short topic description.
+- A topic card description cannot contain link macros.
+- A topic card has the same three-section stored text shape as regular cards.
+- A topic card's reverse-link section is generated text.
+- Each card has a unique string location.
+- Topic root names are allocated as `0`, `1`, `2`, and so on.
+- Topic root numbers are monotonic and are not reused after topic deletion.
+- The topic card for a topic is located at `<topic>/0`, for example `1/0`.
+- Locations beginning with `<topic>/` belong under that root topic.
+- A valid topic-card location is `<topic-id>/0`.
+- A valid regular-card location is `<topic-id>/<positive-number>` followed by zero or more `|<positive-number>` or `|<side-label>` segments.
+- Topic IDs are decimal numbers without leading zeroes, except the topic ID `0`.
+- Numeric successor segments are positive decimal numbers without leading zeroes.
+- Side labels are lowercase Excel-style labels: `a` through `z`, then `aa`, `ab`, and so on.
+- Regular card locations use successor notation.
+- A card can have only one direct successor.
+- A card can have any number of side successors.
+- A topic card can only have the first regular card as its direct successor, for example `1/0 -> 1/1`.
+- A topic card cannot have side successors.
+- Direct successors are recorded with numbers.
+- Side successors are recorded with letters.
+- Nested successor segments are delimited by `|`.
+- Example locations include `1/1`, `1/2`, `1/2|c`, and `1/2|c|4|b|b`.
+- `1/2|c|4|b|b` is read from `1/1` as: first direct successor, third side successor, fourth direct successor, second side successor, second side successor.
+- Under each topic, `<topic>/1` is the first regular card, and direct successors advance the numeric segment: `1/1 -> 1/2 -> 1/3`.
+- `zt t "Topic title"` creates only the topic card at `<topic>/0`.
+- `zt t "Topic title"` rejects empty topic titles before opening edit mode.
+- `zt t "Topic title"` rejects topic titles containing newline characters before opening edit mode.
+- After `zt t "Topic title"` creates `<topic>/0`, the pointer lands on `<topic>/0`.
+- After `zt t "Topic title"` creates a topic card, `zt` automatically enters edit mode for that topic card.
+- Creating the first regular card under a topic is done with `zt n`, which creates `<topic>/1`.
+- In other cases, new-card creation requires the pointer to be on an existing card.
+- `zt n` creates the direct successor of the current card.
+- `zt n` from a topic card creates `<topic>/1`.
+- If the pointer is on a topic card and `<topic>/1` already exists, `zt n` rejects creation.
+- `zt n` from a regular card increments the last numeric segment when the current location ends with a number. For example, `1/1 -> 1/2` and `1/2|c|4 -> 1/2|c|5`.
+- `zt n` from a regular card appends `|1` when the current location ends with a side label. For example, `1/2|c -> 1/2|c|1`.
+- If the current card already has a direct successor, `zt n` rejects creation and shows the existing direct successor location.
+- `zt b` creates a side successor of the current card.
+- `zt b` appends the next available side label to the current location. For example, the first side successor of `1/2` is `1/2|a`, and the next is `1/2|b`.
+- `zt b` works the same way after nested direct-successor segments. For example, the first side successor of `1/2|c|4` is `1/2|c|4|a`.
+- `zt b` is not valid when the pointer is on a topic card.
+- After `zt b` creates a side successor, `zt` automatically enters edit mode for that side successor.
+- Side successor labels use lowercase `a` through `z`, then continue Excel-style as `aa`, `ab`, and so on.
+- Public UI and documentation use `direct successor` and `side successor`, not `direct success` or `side success`.
+- Users cannot manually choose a card location during normal card creation.
+- New regular cards are created as empty cards containing two `<--->` separators, giving the card its title, text, and reverse-link zones.
+- After `zt n` creates a regular card, `zt` automatically enters edit mode for that card.
+- `zt e` opens the current card for editing from reading mode.
+- The reverse-link section is visible during editing.
+- Shell edit temporary files use the `.zt.md` extension.
+- Shell edit temporary files are deleted after successful save or cancel.
+- TUI edit mode and shell `$EDITOR` use the same card text validation and save pipeline.
+- Edit mode uses `Ctrl+S` to save and `Esc` to cancel.
+- If edit mode is canceled before a newly-created card has ever been saved, `zt` discards that new card.
+- Saving rejects malformed regular cards.
+- A regular card is malformed if it does not contain exactly two separator lines of `<--->`.
+- A regular card is malformed if its title is empty.
+- A card title must be single-line text.
+- A card title may contain punctuation and spaces.
+- A card title may not contain newline characters.
+- A regular card is malformed if it contains invalid link macros.
+- Saving a card is rejected if the edit introduces new broken links.
+- Saving a card with existing broken links is allowed when the edit does not introduce new broken links.
+- Topic-card save validation matches regular-card save validation, except topic descriptions cannot contain link macros.
+- If the reverse-link zone is damaged during editing, saving repairs that zone from the stored cards.
+- On every save, user edits to the reverse-link section are overwritten by generated reverse-link text.
+- On malformed save failure, `zt` stays in edit mode, shows a one-line error, and does not write the changes until the user fixes the card.
+- Deleting a card deletes that card and all of its successor cards.
+- `zt del` deletes the current card plus all of its successor cards.
+- `zt del` can delete a topic card.
+- Deleting a topic card removes the whole topic, including all cards under that topic.
+- After a topic card is deleted, that topic no longer exists.
+- Deleting a direct successor does not renumber direct successor locations.
+- Deleting a side successor moves later side successor subtrees under the same parent to fill the side-label gap.
+- When side successor deletion moves later side successor subtrees, affected link macros are rewritten to keep links consistent.
+- Side-successor compaction happens before broken-link reporting.
+- After side-successor compaction, only links to actually deleted cards become broken.
+- `zt del` verification charts show side-successor compaction mappings, for example `1/2|c -> 1/2|b`.
+- After deleting a side successor, the session pointer lands on the parent card.
+- Delete compaction regenerates reverse-link sections immediately as part of the delete operation.
+- Side-successor compaction moves whole later side-successor subtrees. For example, if `1/2|c` becomes `1/2|b`, then `1/2|c|4` becomes `1/2|b|4`.
+- Before deletion, `zt del` shows a verification chart of the cards that will be deleted.
+- The `zt del` verification chart shows the number of successor cards that will be deleted.
+- `zt del` requires confirmation before performing the deletion.
+- Regular-card deletion requires the user to type `delete` to confirm.
+- Topic deletion requires the user to type the topic location, for example `1/0`, to confirm.
+- After deleting the current card, the session pointer moves to the parent location if it still exists.
+- If no parent location still exists after deletion, the session pointer moves to `ROOT`.
+- Links to deleted cards remain in card text but become broken links.
+- Broken links cannot be jumped to from the interface.
+- `zt lsbk` lists all broken link macros.
+- `zt lsbk` is available inside a session command bar.
+- `zt lsbk` is also available as a shell command while the service is up.
+- For each broken link, `zt lsbk` shows the source card location, source card title, broken target location, and the matching source text line containing the link macro.
+- Moving a card moves that card and all of its successor cards to the assigned location.
+- `zt mv <new-location>` moves the current card plus all successor cards to the assigned location.
+- `zt mv <new-location>` cannot move topic cards.
+- `zt mv <new-location>` rejects invalid locations.
+- `zt mv <new-location>` must preserve successor rules.
+- `zt mv <new-location>` cannot skip side-successor labels; moving to a side successor must use the next available side label for that parent.
+- `zt mv <new-location>` rejects moving a card into one of its own successor locations.
+- `zt mv <new-location>` rejects if any destination location already exists outside the moved subtree.
+- When `zt mv <new-location>` rejects because destination locations already exist, it shows the conflicting destination locations.
+- Before applying a move, `zt mv <new-location>` shows a verification chart.
+- The move verification chart shows old-location to new-location mappings.
+- The move verification chart shows the number of moved cards.
+- The move verification chart shows the number of link macros that will be rewritten.
+- `zt mv <new-location>` requires the user to type `move` to confirm.
+- Moving cards rewrites link macros in stored card text so existing links keep pointing to the moved cards.
+- After moving the current card, the session pointer moves to the moved card's new location.
+- The system has a service lifecycle controlled by `zt up` and `zt down`.
+- `zt up` starts a per-user background daemon.
+- If `zt up` is called while the service is already up, it succeeds as a no-op, prints that the service is already running, and shows the daemon PID.
+- If `zt up` finds a corrupted SQLite database, it fails with a clear error and does not modify the database.
+- The daemon owns live access to SQLite while the service is up.
+- The daemon writes minimal append-only text logs to `<archive_root>/zt.log`.
+- Commands that need note-system data talk to the daemon.
+- CLI commands talk to the daemon through a per-user local socket or named pipe.
+- On Windows, daemon IPC uses a named pipe.
+- On Unix-like systems, daemon IPC uses a Unix domain socket.
+- While the service is down, only `zt up`, `zt status`, `zt version`, `zt config show`, and `zt config set archive_root <path>` are available.
+- `zt version` prints only the CLI version, for example `zt 0.1.0`.
+- Shell command failures use nonzero exit codes.
+- If `zt down` is called while the service is already down, it succeeds as a no-op and prints that the service is already stopped.
+- `zt down` refuses to stop the service while interactive sessions are open.
+- When `zt down` refuses because sessions are open, it shows the open session count.
+- There is no force-stop command in the initial design.
+- `zt stats` reports total cards, topic cards, and regular cards.
+- `zt` stores configuration in a per-user config file at the OS config location, for example `%APPDATA%\zt\config.toml` on Windows.
+- The config format supports multiple config items, but the only locked current item is `archive_root`.
+- `archive_root` is the root directory where the SQLite database is stored.
+- The SQLite database file is stored at `<archive_root>/zt.sqlite3`.
+- `zt config show` lists all current config items.
+- `zt config set archive_root <path>` sets the archive root.
+- `zt config set archive_root <path>` is rejected while the service is up.
+- `zt config set archive_root <path>` is allowed while the service is down.
+- `zt up` fails with a clear message if `archive_root` is not configured.
+- If `archive_root` is configured but the directory does not exist, `zt up` creates it recursively.
+- If `<archive_root>/zt.sqlite3` does not exist, `zt up` initializes the SQLite file and schema.
+- `zt status` shows the service state.
+- When the service is up, `zt status` shows the daemon PID.
+- `zt status` shows `archive_root` and the SQLite path.
+- `zt status` shows the card count when the database is reachable.
+- `zt status` shows the open interactive session count.
+- The system has a conceptual `zt pointer` that identifies which card is currently being viewed.
+- Pointer state is per interactive terminal session because the pointer is tied to the current view.
+- The daemon does not maintain one global pointer for the database.
+- The daemon tracks open interactive sessions.
+- A session registers with the daemon when the interactive terminal view starts.
+- A session unregisters from the daemon on normal exit.
+- The daemon drops a session if that session's IPC connection closes.
+- If the daemon exits unexpectedly, the session shows a one-line `service disconnected` message and exits without writing data.
+- The daemon tracks one global edit lock.
+- Only one edit operation can be active at a time, whether it comes from a shell command or a session command bar.
+- Commands that need the edit lock fail immediately when the edit lock is already held.
+- Edit-lock failures show a clear `edit in progress` message.
+- Read-only shell commands can run while a card is being edited.
+- Read-only shell commands include `zt status`, `zt stats`, `zt lsbk`, `zt version`, and `zt config show`.
+- `zt stats` is available inside the session command bar.
+- `zt status` is available inside the session command bar.
+- `zt help` is available as a shell command.
+- `zt help` is available inside the session command bar.
+- `zt help` shows only commands available for the current context.
+- When the pointer is on `ROOT`, the interface shows all existing topics.
+- The `ROOT` view shows each topic's location and title.
+- The `ROOT` view does not show topic description previews.
+- A topic card view shows the topic location, topic title, description text, reverse links, and direct successor link to `<topic>/1` if it exists.
+- A regular card view shows the card location, title, card text, reverse links, direct successor link, and side successor links.
+- A regular card view orders side successor links by location label order: `a`, `b`, through `z`, then `aa`, `ab`, and so on.
+- Card text supports link macros in the form `[[location]]`, for example `[[1/2|c]]`.
+- Link macros do not support display text.
+- The full text inside `[[...]]` is parsed as a location.
+- Regular cards may link to topic cards, for example `[[1/0]]`.
+- Topic cards can receive reverse links.
+- Activating a rendered link moves the pointer to the target card and shows that card.
+- Cards have three text sections separated by lines containing exactly `<--->`: title, card text, and automatic reverse links.
+- In topic cards, the card text section is the topic description.
+- Other `---` text is allowed inside card sections.
+- The reverse-link section is generated from cards whose note text links to the current card.
+- Reverse links are generated from macros in card text.
+- Links in the generated reverse-link section are ignored when computing reverse links.
+- Reverse-link sections are regenerated after every successful save, delete, or move.
+- Reverse-link regeneration recomputes the reverse-link section for all cards.
+- If one source card links to the same target multiple times, the target gets one reverse-link line for that source card.
+- Reverse links are not stored as structural link data in SQLite.
+- Reverse links are stored as generated text inside the card's `text` field.
+- Each generated reverse-link line uses this wording: `This note has been referred by note [[<source-location>]] <source-title>`.
+
+## Not Locked Yet
+
+- None currently identified.
