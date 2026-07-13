@@ -1,7 +1,10 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
+use std::fs::File;
 use std::io::Write;
 use std::process::{Command as StdCommand, Stdio};
 use std::thread;
@@ -124,6 +127,168 @@ impl Drop for TestHome {
         let _ = fs::remove_file(self.archive_root.join("zt.pid"));
         thread::sleep(Duration::from_millis(80));
     }
+}
+
+#[cfg(windows)]
+fn host_zip_backend_available() -> bool {
+    StdCommand::new("tar.exe")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn host_tar_gz_backend_available() -> bool {
+    let temp = tempfile::tempdir().expect("compression probe tempdir");
+    let folder = temp.path().join("probe");
+    fs::create_dir_all(&folder).expect("probe folder");
+    fs::write(folder.join("mapping.json"), "{}").expect("probe payload");
+    StdCommand::new("tar.exe")
+        .args(["-a", "-cf"])
+        .arg(temp.path().join("probe.tar.gz"))
+        .arg("-C")
+        .arg(temp.path())
+        .arg("probe/mapping.json")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn host_tar_zst_backend_available() -> bool {
+    let temp = tempfile::tempdir().expect("compression probe tempdir");
+    let folder = temp.path().join("probe");
+    fs::create_dir_all(&folder).expect("probe folder");
+    fs::write(folder.join("mapping.json"), "{}").expect("probe payload");
+    StdCommand::new("tar.exe")
+        .args(["-a", "-cf"])
+        .arg(temp.path().join("probe.tar.zst"))
+        .arg("-C")
+        .arg(temp.path())
+        .arg("probe/mapping.json")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn host_tar_zst_backend_available() -> bool {
+    StdCommand::new("tar")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+        && StdCommand::new("zstd")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn host_tar_gz_backend_available() -> bool {
+    StdCommand::new("tar")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+        && StdCommand::new("gzip")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn host_zip_backend_available() -> bool {
+    StdCommand::new("zip")
+        .arg("-v")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn single_dump_archive(home: &TestHome, extension: &str) -> std::path::PathBuf {
+    let dump_root = home.archive_root.join("dump");
+    let archives: Vec<_> = fs::read_dir(&dump_root)
+        .expect("dump directory")
+        .map(|entry| entry.expect("dump entry").path())
+        .filter(|path| path.is_file())
+        .filter(|path| path.to_string_lossy().ends_with(extension))
+        .collect();
+    assert_eq!(archives.len(), 1, "expected one dump archive");
+    archives.into_iter().next().unwrap()
+}
+
+fn expected_dump_filename(location: &str, text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(location.as_bytes());
+    hasher.update([0]);
+    hasher.update(text.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("{}.md", &digest[..10])
+}
+
+#[cfg(windows)]
+fn build_failing_tar() -> TempDir {
+    let output = tempfile::tempdir().expect("fake tar directory");
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake_tar.rs");
+    let status = StdCommand::new("rustc")
+        .arg(source)
+        .arg("-o")
+        .arg(output.path().join("tar.exe"))
+        .status()
+        .expect("compile fake tar.exe");
+    assert!(status.success());
+    output
+}
+
+#[cfg(windows)]
+fn build_probe_matrix() -> TempDir {
+    let output = build_failing_tar();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake_7z.rs");
+    let seven_zip = output.path().join("7z.exe");
+    let status = StdCommand::new("rustc")
+        .arg(source)
+        .arg("-o")
+        .arg(&seven_zip)
+        .status()
+        .expect("compile fake 7z.exe");
+    assert!(status.success());
+    fs::copy(seven_zip, output.path().join("7zz.exe")).expect("copy fake 7zz.exe");
+    output
+}
+
+#[cfg(windows)]
+fn path_with_prepend(directory: &std::path::Path) -> std::ffi::OsString {
+    let mut paths = vec![directory.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(paths).expect("test PATH")
 }
 
 #[test]
@@ -897,6 +1062,767 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
     let output = child.wait_with_output().expect("session output");
     assert!(output.status.success());
     home.cmd().arg("down").assert().success();
+}
+
+#[test]
+fn dump_is_shell_only_and_requires_service_up() {
+    let home = TestHome::new();
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("zt dp").not());
+    home.cmd()
+        .arg("dp")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("service is not up"));
+
+    home.cmd().arg("up").assert().success();
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  zt dp\n"));
+    home.cmd()
+        .write_stdin("help\ndp\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unknown session command: dp"))
+        .stdout(predicate::str::contains("zt dp").not());
+}
+
+#[test]
+fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".zip");
+    assert!(!home.archive_root.join("dump").join(".tmp").exists());
+    let archive_name = archive_path.file_stem().unwrap().to_str().unwrap();
+    let timestamp = archive_name
+        .strip_prefix("zt-archive-")
+        .expect("timestamped archive name")
+        .parse::<u64>()
+        .expect("Unix timestamp");
+    assert!(timestamp >= started);
+    assert!(timestamp <= started + 5);
+
+    let mut archive =
+        zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
+    assert_eq!(archive.len(), 1);
+    let mut mapping = archive
+        .by_name(&format!("{archive_name}/mapping.json"))
+        .expect("mapping entry");
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut mapping, &mut body).expect("mapping text");
+    assert_eq!(body, "{}");
+}
+
+#[test]
+fn dump_preserves_card_text_hash_mapping_and_location_order() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let topic_text = "Topic\n<--->\nfirst line\n\u{7b2c}\u{4e8c}\u{884c}\n<--->\n";
+    let identical_text = "Same\n<--->\n\u{76f8}\u{540c}\nline two\n<--->\n";
+    home.cmd_with_editor(topic_text)
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor(identical_text)
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success();
+    home.cmd_with_editor(identical_text)
+        .args(["b", "--at", "0/1"])
+        .assert()
+        .success();
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 3 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".zip");
+    let archive_name = archive_path.file_stem().unwrap().to_str().unwrap();
+    let cards = [
+        ("0/0", topic_text),
+        ("0/1", identical_text),
+        ("0/1|a", identical_text),
+    ];
+    let expected_mapping: BTreeMap<String, String> = cards
+        .iter()
+        .map(|(location, text)| {
+            (
+                (*location).to_string(),
+                expected_dump_filename(location, text),
+            )
+        })
+        .collect();
+
+    let mut archive =
+        zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
+    let expected_entries: Vec<String> = std::iter::once(format!("{archive_name}/mapping.json"))
+        .chain(
+            cards
+                .iter()
+                .map(|(location, _)| format!("{archive_name}/{}", expected_mapping[*location])),
+        )
+        .collect();
+    let actual_entries: Vec<String> = (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .expect("ZIP entry")
+                .name()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(actual_entries, expected_entries);
+
+    let mut mapping_body = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/mapping.json"))
+            .expect("mapping entry"),
+        &mut mapping_body,
+    )
+    .expect("mapping text");
+    let mapping: BTreeMap<String, String> =
+        serde_json::from_str(&mapping_body).expect("mapping JSON object");
+    assert_eq!(mapping, expected_mapping);
+    let key_positions: Vec<usize> = cards
+        .iter()
+        .map(|(location, _)| mapping_body.find(&format!("\"{location}\"")).unwrap())
+        .collect();
+    assert!(key_positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+    for (location, expected_text) in cards {
+        let mut actual_text = String::new();
+        std::io::Read::read_to_string(
+            &mut archive
+                .by_name(&format!("{archive_name}/{}", expected_mapping[location]))
+                .expect("Card Markdown entry"),
+            &mut actual_text,
+        )
+        .expect("Card Markdown text");
+        assert_eq!(actual_text, expected_text);
+    }
+    assert_ne!(expected_mapping["0/1"], expected_mapping["0/1|a"]);
+}
+
+#[test]
+fn repeated_dumps_keep_payload_order_and_mapping_bytes_stable() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    home.cmd().arg("dp").write_stdin("1\n").assert().success();
+    let first_second = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    while std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        == first_second
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    home.cmd().arg("dp").write_stdin("1\n").assert().success();
+
+    let mut archives: Vec<_> = fs::read_dir(home.archive_root.join("dump"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.to_string_lossy().ends_with(".zip"))
+        .collect();
+    archives.sort();
+    assert_eq!(archives.len(), 2);
+    let snapshots: Vec<_> = archives
+        .iter()
+        .map(|path| {
+            let mut archive = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
+            let entries: Vec<_> = (0..archive.len())
+                .map(|index| {
+                    let name = archive.by_index(index).unwrap().name().to_string();
+                    name.split_once('/').unwrap().1.to_string()
+                })
+                .collect();
+            let mapping_name = archive
+                .file_names()
+                .find(|name| name.ends_with("/mapping.json"))
+                .unwrap()
+                .to_string();
+            let mut mapping = Vec::new();
+            std::io::Read::read_to_end(&mut archive.by_name(&mapping_name).unwrap(), &mut mapping)
+                .unwrap();
+            (entries, mapping)
+        })
+        .collect();
+    assert_eq!(snapshots[0], snapshots[1]);
+}
+
+#[test]
+fn selecting_tar_gz_creates_the_same_timestamped_payload() {
+    if !host_zip_backend_available() || !host_tar_gz_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd()
+        .arg("dp")
+        .write_stdin("2\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1. zip"))
+        .stdout(predicate::str::contains("2. tar.gz"))
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".tar.gz");
+    let filename = archive_path.file_name().unwrap().to_str().unwrap();
+    let archive_name = filename.strip_suffix(".tar.gz").unwrap();
+    let entry = format!("{archive_name}/mapping.json");
+    let listing = StdCommand::new("tar")
+        .arg("-tf")
+        .arg(&archive_path)
+        .output()
+        .expect("list tar.gz");
+    assert!(listing.status.success());
+    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    let mapping = StdCommand::new("tar")
+        .args(["-xOf"])
+        .arg(&archive_path)
+        .arg(&entry)
+        .output()
+        .expect("read tar.gz mapping");
+    assert!(mapping.status.success());
+    assert_eq!(mapping.stdout, b"{}");
+}
+
+#[test]
+fn selecting_tar_zst_creates_the_same_timestamped_payload() {
+    if !host_zip_backend_available()
+        || !host_tar_gz_backend_available()
+        || !host_tar_zst_backend_available()
+    {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd()
+        .arg("dp")
+        .write_stdin("3\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3. tar.zst"))
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".tar.zst");
+    let filename = archive_path.file_name().unwrap().to_str().unwrap();
+    let archive_name = filename.strip_suffix(".tar.zst").unwrap();
+    let entry = format!("{archive_name}/mapping.json");
+    let listing = StdCommand::new("tar")
+        .arg("-tf")
+        .arg(&archive_path)
+        .output()
+        .expect("list tar.zst");
+    assert!(listing.status.success());
+    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    let mapping = StdCommand::new("tar")
+        .args(["-xOf"])
+        .arg(&archive_path)
+        .arg(&entry)
+        .output()
+        .expect("read tar.zst mapping");
+    assert!(mapping.status.success());
+    assert_eq!(mapping.stdout, b"{}");
+}
+
+#[test]
+fn dump_rejects_compression_flags_and_invalid_prompt_input_before_staging() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd()
+        .args(["dp", "--compress", "zip"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown command"));
+    for choice in ["0\n", "01\n", "zip\n"] {
+        home.cmd()
+            .arg("dp")
+            .write_stdin(choice)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid compression option"));
+    }
+    assert!(!home.archive_root.join("dump").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn dump_probe_falls_back_to_7zz_and_lists_only_the_usable_format() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let compressors = build_probe_matrix();
+
+    home.cmd()
+        .current_dir(compressors.path())
+        .env("PATH", path_with_prepend(compressors.path()))
+        .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
+        .arg("dp")
+        .write_stdin("0\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("1. 7z"))
+        .stdout(predicate::str::contains("zip").not())
+        .stdout(predicate::str::contains("tar.gz").not())
+        .stdout(predicate::str::contains("tar.zst").not())
+        .stderr(predicate::str::contains("invalid compression option"));
+    assert!(!home.archive_root.join("dump").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn dump_reports_all_supported_names_when_every_probe_fails() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let compressors = build_probe_matrix();
+
+    home.cmd()
+        .current_dir(compressors.path())
+        .env("PATH", path_with_prepend(compressors.path()))
+        .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
+        .env("ZT_FAKE_7Z_ALL_FAIL", "1")
+        .arg("dp")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("compression options").not())
+        .stderr(predicate::str::contains(
+            "no supported compression option detected; supported options: zip, tar.gz, tar.zst, 7z",
+        ));
+    assert!(!home.archive_root.join("dump").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn selecting_7zz_creates_the_same_timestamped_payload() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let compressors = build_probe_matrix();
+
+    home.cmd()
+        .current_dir(compressors.path())
+        .env("PATH", path_with_prepend(compressors.path()))
+        .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1. 7z"))
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".7z");
+    let filename = archive_path.file_name().unwrap().to_str().unwrap();
+    let archive_name = filename.strip_suffix(".7z").unwrap();
+    let entry = format!("{archive_name}/mapping.json");
+    let system_tar = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("tar.exe");
+    let listing = StdCommand::new(&system_tar)
+        .arg("-tf")
+        .arg(&archive_path)
+        .output()
+        .expect("list 7z");
+    assert!(listing.status.success());
+    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    let mapping = StdCommand::new(system_tar)
+        .args(["-xOf"])
+        .arg(&archive_path)
+        .arg(&entry)
+        .output()
+        .expect("read 7z mapping");
+    assert!(mapping.status.success());
+    assert_eq!(mapping.stdout, b"{}");
+}
+
+#[test]
+fn dump_refuses_edit_lock_but_runs_with_an_open_session() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    fs::write(home.archive_root.join("zt.edit.lock"), "held").expect("edit lock");
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("edit in progress"));
+    assert!(!home.archive_root.join("dump").exists());
+    fs::remove_file(home.archive_root.join("zt.edit.lock")).expect("unlock");
+
+    let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn session");
+    home.wait_until(|| {
+        fs::read_to_string(home.archive_root.join("zt.sessions"))
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    });
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+    assert!(single_dump_archive(&home, ".zip").is_file());
+    assert!(!home.archive_root.join("zt.edit.lock").exists());
+
+    session
+        .stdin
+        .as_mut()
+        .expect("session stdin")
+        .write_all(b"q\n")
+        .expect("quit session");
+    assert!(session.wait().expect("session exit").success());
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_compression_removes_partial_archive_and_timestamped_staging() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let fake_tar = build_failing_tar();
+
+    home.cmd()
+        .current_dir(fake_tar.path())
+        .env("PATH", path_with_prepend(fake_tar.path()))
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("1. zip"))
+        .stdout(predicate::str::contains("2. tar.gz"))
+        .stdout(predicate::str::contains("3. tar.zst"))
+        .stderr(predicate::str::contains(
+            "compression command for zip failed",
+        ));
+
+    let dump_root = home.archive_root.join("dump");
+    let files: Vec<_> = fs::read_dir(&dump_root)
+        .expect("dump root")
+        .map(|entry| entry.expect("dump entry").path())
+        .filter(|path| path.is_file())
+        .collect();
+    assert!(files.is_empty(), "partial archive remains: {files:?}");
+    let staging_root = dump_root.join(".tmp");
+    assert!(!staging_root.exists(), "staging root remains");
+    assert!(!home.archive_root.join("zt.edit.lock").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn preexisting_dump_archive_is_never_overwritten_or_cleaned_up() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let fake_tar = build_failing_tar();
+    let dump_root = home.archive_root.join("dump");
+    fs::create_dir_all(&dump_root).expect("dump root");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let protected: Vec<_> = (now..=now + 10)
+        .map(|timestamp| dump_root.join(format!("zt-archive-{timestamp}.zip")))
+        .collect();
+    for archive in &protected {
+        fs::write(archive, b"existing archive").expect("protected archive");
+    }
+
+    home.cmd()
+        .current_dir(fake_tar.path())
+        .env("PATH", path_with_prepend(fake_tar.path()))
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("archive already exists"));
+
+    for archive in protected {
+        assert_eq!(fs::read(archive).unwrap(), b"existing archive");
+    }
+    assert!(!dump_root.join(".tmp").exists());
+    assert!(!home.archive_root.join("zt.edit.lock").exists());
+}
+
+#[test]
+fn clear_is_shell_only_service_gated_and_exact_confirmation_cancels_safely() {
+    let home = TestHome::new();
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("zt clear").not());
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("service is not up"));
+
+    home.cmd().arg("up").assert().success();
+    home.create_topic_and_base();
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  zt clear\n"));
+    for confirmation in ["CLEAR\n", " clear\n", "clear \n"] {
+        home.cmd()
+            .arg("clear")
+            .write_stdin(confirmation)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("clear canceled\n"))
+            .stdout(predicate::str::contains("compression options").not());
+    }
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    home.cmd()
+        .write_stdin("help\nclear\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unknown session command: clear"))
+        .stdout(predicate::str::contains("zt clear").not());
+}
+
+#[test]
+fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    home.cmd_with_editor("Other\n<--->\nother\n<--->\n")
+        .args(["t", "Other"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1/0"));
+    let config_path = home.config_dir.join("config.toml");
+    let config_before = fs::read(&config_path).expect("config bytes");
+    let dump_marker = home.archive_root.join("dump").join("existing.dump");
+    fs::create_dir_all(dump_marker.parent().unwrap()).expect("dump root");
+    fs::write(&dump_marker, b"keep this dump").expect("dump marker");
+
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "cleared 3 cards; next topic id reset to 0\n",
+        ));
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^total: 0\ntopics: 0\nregular: 0\n$").unwrap());
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let cards: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
+        .unwrap();
+    let next_topic_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    assert_eq!(cards, 0);
+    assert_eq!(next_topic_id, "0");
+    assert_eq!(fs::read(&config_path).unwrap(), config_before);
+    assert_eq!(fs::read(&dump_marker).unwrap(), b"keep this dump");
+
+    home.cmd_with_editor("Fresh\n<--->\nfresh\n<--->\n")
+        .args(["t", "Fresh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^0/0\n$").unwrap());
+    home.cmd_with_editor("First\n<--->\nfirst\n<--->\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^0/1\n$").unwrap());
+}
+
+#[test]
+fn clear_refuses_edit_lock_without_changing_storage() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    fs::write(home.archive_root.join("zt.edit.lock"), "held").expect("edit lock");
+
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("type clear to confirm").not())
+        .stderr(predicate::str::contains("edit in progress"));
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let next_topic_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(next_topic_id, "1");
+}
+
+#[test]
+fn clear_refuses_open_sessions_without_changing_storage() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn session");
+    home.wait_until(|| {
+        fs::read_to_string(home.archive_root.join("zt.sessions"))
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    });
+
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("type clear to confirm").not())
+        .stderr(predicate::str::contains(
+            "cannot clear while 1 session(s) are open",
+        ));
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let next_topic_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(next_topic_id, "1");
+    drop(conn);
+
+    session
+        .stdin
+        .as_mut()
+        .expect("session stdin")
+        .write_all(b"q\n")
+        .expect("quit session");
+    assert!(session.wait().expect("session exit").success());
+}
+
+#[test]
+fn clear_rolls_back_card_deletion_when_topic_reset_fails() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute_batch(
+        "CREATE TRIGGER fail_topic_reset
+         BEFORE UPDATE OF value ON metadata
+         WHEN NEW.key = 'next_topic_id'
+         BEGIN
+             SELECT RAISE(ABORT, 'forced topic reset failure');
+         END;",
+    )
+    .expect("failure trigger");
+    drop(conn);
+
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("forced topic reset failure"));
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let card_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
+        .unwrap();
+    let next_topic_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(card_count, 2);
+    assert_eq!(next_topic_id, "1");
+    assert!(!home.archive_root.join("zt.edit.lock").exists());
 }
 
 #[test]

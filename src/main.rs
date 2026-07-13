@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod dump;
 mod session;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -38,6 +39,8 @@ fn run() -> Result<()> {
         [cmd] if cmd == "status" => cmd_status(),
         [cmd] if cmd == "stats" => cmd_stats(),
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
+        [cmd] if cmd == "dp" => cmd_dump(),
+        [cmd] if cmd == "clear" => cmd_clear(),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
@@ -396,6 +399,46 @@ fn cmd_stats() -> Result<()> {
     Ok(())
 }
 
+fn cmd_dump() -> Result<()> {
+    let root = require_service_up()?;
+    let _lock = acquire_edit_lock(&root)?;
+    let conn = open_db(&root)?;
+    let cards = load_cards(&conn)?
+        .into_iter()
+        .map(|card| dump::DumpCard::new(card.location, card.text))
+        .collect::<Vec<_>>();
+    dump::run(&root, &cards)
+}
+
+fn cmd_clear() -> Result<()> {
+    let root = require_service_up()?;
+    let sessions = session::session_count(&root);
+    if sessions > 0 {
+        bail!("cannot clear while {sessions} session(s) are open");
+    }
+    let _lock = acquire_edit_lock(&root)?;
+    print!("type clear to confirm: ");
+    io::stdout().flush()?;
+    let mut confirmation = String::new();
+    io::stdin().read_line(&mut confirmation)?;
+    if confirmation.trim_end_matches(['\r', '\n']) != "clear" {
+        println!("clear canceled");
+        return Ok(());
+    }
+    let mut conn = open_db(&root)?;
+    let tx = conn.transaction()?;
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    tx.execute("DELETE FROM cards", [])?;
+    tx.execute(
+        "INSERT INTO metadata(key, value) VALUES('next_topic_id', '0')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )?;
+    tx.commit()?;
+    println!("cleared {count} cards; next topic id reset to 0");
+    Ok(())
+}
+
 fn cmd_help() -> Result<()> {
     let up = Config::load()?
         .archive_root
@@ -420,6 +463,8 @@ fn cmd_help() -> Result<()> {
         println!("  zt mv --at <location> <new-location>");
         println!("  zt stats");
         println!("  zt lsbk");
+        println!("  zt dp");
+        println!("  zt clear");
     }
     Ok(())
 }
