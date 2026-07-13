@@ -93,6 +93,18 @@ impl TestHome {
             == 1
     }
 
+    fn citation_exists(&self, citation_key: &str) -> bool {
+        let conn =
+            rusqlite::Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cards WHERE citation_key = ?1)",
+            [citation_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("citation exists")
+            == 1
+    }
+
     fn create_topic_and_base(&self) {
         let status = self
             .zt_command_with_editor("Topic\n<--->\ndescription\n<--->\n")
@@ -107,6 +119,40 @@ impl TestHome {
             .status()
             .expect("create base");
         assert!(status.success(), "create base failed: {status}");
+    }
+
+    fn create_literature(&self, citation_key: &str, title: &str, body: &str) {
+        let script = self.config_dir.join("fake-literature-editor.ps1");
+        fs::create_dir_all(&self.config_dir).expect("config dir");
+        fs::write(
+            &script,
+            concat!(
+                "if ($args[0].EndsWith('.bib')) {\n",
+                "  [IO.File]::WriteAllText($args[0], $env:ZT_EDITOR_BIB)\n",
+                "} else {\n",
+                "  [IO.File]::WriteAllText($args[0], $env:ZT_EDITOR_CARD)\n",
+                "}\n",
+            ),
+        )
+        .expect("literature editor script");
+        let status = self
+            .zt_command()
+            .env(
+                "EDITOR",
+                format!(
+                    "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
+                    script.display()
+                ),
+            )
+            .env(
+                "ZT_EDITOR_BIB",
+                format!("@book{{{citation_key}, title={{{title}}}}}"),
+            )
+            .env("ZT_EDITOR_CARD", format!("{title}\n<--->\n{body}\n<--->\n"))
+            .arg("l")
+            .status()
+            .expect("create Literature Card");
+        assert!(status.success(), "create Literature Card failed: {status}");
     }
 
     fn create_move_fixture(&self) {
@@ -226,6 +272,224 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
 }
 
 #[test]
+fn terminal_session_creates_navigates_and_lists_literature_card() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("l");
+    session.send_enter();
+    session.wait_for_text("metadata edit");
+    session.send_text("@book{Session2025, title={Session Literature}}");
+    session.send_key(Key::CtrlS);
+
+    session.wait_for_text("Session Literature");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_text("session literature notes");
+    session.send_key(Key::CtrlS);
+
+    session.wait_for_text("citation key: Session2025");
+    session.wait_for_text("title: Session Literature");
+    session.wait_for_text("metadata:");
+    session.wait_for_text("@book{Session2025, title={Session Literature}}");
+    session.wait_for_text("session literature notes");
+
+    session.send_text("root");
+    session.send_enter();
+    session.send_text("ls");
+    session.send_enter();
+    session.wait_for_text("Session2025 Session Literature");
+
+    session.send_text("stats");
+    session.send_enter();
+    session.wait_for_text("total: 1 | topics: 0 | regular: 0 | literature: 1");
+
+    session.send_text("go Session2025");
+    session.send_enter();
+    session.wait_for_text("citation key: Session2025");
+    session.send_text("ls");
+    session.send_enter();
+    session.wait_for_text("Session2025 Session Literature");
+    session.send_text("help");
+    session.send_enter();
+    session.wait_for_text("go <target>");
+    session.wait_for_text(" l ");
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_literature_creation_retries_metadata_and_cancels_atomically() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let invalid = "@comment{invalid}";
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("l");
+    session.send_enter();
+    session.wait_for_text("metadata edit");
+    let blocked = home
+        .zt_command_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+        .args(["t", "Blocked During Metadata"])
+        .output()
+        .expect("blocked write during metadata stage");
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("edit in progress"));
+    session.send_key(Key::Esc);
+    session.wait_for_text_count("ROOT", 2);
+    assert!(!home.citation_exists("NeverStored"));
+
+    session.send_text("l");
+    session.send_enter();
+    session.wait_for_text_count("metadata edit", 2);
+    session.send_text(invalid);
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("exactly one ordinary bibliographic entry");
+    session.wait_for_text_count(invalid, 2);
+    for _ in invalid.chars() {
+        session.send_key(Key::Backspace);
+    }
+    session.send_text("@book{NeverStored, title={Canceled Body Stage}}");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("Canceled Body Stage");
+    let blocked = home
+        .zt_command_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+        .args(["t", "Blocked During Body"])
+        .output()
+        .expect("blocked write during body stage");
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("edit in progress"));
+    session.send_key(Key::Esc);
+    session.wait_for_text_count("ROOT", 3);
+    assert!(!home.citation_exists("NeverStored"));
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_literature("ClickLit", "Clickable Literature", "literature body");
+    let status = home
+        .zt_command_with_editor("Topic\n<--->\nopen [[ClickLit]]\n<--->\n")
+        .args(["t", "Topic"])
+        .status()
+        .expect("create citation source");
+    assert!(status.success(), "create citation source failed: {status}");
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("go 0/0");
+    session.send_enter();
+    session.wait_for_text("open [[ClickLit]]");
+    session.send_left_click(2, 8);
+    session.wait_for_text("citation key: ClickLit");
+
+    session.send_text("n");
+    session.send_enter();
+    session.wait_for_text("zt n is not valid on a Literature Card");
+    session.send_text("b");
+    session.send_enter();
+    session.wait_for_text("zt b is not valid on a Literature Card");
+    session.send_text("mv 0/1");
+    session.send_enter();
+    session.wait_for_text("Literature Card cannot be moved");
+
+    session.send_text("del");
+    session.send_enter();
+    session.wait_for_text("delete ClickLit");
+    session.wait_for_text("type `delete` to confirm:");
+    let roots_before_delete = session.plain_output().matches("ROOT").count();
+    session.send_text("delete");
+    session.send_enter();
+    session.wait_for_text_count("ROOT", roots_before_delete + 1);
+    assert!(!home.citation_exists("ClickLit"));
+
+    session.send_text("go ClickLit");
+    session.send_enter();
+    session.wait_for_text("target `ClickLit` does not exist");
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_selects_literature_edit_part_and_confirms_rename() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let original_bib = "@book{SessionEdit, title={Original Session Title}}";
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("l");
+    session.send_enter();
+    session.wait_for_text("metadata edit");
+    session.send_text(original_bib);
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("Original Session Title");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_text("original body");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("citation key: SessionEdit");
+
+    session.send_text("e");
+    session.send_enter();
+    session.wait_for_text("edit literature card:");
+    session.wait_for_text("1. metadata");
+    session.wait_for_text("2. main text");
+    session.send_text("3");
+    session.send_enter();
+    session.wait_for_text("invalid edit option");
+    session.send_text("1");
+    session.send_enter();
+    session.wait_for_text("metadata edit");
+    session.send_key(Key::End);
+    for _ in original_bib.chars() {
+        session.send_key(Key::Backspace);
+    }
+    session.send_text("@book{SessionRenamed, title={Renamed Session Title}}");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("SessionEdit -> SessionRenamed");
+    session.wait_for_text("type `move` to confirm:");
+    session.send_text("move");
+    session.send_enter();
+    session.wait_for_text("citation key: SessionRenamed");
+    session.wait_for_text("title: Renamed Session Title");
+    session.wait_for_text("original body");
+
+    session.send_text("e");
+    session.send_enter();
+    session.wait_for_text("edit literature card:");
+    session.send_text("2");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_key(Key::End);
+    session.send_text(" edited");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("citation key: SessionRenamed");
+    session.wait_for_text("original body edited");
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
 fn terminal_session_topic_title_does_not_parse_shell_quotes() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -263,7 +527,7 @@ fn terminal_session_navigates_and_activates_rendered_links() {
 
     session.send_text("go 9/9");
     session.send_enter();
-    session.wait_for_text("location `9/9` does not exist");
+    session.wait_for_text("target `9/9` does not exist");
     session.wait_for_text("location: 0/1");
 
     session.send_left_click(2, 5);
@@ -294,7 +558,8 @@ fn terminal_session_runs_read_only_commands() {
 
     session.send_text("ls");
     session.send_enter();
-    session.wait_for_text("0/0 Topic | 0/1 Base");
+    session.wait_for_text_count("0/0 Topic", 2);
+    assert!(!session.plain_output().contains("0/1 Base"));
 
     session.send_text("lsbk");
     session.send_enter();
@@ -302,7 +567,7 @@ fn terminal_session_runs_read_only_commands() {
 
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("root | go <location>");
+    session.wait_for_text("root | go <target>");
 
     session.send_text("foo bar");
     session.send_enter();

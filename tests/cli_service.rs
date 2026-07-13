@@ -65,6 +65,48 @@ impl TestHome {
         cmd
     }
 
+    fn cmd_with_editor_sequence(&self, texts: &[&str]) -> (Command, std::path::PathBuf) {
+        let sequence_dir = self.config_dir.join("editor-sequence");
+        let capture_dir = self.config_dir.join("editor-captures");
+        let counter = self.config_dir.join("editor-counter.txt");
+        let script = self.config_dir.join("fake-sequence-editor.ps1");
+        let _ = fs::remove_dir_all(&sequence_dir);
+        let _ = fs::remove_dir_all(&capture_dir);
+        let _ = fs::remove_file(&counter);
+        fs::create_dir_all(&sequence_dir).expect("editor sequence dir");
+        fs::create_dir_all(&capture_dir).expect("editor capture dir");
+        for (index, text) in texts.iter().enumerate() {
+            fs::write(sequence_dir.join(format!("{index}.txt")), text)
+                .expect("editor sequence text");
+        }
+        fs::write(
+            &script,
+            concat!(
+                "$index = if (Test-Path -LiteralPath $env:ZT_EDITOR_COUNTER) { [int][IO.File]::ReadAllText($env:ZT_EDITOR_COUNTER) } else { 0 }\n",
+                "$initial = [IO.File]::ReadAllText($args[0])\n",
+                "[IO.File]::WriteAllText((Join-Path $env:ZT_EDITOR_CAPTURE_DIR \"$index.initial\"), $initial)\n",
+                "[IO.File]::WriteAllText((Join-Path $env:ZT_EDITOR_CAPTURE_DIR \"$index.path\"), $args[0])\n",
+                "$next = Join-Path $env:ZT_EDITOR_SEQUENCE_DIR \"$index.txt\"\n",
+                "if (-not (Test-Path -LiteralPath $next)) { exit 1 }\n",
+                "[IO.File]::WriteAllText($args[0], [IO.File]::ReadAllText($next))\n",
+                "[IO.File]::WriteAllText($env:ZT_EDITOR_COUNTER, [string]($index + 1))\n",
+            ),
+        )
+        .expect("sequence editor script");
+        let mut cmd = self.cmd();
+        cmd.env(
+            "EDITOR",
+            format!(
+                "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
+                script.display()
+            ),
+        );
+        cmd.env("ZT_EDITOR_SEQUENCE_DIR", &sequence_dir);
+        cmd.env("ZT_EDITOR_CAPTURE_DIR", &capture_dir);
+        cmd.env("ZT_EDITOR_COUNTER", &counter);
+        (cmd, capture_dir)
+    }
+
     fn configure_and_up(&self) {
         self.cmd()
             .args([
@@ -97,6 +139,24 @@ impl TestHome {
         )
         .expect("exists")
             == 1
+    }
+
+    fn literature_count(&self) -> i64 {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row("SELECT COUNT(*) FROM cards WHERE is_lit = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("literature count")
+    }
+
+    fn literature_data(&self, citation_key: &str) -> (String, String) {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row(
+            "SELECT bibtex, text FROM cards WHERE citation_key = ?1",
+            [citation_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("literature data")
     }
 
     fn create_topic_and_base(&self) {
@@ -246,6 +306,17 @@ fn expected_dump_filename(location: &str, text: &str) -> String {
     format!("{}.md", &digest[..10])
 }
 
+fn expected_literature_dump_filename(citation_key: &str, bibtex: &str, text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(citation_key.as_bytes());
+    hasher.update([0]);
+    hasher.update(bibtex.as_bytes());
+    hasher.update([0]);
+    hasher.update(text.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("{}.md", &digest[..10])
+}
+
 #[cfg(windows)]
 fn build_failing_tar() -> TempDir {
     let output = tempfile::tempdir().expect("fake tar directory");
@@ -346,7 +417,18 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
         .expect("columns")
         .collect::<Result<Vec<_>, _>>()
         .expect("column rows");
-    assert_eq!(columns, vec!["location", "is_topic", "text"]);
+    assert_eq!(
+        columns,
+        vec![
+            "row_id",
+            "location",
+            "citation_key",
+            "is_topic",
+            "is_lit",
+            "bibtex",
+            "text",
+        ]
+    );
     assert!(
         fs::read_to_string(home.archive_root.join("zt.log"))
             .expect("log")
@@ -372,6 +454,111 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
         .assert()
         .success()
         .stdout(predicate::str::contains("service already stopped"));
+}
+
+#[test]
+fn literature_schema_enforces_card_kind_states_and_case_insensitive_identity() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+
+    for sql in [
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES(NULL, NULL, 0, 0, NULL, 'x')",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES('0/1', 'Mixed', 0, 0, NULL, 'x')",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES('0/1', 'Mixed', 0, 1, '@book{Mixed,title={X}}', 'x')",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES(NULL, 'LitTopic', 1, 1, '@book{LitTopic,title={X}}', 'x')",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES(NULL, 'NoBib', 0, 1, NULL, 'x')",
+    ] {
+        assert!(
+            conn.execute(sql, []).is_err(),
+            "invalid Card state was stored: {sql}"
+        );
+    }
+
+    conn.execute(
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
+         VALUES(NULL, 'ExactCase', 0, 1, '@book{ExactCase,title={X}}', 'X\n<--->\n\n<--->\n')",
+        [],
+    )
+    .expect("valid Literature row");
+    assert!(
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
+             VALUES(NULL, 'exactcase', 0, 1, '@book{exactcase,title={Y}}', 'Y\n<--->\n\n<--->\n')",
+            [],
+        )
+        .is_err(),
+        "case-only duplicate Citation key was stored"
+    );
+    let exact: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE citation_key = 'ExactCase'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let wrong_case: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE citation_key = 'exactcase'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!((exact, wrong_case), (1, 0));
+}
+
+#[test]
+fn legacy_cards_schema_is_rejected_without_modifying_the_database() {
+    let home = TestHome::new();
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    fs::create_dir_all(&home.archive_root).expect("archive root");
+    let db = home.archive_root.join("zt.sqlite3");
+    let conn = Connection::open(&db).expect("legacy db");
+    conn.execute_batch(
+        "CREATE TABLE cards(location TEXT PRIMARY KEY, is_topic INTEGER NOT NULL, text TEXT NOT NULL);
+         CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO cards VALUES('0/0', 1, 'Legacy\n<--->\nexact body\n<--->\n');
+         INSERT INTO metadata VALUES('next_topic_id', '7');",
+    )
+    .expect("legacy fixture");
+    drop(conn);
+    let before = fs::read(&db).expect("legacy bytes before");
+
+    home.cmd()
+        .arg("up")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("legacy cards schema detected"));
+
+    assert_eq!(fs::read(&db).expect("legacy bytes after"), before);
+    assert!(!home.archive_root.join("zt.pid").exists());
+    assert!(!home.archive_root.join("zt.log").exists());
+    let conn = Connection::open(&db).expect("reopen legacy db");
+    let row: (String, i64, String) = conn
+        .query_row("SELECT location, is_topic, text FROM cards", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    let next_topic_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        ("0/0".into(), 1, "Legacy\n<--->\nexact body\n<--->\n".into())
+    );
+    assert_eq!(next_topic_id, "7");
 }
 
 #[test]
@@ -459,6 +646,167 @@ fn shell_create_edit_and_successor_locations() {
 }
 
 #[test]
+fn shell_creates_literature_card_from_bibtex_then_card_text() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let bibtex = concat!(
+        "@article{Smith2024,\n",
+        "  author = {Smith, Alice},\n",
+        "  title = {{A}   Study},\n",
+        "  year = {2024}\n",
+        "}\n",
+    );
+    let (mut create, captures) = home.cmd_with_editor_sequence(&[
+        bibtex,
+        "Client cannot replace this title\n<--->\nmy literature notes\n<--->\nclient reverse",
+    ]);
+
+    create
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::eq("Smith2024\n"));
+
+    assert!(
+        fs::read_to_string(captures.join("0.path"))
+            .expect("metadata editor path")
+            .ends_with(".bib")
+    );
+    assert!(
+        fs::read_to_string(captures.join("1.path"))
+            .expect("text editor path")
+            .ends_with(".zt.md")
+    );
+    assert_eq!(
+        fs::read_to_string(captures.join("1.initial")).expect("text editor initial content"),
+        "A Study\n<--->\n\n<--->\n"
+    );
+
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("total: 1"))
+        .stdout(predicate::str::contains("topics: 0"))
+        .stdout(predicate::str::contains("regular: 0"))
+        .stdout(predicate::str::contains("literature: 1"));
+    home.cmd()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cards: 1"));
+}
+
+#[test]
+fn shell_literature_creation_reopens_invalid_metadata_with_content_intact() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let invalid = "@comment{not a bibliographic work}\n";
+    let valid = "@book{Repair2025, title = {Repaired Metadata}}\n";
+    let (mut create, captures) = home.cmd_with_editor_sequence(&[
+        invalid,
+        valid,
+        "Repaired Metadata\n<--->\nnotes\n<--->\n",
+    ]);
+
+    create
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::eq("Repair2025\n"))
+        .stderr(predicate::str::contains("ordinary bibliographic entry"));
+
+    assert_eq!(
+        fs::read_to_string(captures.join("1.initial")).expect("retried metadata"),
+        invalid
+    );
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("literature: 1"));
+}
+
+#[test]
+fn literature_creation_cancellation_and_case_collisions_never_store_partial_rows() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    home.cmd_with_canceling_editor("@book{CanceledMeta, title={Canceled Metadata}}")
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    assert_eq!(home.literature_count(), 0);
+
+    let (mut cancel_body, _) =
+        home.cmd_with_editor_sequence(&["@book{CanceledBody, title={Canceled Body}}\n"]);
+    cancel_body
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    assert_eq!(home.literature_count(), 0);
+
+    let invalid = "@book{0/7, title={Location Is Not A Citation Key}}";
+    let (mut invalid_then_cancel, captures) = home.cmd_with_editor_sequence(&[invalid]);
+    invalid_then_cancel
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("invalid Citation key"));
+    assert_eq!(
+        fs::read_to_string(captures.join("1.initial")).expect("invalid retry buffer"),
+        invalid
+    );
+    assert_eq!(home.literature_count(), 0);
+
+    let exact_bib = "@book{CaseKey, title={Exact Case}}\r\n";
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        exact_bib,
+        "changed by client\nsecond generated-title line\n<--->\nnotes\n<--->\n",
+    ]);
+    create
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::eq("CaseKey\n"));
+    assert_eq!(home.literature_data("CaseKey").0, exact_bib);
+
+    let (mut duplicate_then_cancel, duplicate_captures) =
+        home.cmd_with_editor_sequence(&["@article{casekey, title={Case Collision}}"]);
+    duplicate_then_cancel
+        .arg("l")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(duplicate_captures.join("1.initial")).expect("duplicate retry buffer"),
+        "@article{casekey, title={Case Collision}}"
+    );
+    assert_eq!(home.literature_count(), 1);
+    home.cmd()
+        .write_stdin("go casekey\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("target `casekey` does not exist"));
+
+    let editor_path = home.config_dir.join("unexpected-editor.txt");
+    home.cmd_with_editor("@book{Never, title={Never}}")
+        .env("ZT_EDITOR_PATH_OUT", &editor_path)
+        .args(["l", "unexpected"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown command"));
+    assert!(
+        !editor_path.exists(),
+        "argument validation launched the editor"
+    );
+}
+
+#[test]
 fn shell_editor_failure_cancel_and_tempfile_cleanup_are_safe() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -527,10 +875,11 @@ fn card_text_and_location_validation_reports_clear_errors() {
     home.cmd_with_editor("Topic\n<--->\ninvalid [[0/0]]\n<--->\n")
         .args(["e", "--at", "0/0"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "topic descriptions cannot contain link macros",
-        ));
+        .success();
+    assert!(
+        home.card_text("0/0")
+            .contains("This note has been referred by note [[0/0]] Topic")
+    );
 
     home.cmd_with_editor("First\n<--->\nbody\n<--->\n")
         .args(["n", "--at", "0/0"])
@@ -603,6 +952,448 @@ fn reverse_links_and_broken_links_are_generated_from_card_text() {
         .args(["e", "--at", "0/2"])
         .assert()
         .success();
+}
+
+#[test]
+fn every_card_kind_can_link_to_literature_and_literature_can_link_to_locations() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let (mut create_lit_a, _) = home.cmd_with_editor_sequence(&[
+        "@article{LitA, title={Literature A}}",
+        "Literature A\n<--->\nfirst work\n<--->\n",
+    ]);
+    create_lit_a.arg("l").assert().success();
+
+    home.cmd_with_editor("Topic\n<--->\nplain topic\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Regular\n<--->\nplain regular\n<--->\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Topic\n<--->\ntopic cites [[LitA]] and [[0/1]]\n<--->\n")
+        .args(["e", "--at", "0/0"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Regular\n<--->\nregular cites [[LitA]]\n<--->\n")
+        .args(["e", "--at", "0/1"])
+        .assert()
+        .success();
+
+    let (mut create_lit_b, _) = home.cmd_with_editor_sequence(&[
+        "@book{LitB, title={Literature B}}",
+        "Literature B\n<--->\nliterature cites [[LitA]], [[0/0]], and [[0/1]]\n<--->\n",
+    ]);
+    create_lit_b.arg("l").assert().success();
+
+    home.cmd()
+        .write_stdin("go LitA\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[0/0]] Topic",
+        ))
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[0/1]] Regular",
+        ))
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[LitB]] Literature B",
+        ));
+    home.cmd()
+        .write_stdin("go 0/0\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[LitB]] Literature B",
+        ));
+}
+
+#[test]
+fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_order() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    for (key, title) in [("ZebraKey", "Zebra Work"), ("AlphaKey", "Alpha Work")] {
+        let bib = format!("@book{{{key}, title={{{title}}}}}");
+        let text = format!("{title}\n<--->\nnotes\n<--->\n");
+        let (mut create, _) = home.cmd_with_editor_sequence(&[&bib, &text]);
+        create.arg("l").assert().success();
+    }
+
+    let automatic_root = home
+        .cmd()
+        .write_stdin("q\n")
+        .output()
+        .expect("automatic ROOT output");
+    let automatic_root = String::from_utf8(automatic_root.stdout).unwrap();
+    assert!(automatic_root.starts_with("ROOT\n0/0 Topic\n"));
+    assert!(!automatic_root.contains("0/1 Base"));
+    assert!(!automatic_root.contains("AlphaKey"));
+    assert!(!automatic_root.contains("ZebraKey"));
+
+    let root_ls = home
+        .cmd()
+        .write_stdin("ls\nq\n")
+        .output()
+        .expect("ROOT ls output");
+    let root_ls = String::from_utf8(root_ls.stdout).unwrap();
+    assert!(root_ls.contains("0/0 Topic\nAlphaKey Alpha Work\nZebraKey Zebra Work\n"));
+    assert!(!root_ls.contains("0/1 Base"));
+
+    let topic_ls = home
+        .cmd()
+        .write_stdin("go 0/0\nls\nq\n")
+        .output()
+        .expect("Topic ls output");
+    let topic_ls = String::from_utf8(topic_ls.stdout).unwrap();
+    assert!(topic_ls.contains("0/0 Topic\n0/1 Base\n"));
+    assert!(!topic_ls.contains("AlphaKey Alpha Work"));
+    assert!(!topic_ls.contains("ZebraKey Zebra Work"));
+
+    let literature_ls = home
+        .cmd()
+        .write_stdin("go ZebraKey\nls\nq\n")
+        .output()
+        .expect("Literature ls output");
+    let literature_ls = String::from_utf8(literature_ls.stdout).unwrap();
+    assert!(literature_ls.contains("AlphaKey Alpha Work\nZebraKey Zebra Work\n"));
+    assert_eq!(literature_ls.matches("0/0 Topic").count(), 1);
+    assert!(!literature_ls.contains("0/1 Base"));
+}
+
+#[test]
+fn shell_metadata_part_updates_raw_bibtex_and_generated_title_without_editing_body() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("Topic\n<--->\ntarget\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        "@article{EditKey, title={Original Title}}",
+        "Original Title\n<--->\nbody stays here [[0/0]]\n<--->\n",
+    ]);
+    create.arg("l").assert().success();
+
+    let editor_path = home.config_dir.join("metadata-editor-path.txt");
+    home.cmd_with_editor("@article{EditKey, title={Updated {Title}}}\n")
+        .env("ZT_EDITOR_PATH_OUT", &editor_path)
+        .args(["e", "--at", "EditKey", "--part", "metadata"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    assert!(
+        fs::read_to_string(editor_path)
+            .expect("metadata editor path")
+            .ends_with(".bib")
+    );
+
+    home.cmd()
+        .write_stdin("go EditKey\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("title: Updated Title"))
+        .stdout(predicate::str::contains(
+            "@article{EditKey, title={Updated {Title}}}",
+        ))
+        .stdout(predicate::str::contains("body stays here"));
+    home.cmd()
+        .write_stdin("go 0/0\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[EditKey]] Updated Title",
+        ));
+}
+
+#[test]
+fn shell_literature_edit_selector_errors_fail_before_editor_launch() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        "@book{SelectorKey, title={Selector Work}}",
+        "Selector Work\n<--->\nbody\n<--->\n",
+    ]);
+    create.arg("l").assert().success();
+    home.cmd_with_editor("Topic\n<--->\nbody\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  zt l\n"))
+        .stdout(predicate::str::contains("  zt del --at <target>\n"))
+        .stdout(predicate::str::contains("  zt n --at <location>\n"));
+
+    let cases: &[(&[&str], &str)] = &[
+        (&["e", "--at", "SelectorKey"], "requires --part"),
+        (
+            &["e", "--at", "SelectorKey", "--part", "unknown"],
+            "invalid --part",
+        ),
+        (
+            &[
+                "e",
+                "--at",
+                "SelectorKey",
+                "--part",
+                "text",
+                "--part",
+                "metadata",
+            ],
+            "duplicate or incomplete --part",
+        ),
+        (
+            &["e", "--at", "0/0", "--part", "text"],
+            "valid only when editing a Literature Card",
+        ),
+    ];
+    for (index, (args, expected)) in cases.iter().enumerate() {
+        let marker = home
+            .config_dir
+            .join(format!("editor-must-not-run-{index}.txt"));
+        home.cmd_with_editor("must not be used")
+            .env("ZT_EDITOR_PATH_OUT", &marker)
+            .args(*args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(*expected));
+        assert!(
+            !marker.exists(),
+            "invalid selector launched EDITOR: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn metadata_edit_cancel_collision_and_rejected_rename_leave_graph_unchanged() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    for (key, title) in [("KeepKey", "Keep Work"), ("TakenKey", "Taken Work")] {
+        let bib = format!("@book{{{key}, title={{{title}}}}}\n");
+        let text = format!("{title}\n<--->\nbody {key}\n<--->\n");
+        let (mut create, _) = home.cmd_with_editor_sequence(&[&bib, &text]);
+        create.arg("l").assert().success();
+    }
+    home.cmd_with_editor("Topic\n<--->\nsource [[KeepKey]]\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let original = home.literature_data("KeepKey");
+    let original_source = home.card_text("0/0");
+
+    home.cmd_with_canceling_editor("@book{CanceledRename, title={Canceled}}")
+        .args(["e", "--at", "KeepKey", "--part", "metadata"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+    assert_eq!(home.literature_data("KeepKey"), original);
+
+    let (mut collision, captures) =
+        home.cmd_with_editor_sequence(&["@book{takenkey, title={Collision}}"]);
+    collision
+        .args(["e", "--at", "KeepKey", "--part", "metadata"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("conflicts with an existing"));
+    assert_eq!(
+        fs::read_to_string(captures.join("1.initial")).expect("collision retry buffer"),
+        "@book{takenkey, title={Collision}}"
+    );
+    assert_eq!(home.literature_data("KeepKey"), original);
+
+    home.cmd_with_editor("@book{RejectedRename, title={Rejected}}")
+        .args(["e", "--at", "KeepKey", "--part", "metadata"])
+        .write_stdin("not move\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("KeepKey -> RejectedRename"))
+        .stderr(predicate::str::contains("confirmation did not match"));
+    assert_eq!(home.literature_data("KeepKey"), original);
+    assert_eq!(home.card_text("0/0"), original_source);
+    assert_eq!(home.literature_count(), 2);
+    home.cmd()
+        .write_stdin("go RejectedRename\ngo keepkey\ngo KeepKey\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "target `RejectedRename` does not exist",
+        ))
+        .stdout(predicate::str::contains("target `keepkey` does not exist"))
+        .stdout(predicate::str::contains("citation key: KeepKey"));
+}
+
+#[test]
+fn shell_text_part_repairs_literature_title_and_reverse_links() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        "@book{TextEdit, title={Generated Title}}",
+        "Generated Title\n<--->\nold body\n<--->\n",
+    ]);
+    create.arg("l").assert().success();
+    home.cmd_with_editor("Topic\n<--->\nsource [[TextEdit]]\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+
+    home.cmd_with_editor(
+        "\nClient added another title line\n<--->\nnew body\n<--->\nclient reverse must disappear",
+    )
+    .args(["e", "--at", "TextEdit", "--part", "text"])
+    .assert()
+    .success();
+
+    home.cmd()
+        .write_stdin("go TextEdit\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("title: Generated Title"))
+        .stdout(predicate::str::contains("new body"))
+        .stdout(predicate::str::contains(
+            "This note has been referred by note [[0/0]] Topic",
+        ))
+        .stdout(predicate::str::contains("client reverse must disappear").not());
+}
+
+#[test]
+fn citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let (mut create_old, _) = home.cmd_with_editor_sequence(&[
+        "@book{OldKey, title={Old Work}}",
+        "Old Work\n<--->\nwork\n<--->\n",
+    ]);
+    create_old.arg("l").assert().success();
+    home.cmd_with_editor("Topic [[OldKey]]\n<--->\ntopic [[OldKey]]\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Regular\n<--->\nregular [[OldKey]]\n<--->\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success();
+    let (mut create_source, _) = home.cmd_with_editor_sequence(&[
+        "@misc{LitSource, title={Literature Source}, note={metadata [[OldKey]] stays literal}}",
+        "Literature Source\n<--->\nliterature [[OldKey]]\n<--->\n",
+    ]);
+    create_source.arg("l").assert().success();
+
+    home.cmd_with_editor("@book{NewKey, title={Renamed Work}}\n")
+        .args(["e", "--at", "OldKey", "--part", "metadata"])
+        .write_stdin("move\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OldKey -> NewKey"))
+        .stdout(predicate::str::contains("link macros rewritten: 3"));
+
+    home.cmd()
+        .write_stdin("go OldKey\ngo NewKey\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("target `OldKey` does not exist"))
+        .stdout(predicate::str::contains("citation key: NewKey"))
+        .stdout(predicate::str::contains("title: Renamed Work"));
+    for target in ["0/0", "0/1", "LitSource"] {
+        home.cmd()
+            .write_stdin(format!("go {target}\nq\n"))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("[[NewKey]]"));
+    }
+    home.cmd()
+        .write_stdin("go LitSource\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "metadata [[OldKey]] stays literal",
+        ));
+    assert!(
+        home.card_text("0/0")
+            .starts_with("Topic [[OldKey]]\n<--->\ntopic [[NewKey]]\n"),
+        "Citation-key rename must rewrite only actual body Links"
+    );
+}
+
+#[test]
+fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        "@article{DeleteLit, title={Delete Literature}}",
+        "Delete Literature\n<--->\nwork\n<--->\n",
+    ]);
+    create.arg("l").assert().success();
+    home.cmd_with_editor("Topic\n<--->\nsource [[DeleteLit]]\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Topic\n<--->\nwrong case [[deletelit]]\n<--->\n")
+        .args(["e", "--at", "0/0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "link target `deletelit` does not exist",
+        ));
+
+    for command in ["n", "b"] {
+        home.cmd_with_editor("Never\n<--->\ncreated\n<--->\n")
+            .args([command, "--at", "DeleteLit"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Literature Card"));
+    }
+    home.cmd()
+        .args(["mv", "--at", "DeleteLit", "0/1"])
+        .write_stdin("move\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Literature Card"));
+
+    home.cmd()
+        .args(["del", "--at", "DeleteLit"])
+        .write_stdin("delete\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("delete DeleteLit"))
+        .stdout(predicate::str::contains("deleted: 1"))
+        .stdout(predicate::str::contains("compacted:").not());
+
+    home.cmd()
+        .arg("lsbk")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "0/0 Topic -> DeleteLit: source [[DeleteLit]]",
+        ));
+    home.cmd_with_editor("Topic\n<--->\nsource [[DeleteLit]] after deletion\n<--->\nstale reverse")
+        .args(["e", "--at", "0/0"])
+        .assert()
+        .success();
+    home.cmd_with_editor("New Source\n<--->\nnew [[DeleteLit]]\n<--->\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "link target `DeleteLit` does not exist",
+        ));
+    home.cmd()
+        .write_stdin("go DeleteLit\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "target `DeleteLit` does not exist",
+        ));
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("literature: 0"))
+        .stdout(predicate::str::contains("total: 1"));
 }
 
 #[test]
@@ -756,7 +1547,7 @@ fn session_navigation_and_read_only_commands_use_the_session_pointer() {
         .stdout(predicate::str::contains("unknown session command: foo"))
         .stdout(predicate::str::contains("unknown session command: zt"))
         .stdout(predicate::str::contains("session commands must start").not())
-        .stdout(predicate::str::contains("location `0/99` does not exist"))
+        .stdout(predicate::str::contains("target `0/99` does not exist"))
         .stdout(predicate::str::contains("total: 3"));
 }
 
@@ -824,6 +1615,49 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
         .stdout(predicate::str::contains("exactly two"));
     assert!(home.card_text("0/1").contains("updated body"));
     assert!(!home.card_text("0/1").contains("damaged reverse"));
+}
+
+#[test]
+fn line_session_creates_and_edits_literature_with_retry_and_numbered_selection() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut input = String::new();
+    input.push_str("l\n");
+    input.push_str("@comment{invalid}");
+    input.push('\x13');
+    input.push_str("@book{LineLit, title={Line Literature}}");
+    input.push('\x13');
+    input.push_str("client title\nextra title line\n<--->\nline body\n<--->\nclient reverse");
+    input.push('\x13');
+    input.push_str("e\n9\n1\n");
+    input.push_str("@book{LineLit, title={Updated Line Literature}}");
+    input.push('\x13');
+    input.push_str("e\n2\n");
+    input.push_str("\nreplacement title line\n<--->\nupdated line body\n<--->\nstale reverse");
+    input.push('\x13');
+    input.push_str("q\n");
+
+    home.cmd()
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("metadata edit"))
+        .stdout(predicate::str::contains(
+            "exactly one ordinary bibliographic entry",
+        ))
+        .stdout(predicate::str::contains("citation key: LineLit"))
+        .stdout(predicate::str::contains("invalid edit option"))
+        .stdout(predicate::str::contains("title: Updated Line Literature"))
+        .stdout(predicate::str::contains("updated line body"))
+        .stdout(predicate::str::contains("stale reverse").not());
+
+    assert_eq!(
+        home.literature_data("LineLit"),
+        (
+            "@book{LineLit, title={Updated Line Literature}}".into(),
+            "Updated Line Literature\n<--->\nupdated line body\n<--->\n".into(),
+        )
+    );
 }
 
 #[test]
@@ -1243,6 +2077,161 @@ fn dump_preserves_card_text_hash_mapping_and_location_order() {
 }
 
 #[test]
+fn dump_adds_hashed_literature_markdown_and_exact_citation_key_bibtex() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let bibtex = "@article{DumpKey,\n  title={Dump Literature}\n}\n\n";
+    let card_text = "Dump Literature\n<--->\nnotes\n<--->\n";
+    let (mut create, _) = home.cmd_with_editor_sequence(&[bibtex, card_text]);
+    create.arg("l").assert().success();
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 1 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".zip");
+    let archive_name = archive_path.file_stem().unwrap().to_str().unwrap();
+    let markdown_name = expected_literature_dump_filename("DumpKey", bibtex, card_text);
+    let mut archive =
+        zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
+    let actual_entries = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_entries,
+        vec![
+            format!("{archive_name}/mapping.json"),
+            format!("{archive_name}/{markdown_name}"),
+            format!("{archive_name}/DumpKey.bib"),
+        ]
+    );
+
+    let mut mapping = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/mapping.json"))
+            .expect("mapping entry"),
+        &mut mapping,
+    )
+    .expect("mapping text");
+    assert_eq!(
+        serde_json::from_str::<BTreeMap<String, String>>(&mapping).unwrap()["DumpKey"],
+        markdown_name
+    );
+
+    let mut markdown = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/{markdown_name}"))
+            .expect("Literature Markdown"),
+        &mut markdown,
+    )
+    .expect("Markdown text");
+    assert!(markdown.starts_with(
+        "---\nzt_kind: literature\ncitation_key: DumpKey\nbibtex: |+\n  @article{DumpKey,\n    title={Dump Literature}\n  }\n  \n---\n"
+    ));
+    assert!(markdown.ends_with(card_text));
+
+    let mut exact_bibtex = Vec::new();
+    std::io::Read::read_to_end(
+        &mut archive
+            .by_name(&format!("{archive_name}/DumpKey.bib"))
+            .expect("BibTeX entry"),
+        &mut exact_bibtex,
+    )
+    .expect("BibTeX bytes");
+    assert_eq!(exact_bibtex, bibtex.as_bytes());
+}
+
+#[test]
+fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let topic_text = "Topic\n<--->\nregular payload stays exact\n<--->\n";
+    home.cmd_with_editor(topic_text)
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let literature = [
+        (
+            "ZebraDump",
+            "@misc{ZebraDump, title={Zebra Dump}}\n",
+            "Zebra Dump\n<--->\nzebra\n<--->\n",
+        ),
+        (
+            "AlphaDump",
+            "@book{AlphaDump, title={Alpha Dump}}",
+            "Alpha Dump\n<--->\nalpha\n<--->\n",
+        ),
+    ];
+    for (_, bibtex, text) in literature {
+        let (mut create, _) = home.cmd_with_editor_sequence(&[bibtex, text]);
+        create.arg("l").assert().success();
+    }
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 3 cards to "));
+
+    let topic_md = expected_dump_filename("0/0", topic_text);
+    let alpha_md = expected_literature_dump_filename("AlphaDump", literature[1].1, literature[1].2);
+    let zebra_md = expected_literature_dump_filename("ZebraDump", literature[0].1, literature[0].2);
+    let archive_path = single_dump_archive(&home, ".zip");
+    let archive_name = archive_path.file_stem().unwrap().to_str().unwrap();
+    let mut archive =
+        zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
+    let actual_entries = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_entries,
+        vec![
+            format!("{archive_name}/mapping.json"),
+            format!("{archive_name}/{topic_md}"),
+            format!("{archive_name}/{alpha_md}"),
+            format!("{archive_name}/{zebra_md}"),
+            format!("{archive_name}/AlphaDump.bib"),
+            format!("{archive_name}/ZebraDump.bib"),
+        ]
+    );
+
+    let mut mapping_body = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/mapping.json"))
+            .expect("mapping entry"),
+        &mut mapping_body,
+    )
+    .expect("mapping body");
+    assert_eq!(
+        serde_json::from_str::<BTreeMap<String, String>>(&mapping_body).unwrap(),
+        BTreeMap::from([
+            ("0/0".into(), topic_md),
+            ("AlphaDump".into(), alpha_md),
+            ("ZebraDump".into(), zebra_md),
+        ])
+    );
+    let positions =
+        ["\"0/0\"", "\"AlphaDump\"", "\"ZebraDump\""].map(|key| mapping_body.find(key).unwrap());
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(!mapping_body.contains(".bib"));
+}
+
+#[test]
 fn repeated_dumps_keep_payload_order_and_mapping_bytes_stable() {
     if !host_zip_backend_available() {
         return;
@@ -1631,7 +2620,13 @@ fn clear_is_shell_only_service_gated_and_exact_confirmation_cancels_safely() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("  zt clear\n"));
+        .stdout(predicate::str::contains("  zt clear\n"))
+        .stdout(predicate::str::contains("zt clean").not());
+    home.cmd()
+        .arg("clean")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown command"));
     for confirmation in ["CLEAR\n", " clear\n", "clear \n"] {
         home.cmd()
             .arg("clear")
@@ -1661,6 +2656,11 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
         .assert()
         .success()
         .stdout(predicate::str::contains("1/0"));
+    let (mut create_literature, _) = home.cmd_with_editor_sequence(&[
+        "@book{ClearLit, title={Clear Literature}}",
+        "Clear Literature\n<--->\nclear me too\n<--->\n",
+    ]);
+    create_literature.arg("l").assert().success();
     let config_path = home.config_dir.join("config.toml");
     let config_before = fs::read(&config_path).expect("config bytes");
     let dump_marker = home.archive_root.join("dump").join("existing.dump");
@@ -1673,13 +2673,11 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "cleared 3 cards; next topic id reset to 0\n",
+            "cleared 4 cards; next topic id reset to 0\n",
         ));
-    home.cmd()
-        .arg("stats")
-        .assert()
-        .success()
-        .stdout(predicate::str::is_match(r"^total: 0\ntopics: 0\nregular: 0\n$").unwrap());
+    home.cmd().arg("stats").assert().success().stdout(
+        predicate::str::is_match(r"^total: 0\ntopics: 0\nregular: 0\nliterature: 0\n$").unwrap(),
+    );
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     let cards: i64 = conn
         .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))

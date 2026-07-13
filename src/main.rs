@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod dump;
+mod literature;
 mod session;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,6 +51,7 @@ fn run() -> Result<()> {
             let title = title.join(" ");
             shell_create_topic(&title)
         }
+        [cmd] if cmd == "l" => shell_create_literature(),
         [cmd, rest @ ..] if cmd == "n" => {
             let at = parse_at(rest)?;
             shell_create_direct(&at)
@@ -59,11 +61,11 @@ fn run() -> Result<()> {
             shell_create_side(&at)
         }
         [cmd, rest @ ..] if cmd == "e" => {
-            let at = parse_at(rest)?;
-            shell_edit(&at)
+            let (at, part) = parse_edit_args(rest)?;
+            shell_edit(&at, part)
         }
         [cmd, rest @ ..] if cmd == "del" => {
-            let at = parse_at(rest)?;
+            let at = parse_target_at(rest)?;
             shell_delete(&at)
         }
         [cmd, rest @ ..] if cmd == "mv" => {
@@ -81,11 +83,50 @@ fn parse_at(args: &[String]) -> Result<String> {
     }
 }
 
+fn parse_target_at(args: &[String]) -> Result<String> {
+    match args {
+        [flag, value] if flag == "--at" => Ok(value.clone()),
+        _ => bail!("expected --at <target>"),
+    }
+}
+
 fn parse_mv_args(args: &[String]) -> Result<(String, String)> {
     match args {
         [flag, at, new_location] if flag == "--at" => Ok((at.clone(), new_location.clone())),
         _ => bail!("expected --at <location> <new-location>"),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditPart {
+    Metadata,
+    Text,
+}
+
+fn parse_edit_args(args: &[String]) -> Result<(String, Option<EditPart>)> {
+    let mut target = None;
+    let mut part = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--at" if target.is_none() && index + 1 < args.len() => {
+                target = Some(args[index + 1].clone());
+                index += 2;
+            }
+            "--part" if part.is_none() && index + 1 < args.len() => {
+                part = Some(match args[index + 1].as_str() {
+                    "metadata" => EditPart::Metadata,
+                    "text" => EditPart::Text,
+                    value => bail!("invalid --part `{value}`; expected metadata or text"),
+                });
+                index += 2;
+            }
+            "--at" => bail!("duplicate or incomplete --at option"),
+            "--part" => bail!("duplicate or incomplete --part option"),
+            value => bail!("unexpected edit argument `{value}`"),
+        }
+    }
+    Ok((target.context("expected --at <target>")?, part))
 }
 
 #[derive(Debug, Default)]
@@ -327,20 +368,60 @@ fn initialize_database(root: &Path) -> Result<()> {
     if integrity != "ok" {
         bail!("SQLite database is corrupted: {integrity}");
     }
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    let cards_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cards')",
+        [],
+        |row| row.get(0),
+    )?;
+    if cards_exists {
+        let mut stmt = conn.prepare("PRAGMA table_info(cards)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if columns == ["location", "is_topic", "text"] {
+            bail!(
+                "legacy cards schema detected; back up and manually migrate the database before starting this ZT version"
+            );
+        }
+        let expected = [
+            "row_id",
+            "location",
+            "citation_key",
+            "is_topic",
+            "is_lit",
+            "bibtex",
+            "text",
+        ];
+        if columns != expected {
+            bail!("unsupported cards schema; database was not modified");
+        }
+    }
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS cards (
-            location TEXT PRIMARY KEY,
-            is_topic INTEGER NOT NULL,
-            text TEXT NOT NULL
+            row_id INTEGER PRIMARY KEY,
+            location TEXT UNIQUE,
+            citation_key TEXT UNIQUE,
+            is_topic INTEGER NOT NULL CHECK(is_topic IN (0, 1)),
+            is_lit INTEGER NOT NULL CHECK(is_lit IN (0, 1)),
+            bibtex TEXT,
+            text TEXT NOT NULL,
+            CHECK(
+                (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
+                OR
+                (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
+            )
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+            ON cards(citation_key COLLATE NOCASE)
+            WHERE citation_key IS NOT NULL;
         CREATE TABLE IF NOT EXISTS metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
         ",
     )?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
     Ok(())
 }
 
@@ -396,6 +477,7 @@ fn cmd_stats() -> Result<()> {
     println!("total: {}", counts.total);
     println!("topics: {}", counts.topics);
     println!("regular: {}", counts.regular);
+    println!("literature: {}", counts.literature);
     Ok(())
 }
 
@@ -405,8 +487,19 @@ fn cmd_dump() -> Result<()> {
     let conn = open_db(&root)?;
     let cards = load_cards(&conn)?
         .into_iter()
-        .map(|card| dump::DumpCard::new(card.location, card.text))
-        .collect::<Vec<_>>();
+        .map(|card| {
+            if card.is_lit {
+                Ok(dump::DumpCard::literature(
+                    card.address,
+                    card.bibtex
+                        .context("Literature Card is missing its BibTeX metadata")?,
+                    card.text,
+                ))
+            } else {
+                Ok(dump::DumpCard::new(card.address, card.text))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
     dump::run(&root, &cards)
 }
 
@@ -456,10 +549,13 @@ fn cmd_help() -> Result<()> {
     if up {
         println!("  zt");
         println!("  zt t <title>");
+        println!("  zt l");
         println!("  zt n --at <location>");
         println!("  zt b --at <location>");
         println!("  zt e --at <location>");
-        println!("  zt del --at <location>");
+        println!("  zt e --at <citation-key> --part metadata");
+        println!("  zt e --at <citation-key> --part text");
+        println!("  zt del --at <target>");
         println!("  zt mv --at <location> <new-location>");
         println!("  zt stats");
         println!("  zt lsbk");
@@ -474,6 +570,7 @@ struct Counts {
     total: i64,
     topics: i64,
     regular: i64,
+    literature: i64,
 }
 
 fn card_counts(root: &Path) -> Result<Counts> {
@@ -489,10 +586,16 @@ fn card_counts(root: &Path) -> Result<Counts> {
             row.get(0)
         })
         .unwrap_or(0);
+    let literature = conn
+        .query_row("SELECT COUNT(*) FROM cards WHERE is_lit = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
     Ok(Counts {
         total,
         topics,
-        regular: total - topics,
+        regular: total - topics - literature,
+        literature,
     })
 }
 
@@ -503,8 +606,12 @@ fn open_db(root: &Path) -> Result<Connection> {
 
 #[derive(Clone, Debug)]
 struct Card {
-    location: String,
+    row_id: i64,
+    address: String,
+    citation_key: Option<String>,
     is_topic: bool,
+    is_lit: bool,
+    bibtex: Option<String>,
     text: String,
 }
 
@@ -516,6 +623,17 @@ struct ParsedCard {
 }
 
 fn parse_card_text(text: &str) -> Result<ParsedCard> {
+    parse_card_text_with_title_validation(text, true)
+}
+
+fn parse_literature_edit_text(text: &str) -> Result<ParsedCard> {
+    parse_card_text_with_title_validation(text, false)
+}
+
+fn parse_card_text_with_title_validation(
+    text: &str,
+    require_single_nonempty_title: bool,
+) -> Result<ParsedCard> {
     let lines: Vec<&str> = text.lines().collect();
     let delimiter_positions: Vec<usize> = lines
         .iter()
@@ -528,15 +646,16 @@ fn parse_card_text(text: &str) -> Result<ParsedCard> {
     let first = delimiter_positions[0];
     let second = delimiter_positions[1];
     let title_lines = &lines[..first];
-    if title_lines.len() != 1 {
-        bail!("card title must be a single line");
-    }
-    let title = title_lines[0].to_string();
-    if title.trim().is_empty() {
-        bail!("card title cannot be empty");
+    if require_single_nonempty_title {
+        if title_lines.len() != 1 {
+            bail!("card title must be a single line");
+        }
+        if title_lines[0].trim().is_empty() {
+            bail!("card title cannot be empty");
+        }
     }
     Ok(ParsedCard {
-        title,
+        title: title_lines.join("\n"),
         body: lines[first + 1..second].join("\n"),
         reverse: lines[second + 1..].join("\n"),
     })
@@ -554,7 +673,7 @@ fn regular_template() -> String {
     format!("\n{DELIM}\n\n{DELIM}\n")
 }
 
-fn extract_link_locations(text: &str) -> Result<Vec<String>> {
+fn extract_link_targets(text: &str) -> Result<Vec<String>> {
     let mut links = Vec::new();
     let mut offset = 0;
     while let Some(start_rel) = text[offset..].find("[[") {
@@ -565,7 +684,7 @@ fn extract_link_locations(text: &str) -> Result<Vec<String>> {
         };
         let end = content_start + end_rel;
         let content = &text[content_start..end];
-        if !is_valid_location(content) {
+        if !is_valid_location(content) && literature::validate_citation_key(content).is_err() {
             bail!("invalid link macro target `{content}`");
         }
         links.push(content.to_string());
@@ -580,29 +699,25 @@ fn extract_link_locations(text: &str) -> Result<Vec<String>> {
 fn validate_card_text(
     conn: &Connection,
     location: &str,
-    is_topic: bool,
     text: &str,
     old_text: Option<&str>,
 ) -> Result<ParsedCard> {
     let parsed = parse_card_text(text)?;
-    let links = extract_link_locations(&parsed.body)?;
-    if is_topic && !links.is_empty() {
-        bail!("topic descriptions cannot contain link macros");
-    }
+    let links = extract_link_targets(&parsed.body)?;
     let mut existing_broken = BTreeSet::new();
     if let Some(old_text) = old_text {
         let old = parse_card_text(old_text)?;
-        for link in extract_link_locations(&old.body)? {
-            if !location_exists(conn, &link)? {
+        for link in extract_link_targets(&old.body)? {
+            if !target_exists(conn, &link)? {
                 existing_broken.insert(link);
             }
         }
     }
     for link in links {
-        if link == location && location_exists(conn, location)? {
+        if link == location && target_exists(conn, location)? {
             continue;
         }
-        if !location_exists(conn, &link)? && !existing_broken.contains(&link) {
+        if !target_exists(conn, &link)? && !existing_broken.contains(&link) {
             bail!("link target `{link}` does not exist");
         }
     }
@@ -670,28 +785,60 @@ fn location_exists(conn: &Connection, location: &str) -> Result<bool> {
     )? == 1)
 }
 
-fn load_card(conn: &Connection, location: &str) -> Result<Card> {
+fn citation_key_exists(conn: &Connection, citation_key: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE citation_key = ?1)",
+        [citation_key],
+        |row| row.get::<_, i64>(0),
+    )? == 1)
+}
+
+fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
+    if is_valid_location(target) {
+        location_exists(conn, target)
+    } else if literature::validate_citation_key(target).is_ok() {
+        citation_key_exists(conn, target)
+    } else {
+        Ok(false)
+    }
+}
+
+fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
-        "SELECT location, is_topic, text FROM cards WHERE location = ?1",
-        [location],
+        "SELECT row_id, COALESCE(location, citation_key), citation_key,
+                is_topic, is_lit, bibtex, text
+         FROM cards WHERE location = ?1 OR citation_key = ?1",
+        [target],
         |row| {
             Ok(Card {
-                location: row.get(0)?,
-                is_topic: row.get::<_, i64>(1)? == 1,
-                text: row.get(2)?,
+                row_id: row.get(0)?,
+                address: row.get(1)?,
+                citation_key: row.get(2)?,
+                is_topic: row.get::<_, i64>(3)? == 1,
+                is_lit: row.get::<_, i64>(4)? == 1,
+                bibtex: row.get(5)?,
+                text: row.get(6)?,
             })
         },
     )
-    .with_context(|| format!("card `{location}` does not exist"))
+    .with_context(|| format!("card `{target}` does not exist"))
 }
 
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
-    let mut stmt = conn.prepare("SELECT location, is_topic, text FROM cards ORDER BY location")?;
+    let mut stmt = conn.prepare(
+        "SELECT row_id, COALESCE(location, citation_key), citation_key,
+                is_topic, is_lit, bibtex, text
+         FROM cards ORDER BY COALESCE(location, citation_key)",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(Card {
-            location: row.get(0)?,
-            is_topic: row.get::<_, i64>(1)? == 1,
-            text: row.get(2)?,
+            row_id: row.get(0)?,
+            address: row.get(1)?,
+            citation_key: row.get(2)?,
+            is_topic: row.get::<_, i64>(3)? == 1,
+            is_lit: row.get::<_, i64>(4)? == 1,
+            bibtex: row.get(5)?,
+            text: row.get(6)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -787,10 +934,10 @@ fn next_side_successor(
 ) -> Result<String> {
     let mut max_label = 0;
     for card in load_cards(conn)? {
-        if excluding.contains(&card.location) {
+        if excluding.contains(&card.address) {
             continue;
         }
-        if let Some(label) = immediate_side_label(&card.location, parent) {
+        if let Some(label) = immediate_side_label(&card.address, parent) {
             max_label = max_label.max(side_label_to_number(&label));
         }
     }
@@ -799,7 +946,7 @@ fn next_side_successor(
 
 fn descendant_locations(conn: &Connection, root: &str) -> Result<BTreeSet<String>> {
     let cards = load_cards(conn)?;
-    let locations: BTreeSet<String> = cards.iter().map(|card| card.location.clone()).collect();
+    let locations: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
     let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for location in &locations {
         if let Some(parent) = parent_location(location)
@@ -837,7 +984,7 @@ fn next_topic_location(conn: &Connection) -> Result<String> {
                 .unwrap_or_default()
                 .iter()
                 .filter(|card| card.is_topic)
-                .filter_map(|card| topic_id(&card.location).ok()?.parse::<u64>().ok())
+                .filter_map(|card| topic_id(&card.address).ok()?.parse::<u64>().ok())
                 .max();
             max_existing.map(|value| value + 1).unwrap_or(0)
         });
@@ -860,8 +1007,12 @@ enum EditOutcome {
 }
 
 fn run_editor(initial_text: &str) -> Result<EditOutcome> {
+    run_editor_with_suffix(initial_text, ".zt.md")
+}
+
+fn run_editor_with_suffix(initial_text: &str, suffix: &str) -> Result<EditOutcome> {
     let editor = env::var("EDITOR").context("EDITOR is not set")?;
-    let mut temp = tempfile::Builder::new().suffix(".zt.md").tempfile()?;
+    let mut temp = tempfile::Builder::new().suffix(suffix).tempfile()?;
     temp.write_all(initial_text.as_bytes())?;
     temp.flush()?;
     let temp_path = temp.into_temp_path();
@@ -880,6 +1031,84 @@ fn run_editor(initial_text: &str) -> Result<EditOutcome> {
     let edited = fs::read_to_string(&path)?;
     drop(temp_path);
     Ok(EditOutcome::Saved(edited))
+}
+
+fn shell_create_literature() -> Result<()> {
+    let root = require_service_up()?;
+    let _lock = acquire_edit_lock(&root)?;
+    let mut conn = open_db(&root)?;
+    let mut metadata_buffer = String::new();
+    let (bibtex, metadata) = loop {
+        let EditOutcome::Saved(edited) = run_editor_with_suffix(&metadata_buffer, ".bib")? else {
+            return Ok(());
+        };
+        match literature::parse_metadata(&edited) {
+            Ok(metadata)
+                if !citation_key_exists_case_insensitive(&conn, &metadata.citation_key)? =>
+            {
+                break (edited, metadata);
+            }
+            Ok(metadata) => {
+                eprintln!("Literature Card `{}` already exists", metadata.citation_key);
+            }
+            Err(error) => eprintln!("{error:#}"),
+        }
+        metadata_buffer = edited;
+    };
+    let initial_text = compose_card_text(&metadata.title, "", "");
+    let EditOutcome::Saved(edited_text) = run_editor(&initial_text)? else {
+        return Ok(());
+    };
+    let parsed = parse_literature_edit_text(&edited_text)?;
+    let text = compose_card_text(&metadata.title, &parsed.body, "");
+    insert_literature_card(&mut conn, &metadata.citation_key, &bibtex, &text)?;
+    println!("{}", metadata.citation_key);
+    Ok(())
+}
+
+fn citation_key_exists_case_insensitive(conn: &Connection, citation_key: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE citation_key = ?1 COLLATE NOCASE)",
+        [citation_key],
+        |row| row.get::<_, i64>(0),
+    )? == 1)
+}
+
+fn citation_key_conflicts(
+    conn: &Connection,
+    citation_key: &str,
+    excluding_row_id: i64,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM cards
+            WHERE citation_key = ?1 COLLATE NOCASE AND row_id != ?2
+        )",
+        params![citation_key, excluding_row_id],
+        |row| row.get::<_, i64>(0),
+    )? == 1)
+}
+
+fn insert_literature_card(
+    conn: &mut Connection,
+    citation_key: &str,
+    bibtex: &str,
+    text: &str,
+) -> Result<()> {
+    literature::validate_citation_key(citation_key)?;
+    if citation_key_exists_case_insensitive(conn, citation_key)? {
+        bail!("Literature Card `{citation_key}` already exists");
+    }
+    validate_card_text(conn, citation_key, text, None)?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
+         VALUES(NULL, ?1, 0, 1, ?2, ?3)",
+        params![citation_key, bibtex, text],
+    )?;
+    regenerate_reverse_links_tx(&tx)?;
+    tx.commit()?;
+    Ok(())
 }
 
 struct EditLock {
@@ -929,7 +1158,10 @@ fn shell_create_direct(at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
-    let location = direct_successor(&parent.location)?;
+    if parent.is_lit {
+        bail!("zt n is not valid on a Literature Card");
+    }
+    let location = direct_successor(&parent.address)?;
     if location_exists(&conn, &location)? {
         bail!("direct successor already exists: {location}");
     }
@@ -948,10 +1180,13 @@ fn shell_create_side(at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
+    if parent.is_lit {
+        bail!("zt b is not valid on a Literature Card");
+    }
     if parent.is_topic {
         bail!("zt b is not valid on a topic card");
     }
-    let location = next_side_successor(&conn, &parent.location, &BTreeSet::new())?;
+    let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
@@ -962,15 +1197,138 @@ fn shell_create_side(at: &str) -> Result<()> {
     }
 }
 
-fn shell_edit(at: &str) -> Result<()> {
+fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let card = load_card(&conn, at)?;
+    if card.is_lit {
+        return match part {
+            Some(EditPart::Metadata) => shell_edit_literature_metadata(&mut conn, &card),
+            Some(EditPart::Text) => shell_edit_literature_text(&mut conn, &card),
+            None => bail!("Literature Card editing requires --part metadata or --part text"),
+        };
+    }
+    if part.is_some() {
+        bail!("--part is valid only when editing a Literature Card");
+    }
     match run_editor(&card.text)? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => update_card_text(&mut conn, &card, &text),
     }
+}
+
+fn shell_edit_literature_text(conn: &mut Connection, card: &Card) -> Result<()> {
+    match run_editor(&card.text)? {
+        EditOutcome::Canceled => Ok(()),
+        EditOutcome::Saved(edited) => update_literature_text(conn, card, &edited),
+    }
+}
+
+fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> Result<()> {
+    let metadata = literature::parse_metadata(
+        card.bibtex
+            .as_deref()
+            .context("Literature Card is missing its BibTeX metadata")?,
+    )?;
+    let parsed = parse_literature_edit_text(edited)?;
+    let text = compose_card_text(&metadata.title, &parsed.body, "");
+    validate_card_text(conn, &card.address, &text, Some(&card.text))?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+        params![text, card.row_id],
+    )?;
+    regenerate_reverse_links_tx(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<()> {
+    let citation_key = card
+        .citation_key
+        .as_deref()
+        .context("Literature Card is missing its Citation key")?;
+    let mut buffer = card
+        .bibtex
+        .clone()
+        .context("Literature Card is missing its BibTeX metadata")?;
+    loop {
+        let EditOutcome::Saved(edited) = run_editor_with_suffix(&buffer, ".bib")? else {
+            return Ok(());
+        };
+        let metadata = match literature::parse_metadata(&edited) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                eprintln!("{error:#}");
+                buffer = edited;
+                continue;
+            }
+        };
+        let renaming = metadata.citation_key != citation_key;
+        if renaming
+            && (metadata.citation_key.eq_ignore_ascii_case(citation_key)
+                || citation_key_conflicts(conn, &metadata.citation_key, card.row_id)?)
+        {
+            eprintln!(
+                "Citation key `{}` conflicts with an existing Literature Card",
+                metadata.citation_key
+            );
+            buffer = edited;
+            continue;
+        }
+        if renaming {
+            let rewritten_links = count_target_links(conn, citation_key)?;
+            println!("{citation_key} -> {}", metadata.citation_key);
+            println!("link macros rewritten: {rewritten_links}");
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            read_confirmation(&mut input, "move")?;
+        }
+        update_literature_metadata(conn, card, &metadata.citation_key, &edited, &metadata.title)?;
+        return Ok(());
+    }
+}
+
+fn count_target_links(conn: &Connection, target: &str) -> Result<usize> {
+    let mut count = 0;
+    for card in load_cards(conn)? {
+        let parsed = parse_card_text(&card.text)?;
+        count += extract_link_targets(&parsed.body)?
+            .into_iter()
+            .filter(|candidate| candidate == target)
+            .count();
+    }
+    Ok(count)
+}
+
+fn update_literature_metadata(
+    conn: &mut Connection,
+    card: &Card,
+    citation_key: &str,
+    bibtex: &str,
+    title: &str,
+) -> Result<()> {
+    let parsed = parse_card_text(&card.text)?;
+    let text = compose_card_text(title, &parsed.body, "");
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE cards SET citation_key = ?1, bibtex = ?2, text = ?3 WHERE row_id = ?4",
+        params![citation_key, bibtex, text, card.row_id],
+    )?;
+    if citation_key != card.address {
+        let mapping = BTreeMap::from([(card.address.clone(), citation_key.to_string())]);
+        for source in load_cards(&tx)? {
+            let rewritten = replace_link_locations(&source.text, &mapping)?;
+            tx.execute(
+                "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+                params![rewritten, source.row_id],
+            )?;
+        }
+    }
+    regenerate_reverse_links_tx(&tx)?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn insert_card(conn: &mut Connection, location: &str, is_topic: bool, text: &str) -> Result<()> {
@@ -980,10 +1338,11 @@ fn insert_card(conn: &mut Connection, location: &str, is_topic: bool, text: &str
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
     }
-    validate_card_text(conn, location, is_topic, text, None)?;
+    validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, is_topic, text) VALUES(?1, ?2, ?3)",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3)",
         params![location, if is_topic { 1 } else { 0 }, text],
     )?;
     regenerate_reverse_links_tx(&tx)?;
@@ -992,11 +1351,11 @@ fn insert_card(conn: &mut Connection, location: &str, is_topic: bool, text: &str
 }
 
 fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()> {
-    validate_card_text(conn, &card.location, card.is_topic, text, Some(&card.text))?;
+    validate_card_text(conn, &card.address, text, Some(&card.text))?;
     let tx = conn.transaction()?;
     tx.execute(
-        "UPDATE cards SET text = ?1 WHERE location = ?2",
-        params![text, card.location],
+        "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+        params![text, card.row_id],
     )?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
@@ -1005,32 +1364,32 @@ fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()
 
 fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
     let cards = load_cards(conn)?;
-    let existing: BTreeSet<String> = cards.iter().map(|card| card.location.clone()).collect();
+    let existing: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
     let titles: BTreeMap<String, String> = cards
         .iter()
         .filter_map(|card| {
             parse_card_text(&card.text)
                 .ok()
-                .map(|parsed| (card.location.clone(), parsed.title))
+                .map(|parsed| (card.address.clone(), parsed.title))
         })
         .collect();
     let mut inbound: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for source in &cards {
         let parsed = parse_card_text(&source.text)?;
         let mut seen = BTreeSet::new();
-        for target in extract_link_locations(&parsed.body)? {
+        for target in extract_link_targets(&parsed.body)? {
             if existing.contains(&target) && seen.insert(target.clone()) {
                 inbound
                     .entry(target)
                     .or_default()
-                    .insert(source.location.clone());
+                    .insert(source.address.clone());
             }
         }
     }
     for card in &cards {
         let parsed = parse_card_text(&card.text)?;
         let reverse = inbound
-            .get(&card.location)
+            .get(&card.address)
             .into_iter()
             .flat_map(|sources| sources.iter())
             .map(|source| {
@@ -1041,14 +1400,20 @@ fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
             .join("\n");
         let text = compose_card_text(&parsed.title, &parsed.body, &reverse);
         conn.execute(
-            "UPDATE cards SET text = ?1 WHERE location = ?2",
-            params![text, card.location],
+            "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+            params![text, card.row_id],
         )?;
     }
     Ok(())
 }
 
 fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
+    let parsed = parse_card_text(text)?;
+    let body = replace_link_targets(&parsed.body, mapping)?;
+    Ok(compose_card_text(&parsed.title, &body, &parsed.reverse))
+}
+
+fn replace_link_targets(text: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
     let mut output = String::new();
     let mut offset = 0;
     while let Some(start_rel) = text[offset..].find("[[") {
@@ -1095,16 +1460,19 @@ struct DeleteResult {
 struct DeletePlan {
     delete_set: BTreeSet<String>,
     confirmation: String,
+    is_lit: bool,
 }
 
 fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
     let card = load_card(conn, at)?;
-    let delete_set = if card.is_topic {
-        let topic = topic_id(&card.location)?;
+    let delete_set = if card.is_lit {
+        BTreeSet::from([card.address.clone()])
+    } else if card.is_topic {
+        let topic = topic_id(&card.address)?;
         load_cards(conn)?
             .into_iter()
-            .filter(|card| card.location.starts_with(&format!("{topic}/")))
-            .map(|card| card.location)
+            .filter(|card| card.address.starts_with(&format!("{topic}/")))
+            .map(|card| card.address)
             .collect::<BTreeSet<_>>()
     } else {
         descendant_locations(conn, at)?
@@ -1117,6 +1485,7 @@ fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
     Ok(DeletePlan {
         delete_set,
         confirmation,
+        is_lit: card.is_lit,
     })
 }
 
@@ -1139,10 +1508,18 @@ fn print_delete_verification(plan: &DeletePlan) {
 }
 
 fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Result<DeleteResult> {
-    let compaction = side_compaction_mapping(conn, at, &plan.delete_set)?;
+    let compaction = if plan.is_lit {
+        BTreeMap::new()
+    } else {
+        side_compaction_mapping(conn, at, &plan.delete_set)?
+    };
     let tx = conn.transaction()?;
-    for location in &plan.delete_set {
-        tx.execute("DELETE FROM cards WHERE location = ?1", [location])?;
+    for address in &plan.delete_set {
+        if plan.is_lit {
+            tx.execute("DELETE FROM cards WHERE citation_key = ?1", [address])?;
+        } else {
+            tx.execute("DELETE FROM cards WHERE location = ?1", [address])?;
+        }
     }
     apply_location_mapping_tx(&tx, &compaction)?;
     regenerate_reverse_links_tx(&tx)?;
@@ -1189,10 +1566,10 @@ fn side_compaction_mapping(
     let cards = load_cards(conn)?;
     let mut labels = BTreeSet::new();
     for card in &cards {
-        if delete_set.contains(&card.location) {
+        if delete_set.contains(&card.address) {
             continue;
         }
-        if let Some(label) = immediate_side_label(&card.location, &parent)
+        if let Some(label) = immediate_side_label(&card.address, &parent)
             && side_label_to_number(&label) > deleted_rank
         {
             labels.insert(label);
@@ -1208,14 +1585,13 @@ fn side_compaction_mapping(
     }
     let mut mapping = BTreeMap::new();
     for card in cards {
-        if delete_set.contains(&card.location) {
+        if delete_set.contains(&card.address) {
             continue;
         }
         for (old_prefix, new_prefix) in &prefix_map {
-            if card.location == *old_prefix || card.location.starts_with(&format!("{old_prefix}|"))
-            {
-                let suffix = &card.location[old_prefix.len()..];
-                mapping.insert(card.location.clone(), format!("{new_prefix}{suffix}"));
+            if card.address == *old_prefix || card.address.starts_with(&format!("{old_prefix}|")) {
+                let suffix = &card.address[old_prefix.len()..];
+                mapping.insert(card.address.clone(), format!("{new_prefix}{suffix}"));
                 break;
             }
         }
@@ -1243,8 +1619,8 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
     for card in cards {
         let text = replace_link_locations(&card.text, mapping)?;
         conn.execute(
-            "UPDATE cards SET text = ?1 WHERE location = ?2",
-            params![text, card.location],
+            "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+            params![text, card.row_id],
         )?;
     }
     Ok(())
@@ -1290,6 +1666,9 @@ where
 
 fn move_plan(conn: &Connection, at: &str, new_location: &str) -> Result<MovePlan> {
     let card = load_card(conn, at)?;
+    if card.is_lit {
+        bail!("Literature Card cannot be moved; edit metadata to change its Citation key");
+    }
     if card.is_topic {
         bail!("topic cards cannot be moved");
     }
@@ -1374,7 +1753,7 @@ fn move_mapping(
     moved: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, String>> {
     let cards = load_cards(conn)?;
-    let locations: BTreeSet<String> = cards.iter().map(|card| card.location.clone()).collect();
+    let locations: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
     let mut mapping = BTreeMap::new();
     for location in moved {
         let edges = path_edges(old_root, location, &locations)?;
@@ -1422,7 +1801,7 @@ fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) 
     let mut count = 0;
     for card in load_cards(conn)? {
         let parsed = parse_card_text(&card.text)?;
-        for link in extract_link_locations(&parsed.body)? {
+        for link in extract_link_targets(&parsed.body)? {
             if mapping.contains_key(&link) {
                 count += 1;
             }
@@ -1438,9 +1817,9 @@ fn cmd_lsbk() -> Result<()> {
     for card in &cards {
         let parsed = parse_card_text(&card.text)?;
         for line in parsed.body.lines() {
-            for target in extract_link_locations(line)? {
-                if !location_exists(&conn, &target)? {
-                    println!("{} {} -> {}: {}", card.location, parsed.title, target, line);
+            for target in extract_link_targets(line)? {
+                if !target_exists(&conn, &target)? {
+                    println!("{} {} -> {}: {}", card.address, parsed.title, target, line);
                 }
             }
         }

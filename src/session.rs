@@ -14,8 +14,12 @@ pub(crate) fn run_session(root: PathBuf) -> Result<()> {
     cmd_line_session(root)
 }
 
-fn run_session_editor<R: BufRead>(input: &mut R, initial_text: &str) -> Result<EditOutcome> {
-    println!("edit mode");
+fn run_session_editor_with_header<R: BufRead>(
+    input: &mut R,
+    initial_text: &str,
+    header: &str,
+) -> Result<EditOutcome> {
+    println!("{header}");
     println!("{initial_text}");
     let mut bytes = Vec::new();
     loop {
@@ -35,14 +39,27 @@ fn run_session_editor<R: BufRead>(input: &mut R, initial_text: &str) -> Result<E
     }
 }
 
-fn session_edit_until_saved<R, F>(input: &mut R, initial_text: &str, mut save: F) -> Result<bool>
+fn session_edit_until_saved<R, F>(input: &mut R, initial_text: &str, save: F) -> Result<bool>
+where
+    R: BufRead,
+    F: FnMut(&str) -> Result<()>,
+{
+    session_edit_until_saved_with_header(input, initial_text, "edit mode", save)
+}
+
+fn session_edit_until_saved_with_header<R, F>(
+    input: &mut R,
+    initial_text: &str,
+    header: &str,
+    mut save: F,
+) -> Result<bool>
 where
     R: BufRead,
     F: FnMut(&str) -> Result<()>,
 {
     let mut current = initial_text.to_string();
     loop {
-        match run_session_editor(input, &current)? {
+        match run_session_editor_with_header(input, &current, header)? {
             EditOutcome::Canceled => return Ok(false),
             EditOutcome::Saved(text) => match save(&text) {
                 Ok(()) => return Ok(true),
@@ -257,11 +274,11 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                 ) && let Some(target) = link_target_at(&links, mouse.row, mouse.column)
                 {
                     let conn = open_db(&root)?;
-                    if location_exists(&conn, target)? {
+                    if target_exists(&conn, target)? {
                         pointer = Pointer::Card(target.to_string());
                         message.clear();
                     } else {
-                        message = format!("location `{target}` does not exist");
+                        message = format!("target `{target}` does not exist");
                     }
                 } else {
                     continue;
@@ -306,7 +323,7 @@ fn draw_tui(root: &Path, pointer: &Pointer, command: &str, message: &str) -> Res
                 write_tui_location_line(
                     &mut stdout,
                     &mut row,
-                    &card.location,
+                    &card.address,
                     &format!(" {}", parsed.title),
                     &mut links,
                 )?;
@@ -315,12 +332,36 @@ fn draw_tui(root: &Path, pointer: &Pointer, command: &str, message: &str) -> Res
         Pointer::Card(location) => {
             let card = load_card(&conn, location)?;
             let parsed = parse_card_text(&card.text)?;
-            write_tui_plain_line(
-                &mut stdout,
-                &mut row,
-                &format!("location: {}", card.location),
-            )?;
+            if card.is_lit {
+                write_tui_plain_line(
+                    &mut stdout,
+                    &mut row,
+                    &format!(
+                        "citation key: {}",
+                        card.citation_key
+                            .as_deref()
+                            .context("Literature Card is missing its Citation key")?
+                    ),
+                )?;
+            } else {
+                write_tui_plain_line(
+                    &mut stdout,
+                    &mut row,
+                    &format!("location: {}", card.address),
+                )?;
+            }
             write_tui_plain_line(&mut stdout, &mut row, &format!("title: {}", parsed.title))?;
+            if card.is_lit {
+                write_tui_plain_line(&mut stdout, &mut row, "metadata:")?;
+                for line in card
+                    .bibtex
+                    .as_deref()
+                    .context("Literature Card is missing its BibTeX metadata")?
+                    .lines()
+                {
+                    write_tui_plain_line(&mut stdout, &mut row, line)?;
+                }
+            }
             for line in parsed.body.lines() {
                 write_tui_link_line(&mut stdout, &conn, &mut row, line, &mut links)?;
             }
@@ -329,7 +370,8 @@ fn draw_tui(root: &Path, pointer: &Pointer, command: &str, message: &str) -> Res
                     write_tui_link_line(&mut stdout, &conn, &mut row, line, &mut links)?;
                 }
             }
-            if let Ok(direct) = direct_successor(&card.location)
+            if !card.is_lit
+                && let Ok(direct) = direct_successor(&card.address)
                 && location_exists(&conn, &direct)?
             {
                 write_tui_link_line(
@@ -340,14 +382,16 @@ fn draw_tui(root: &Path, pointer: &Pointer, command: &str, message: &str) -> Res
                     &mut links,
                 )?;
             }
-            for side in side_successors(&conn, &card.location)? {
-                write_tui_link_line(
-                    &mut stdout,
-                    &conn,
-                    &mut row,
-                    &format!("side: [[{side}]]"),
-                    &mut links,
-                )?;
+            if !card.is_lit {
+                for side in side_successors(&conn, &card.address)? {
+                    write_tui_link_line(
+                        &mut stdout,
+                        &conn,
+                        &mut row,
+                        &format!("side: [[{side}]]"),
+                        &mut links,
+                    )?;
+                }
             }
         }
     }
@@ -409,7 +453,9 @@ fn write_tui_link_line<W: Write>(
         let end = content_start + end_rel;
         let target = &text[content_start..end];
         let macro_text = &text[start..end + 2];
-        if is_valid_location(target) && location_exists(conn, target)? {
+        if (is_valid_location(target) || literature::validate_citation_key(target).is_ok())
+            && target_exists(conn, target)?
+        {
             queue_tui_valid_link(stdout, *row, col, macro_text, target, links)?;
         } else {
             crossterm::queue!(
@@ -456,7 +502,7 @@ fn queue_tui_valid_link<W: Write>(
 }
 
 fn normalize_session_command(line: &str) -> Option<Vec<&str>> {
-    let tokens: Vec<&str> = line.trim().split_whitespace().collect();
+    let tokens: Vec<&str> = line.split_whitespace().collect();
     if tokens.is_empty() {
         return None;
     }
@@ -474,7 +520,7 @@ fn unknown_session_command(parts: &[&str]) -> String {
 }
 
 fn session_help_text() -> &'static str {
-    "root | go <location> | ls | t <title> | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
+    "root | go <target> | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
 }
 
 fn handle_tui_command(
@@ -493,12 +539,12 @@ fn handle_tui_command(
             message.clear();
             Ok(true)
         }
-        ["zt", "go", location] => {
+        ["zt", "go", target] => {
             let conn = open_db(root)?;
-            if !location_exists(&conn, location)? {
-                bail!("location `{location}` does not exist");
+            if !target_exists(&conn, target)? {
+                bail!("target `{target}` does not exist");
             }
-            *pointer = Pointer::Card((*location).to_string());
+            *pointer = Pointer::Card((*target).to_string());
             message.clear();
             Ok(true)
         }
@@ -509,8 +555,8 @@ fn handle_tui_command(
         ["zt", "stats"] => {
             let counts = card_counts(root)?;
             *message = format!(
-                "total: {} | topics: {} | regular: {}",
-                counts.total, counts.topics, counts.regular
+                "total: {} | topics: {} | regular: {} | literature: {}",
+                counts.total, counts.topics, counts.regular, counts.literature
             );
             Ok(true)
         }
@@ -531,6 +577,11 @@ fn handle_tui_command(
             message.clear();
             Ok(true)
         }
+        ["zt", "l"] => {
+            tui_create_literature(root, pointer)?;
+            message.clear();
+            Ok(true)
+        }
         ["zt", "n"] => {
             let at = current_card(pointer)?;
             tui_create_direct(root, pointer, &at)?;
@@ -545,7 +596,8 @@ fn handle_tui_command(
         }
         ["zt", "e"] => {
             let at = current_card(pointer)?;
-            tui_edit_card(root, &at)?;
+            let target = tui_edit_card(root, &at)?;
+            *pointer = Pointer::Card(target);
             message.clear();
             Ok(true)
         }
@@ -594,11 +646,41 @@ fn tui_create_topic(root: &Path, pointer: &mut Pointer, title: &str) -> Result<(
     Ok(())
 }
 
+fn tui_create_literature(root: &Path, pointer: &mut Pointer) -> Result<()> {
+    let _lock = acquire_edit_lock(root)?;
+    let mut conn = open_db(root)?;
+    let mut accepted = None;
+    if !tui_edit_until_saved_with_header("", "metadata edit", |text| {
+        let metadata = literature::parse_metadata(text)?;
+        if citation_key_exists_case_insensitive(&conn, &metadata.citation_key)? {
+            bail!("Literature Card `{}` already exists", metadata.citation_key);
+        }
+        accepted = Some((text.to_string(), metadata));
+        Ok(())
+    })? {
+        return Ok(());
+    }
+    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
+    let initial_text = compose_card_text(&metadata.title, "", "");
+    let citation_key = metadata.citation_key.clone();
+    if tui_edit_until_saved(&initial_text, |edited| {
+        let parsed = parse_literature_edit_text(edited)?;
+        let text = compose_card_text(&metadata.title, &parsed.body, "");
+        insert_literature_card(&mut conn, &citation_key, &bibtex, &text)
+    })? {
+        *pointer = Pointer::Card(citation_key);
+    }
+    Ok(())
+}
+
 fn tui_create_direct(root: &Path, pointer: &mut Pointer, at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(root)?;
     let mut conn = open_db(root)?;
     let parent = load_card(&conn, at)?;
-    let location = direct_successor(&parent.location)?;
+    if parent.is_lit {
+        bail!("zt n is not valid on a Literature Card");
+    }
+    let location = direct_successor(&parent.address)?;
     if location_exists(&conn, &location)? {
         bail!("direct successor already exists: {location}");
     }
@@ -614,10 +696,13 @@ fn tui_create_side(root: &Path, pointer: &mut Pointer, at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(root)?;
     let mut conn = open_db(root)?;
     let parent = load_card(&conn, at)?;
+    if parent.is_lit {
+        bail!("zt b is not valid on a Literature Card");
+    }
     if parent.is_topic {
         bail!("zt b is not valid on a topic card");
     }
-    let location = next_side_successor(&conn, &parent.location, &BTreeSet::new())?;
+    let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
     if tui_edit_until_saved(&regular_template(), |text| {
         insert_card(&mut conn, &location, false, text)
     })? {
@@ -626,22 +711,139 @@ fn tui_create_side(root: &Path, pointer: &mut Pointer, at: &str) -> Result<()> {
     Ok(())
 }
 
-fn tui_edit_card(root: &Path, at: &str) -> Result<()> {
+fn tui_edit_card(root: &Path, at: &str) -> Result<String> {
     let _lock = acquire_edit_lock(root)?;
     let mut conn = open_db(root)?;
     let card = load_card(&conn, at)?;
-    tui_edit_until_saved(&card.text, |text| update_card_text(&mut conn, &card, text))?;
+    if !card.is_lit {
+        tui_edit_until_saved(&card.text, |text| update_card_text(&mut conn, &card, text))?;
+        return Ok(card.address);
+    }
+    match tui_select_literature_edit_part()? {
+        EditPart::Metadata => tui_edit_literature_metadata(&mut conn, &card),
+        EditPart::Text => {
+            tui_edit_until_saved(&card.text, |text| {
+                update_literature_text(&mut conn, &card, text)
+            })?;
+            Ok(card.address)
+        }
+    }
+}
+
+fn tui_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<String> {
+    let old_key = card
+        .citation_key
+        .as_deref()
+        .context("Literature Card is missing its Citation key")?;
+    let initial = card
+        .bibtex
+        .as_deref()
+        .context("Literature Card is missing its BibTeX metadata")?;
+    let mut accepted = None;
+    if !tui_edit_until_saved_with_header(initial, "metadata edit", |text| {
+        let metadata = literature::parse_metadata(text)?;
+        if metadata.citation_key != old_key
+            && (metadata.citation_key.eq_ignore_ascii_case(old_key)
+                || citation_key_conflicts(conn, &metadata.citation_key, card.row_id)?)
+        {
+            bail!(
+                "Citation key `{}` conflicts with an existing Literature Card",
+                metadata.citation_key
+            );
+        }
+        accepted = Some((text.to_string(), metadata));
+        Ok(())
+    })? {
+        return Ok(card.address.clone());
+    }
+    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
+    if metadata.citation_key != old_key {
+        let rewritten_links = count_target_links(conn, old_key)?;
+        tui_read_confirmation(
+            "move",
+            &[
+                "citation key rename:".to_string(),
+                format!("{old_key} -> {}", metadata.citation_key),
+                format!("link macros rewritten: {rewritten_links}"),
+            ],
+        )?;
+    }
+    update_literature_metadata(conn, card, &metadata.citation_key, &bibtex, &metadata.title)?;
+    Ok(metadata.citation_key)
+}
+
+fn tui_select_literature_edit_part() -> Result<EditPart> {
+    let mut input = String::new();
+    let mut error = String::new();
+    loop {
+        draw_tui_literature_edit_selection(&input, &error)?;
+        let crossterm::event::Event::Key(key) = crossterm::event::read()? else {
+            continue;
+        };
+        if !is_tui_input_key(&key) {
+            continue;
+        }
+        match key.code {
+            crossterm::event::KeyCode::Char(ch) => input.push(ch),
+            crossterm::event::KeyCode::Backspace => {
+                input.pop();
+            }
+            crossterm::event::KeyCode::Enter => match input.as_str() {
+                "1" => return Ok(EditPart::Metadata),
+                "2" => return Ok(EditPart::Text),
+                _ => {
+                    error = "invalid edit option".to_string();
+                    input.clear();
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+fn draw_tui_literature_edit_selection(input: &str, error: &str) -> Result<()> {
+    let mut stdout = io::stdout();
+    crossterm::queue!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::style::Print("edit literature card:\n  1. metadata\n  2. main text\n")
+    )?;
+    if !error.is_empty() {
+        crossterm::queue!(
+            stdout,
+            crossterm::style::SetForegroundColor(crossterm::style::Color::DarkRed),
+            crossterm::style::Print(format!("{error}\n")),
+            crossterm::style::ResetColor
+        )?;
+    }
+    crossterm::queue!(
+        stdout,
+        crossterm::style::Print(format!("select edit: {input}"))
+    )?;
+    stdout.flush()?;
     Ok(())
 }
 
-fn tui_edit_until_saved<F>(initial_text: &str, mut save: F) -> Result<bool>
+fn tui_edit_until_saved<F>(initial_text: &str, save: F) -> Result<bool>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    tui_edit_until_saved_with_header(initial_text, "edit mode", save)
+}
+
+fn tui_edit_until_saved_with_header<F>(
+    initial_text: &str,
+    header: &str,
+    mut save: F,
+) -> Result<bool>
 where
     F: FnMut(&str) -> Result<()>,
 {
     let mut editor = EditorModel::new(initial_text);
     let mut error = String::new();
     loop {
-        match run_tui_editor(&mut editor, &error)? {
+        match run_tui_editor(&mut editor, &error, header)? {
             EditOutcome::Canceled => return Ok(false),
             EditOutcome::Saved(text) => match save(&text) {
                 Ok(()) => return Ok(true),
@@ -887,9 +1089,9 @@ fn char_display_width(ch: char) -> usize {
     }
 }
 
-fn run_tui_editor(editor: &mut EditorModel, error: &str) -> Result<EditOutcome> {
+fn run_tui_editor(editor: &mut EditorModel, error: &str, header: &str) -> Result<EditOutcome> {
     loop {
-        let viewport = draw_tui_editor(editor, error)?;
+        let viewport = draw_tui_editor(editor, error, header)?;
         if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
             if !is_tui_input_key(&key) {
                 continue;
@@ -939,7 +1141,7 @@ fn editor_action_from_key_code(code: crossterm::event::KeyCode) -> Option<Editor
     }
 }
 
-fn draw_tui_editor(editor: &mut EditorModel, error: &str) -> Result<ViewportSize> {
+fn draw_tui_editor(editor: &mut EditorModel, error: &str, header: &str) -> Result<ViewportSize> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let viewport = ViewportSize::new((rows as usize).saturating_sub(3).max(1), cols as usize);
     editor.ensure_visible(viewport);
@@ -949,7 +1151,7 @@ fn draw_tui_editor(editor: &mut EditorModel, error: &str) -> Result<ViewportSize
         stdout,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::MoveTo(0, 0),
-        crossterm::style::Print("edit mode: Ctrl+S save, Esc cancel")
+        crossterm::style::Print(format!("{header}: Ctrl+S save, Esc cancel"))
     )?;
     crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, 1))?;
     if !error.is_empty() {
@@ -1067,21 +1269,34 @@ fn draw_tui_confirmation(lines: &[String], expected: &str, input: &str) -> Resul
 
 fn tui_ls(root: &Path, pointer: &Pointer) -> Result<String> {
     let conn = open_db(root)?;
-    let topic = match pointer {
-        Pointer::Root => None,
-        Pointer::Card(location) => Some(topic_id(location)?.to_string()),
-    };
     let mut lines = Vec::new();
-    for card in load_cards(&conn)? {
-        if let Some(topic) = &topic
-            && !card.location.starts_with(&format!("{topic}/"))
-        {
-            continue;
-        }
+    for card in cards_for_list(&conn, pointer)? {
         let parsed = parse_card_text(&card.text)?;
-        lines.push(format!("{} {}", card.location, parsed.title));
+        lines.push(format!("{} {}", card.address, parsed.title));
     }
     Ok(lines.join(" | "))
+}
+
+fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<Vec<Card>> {
+    let cards = load_cards(conn)?;
+    match pointer {
+        Pointer::Root => Ok(cards
+            .into_iter()
+            .filter(|card| card.is_topic || card.is_lit)
+            .collect()),
+        Pointer::Card(target) => {
+            let current = load_card(conn, target)?;
+            if current.is_lit {
+                Ok(cards.into_iter().filter(|card| card.is_lit).collect())
+            } else {
+                let topic = topic_id(&current.address)?;
+                Ok(cards
+                    .into_iter()
+                    .filter(|card| card.address.starts_with(&format!("{topic}/")))
+                    .collect())
+            }
+        }
+    }
 }
 
 fn tui_lsbk(root: &Path) -> Result<String> {
@@ -1090,11 +1305,11 @@ fn tui_lsbk(root: &Path) -> Result<String> {
     for card in load_cards(&conn)? {
         let parsed = parse_card_text(&card.text)?;
         for line in parsed.body.lines() {
-            for target in extract_link_locations(line)? {
-                if !location_exists(&conn, &target)? {
+            for target in extract_link_targets(line)? {
+                if !target_exists(&conn, &target)? {
                     lines.push(format!(
                         "{} {} -> {}: {}",
-                        card.location, parsed.title, target, line
+                        card.address, parsed.title, target, line
                     ));
                 }
             }
@@ -1122,12 +1337,12 @@ fn handle_session_command<R: BufRead>(
             *pointer = Pointer::Root;
             Ok(true)
         }
-        ["zt", "go", location] => {
+        ["zt", "go", target] => {
             let conn = open_db(root)?;
-            if !location_exists(&conn, location)? {
-                bail!("location `{location}` does not exist");
+            if !target_exists(&conn, target)? {
+                bail!("target `{target}` does not exist");
             }
-            *pointer = Pointer::Card((*location).to_string());
+            *pointer = Pointer::Card((*target).to_string());
             Ok(true)
         }
         ["zt", "ls"] => {
@@ -1167,6 +1382,10 @@ fn handle_session_command<R: BufRead>(
             }
             Ok(true)
         }
+        ["zt", "l"] => {
+            line_create_literature(root, pointer, input)?;
+            Ok(true)
+        }
         ["zt", "n"] => {
             let at = current_card(pointer)?;
             shell_like_session_create_direct(root, &at, pointer, input)?;
@@ -1182,9 +1401,73 @@ fn handle_session_command<R: BufRead>(
             let _lock = acquire_edit_lock(root)?;
             let mut conn = open_db(root)?;
             let card = load_card(&conn, &at)?;
-            session_edit_until_saved(input, &card.text, |text| {
-                update_card_text(&mut conn, &card, text)
-            })?;
+            if card.is_lit {
+                match line_select_literature_edit_part(input)? {
+                    EditPart::Metadata => {
+                        let old_key = card
+                            .citation_key
+                            .as_deref()
+                            .context("Literature Card is missing its Citation key")?;
+                        let initial = card
+                            .bibtex
+                            .as_deref()
+                            .context("Literature Card is missing its BibTeX metadata")?;
+                        let mut accepted = None;
+                        if session_edit_until_saved_with_header(
+                            input,
+                            initial,
+                            "metadata edit",
+                            |text| {
+                                let metadata = literature::parse_metadata(text)?;
+                                if metadata.citation_key != old_key
+                                    && (metadata.citation_key.eq_ignore_ascii_case(old_key)
+                                        || citation_key_conflicts(
+                                            &conn,
+                                            &metadata.citation_key,
+                                            card.row_id,
+                                        )?)
+                                {
+                                    bail!(
+                                        "Citation key `{}` conflicts with an existing Literature Card",
+                                        metadata.citation_key
+                                    );
+                                }
+                                accepted = Some((text.to_string(), metadata));
+                                Ok(())
+                            },
+                        )? {
+                            let (bibtex, metadata) =
+                                accepted.context("validated Literature metadata is missing")?;
+                            if metadata.citation_key != old_key {
+                                println!("citation key rename:");
+                                println!("{old_key} -> {}", metadata.citation_key);
+                                println!(
+                                    "link macros rewritten: {}",
+                                    count_target_links(&conn, old_key)?
+                                );
+                                read_confirmation(input, "move")?;
+                            }
+                            update_literature_metadata(
+                                &mut conn,
+                                &card,
+                                &metadata.citation_key,
+                                &bibtex,
+                                &metadata.title,
+                            )?;
+                            *pointer = Pointer::Card(metadata.citation_key);
+                        }
+                    }
+                    EditPart::Text => {
+                        session_edit_until_saved(input, &card.text, |text| {
+                            update_literature_text(&mut conn, &card, text)
+                        })?;
+                    }
+                }
+            } else {
+                session_edit_until_saved(input, &card.text, |text| {
+                    update_card_text(&mut conn, &card, text)
+                })?;
+            }
             Ok(true)
         }
         ["zt", "del"] => {
@@ -1220,6 +1503,55 @@ fn current_card(pointer: &Pointer) -> Result<String> {
     }
 }
 
+fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPart> {
+    loop {
+        println!("edit literature card:");
+        println!("  1. metadata");
+        println!("  2. main text");
+        println!("select edit:");
+        let mut choice = String::new();
+        if input.read_line(&mut choice)? == 0 {
+            bail!("edit selection canceled");
+        }
+        match choice.trim_end_matches(['\r', '\n']) {
+            "1" => return Ok(EditPart::Metadata),
+            "2" => return Ok(EditPart::Text),
+            _ => println!("invalid edit option"),
+        }
+    }
+}
+
+fn line_create_literature<R: BufRead>(
+    root: &Path,
+    pointer: &mut Pointer,
+    input: &mut R,
+) -> Result<()> {
+    let _lock = acquire_edit_lock(root)?;
+    let mut conn = open_db(root)?;
+    let mut accepted = None;
+    if !session_edit_until_saved_with_header(input, "", "metadata edit", |text| {
+        let metadata = literature::parse_metadata(text)?;
+        if citation_key_exists_case_insensitive(&conn, &metadata.citation_key)? {
+            bail!("Literature Card `{}` already exists", metadata.citation_key);
+        }
+        accepted = Some((text.to_string(), metadata));
+        Ok(())
+    })? {
+        return Ok(());
+    }
+    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
+    let initial_text = compose_card_text(&metadata.title, "", "");
+    let citation_key = metadata.citation_key.clone();
+    if session_edit_until_saved(input, &initial_text, |edited| {
+        let parsed = parse_literature_edit_text(edited)?;
+        let text = compose_card_text(&metadata.title, &parsed.body, "");
+        insert_literature_card(&mut conn, &citation_key, &bibtex, &text)
+    })? {
+        *pointer = Pointer::Card(citation_key);
+    }
+    Ok(())
+}
+
 fn shell_like_session_create_direct<R: BufRead>(
     root: &Path,
     at: &str,
@@ -1229,7 +1561,10 @@ fn shell_like_session_create_direct<R: BufRead>(
     let _lock = acquire_edit_lock(root)?;
     let mut conn = open_db(root)?;
     let parent = load_card(&conn, at)?;
-    let location = direct_successor(&parent.location)?;
+    if parent.is_lit {
+        bail!("zt n is not valid on a Literature Card");
+    }
+    let location = direct_successor(&parent.address)?;
     if location_exists(&conn, &location)? {
         bail!("direct successor already exists: {location}");
     }
@@ -1250,10 +1585,13 @@ fn shell_like_session_create_side<R: BufRead>(
     let _lock = acquire_edit_lock(root)?;
     let mut conn = open_db(root)?;
     let parent = load_card(&conn, at)?;
+    if parent.is_lit {
+        bail!("zt b is not valid on a Literature Card");
+    }
     if parent.is_topic {
         bail!("zt b is not valid on a topic card");
     }
-    let location = next_side_successor(&conn, &parent.location, &BTreeSet::new())?;
+    let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
     if session_edit_until_saved(input, &regular_template(), |text| {
         insert_card(&mut conn, &location, false, text)
     })? {
@@ -1269,25 +1607,53 @@ fn print_view(root: &Path, pointer: &Pointer) -> Result<()> {
             println!("ROOT");
             for card in load_cards(&conn)?.into_iter().filter(|card| card.is_topic) {
                 let parsed = parse_card_text(&card.text)?;
-                println!("{} {}", card.location, parsed.title);
+                println!("{} {}", card.address, parsed.title);
             }
         }
         Pointer::Card(location) => {
             let card = load_card(&conn, location)?;
             let parsed = parse_card_text(&card.text)?;
-            println!("location: {}", card.location);
+            if card.is_lit {
+                println!(
+                    "citation key: {}",
+                    card.citation_key
+                        .as_deref()
+                        .context("Literature Card is missing its Citation key")?
+                );
+            } else {
+                println!("location: {}", card.address);
+            }
             println!("title: {}", parsed.title);
+            if card.is_lit {
+                println!("metadata:");
+                print!(
+                    "{}",
+                    card.bibtex
+                        .as_deref()
+                        .context("Literature Card is missing its BibTeX metadata")?
+                );
+                if !card
+                    .bibtex
+                    .as_deref()
+                    .is_some_and(|raw| raw.ends_with('\n'))
+                {
+                    println!();
+                }
+            }
             println!("{}", parsed.body);
             if !parsed.reverse.trim().is_empty() {
                 println!("{}", parsed.reverse);
             }
-            if let Ok(direct) = direct_successor(&card.location)
+            if !card.is_lit
+                && let Ok(direct) = direct_successor(&card.address)
                 && location_exists(&conn, &direct)?
             {
                 println!("direct: [[{direct}]]");
             }
-            for side in side_successors(&conn, &card.location)? {
-                println!("side: [[{side}]]");
+            if !card.is_lit {
+                for side in side_successors(&conn, &card.address)? {
+                    println!("side: [[{side}]]");
+                }
             }
         }
     }
@@ -1297,10 +1663,10 @@ fn print_view(root: &Path, pointer: &Pointer) -> Result<()> {
 fn side_successors(conn: &Connection, parent: &str) -> Result<Vec<String>> {
     let mut by_label = BTreeMap::new();
     for card in load_cards(conn)? {
-        if let Some(label) = immediate_side_label(&card.location, parent) {
+        if let Some(label) = immediate_side_label(&card.address, parent) {
             by_label
                 .entry(side_label_to_number(&label))
-                .or_insert(card.location);
+                .or_insert(card.address);
         }
     }
     Ok(by_label.into_values().collect())
@@ -1308,18 +1674,9 @@ fn side_successors(conn: &Connection, parent: &str) -> Result<Vec<String>> {
 
 fn session_ls(root: &Path, pointer: &Pointer) -> Result<()> {
     let conn = open_db(root)?;
-    let topic = match pointer {
-        Pointer::Root => None,
-        Pointer::Card(location) => Some(topic_id(location)?.to_string()),
-    };
-    for card in load_cards(&conn)? {
-        if let Some(topic) = &topic
-            && !card.location.starts_with(&format!("{topic}/"))
-        {
-            continue;
-        }
+    for card in cards_for_list(&conn, pointer)? {
         let parsed = parse_card_text(&card.text)?;
-        println!("{} {}", card.location, parsed.title);
+        println!("{} {}", card.address, parsed.title);
     }
     Ok(())
 }

@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct DumpCard {
-    location: String,
+    address: String,
+    bibtex: Option<String>,
     text: String,
 }
 
@@ -21,8 +22,20 @@ struct DumpPayload {
 }
 
 impl DumpCard {
-    pub(crate) fn new(location: String, text: String) -> Self {
-        Self { location, text }
+    pub(crate) fn new(address: String, text: String) -> Self {
+        Self {
+            address,
+            bibtex: None,
+            text,
+        }
+    }
+
+    pub(crate) fn literature(address: String, bibtex: String, text: String) -> Self {
+        Self {
+            address,
+            bibtex: Some(bibtex),
+            text,
+        }
     }
 }
 
@@ -358,10 +371,18 @@ where
     let mut mapping = BTreeMap::new();
     let mut files = Vec::with_capacity(cards.len());
     let mut filenames = BTreeSet::new();
-    for card in cards {
-        let mut base = Vec::with_capacity(card.location.len() + card.text.len() + 1);
-        base.extend_from_slice(card.location.as_bytes());
+    let mut ordered = cards.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.address.cmp(&right.address));
+    for card in &ordered {
+        let mut base = Vec::with_capacity(
+            card.address.len() + card.text.len() + card.bibtex.as_ref().map_or(0, String::len) + 2,
+        );
+        base.extend_from_slice(card.address.as_bytes());
         base.push(0);
+        if let Some(bibtex) = &card.bibtex {
+            base.extend_from_slice(bibtex.as_bytes());
+            base.push(0);
+        }
         base.extend_from_slice(card.text.as_bytes());
         let mut digest = hash(&base);
         while filenames.contains(&format!("{digest}.md")) {
@@ -372,10 +393,45 @@ where
         }
         let filename = format!("{digest}.md");
         filenames.insert(filename.clone());
-        mapping.insert(card.location.clone(), filename.clone());
-        files.push((filename, card.text.clone()));
+        mapping.insert(card.address.clone(), filename.clone());
+        let markdown = match &card.bibtex {
+            Some(bibtex) => literature_markdown(&card.address, bibtex, &card.text),
+            None => card.text.clone(),
+        };
+        files.push((filename, markdown));
+    }
+    for card in ordered {
+        if let Some(bibtex) = &card.bibtex {
+            files.push((format!("{}.bib", card.address), bibtex.clone()));
+        }
     }
     Ok(DumpPayload { mapping, files })
+}
+
+fn literature_markdown(citation_key: &str, bibtex: &str, text: &str) -> String {
+    let trailing_newlines = bibtex
+        .chars()
+        .rev()
+        .take_while(|ch| *ch == '\n' || *ch == '\r')
+        .filter(|ch| *ch == '\n')
+        .count();
+    let indicator = match trailing_newlines {
+        0 => "|-",
+        1 => "|",
+        _ => "|+",
+    };
+    let mut output =
+        format!("---\nzt_kind: literature\ncitation_key: {citation_key}\nbibtex: {indicator}\n");
+    for line in bibtex.split_inclusive('\n') {
+        output.push_str("  ");
+        output.push_str(line);
+    }
+    if !bibtex.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str("---\n");
+    output.push_str(text);
+    output
 }
 
 fn digest_10(input: &[u8]) -> String {
@@ -805,5 +861,25 @@ mod tests {
 
         assert!(!staging.exists());
         assert_eq!(fs::read(archive).unwrap(), b"someone else's archive");
+    }
+}
+#[test]
+fn literature_yaml_round_trips_all_trailing_newline_states_and_exact_card_text() {
+    let card_text = "Title\n<--->\nbody\n<--->\nreverse";
+    for (bibtex, indicator) in [
+        ("@book{K,title={T}}", "|-"),
+        ("@book{K,title={T}}\n", "|"),
+        ("@book{K,title={T}}\n\n", "|+"),
+    ] {
+        let markdown = literature_markdown("K", bibtex, card_text);
+        assert!(markdown.contains(&format!("bibtex: {indicator}\n")));
+        let closing = markdown.find("\n---\n").expect("closing front matter");
+        let yaml = &markdown[4..=closing];
+        let metadata: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(yaml).expect("valid YAML front matter");
+        assert_eq!(metadata["zt_kind"].as_str(), Some("literature"));
+        assert_eq!(metadata["citation_key"].as_str(), Some("K"));
+        assert_eq!(metadata["bibtex"].as_str(), Some(bibtex));
+        assert_eq!(&markdown[closing + 5..], card_text);
     }
 }
