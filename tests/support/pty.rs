@@ -10,6 +10,7 @@ pub struct PtySession {
     _master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     output: Arc<Mutex<String>>,
+    answered_cursor_position_queries: usize,
 }
 
 pub enum Key {
@@ -44,6 +45,10 @@ impl Key {
 
 impl PtySession {
     pub fn spawn(program: &Path, config_dir: &Path) -> Self {
+        Self::spawn_with_args(program, config_dir, &[])
+    }
+
+    pub fn spawn_with_args(program: &Path, config_dir: &Path, args: &[&str]) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -55,6 +60,7 @@ impl PtySession {
             .expect("open pty");
 
         let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
         cmd.env("ZT_CONFIG_DIR", config_dir);
         let child = pair.slave.spawn_command(cmd).expect("spawn pty command");
         drop(pair.slave);
@@ -82,6 +88,7 @@ impl PtySession {
             _master: pair.master,
             writer,
             output,
+            answered_cursor_position_queries: 0,
         }
     }
 
@@ -105,21 +112,27 @@ impl PtySession {
     }
 
     pub fn wait_for_text(&mut self, expected: &str) {
+        self.wait_for_text_count(expected, 1);
+    }
+
+    pub fn wait_for_text_count(&mut self, expected: &str, count: usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut answered_cursor_position_query = false;
         while Instant::now() < deadline {
             let output = self.output();
-            if output.contains(expected) || strip_ansi(&output).contains(expected) {
+            if output.matches(expected).count() >= count
+                || strip_ansi(&output).matches(expected).count() >= count
+            {
                 return;
             }
-            if !answered_cursor_position_query && output.contains("\x1b[6n") {
+            let cursor_position_queries = output.matches("\x1b[6n").count();
+            while self.answered_cursor_position_queries < cursor_position_queries {
                 self.send_text("\x1b[1;1R");
-                answered_cursor_position_query = true;
+                self.answered_cursor_position_queries += 1;
             }
             thread::sleep(Duration::from_millis(20));
         }
         panic!(
-            "timed out waiting for `{expected}` in PTY output:\n{}",
+            "timed out waiting for {count} occurrence(s) of `{expected}` in PTY output:\n{}",
             self.output().escape_debug()
         );
     }

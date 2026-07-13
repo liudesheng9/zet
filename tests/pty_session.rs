@@ -2,6 +2,7 @@ mod support;
 
 use assert_cmd::cargo::cargo_bin;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -131,6 +132,49 @@ impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.archive_root.join("zt.pid"));
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn terminal_clear_accepts_confirmation_after_session_returns_to_shell() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let zt = cargo_bin("zt");
+    let zt_command = format!("& '{}'", zt.display().to_string().replace('\'', "''"));
+    let mut shell = PtySession::spawn_with_args(
+        Path::new("powershell.exe"),
+        &home.config_dir,
+        &["-NoLogo", "-NoProfile", "-NoExit"],
+    );
+    shell.wait_for_text("PS ");
+
+    shell.send_text(&zt_command);
+    shell.send_enter();
+    shell.wait_for_text("ROOT");
+    shell.send_text("q");
+    shell.send_enter();
+    shell.wait_for_text_count("PS ", 2);
+
+    shell.send_text(&format!("{zt_command} clear"));
+    shell.send_enter();
+    shell.wait_for_text("type clear to confirm: ");
+    shell.send_text("clear");
+    shell.send_enter();
+    shell.wait_for_text("cleared 2 cards; next topic id reset to 0");
+
+    let output = shell.plain_output();
+    assert!(
+        output.contains("type clear to confirm: clear"),
+        "confirmation input was not visible:\n{}",
+        output.escape_debug()
+    );
+
+    shell.send_text("exit");
+    shell.send_enter();
+    let status = shell.wait_for_exit();
+    assert!(status.success(), "PowerShell exited with {status}");
 }
 
 #[test]

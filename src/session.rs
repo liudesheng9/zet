@@ -194,13 +194,14 @@ struct TuiGuard {
 
 impl Drop for TuiGuard {
     fn drop(&mut self) {
-        crossterm::terminal::disable_raw_mode().ok();
         crossterm::execute!(
             io::stdout(),
             crossterm::event::DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen
         )
         .ok();
+        // ConPTY needs cooked input restored after the terminal UI has been left.
+        crossterm::terminal::disable_raw_mode().ok();
         unregister_session(&self.root).ok();
     }
 }
