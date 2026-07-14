@@ -181,6 +181,18 @@ impl Drop for TestHome {
 }
 
 #[cfg(windows)]
+struct ClipboardTextRestore(String);
+
+#[cfg(windows)]
+impl Drop for ClipboardTextRestore {
+    fn drop(&mut self) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(&self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
 #[test]
 fn terminal_clear_accepts_confirmation_after_session_returns_to_shell() {
     let home = TestHome::new();
@@ -239,6 +251,287 @@ fn terminal_session_starts_at_root_and_quits_cleanly() {
 }
 
 #[test]
+fn terminal_session_drag_highlights_visible_root_text() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+
+    session.send_left_drag(0, 0, 0, 3);
+    session.wait_for_raw_text("\x1b[7m");
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_copies_rendered_selection_through_fake_clipboard() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let clipboard_output = home.config_dir.join("clipboard.txt");
+
+    let mut session = PtySession::spawn_with_test_clipboard(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "seed",
+        Some(&clipboard_output),
+    );
+    session.wait_for_text("ROOT");
+    session.send_left_drag(0, 0, 0, 3);
+    session.wait_for_raw_text("\x1b[7m");
+    session.send_key(Key::CtrlShiftC);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !clipboard_output.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        clipboard_output.exists(),
+        "fake clipboard output was not written:\n{}",
+        session.output().escape_debug(),
+    );
+    assert_eq!(fs::read_to_string(&clipboard_output).unwrap(), "ROOT");
+
+    fs::remove_file(&clipboard_output).unwrap();
+    let root_count = session.plain_output().matches("ROOT").count();
+    session.resize(25, 81);
+    session.wait_for_text_count("ROOT", root_count + 1);
+    session.send_key(Key::CtrlShiftC);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !clipboard_output.exists(),
+        "resize must clear screen selection"
+    );
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_pastes_fake_clipboard_into_command_bar_without_executing() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn_with_test_clipboard(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "st\tat\r\ns",
+        None,
+    );
+    session.wait_for_text("ROOT");
+    session.send_key(Key::CtrlShiftV);
+    session.wait_for_text("> st at s");
+    assert!(!session.plain_output().contains("total:"));
+
+    for _ in 0..7 {
+        session.send_key(Key::Backspace);
+    }
+    session.send_text("stats");
+    session.send_enter();
+    session.wait_for_text("total: 0 | topics: 0 | regular: 0 | literature: 0");
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "manual acceptance: temporarily uses and restores the real Windows text clipboard"]
+fn manual_real_windows_clipboard_copy_and_paste_smoke() {
+    let mut os_clipboard = arboard::Clipboard::new().expect("open Windows clipboard");
+    let original = os_clipboard
+        .get_text()
+        .expect("manual smoke requires restorable text clipboard contents");
+    let _restore = ClipboardTextRestore(original);
+    os_clipboard.set_text("stats").expect("seed clipboard");
+    drop(os_clipboard);
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut session =
+        PtySession::spawn_with_real_clipboard_shortcuts(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_key(Key::CtrlShiftV);
+    session.wait_for_text("> stats");
+    assert!(!session.plain_output().contains("total:"));
+    session.send_enter();
+    session.wait_for_text("total: 0 | topics: 0 | regular: 0 | literature: 0");
+
+    session.send_left_drag(0, 0, 0, 3);
+    session.wait_for_raw_text("\x1b[7m");
+    session.send_key(Key::CtrlShiftC);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let copied = loop {
+        let copied = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .expect("read copied Windows clipboard text");
+        if copied == "ROOT" || std::time::Instant::now() >= deadline {
+            break copied;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(copied, "ROOT");
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text("中文\r\n\tline  \r\n\r\nend "))
+        .expect("seed multiline editor clipboard");
+
+    session.send_text("t Paste");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_key(Key::CtrlShiftV);
+    session.wait_for_text("中文");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("title: Paste");
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+    assert_eq!(
+        home.card_text("0/0"),
+        "Paste\n<--->\n中文\n\tline  \n\nend \n<--->\n"
+    );
+}
+
+#[test]
+fn terminal_editor_copies_logical_selection_and_plain_ctrl_c_still_cancels() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let clipboard_output = home.config_dir.join("editor-clipboard.txt");
+
+    let mut session = PtySession::spawn_with_test_clipboard(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "seed",
+        Some(&clipboard_output),
+    );
+    session.wait_for_text("ROOT");
+    session.send_text("t Copy");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_left_drag(2, 0, 2, 3);
+    session.wait_for_raw_text("\x1b[7m");
+    session.send_key(Key::CtrlShiftC);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !clipboard_output.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(fs::read_to_string(&clipboard_output).unwrap(), "Copy");
+
+    session.send_key(Key::CtrlC);
+    session.wait_for_text_count("ROOT", 2);
+    assert!(!home.location_exists("0/0"));
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_editor_replaces_selection_from_fake_clipboard_and_saves() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn_with_test_clipboard(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "中文\r\n\tline  \r\n\r\nend ",
+        None,
+    );
+    session.wait_for_text("ROOT");
+    session.send_text("t Paste");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_left_click(2, 2);
+    session.send_text("X");
+    session.wait_for_text("PaXste");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_text("replace");
+    session.send_left_drag(4, 0, 4, 6);
+    session.wait_for_raw_text("\x1b[7m");
+    session.send_key(Key::CtrlShiftV);
+    session.wait_for_text("中文");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("location: 0/0");
+    session.wait_for_text("title: PaXste");
+
+    session.send_text("e");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.wait_for_text("line");
+    session.send_key(Key::CtrlC);
+    session.wait_for_text("title: PaXste");
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+    assert_eq!(
+        home.card_text("0/0"),
+        "PaXste\n<--->\n中文\n\tline  \n\nend \n<--->\n"
+    );
+}
+
+#[test]
+fn terminal_editor_drag_scrolls_both_axes_and_selection_survives_resize() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    let mut session = PtySession::spawn_with_test_clipboard_at_size(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "one\ntwo\nthree\nfour\nfive\nsix\nabcdefghijklmnopqrstuvwxyz0123456789",
+        7,
+        20,
+    );
+    session.wait_for_text("ROOT");
+    session.send_text("l");
+    session.send_enter();
+    session.wait_for_text("metadata edit");
+    session.send_key(Key::CtrlShiftV);
+    for _ in 0..6 {
+        session.send_key(Key::Up);
+    }
+    session.send_key(Key::Home);
+    session.wait_for_text("one");
+
+    session.send_left_press(2, 0);
+    for column in [0, 1, 0] {
+        let reverse_count = session.output().matches("\x1b[7m").count();
+        session.send_left_drag_to(5, column);
+        session.wait_for_raw_text_count("\x1b[7m", reverse_count + 1);
+    }
+    session.wait_for_text("abcdefghijklmnopqrst");
+    for column in [19, 18].into_iter().cycle().take(16) {
+        let reverse_count = session.output().matches("\x1b[7m").count();
+        session.send_left_drag_to(5, column);
+        session.wait_for_raw_text_count("\x1b[7m", reverse_count + 1);
+    }
+    session.send_left_release(5, 19);
+    session.wait_for_text("qrstuvwxyz0123456789");
+    let reverse_count = session.output().matches("\x1b[7m").count();
+
+    session.resize(8, 14);
+    session.wait_for_raw_text_count("\x1b[7m", reverse_count + 1);
+    session.send_key(Key::CtrlC);
+    session.wait_for_text_count("ROOT", 2);
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
 fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -249,6 +542,9 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
     session.send_enter();
     session.wait_for_text("edit mode");
 
+    session.send_left_drag(2, 0, 2, 5);
+    session.wait_for_raw_text("\x1b[7m");
+
     session.send_key(Key::Down);
     session.send_key(Key::Down);
     session.send_text("中文正文");
@@ -256,6 +552,8 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
 
     session.wait_for_text("location: 0/0");
     session.wait_for_text("中文正文");
+    session.send_left_drag(1, 7, 1, 12);
+    session.wait_for_raw_text("\x1b[7m");
     session.send_text("root");
     session.send_enter();
     session.wait_for_text("ROOT");
@@ -429,8 +727,14 @@ fn terminal_session_selects_literature_edit_part_and_confirms_rename() {
     let home = TestHome::new();
     home.configure_and_up();
     let original_bib = "@book{SessionEdit, title={Original Session Title}}";
+    let clipboard_output = home.config_dir.join("modal-clipboard.txt");
 
-    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    let mut session = PtySession::spawn_with_test_clipboard(
+        &cargo_bin("zt"),
+        &home.config_dir,
+        "seed",
+        Some(&clipboard_output),
+    );
     session.wait_for_text("ROOT");
     session.send_text("l");
     session.send_enter();
@@ -449,6 +753,17 @@ fn terminal_session_selects_literature_edit_part_and_confirms_rename() {
     session.wait_for_text("edit literature card:");
     session.wait_for_text("1. metadata");
     session.wait_for_text("2. main text");
+    session.send_left_drag(0, 0, 1, 12);
+    session.wait_for_raw_text("\x1b[7m");
+    session.send_key(Key::CtrlShiftC);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !clipboard_output.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        fs::read_to_string(&clipboard_output).unwrap(),
+        "edit literature card:\n  1. metadata"
+    );
     session.send_text("3");
     session.send_enter();
     session.wait_for_text("invalid edit option");
@@ -529,6 +844,10 @@ fn terminal_session_navigates_and_activates_rendered_links() {
     session.send_enter();
     session.wait_for_text("target `9/9` does not exist");
     session.wait_for_text("location: 0/1");
+
+    session.send_left_drag(2, 5, 2, 8);
+    session.wait_for_raw_text("\x1b[7m");
+    assert!(!session.plain_output().contains("location: 0/0"));
 
     session.send_left_click(2, 5);
     session.wait_for_text("location: 0/0");

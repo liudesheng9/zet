@@ -23,6 +23,8 @@ pub enum Key {
     Backspace,
     Delete,
     CtrlC,
+    CtrlShiftC,
+    CtrlShiftV,
     CtrlS,
     Esc,
 }
@@ -39,6 +41,8 @@ impl Key {
             Key::Backspace => b"\x7f",
             Key::Delete => b"\x1b[3~",
             Key::CtrlC => b"\x03",
+            Key::CtrlShiftC => b"\x1c",
+            Key::CtrlShiftV => b"\x1d",
             Key::CtrlS => b"\x13",
             Key::Esc => b"\x1b",
         }
@@ -51,11 +55,59 @@ impl PtySession {
     }
 
     pub fn spawn_with_args(program: &Path, config_dir: &Path, args: &[&str]) -> Self {
+        Self::spawn_configured(program, config_dir, args, None, false, (24, 80))
+    }
+
+    pub fn spawn_with_test_clipboard(
+        program: &Path,
+        config_dir: &Path,
+        clipboard_text: &str,
+        clipboard_output: Option<&Path>,
+    ) -> Self {
+        Self::spawn_configured(
+            program,
+            config_dir,
+            &[],
+            Some((clipboard_text, clipboard_output)),
+            false,
+            (24, 80),
+        )
+    }
+
+    pub fn spawn_with_test_clipboard_at_size(
+        program: &Path,
+        config_dir: &Path,
+        clipboard_text: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Self {
+        Self::spawn_configured(
+            program,
+            config_dir,
+            &[],
+            Some((clipboard_text, None)),
+            false,
+            (rows, cols),
+        )
+    }
+
+    pub fn spawn_with_real_clipboard_shortcuts(program: &Path, config_dir: &Path) -> Self {
+        Self::spawn_configured(program, config_dir, &[], None, true, (24, 80))
+    }
+
+    fn spawn_configured(
+        program: &Path,
+        config_dir: &Path,
+        args: &[&str],
+        test_clipboard: Option<(&str, Option<&Path>)>,
+        test_shortcuts: bool,
+        size: (u16, u16),
+    ) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows: size.0,
+                cols: size.1,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -64,6 +116,15 @@ impl PtySession {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.env("ZT_CONFIG_DIR", config_dir);
+        if let Some((text, output)) = test_clipboard {
+            cmd.env("ZT_TEST_CLIPBOARD_TEXT", text);
+            if let Some(path) = output {
+                cmd.env("ZT_TEST_CLIPBOARD_OUTPUT", path);
+            }
+        }
+        if test_shortcuts {
+            cmd.env("ZT_TEST_SHORTCUTS", "1");
+        }
         let child = pair.slave.spawn_command(cmd).expect("spawn pty command");
         drop(pair.slave);
 
@@ -108,9 +169,56 @@ impl PtySession {
         self.writer.flush().expect("pty flush");
     }
 
+    pub fn resize(&self, rows: u16, cols: u16) {
+        self._master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty resize");
+    }
+
     pub fn send_left_click(&mut self, row: u16, col: u16) {
-        let sequence = format!("\x1b[<0;{};{}M", col + 1, row + 1);
-        self.send_text(&sequence);
+        self.send_left_press(row, col);
+        self.send_left_release(row, col);
+    }
+
+    pub fn send_left_press(&mut self, row: u16, col: u16) {
+        self.send_text(&format!("\x1b[<0;{};{}M", col + 1, row + 1));
+    }
+
+    pub fn send_left_drag_to(&mut self, row: u16, col: u16) {
+        self.send_text(&format!("\x1b[<32;{};{}M", col + 1, row + 1));
+    }
+
+    pub fn send_left_release(&mut self, row: u16, col: u16) {
+        self.send_text(&format!("\x1b[<0;{};{}m", col + 1, row + 1));
+    }
+
+    pub fn send_left_drag(&mut self, from_row: u16, from_col: u16, to_row: u16, to_col: u16) {
+        self.send_left_press(from_row, from_col);
+        self.send_left_drag_to(to_row, to_col);
+        self.send_left_release(to_row, to_col);
+    }
+
+    pub fn wait_for_raw_text(&mut self, expected: &str) {
+        self.wait_for_raw_text_count(expected, 1);
+    }
+
+    pub fn wait_for_raw_text_count(&mut self, expected: &str, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if self.output().matches(expected).count() >= count {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "timed out waiting for {count} occurrence(s) of raw terminal text `{expected}` in PTY output:\n{}",
+            self.output().escape_debug()
+        );
     }
 
     pub fn wait_for_text(&mut self, expected: &str) {

@@ -1,10 +1,11 @@
 [package]
 name = "zt"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 crossterm = "0.28"
 getrandom = "0.4"
 nom-bibtex = "0.6"
