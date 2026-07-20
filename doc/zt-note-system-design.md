@@ -39,11 +39,14 @@ Status: design locked for initial implementation.
 - If shell card creation enters editing and the user cancels before first save, `zt` discards the newly-created card.
 - `q` exits the interactive terminal session.
 - `Ctrl+C` also closes the interactive terminal session without changing card data.
-- `root` moves the session pointer back to `ROOT`.
-- `go <location>` moves the session pointer to a typed location.
-- `go <location>` cannot jump to missing locations.
-- `go <location>` cannot jump to broken-link targets.
-- If `go <location>` is given a missing or broken location, it shows a one-line error and leaves the pointer unchanged.
+- Bare `go` moves the Session Pointer back to `ROOT`.
+- `root` remains a supported alias for moving the Session Pointer to `ROOT`.
+- `go <target>` moves the Session Pointer to an existing Card addressed by a Location or Citation key.
+- `go <target>` cannot jump to missing or Broken-link targets.
+- If `go <target>` is given a missing or broken target, it shows a one-line error and leaves the Pointer unchanged.
+- Session help presents navigation as `go [<target>] | root`.
+- `go <target> <extra>` fails with `usage: go [<target>]` and leaves the Pointer unchanged.
+- Shell `zt go` remains unknown; no `go --at` or initial-target Session launch form exists.
 - `ls` is available in the session command bar.
 - `ls` lists cards under the current topic.
 - `ls` shows card locations and titles.

@@ -28,7 +28,7 @@ Status: design locked for implementation.
 - TUI edit mode should use nano-like editor behavior as its interaction baseline.
 - The first locked edit-caret movement keys are `Left`, `Right`, `Up`, and `Down`.
 - Text insertion and backspace in TUI edit mode operate at the edit caret.
-- The PTY-backed workflow matrix must include at least one real PTY test for each interactive Session command and workflow: `root`, `go <location>`, `ls`, `help`, `stats`, `status`, `lsbk`, `q`, rendered link activation, `t <title>`, `n`, `b`, `e`, edit save, edit cancel, edit validation retry, `del`, `mv <new-location>`, service disconnect, and edit-lock blocking.
+- The PTY-backed workflow matrix must include at least one real PTY test for each interactive Session command and workflow: `root`, bare `go`, `go <target>`, `ls`, `help`, `stats`, `status`, `lsbk`, `q`, rendered link activation, `t <title>`, `n`, `b`, `e`, edit save, edit cancel, edit validation retry, `del`, `mv <new-location>`, service disconnect, and edit-lock blocking.
 - Edge cases that are awkward to drive through terminal escape sequences should stay in model-level or existing line-session tests.
 - First-pass nano-like edit mode must exactly support these operations: `Left`, `Right`, `Up`, `Down`, text insertion at the edit caret, `Backspace`, `Delete`, `Home`, `End`, `Enter`, `Ctrl+S`, and `Esc`.
 - Nano-like behavior outside those locked operations is deferred, including search, cut/paste buffers, paging commands, and mouse-based caret placement.

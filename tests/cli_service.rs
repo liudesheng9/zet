@@ -1552,6 +1552,81 @@ fn session_navigation_and_read_only_commands_use_the_session_pointer() {
 }
 
 #[test]
+fn line_session_bare_go_returns_to_root_and_is_idempotent() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let output = home
+        .cmd()
+        .write_stdin("go 0/1\ngo\ngo\ngo 0/1\nq\n")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).expect("session output is UTF-8");
+
+    assert_eq!(stdout.matches("ROOT\n").count(), 3);
+    assert_eq!(stdout.matches("location: 0/1\n").count(), 2);
+    assert!(!stdout.contains("unknown session command: go"));
+}
+
+#[test]
+fn line_session_rejects_extra_go_arguments_without_moving_pointer() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    home.cmd()
+        .write_stdin("go 0/1\ngo 0/0 extra\ne\n\x1bq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("usage: go [<target>]"))
+        .stdout(predicate::str::contains("unknown session command: go").not())
+        .stdout(predicate::str::contains(
+            "edit mode\nBase\n<--->\nbase\n<--->",
+        ));
+}
+
+#[test]
+fn line_session_help_shows_optional_go_target_and_root_alias() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    home.cmd()
+        .write_stdin("help\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("go [<target>] | root"))
+        .stdout(predicate::str::contains("root | go <target>").not());
+}
+
+#[test]
+fn go_remains_session_only_without_shell_or_initial_target_forms() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    home.cmd()
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("zt go").not());
+    for args in [vec!["go"], vec!["go", "--at", "0/1"], vec!["--at", "0/1"]] {
+        home.cmd()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unknown command"));
+    }
+    home.cmd()
+        .write_stdin("q\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("ROOT\n"));
+}
+
+#[test]
 fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
     let home = TestHome::new();
     home.configure_and_up();

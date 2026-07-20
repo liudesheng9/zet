@@ -1001,7 +1001,7 @@ fn unknown_session_command(parts: &[&str]) -> String {
 }
 
 fn session_help_text() -> &'static str {
-    "root | go <target> | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
+    "go [<target>] | root | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
 }
 
 fn handle_tui_command(
@@ -1016,7 +1016,7 @@ fn handle_tui_command(
     };
     match parts.as_slice() {
         ["zt", "q"] => Ok(false),
-        ["zt", "root"] => {
+        ["zt", "root"] | ["zt", "go"] => {
             *pointer = Pointer::Root;
             message.clear();
             Ok(true)
@@ -1030,6 +1030,7 @@ fn handle_tui_command(
             message.clear();
             Ok(true)
         }
+        ["zt", "go", _, _, ..] => bail!("usage: go [<target>]"),
         ["zt", "ls"] => {
             *message = tui_ls(root, pointer)?;
             Ok(true)
@@ -2333,7 +2334,7 @@ fn handle_session_command<R: BufRead>(
     };
     match parts.as_slice() {
         ["zt", "q"] => Ok(false),
-        ["zt", "root"] => {
+        ["zt", "root"] | ["zt", "go"] => {
             *pointer = Pointer::Root;
             Ok(true)
         }
@@ -2345,6 +2346,7 @@ fn handle_session_command<R: BufRead>(
             *pointer = Pointer::Card((*target).to_string());
             Ok(true)
         }
+        ["zt", "go", _, _, ..] => bail!("usage: go [<target>]"),
         ["zt", "ls"] => {
             session_ls(root, pointer)?;
             Ok(true)

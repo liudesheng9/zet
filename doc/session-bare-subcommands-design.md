@@ -23,6 +23,7 @@ Status: design locked for implementation.
   - `e` edits the current Card.
   - `n` creates the direct successor of the current Card.
   - `b` creates the next side successor of the current Card.
+  - `go` moves the Session Pointer to `ROOT`.
   - `go 1/2` moves the Session Pointer to Location `1/2`.
   - `mv 1/2|a` moves the current Card subtree to Location `1/2|a`.
   - `q` exits the Session.
@@ -40,7 +41,7 @@ Status: design locked for implementation.
 - This change does not add command history or edit-caret movement to the command bar.
 - Confirmation prompts remain data prompts, not Session commands. Delete still asks for `delete`; move still asks for `move`; topic deletion still asks for the Topic Location.
 - The TUI command-bar prompt changes from `zt>` to `>` so the interface no longer suggests typing the executable prefix inside a Session.
-- `help` inside a Session shows only bare Session forms, such as `root | go <location> | ls | t <title> | n | b | e | del | mv <new-location> | stats | status | lsbk | q`.
+- `help` inside a Session shows only bare Session forms, with navigation presented as `go [<target>] | root`.
 - If a user types `zt e` inside a Session, the refusal text is `unknown session command: zt`.
 - If a user types only `zt` inside a Session, the refusal text is also `unknown session command: zt`.
 - The same refusal rule applies to other Session inputs whose first token is `zt`: the first token is interpreted as the requested subcommand name, not as a removable executable prefix.

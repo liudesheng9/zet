@@ -612,7 +612,7 @@ fn terminal_session_creates_navigates_and_lists_literature_card() {
     session.wait_for_text("Session2025 Session Literature");
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("go <target>");
+    session.wait_for_text("go [<target>] | root");
     session.wait_for_text(" l ");
 
     session.send_text("q");
@@ -859,6 +859,96 @@ fn terminal_session_navigates_and_activates_rendered_links() {
 }
 
 #[test]
+fn terminal_session_bare_go_returns_to_root_and_clears_status() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+
+    session.send_text("go 0/1");
+    session.send_enter();
+    session.wait_for_text("location: 0/1");
+
+    session.send_text("stats");
+    session.send_enter();
+    session.wait_for_text("total: 2 | topics: 1 | regular: 1");
+
+    let typed_go_before = session.plain_output().matches("> go").count();
+    session.send_text("go");
+    session.wait_for_text_count("> go", typed_go_before + 1);
+    let roots_before_go = session.plain_output().matches("ROOT").count();
+    let output_before_go = session.output().len();
+    session.send_enter();
+    session.wait_for_text_count("ROOT", roots_before_go + 1);
+
+    let output = session.output();
+    let go_redraw = &output[output_before_go..];
+    assert!(!go_redraw.contains("unknown session command: go"));
+    assert!(!go_redraw.contains("total: 2 | topics: 1 | regular: 1"));
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_bare_go_at_root_is_idempotent() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.wait_for_text("0/0 Topic");
+
+    let typed_go_before = session.plain_output().matches("> go").count();
+    session.send_text("go");
+    session.wait_for_text_count("> go", typed_go_before + 1);
+    let roots_before_enter = session.plain_output().matches("ROOT").count();
+    let topics_before_enter = session.plain_output().matches("0/0 Topic").count();
+    session.send_enter();
+    session.wait_for_text_count("ROOT", roots_before_enter + 1);
+    session.wait_for_text_count("0/0 Topic", topics_before_enter + 1);
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
+fn terminal_session_rejects_extra_go_arguments_without_moving_pointer() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("go 0/1");
+    session.send_enter();
+    session.wait_for_text("location: 0/1");
+
+    session.send_text("go 0/0 extra");
+    session.wait_for_text("> go 0/0 extra");
+    let output_before_enter = session.output().len();
+    session.send_enter();
+    session.wait_for_text("usage: go [<target>]");
+
+    let output = session.output();
+    let error_redraw = &output[output_before_enter..];
+    assert!(error_redraw.contains("location: 0/1"));
+    assert!(!error_redraw.contains("unknown session command: go"));
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+}
+
+#[test]
 fn terminal_session_runs_read_only_commands() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -886,7 +976,7 @@ fn terminal_session_runs_read_only_commands() {
 
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("root | go <target>");
+    session.wait_for_text("go [<target>] | root");
 
     session.send_text("foo bar");
     session.send_enter();

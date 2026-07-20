@@ -38,8 +38,8 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 18. As a user, I want command-bar commands to omit the executable prefix, so that common Session commands are short.
 19. As a user, I want no command history in the command bar, so that the TUI stays simple.
 20. As a user, I want `q` and `Ctrl+C` to exit the Session, so that I can leave predictably.
-21. As a user, I want `root`, so that I can return to the Topic list.
-22. As a user, I want `go <location>`, so that I can jump to a known Card.
+21. As a user, I want bare `go` with `root` retained as an alias, so that I can return to the Topic list.
+22. As a user, I want `go <target>`, so that I can jump to a known Card by Location or Citation key.
 23. As a user, I want `go` to reject missing or broken targets, so that the pointer never moves to nowhere.
 24. As a user, I want shell `zt help` and Session `help`, so that I can see available commands for the current context.
 25. As a user, I want shell `zt stats` and Session `stats`, so that I can see total, Topic, and regular Card counts.
@@ -162,7 +162,7 @@ The implementation must keep the design simple but strict: no GUI, no web UI, no
 - Cover broken-link behavior, including newly introduced broken links versus pre-existing broken links.
 - Cover delete confirmation charts, Topic deletion, direct deletion, side-successor compaction, link rewriting, and pointer movement.
 - Cover move verification charts, destination validation, subtree moves, link rewriting, and pointer movement.
-- Cover shell `zt lsbk` and `zt stats`, plus Session `lsbk`, `stats`, `ls`, `help`, `go`, and `root` as user-visible command behavior.
+- Cover shell `zt lsbk` and `zt stats`, plus Session `lsbk`, `stats`, `ls`, `help`, bare `go`, `go <target>`, and `root` as user-visible command behavior.
 - Existing PTY and line-session workflow tests should be updated from full-prefix Session input to bare input, with old-prefix coverage kept only for explicit refusal cases.
 - Treat nonzero shell exit codes and user-facing error text as part of the external contract.
 

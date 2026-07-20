@@ -24,7 +24,7 @@ Status: design locked for implementation.
 - A Link is written as `[[location]]`. Link parsing currently accepts only the existing numeric Location grammar.
 - Topic descriptions currently reject all outbound Link macros.
 - Reverse links are recomputed from Link macros in Card bodies and written into the third text section of every Card.
-- Both TUI and piped Sessions use bare Session subcommands. `go <location>` resolves only existing Locations.
+- Both TUI and piped Sessions use bare Session subcommands. Bare `go` returns the Pointer to `ROOT`, while `go <target>` resolves an existing Location or Citation key.
 - Shell dump is `zt dp`. It writes one Markdown file containing exactly `cards.text` per Card, hashes `Location + NUL + text`, and maps each Location to its 10-character-hash filename in `mapping.json`.
 - The existing destructive command is `zt clear`, not `zt clean`. It deletes every row from `cards` and resets Topic allocation.
 - The project is still in its development-period no-migration phase unless this design explicitly changes that rule.
@@ -234,7 +234,7 @@ Status: design locked for implementation.
 - Shell `zt n --at <location>`, `zt b --at <location>`, and `zt mv --at <location> <new-location>` remain Location-only commands.
 - No `--lit`, address prefix, or second targeting mechanism is added.
 - Shell help adds argument-free `zt l` and uses `<target>` for `e` and `del`.
-- Session help adds bare `l` and changes `go <location>` to `go <target>`.
+- Session help adds bare `l` and presents navigation as `go [<target>] | root`; a provided target may be a Location or Citation key.
 - Session `e` continues to use the Pointer and the numbered choice rather than a command-line option.
 
 ## Locked Shell Literature Edit Option
