@@ -955,6 +955,37 @@ fn reverse_links_and_broken_links_are_generated_from_card_text() {
 }
 
 #[test]
+fn malformed_stored_link_text_remains_readable_and_strict_writes_are_atomic() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let malformed = "Base\n<--->\nbefore [[0/0\n<--->\n";
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute(
+        "UPDATE cards SET text = ?1 WHERE location = '0/1'",
+        [malformed],
+    )
+    .expect("inject malformed stored Link text");
+    drop(conn);
+
+    home.cmd()
+        .write_stdin("go 0/1\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("before [[0/0"));
+
+    let topic_before = home.card_text("0/0");
+    home.cmd_with_editor("Topic\n<--->\nchanged\n<--->\n")
+        .args(["e", "--at", "0/0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid link macro"));
+    assert_eq!(home.card_text("0/0"), topic_before);
+    assert_eq!(home.card_text("0/1"), malformed);
+}
+
+#[test]
 fn every_card_kind_can_link_to_literature_and_literature_can_link_to_locations() {
     let home = TestHome::new();
     home.configure_and_up();

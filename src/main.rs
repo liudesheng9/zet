@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod dump;
+mod link;
 mod literature;
 mod session;
 
@@ -673,54 +674,35 @@ fn regular_template() -> String {
     format!("\n{DELIM}\n\n{DELIM}\n")
 }
 
-fn extract_link_targets(text: &str) -> Result<Vec<String>> {
-    let mut links = Vec::new();
-    let mut offset = 0;
-    while let Some(start_rel) = text[offset..].find("[[") {
-        let start = offset + start_rel;
-        let content_start = start + 2;
-        let Some(end_rel) = text[content_start..].find("]]") else {
-            bail!("invalid link macro");
-        };
-        let end = content_start + end_rel;
-        let content = &text[content_start..end];
-        if !is_valid_location(content) && literature::validate_citation_key(content).is_err() {
-            bail!("invalid link macro target `{content}`");
-        }
-        links.push(content.to_string());
-        offset = end + 2;
-    }
-    if text[offset..].contains("]]") {
-        bail!("invalid link macro");
-    }
-    Ok(links)
+fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
+    link_lifecycle_from_cards(&load_cards(conn)?)
+}
+
+fn link_lifecycle_from_cards(cards: &[Card]) -> Result<link::LinkLifecycle> {
+    let snapshots = cards
+        .iter()
+        .map(|card| {
+            let parsed = parse_card_text(&card.text)?;
+            Ok(link::CardSnapshot {
+                address: card.address.clone(),
+                title: parsed.title,
+                body: parsed.body,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(link::LinkLifecycle::from_cards(snapshots))
 }
 
 fn validate_card_text(
     conn: &Connection,
-    location: &str,
+    _location: &str,
     text: &str,
     old_text: Option<&str>,
 ) -> Result<ParsedCard> {
     let parsed = parse_card_text(text)?;
-    let links = extract_link_targets(&parsed.body)?;
-    let mut existing_broken = BTreeSet::new();
-    if let Some(old_text) = old_text {
-        let old = parse_card_text(old_text)?;
-        for link in extract_link_targets(&old.body)? {
-            if !target_exists(conn, &link)? {
-                existing_broken.insert(link);
-            }
-        }
-    }
-    for link in links {
-        if link == location && target_exists(conn, location)? {
-            continue;
-        }
-        if !target_exists(conn, &link)? && !existing_broken.contains(&link) {
-            bail!("link target `{link}` does not exist");
-        }
-    }
+    let old = old_text.map(parse_card_text).transpose()?;
+    link_lifecycle(conn)?
+        .validate_edit(&parsed.body, old.as_ref().map(|card| card.body.as_str()))?;
     Ok(parsed)
 }
 
@@ -1291,15 +1273,10 @@ fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<
 }
 
 fn count_target_links(conn: &Connection, target: &str) -> Result<usize> {
-    let mut count = 0;
-    for card in load_cards(conn)? {
-        let parsed = parse_card_text(&card.text)?;
-        count += extract_link_targets(&parsed.body)?
-            .into_iter()
-            .filter(|candidate| candidate == target)
-            .count();
-    }
-    Ok(count)
+    count_rewritten_links(
+        conn,
+        &BTreeMap::from([(target.to_string(), target.to_string())]),
+    )
 }
 
 fn update_literature_metadata(
@@ -1364,41 +1341,13 @@ fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()
 
 fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
     let cards = load_cards(conn)?;
-    let existing: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
-    let titles: BTreeMap<String, String> = cards
-        .iter()
-        .filter_map(|card| {
-            parse_card_text(&card.text)
-                .ok()
-                .map(|parsed| (card.address.clone(), parsed.title))
-        })
-        .collect();
-    let mut inbound: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for source in &cards {
-        let parsed = parse_card_text(&source.text)?;
-        let mut seen = BTreeSet::new();
-        for target in extract_link_targets(&parsed.body)? {
-            if existing.contains(&target) && seen.insert(target.clone()) {
-                inbound
-                    .entry(target)
-                    .or_default()
-                    .insert(source.address.clone());
-            }
-        }
-    }
+    let reverse_sections = link_lifecycle_from_cards(&cards)?.reverse_sections()?;
     for card in &cards {
         let parsed = parse_card_text(&card.text)?;
-        let reverse = inbound
+        let reverse = reverse_sections
             .get(&card.address)
-            .into_iter()
-            .flat_map(|sources| sources.iter())
-            .map(|source| {
-                let title = titles.get(source).cloned().unwrap_or_default();
-                format!("This note has been referred by note [[{source}]] {title}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let text = compose_card_text(&parsed.title, &parsed.body, &reverse);
+            .context("Link lifecycle omitted a Card Reverse link section")?;
+        let text = compose_card_text(&parsed.title, &parsed.body, reverse);
         conn.execute(
             "UPDATE cards SET text = ?1 WHERE row_id = ?2",
             params![text, card.row_id],
@@ -1409,28 +1358,10 @@ fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
 
 fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
     let parsed = parse_card_text(text)?;
-    let body = replace_link_targets(&parsed.body, mapping)?;
+    let body = link::LinkBody::parse(&parsed.body)?
+        .rewrite_targets(mapping)
+        .body;
     Ok(compose_card_text(&parsed.title, &body, &parsed.reverse))
-}
-
-fn replace_link_targets(text: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
-    let mut output = String::new();
-    let mut offset = 0;
-    while let Some(start_rel) = text[offset..].find("[[") {
-        let start = offset + start_rel;
-        let content_start = start + 2;
-        let Some(end_rel) = text[content_start..].find("]]") else {
-            bail!("invalid link macro");
-        };
-        let end = content_start + end_rel;
-        output.push_str(&text[offset..content_start]);
-        let target = &text[content_start..end];
-        output.push_str(mapping.get(target).map(String::as_str).unwrap_or(target));
-        output.push_str("]]");
-        offset = end + 2;
-    }
-    output.push_str(&text[offset..]);
-    Ok(output)
 }
 
 fn shell_delete(at: &str) -> Result<()> {
@@ -1801,11 +1732,9 @@ fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) 
     let mut count = 0;
     for card in load_cards(conn)? {
         let parsed = parse_card_text(&card.text)?;
-        for link in extract_link_targets(&parsed.body)? {
-            if mapping.contains_key(&link) {
-                count += 1;
-            }
-        }
+        count += link::LinkBody::parse(&parsed.body)?
+            .rewrite_targets(mapping)
+            .count;
     }
     Ok(count)
 }
@@ -1813,16 +1742,11 @@ fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) 
 fn cmd_lsbk() -> Result<()> {
     let root = require_service_up()?;
     let conn = open_db(&root)?;
-    let cards = load_cards(&conn)?;
-    for card in &cards {
-        let parsed = parse_card_text(&card.text)?;
-        for line in parsed.body.lines() {
-            for target in extract_link_targets(line)? {
-                if !target_exists(&conn, &target)? {
-                    println!("{} {} -> {}: {}", card.address, parsed.title, target, line);
-                }
-            }
-        }
+    for broken in link_lifecycle(&conn)?.broken_links()? {
+        println!(
+            "{} {} -> {}: {}",
+            broken.source_address, broken.source_title, broken.target, broken.source_line
+        );
     }
     Ok(())
 }

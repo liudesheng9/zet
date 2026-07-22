@@ -7,11 +7,64 @@ use std::process::{Command, Stdio};
 
 use crate::*;
 
+mod command;
+
+use command::{CommandResult, Execution, Interaction, Pointer, SessionState};
+
 pub(crate) fn run_session(root: PathBuf) -> Result<()> {
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
         return cmd_tui_session(root);
     }
     cmd_line_session(root)
+}
+
+struct LineInteraction<'a, R> {
+    input: &'a mut R,
+}
+
+impl<R: BufRead> Interaction for LineInteraction<'_, R> {
+    fn edit(
+        &mut self,
+        initial_text: &str,
+        header: &str,
+        save: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<bool> {
+        session_edit_until_saved_with_header(self.input, initial_text, header, save)
+    }
+
+    fn choose_literature_edit_part(&mut self) -> Result<EditPart> {
+        line_select_literature_edit_part(self.input)
+    }
+
+    fn confirm(&mut self, expected: &str, lines: &[String]) -> Result<()> {
+        for line in lines {
+            println!("{line}");
+        }
+        read_confirmation(self.input, expected)
+    }
+}
+
+struct TuiInteraction<'a> {
+    clipboard: &'a mut dyn ClipboardAccess,
+}
+
+impl Interaction for TuiInteraction<'_> {
+    fn edit(
+        &mut self,
+        initial_text: &str,
+        header: &str,
+        save: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<bool> {
+        tui_edit_until_saved_with_header(initial_text, header, self.clipboard, save)
+    }
+
+    fn choose_literature_edit_part(&mut self) -> Result<EditPart> {
+        tui_select_literature_edit_part(self.clipboard)
+    }
+
+    fn confirm(&mut self, expected: &str, lines: &[String]) -> Result<()> {
+        tui_read_confirmation(expected, lines, self.clipboard)
+    }
 }
 
 fn run_session_editor_with_header<R: BufRead>(
@@ -37,14 +90,6 @@ fn run_session_editor_with_header<R: BufRead>(
             value => bytes.push(value),
         }
     }
-}
-
-fn session_edit_until_saved<R, F>(input: &mut R, initial_text: &str, save: F) -> Result<bool>
-where
-    R: BufRead,
-    F: FnMut(&str) -> Result<()>,
-{
-    session_edit_until_saved_with_header(input, initial_text, "edit mode", save)
 }
 
 fn session_edit_until_saved_with_header<R, F>(
@@ -75,8 +120,8 @@ where
 fn cmd_line_session(root: PathBuf) -> Result<()> {
     register_session(&root)?;
     let guard = SessionGuard { root: root.clone() };
-    let mut pointer = Pointer::Root;
-    print_view(&root, &pointer)?;
+    let mut state = SessionState::root();
+    print_view(&root, state.pointer())?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
     loop {
@@ -89,12 +134,15 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
             break;
         }
         let line = line.trim_end_matches(['\r', '\n']).to_string();
-        match handle_session_command(&root, &mut pointer, &line, &mut input) {
-            Ok(keep_going) => {
-                if !keep_going {
-                    break;
-                }
-                print_view(&root, &pointer)?;
+        let execution = {
+            let mut interaction = LineInteraction { input: &mut input };
+            command::execute(&root, &mut state, &line, &mut interaction)
+        };
+        match execution {
+            Ok(Execution::Exit) => break,
+            Ok(Execution::Continue(result)) => {
+                present_line_result(result)?;
+                print_view(&root, state.pointer())?;
             }
             Err(err) => {
                 println!("{err:#}");
@@ -105,9 +153,45 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-enum Pointer {
-    Root,
-    Card(String),
+fn present_line_result(result: CommandResult) -> Result<()> {
+    for line in line_result_lines(result) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn line_result_lines(result: CommandResult) -> Vec<String> {
+    match result {
+        CommandResult::Noop | CommandResult::Navigated | CommandResult::Changed => Vec::new(),
+        CommandResult::List(cards) => cards
+            .into_iter()
+            .map(|card| format!("{} {}", card.address, card.title))
+            .collect(),
+        CommandResult::Stats(stats) => vec![
+            format!("total: {}", stats.total),
+            format!("topics: {}", stats.topics),
+            format!("regular: {}", stats.regular),
+            format!("literature: {}", stats.literature),
+        ],
+        CommandResult::Status(status) => vec![
+            "state: up".to_string(),
+            format!("pid: {}", status.pid),
+            format!("archive_root: {}", status.archive_root),
+            format!("sqlite: {}", status.sqlite),
+            format!("cards: {}", status.cards),
+            format!("sessions: {}", status.sessions),
+        ],
+        CommandResult::BrokenLinks(broken_links) => broken_links
+            .into_iter()
+            .map(|broken| {
+                format!(
+                    "{} {} -> {}: {}",
+                    broken.source_address, broken.source_title, broken.target, broken.source_line
+                )
+            })
+            .collect(),
+        CommandResult::Help(help) => vec![help.to_string()],
+    }
 }
 
 struct SessionGuard {
@@ -502,17 +586,23 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
         crossterm::event::EnableMouseCapture
     )?;
     let _guard = TuiGuard { root: root.clone() };
-    let mut pointer = Pointer::Root;
+    let mut state = SessionState::root();
     let mut command = String::new();
     let mut message = String::new();
     let mut clipboard = SessionClipboard::new();
     let mut selection = None;
     let mut mouse_gesture: Option<MouseGesture> = None;
-    let mut frame = draw_tui(&root, &pointer, &command, &message, selection.as_ref())?;
+    let mut frame = draw_tui(
+        &root,
+        state.pointer(),
+        &command,
+        &message,
+        selection.as_ref(),
+    )?;
     loop {
         if !is_service_up(&root) {
             message = "service disconnected".to_string();
-            draw_tui(&root, &pointer, &command, &message, None)?;
+            draw_tui(&root, state.pointer(), &command, &message, None)?;
             break;
         }
         match read_tui_event()? {
@@ -523,7 +613,13 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     {
                         message = format!("clipboard copy failed: {error:#}");
                     }
-                    frame = draw_tui(&root, &pointer, &command, &message, selection.as_ref())?;
+                    frame = draw_tui(
+                        &root,
+                        state.pointer(),
+                        &command,
+                        &message,
+                        selection.as_ref(),
+                    )?;
                     continue;
                 }
                 if is_paste_shortcut(&key) {
@@ -533,7 +629,13 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                             message = format!("clipboard paste failed: {error:#}");
                         }
                     }
-                    frame = draw_tui(&root, &pointer, &command, &message, selection.as_ref())?;
+                    frame = draw_tui(
+                        &root,
+                        state.pointer(),
+                        &command,
+                        &message,
+                        selection.as_ref(),
+                    )?;
                     continue;
                 }
                 selection = None;
@@ -548,15 +650,17 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     crossterm::event::KeyCode::Enter => {
                         let line = command.trim().to_string();
                         command.clear();
-                        match handle_tui_command(
-                            &root,
-                            &mut pointer,
-                            &line,
-                            &mut message,
-                            &mut clipboard,
-                        ) {
-                            Ok(true) => {}
-                            Ok(false) => break,
+                        let execution = {
+                            let mut interaction = TuiInteraction {
+                                clipboard: &mut clipboard,
+                            };
+                            command::execute(&root, &mut state, &line, &mut interaction)
+                        };
+                        match execution {
+                            Ok(Execution::Exit) => break,
+                            Ok(Execution::Continue(result)) => {
+                                present_tui_result(result, &mut message)
+                            }
                             Err(err) => message = format!("{err:#}"),
                         }
                     }
@@ -602,7 +706,7 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                         {
                             let conn = open_db(&root)?;
                             if target_exists(&conn, target)? {
-                                pointer = Pointer::Card(target.to_string());
+                                state.follow_link(target.to_string());
                                 message.clear();
                             } else {
                                 message = format!("target `{target}` does not exist");
@@ -618,9 +722,58 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
             }
             _ => continue,
         }
-        frame = draw_tui(&root, &pointer, &command, &message, selection.as_ref())?;
+        frame = draw_tui(
+            &root,
+            state.pointer(),
+            &command,
+            &message,
+            selection.as_ref(),
+        )?;
     }
     Ok(())
+}
+
+fn present_tui_result(result: CommandResult, message: &mut String) {
+    match result {
+        CommandResult::Noop => {}
+        CommandResult::Navigated | CommandResult::Changed => message.clear(),
+        CommandResult::List(cards) => {
+            *message = cards
+                .into_iter()
+                .map(|card| format!("{} {}", card.address, card.title))
+                .collect::<Vec<_>>()
+                .join(" | ");
+        }
+        CommandResult::Stats(stats) => {
+            *message = format!(
+                "total: {} | topics: {} | regular: {} | literature: {}",
+                stats.total, stats.topics, stats.regular, stats.literature
+            );
+        }
+        CommandResult::Status(status) => {
+            *message = format!("state: up | sessions: {}", status.sessions);
+        }
+        CommandResult::BrokenLinks(broken_links) => {
+            *message = if broken_links.is_empty() {
+                "no broken links".to_string()
+            } else {
+                broken_links
+                    .into_iter()
+                    .map(|broken| {
+                        format!(
+                            "{} {} -> {}: {}",
+                            broken.source_address,
+                            broken.source_title,
+                            broken.target,
+                            broken.source_line
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+        }
+        CommandResult::Help(help) => *message = help.to_string(),
+    }
 }
 
 fn is_tui_input_key(key: &crossterm::event::KeyEvent) -> bool {
@@ -693,6 +846,7 @@ fn draw_tui(
     selection: Option<&ScreenSelection>,
 ) -> Result<TuiFrame> {
     let conn = open_db(root)?;
+    let link_lifecycle = link_lifecycle(&conn)?;
     let mut stdout = io::stdout();
     let mut links = Vec::new();
     let mut lines = Vec::new();
@@ -762,12 +916,12 @@ fn draw_tui(
                 }
             }
             for line in parsed.body.lines() {
-                write_tui_link_line(&mut stdout, &conn, &mut row, line, &mut links)?;
+                write_tui_link_line(&mut stdout, &link_lifecycle, &mut row, line, &mut links)?;
                 lines.push(line.to_string());
             }
             if !parsed.reverse.trim().is_empty() {
                 for line in parsed.reverse.lines() {
-                    write_tui_link_line(&mut stdout, &conn, &mut row, line, &mut links)?;
+                    write_tui_link_line(&mut stdout, &link_lifecycle, &mut row, line, &mut links)?;
                     lines.push(line.to_string());
                 }
             }
@@ -777,7 +931,7 @@ fn draw_tui(
             {
                 write_tui_link_line(
                     &mut stdout,
-                    &conn,
+                    &link_lifecycle,
                     &mut row,
                     &format!("direct: [[{direct}]]"),
                     &mut links,
@@ -788,7 +942,7 @@ fn draw_tui(
                 for side in side_successors(&conn, &card.address)? {
                     write_tui_link_line(
                         &mut stdout,
-                        &conn,
+                        &link_lifecycle,
                         &mut row,
                         &format!("side: [[{side}]]"),
                         &mut links,
@@ -901,7 +1055,7 @@ fn write_tui_location_line<W: Write>(
 
 fn write_tui_link_line<W: Write>(
     stdout: &mut W,
-    conn: &Connection,
+    lifecycle: &link::LinkLifecycle,
     row: &mut u16,
     text: &str,
     links: &mut Vec<LinkSpan>,
@@ -909,37 +1063,29 @@ fn write_tui_link_line<W: Write>(
     crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, *row))?;
     let mut col = 0_u16;
     let mut offset = 0_usize;
-    while let Some(start_rel) = text[offset..].find("[[") {
-        let start = offset + start_rel;
+    for classified in lifecycle.classify_for_rendering(text) {
+        let start = classified.macro_range.start;
         let plain = &text[offset..start];
         crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(plain)))?;
         col = col.saturating_add(tui_text_width(plain) as u16);
-        let content_start = start + 2;
-        let Some(end_rel) = text[content_start..].find("]]") else {
-            let rest = &text[start..];
-            crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(rest)))?;
-            *row = row.saturating_add(tui_line_height(text));
-            return Ok(());
-        };
-        let end = content_start + end_rel;
-        let target = &text[content_start..end];
-        let macro_text = &text[start..end + 2];
-        if (is_valid_location(target) || literature::validate_citation_key(target).is_ok())
-            && target_exists(conn, target)?
-        {
-            queue_tui_valid_link(stdout, *row, col, macro_text, target, links)?;
-        } else {
-            crossterm::queue!(
-                stdout,
-                crossterm::style::SetForegroundColor(crossterm::style::Color::DarkRed),
-                crossterm::style::SetAttribute(crossterm::style::Attribute::Underlined),
-                crossterm::style::Print(expand_display_tabs(macro_text)),
-                crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline),
-                crossterm::style::ResetColor
-            )?;
+        let macro_text = &text[classified.macro_range.clone()];
+        match classified.status {
+            link::LinkStatus::Valid => {
+                queue_tui_valid_link(stdout, *row, col, macro_text, classified.target, links)?;
+            }
+            link::LinkStatus::Broken => {
+                crossterm::queue!(
+                    stdout,
+                    crossterm::style::SetForegroundColor(crossterm::style::Color::DarkRed),
+                    crossterm::style::SetAttribute(crossterm::style::Attribute::Underlined),
+                    crossterm::style::Print(expand_display_tabs(macro_text)),
+                    crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline),
+                    crossterm::style::ResetColor
+                )?;
+            }
         }
         col = col.saturating_add(tui_text_width(macro_text) as u16);
-        offset = end + 2;
+        offset = classified.macro_range.end;
     }
     let rest = &text[offset..];
     crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(rest)))?;
@@ -980,309 +1126,6 @@ fn queue_tui_valid_link<W: Write>(
         span_start = 0;
     }
     Ok(())
-}
-
-fn normalize_session_command(line: &str) -> Option<Vec<&str>> {
-    let tokens: Vec<&str> = line.split_whitespace().collect();
-    if tokens.is_empty() {
-        return None;
-    }
-    let mut parts = Vec::with_capacity(tokens.len() + 1);
-    parts.push("zt");
-    parts.extend(tokens);
-    Some(parts)
-}
-
-fn unknown_session_command(parts: &[&str]) -> String {
-    format!(
-        "unknown session command: {}",
-        parts.get(1).copied().unwrap_or_default()
-    )
-}
-
-fn session_help_text() -> &'static str {
-    "go [<target>] | root | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
-}
-
-fn handle_tui_command(
-    root: &Path,
-    pointer: &mut Pointer,
-    line: &str,
-    message: &mut String,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<bool> {
-    let Some(parts) = normalize_session_command(line) else {
-        return Ok(true);
-    };
-    match parts.as_slice() {
-        ["zt", "q"] => Ok(false),
-        ["zt", "root"] | ["zt", "go"] => {
-            *pointer = Pointer::Root;
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "go", target] => {
-            let conn = open_db(root)?;
-            if !target_exists(&conn, target)? {
-                bail!("target `{target}` does not exist");
-            }
-            *pointer = Pointer::Card((*target).to_string());
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "go", _, _, ..] => bail!("usage: go [<target>]"),
-        ["zt", "ls"] => {
-            *message = tui_ls(root, pointer)?;
-            Ok(true)
-        }
-        ["zt", "stats"] => {
-            let counts = card_counts(root)?;
-            *message = format!(
-                "total: {} | topics: {} | regular: {} | literature: {}",
-                counts.total, counts.topics, counts.regular, counts.literature
-            );
-            Ok(true)
-        }
-        ["zt", "status"] => {
-            *message = format!("state: up | sessions: {}", session_count(root));
-            Ok(true)
-        }
-        ["zt", "lsbk"] => {
-            *message = tui_lsbk(root)?;
-            Ok(true)
-        }
-        ["zt", "help"] => {
-            *message = session_help_text().to_string();
-            Ok(true)
-        }
-        ["zt", "t", title @ ..] => {
-            tui_create_topic(root, pointer, &title.join(" "), clipboard)?;
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "l"] => {
-            tui_create_literature(root, pointer, clipboard)?;
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "n"] => {
-            let at = current_card(pointer)?;
-            tui_create_direct(root, pointer, &at, clipboard)?;
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "b"] => {
-            let at = current_card(pointer)?;
-            tui_create_side(root, pointer, &at, clipboard)?;
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "e"] => {
-            let at = current_card(pointer)?;
-            let target = tui_edit_card(root, &at, clipboard)?;
-            *pointer = Pointer::Card(target);
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "del"] => {
-            let at = current_card(pointer)?;
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            let plan = delete_plan(&conn, &at)?;
-            tui_read_confirmation(
-                &plan.confirmation,
-                &delete_verification_lines(&plan),
-                clipboard,
-            )?;
-            apply_delete_plan(&mut conn, &at, plan)?;
-            *pointer = parent_location(&at)
-                .map(Pointer::Card)
-                .unwrap_or(Pointer::Root);
-            message.clear();
-            Ok(true)
-        }
-        ["zt", "mv", new_location] => {
-            let at = current_card(pointer)?;
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            let plan = move_plan(&conn, &at, new_location)?;
-            tui_read_confirmation("move", &move_verification_lines(&plan), clipboard)?;
-            apply_move_plan(&mut conn, &plan)?;
-            *pointer = Pointer::Card((*new_location).to_string());
-            message.clear();
-            Ok(true)
-        }
-        _ => bail!("{}", unknown_session_command(&parts)),
-    }
-}
-
-fn tui_create_topic(
-    root: &Path,
-    pointer: &mut Pointer,
-    title: &str,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<()> {
-    if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
-        bail!("topic title must be non-empty single-line text");
-    }
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let location = next_topic_location(&conn)?;
-    if tui_edit_until_saved(&topic_template(title), clipboard, |text| {
-        insert_card(&mut conn, &location, true, text)?;
-        bump_next_topic_id(&conn, &location)?;
-        Ok(())
-    })? {
-        *pointer = Pointer::Card(location);
-    }
-    Ok(())
-}
-
-fn tui_create_literature(
-    root: &Path,
-    pointer: &mut Pointer,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let mut accepted = None;
-    if !tui_edit_until_saved_with_header("", "metadata edit", clipboard, |text| {
-        let metadata = literature::parse_metadata(text)?;
-        if citation_key_exists_case_insensitive(&conn, &metadata.citation_key)? {
-            bail!("Literature Card `{}` already exists", metadata.citation_key);
-        }
-        accepted = Some((text.to_string(), metadata));
-        Ok(())
-    })? {
-        return Ok(());
-    }
-    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
-    let initial_text = compose_card_text(&metadata.title, "", "");
-    let citation_key = metadata.citation_key.clone();
-    if tui_edit_until_saved(&initial_text, clipboard, |edited| {
-        let parsed = parse_literature_edit_text(edited)?;
-        let text = compose_card_text(&metadata.title, &parsed.body, "");
-        insert_literature_card(&mut conn, &citation_key, &bibtex, &text)
-    })? {
-        *pointer = Pointer::Card(citation_key);
-    }
-    Ok(())
-}
-
-fn tui_create_direct(
-    root: &Path,
-    pointer: &mut Pointer,
-    at: &str,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt n is not valid on a Literature Card");
-    }
-    let location = direct_successor(&parent.address)?;
-    if location_exists(&conn, &location)? {
-        bail!("direct successor already exists: {location}");
-    }
-    if tui_edit_until_saved(&regular_template(), clipboard, |text| {
-        insert_card(&mut conn, &location, false, text)
-    })? {
-        *pointer = Pointer::Card(location);
-    }
-    Ok(())
-}
-
-fn tui_create_side(
-    root: &Path,
-    pointer: &mut Pointer,
-    at: &str,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt b is not valid on a Literature Card");
-    }
-    if parent.is_topic {
-        bail!("zt b is not valid on a topic card");
-    }
-    let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
-    if tui_edit_until_saved(&regular_template(), clipboard, |text| {
-        insert_card(&mut conn, &location, false, text)
-    })? {
-        *pointer = Pointer::Card(location);
-    }
-    Ok(())
-}
-
-fn tui_edit_card(root: &Path, at: &str, clipboard: &mut dyn ClipboardAccess) -> Result<String> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let card = load_card(&conn, at)?;
-    if !card.is_lit {
-        tui_edit_until_saved(&card.text, clipboard, |text| {
-            update_card_text(&mut conn, &card, text)
-        })?;
-        return Ok(card.address);
-    }
-    match tui_select_literature_edit_part(clipboard)? {
-        EditPart::Metadata => tui_edit_literature_metadata(&mut conn, &card, clipboard),
-        EditPart::Text => {
-            tui_edit_until_saved(&card.text, clipboard, |text| {
-                update_literature_text(&mut conn, &card, text)
-            })?;
-            Ok(card.address)
-        }
-    }
-}
-
-fn tui_edit_literature_metadata(
-    conn: &mut Connection,
-    card: &Card,
-    clipboard: &mut dyn ClipboardAccess,
-) -> Result<String> {
-    let old_key = card
-        .citation_key
-        .as_deref()
-        .context("Literature Card is missing its Citation key")?;
-    let initial = card
-        .bibtex
-        .as_deref()
-        .context("Literature Card is missing its BibTeX metadata")?;
-    let mut accepted = None;
-    if !tui_edit_until_saved_with_header(initial, "metadata edit", clipboard, |text| {
-        let metadata = literature::parse_metadata(text)?;
-        if metadata.citation_key != old_key
-            && (metadata.citation_key.eq_ignore_ascii_case(old_key)
-                || citation_key_conflicts(conn, &metadata.citation_key, card.row_id)?)
-        {
-            bail!(
-                "Citation key `{}` conflicts with an existing Literature Card",
-                metadata.citation_key
-            );
-        }
-        accepted = Some((text.to_string(), metadata));
-        Ok(())
-    })? {
-        return Ok(card.address.clone());
-    }
-    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
-    if metadata.citation_key != old_key {
-        let rewritten_links = count_target_links(conn, old_key)?;
-        tui_read_confirmation(
-            "move",
-            &[
-                "citation key rename:".to_string(),
-                format!("{old_key} -> {}", metadata.citation_key),
-                format!("link macros rewritten: {rewritten_links}"),
-            ],
-            clipboard,
-        )?;
-    }
-    update_literature_metadata(conn, card, &metadata.citation_key, &bibtex, &metadata.title)?;
-    Ok(metadata.citation_key)
 }
 
 fn tui_select_literature_edit_part(clipboard: &mut dyn ClipboardAccess) -> Result<EditPart> {
@@ -1412,17 +1255,6 @@ fn draw_tui_literature_edit_selection(
     }
     stdout.flush()?;
     Ok(screen)
-}
-
-fn tui_edit_until_saved<F>(
-    initial_text: &str,
-    clipboard: &mut dyn ClipboardAccess,
-    save: F,
-) -> Result<bool>
-where
-    F: FnMut(&str) -> Result<()>,
-{
-    tui_edit_until_saved_with_header(initial_text, "edit mode", clipboard, save)
 }
 
 fn tui_edit_until_saved_with_header<F>(
@@ -2268,16 +2100,6 @@ fn draw_tui_confirmation(
     Ok(screen)
 }
 
-fn tui_ls(root: &Path, pointer: &Pointer) -> Result<String> {
-    let conn = open_db(root)?;
-    let mut lines = Vec::new();
-    for card in cards_for_list(&conn, pointer)? {
-        let parsed = parse_card_text(&card.text)?;
-        lines.push(format!("{} {}", card.address, parsed.title));
-    }
-    Ok(lines.join(" | "))
-}
-
 fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<Vec<Card>> {
     let cards = load_cards(conn)?;
     match pointer {
@@ -2300,211 +2122,6 @@ fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<Vec<Card>> {
     }
 }
 
-fn tui_lsbk(root: &Path) -> Result<String> {
-    let conn = open_db(root)?;
-    let mut lines = Vec::new();
-    for card in load_cards(&conn)? {
-        let parsed = parse_card_text(&card.text)?;
-        for line in parsed.body.lines() {
-            for target in extract_link_targets(line)? {
-                if !target_exists(&conn, &target)? {
-                    lines.push(format!(
-                        "{} {} -> {}: {}",
-                        card.address, parsed.title, target, line
-                    ));
-                }
-            }
-        }
-    }
-    if lines.is_empty() {
-        Ok("no broken links".to_string())
-    } else {
-        Ok(lines.join(" | "))
-    }
-}
-
-fn handle_session_command<R: BufRead>(
-    root: &Path,
-    pointer: &mut Pointer,
-    line: &str,
-    input: &mut R,
-) -> Result<bool> {
-    let Some(parts) = normalize_session_command(line) else {
-        return Ok(true);
-    };
-    match parts.as_slice() {
-        ["zt", "q"] => Ok(false),
-        ["zt", "root"] | ["zt", "go"] => {
-            *pointer = Pointer::Root;
-            Ok(true)
-        }
-        ["zt", "go", target] => {
-            let conn = open_db(root)?;
-            if !target_exists(&conn, target)? {
-                bail!("target `{target}` does not exist");
-            }
-            *pointer = Pointer::Card((*target).to_string());
-            Ok(true)
-        }
-        ["zt", "go", _, _, ..] => bail!("usage: go [<target>]"),
-        ["zt", "ls"] => {
-            session_ls(root, pointer)?;
-            Ok(true)
-        }
-        ["zt", "stats"] => {
-            cmd_stats()?;
-            Ok(true)
-        }
-        ["zt", "status"] => {
-            cmd_status()?;
-            Ok(true)
-        }
-        ["zt", "lsbk"] => {
-            cmd_lsbk()?;
-            Ok(true)
-        }
-        ["zt", "help"] => {
-            println!("{}", session_help_text());
-            Ok(true)
-        }
-        ["zt", "t", title @ ..] => {
-            let title = title.join(" ");
-            if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
-                bail!("topic title must be non-empty single-line text");
-            }
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            let location = next_topic_location(&conn)?;
-            if session_edit_until_saved(input, &topic_template(&title), |text| {
-                insert_card(&mut conn, &location, true, text)?;
-                bump_next_topic_id(&conn, &location)?;
-                Ok(())
-            })? {
-                *pointer = Pointer::Card(location);
-            }
-            Ok(true)
-        }
-        ["zt", "l"] => {
-            line_create_literature(root, pointer, input)?;
-            Ok(true)
-        }
-        ["zt", "n"] => {
-            let at = current_card(pointer)?;
-            shell_like_session_create_direct(root, &at, pointer, input)?;
-            Ok(true)
-        }
-        ["zt", "b"] => {
-            let at = current_card(pointer)?;
-            shell_like_session_create_side(root, &at, pointer, input)?;
-            Ok(true)
-        }
-        ["zt", "e"] => {
-            let at = current_card(pointer)?;
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            let card = load_card(&conn, &at)?;
-            if card.is_lit {
-                match line_select_literature_edit_part(input)? {
-                    EditPart::Metadata => {
-                        let old_key = card
-                            .citation_key
-                            .as_deref()
-                            .context("Literature Card is missing its Citation key")?;
-                        let initial = card
-                            .bibtex
-                            .as_deref()
-                            .context("Literature Card is missing its BibTeX metadata")?;
-                        let mut accepted = None;
-                        if session_edit_until_saved_with_header(
-                            input,
-                            initial,
-                            "metadata edit",
-                            |text| {
-                                let metadata = literature::parse_metadata(text)?;
-                                if metadata.citation_key != old_key
-                                    && (metadata.citation_key.eq_ignore_ascii_case(old_key)
-                                        || citation_key_conflicts(
-                                            &conn,
-                                            &metadata.citation_key,
-                                            card.row_id,
-                                        )?)
-                                {
-                                    bail!(
-                                        "Citation key `{}` conflicts with an existing Literature Card",
-                                        metadata.citation_key
-                                    );
-                                }
-                                accepted = Some((text.to_string(), metadata));
-                                Ok(())
-                            },
-                        )? {
-                            let (bibtex, metadata) =
-                                accepted.context("validated Literature metadata is missing")?;
-                            if metadata.citation_key != old_key {
-                                println!("citation key rename:");
-                                println!("{old_key} -> {}", metadata.citation_key);
-                                println!(
-                                    "link macros rewritten: {}",
-                                    count_target_links(&conn, old_key)?
-                                );
-                                read_confirmation(input, "move")?;
-                            }
-                            update_literature_metadata(
-                                &mut conn,
-                                &card,
-                                &metadata.citation_key,
-                                &bibtex,
-                                &metadata.title,
-                            )?;
-                            *pointer = Pointer::Card(metadata.citation_key);
-                        }
-                    }
-                    EditPart::Text => {
-                        session_edit_until_saved(input, &card.text, |text| {
-                            update_literature_text(&mut conn, &card, text)
-                        })?;
-                    }
-                }
-            } else {
-                session_edit_until_saved(input, &card.text, |text| {
-                    update_card_text(&mut conn, &card, text)
-                })?;
-            }
-            Ok(true)
-        }
-        ["zt", "del"] => {
-            let at = current_card(pointer)?;
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            delete_card(&mut conn, &at, |expected| {
-                read_confirmation(input, expected)
-            })?;
-            *pointer = parent_location(&at)
-                .map(Pointer::Card)
-                .unwrap_or(Pointer::Root);
-            Ok(true)
-        }
-        ["zt", "mv", new_location] => {
-            let at = current_card(pointer)?;
-            let _lock = acquire_edit_lock(root)?;
-            let mut conn = open_db(root)?;
-            move_card(&mut conn, &at, new_location, |expected| {
-                read_confirmation(input, expected)
-            })?;
-            *pointer = Pointer::Card((*new_location).to_string());
-            Ok(true)
-        }
-        _ => bail!("{}", unknown_session_command(&parts)),
-    }
-}
-
-fn current_card(pointer: &Pointer) -> Result<String> {
-    match pointer {
-        Pointer::Root => bail!("pointer is on ROOT"),
-        Pointer::Card(location) => Ok(location.clone()),
-    }
-}
-
 fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPart> {
     loop {
         println!("edit literature card:");
@@ -2521,85 +2138,6 @@ fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPar
             _ => println!("invalid edit option"),
         }
     }
-}
-
-fn line_create_literature<R: BufRead>(
-    root: &Path,
-    pointer: &mut Pointer,
-    input: &mut R,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let mut accepted = None;
-    if !session_edit_until_saved_with_header(input, "", "metadata edit", |text| {
-        let metadata = literature::parse_metadata(text)?;
-        if citation_key_exists_case_insensitive(&conn, &metadata.citation_key)? {
-            bail!("Literature Card `{}` already exists", metadata.citation_key);
-        }
-        accepted = Some((text.to_string(), metadata));
-        Ok(())
-    })? {
-        return Ok(());
-    }
-    let (bibtex, metadata) = accepted.context("validated Literature metadata is missing")?;
-    let initial_text = compose_card_text(&metadata.title, "", "");
-    let citation_key = metadata.citation_key.clone();
-    if session_edit_until_saved(input, &initial_text, |edited| {
-        let parsed = parse_literature_edit_text(edited)?;
-        let text = compose_card_text(&metadata.title, &parsed.body, "");
-        insert_literature_card(&mut conn, &citation_key, &bibtex, &text)
-    })? {
-        *pointer = Pointer::Card(citation_key);
-    }
-    Ok(())
-}
-
-fn shell_like_session_create_direct<R: BufRead>(
-    root: &Path,
-    at: &str,
-    pointer: &mut Pointer,
-    input: &mut R,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt n is not valid on a Literature Card");
-    }
-    let location = direct_successor(&parent.address)?;
-    if location_exists(&conn, &location)? {
-        bail!("direct successor already exists: {location}");
-    }
-    if session_edit_until_saved(input, &regular_template(), |text| {
-        insert_card(&mut conn, &location, false, text)
-    })? {
-        *pointer = Pointer::Card(location);
-    }
-    Ok(())
-}
-
-fn shell_like_session_create_side<R: BufRead>(
-    root: &Path,
-    at: &str,
-    pointer: &mut Pointer,
-    input: &mut R,
-) -> Result<()> {
-    let _lock = acquire_edit_lock(root)?;
-    let mut conn = open_db(root)?;
-    let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt b is not valid on a Literature Card");
-    }
-    if parent.is_topic {
-        bail!("zt b is not valid on a topic card");
-    }
-    let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
-    if session_edit_until_saved(input, &regular_template(), |text| {
-        insert_card(&mut conn, &location, false, text)
-    })? {
-        *pointer = Pointer::Card(location);
-    }
-    Ok(())
 }
 
 fn print_view(root: &Path, pointer: &Pointer) -> Result<()> {
@@ -2674,18 +2212,33 @@ fn side_successors(conn: &Connection, parent: &str) -> Result<Vec<String>> {
     Ok(by_label.into_values().collect())
 }
 
-fn session_ls(root: &Path, pointer: &Pointer) -> Result<()> {
-    let conn = open_db(root)?;
-    for card in cards_for_list(&conn, pointer)? {
-        let parsed = parse_card_text(&card.text)?;
-        println!("{} {}", card.address, parsed.title);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripted_tui_and_line_adapters_present_shared_results_differently() {
+        let result = CommandResult::Stats(command::Stats {
+            total: 4,
+            topics: 1,
+            regular: 2,
+            literature: 1,
+        });
+
+        assert_eq!(
+            line_result_lines(result.clone()),
+            ["total: 4", "topics: 1", "regular: 2", "literature: 1",]
+        );
+        let mut message = "old status".to_string();
+        present_tui_result(result, &mut message);
+        assert_eq!(message, "total: 4 | topics: 1 | regular: 2 | literature: 1");
+
+        present_tui_result(CommandResult::Navigated, &mut message);
+        assert!(message.is_empty());
+        message.push_str("kept");
+        present_tui_result(CommandResult::Noop, &mut message);
+        assert_eq!(message, "kept");
+    }
 
     #[test]
     fn tui_key_filter_ignores_release_events() {
