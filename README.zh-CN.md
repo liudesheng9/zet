@@ -35,12 +35,36 @@ zt
 ```text
 t 我的第一个主题   # 创建 Topic
 n                  # 创建当前 Card 的 Direct successor
+b                  # 创建 Side successor
+l                  # 创建 Literature Card
 e                  # 编辑当前 Card
 go <目标>          # 前往指定 Location 或 Citation key
 ls                 # 列出当前 Topic 中的 Card
 help               # 显示所有 Session 命令
 q                  # 退出 Session
 ```
+
+## 创建 Literature Card
+
+在 Session 中运行 `l`，或在 Shell 中使用 `$EDITOR` 运行 `zt l`。先输入并保存一个完整的 BibTeX 条目，再输入并保存 Card 正文。BibTeX 条目的 key 会成为 Citation key，其中的 `title` 字段会成为 Card 标题。
+
+```bibtex
+@book{Smith2024,
+  title = {示例书籍}
+}
+```
+
+在 Session 中，每个阶段按 `Ctrl+S` 保存，按 `Esc` 取消。创建后可以使用 `go Smith2024` 打开，也可以使用 `[[Smith2024]]` 创建 Link。
+
+## Card 地址规则
+
+ZT 不给 Topic 和 Regular Card 分配任意 ID，而是自动为它们分配 **Location**：
+
+- Topic 使用 `<主题编号>/0`；新档案从 `0/0` 开始，然后是 `1/0`，依此类推。普通删除不会复用 Topic 编号。
+- `n` 创建数字形式的 Direct successor：`0/0` -> `0/1` -> `0/2`。
+- `b` 创建 Regular Card 的下一个字母形式 Side successor：`0/2|a`、`0/2|b`、...、`0/2|z`、`0/2|aa`。
+- Side successor 后的 Direct successor 会增加新的数字段：`0/2|a` -> `0/2|a|1`。
+- Literature Card 没有 Location；它使用 BibTeX 条目的 key 作为 Citation key。
 
 常用 Shell 命令：
 
