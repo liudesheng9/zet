@@ -865,7 +865,7 @@ mod tests {
 }
 #[test]
 fn literature_yaml_round_trips_all_trailing_newline_states_and_exact_card_text() {
-    let card_text = "Title\n<--->\nbody\n<--->\nreverse";
+    let card_text = "# Title\n\nbody\n\n<!-- zt:reverse-links -->\nreverse";
     for (bibtex, indicator) in [
         ("@book{K,title={T}}", "|-"),
         ("@book{K,title={T}}\n", "|"),

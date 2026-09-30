@@ -60,11 +60,19 @@ impl<'a> LinkBody<'a> {
     }
 }
 
+/// Link macros are recognized in Markdown prose only: text inside inline code
+/// spans and fenced code blocks is never a Link.
 fn scan_occurrences(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>> {
+    let code = code_ranges(text);
+    let in_code = |index: usize| code.iter().find(|range| range.contains(&index));
     let mut occurrences = Vec::new();
     let mut offset = 0;
     while let Some(start_relative) = text[offset..].find("[[") {
         let start = offset + start_relative;
+        if let Some(range) = in_code(start) {
+            offset = range.end;
+            continue;
+        }
         let target_start = start + 2;
         let Some(end_relative) = text[target_start..].find("]]") else {
             if strict {
@@ -87,10 +95,106 @@ fn scan_occurrences(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>>
         });
         offset = target_end + 2;
     }
-    if strict && text[offset..].contains("]]") {
-        bail!("invalid link macro");
+    if strict {
+        let mut tail = offset;
+        while let Some(relative) = text[tail..].find("]]") {
+            let index = tail + relative;
+            match in_code(index) {
+                Some(range) => tail = range.end.max(index + 1),
+                None => bail!("invalid link macro"),
+            }
+        }
     }
     Ok(occurrences)
+}
+
+/// Byte ranges of fenced code blocks and inline code spans in Markdown text.
+pub(crate) fn code_ranges(text: &str) -> Vec<Range<usize>> {
+    let (mut fenced, inline) = scan_code(text);
+    fenced.extend(inline);
+    fenced.sort_by_key(|range| range.start);
+    fenced
+}
+
+/// Byte ranges of fenced code blocks, each from its opening fence line
+/// through its closing fence line.
+pub(crate) fn fenced_code_ranges(text: &str) -> Vec<Range<usize>> {
+    scan_code(text).0
+}
+
+fn scan_code(text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let mut ranges = Vec::new();
+    let mut inline = Vec::new();
+    let mut fence: Option<(u8, usize, usize)> = None;
+    let mut prose_start = 0;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let indent = content.len() - content.trim_start_matches(' ').len();
+        let trimmed = &content[indent..];
+        let run = |ch: u8| trimmed.bytes().take_while(|byte| *byte == ch).count();
+        match fence {
+            None if indent <= 3 && (run(b'`') >= 3 || run(b'~') >= 3) => {
+                let ch = trimmed.as_bytes()[0];
+                inline_code_ranges(text, prose_start..line_start, &mut inline);
+                fence = Some((ch, run(ch), line_start));
+            }
+            Some((ch, count, start))
+                if indent <= 3 && run(ch) >= count && trimmed[run(ch)..].trim().is_empty() =>
+            {
+                ranges.push(start..line_end);
+                fence = None;
+                prose_start = line_end;
+            }
+            _ => {}
+        }
+        line_start = line_end;
+    }
+    match fence {
+        Some((_, _, start)) => ranges.push(start..text.len()),
+        None => inline_code_ranges(text, prose_start..text.len(), &mut inline),
+    }
+    (ranges, inline)
+}
+
+fn inline_code_ranges(text: &str, within: Range<usize>, ranges: &mut Vec<Range<usize>>) {
+    let bytes = text.as_bytes();
+    let run_at = |index: usize| {
+        bytes[index..within.end]
+            .iter()
+            .take_while(|byte| **byte == b'`')
+            .count()
+    };
+    let mut index = within.start;
+    while index < within.end {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+        let open = run_at(index);
+        let mut search = index + open;
+        let mut close = None;
+        while search < within.end {
+            if bytes[search] == b'`' {
+                let run = run_at(search);
+                if run == open {
+                    close = Some(search + run);
+                    break;
+                }
+                search += run;
+            } else {
+                search += 1;
+            }
+        }
+        match close {
+            Some(end) => {
+                ranges.push(index..end);
+                index = end;
+            }
+            None => index += open,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,19 +304,12 @@ impl LinkLifecycle {
             .cards
             .iter()
             .map(|card| {
-                let reverse = inbound
+                let sources = inbound
                     .get(card.address.as_str())
                     .into_iter()
                     .flat_map(|sources| sources.iter())
-                    .map(|source| {
-                        format!(
-                            "This note has been referred by note [[{source}]] {}",
-                            titles.get(*source).copied().unwrap_or_default()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (card.address.clone(), reverse)
+                    .map(|source| (*source, titles.get(*source).copied().unwrap_or_default()));
+                (card.address.clone(), crate::card::reverse_section(sources))
             })
             .collect())
     }
@@ -220,21 +317,28 @@ impl LinkLifecycle {
     pub(crate) fn broken_links(&self) -> Result<Vec<BrokenLink>> {
         let mut broken = Vec::new();
         for card in &self.cards {
-            for line in card.body.lines() {
-                for occurrence in LinkBody::parse(line)?.occurrences() {
-                    if !self.addresses.contains(occurrence.target) {
-                        broken.push(BrokenLink {
-                            source_address: card.address.clone(),
-                            source_title: card.title.clone(),
-                            target: occurrence.target.to_string(),
-                            source_line: line.to_string(),
-                        });
-                    }
+            for occurrence in LinkBody::parse(&card.body)?.occurrences() {
+                if !self.addresses.contains(occurrence.target) {
+                    broken.push(BrokenLink {
+                        source_address: card.address.clone(),
+                        source_title: card.title.clone(),
+                        target: occurrence.target.to_string(),
+                        source_line: line_around(&card.body, occurrence.macro_range.start)
+                            .to_string(),
+                    });
                 }
             }
         }
         Ok(broken)
     }
+}
+
+fn line_around(text: &str, index: usize) -> &str {
+    let start = text[..index].rfind('\n').map_or(0, |newline| newline + 1);
+    let end = text[index..]
+        .find('\n')
+        .map_or(text.len(), |newline| index + newline);
+    text[start..end].trim_end_matches('\r')
 }
 
 #[cfg(test)]
@@ -386,8 +490,32 @@ mod tests {
 
         assert_eq!(
             lifecycle.reverse_sections().expect("derive Reverse links")["0/1"],
-            "This note has been referred by note [[0/0]] Earlier Source\n\
-             This note has been referred by note [[0/2]] Later Source"
+            "## Reverse links\n\n- [[0/0]] Earlier Source\n- [[0/2]] Later Source\n"
+        );
+    }
+
+    #[test]
+    fn links_inside_markdown_code_are_plain_text() {
+        let body = "`[[nope]]` and ``a ]] b`` then [[0/1]]\n```rust\nlet x = v[[0]];\n```\n~~~\n]]\n~~~\n[[LitA]]";
+        let targets = LinkBody::parse(body)
+            .expect("code is ignored by strict parsing")
+            .occurrences()
+            .iter()
+            .map(|occurrence| occurrence.target)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, ["0/1", "LitA"]);
+        assert_eq!(
+            LinkBody::parse("```\n[[x]]\nunclosed")
+                .expect("an unclosed fence runs to the end")
+                .occurrences(),
+            []
+        );
+        assert_eq!(
+            LinkBody::parse("`unmatched [[0/1]]")
+                .expect("an unmatched backtick is literal")
+                .occurrences()
+                .len(),
+            1
         );
     }
 

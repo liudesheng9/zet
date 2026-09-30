@@ -9,13 +9,19 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod card;
 mod dump;
+mod gui;
 mod link;
 mod literature;
 mod session;
 
+pub(crate) use card::{
+    ParsedCard, compose_card_text, parse_card_text, parse_literature_edit_text, regular_template,
+    topic_template,
+};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const DELIM: &str = "<--->";
 
 fn main() {
     if let Err(err) = run() {
@@ -43,6 +49,7 @@ fn run() -> Result<()> {
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
         [cmd] if cmd == "dp" => cmd_dump(),
         [cmd] if cmd == "clear" => cmd_clear(),
+        [cmd, rest @ ..] if cmd == "gui" => gui::run(rest),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
@@ -199,6 +206,7 @@ fn require_service_up() -> Result<PathBuf> {
     if !is_service_up(&root) {
         bail!("service is not up");
     }
+    ensure_markdown_cards(&root)?;
     Ok(root)
 }
 
@@ -423,6 +431,64 @@ fn initialize_database(root: &Path) -> Result<()> {
         ",
     )?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    drop(conn);
+    ensure_markdown_cards(root)
+}
+
+const CARD_FORMAT: &str = "markdown";
+
+/// Convert an archive written before Cards were Markdown documents. The
+/// original database is first copied next to it as a backup.
+fn ensure_markdown_cards(root: &Path) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    let mut conn = open_db(root)?;
+    let format: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'card_format'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if format.as_deref() == Some(CARD_FORMAT) {
+        return Ok(());
+    }
+    let cards = load_cards(&conn)?;
+    let converted = cards
+        .iter()
+        .filter_map(|card| Some((card.row_id, card::from_legacy_text(&card.text)?)))
+        .collect::<Vec<_>>();
+    if !converted.is_empty() {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let backup = root.join(format!("zt.sqlite3.pre-markdown-{seconds}.bak"));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().to_string()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+        log_event(
+            root,
+            &format!(
+                "converting {} cards to Markdown; backup {}",
+                converted.len(),
+                backup.display()
+            ),
+        )
+        .ok();
+    }
+    let tx = conn.transaction()?;
+    for (row_id, text) in &converted {
+        tx.execute(
+            "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+            params![text, row_id],
+        )?;
+    }
+    regenerate_reverse_links_tx(&tx).context("failed to convert Cards to Markdown")?;
+    tx.execute(
+        "INSERT INTO metadata(key, value) VALUES('card_format', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [CARD_FORMAT],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -549,6 +615,7 @@ fn cmd_help() -> Result<()> {
     println!("  zt config set archive_root <path>");
     if up {
         println!("  zt");
+        println!("  zt gui [--port <port>] [--no-open]");
         println!("  zt t <title>");
         println!("  zt l");
         println!("  zt n --at <target>");
@@ -614,64 +681,6 @@ struct Card {
     is_lit: bool,
     bibtex: Option<String>,
     text: String,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedCard {
-    title: String,
-    body: String,
-    reverse: String,
-}
-
-fn parse_card_text(text: &str) -> Result<ParsedCard> {
-    parse_card_text_with_title_validation(text, true)
-}
-
-fn parse_literature_edit_text(text: &str) -> Result<ParsedCard> {
-    parse_card_text_with_title_validation(text, false)
-}
-
-fn parse_card_text_with_title_validation(
-    text: &str,
-    require_single_nonempty_title: bool,
-) -> Result<ParsedCard> {
-    let lines: Vec<&str> = text.lines().collect();
-    let delimiter_positions: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, line)| (*line == DELIM).then_some(idx))
-        .collect();
-    if delimiter_positions.len() != 2 {
-        bail!("card text must contain exactly two {DELIM} delimiter lines");
-    }
-    let first = delimiter_positions[0];
-    let second = delimiter_positions[1];
-    let title_lines = &lines[..first];
-    if require_single_nonempty_title {
-        if title_lines.len() != 1 {
-            bail!("card title must be a single line");
-        }
-        if title_lines[0].trim().is_empty() {
-            bail!("card title cannot be empty");
-        }
-    }
-    Ok(ParsedCard {
-        title: title_lines.join("\n"),
-        body: lines[first + 1..second].join("\n"),
-        reverse: lines[second + 1..].join("\n"),
-    })
-}
-
-fn compose_card_text(title: &str, body: &str, reverse: &str) -> String {
-    format!("{title}\n{DELIM}\n{body}\n{DELIM}\n{reverse}")
-}
-
-fn topic_template(title: &str) -> String {
-    compose_card_text(title, "", "")
-}
-
-fn regular_template() -> String {
-    format!("\n{DELIM}\n\n{DELIM}\n")
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -1083,7 +1092,7 @@ fn shell_create_literature() -> Result<()> {
         }
         metadata_buffer = edited;
     };
-    let initial_text = compose_card_text(&metadata.title, "", "");
+    let initial_text = card::card_template(&metadata.title);
     let EditOutcome::Saved(edited_text) = run_editor(&initial_text)? else {
         return Ok(());
     };

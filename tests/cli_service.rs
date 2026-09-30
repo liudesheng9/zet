@@ -160,11 +160,11 @@ impl TestHome {
     }
 
     fn create_topic_and_base(&self) {
-        self.cmd_with_editor("Topic\n<--->\ndescription\n<--->\n")
+        self.cmd_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
             .args(["t", "Topic"])
             .assert()
             .success();
-        self.cmd_with_editor("Base\n<--->\nbase\n<--->\n")
+        self.cmd_with_editor("# Base\n\nbase\n\n<!-- zt:reverse-links -->\n")
             .args(["n", "--at", "0/0"])
             .assert()
             .success();
@@ -477,14 +477,14 @@ fn literature_schema_enforces_card_kind_states_and_case_insensitive_identity() {
 
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
-         VALUES(NULL, 'ExactCase', 0, 1, '@book{ExactCase,title={X}}', 'X\n<--->\n\n<--->\n')",
+         VALUES(NULL, 'ExactCase', 0, 1, '@book{ExactCase,title={X}}', '# X\n\n<!-- zt:reverse-links -->\n')",
         [],
     )
     .expect("valid Literature row");
     assert!(
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
-             VALUES(NULL, 'exactcase', 0, 1, '@book{exactcase,title={Y}}', 'Y\n<--->\n\n<--->\n')",
+             VALUES(NULL, 'exactcase', 0, 1, '@book{exactcase,title={Y}}', '# Y\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .is_err(),
@@ -525,7 +525,7 @@ fn legacy_cards_schema_is_rejected_without_modifying_the_database() {
     conn.execute_batch(
         "CREATE TABLE cards(location TEXT PRIMARY KEY, is_topic INTEGER NOT NULL, text TEXT NOT NULL);
          CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-         INSERT INTO cards VALUES('0/0', 1, 'Legacy\n<--->\nexact body\n<--->\n');
+         INSERT INTO cards VALUES('0/0', 1, '# Legacy\n\nexact body\n\n<!-- zt:reverse-links -->\n');
          INSERT INTO metadata VALUES('next_topic_id', '7');",
     )
     .expect("legacy fixture");
@@ -556,7 +556,11 @@ fn legacy_cards_schema_is_rejected_without_modifying_the_database() {
         .unwrap();
     assert_eq!(
         row,
-        ("0/0".into(), 1, "Legacy\n<--->\nexact body\n<--->\n".into())
+        (
+            "0/0".into(),
+            1,
+            "# Legacy\n\nexact body\n\n<!-- zt:reverse-links -->\n".into()
+        )
     );
     assert_eq!(next_topic_id, "7");
 }
@@ -594,43 +598,43 @@ fn shell_create_edit_and_successor_locations() {
     let home = TestHome::new();
     home.configure_and_up();
 
-    home.cmd_with_editor("Topic One\n<--->\ndescription\n<--->\n")
+    home.cmd_with_editor("# Topic One\n\ndescription\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic One"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/0"));
 
-    home.cmd_with_editor("First\n<--->\nbody\n<--->\n")
+    home.cmd_with_editor("# First\n\nbody\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/1"));
 
-    home.cmd_with_editor("No implicit pointer\n<--->\nbody\n<--->\n")
+    home.cmd_with_editor("# No implicit pointer\n\nbody\n\n<!-- zt:reverse-links -->\n")
         .arg("n")
         .assert()
         .failure()
         .stderr(predicate::str::contains("expected --at <target>"));
 
-    home.cmd_with_editor("Second\n<--->\nnext\n<--->\n")
+    home.cmd_with_editor("# Second\n\nnext\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/2"));
 
-    home.cmd_with_editor("Branch A\n<--->\nside\n<--->\n")
+    home.cmd_with_editor("# Branch A\n\nside\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/1|a"));
 
-    home.cmd_with_editor("Branch B\n<--->\nside\n<--->\n")
+    home.cmd_with_editor("# Branch B\n\nside\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/1|b"));
 
-    home.cmd_with_editor("Invalid\n<--->\nside\n<--->\n")
+    home.cmd_with_editor("# Invalid\n\nside\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/0"])
         .assert()
         .failure()
@@ -660,7 +664,7 @@ fn shell_creates_literature_card_from_bibtex_then_card_text() {
     );
     let (mut create, captures) = home.cmd_with_editor_sequence(&[
         bibtex,
-        "Client cannot replace this title\n<--->\nmy literature notes\n<--->\nclient reverse",
+        "# Client cannot replace this title\n\nmy literature notes\n\n<!-- zt:reverse-links -->\nclient reverse",
     ]);
 
     create
@@ -681,7 +685,7 @@ fn shell_creates_literature_card_from_bibtex_then_card_text() {
     );
     assert_eq!(
         fs::read_to_string(captures.join("1.initial")).expect("text editor initial content"),
-        "A Study\n<--->\n\n<--->\n"
+        "# A Study\n\n\n<!-- zt:reverse-links -->\n"
     );
 
     home.cmd()
@@ -708,7 +712,7 @@ fn shell_literature_creation_reopens_invalid_metadata_with_content_intact() {
     let (mut create, captures) = home.cmd_with_editor_sequence(&[
         invalid,
         valid,
-        "Repaired Metadata\n<--->\nnotes\n<--->\n",
+        "# Repaired Metadata\n\nnotes\n\n<!-- zt:reverse-links -->\n",
     ]);
 
     create
@@ -765,10 +769,8 @@ fn literature_creation_cancellation_and_case_collisions_never_store_partial_rows
     assert_eq!(home.literature_count(), 0);
 
     let exact_bib = "@book{CaseKey, title={Exact Case}}\r\n";
-    let (mut create, _) = home.cmd_with_editor_sequence(&[
-        exact_bib,
-        "changed by client\nsecond generated-title line\n<--->\nnotes\n<--->\n",
-    ]);
+    let (mut create, _) =
+        home.cmd_with_editor_sequence(&[exact_bib, "# changed by client\nnotes\n"]);
     create
         .arg("l")
         .assert()
@@ -821,7 +823,7 @@ fn shell_editor_failure_cancel_and_tempfile_cleanup_are_safe() {
         .failure()
         .stderr(predicate::str::contains("EDITOR is not set"));
 
-    home.cmd_with_canceling_editor("Canceled Topic\n<--->\nnot saved\n<--->\n")
+    home.cmd_with_canceling_editor("# Canceled Topic\n\nnot saved\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Canceled Topic"])
         .assert()
         .success()
@@ -833,7 +835,7 @@ fn shell_editor_failure_cancel_and_tempfile_cleanup_are_safe() {
         .stdout(predicate::str::contains("total: 0"));
 
     let path_out = home.config_dir.join("editor-path.txt");
-    home.cmd_with_editor("Topic\n<--->\ndescription\n<--->\n")
+    home.cmd_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
         .env("ZT_EDITOR_PATH_OUT", &path_out)
         .args(["t", "Topic"])
         .assert()
@@ -843,7 +845,7 @@ fn shell_editor_failure_cancel_and_tempfile_cleanup_are_safe() {
     assert!(temp_path.ends_with(".zt.md"));
     assert!(!std::path::Path::new(&temp_path).exists());
 
-    home.cmd_with_canceling_editor("Canceled\n<--->\nnot saved\n<--->\n")
+    home.cmd_with_canceling_editor("# Canceled\n\nnot saved\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success()
@@ -856,39 +858,44 @@ fn card_text_and_location_validation_reports_clear_errors() {
     let home = TestHome::new();
     home.configure_and_up();
 
-    home.cmd_with_editor("Ignored\n<--->\nignored\n<--->\n")
+    home.cmd_with_editor("# Ignored\n\nignored\n\n<!-- zt:reverse-links -->\n")
         .args(["t", ""])
         .assert()
         .failure()
         .stderr(predicate::str::contains("topic title"));
 
-    home.cmd_with_editor("Malformed\n<--->\nmissing reverse delimiter\n")
+    home.cmd_with_editor("Malformed\nno title heading\n")
         .args(["t", "Malformed"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("exactly two"));
+        .stderr(predicate::str::contains(
+            "must start with a `# Title` heading",
+        ));
 
-    home.cmd_with_editor("Topic\n<--->\nvalid\n<--->\n")
+    home.cmd_with_editor(&format!("# Twice\n{0}\n{0}\n", "<!-- zt:reverse-links -->"))
+        .args(["t", "Twice"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at most one"));
+
+    home.cmd_with_editor("# Topic\n\nvalid\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success()
         .stdout(predicate::str::contains("0/0"));
 
-    home.cmd_with_editor("Topic\n<--->\ninvalid [[0/0]]\n<--->\n")
+    home.cmd_with_editor("# Topic\n\ninvalid [[0/0]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/0"])
         .assert()
         .success();
-    assert!(
-        home.card_text("0/0")
-            .contains("This note has been referred by note [[0/0]] Topic")
-    );
+    assert!(home.card_text("0/0").contains("- [[0/0]] Topic"));
 
-    home.cmd_with_editor("First\n<--->\nbody\n<--->\n")
+    home.cmd_with_editor("# First\n\nbody\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success();
 
-    home.cmd_with_editor("First\n<--->\ninvalid [[0/01]]\n<--->\n")
+    home.cmd_with_editor("# First\n\ninvalid [[0/01]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/1"])
         .assert()
         .failure()
@@ -900,37 +907,31 @@ fn reverse_links_and_broken_links_are_generated_from_card_text() {
     let home = TestHome::new();
     home.configure_and_up();
 
-    home.cmd_with_editor("Topic\n<--->\ndescription\n<--->\n")
+    home.cmd_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
-    home.cmd_with_editor("Base\n<--->\nbase\n<--->\n")
+    home.cmd_with_editor("# Base\n\nbase\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success();
-    home.cmd_with_editor("Target\n<--->\ntarget\n<--->\n")
+    home.cmd_with_editor("# Target\n\ntarget\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Source\n<--->\nsee [[0/1|a]] and [[0/1|a]] plus [[0/0]]\n<--->\n")
-        .args(["n", "--at", "0/1"])
-        .assert()
-        .success();
+    home.cmd_with_editor(
+        "# Source\n\nsee [[0/1|a]] and [[0/1|a]] plus [[0/0]]\n\n<!-- zt:reverse-links -->\n",
+    )
+    .args(["n", "--at", "0/1"])
+    .assert()
+    .success();
 
     let target_text = home.card_text("0/1|a");
-    assert!(target_text.contains("This note has been referred by note [[0/2]] Source"));
-    assert_eq!(
-        target_text
-            .matches("This note has been referred by note [[0/2]] Source")
-            .count(),
-        1
-    );
-    assert!(
-        home.card_text("0/0")
-            .contains("This note has been referred by note [[0/2]] Source")
-    );
+    assert!(target_text.contains("- [[0/2]] Source"));
+    assert_eq!(target_text.matches("- [[0/2]] Source").count(), 1);
+    assert!(home.card_text("0/0").contains("- [[0/2]] Source"));
 
-    home.cmd_with_editor("Source\n<--->\nnew broken [[0/99]]\n<--->\n")
+    home.cmd_with_editor("# Source\n\nnew broken [[0/99]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/2"])
         .assert()
         .failure()
@@ -950,7 +951,7 @@ fn reverse_links_and_broken_links_are_generated_from_card_text() {
         .stdout(predicate::str::contains("0/2 Source -> 0/1|a"))
         .stdout(predicate::str::contains("see [[0/1|a]]"));
 
-    home.cmd_with_editor("Source\n<--->\nsee [[0/1|a]] but keep editing\n<--->\ndamaged reverse\n")
+    home.cmd_with_editor("# Source\n\nsee [[0/1|a]] but keep editing\n\n<!-- zt:reverse-links -->\ndamaged reverse\n")
         .args(["e", "--at", "0/2"])
         .assert()
         .success();
@@ -962,7 +963,7 @@ fn malformed_stored_link_text_remains_readable_and_strict_writes_are_atomic() {
     home.configure_and_up();
     home.create_topic_and_base();
 
-    let malformed = "Base\n<--->\nbefore [[0/0\n<--->\n";
+    let malformed = "# Base\n\nbefore [[0/0\n\n<!-- zt:reverse-links -->\n";
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute(
         "UPDATE cards SET text = ?1 WHERE location = '0/1'",
@@ -978,7 +979,7 @@ fn malformed_stored_link_text_remains_readable_and_strict_writes_are_atomic() {
         .stdout(predicate::str::contains("before [[0/0"));
 
     let topic_before = home.card_text("0/0");
-    home.cmd_with_editor("Topic\n<--->\nchanged\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nchanged\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/0"])
         .assert()
         .failure()
@@ -994,30 +995,32 @@ fn every_card_kind_can_link_to_literature_and_literature_can_link_to_locations()
 
     let (mut create_lit_a, _) = home.cmd_with_editor_sequence(&[
         "@article{LitA, title={Literature A}}",
-        "Literature A\n<--->\nfirst work\n<--->\n",
+        "# Literature A\n\nfirst work\n\n<!-- zt:reverse-links -->\n",
     ]);
     create_lit_a.arg("l").assert().success();
 
-    home.cmd_with_editor("Topic\n<--->\nplain topic\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nplain topic\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
-    home.cmd_with_editor("Regular\n<--->\nplain regular\n<--->\n")
+    home.cmd_with_editor("# Regular\n\nplain regular\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success();
-    home.cmd_with_editor("Topic\n<--->\ntopic cites [[LitA]] and [[0/1]]\n<--->\n")
-        .args(["e", "--at", "0/0"])
-        .assert()
-        .success();
-    home.cmd_with_editor("Regular\n<--->\nregular cites [[LitA]]\n<--->\n")
+    home.cmd_with_editor(
+        "# Topic\n\ntopic cites [[LitA]] and [[0/1]]\n\n<!-- zt:reverse-links -->\n",
+    )
+    .args(["e", "--at", "0/0"])
+    .assert()
+    .success();
+    home.cmd_with_editor("# Regular\n\nregular cites [[LitA]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/1"])
         .assert()
         .success();
 
     let (mut create_lit_b, _) = home.cmd_with_editor_sequence(&[
         "@book{LitB, title={Literature B}}",
-        "Literature B\n<--->\nliterature cites [[LitA]], [[0/0]], and [[0/1]]\n<--->\n",
+        "# Literature B\n\nliterature cites [[LitA]], [[0/0]], and [[0/1]]\n\n<!-- zt:reverse-links -->\n",
     ]);
     create_lit_b.arg("l").assert().success();
 
@@ -1025,22 +1028,14 @@ fn every_card_kind_can_link_to_literature_and_literature_can_link_to_locations()
         .write_stdin("go LitA\nq\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[0/0]] Topic",
-        ))
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[0/1]] Regular",
-        ))
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[LitB]] Literature B",
-        ));
+        .stdout(predicate::str::contains("- [[0/0]] Topic"))
+        .stdout(predicate::str::contains("- [[0/1]] Regular"))
+        .stdout(predicate::str::contains("- [[LitB]] Literature B"));
     home.cmd()
         .write_stdin("go 0/0\nq\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[LitB]] Literature B",
-        ));
+        .stdout(predicate::str::contains("- [[LitB]] Literature B"));
 }
 
 #[test]
@@ -1050,7 +1045,7 @@ fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_orde
     home.create_topic_and_base();
     for (key, title) in [("ZebraKey", "Zebra Work"), ("AlphaKey", "Alpha Work")] {
         let bib = format!("@book{{{key}, title={{{title}}}}}");
-        let text = format!("{title}\n<--->\nnotes\n<--->\n");
+        let text = format!("# {title}\n\nnotes\n\n<!-- zt:reverse-links -->\n");
         let (mut create, _) = home.cmd_with_editor_sequence(&[&bib, &text]);
         create.arg("l").assert().success();
     }
@@ -1120,13 +1115,13 @@ fn empty_root_view_names_the_commands_that_create_topics_and_literature() {
 fn shell_metadata_part_updates_raw_bibtex_and_generated_title_without_editing_body() {
     let home = TestHome::new();
     home.configure_and_up();
-    home.cmd_with_editor("Topic\n<--->\ntarget\n<--->\n")
+    home.cmd_with_editor("# Topic\n\ntarget\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
     let (mut create, _) = home.cmd_with_editor_sequence(&[
         "@article{EditKey, title={Original Title}}",
-        "Original Title\n<--->\nbody stays here [[0/0]]\n<--->\n",
+        "# Original Title\n\nbody stays here [[0/0]]\n\n<!-- zt:reverse-links -->\n",
     ]);
     create.arg("l").assert().success();
 
@@ -1147,7 +1142,7 @@ fn shell_metadata_part_updates_raw_bibtex_and_generated_title_without_editing_bo
         .write_stdin("go EditKey\nq\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("title: Updated Title"))
+        .stdout(predicate::str::contains("# Updated Title"))
         .stdout(predicate::str::contains(
             "@article{EditKey, title={Updated {Title}}}",
         ))
@@ -1156,9 +1151,7 @@ fn shell_metadata_part_updates_raw_bibtex_and_generated_title_without_editing_bo
         .write_stdin("go 0/0\nq\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[EditKey]] Updated Title",
-        ));
+        .stdout(predicate::str::contains("- [[EditKey]] Updated Title"));
 }
 
 #[test]
@@ -1167,10 +1160,10 @@ fn shell_literature_edit_selector_errors_fail_before_editor_launch() {
     home.configure_and_up();
     let (mut create, _) = home.cmd_with_editor_sequence(&[
         "@book{SelectorKey, title={Selector Work}}",
-        "Selector Work\n<--->\nbody\n<--->\n",
+        "# Selector Work\n\nbody\n\n<!-- zt:reverse-links -->\n",
     ]);
     create.arg("l").assert().success();
-    home.cmd_with_editor("Topic\n<--->\nbody\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nbody\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
@@ -1228,11 +1221,11 @@ fn metadata_edit_cancel_collision_and_rejected_rename_leave_graph_unchanged() {
     home.configure_and_up();
     for (key, title) in [("KeepKey", "Keep Work"), ("TakenKey", "Taken Work")] {
         let bib = format!("@book{{{key}, title={{{title}}}}}\n");
-        let text = format!("{title}\n<--->\nbody {key}\n<--->\n");
+        let text = format!("# {title}\n\nbody {key}\n\n<!-- zt:reverse-links -->\n");
         let (mut create, _) = home.cmd_with_editor_sequence(&[&bib, &text]);
         create.arg("l").assert().success();
     }
-    home.cmd_with_editor("Topic\n<--->\nsource [[KeepKey]]\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nsource [[KeepKey]]\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
@@ -1286,16 +1279,16 @@ fn shell_text_part_repairs_literature_title_and_reverse_links() {
     home.configure_and_up();
     let (mut create, _) = home.cmd_with_editor_sequence(&[
         "@book{TextEdit, title={Generated Title}}",
-        "Generated Title\n<--->\nold body\n<--->\n",
+        "# Generated Title\n\nold body\n\n<!-- zt:reverse-links -->\n",
     ]);
     create.arg("l").assert().success();
-    home.cmd_with_editor("Topic\n<--->\nsource [[TextEdit]]\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nsource [[TextEdit]]\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
 
     home.cmd_with_editor(
-        "\nClient added another title line\n<--->\nnew body\n<--->\nclient reverse must disappear",
+        "\n# Client added another title\n\nnew body\n\n<!-- zt:reverse-links -->\nclient reverse must disappear",
     )
     .args(["e", "--at", "TextEdit", "--part", "text"])
     .assert()
@@ -1305,11 +1298,9 @@ fn shell_text_part_repairs_literature_title_and_reverse_links() {
         .write_stdin("go TextEdit\nq\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("title: Generated Title"))
+        .stdout(predicate::str::contains("# Generated Title"))
         .stdout(predicate::str::contains("new body"))
-        .stdout(predicate::str::contains(
-            "This note has been referred by note [[0/0]] Topic",
-        ))
+        .stdout(predicate::str::contains("- [[0/0]] Topic"))
         .stdout(predicate::str::contains("client reverse must disappear").not());
 }
 
@@ -1319,20 +1310,20 @@ fn citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind() {
     home.configure_and_up();
     let (mut create_old, _) = home.cmd_with_editor_sequence(&[
         "@book{OldKey, title={Old Work}}",
-        "Old Work\n<--->\nwork\n<--->\n",
+        "# Old Work\n\nwork\n\n<!-- zt:reverse-links -->\n",
     ]);
     create_old.arg("l").assert().success();
-    home.cmd_with_editor("Topic [[OldKey]]\n<--->\ntopic [[OldKey]]\n<--->\n")
+    home.cmd_with_editor("# Topic [[OldKey]]\n\ntopic [[OldKey]]\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
-    home.cmd_with_editor("Regular\n<--->\nregular [[OldKey]]\n<--->\n")
+    home.cmd_with_editor("# Regular\n\nregular [[OldKey]]\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success();
     let (mut create_source, _) = home.cmd_with_editor_sequence(&[
         "@misc{LitSource, title={Literature Source}, note={metadata [[OldKey]] stays literal}}",
-        "Literature Source\n<--->\nliterature [[OldKey]]\n<--->\n",
+        "# Literature Source\n\nliterature [[OldKey]]\n\n<!-- zt:reverse-links -->\n",
     ]);
     create_source.arg("l").assert().success();
 
@@ -1350,7 +1341,7 @@ fn citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind() {
         .success()
         .stdout(predicate::str::contains("target `OldKey` does not exist"))
         .stdout(predicate::str::contains("citation key: NewKey"))
-        .stdout(predicate::str::contains("title: Renamed Work"));
+        .stdout(predicate::str::contains("# Renamed Work"));
     for target in ["0/0", "0/1", "LitSource"] {
         home.cmd()
             .write_stdin(format!("go {target}\nq\n"))
@@ -1367,7 +1358,7 @@ fn citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind() {
         ));
     assert!(
         home.card_text("0/0")
-            .starts_with("Topic [[OldKey]]\n<--->\ntopic [[NewKey]]\n"),
+            .starts_with("# Topic [[OldKey]]\n\ntopic [[NewKey]]\n"),
         "Citation-key rename must rewrite only actual body Links"
     );
 }
@@ -1378,14 +1369,14 @@ fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology()
     home.configure_and_up();
     let (mut create, _) = home.cmd_with_editor_sequence(&[
         "@article{DeleteLit, title={Delete Literature}}",
-        "Delete Literature\n<--->\nwork\n<--->\n",
+        "# Delete Literature\n\nwork\n\n<!-- zt:reverse-links -->\n",
     ]);
     create.arg("l").assert().success();
-    home.cmd_with_editor("Topic\n<--->\nsource [[DeleteLit]]\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nsource [[DeleteLit]]\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
-    home.cmd_with_editor("Topic\n<--->\nwrong case [[deletelit]]\n<--->\n")
+    home.cmd_with_editor("# Topic\n\nwrong case [[deletelit]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/0"])
         .assert()
         .failure()
@@ -1393,7 +1384,7 @@ fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology()
             "link target `deletelit` does not exist",
         ));
 
-    home.cmd_with_editor("Never\n<--->\ncreated\n<--->\n")
+    home.cmd_with_editor("# Never\n\ncreated\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "DeleteLit"])
         .assert()
         .failure()
@@ -1406,7 +1397,7 @@ fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology()
         .assert()
         .failure()
         .stderr(predicate::str::contains("Literature Card cannot be moved"));
-    home.cmd_with_editor("Tree Note\n<--->\ninside the tree\n<--->\n")
+    home.cmd_with_editor("# Tree Note\n\ninside the tree\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "DeleteLit"])
         .assert()
         .success()
@@ -1438,11 +1429,11 @@ fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology()
         .stdout(predicate::str::contains(
             "0/0 Topic -> DeleteLit: source [[DeleteLit]]",
         ));
-    home.cmd_with_editor("Topic\n<--->\nsource [[DeleteLit]] after deletion\n<--->\nstale reverse")
+    home.cmd_with_editor("# Topic\n\nsource [[DeleteLit]] after deletion\n\n<!-- zt:reverse-links -->\nstale reverse")
         .args(["e", "--at", "0/0"])
         .assert()
         .success();
-    home.cmd_with_editor("New Source\n<--->\nnew [[DeleteLit]]\n<--->\n")
+    home.cmd_with_editor("# New Source\n\nnew [[DeleteLit]]\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .failure()
@@ -1470,26 +1461,28 @@ fn delete_side_successor_compacts_later_sides_and_rewrites_links() {
     home.configure_and_up();
     home.create_topic_and_base();
 
-    home.cmd_with_editor("Side A\n<--->\na\n<--->\n")
+    home.cmd_with_editor("# Side A\n\na\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Side B\n<--->\nb\n<--->\n")
+    home.cmd_with_editor("# Side B\n\nb\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Side C\n<--->\nc\n<--->\n")
+    home.cmd_with_editor("# Side C\n\nc\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Side C Child\n<--->\nchild\n<--->\n")
+    home.cmd_with_editor("# Side C Child\n\nchild\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1|c"])
         .assert()
         .success();
-    home.cmd_with_editor("Source\n<--->\nlinks [[0/1|c]] and [[0/1|c|1]]\n<--->\n")
-        .args(["n", "--at", "0/1"])
-        .assert()
-        .success();
+    home.cmd_with_editor(
+        "# Source\n\nlinks [[0/1|c]] and [[0/1|c|1]]\n\n<!-- zt:reverse-links -->\n",
+    )
+    .args(["n", "--at", "0/1"])
+    .assert()
+    .success();
 
     home.cmd()
         .args(["del", "--at", "0/1|b"])
@@ -1521,18 +1514,20 @@ fn move_subtree_validates_target_and_rewrites_links() {
     home.configure_and_up();
     home.create_topic_and_base();
 
-    home.cmd_with_editor("Movable\n<--->\nmove me\n<--->\n")
+    home.cmd_with_editor("# Movable\n\nmove me\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Movable Child\n<--->\nchild\n<--->\n")
+    home.cmd_with_editor("# Movable Child\n\nchild\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1|a"])
         .assert()
         .success();
-    home.cmd_with_editor("Source\n<--->\npoints [[0/1|a]] and [[0/1|a|1]]\n<--->\n")
-        .args(["n", "--at", "0/1"])
-        .assert()
-        .success();
+    home.cmd_with_editor(
+        "# Source\n\npoints [[0/1|a]] and [[0/1|a|1]]\n\n<!-- zt:reverse-links -->\n",
+    )
+    .args(["n", "--at", "0/1"])
+    .assert()
+    .success();
 
     home.cmd()
         .args(["mv", "--at", "0/0", "0/2|a"])
@@ -1586,10 +1581,7 @@ fn move_subtree_validates_target_and_rewrites_links() {
     let source = home.card_text("0/2");
     assert!(source.contains("[[0/2|a]]"));
     assert!(source.contains("[[0/2|a|1]]"));
-    assert!(
-        home.card_text("0/2|a")
-            .contains("This note has been referred by note [[0/2]] Source")
-    );
+    assert!(home.card_text("0/2|a").contains("- [[0/2]] Source"));
 }
 
 #[test]
@@ -1597,7 +1589,7 @@ fn session_navigation_and_read_only_commands_use_the_session_pointer() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
-    home.cmd_with_editor("Second\n<--->\nsecond\n<--->\n")
+    home.cmd_with_editor("# Second\n\nsecond\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .assert()
         .success();
@@ -1653,7 +1645,7 @@ fn line_session_rejects_extra_go_arguments_without_moving_pointer() {
         .stdout(predicate::str::contains("usage: go [<target>]"))
         .stdout(predicate::str::contains("unknown session command: go").not())
         .stdout(predicate::str::contains(
-            "edit mode\nBase\n<--->\nbase\n<--->",
+            "edit mode\n# Base\n\nbase\n\n<!-- zt:reverse-links -->",
         ));
 }
 
@@ -1703,13 +1695,13 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
         .write_stdin(
             concat!(
                 "t Session Topic\n",
-                "Session Topic\n<--->\ndescription\n<--->\n",
+                "# Session Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n",
                 "\x13",
                 "n\n",
-                "First\n<--->\nbody\n<--->\n",
+                "# First\n\nbody\n\n<!-- zt:reverse-links -->\n",
                 "\x13",
                 "b\n",
-                "Side\n<--->\nside body\n<--->\n",
+                "# Side\n\nside body\n\n<!-- zt:reverse-links -->\n",
                 "\x13",
                 "q\n",
             )
@@ -1730,7 +1722,7 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
             concat!(
                 "go 0/1\n",
                 "n\n",
-                "Canceled\n<--->\nnot saved\n<--->\n",
+                "# Canceled\n\nnot saved\n\n<!-- zt:reverse-links -->\n",
                 "\x1b",
                 "q\n",
             )
@@ -1745,9 +1737,9 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
             concat!(
                 "go 0/1\n",
                 "e\n",
-                "Broken\n<--->\nmissing delimiter\n",
+                "Broken without a heading\n",
                 "\x13",
-                "Fixed\n<--->\nupdated body\n<--->\ndamaged reverse\n",
+                "# Fixed\n\nupdated body\n\n<!-- zt:reverse-links -->\ndamaged reverse\n",
                 "\x13",
                 "q\n",
             )
@@ -1755,7 +1747,7 @@ fn session_writes_use_pointer_tui_save_cancel_and_retry_validation() {
         )
         .assert()
         .success()
-        .stdout(predicate::str::contains("exactly two"));
+        .stdout(predicate::str::contains("`# Title` heading"));
     assert!(home.card_text("0/1").contains("updated body"));
     assert!(!home.card_text("0/1").contains("damaged reverse"));
 }
@@ -1770,13 +1762,13 @@ fn line_session_creates_and_edits_literature_with_retry_and_numbered_selection()
     input.push('\x13');
     input.push_str("@book{LineLit, title={Line Literature}}");
     input.push('\x13');
-    input.push_str("client title\nextra title line\n<--->\nline body\n<--->\nclient reverse");
+    input.push_str("# client title\n\nline body\n\n<!-- zt:reverse-links -->\nclient reverse");
     input.push('\x13');
     input.push_str("e\n9\n1\n");
     input.push_str("@book{LineLit, title={Updated Line Literature}}");
     input.push('\x13');
     input.push_str("e\n2\n");
-    input.push_str("\nreplacement title line\n<--->\nupdated line body\n<--->\nstale reverse");
+    input.push_str("\n# replacement title line\n\nupdated line body\n\n<!-- zt:reverse-links -->\nstale reverse");
     input.push('\x13');
     input.push_str("q\n");
 
@@ -1790,7 +1782,7 @@ fn line_session_creates_and_edits_literature_with_retry_and_numbered_selection()
         ))
         .stdout(predicate::str::contains("citation key: LineLit"))
         .stdout(predicate::str::contains("invalid edit option"))
-        .stdout(predicate::str::contains("title: Updated Line Literature"))
+        .stdout(predicate::str::contains("# Updated Line Literature"))
         .stdout(predicate::str::contains("updated line body"))
         .stdout(predicate::str::contains("stale reverse").not());
 
@@ -1798,7 +1790,7 @@ fn line_session_creates_and_edits_literature_with_retry_and_numbered_selection()
         home.literature_data("LineLit"),
         (
             "@book{LineLit, title={Updated Line Literature}}".into(),
-            "Updated Line Literature\n<--->\nupdated line body\n<--->\n".into(),
+            "# Updated Line Literature\n\nupdated line body\n\n<!-- zt:reverse-links -->\n".into(),
         )
     );
 }
@@ -1822,11 +1814,11 @@ fn session_delete_and_move_use_pointer_confirmation_and_update_pointer() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
-    home.cmd_with_editor("Movable\n<--->\nmove\n<--->\n")
+    home.cmd_with_editor("# Movable\n\nmove\n\n<!-- zt:reverse-links -->\n")
         .args(["b", "--at", "0/1"])
         .assert()
         .success();
-    home.cmd_with_editor("Source\n<--->\nsource [[0/1|a]]\n<--->\n")
+    home.cmd_with_editor("# Source\n\nsource [[0/1|a]]\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .assert()
         .success();
@@ -1883,7 +1875,7 @@ fn topic_delete_removes_topic_and_topic_ids_are_not_reused() {
         .success()
         .stdout(predicate::str::contains("total: 0"));
 
-    home.cmd_with_editor("Next Topic\n<--->\nnext\n<--->\n")
+    home.cmd_with_editor("# Next Topic\n\nnext\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Next Topic"])
         .assert()
         .success()
@@ -1900,7 +1892,9 @@ fn side_successor_labels_roll_over_from_z_to_aa() {
     let mut input = String::from("go 0/1\n");
     for index in 1..=27 {
         input.push_str("b\n");
-        input.push_str(&format!("Side {index}\n<--->\nbody {index}\n<--->\n"));
+        input.push_str(&format!(
+            "# Side {index}\n\nbody {index}\n\n<!-- zt:reverse-links -->\n"
+        ));
         input.push('\x13');
         input.push_str("go 0/1\n");
     }
@@ -1951,7 +1945,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("service is not up"));
-    home.cmd_with_editor("Nope\n<--->\nnope\n<--->\n")
+    home.cmd_with_editor("# Nope\n\nnope\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Nope"])
         .assert()
         .failure()
@@ -1980,7 +1974,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .assert()
         .success()
         .stdout(predicate::str::contains("total: 2"));
-    home.cmd_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+    home.cmd_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .assert()
         .failure()
@@ -2005,7 +1999,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .assert()
         .success()
         .stdout(predicate::str::contains("state: up"));
-    home.cmd_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+    home.cmd_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .assert()
         .failure()
@@ -2129,8 +2123,9 @@ fn dump_preserves_card_text_hash_mapping_and_location_order() {
 
     let home = TestHome::new();
     home.configure_and_up();
-    let topic_text = "Topic\n<--->\nfirst line\n\u{7b2c}\u{4e8c}\u{884c}\n<--->\n";
-    let identical_text = "Same\n<--->\n\u{76f8}\u{540c}\nline two\n<--->\n";
+    let topic_text =
+        "# Topic\n\nfirst line\n\u{7b2c}\u{4e8c}\u{884c}\n\n<!-- zt:reverse-links -->\n";
+    let identical_text = "# Same\n\n\u{76f8}\u{540c}\nline two\n\n<!-- zt:reverse-links -->\n";
     home.cmd_with_editor(topic_text)
         .args(["t", "Topic"])
         .assert()
@@ -2228,7 +2223,7 @@ fn dump_adds_hashed_literature_markdown_and_exact_citation_key_bibtex() {
     let home = TestHome::new();
     home.configure_and_up();
     let bibtex = "@article{DumpKey,\n  title={Dump Literature}\n}\n\n";
-    let card_text = "Dump Literature\n<--->\nnotes\n<--->\n";
+    let card_text = "# Dump Literature\n\nnotes\n\n<!-- zt:reverse-links -->\n";
     let (mut create, _) = home.cmd_with_editor_sequence(&[bibtex, card_text]);
     create.arg("l").assert().success();
 
@@ -2301,7 +2296,7 @@ fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
 
     let home = TestHome::new();
     home.configure_and_up();
-    let topic_text = "Topic\n<--->\nregular payload stays exact\n<--->\n";
+    let topic_text = "# Topic\n\nregular payload stays exact\n\n<!-- zt:reverse-links -->\n";
     home.cmd_with_editor(topic_text)
         .args(["t", "Topic"])
         .assert()
@@ -2310,12 +2305,12 @@ fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
         (
             "ZebraDump",
             "@misc{ZebraDump, title={Zebra Dump}}\n",
-            "Zebra Dump\n<--->\nzebra\n<--->\n",
+            "# Zebra Dump\n\nzebra\n\n<!-- zt:reverse-links -->\n",
         ),
         (
             "AlphaDump",
             "@book{AlphaDump, title={Alpha Dump}}",
-            "Alpha Dump\n<--->\nalpha\n<--->\n",
+            "# Alpha Dump\n\nalpha\n\n<!-- zt:reverse-links -->\n",
         ),
     ];
     for (_, bibtex, text) in literature {
@@ -2794,14 +2789,14 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
-    home.cmd_with_editor("Other\n<--->\nother\n<--->\n")
+    home.cmd_with_editor("# Other\n\nother\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Other"])
         .assert()
         .success()
         .stdout(predicate::str::contains("1/0"));
     let (mut create_literature, _) = home.cmd_with_editor_sequence(&[
         "@book{ClearLit, title={Clear Literature}}",
-        "Clear Literature\n<--->\nclear me too\n<--->\n",
+        "# Clear Literature\n\nclear me too\n\n<!-- zt:reverse-links -->\n",
     ]);
     create_literature.arg("l").assert().success();
     let config_path = home.config_dir.join("config.toml");
@@ -2838,12 +2833,12 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
     assert_eq!(fs::read(&config_path).unwrap(), config_before);
     assert_eq!(fs::read(&dump_marker).unwrap(), b"keep this dump");
 
-    home.cmd_with_editor("Fresh\n<--->\nfresh\n<--->\n")
+    home.cmd_with_editor("# Fresh\n\nfresh\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Fresh"])
         .assert()
         .success()
         .stdout(predicate::str::is_match(r"^0/0\n$").unwrap());
-    home.cmd_with_editor("First\n<--->\nfirst\n<--->\n")
+    home.cmd_with_editor("# First\n\nfirst\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success()
@@ -3028,43 +3023,43 @@ fn literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary() 
     home.configure_and_up();
     let bibtex = "@book{TreeLit, title={Tree Work}}";
     for (bib, text) in [
-        (bibtex, "Tree Work\n<--->\nwork\n<--->\n"),
+        (bibtex, "# Tree Work\n\nwork\n\n<!-- zt:reverse-links -->\n"),
         (
             "@book{OtherLit, title={Other Work}}",
-            "Other Work\n<--->\nother\n<--->\n",
+            "# Other Work\n\nother\n\n<!-- zt:reverse-links -->\n",
         ),
     ] {
         let (mut create, _) = home.cmd_with_editor_sequence(&[bib, text]);
         create.arg("l").assert().success();
     }
-    home.cmd_with_editor("Topic\n<--->\ntopic\n<--->\n")
+    home.cmd_with_editor("# Topic\n\ntopic\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .assert()
         .success();
-    home.cmd_with_editor("Idea\n<--->\nidea\n<--->\n")
+    home.cmd_with_editor("# Idea\n\nidea\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/0"])
         .assert()
         .success();
 
-    home.cmd_with_editor("Chapter\n<--->\nchapter notes\n<--->\n")
+    home.cmd_with_editor("# Chapter\n\nchapter notes\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "TreeLit"])
         .assert()
         .success()
         .stdout("TreeLit/1\n");
-    home.cmd_with_editor("Again\n<--->\nagain\n<--->\n")
+    home.cmd_with_editor("# Again\n\nagain\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "TreeLit"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "direct successor already exists: TreeLit/1",
         ));
-    home.cmd_with_editor("Next\n<--->\nnext\n<--->\n")
+    home.cmd_with_editor("# Next\n\nnext\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "TreeLit/1"])
         .assert()
         .success()
         .stdout("TreeLit/2\n");
     for expected in ["TreeLit/1|a\n", "TreeLit/1|b\n"] {
-        home.cmd_with_editor("Aside\n<--->\naside\n<--->\n")
+        home.cmd_with_editor("# Aside\n\naside\n\n<!-- zt:reverse-links -->\n")
             .args(["b", "--at", "TreeLit/1"])
             .assert()
             .success()
@@ -3076,14 +3071,11 @@ fn literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary() 
         "the tree root keeps its exact BibTeX metadata"
     );
 
-    home.cmd_with_editor("Idea\n<--->\ncites [[TreeLit/1|b]]\n<--->\n")
+    home.cmd_with_editor("# Idea\n\ncites [[TreeLit/1|b]]\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/1"])
         .assert()
         .success();
-    assert!(
-        home.card_text("TreeLit/1|b")
-            .ends_with("This note has been referred by note [[0/1]] Idea")
-    );
+    assert!(home.card_text("TreeLit/1|b").ends_with("- [[0/1]] Idea\n"));
     home.cmd()
         .write_stdin("go TreeLit\ngo TreeLit/1\nq\n")
         .assert()
@@ -3172,7 +3164,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     home.configure_and_up();
     let (mut create, _) = home.cmd_with_editor_sequence(&[
         "@book{LineTree, title={Line Tree}}",
-        "Line Tree\n<--->\nroot body\n<--->\n",
+        "# Line Tree\n\nroot body\n\n<!-- zt:reverse-links -->\n",
     ]);
     create.arg("l").assert().success();
 
@@ -3182,7 +3174,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
             "go LineTree\n",
             "help\n",
             "n\n",
-            "First Note\n<--->\nfirst body\n<--->\n\x13",
+            "# First Note\n\nfirst body\n\n<!-- zt:reverse-links -->\n\x13",
             "help\n",
             "ls\n",
             "up\n",
@@ -3202,7 +3194,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     ));
     assert!(
         stdout.contains(
-            "location: LineTree/1\ntitle: First Note\nfirst body\nparent: [[LineTree]]\n"
+            "location: LineTree/1\n# First Note\n\nfirst body\n\n<!-- zt:reverse-links -->\nparent: [[LineTree]]\n"
         )
     );
     assert!(stdout.contains(
@@ -3220,7 +3212,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     assert!(citation_view < root_view);
     assert_eq!(
         home.card_text("LineTree/1"),
-        "First Note\n<--->\nfirst body\n<--->\n"
+        "# First Note\n\nfirst body\n\n<!-- zt:reverse-links -->\n"
     );
 }
 
@@ -3233,8 +3225,8 @@ fn dump_maps_literature_tree_cards_by_location() {
     let home = TestHome::new();
     home.configure_and_up();
     let bibtex = "@book{DumpTree, title={Dump Tree}}";
-    let root_text = "Dump Tree\n<--->\nroot\n<--->\n";
-    let node_text = "Node\n<--->\nnode\n<--->\n";
+    let root_text = "# Dump Tree\n\nroot\n\n<!-- zt:reverse-links -->\n";
+    let node_text = "# Node\n\nnode\n\n<!-- zt:reverse-links -->\n";
     let (mut create, _) = home.cmd_with_editor_sequence(&[bibtex, root_text]);
     create.arg("l").assert().success();
     home.cmd_with_editor(node_text)
@@ -3274,4 +3266,253 @@ fn dump_maps_literature_tree_cards_by_location() {
         mapping["DumpTree/1"],
         expected_dump_filename("DumpTree/1", node_text)
     );
+}
+
+#[test]
+fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
+    let home = TestHome::new();
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    fs::create_dir_all(&home.archive_root).expect("archive root");
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("old db");
+    conn.execute_batch(
+        "CREATE TABLE cards (
+            row_id INTEGER PRIMARY KEY,
+            location TEXT UNIQUE,
+            citation_key TEXT UNIQUE,
+            is_topic INTEGER NOT NULL CHECK(is_topic IN (0, 1)),
+            is_lit INTEGER NOT NULL CHECK(is_lit IN (0, 1)),
+            bibtex TEXT,
+            text TEXT NOT NULL
+         );
+         CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES
+            ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\ndescription\n<--->\nThis note has been referred by note [[0/1]] Idea'),
+            ('0/1', NULL, 0, 0, NULL, 'Idea\n<--->\nsee [[0/0]]\nand [[OldLit]]\n<--->\n'),
+            (NULL, 'OldLit', 0, 1, '@book{OldLit, title={Old Work}}', 'Old Work\n<--->\nnotes\n<--->\n');
+         INSERT INTO metadata VALUES('next_topic_id', '1');",
+    )
+    .expect("pre-Markdown fixture");
+    drop(conn);
+
+    home.cmd().arg("up").assert().success();
+
+    assert_eq!(
+        home.card_text("0/0"),
+        "# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[0/1]] Idea\n"
+    );
+    assert_eq!(
+        home.card_text("0/1"),
+        "# Idea\n\nsee [[0/0]]\nand [[OldLit]]\n\n<!-- zt:reverse-links -->\n"
+    );
+    assert_eq!(
+        home.literature_data("OldLit").1,
+        "# Old Work\n\nnotes\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[0/1]] Idea\n"
+    );
+    let backups = fs::read_dir(&home.archive_root)
+        .expect("archive listing")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("zt.sqlite3.pre-markdown-") && name.ends_with(".bak"))
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1, "one backup of the pre-Markdown archive");
+    let backup = Connection::open(home.archive_root.join(&backups[0])).expect("backup db");
+    let old_text: String = backup
+        .query_row("SELECT text FROM cards WHERE location = '0/1'", [], |row| {
+            row.get(0)
+        })
+        .expect("backup keeps the original text");
+    assert_eq!(
+        old_text,
+        "Idea\n<--->\nsee [[0/0]]\nand [[OldLit]]\n<--->\n"
+    );
+    drop(backup);
+
+    home.cmd().arg("down").assert().success();
+    home.wait_until(|| !home.archive_root.join("zt.pid").exists());
+    home.cmd().arg("up").assert().success();
+    let backups_after_restart = fs::read_dir(&home.archive_root)
+        .expect("archive listing")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+        .count();
+    assert_eq!(backups_after_restart, 1, "conversion runs only once");
+}
+
+fn http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> (u16, String) {
+    use std::io::Read;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to gui");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Host"))
+    {
+        request.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+    }
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    let body = body.unwrap_or_default();
+    request.push_str(&format!(
+        "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    ));
+    stream.write_all(request.as_bytes()).expect("send request");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("read response");
+    let response = String::from_utf8(response).expect("UTF-8 response");
+    let status = response[9..12].parse().expect("status code");
+    let body_start = response.find("\r\n\r\n").expect("header end") + 4;
+    (status, response[body_start..].to_string())
+}
+
+#[test]
+fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
+    use std::io::{BufRead, BufReader};
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut gui = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .args(["gui", "--no-open", "--port", "0"])
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start zt gui");
+    let mut stdout = BufReader::new(gui.stdout.take().expect("gui stdout"));
+    let mut first_line = String::new();
+    stdout.read_line(&mut first_line).expect("gui url line");
+    let port: u16 = first_line
+        .trim()
+        .strip_prefix("zt gui: http://127.0.0.1:")
+        .and_then(|rest| rest.strip_suffix('/'))
+        .expect("gui prints its URL")
+        .parse()
+        .expect("port");
+
+    let (status, page) = http_request(port, "GET", "/", &[], None);
+    assert_eq!(status, 200);
+    let token = page
+        .split("name=\"zt-token\" content=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("page embeds the token")
+        .to_string();
+    assert_eq!(token.len(), 32);
+    let auth = [("X-ZT-Token", token.as_str())];
+    let api = |method: &str, path: &str, body: Option<&str>| {
+        let (status, body) = http_request(port, method, path, &auth, body);
+        let value: serde_json::Value = serde_json::from_str(&body).expect("JSON response");
+        (status, value)
+    };
+
+    assert_eq!(http_request(port, "GET", "/api/overview", &[], None).0, 403);
+    assert_eq!(
+        http_request(
+            port,
+            "GET",
+            "/api/overview",
+            &[("Host", "evil.example:80"), auth[0]],
+            None
+        )
+        .0,
+        421
+    );
+    home.cmd()
+        .arg("down")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("session(s) are open"));
+
+    let (status, created) = api(
+        "POST",
+        "/api/create",
+        Some(r##"{"kind":"topic","text":"# Topic\n\nA **bold** start.\n"}"##),
+    );
+    assert_eq!((status, created["address"].as_str()), (200, Some("0/0")));
+    let (_, created) = api(
+        "POST",
+        "/api/create",
+        Some(
+            r##"{"kind":"direct","at":"0/0","text":"# Idea\n\nsee [[0/0]] and `[[not a link]]`\n\n<script>alert(1)</script>\n"}"##,
+        ),
+    );
+    assert_eq!(created["address"], "0/1");
+    let (status, rejected) = api(
+        "POST",
+        "/api/create",
+        Some(r##"{"kind":"side","at":"0/1","text":"no heading"}"##),
+    );
+    assert_eq!(status, 400);
+    assert_eq!(
+        rejected["error"],
+        "card text must start with a `# Title` heading"
+    );
+
+    assert_eq!(
+        home.card_text("0/0"),
+        "# Topic\n\nA **bold** start.\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[0/1]] Idea\n"
+    );
+    let (_, card) = api("GET", "/api/card?at=0%2F1", None);
+    let html = card["html"].as_str().expect("rendered html");
+    assert!(html.contains("class=\"zt-link\" href=\"#/card/0/0\" data-target=\"0/0\""));
+    assert!(html.contains("<code>[[not a link]]</code>"));
+    assert!(!html.contains("<script>"));
+    assert_eq!(card["parent"]["address"], "0/0");
+    let (_, topic) = api("GET", "/api/card?at=0%2F0", None);
+    assert!(
+        topic["html"]
+            .as_str()
+            .unwrap()
+            .contains("<strong>bold</strong>")
+    );
+    assert_eq!(topic["inbound"][0]["address"], "0/1");
+
+    let (_, stale) = api(
+        "POST",
+        "/api/edit",
+        Some(r##"{"at":"0/1","text":"# Idea\n\nchanged\n","base":"not the stored text"}"##),
+    );
+    assert!(
+        stale["error"]
+            .as_str()
+            .unwrap()
+            .contains("changed since it was opened")
+    );
+
+    let (_, plan) = api("POST", "/api/delete", Some(r#"{"at":"0/1"}"#));
+    assert_eq!(plan["confirm"], "delete");
+    assert!(home.location_exists("0/1"));
+    let (_, deleted) = api(
+        "POST",
+        "/api/delete",
+        Some(r#"{"at":"0/1","confirm":"delete"}"#),
+    );
+    assert_eq!(
+        (deleted["deleted"].as_u64(), deleted["address"].as_str()),
+        (Some(1), Some("0/0"))
+    );
+    assert!(!home.location_exists("0/1"));
+
+    let (_, overview) = api("GET", "/api/overview", None);
+    assert_eq!(overview["stats"]["total"], 1);
+    assert_eq!(overview["trees"][0]["excerpt"], "A bold start.");
+
+    let (status, _) = api("POST", "/api/quit", Some("{}"));
+    assert_eq!(status, 200);
+    assert!(gui.wait().expect("gui exits").success());
+    home.cmd().arg("down").assert().success();
 }

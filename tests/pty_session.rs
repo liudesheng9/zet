@@ -107,14 +107,14 @@ impl TestHome {
 
     fn create_topic_and_base(&self) {
         let status = self
-            .zt_command_with_editor("Topic\n<--->\ndescription\n<--->\n")
+            .zt_command_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
             .args(["t", "Topic"])
             .status()
             .expect("create topic");
         assert!(status.success(), "create topic failed: {status}");
 
         let status = self
-            .zt_command_with_editor("Base\n<--->\nbody [[0/0]]\n<--->\n")
+            .zt_command_with_editor("# Base\n\nbody [[0/0]]\n\n<!-- zt:reverse-links -->\n")
             .args(["n", "--at", "0/0"])
             .status()
             .expect("create base");
@@ -148,7 +148,10 @@ impl TestHome {
                 "ZT_EDITOR_BIB",
                 format!("@book{{{citation_key}, title={{{title}}}}}"),
             )
-            .env("ZT_EDITOR_CARD", format!("{title}\n<--->\n{body}\n<--->\n"))
+            .env(
+                "ZT_EDITOR_CARD",
+                format!("# {title}\n\n{body}\n\n<!-- zt:reverse-links -->\n"),
+            )
             .arg("l")
             .status()
             .expect("create Literature Card");
@@ -159,14 +162,14 @@ impl TestHome {
         self.create_topic_and_base();
 
         let status = self
-            .zt_command_with_editor("Movable\n<--->\nmove\n<--->\n")
+            .zt_command_with_editor("# Movable\n\nmove\n\n<!-- zt:reverse-links -->\n")
             .args(["b", "--at", "0/1"])
             .status()
             .expect("create side");
         assert!(status.success(), "create side failed: {status}");
 
         let status = self
-            .zt_command_with_editor("Source\n<--->\nsource [[0/1|a]]\n<--->\n")
+            .zt_command_with_editor("# Source\n\nsource [[0/1|a]]\n\n<!-- zt:reverse-links -->\n")
             .args(["n", "--at", "0/1"])
             .status()
             .expect("create source");
@@ -390,14 +393,14 @@ fn manual_real_windows_clipboard_copy_and_paste_smoke() {
     session.send_key(Key::CtrlShiftV);
     session.wait_for_text("中文");
     session.send_key(Key::CtrlS);
-    session.wait_for_text("title: Paste");
+    session.wait_for_text("# Paste");
     session.send_text("q");
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
     assert_eq!(
         home.card_text("0/0"),
-        "Paste\n<--->\n中文\n\tline  \n\nend \n<--->\n"
+        "# Paste\n\n中文\n\tline  \n\nend \n\n<!-- zt:reverse-links -->\n"
     );
 }
 
@@ -417,7 +420,7 @@ fn terminal_editor_copies_logical_selection_and_plain_ctrl_c_still_cancels() {
     session.send_text("t Copy");
     session.send_enter();
     session.wait_for_text("edit mode");
-    session.send_left_drag(2, 0, 2, 3);
+    session.send_left_drag(2, 2, 2, 5);
     session.wait_for_raw_text("\x1b[7m");
     session.send_key(Key::CtrlShiftC);
 
@@ -451,7 +454,7 @@ fn terminal_editor_replaces_selection_from_fake_clipboard_and_saves() {
     session.send_text("t Paste");
     session.send_enter();
     session.wait_for_text("edit mode");
-    session.send_left_click(2, 2);
+    session.send_left_click(2, 4);
     session.send_text("X");
     session.wait_for_text("PaXste");
     session.send_key(Key::Down);
@@ -463,14 +466,14 @@ fn terminal_editor_replaces_selection_from_fake_clipboard_and_saves() {
     session.wait_for_text("中文");
     session.send_key(Key::CtrlS);
     session.wait_for_text("location: 0/0");
-    session.wait_for_text("title: PaXste");
+    session.wait_for_text("# PaXste");
 
     session.send_text("e");
     session.send_enter();
     session.wait_for_text("edit mode");
     session.wait_for_text("line");
     session.send_key(Key::CtrlC);
-    session.wait_for_text("title: PaXste");
+    session.wait_for_text("# PaXste");
 
     session.send_text("q");
     session.send_enter();
@@ -478,7 +481,7 @@ fn terminal_editor_replaces_selection_from_fake_clipboard_and_saves() {
     assert!(status.success(), "session exited with {status}");
     assert_eq!(
         home.card_text("0/0"),
-        "PaXste\n<--->\n中文\n\tline  \n\nend \n<--->\n"
+        "# PaXste\n\n中文\n\tline  \n\nend \n\n<!-- zt:reverse-links -->\n"
     );
 }
 
@@ -566,7 +569,10 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
     let status = session.wait_for_exit();
 
     assert!(status.success(), "session exited with {status}");
-    assert_eq!(home.card_text("0/0"), "中文主题\n<--->\n中文正文\n<--->\n");
+    assert_eq!(
+        home.card_text("0/0"),
+        "# 中文主题\n\n中文正文\n\n<!-- zt:reverse-links -->\n"
+    );
 }
 
 #[test]
@@ -586,15 +592,15 @@ fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scroll
     // ROOT, topics:, empty hint, literature:, then the clickable Literature entry.
     session.send_left_click(4, 2);
     session.wait_for_text("citation key: TreeKey");
-    session.wait_for_text("lines 1-22 of 44");
+    session.wait_for_text("lines 1-22 of 47");
     assert!(!session.plain_output().contains("body line 40"));
     session.send_key(Key::PageDown);
-    session.wait_for_text("lines 22-43 of 44");
+    session.wait_for_text("lines 22-43 of 47");
     session.send_key(Key::PageDown);
-    session.wait_for_text("lines 23-44 of 44");
+    session.wait_for_text("lines 26-47 of 47");
     session.wait_for_text("body line 40");
     session.send_key(Key::PageUp);
-    session.wait_for_text("lines 2-23 of 44");
+    session.wait_for_text("lines 5-26 of 47");
 
     session.send_text("b");
     session.send_enter();
@@ -653,7 +659,7 @@ fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scroll
     assert!(status.success(), "session exited with {status}");
     assert_eq!(
         home.card_text("TreeKey/1"),
-        "Chapter\n<--->\nchapter body\n<--->\n"
+        "# Chapter\n\nchapter body\n\n<!-- zt:reverse-links -->\n"
     );
 }
 
@@ -677,7 +683,7 @@ fn terminal_session_creates_navigates_and_lists_literature_card() {
     session.send_key(Key::CtrlS);
 
     session.wait_for_text("citation key: Session2025");
-    session.wait_for_text("title: Session Literature");
+    session.wait_for_text("# Session Literature");
     session.wait_for_text("metadata:");
     session.wait_for_text("@book{Session2025, title={Session Literature}}");
     session.wait_for_text("session literature notes");
@@ -721,7 +727,7 @@ fn terminal_session_literature_creation_retries_metadata_and_cancels_atomically(
     session.send_enter();
     session.wait_for_text("metadata edit");
     let blocked = home
-        .zt_command_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+        .zt_command_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Blocked During Metadata"])
         .output()
         .expect("blocked write during metadata stage");
@@ -745,7 +751,7 @@ fn terminal_session_literature_creation_retries_metadata_and_cancels_atomically(
     session.send_key(Key::CtrlS);
     session.wait_for_text("Canceled Body Stage");
     let blocked = home
-        .zt_command_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+        .zt_command_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Blocked During Body"])
         .output()
         .expect("blocked write during body stage");
@@ -767,7 +773,7 @@ fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root()
     home.configure_and_up();
     home.create_literature("ClickLit", "Clickable Literature", "literature body");
     let status = home
-        .zt_command_with_editor("Topic\n<--->\nopen [[ClickLit]]\n<--->\n")
+        .zt_command_with_editor("# Topic\n\nopen [[ClickLit]]\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Topic"])
         .status()
         .expect("create citation source");
@@ -778,7 +784,7 @@ fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root()
     session.send_text("go 0/0");
     session.send_enter();
     session.wait_for_text("open [[ClickLit]]");
-    session.send_left_click(2, 8);
+    session.send_left_click(3, 8);
     session.wait_for_text("citation key: ClickLit");
 
     session.send_text("b");
@@ -866,7 +872,7 @@ fn terminal_session_selects_literature_edit_part_and_confirms_rename() {
     session.send_text("move");
     session.send_enter();
     session.wait_for_text("citation key: SessionRenamed");
-    session.wait_for_text("title: Renamed Session Title");
+    session.wait_for_text("# Renamed Session Title");
     session.wait_for_text("original body");
 
     session.send_text("e");
@@ -907,7 +913,10 @@ fn terminal_session_topic_title_does_not_parse_shell_quotes() {
     let status = session.wait_for_exit();
 
     assert!(status.success(), "session exited with {status}");
-    assert_eq!(home.card_text("0/0"), "\"Quoted Topic\"\n<--->\n\n<--->\n");
+    assert_eq!(
+        home.card_text("0/0"),
+        "# \"Quoted Topic\"\n\n<!-- zt:reverse-links -->\n"
+    );
 }
 
 #[test]
@@ -930,11 +939,11 @@ fn terminal_session_navigates_and_activates_rendered_links() {
     session.wait_for_text("target `9/9` does not exist");
     session.wait_for_text("location: 0/1");
 
-    session.send_left_drag(2, 5, 2, 8);
+    session.send_left_drag(3, 5, 3, 8);
     session.wait_for_raw_text("\x1b[7m");
     assert!(!session.plain_output().contains("location: 0/0"));
 
-    session.send_left_click(2, 5);
+    session.send_left_click(3, 5);
     session.wait_for_text("location: 0/0");
 
     session.send_text("q");
@@ -1133,8 +1142,14 @@ fn terminal_session_creates_direct_and_side_cards() {
     let status = session.wait_for_exit();
 
     assert!(status.success(), "session exited with {status}");
-    assert_eq!(home.card_text("0/2"), "Direct\n<--->\ndirect body\n<--->\n");
-    assert_eq!(home.card_text("0/1|a"), "Side\n<--->\nside body\n<--->\n");
+    assert_eq!(
+        home.card_text("0/2"),
+        "# Direct\n\ndirect body\n\n<!-- zt:reverse-links -->\n"
+    );
+    assert_eq!(
+        home.card_text("0/1|a"),
+        "# Side\n\nside body\n\n<!-- zt:reverse-links -->\n"
+    );
 }
 
 #[test]
@@ -1250,7 +1265,7 @@ fn terminal_session_edit_lock_blocks_other_writes() {
     session.wait_for_text("edit mode");
 
     let output = home
-        .zt_command_with_editor("Blocked\n<--->\nblocked\n<--->\n")
+        .zt_command_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
         .args(["n", "--at", "0/1"])
         .output()
         .expect("blocked write");
@@ -1311,10 +1326,9 @@ fn terminal_session_retries_invalid_edit_save_and_cancels_without_write() {
     session.send_enter();
     session.wait_for_text("edit mode");
 
-    session.send_key(Key::Down);
     session.send_key(Key::Delete);
     session.send_key(Key::CtrlS);
-    session.wait_for_text("exactly two");
+    session.wait_for_text("`# Title` heading");
 
     session.send_key(Key::Esc);
     session.wait_for_text("location: 0/1");

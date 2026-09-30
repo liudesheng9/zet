@@ -2,10 +2,12 @@
 
 [English](README.md) | 中文
 
-ZT 是一个本地优先、以命令行为核心的卡片笔记系统，支持可寻址的 Card 和终端导航。
+ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 Markdown 文档，既可以在终端 Session 中使用，也可以在卡片盒 GUI 中浏览和编辑。
 
 ## 功能
 
+- 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
+- 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
 - 使用 `[[target]]` Link 连接 Card，并自动生成 Reverse link、检查 Broken link。
@@ -48,6 +50,60 @@ q                  # 退出 Session
 ROOT 视图会列出所有 Topic 和 Literature Card。每个 Card 视图末尾都有可点击的
 `parent:`、`direct:`、`side:` 链接。`ls`、`lsbk`、`help` 会打开可点击地址的结果面板，
 按 `Esc` 关闭。内容过长时可用 `PageUp`/`PageDown` 或鼠标滚轮滚动。
+
+## Markdown Card
+
+每张 Card 都以一个 Markdown 文档存储：
+
+```markdown
+# 原子化笔记
+
+每张卡片只写一个想法。参见 [[0/0]] 与 [[Smith2024]]。
+
+- 简短
+- 可链接
+
+<!-- zt:reverse-links -->
+## Reverse links
+
+- [[0/2]] 地址即位置
+```
+
+Topic 和 Regular Card 必须以 `# 标题` 开头。`<!-- zt:reverse-links -->` 标记之后的内容由 ZT
+自动生成，每次保存都会重写，因此在那里所做的修改会被忽略。`[[target]]` Link 只在正文中生效；
+写在 `行内代码` 或代码块中的内容只是普通文本。终端不会渲染 Markdown：Session 会原样显示和编辑
+存储的 Markdown。
+
+0.2.0 之前创建的档案会在 `zt up` 时自动转换；转换前会先把原数据库备份为档案目录中的
+`zt.sqlite3.pre-markdown-<时间>.bak`。
+
+## GUI
+
+服务启动后运行：
+
+```sh
+zt gui                 # 打开应用窗口（Edge/Chrome）或默认浏览器
+zt gui --no-open       # 只打印本地地址
+zt gui --port 4717     # 指定端口
+```
+
+- **卡片柜**（左侧）：所有 Topic 与 Literature 抽屉，以及全文搜索。
+- **书桌**（ROOT）：每棵树显示为一叠索引卡片。
+- **地图（Map）**：把当前树画成 Folgezettel 地图。Direct successor 沿同一列向下延伸，
+  Side successor 分出新的一列，Link 显示为虚线弧。
+- **星图（Constellation）**：所有 Card 与 Link 组成的一张图，按树着色。
+- **阅读器**（右侧）：以索引卡片的样式渲染 Card，包含 Link 标签、Reverse link、
+  parent/direct/side 导航以及存储的 Markdown 原文。
+- **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
+  `Ctrl+S` 保存，`Esc` 取消。
+
+命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`del`、`mv 1/3`、
+`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
+`:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
+`v` 切换视图、`f` 适配窗口。
+
+GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
+因此需要先用电源按钮或 `Ctrl+C` 关闭 GUI，`zt down` 才能停止服务。
 
 ## 创建 Literature Card
 
@@ -93,6 +149,7 @@ ZT 不给 Topic 和 Regular Card 分配任意 ID，而是自动为它们分配 *
 
 ```sh
 zt help
+zt gui
 zt status
 zt stats
 zt lsbk

@@ -401,7 +401,7 @@ pub(super) fn execute(
             }
             let (bibtex, metadata) =
                 accepted.context("validated Literature metadata is missing")?;
-            let initial_text = crate::compose_card_text(&metadata.title, "", "");
+            let initial_text = crate::card::card_template(&metadata.title);
             let citation_key = metadata.citation_key.clone();
             let mut save_text = |edited: &str| {
                 let parsed = crate::parse_literature_edit_text(edited)?;
@@ -604,7 +604,7 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n')",
+             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert target");
@@ -657,8 +657,8 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', 'Work\n<--->\n\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', '# Work\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert cards");
@@ -687,12 +687,12 @@ mod tests {
         let conn = crate::open_db(root).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             ('0/1', NULL, 0, 0, NULL, 'Idea\n<--->\n\n<--->\n'),\
-             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', 'Work\n<--->\n\n<--->\n'),\
-             ('LitA/1', NULL, 0, 0, NULL, 'Note\n<--->\n\n<--->\n'),\
-             ('LitA/1|a', NULL, 0, 0, NULL, 'Aside\n<--->\n\n<--->\n'),\
-             (NULL, 'LitB', 0, 1, '@book{LitB, title={Other}}', 'Other\n<--->\n\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Idea\n\n<!-- zt:reverse-links -->\n'),\
+             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', '# Work\n\n<!-- zt:reverse-links -->\n'),\
+             ('LitA/1', NULL, 0, 0, NULL, '# Note\n\n<!-- zt:reverse-links -->\n'),\
+             ('LitA/1|a', NULL, 0, 0, NULL, '# Aside\n\n<!-- zt:reverse-links -->\n'),\
+             (NULL, 'LitB', 0, 1, '@book{LitB, title={Other}}', '# Other\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Literature tree");
@@ -754,7 +754,9 @@ mod tests {
         insert_literature_tree(temp.path());
         let mut state = SessionState::at("LitB");
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("First\n<--->\nnote\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# First\n\nnote\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
         };
@@ -884,7 +886,7 @@ mod tests {
         insert_literature_tree(temp.path());
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
-            "UPDATE cards SET text = 'Idea\n<--->\nsee [[LitA/1|a]] and [[LitA]]\n<--->\n'\
+            "UPDATE cards SET text = '# Idea\n\nsee [[LitA/1|a]] and [[LitA]]\n\n<!-- zt:reverse-links -->\n'\
              WHERE location = '0/1'",
             [],
         )
@@ -961,9 +963,9 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             ('0/1', NULL, 0, 0, NULL, 'Card\n<--->\n\n<--->\n'),\
-             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', 'Work\n<--->\n\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Card\n\n<!-- zt:reverse-links -->\n'),\
+             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', '# Work\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert cards");
@@ -1007,7 +1009,7 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\nsee [[Missing]]\n<--->\n')",
+             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\nsee [[Missing]]\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert source");
@@ -1068,7 +1070,9 @@ mod tests {
         crate::initialize_database(temp.path()).expect("initialize database");
         let mut state = SessionState::root();
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("My Topic\n<--->\nbody\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# My Topic\n\nbody\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
         };
@@ -1081,7 +1085,7 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         assert_eq!(
             crate::load_card(&conn, "0/0").expect("created Topic").text,
-            "My Topic\n<--->\nbody\n<--->\n"
+            "# My Topic\n\nbody\n\n<!-- zt:reverse-links -->\n"
         );
     }
 
@@ -1092,14 +1096,16 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n')",
+             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Topic");
         drop(conn);
         let mut state = SessionState::at("0/0");
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("Direct\n<--->\nbody\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# Direct\n\nbody\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
         };
@@ -1115,7 +1121,7 @@ mod tests {
             crate::load_card(&conn, "0/1")
                 .expect("created Direct successor")
                 .text,
-            "Direct\n<--->\nbody\n<--->\n"
+            "# Direct\n\nbody\n\n<!-- zt:reverse-links -->\n"
         );
     }
 
@@ -1126,15 +1132,17 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             ('0/1', NULL, 0, 0, NULL, 'Base\n<--->\n\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Cards");
         drop(conn);
         let mut state = SessionState::at("0/1");
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("Side\n<--->\nbody\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# Side\n\nbody\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
         };
@@ -1149,7 +1157,7 @@ mod tests {
             crate::load_card(&conn, "0/1|a")
                 .expect("created Side successor")
                 .text,
-            "Side\n<--->\nbody\n<--->\n"
+            "# Side\n\nbody\n\n<!-- zt:reverse-links -->\n"
         );
     }
 
@@ -1161,7 +1169,7 @@ mod tests {
         let mut interaction = ScriptedInteraction {
             edits: VecDeque::from([
                 Some("@book{LitA, title={Work}}".to_string()),
-                Some("Work\n<--->\nbody\n<--->\n".to_string()),
+                Some("# Work\n\nbody\n\n<!-- zt:reverse-links -->\n".to_string()),
             ]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
@@ -1176,7 +1184,7 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         let card = crate::load_card(&conn, "LitA").expect("created Literature Card");
         assert_eq!(card.citation_key.as_deref(), Some("LitA"));
-        assert_eq!(card.text, "Work\n<--->\nbody\n<--->\n");
+        assert_eq!(card.text, "# Work\n\nbody\n\n<!-- zt:reverse-links -->\n");
     }
 
     #[test]
@@ -1186,14 +1194,16 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
-             VALUES('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\nold\n<--->\n')",
+             VALUES('0/0', NULL, 1, 0, NULL, '# Topic\n\nold\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Topic");
         drop(conn);
         let mut state = SessionState::at("0/0");
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("Topic\n<--->\nnew body\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# Topic\n\nnew body\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::new(),
             confirmations: VecDeque::new(),
         };
@@ -1206,7 +1216,7 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         assert_eq!(
             crate::load_card(&conn, "0/0").expect("edited Card").text,
-            "Topic\n<--->\nnew body\n<--->\n"
+            "# Topic\n\nnew body\n\n<!-- zt:reverse-links -->\n"
         );
     }
 
@@ -1218,14 +1228,16 @@ mod tests {
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
              VALUES(NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}',\
-                    'Work\n<--->\nold\n<--->\n')",
+                    '# Work\n\nold\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Literature Card");
         drop(conn);
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {
-            edits: VecDeque::from([Some("Work\n<--->\nnew body\n<--->\n".to_string())]),
+            edits: VecDeque::from([Some(
+                "# Work\n\nnew body\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
             choices: VecDeque::from([crate::EditPart::Text]),
             confirmations: VecDeque::new(),
         };
@@ -1241,7 +1253,7 @@ mod tests {
             crate::load_card(&conn, "LitA")
                 .expect("edited Literature Card")
                 .text,
-            "Work\n<--->\nnew body\n<--->\n"
+            "# Work\n\nnew body\n\n<!-- zt:reverse-links -->\n"
         );
     }
 
@@ -1253,7 +1265,7 @@ mod tests {
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)\
              VALUES(NULL, 'LitA', 0, 1, '@book{LitA, title={Old Work}}',\
-                    'Old Work\n<--->\nbody\n<--->\n')",
+                    '# Old Work\n\nbody\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Literature Card");
@@ -1277,7 +1289,7 @@ mod tests {
             card.bibtex.as_deref(),
             Some("@book{LitA, title={New Work}}")
         );
-        assert!(card.text.starts_with("New Work\n<--->\nbody\n"));
+        assert!(card.text.starts_with("# New Work\n\nbody\n"));
     }
 
     #[test]
@@ -1287,9 +1299,9 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             ('0/1', NULL, 0, 0, NULL, 'Base\n<--->\n\n<--->\n'),\
-             ('0/1|a', NULL, 0, 0, NULL, 'Side\n<--->\n\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1|a', NULL, 0, 0, NULL, '# Side\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Cards");
@@ -1325,11 +1337,11 @@ mod tests {
         let conn = crate::open_db(temp.path()).expect("open database");
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
-             ('0/1', NULL, 0, 0, NULL, 'Base\n<--->\n\n<--->\n'),\
-             ('0/1|a', NULL, 0, 0, NULL, 'Side\n<--->\n\n<--->\n'),\
-             ('0/1|a|1', NULL, 0, 0, NULL, 'Child\n<--->\n\n<--->\n'),\
-             ('0/2', NULL, 0, 0, NULL, 'Target\n<--->\nsee [[0/1|a]]\n<--->\n')",
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Base\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1|a', NULL, 0, 0, NULL, '# Side\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1|a|1', NULL, 0, 0, NULL, '# Child\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/2', NULL, 0, 0, NULL, '# Target\n\nsee [[0/1|a]]\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Cards");
@@ -1375,8 +1387,8 @@ mod tests {
         conn.execute(
             "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
              (NULL, 'LitA', 0, 1, '@book{LitA, title={Old Work}}',\
-                    'Old Work\n<--->\nbody\n<--->\n'),\
-             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\nsee [[LitA]]\n<--->\n')",
+                    '# Old Work\n\nbody\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\nsee [[LitA]]\n\n<!-- zt:reverse-links -->\n')",
             [],
         )
         .expect("insert Cards");

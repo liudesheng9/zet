@@ -1,6 +1,6 @@
 [package]
 name = "zt"
-version = "0.1.11"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -9,10 +9,12 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 crossterm = "0.28"
 getrandom = "0.4"
 nom-bibtex = "0.6"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.14"
+tiny_http = "0.12"
 
 [dev-dependencies]
 assert_cmd = "2.0"

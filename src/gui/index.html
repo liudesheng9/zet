@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="zt-token" content="__ZT_TOKEN__">
+<title>zt · slip-box</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='19' rx='3' fill='%23c4622d'/%3E%3Crect x='6' y='4' width='20' height='4' rx='1.5' fill='%23e9b38f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div id="app" class="app">
+  <header class="topbar">
+    <button class="icon-btn rail-toggle" id="rail-toggle" title="Cabinet" aria-label="Toggle cabinet">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <a class="brand" href="#/" title="ROOT">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">zt</span>
+    </a>
+    <nav class="trail" id="trail" aria-label="Pointer"></nav>
+    <div class="command" id="command">
+      <span class="command-prompt" aria-hidden="true">›</span>
+      <input id="command-input" autocomplete="off" spellcheck="false"
+             placeholder="go 1/2 · n · b · e · t Title · l · ls · lsbk · help — or search">
+      <kbd class="command-hint">:</kbd>
+      <div class="command-menu" id="command-menu" role="listbox" hidden></div>
+    </div>
+    <div class="topbar-actions">
+      <button class="pill" id="broken-pill" hidden title="Broken links (lsbk)"></button>
+      <span class="stats" id="stats"></span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+      </button>
+      <button class="icon-btn" id="quit" title="Stop zt gui" aria-label="Stop the GUI server">
+        <svg viewBox="0 0 24 24"><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <aside class="rail" id="rail">
+    <div class="rail-search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+      <input id="search" type="search" placeholder="Search cards" autocomplete="off">
+    </div>
+    <div class="rail-scroll">
+      <div id="search-results" class="search-results" hidden></div>
+      <section class="drawer-group">
+        <header><h2>Topics</h2><button class="mini-btn" data-action="new-topic" title="New Topic (t)">+ t</button></header>
+        <div id="topic-drawers" class="drawers"></div>
+      </section>
+      <section class="drawer-group">
+        <header><h2>Literature</h2><button class="mini-btn" data-action="new-literature" title="New Literature Card (l)">+ l</button></header>
+        <div id="literature-drawers" class="drawers"></div>
+      </section>
+    </div>
+    <footer class="rail-footer">
+      <span id="archive-root" class="archive-root"></span>
+    </footer>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div class="stage-bar">
+      <div class="seg" role="tablist">
+        <button role="tab" data-mode="map" class="on">Map</button>
+        <button role="tab" data-mode="constellation">Constellation</button>
+      </div>
+      <div class="stage-title" id="stage-title"></div>
+      <div class="zoom">
+        <button class="icon-btn" data-zoom="out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+        <button class="icon-btn" data-zoom="fit" title="Fit" aria-label="Fit to view"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+        <button class="icon-btn" data-zoom="in" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
+      </div>
+    </div>
+    <div class="viewport" id="viewport">
+      <div class="desk" id="desk" hidden></div>
+      <div class="plane" id="plane">
+        <svg class="edges" id="edges"></svg>
+        <div class="nodes" id="nodes"></div>
+      </div>
+      <canvas class="sky" id="sky" hidden></canvas>
+      <div class="sky-label" id="sky-label" hidden></div>
+    </div>
+    <div class="legend" id="legend">
+      <span><i class="lg-direct"></i>direct successor</span>
+      <span><i class="lg-side"></i>side successor</span>
+      <span><i class="lg-link"></i>link</span>
+    </div>
+  </main>
+
+  <aside class="reader" id="reader" aria-live="polite"></aside>
+</div>
+
+<div class="overlay" id="overlay" hidden></div>
+<div class="toasts" id="toasts" aria-live="assertive"></div>
+</body>
+</html>

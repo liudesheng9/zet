@@ -1,11 +1,11 @@
 # ZT Note System
 
-ZT is a local CLI note system built around addressable cards and terminal navigation.
+ZT is a local note system built around addressable Markdown cards, with terminal navigation and a local GUI.
 
 ## Language
 
 **Card**:
-A note item in the system. A Card has a title, body text, Reverse link section, and unique address.
+A note item in the system. A Card is one Markdown document: a `# Title` heading, a Markdown body, and a generated Reverse link section after the `<!-- zt:reverse-links -->` marker. It has a unique address.
 _Avoid_: Note item, note record
 
 **Regular Card**:
@@ -69,3 +69,11 @@ _Avoid_: Direct success, next note
 **Side successor**:
 An alternative continuation from another regular card. It is recorded with a letter in the location, and a card may have many side successors.
 _Avoid_: Side success, branch
+
+**GUI**:
+The local browser interface started with `zt gui`. It renders Card Markdown and changes Cards through the same rules as the Session; it counts as a Session while open.
+_Avoid_: Web app, frontend
+
+**Folgezettel map**:
+The GUI view of one tree, laid out by address: Direct successors continue downward and each Side successor starts a new column.
+_Avoid_: Tree diagram

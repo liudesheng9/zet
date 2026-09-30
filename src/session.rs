@@ -304,6 +304,25 @@ fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
     }
 }
 
+/// A Card's stored Markdown, shown verbatim rather than rendered. Links in
+/// prose stay clickable; fenced code lines are plain text.
+fn markdown_view_lines(text: &str) -> Vec<ViewLine> {
+    let fenced = crate::link::fenced_code_ranges(text);
+    let mut start = 0;
+    text.split_inclusive('\n')
+        .map(|raw| {
+            let line_start = start;
+            start += raw.len();
+            let line = raw.trim_end_matches(['\n', '\r']).to_string();
+            if fenced.iter().any(|range| range.contains(&line_start)) {
+                ViewLine::Plain(line)
+            } else {
+                ViewLine::Linked(line)
+            }
+        })
+        .collect()
+}
+
 /// The card view shared by the line Session and the TUI.
 fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
     let mut lines = Vec::new();
@@ -335,39 +354,22 @@ fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
         }
         Pointer::Card(target) => {
             let card = load_card(conn, target)?;
-            let parsed = parse_card_text(&card.text)?;
             if card.is_lit {
                 let citation_key = card
                     .citation_key
                     .as_deref()
                     .context("Literature Card is missing its Citation key")?;
                 lines.push(ViewLine::Plain(format!("citation key: {citation_key}")));
-            } else {
-                lines.push(ViewLine::Plain(format!("location: {}", card.address)));
-            }
-            lines.push(ViewLine::Plain(format!("title: {}", parsed.title)));
-            if card.is_lit {
                 lines.push(ViewLine::Plain("metadata:".to_string()));
                 let bibtex = card
                     .bibtex
                     .as_deref()
                     .context("Literature Card is missing its BibTeX metadata")?;
                 lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
+            } else {
+                lines.push(ViewLine::Plain(format!("location: {}", card.address)));
             }
-            lines.extend(
-                parsed
-                    .body
-                    .lines()
-                    .map(|line| ViewLine::Linked(line.to_string())),
-            );
-            if !parsed.reverse.trim().is_empty() {
-                lines.extend(
-                    parsed
-                        .reverse
-                        .lines()
-                        .map(|line| ViewLine::Linked(line.to_string())),
-                );
-            }
+            lines.extend(markdown_view_lines(&card.text));
             if let Some(parent) = parent_location(&card.address)
                 && target_exists(conn, &parent)?
             {
@@ -388,8 +390,8 @@ fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
     Ok(lines)
 }
 
-struct SessionGuard {
-    root: PathBuf,
+pub(crate) struct SessionGuard {
+    pub(crate) root: PathBuf,
 }
 
 impl Drop for SessionGuard {
@@ -422,7 +424,7 @@ fn active_session_pids(root: &Path) -> Vec<u32> {
         .unwrap_or_default()
 }
 
-fn register_session(root: &Path) -> Result<()> {
+pub(crate) fn register_session(root: &Path) -> Result<()> {
     let pid = std::process::id();
     let mut active = active_session_pids(root);
     if !active.contains(&pid) {
@@ -1680,10 +1682,12 @@ impl EditorModel {
         if lines.is_empty() {
             lines.push(String::new());
         }
+        // A new Card opens with an empty `# ` heading; start typing its title.
+        let caret_col = if lines[0] == "# " { 2 } else { 0 };
         Self {
             lines,
             caret_line: 0,
-            caret_col: 0,
+            caret_col,
             selection: None,
             desired_col: None,
             row_offset: 0,
