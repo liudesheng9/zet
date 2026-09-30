@@ -27,6 +27,8 @@ pub enum Key {
     CtrlShiftV,
     CtrlS,
     Esc,
+    PageUp,
+    PageDown,
 }
 
 impl Key {
@@ -45,6 +47,8 @@ impl Key {
             Key::CtrlShiftV => b"\x1d",
             Key::CtrlS => b"\x13",
             Key::Esc => b"\x1b",
+            Key::PageUp => b"\x1b[5~",
+            Key::PageDown => b"\x1b[6~",
         }
     }
 }
@@ -274,10 +278,17 @@ fn strip_ansi(input: &str) -> String {
         if ch == '\x1b' {
             match chars.next() {
                 Some('[') => {
+                    let mut params = String::new();
                     for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
+                            // A full screen clear starts a new frame; keep frames
+                            // from running together with the previous last row.
+                            if c == 'J' && params == "2" {
+                                output.push('\n');
+                            }
                             break;
                         }
+                        params.push(c);
                     }
                 }
                 Some(']') => {

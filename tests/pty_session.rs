@@ -570,6 +570,94 @@ fn terminal_session_creates_chinese_topic_with_tui_edit_caret() {
 }
 
 #[test]
+fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scrolling() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let body = (1..=40)
+        .map(|line| format!("body line {line:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    home.create_literature("TreeKey", "Tree Work", &body);
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.wait_for_text("(none yet; create one with t <title>)");
+    session.wait_for_text("TreeKey Tree Work");
+    // ROOT, topics:, empty hint, literature:, then the clickable Literature entry.
+    session.send_left_click(4, 2);
+    session.wait_for_text("citation key: TreeKey");
+    session.wait_for_text("lines 1-22 of 44");
+    assert!(!session.plain_output().contains("body line 40"));
+    session.send_key(Key::PageDown);
+    session.wait_for_text("lines 22-43 of 44");
+    session.send_key(Key::PageDown);
+    session.wait_for_text("lines 23-44 of 44");
+    session.wait_for_text("body line 40");
+    session.send_key(Key::PageUp);
+    session.wait_for_text("lines 2-23 of 44");
+
+    session.send_text("b");
+    session.send_enter();
+    session.wait_for_text("side successors cannot start from a Literature Card");
+    session.send_text("n");
+    session.send_enter();
+    session.wait_for_text("edit mode");
+    session.send_text("Chapter");
+    session.send_key(Key::Down);
+    session.send_key(Key::Down);
+    session.send_text("chapter body");
+    session.send_key(Key::CtrlS);
+    session.wait_for_text("location: TreeKey/1");
+    session.wait_for_text("parent: [[TreeKey]]");
+
+    session.send_text("ls");
+    session.send_enter();
+    session.wait_for_text("Literature tree TreeKey: 2 cards");
+    session.wait_for_text("TreeKey/1 Chapter");
+    let views = session
+        .plain_output()
+        .matches("location: TreeKey/1")
+        .count();
+    session.send_key(Key::Esc);
+    session.wait_for_text_count("location: TreeKey/1", views + 1);
+
+    session.send_text("ls");
+    session.send_enter();
+    session.wait_for_text_count("Literature tree TreeKey: 2 cards", 2);
+    let roots = session
+        .plain_output()
+        .matches("citation key: TreeKey")
+        .count();
+    // Panel rows: heading, then TreeKey, then TreeKey/1.
+    session.send_left_click(1, 2);
+    session.wait_for_text_count("citation key: TreeKey", roots + 1);
+
+    session.send_text("go TreeKey/1");
+    session.send_enter();
+    session.wait_for_text_count("location: TreeKey/1", views + 2);
+    session.send_text("help");
+    session.send_enter();
+    session.wait_for_text("commands: go [<target>] | root | up | ls | t <title> | l | n | b | e");
+    session.wait_for_text("go to the parent card; a tree root goes to ROOT");
+    session.send_text("up");
+    session.send_enter();
+    session.wait_for_text_count("citation key: TreeKey", roots + 2);
+    let root_views = session.plain_output().matches("topics:").count();
+    session.send_text("up");
+    session.send_enter();
+    session.wait_for_text_count("topics:", root_views + 1);
+
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+    assert_eq!(
+        home.card_text("TreeKey/1"),
+        "Chapter\n<--->\nchapter body\n<--->\n"
+    );
+}
+
+#[test]
 fn terminal_session_creates_navigates_and_lists_literature_card() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -609,10 +697,10 @@ fn terminal_session_creates_navigates_and_lists_literature_card() {
     session.wait_for_text("citation key: Session2025");
     session.send_text("ls");
     session.send_enter();
-    session.wait_for_text("Session2025 Session Literature");
+    session.wait_for_text("Literature tree Session2025: 1 cards");
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("go [<target>] | root");
+    session.wait_for_text("go [<target>] | root | up");
     session.wait_for_text(" l ");
 
     session.send_text("q");
@@ -693,12 +781,9 @@ fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root()
     session.send_left_click(2, 8);
     session.wait_for_text("citation key: ClickLit");
 
-    session.send_text("n");
-    session.send_enter();
-    session.wait_for_text("zt n is not valid on a Literature Card");
     session.send_text("b");
     session.send_enter();
-    session.wait_for_text("zt b is not valid on a Literature Card");
+    session.wait_for_text("side successors cannot start from a Literature Card");
     session.send_text("mv 0/1");
     session.send_enter();
     session.wait_for_text("Literature Card cannot be moved");
@@ -706,9 +791,9 @@ fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root()
     session.send_text("del");
     session.send_enter();
     session.wait_for_text("delete ClickLit");
-    session.wait_for_text("type `delete` to confirm:");
+    session.wait_for_text("type `ClickLit` to confirm:");
     let roots_before_delete = session.plain_output().matches("ROOT").count();
-    session.send_text("delete");
+    session.send_text("ClickLit");
     session.send_enter();
     session.wait_for_text_count("ROOT", roots_before_delete + 1);
     assert!(!home.citation_exists("ClickLit"));

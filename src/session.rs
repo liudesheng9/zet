@@ -142,6 +142,9 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
             Ok(Execution::Exit) => break,
             Ok(Execution::Continue(result)) => {
                 present_line_result(result)?;
+                if let Some(notice) = command::recover_missing_pointer(&root, &mut state)? {
+                    println!("{notice}");
+                }
                 print_view(&root, state.pointer())?;
             }
             Err(err) => {
@@ -163,10 +166,6 @@ fn present_line_result(result: CommandResult) -> Result<()> {
 fn line_result_lines(result: CommandResult) -> Vec<String> {
     match result {
         CommandResult::Noop | CommandResult::Navigated | CommandResult::Changed => Vec::new(),
-        CommandResult::List(cards) => cards
-            .into_iter()
-            .map(|card| format!("{} {}", card.address, card.title))
-            .collect(),
         CommandResult::Stats(stats) => vec![
             format!("total: {}", stats.total),
             format!("topics: {}", stats.topics),
@@ -181,17 +180,212 @@ fn line_result_lines(result: CommandResult) -> Vec<String> {
             format!("cards: {}", status.cards),
             format!("sessions: {}", status.sessions),
         ],
-        CommandResult::BrokenLinks(broken_links) => broken_links
-            .into_iter()
-            .map(|broken| {
-                format!(
-                    "{} {} -> {}: {}",
-                    broken.source_address, broken.source_title, broken.target, broken.source_line
-                )
-            })
-            .collect(),
-        CommandResult::Help(help) => vec![help.to_string()],
+        CommandResult::List(_) | CommandResult::BrokenLinks(_) | CommandResult::Help(_) => {
+            result_panel(&result)
+                .unwrap_or_default()
+                .iter()
+                .map(ViewLine::text)
+                .collect()
+        }
     }
+}
+
+/// One rendered line of a card view or result panel. The line Session prints
+/// `text()`; the TUI styles each kind and makes addresses and Links clickable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ViewLine {
+    Plain(String),
+    Heading(String),
+    Hint(String),
+    /// Text whose `[[target]]` macros render as valid or Broken links.
+    Linked(String),
+    /// A clickable address followed by plain text.
+    Entry {
+        address: String,
+        rest: String,
+    },
+}
+
+impl ViewLine {
+    fn text(&self) -> String {
+        match self {
+            Self::Plain(text) | Self::Heading(text) | Self::Hint(text) | Self::Linked(text) => {
+                text.clone()
+            }
+            Self::Entry { address, rest } => format!("{address}{rest}"),
+        }
+    }
+
+    fn entry(address: &str, title: &str) -> Self {
+        Self::Entry {
+            address: address.to_string(),
+            rest: format!(" {title}"),
+        }
+    }
+
+    fn clipped(&self, max_cells: usize) -> Self {
+        match self {
+            Self::Plain(text) => Self::Plain(clip_to_cells(text, max_cells)),
+            Self::Heading(text) => Self::Heading(clip_to_cells(text, max_cells)),
+            Self::Hint(text) => Self::Hint(clip_to_cells(text, max_cells)),
+            Self::Linked(text) => Self::Linked(clip_to_cells(text, max_cells)),
+            Self::Entry { address, rest } => {
+                let address_cells = tui_text_width(address);
+                if address_cells >= max_cells {
+                    Self::Plain(clip_to_cells(address, max_cells))
+                } else {
+                    Self::Entry {
+                        address: address.clone(),
+                        rest: clip_to_cells(rest, max_cells - address_cells),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn clip_to_cells(text: &str, max_cells: usize) -> String {
+    let mut used = 0;
+    let mut clipped = String::new();
+    for ch in text.chars() {
+        let width = char_display_width(ch);
+        if used + width > max_cells {
+            break;
+        }
+        used += width;
+        clipped.push(ch);
+    }
+    clipped
+}
+
+/// Results that list several items open as a panel; other results are messages.
+fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
+    match result {
+        CommandResult::List(listing) => {
+            let mut lines = vec![ViewLine::Heading(listing.heading.clone())];
+            if listing.cards.is_empty() {
+                lines.push(ViewLine::Hint("(no cards)".to_string()));
+            }
+            lines.extend(
+                listing
+                    .cards
+                    .iter()
+                    .map(|card| ViewLine::entry(&card.address, &card.title)),
+            );
+            Some(lines)
+        }
+        CommandResult::BrokenLinks(broken_links) if broken_links.is_empty() => {
+            Some(vec![ViewLine::Plain("no broken links".to_string())])
+        }
+        CommandResult::BrokenLinks(broken_links) => {
+            let mut lines = vec![ViewLine::Heading(format!(
+                "broken links: {}",
+                broken_links.len()
+            ))];
+            lines.extend(broken_links.iter().map(|broken| ViewLine::Entry {
+                address: broken.source_address.clone(),
+                rest: format!(
+                    " {} -> {}: {}",
+                    broken.source_title, broken.target, broken.source_line
+                ),
+            }));
+            Some(lines)
+        }
+        CommandResult::Help(help) => {
+            let mut lines = help.lines().into_iter();
+            let mut panel = Vec::new();
+            if let Some(summary) = lines.next() {
+                panel.push(ViewLine::Heading(summary));
+            }
+            panel.extend(lines.map(ViewLine::Plain));
+            Some(panel)
+        }
+        _ => None,
+    }
+}
+
+/// The card view shared by the line Session and the TUI.
+fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
+    let mut lines = Vec::new();
+    match pointer {
+        Pointer::Root => {
+            lines.push(ViewLine::Plain("ROOT".to_string()));
+            let cards = load_cards(conn)?;
+            for (heading, is_literature, empty_hint) in [
+                ("topics:", false, "  (none yet; create one with t <title>)"),
+                ("literature:", true, "  (none yet; create one with l)"),
+            ] {
+                lines.push(ViewLine::Heading(heading.to_string()));
+                let mut any = false;
+                for card in cards.iter().filter(|card| {
+                    if is_literature {
+                        card.is_lit
+                    } else {
+                        card.is_topic
+                    }
+                }) {
+                    let parsed = parse_card_text(&card.text)?;
+                    lines.push(ViewLine::entry(&card.address, &parsed.title));
+                    any = true;
+                }
+                if !any {
+                    lines.push(ViewLine::Hint(empty_hint.to_string()));
+                }
+            }
+        }
+        Pointer::Card(target) => {
+            let card = load_card(conn, target)?;
+            let parsed = parse_card_text(&card.text)?;
+            if card.is_lit {
+                let citation_key = card
+                    .citation_key
+                    .as_deref()
+                    .context("Literature Card is missing its Citation key")?;
+                lines.push(ViewLine::Plain(format!("citation key: {citation_key}")));
+            } else {
+                lines.push(ViewLine::Plain(format!("location: {}", card.address)));
+            }
+            lines.push(ViewLine::Plain(format!("title: {}", parsed.title)));
+            if card.is_lit {
+                lines.push(ViewLine::Plain("metadata:".to_string()));
+                let bibtex = card
+                    .bibtex
+                    .as_deref()
+                    .context("Literature Card is missing its BibTeX metadata")?;
+                lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
+            }
+            lines.extend(
+                parsed
+                    .body
+                    .lines()
+                    .map(|line| ViewLine::Linked(line.to_string())),
+            );
+            if !parsed.reverse.trim().is_empty() {
+                lines.extend(
+                    parsed
+                        .reverse
+                        .lines()
+                        .map(|line| ViewLine::Linked(line.to_string())),
+                );
+            }
+            if let Some(parent) = parent_location(&card.address)
+                && target_exists(conn, &parent)?
+            {
+                lines.push(ViewLine::Linked(format!("parent: [[{parent}]]")));
+            }
+            if let Ok(direct) = direct_successor(&card.address)
+                && location_exists(conn, &direct)?
+            {
+                lines.push(ViewLine::Linked(format!("direct: [[{direct}]]")));
+            }
+            if !is_tree_root(&card) {
+                for side in side_successors(conn, &card.address)? {
+                    lines.push(ViewLine::Linked(format!("side: [[{side}]]")));
+                }
+            }
+        }
+    }
+    Ok(lines)
 }
 
 struct SessionGuard {
@@ -319,6 +513,44 @@ struct MouseGesture {
 struct TuiFrame {
     links: Vec<LinkSpan>,
     screen: RenderedScreen,
+    scroll: usize,
+    visible_lines: usize,
+    total_lines: usize,
+    content_rows: usize,
+}
+
+impl TuiFrame {
+    fn can_scroll_down(&self) -> bool {
+        self.scroll + self.visible_lines < self.total_lines
+    }
+
+    /// One screen of content, keeping one line of overlap for context.
+    fn page(&self) -> usize {
+        self.content_rows.saturating_sub(1).max(1)
+    }
+
+    fn scrolled_down(&self) -> usize {
+        self.scrolled_by(self.page() as isize)
+    }
+
+    fn scrolled_up(&self) -> usize {
+        self.scrolled_by(-(self.page() as isize))
+    }
+
+    fn scrolled_by(&self, delta: isize) -> usize {
+        if delta < 0 {
+            self.scroll.saturating_sub(delta.unsigned_abs())
+        } else if self.can_scroll_down() {
+            // Stop once the last line reaches the bottom, so the final page is
+            // full; wrapped lines may still need a further step to show it.
+            let last_full_page = self.total_lines.saturating_sub(self.content_rows);
+            (self.scroll + delta as usize)
+                .min(last_full_page.max(self.scroll + 1))
+                .min(self.total_lines.saturating_sub(1))
+        } else {
+            self.scroll
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -588,21 +820,15 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
     let _guard = TuiGuard { root: root.clone() };
     let mut state = SessionState::root();
     let mut command = String::new();
-    let mut message = String::new();
+    let mut view = TuiView::default();
     let mut clipboard = SessionClipboard::new();
     let mut selection = None;
     let mut mouse_gesture: Option<MouseGesture> = None;
-    let mut frame = draw_tui(
-        &root,
-        state.pointer(),
-        &command,
-        &message,
-        selection.as_ref(),
-    )?;
+    let mut frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
     loop {
         if !is_service_up(&root) {
-            message = "service disconnected".to_string();
-            draw_tui(&root, state.pointer(), &command, &message, None)?;
+            view.message = StatusMessage::Error("service disconnected".to_string());
+            draw_tui(&root, state.pointer(), &view, &command, None)?;
             break;
         }
         match read_tui_event()? {
@@ -611,31 +837,21 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     if let Err(error) =
                         copy_screen_selection(&frame.screen, selection, &mut clipboard)
                     {
-                        message = format!("clipboard copy failed: {error:#}");
+                        view.message =
+                            StatusMessage::Error(format!("clipboard copy failed: {error:#}"));
                     }
-                    frame = draw_tui(
-                        &root,
-                        state.pointer(),
-                        &command,
-                        &message,
-                        selection.as_ref(),
-                    )?;
+                    frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
                     continue;
                 }
                 if is_paste_shortcut(&key) {
                     match paste_command_bar(&mut command, &mut clipboard) {
                         Ok(()) => selection = None,
                         Err(error) => {
-                            message = format!("clipboard paste failed: {error:#}");
+                            view.message =
+                                StatusMessage::Error(format!("clipboard paste failed: {error:#}"));
                         }
                     }
-                    frame = draw_tui(
-                        &root,
-                        state.pointer(),
-                        &command,
-                        &message,
-                        selection.as_ref(),
-                    )?;
+                    frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
                     continue;
                 }
                 selection = None;
@@ -659,12 +875,18 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                         match execution {
                             Ok(Execution::Exit) => break,
                             Ok(Execution::Continue(result)) => {
-                                present_tui_result(result, &mut message)
+                                present_tui_result(result, &mut view)
                             }
-                            Err(err) => message = format!("{err:#}"),
+                            Err(err) => view.message = StatusMessage::Error(format!("{err:#}")),
                         }
                     }
+                    crossterm::event::KeyCode::Esc if command.is_empty() => {
+                        view.panel = None;
+                        view.scroll = 0;
+                    }
                     crossterm::event::KeyCode::Esc => command.clear(),
+                    crossterm::event::KeyCode::PageDown => view.scroll = frame.scrolled_down(),
+                    crossterm::event::KeyCode::PageUp => view.scroll = frame.scrolled_up(),
                     _ => {}
                 }
             }
@@ -674,6 +896,12 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     column: mouse.column,
                 };
                 match mouse.kind {
+                    crossterm::event::MouseEventKind::ScrollDown => {
+                        view.scroll = frame.scrolled_by(TUI_WHEEL_LINES as isize);
+                    }
+                    crossterm::event::MouseEventKind::ScrollUp => {
+                        view.scroll = frame.scrolled_by(-(TUI_WHEEL_LINES as isize));
+                    }
                     crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                         selection = None;
                         mouse_gesture = Some(MouseGesture {
@@ -707,9 +935,11 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                             let conn = open_db(&root)?;
                             if target_exists(&conn, target)? {
                                 state.follow_link(target.to_string());
-                                message.clear();
+                                present_tui_result(CommandResult::Navigated, &mut view);
                             } else {
-                                message = format!("target `{target}` does not exist");
+                                view.message = StatusMessage::Error(format!(
+                                    "target `{target}` does not exist"
+                                ));
                             }
                         }
                     }
@@ -722,57 +952,71 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
             }
             _ => continue,
         }
-        frame = draw_tui(
-            &root,
-            state.pointer(),
-            &command,
-            &message,
-            selection.as_ref(),
-        )?;
+        if let Some(notice) = command::recover_missing_pointer(&root, &mut state)? {
+            present_tui_result(CommandResult::Navigated, &mut view);
+            view.message = StatusMessage::Info(notice);
+        }
+        frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
     }
     Ok(())
 }
 
-fn present_tui_result(result: CommandResult, message: &mut String) {
+const TUI_WHEEL_LINES: usize = 3;
+
+/// What the TUI shows besides the Pointer's card: an optional result panel,
+/// the content scroll offset, and the one-line status message.
+#[derive(Debug, Default)]
+struct TuiView {
+    panel: Option<Vec<ViewLine>>,
+    scroll: usize,
+    message: StatusMessage,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum StatusMessage {
+    #[default]
+    None,
+    Info(String),
+    Error(String),
+}
+
+impl StatusMessage {
+    fn text(&self) -> &str {
+        match self {
+            Self::None => "",
+            Self::Info(text) | Self::Error(text) => text,
+        }
+    }
+}
+
+fn present_tui_result(result: CommandResult, view: &mut TuiView) {
     match result {
         CommandResult::Noop => {}
-        CommandResult::Navigated | CommandResult::Changed => message.clear(),
-        CommandResult::List(cards) => {
-            *message = cards
-                .into_iter()
-                .map(|card| format!("{} {}", card.address, card.title))
-                .collect::<Vec<_>>()
-                .join(" | ");
+        CommandResult::Navigated | CommandResult::Changed => {
+            view.panel = None;
+            view.scroll = 0;
+            view.message = StatusMessage::None;
         }
         CommandResult::Stats(stats) => {
-            *message = format!(
+            view.message = StatusMessage::Info(format!(
                 "total: {} | topics: {} | regular: {} | literature: {}",
                 stats.total, stats.topics, stats.regular, stats.literature
-            );
+            ));
         }
         CommandResult::Status(status) => {
-            *message = format!("state: up | sessions: {}", status.sessions);
+            view.message = StatusMessage::Info(format!(
+                "state: up | sessions: {} | cards: {}",
+                status.sessions, status.cards
+            ));
         }
-        CommandResult::BrokenLinks(broken_links) => {
-            *message = if broken_links.is_empty() {
-                "no broken links".to_string()
-            } else {
-                broken_links
-                    .into_iter()
-                    .map(|broken| {
-                        format!(
-                            "{} {} -> {}: {}",
-                            broken.source_address,
-                            broken.source_title,
-                            broken.target,
-                            broken.source_line
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            };
+        CommandResult::BrokenLinks(broken_links) if broken_links.is_empty() => {
+            view.message = StatusMessage::Info("no broken links".to_string());
         }
-        CommandResult::Help(help) => *message = help.to_string(),
+        result => {
+            view.panel = result_panel(&result);
+            view.scroll = 0;
+            view.message = StatusMessage::None;
+        }
     }
 }
 
@@ -838,133 +1082,187 @@ fn link_target_at(links: &[LinkSpan], row: u16, column: u16) -> Option<&str> {
         .map(|span| span.target.as_str())
 }
 
+/// Draws the Session screen: scrollable content (the card view or a result
+/// panel) at the top, one status row, and the command bar on the last row.
 fn draw_tui(
     root: &Path,
     pointer: &Pointer,
+    view: &TuiView,
     command: &str,
-    message: &str,
     selection: Option<&ScreenSelection>,
 ) -> Result<TuiFrame> {
     let conn = open_db(root)?;
     let link_lifecycle = link_lifecycle(&conn)?;
+    let content = match &view.panel {
+        Some(panel) => panel.clone(),
+        None => view_lines(&conn, pointer)?,
+    };
+    let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    let width = width.max(1);
+    let height = height.max(3);
+    let message_rows = match &view.message {
+        StatusMessage::None => 1,
+        message => tui_line_height(message.text()).clamp(1, 3),
+    };
+    let command_row = height - 1;
+    let message_row = command_row - message_rows;
+    let total_lines = content.len();
+    let scroll = view.scroll.min(total_lines.saturating_sub(1));
+
     let mut stdout = io::stdout();
     let mut links = Vec::new();
-    let mut lines = Vec::new();
+    let mut screen_lines = Vec::new();
     let mut row = 0_u16;
+    let mut visible_lines = 0;
     crossterm::queue!(
         stdout,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    match pointer {
-        Pointer::Root => {
-            write_tui_plain_line(&mut stdout, &mut row, "ROOT")?;
-            lines.push("ROOT".to_string());
-            for card in load_cards(&conn)?.into_iter().filter(|card| card.is_topic) {
-                let parsed = parse_card_text(&card.text)?;
-                write_tui_location_line(
-                    &mut stdout,
-                    &mut row,
-                    &card.address,
-                    &format!(" {}", parsed.title),
-                    &mut links,
-                )?;
-                lines.push(format!("{} {}", card.address, parsed.title));
-            }
+    for line in content.iter().skip(scroll) {
+        let remaining = message_row.saturating_sub(row);
+        if remaining == 0 {
+            break;
         }
-        Pointer::Card(location) => {
-            let card = load_card(&conn, location)?;
-            let parsed = parse_card_text(&card.text)?;
-            if card.is_lit {
-                write_tui_plain_line(
-                    &mut stdout,
-                    &mut row,
-                    &format!(
-                        "citation key: {}",
-                        card.citation_key
-                            .as_deref()
-                            .context("Literature Card is missing its Citation key")?
-                    ),
-                )?;
-                lines.push(format!(
-                    "citation key: {}",
-                    card.citation_key
-                        .as_deref()
-                        .context("Literature Card is missing its Citation key")?
-                ));
-            } else {
-                write_tui_plain_line(
-                    &mut stdout,
-                    &mut row,
-                    &format!("location: {}", card.address),
-                )?;
-                lines.push(format!("location: {}", card.address));
+        let line = if tui_line_height(&line.text()) > remaining {
+            if visible_lines > 0 {
+                break;
             }
-            write_tui_plain_line(&mut stdout, &mut row, &format!("title: {}", parsed.title))?;
-            lines.push(format!("title: {}", parsed.title));
-            if card.is_lit {
-                write_tui_plain_line(&mut stdout, &mut row, "metadata:")?;
-                lines.push("metadata:".to_string());
-                for line in card
-                    .bibtex
-                    .as_deref()
-                    .context("Literature Card is missing its BibTeX metadata")?
-                    .lines()
-                {
-                    write_tui_plain_line(&mut stdout, &mut row, line)?;
-                    lines.push(line.to_string());
-                }
-            }
-            for line in parsed.body.lines() {
-                write_tui_link_line(&mut stdout, &link_lifecycle, &mut row, line, &mut links)?;
-                lines.push(line.to_string());
-            }
-            if !parsed.reverse.trim().is_empty() {
-                for line in parsed.reverse.lines() {
-                    write_tui_link_line(&mut stdout, &link_lifecycle, &mut row, line, &mut links)?;
-                    lines.push(line.to_string());
-                }
-            }
-            if !card.is_lit
-                && let Ok(direct) = direct_successor(&card.address)
-                && location_exists(&conn, &direct)?
-            {
-                write_tui_link_line(
-                    &mut stdout,
-                    &link_lifecycle,
-                    &mut row,
-                    &format!("direct: [[{direct}]]"),
-                    &mut links,
-                )?;
-                lines.push(format!("direct: [[{direct}]]"));
-            }
-            if !card.is_lit {
-                for side in side_successors(&conn, &card.address)? {
-                    write_tui_link_line(
-                        &mut stdout,
-                        &link_lifecycle,
-                        &mut row,
-                        &format!("side: [[{side}]]"),
-                        &mut links,
-                    )?;
-                    lines.push(format!("side: [[{side}]]"));
-                }
-            }
-        }
+            line.clipped(remaining as usize * width as usize)
+        } else {
+            line.clone()
+        };
+        write_tui_view_line(&mut stdout, &link_lifecycle, &mut row, &line, &mut links)?;
+        screen_lines.push(line.text());
+        visible_lines += 1;
     }
-    row = row.saturating_add(1);
-    lines.push(String::new());
-    write_tui_plain_line(&mut stdout, &mut row, message)?;
-    lines.push(message.to_string());
-    write_tui_plain_line(&mut stdout, &mut row, &format!("> {command}"))?;
-    lines.push(format!("> {command}"));
-    let width = crossterm::terminal::size()?.0;
-    let screen = RenderedScreen::from_logical_lines(&lines, width);
+    for _ in row..message_row {
+        screen_lines.push(String::new());
+    }
+
+    let (message_text, message_color) = match &view.message {
+        StatusMessage::None => (
+            tui_hint(view.panel.is_some(), scroll, visible_lines, total_lines),
+            Some(crossterm::style::Color::DarkGrey),
+        ),
+        StatusMessage::Info(text) => (text.clone(), None),
+        StatusMessage::Error(text) => (text.clone(), Some(crossterm::style::Color::DarkRed)),
+    };
+    let message_text = clip_to_cells(
+        &expand_display_tabs(&message_text),
+        message_rows as usize * width as usize,
+    );
+    crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, message_row))?;
+    if let Some(color) = message_color {
+        crossterm::queue!(stdout, crossterm::style::SetForegroundColor(color))?;
+    }
+    crossterm::queue!(
+        stdout,
+        crossterm::style::Print(&message_text),
+        crossterm::style::ResetColor
+    )?;
+    screen_lines.push(message_text);
+
+    let command_text = command_bar_text(command, width);
+    crossterm::queue!(
+        stdout,
+        crossterm::cursor::MoveTo(0, command_row),
+        crossterm::style::Print(&command_text)
+    )?;
+    screen_lines.push(command_text.clone());
+
+    let screen = RenderedScreen::from_logical_lines(&screen_lines, width);
     if let Some(selection) = selection {
         queue_screen_selection(&mut stdout, &screen, *selection)?;
     }
+    crossterm::queue!(
+        stdout,
+        crossterm::cursor::MoveTo(tui_text_width(&command_text) as u16, command_row)
+    )?;
     stdout.flush()?;
-    Ok(TuiFrame { links, screen })
+    Ok(TuiFrame {
+        links,
+        screen,
+        scroll,
+        visible_lines,
+        total_lines,
+        content_rows: message_row as usize,
+    })
+}
+
+fn tui_hint(panel_open: bool, scroll: usize, visible_lines: usize, total_lines: usize) -> String {
+    let mut hint = String::new();
+    if scroll > 0 || scroll + visible_lines < total_lines {
+        hint.push_str(&format!(
+            "lines {}-{} of {total_lines} | ",
+            scroll + 1,
+            scroll + visible_lines
+        ));
+    }
+    hint.push_str(if panel_open {
+        "Esc: close panel | PgUp/PgDn: scroll | help: commands | q: quit"
+    } else {
+        "help: commands | PgUp/PgDn: scroll | q: quit"
+    });
+    hint
+}
+
+/// Keeps the command bar on one row by showing the tail of long input.
+fn command_bar_text(command: &str, width: u16) -> String {
+    let full = format!("> {command}");
+    let max_cells = (width as usize).saturating_sub(1).max(8);
+    if tui_text_width(&full) <= max_cells {
+        return full;
+    }
+    let budget = max_cells - "> ...".len();
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for ch in command.chars().rev() {
+        let width = char_display_width(ch);
+        if used + width > budget {
+            break;
+        }
+        used += width;
+        tail.push(ch);
+    }
+    format!("> ...{}", tail.into_iter().rev().collect::<String>())
+}
+
+fn write_tui_view_line<W: Write>(
+    stdout: &mut W,
+    lifecycle: &link::LinkLifecycle,
+    row: &mut u16,
+    line: &ViewLine,
+    links: &mut Vec<LinkSpan>,
+) -> Result<()> {
+    match line {
+        ViewLine::Plain(text) => write_tui_plain_line(stdout, row, text),
+        ViewLine::Heading(text) => {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Bold)
+            )?;
+            write_tui_plain_line(stdout, row, text)?;
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetAttribute(crossterm::style::Attribute::NormalIntensity)
+            )?;
+            Ok(())
+        }
+        ViewLine::Hint(text) => {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey)
+            )?;
+            write_tui_plain_line(stdout, row, text)?;
+            crossterm::queue!(stdout, crossterm::style::ResetColor)?;
+            Ok(())
+        }
+        ViewLine::Linked(text) => write_tui_link_line(stdout, lifecycle, row, text, links),
+        ViewLine::Entry { address, rest } => {
+            write_tui_location_line(stdout, row, address, rest, links)
+        }
+    }
 }
 
 fn queue_screen_selection<W: Write>(
@@ -2100,24 +2398,34 @@ fn draw_tui_confirmation(
     Ok(screen)
 }
 
-fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<Vec<Card>> {
+/// `ls` lists Topics and Literature Cards at ROOT, and otherwise the whole
+/// tree that holds the Pointer, root first.
+fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<(String, Vec<Card>)> {
     let cards = load_cards(conn)?;
     match pointer {
-        Pointer::Root => Ok(cards
-            .into_iter()
-            .filter(|card| card.is_topic || card.is_lit)
-            .collect()),
+        Pointer::Root => {
+            let listed = cards
+                .into_iter()
+                .filter(|card| card.is_topic || card.is_lit)
+                .collect::<Vec<_>>();
+            Ok((format!("topics and literature: {}", listed.len()), listed))
+        }
         Pointer::Card(target) => {
             let current = load_card(conn, target)?;
-            if current.is_lit {
-                Ok(cards.into_iter().filter(|card| card.is_lit).collect())
+            let tree = tree_id(&current.address);
+            let kind = if is_literature_tree_id(tree) {
+                "Literature tree"
             } else {
-                let topic = topic_id(&current.address)?;
-                Ok(cards
-                    .into_iter()
-                    .filter(|card| card.address.starts_with(&format!("{topic}/")))
-                    .collect())
-            }
+                "Topic tree"
+            };
+            let listed = cards
+                .into_iter()
+                .filter(|card| is_tree_member(&card.address, tree))
+                .collect::<Vec<_>>();
+            Ok((
+                format!("{kind} {}: {} cards", tree_root_address(tree), listed.len()),
+                listed,
+            ))
         }
     }
 }
@@ -2142,60 +2450,8 @@ fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPar
 
 fn print_view(root: &Path, pointer: &Pointer) -> Result<()> {
     let conn = open_db(root)?;
-    match pointer {
-        Pointer::Root => {
-            println!("ROOT");
-            for card in load_cards(&conn)?.into_iter().filter(|card| card.is_topic) {
-                let parsed = parse_card_text(&card.text)?;
-                println!("{} {}", card.address, parsed.title);
-            }
-        }
-        Pointer::Card(location) => {
-            let card = load_card(&conn, location)?;
-            let parsed = parse_card_text(&card.text)?;
-            if card.is_lit {
-                println!(
-                    "citation key: {}",
-                    card.citation_key
-                        .as_deref()
-                        .context("Literature Card is missing its Citation key")?
-                );
-            } else {
-                println!("location: {}", card.address);
-            }
-            println!("title: {}", parsed.title);
-            if card.is_lit {
-                println!("metadata:");
-                print!(
-                    "{}",
-                    card.bibtex
-                        .as_deref()
-                        .context("Literature Card is missing its BibTeX metadata")?
-                );
-                if !card
-                    .bibtex
-                    .as_deref()
-                    .is_some_and(|raw| raw.ends_with('\n'))
-                {
-                    println!();
-                }
-            }
-            println!("{}", parsed.body);
-            if !parsed.reverse.trim().is_empty() {
-                println!("{}", parsed.reverse);
-            }
-            if !card.is_lit
-                && let Ok(direct) = direct_successor(&card.address)
-                && location_exists(&conn, &direct)?
-            {
-                println!("direct: [[{direct}]]");
-            }
-            if !card.is_lit {
-                for side in side_successors(&conn, &card.address)? {
-                    println!("side: [[{side}]]");
-                }
-            }
-        }
+    for line in view_lines(&conn, pointer)? {
+        println!("{}", line.text());
     }
     Ok(())
 }
@@ -2229,15 +2485,139 @@ mod tests {
             line_result_lines(result.clone()),
             ["total: 4", "topics: 1", "regular: 2", "literature: 1",]
         );
-        let mut message = "old status".to_string();
-        present_tui_result(result, &mut message);
-        assert_eq!(message, "total: 4 | topics: 1 | regular: 2 | literature: 1");
+        let mut view = TuiView {
+            message: StatusMessage::Info("old status".to_string()),
+            ..TuiView::default()
+        };
+        present_tui_result(result, &mut view);
+        assert_eq!(
+            view.message,
+            StatusMessage::Info("total: 4 | topics: 1 | regular: 2 | literature: 1".to_string())
+        );
 
-        present_tui_result(CommandResult::Navigated, &mut message);
-        assert!(message.is_empty());
-        message.push_str("kept");
-        present_tui_result(CommandResult::Noop, &mut message);
-        assert_eq!(message, "kept");
+        present_tui_result(CommandResult::Navigated, &mut view);
+        assert_eq!(view.message, StatusMessage::None);
+        view.message = StatusMessage::Info("kept".to_string());
+        present_tui_result(CommandResult::Noop, &mut view);
+        assert_eq!(view.message, StatusMessage::Info("kept".to_string()));
+    }
+
+    #[test]
+    fn list_results_open_a_clickable_panel_that_navigation_closes() {
+        let listing = CommandResult::List(command::Listing {
+            heading: "Literature tree Smith2024: 2 cards".to_string(),
+            cards: vec![
+                command::CardSummary {
+                    address: "Smith2024".to_string(),
+                    title: "Work".to_string(),
+                },
+                command::CardSummary {
+                    address: "Smith2024/1".to_string(),
+                    title: "Note".to_string(),
+                },
+            ],
+        });
+
+        assert_eq!(
+            line_result_lines(listing.clone()),
+            [
+                "Literature tree Smith2024: 2 cards",
+                "Smith2024 Work",
+                "Smith2024/1 Note",
+            ]
+        );
+        let mut view = TuiView {
+            scroll: 4,
+            ..TuiView::default()
+        };
+        present_tui_result(listing, &mut view);
+        assert_eq!(view.scroll, 0);
+        assert_eq!(
+            view.panel.as_deref().map(|panel| panel[2].clone()),
+            Some(ViewLine::Entry {
+                address: "Smith2024/1".to_string(),
+                rest: " Note".to_string(),
+            })
+        );
+
+        present_tui_result(CommandResult::Navigated, &mut view);
+        assert!(view.panel.is_none());
+    }
+
+    #[test]
+    fn empty_broken_link_results_are_a_message_not_a_panel() {
+        let mut view = TuiView::default();
+        present_tui_result(CommandResult::BrokenLinks(Vec::new()), &mut view);
+        assert!(view.panel.is_none());
+        assert_eq!(
+            view.message,
+            StatusMessage::Info("no broken links".to_string())
+        );
+        assert_eq!(
+            line_result_lines(CommandResult::BrokenLinks(Vec::new())),
+            ["no broken links"]
+        );
+    }
+
+    #[test]
+    fn frame_scrolling_pages_within_content_bounds() {
+        let frame = TuiFrame {
+            links: Vec::new(),
+            screen: RenderedScreen { rows: Vec::new() },
+            scroll: 0,
+            visible_lines: 10,
+            total_lines: 25,
+            content_rows: 10,
+        };
+        assert_eq!(frame.scrolled_down(), 9);
+        assert_eq!(frame.scrolled_up(), 0);
+        assert_eq!(frame.scrolled_by(3), 3);
+
+        let near_end = TuiFrame { scroll: 9, ..frame };
+        assert_eq!(near_end.scrolled_down(), 15, "the final page stays full");
+
+        let at_end = TuiFrame {
+            scroll: 15,
+            visible_lines: 10,
+            ..near_end
+        };
+        assert_eq!(
+            at_end.scrolled_down(),
+            15,
+            "no scrolling past the last line"
+        );
+        assert_eq!(at_end.scrolled_up(), 6, "PageUp moves a full screen back");
+
+        let wrapped = TuiFrame {
+            scroll: 15,
+            visible_lines: 4,
+            ..at_end
+        };
+        assert_eq!(wrapped.scrolled_down(), 16, "wrapped tails stay reachable");
+    }
+
+    #[test]
+    fn long_command_bar_input_keeps_its_tail_on_one_row() {
+        assert_eq!(command_bar_text("go 0/1", 80), "> go 0/1");
+        let long = format!("go {}", "x".repeat(100));
+        let rendered = command_bar_text(&long, 20);
+        assert_eq!(rendered, format!("> ...{}", "x".repeat(14)));
+        assert!(tui_text_width(&rendered) < 20);
+    }
+
+    #[test]
+    fn view_line_clipping_respects_display_cells_and_keeps_entry_addresses() {
+        assert_eq!(
+            ViewLine::Plain("ab中c".to_string()).clipped(3),
+            ViewLine::Plain("ab".to_string())
+        );
+        assert_eq!(
+            ViewLine::entry("0/1", "Long title").clipped(8),
+            ViewLine::Entry {
+                address: "0/1".to_string(),
+                rest: " Long".to_string(),
+            }
+        );
     }
 
     #[test]

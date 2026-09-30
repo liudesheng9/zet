@@ -610,7 +610,7 @@ fn shell_create_edit_and_successor_locations() {
         .arg("n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("expected --at <location>"));
+        .stderr(predicate::str::contains("expected --at <target>"));
 
     home.cmd_with_editor("Second\n<--->\nnext\n<--->\n")
         .args(["n", "--at", "0/1"])
@@ -634,7 +634,9 @@ fn shell_create_edit_and_successor_locations() {
         .args(["b", "--at", "0/0"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not valid on a topic"));
+        .stderr(predicate::str::contains(
+            "side successors cannot start from a Topic Card",
+        ));
 
     home.cmd()
         .arg("stats")
@@ -1059,10 +1061,10 @@ fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_orde
         .output()
         .expect("automatic ROOT output");
     let automatic_root = String::from_utf8(automatic_root.stdout).unwrap();
-    assert!(automatic_root.starts_with("ROOT\n0/0 Topic\n"));
+    assert!(automatic_root.starts_with(
+        "ROOT\ntopics:\n0/0 Topic\nliterature:\nAlphaKey Alpha Work\nZebraKey Zebra Work\n"
+    ));
     assert!(!automatic_root.contains("0/1 Base"));
-    assert!(!automatic_root.contains("AlphaKey"));
-    assert!(!automatic_root.contains("ZebraKey"));
 
     let root_ls = home
         .cmd()
@@ -1079,9 +1081,13 @@ fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_orde
         .output()
         .expect("Topic ls output");
     let topic_ls = String::from_utf8(topic_ls.stdout).unwrap();
-    assert!(topic_ls.contains("0/0 Topic\n0/1 Base\n"));
-    assert!(!topic_ls.contains("AlphaKey Alpha Work"));
-    assert!(!topic_ls.contains("ZebraKey Zebra Work"));
+    // The initial ROOT view lists Literature Cards; the Topic listing must not.
+    let topic_listing = &topic_ls[topic_ls
+        .find("Topic tree 0/0: 2 cards\n")
+        .expect("Topic tree listing")..];
+    assert!(topic_listing.starts_with("Topic tree 0/0: 2 cards\n0/0 Topic\n0/1 Base\n"));
+    assert!(!topic_listing.contains("AlphaKey Alpha Work"));
+    assert!(!topic_listing.contains("ZebraKey Zebra Work"));
 
     let literature_ls = home
         .cmd()
@@ -1089,9 +1095,25 @@ fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_orde
         .output()
         .expect("Literature ls output");
     let literature_ls = String::from_utf8(literature_ls.stdout).unwrap();
-    assert!(literature_ls.contains("AlphaKey Alpha Work\nZebraKey Zebra Work\n"));
+    assert!(literature_ls.contains("Literature tree ZebraKey: 1 cards\nZebraKey Zebra Work\n"));
+    assert!(!literature_ls.contains("Literature tree ZebraKey: 1 cards\nAlphaKey"));
     assert_eq!(literature_ls.matches("0/0 Topic").count(), 1);
     assert!(!literature_ls.contains("0/1 Base"));
+}
+
+#[test]
+fn empty_root_view_names_the_commands_that_create_topics_and_literature() {
+    let home = TestHome::new();
+    home.configure_and_up();
+
+    home.cmd()
+        .write_stdin("q\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with(
+            "ROOT\ntopics:\n  (none yet; create one with t <title>)\n\
+             literature:\n  (none yet; create one with l)\n",
+        ));
 }
 
 #[test]
@@ -1158,7 +1180,7 @@ fn shell_literature_edit_selector_errors_fail_before_editor_launch() {
         .success()
         .stdout(predicate::str::contains("  zt l\n"))
         .stdout(predicate::str::contains("  zt del --at <target>\n"))
-        .stdout(predicate::str::contains("  zt n --at <location>\n"));
+        .stdout(predicate::str::contains("  zt n --at <target>\n"));
 
     let cases: &[(&[&str], &str)] = &[
         (&["e", "--at", "SelectorKey"], "requires --part"),
@@ -1371,28 +1393,43 @@ fn literature_delete_leaves_broken_inbound_links_and_refuses_location_topology()
             "link target `deletelit` does not exist",
         ));
 
-    for command in ["n", "b"] {
-        home.cmd_with_editor("Never\n<--->\ncreated\n<--->\n")
-            .args([command, "--at", "DeleteLit"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("Literature Card"));
-    }
+    home.cmd_with_editor("Never\n<--->\ncreated\n<--->\n")
+        .args(["b", "--at", "DeleteLit"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "side successors cannot start from a Literature Card",
+        ));
     home.cmd()
         .args(["mv", "--at", "DeleteLit", "0/1"])
         .write_stdin("move\n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Literature Card"));
+        .stderr(predicate::str::contains("Literature Card cannot be moved"));
+    home.cmd_with_editor("Tree Note\n<--->\ninside the tree\n<--->\n")
+        .args(["n", "--at", "DeleteLit"])
+        .assert()
+        .success()
+        .stdout("DeleteLit/1\n");
 
     home.cmd()
         .args(["del", "--at", "DeleteLit"])
         .write_stdin("delete\n")
         .assert()
+        .failure()
+        .stdout(predicate::str::contains("type `DeleteLit` to confirm:"))
+        .stderr(predicate::str::contains("confirmation did not match"));
+    assert!(home.location_exists("DeleteLit/1"));
+    home.cmd()
+        .args(["del", "--at", "DeleteLit"])
+        .write_stdin("DeleteLit\n")
+        .assert()
         .success()
-        .stdout(predicate::str::contains("delete DeleteLit"))
-        .stdout(predicate::str::contains("deleted: 1"))
+        .stdout(predicate::str::contains("delete DeleteLit\n"))
+        .stdout(predicate::str::contains("delete DeleteLit/1\n"))
+        .stdout(predicate::str::contains("deleted: 2"))
         .stdout(predicate::str::contains("compacted:").not());
+    assert!(!home.location_exists("DeleteLit/1"));
 
     home.cmd()
         .arg("lsbk")
@@ -1502,7 +1539,7 @@ fn move_subtree_validates_target_and_rewrites_links() {
         .write_stdin("move\n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("topic cards cannot be moved"));
+        .stderr(predicate::str::contains("Topic Cards cannot be moved"));
 
     home.cmd()
         .args(["mv", "--at", "0/1|a", "0/2|b"])
@@ -1908,7 +1945,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("zt n --at <location>").not());
+        .stdout(predicate::str::contains("zt n --at <target>").not());
     home.cmd()
         .arg("stats")
         .assert()
@@ -1926,7 +1963,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("zt n --at <location>"))
+        .stdout(predicate::str::contains("zt n --at <target>"))
         .stdout(predicate::str::contains("zt lsbk"))
         .stdout(predicate::str::contains("zt stats"))
         .stdout(predicate::str::contains("zt help"))
@@ -2983,4 +3020,258 @@ fn killed_session_is_dropped_from_open_session_count() {
         .success()
         .stdout(predicate::str::contains("sessions: 0"));
     home.cmd().arg("down").assert().success();
+}
+
+#[test]
+fn literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let bibtex = "@book{TreeLit, title={Tree Work}}";
+    for (bib, text) in [
+        (bibtex, "Tree Work\n<--->\nwork\n<--->\n"),
+        (
+            "@book{OtherLit, title={Other Work}}",
+            "Other Work\n<--->\nother\n<--->\n",
+        ),
+    ] {
+        let (mut create, _) = home.cmd_with_editor_sequence(&[bib, text]);
+        create.arg("l").assert().success();
+    }
+    home.cmd_with_editor("Topic\n<--->\ntopic\n<--->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor("Idea\n<--->\nidea\n<--->\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success();
+
+    home.cmd_with_editor("Chapter\n<--->\nchapter notes\n<--->\n")
+        .args(["n", "--at", "TreeLit"])
+        .assert()
+        .success()
+        .stdout("TreeLit/1\n");
+    home.cmd_with_editor("Again\n<--->\nagain\n<--->\n")
+        .args(["n", "--at", "TreeLit"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "direct successor already exists: TreeLit/1",
+        ));
+    home.cmd_with_editor("Next\n<--->\nnext\n<--->\n")
+        .args(["n", "--at", "TreeLit/1"])
+        .assert()
+        .success()
+        .stdout("TreeLit/2\n");
+    for expected in ["TreeLit/1|a\n", "TreeLit/1|b\n"] {
+        home.cmd_with_editor("Aside\n<--->\naside\n<--->\n")
+            .args(["b", "--at", "TreeLit/1"])
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+    assert_eq!(
+        home.literature_data("TreeLit").0,
+        bibtex,
+        "the tree root keeps its exact BibTeX metadata"
+    );
+
+    home.cmd_with_editor("Idea\n<--->\ncites [[TreeLit/1|b]]\n<--->\n")
+        .args(["e", "--at", "0/1"])
+        .assert()
+        .success();
+    assert!(
+        home.card_text("TreeLit/1|b")
+            .ends_with("This note has been referred by note [[0/1]] Idea")
+    );
+    home.cmd()
+        .write_stdin("go TreeLit\ngo TreeLit/1\nq\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("citation key: TreeLit"))
+        .stdout(predicate::str::contains("direct: [[TreeLit/1]]"))
+        .stdout(predicate::str::contains("location: TreeLit/1"))
+        .stdout(predicate::str::contains("parent: [[TreeLit]]"))
+        .stdout(predicate::str::contains("direct: [[TreeLit/2]]"))
+        .stdout(predicate::str::contains("side: [[TreeLit/1|a]]"));
+
+    home.cmd()
+        .args(["del", "--at", "TreeLit/1|a"])
+        .write_stdin("delete\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TreeLit/1|b -> TreeLit/1|a"));
+    assert!(home.card_text("0/1").contains("cites [[TreeLit/1|a]]"));
+
+    for (at, to, error) in [
+        (
+            "TreeLit/2",
+            "0/2",
+            "Literature tree Cards cannot leave Literature tree `TreeLit`",
+        ),
+        (
+            "TreeLit/2",
+            "OtherLit/1",
+            "Literature tree Cards cannot leave Literature tree `TreeLit`",
+        ),
+        (
+            "0/1",
+            "TreeLit/1|b",
+            "Topic tree Cards cannot move into Literature tree `TreeLit`",
+        ),
+    ] {
+        home.cmd()
+            .args(["mv", "--at", at, to])
+            .write_stdin("move\n")
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("move verification").not())
+            .stderr(predicate::str::contains(error));
+    }
+    assert!(home.location_exists("TreeLit/2"));
+    assert!(home.location_exists("0/1"));
+    assert!(!home.location_exists("OtherLit/1"));
+
+    home.cmd()
+        .args(["mv", "--at", "TreeLit/2", "TreeLit/1|b"])
+        .write_stdin("move\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TreeLit/2 -> TreeLit/1|b"));
+
+    home.cmd_with_editor("@book{RenamedLit, title={Tree Work}}")
+        .args(["e", "--at", "TreeLit", "--part", "metadata"])
+        .write_stdin("move\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("citation key rename:"))
+        .stdout(predicate::str::contains("TreeLit -> RenamedLit"))
+        .stdout(predicate::str::contains("TreeLit/1 -> RenamedLit/1"))
+        .stdout(predicate::str::contains("TreeLit/1|a -> RenamedLit/1|a"))
+        .stdout(predicate::str::contains("TreeLit/1|b -> RenamedLit/1|b"))
+        .stdout(predicate::str::contains("renamed cards: 4"))
+        .stdout(predicate::str::contains("link macros rewritten: 1"));
+    for old in ["TreeLit/1", "TreeLit/1|a", "TreeLit/1|b"] {
+        assert!(!home.location_exists(old), "{old} was not renamed");
+    }
+    for new in ["RenamedLit/1", "RenamedLit/1|a", "RenamedLit/1|b"] {
+        assert!(home.location_exists(new), "{new} is missing");
+    }
+    assert!(home.card_text("0/1").contains("cites [[RenamedLit/1|a]]"));
+    home.cmd().arg("lsbk").assert().success().stdout("");
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout("total: 7\ntopics: 1\nregular: 4\nliterature: 2\n");
+}
+
+#[test]
+fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let (mut create, _) = home.cmd_with_editor_sequence(&[
+        "@book{LineTree, title={Line Tree}}",
+        "Line Tree\n<--->\nroot body\n<--->\n",
+    ]);
+    create.arg("l").assert().success();
+
+    let output = home
+        .cmd()
+        .write_stdin(concat!(
+            "go LineTree\n",
+            "help\n",
+            "n\n",
+            "First Note\n<--->\nfirst body\n<--->\n\x13",
+            "help\n",
+            "ls\n",
+            "up\n",
+            "up\n",
+            "up\n",
+            "q\n",
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).expect("session output is UTF-8");
+
+    assert!(stdout.contains(
+        "commands: go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
+    ));
+    assert!(
+        stdout.contains(
+            "location: LineTree/1\ntitle: First Note\nfirst body\nparent: [[LineTree]]\n"
+        )
+    );
+    assert!(stdout.contains(
+        "commands: go [<target>] | root | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q\n"
+    ));
+    assert!(stdout.contains("  mv <new-location>  move the current card"));
+    assert!(stdout.contains(
+        "Literature tree LineTree: 2 cards\nLineTree Line Tree\nLineTree/1 First Note\n"
+    ));
+    let after_ls = &stdout[stdout.find("Literature tree LineTree").unwrap()..];
+    let citation_view = after_ls
+        .find("citation key: LineTree")
+        .expect("up to the tree root");
+    let root_view = after_ls.find("ROOT\n").expect("up from the tree root");
+    assert!(citation_view < root_view);
+    assert_eq!(
+        home.card_text("LineTree/1"),
+        "First Note\n<--->\nfirst body\n<--->\n"
+    );
+}
+
+#[test]
+fn dump_maps_literature_tree_cards_by_location() {
+    if !host_zip_backend_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    home.configure_and_up();
+    let bibtex = "@book{DumpTree, title={Dump Tree}}";
+    let root_text = "Dump Tree\n<--->\nroot\n<--->\n";
+    let node_text = "Node\n<--->\nnode\n<--->\n";
+    let (mut create, _) = home.cmd_with_editor_sequence(&[bibtex, root_text]);
+    create.arg("l").assert().success();
+    home.cmd_with_editor(node_text)
+        .args(["n", "--at", "DumpTree"])
+        .assert()
+        .success();
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 2 cards to "));
+
+    let archive_path = single_dump_archive(&home, ".zip");
+    let archive_name = archive_path.file_stem().unwrap().to_str().unwrap();
+    let mut archive =
+        zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
+    let mut mapping = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/mapping.json"))
+            .expect("mapping entry"),
+        &mut mapping,
+    )
+    .expect("mapping text");
+    let mapping = serde_json::from_str::<BTreeMap<String, String>>(&mapping).unwrap();
+    assert_eq!(
+        mapping.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["DumpTree", "DumpTree/1"]
+    );
+    assert_eq!(
+        mapping["DumpTree"],
+        expected_literature_dump_filename("DumpTree", bibtex, root_text)
+    );
+    assert_eq!(
+        mapping["DumpTree/1"],
+        expected_dump_filename("DumpTree/1", node_text)
+    );
 }

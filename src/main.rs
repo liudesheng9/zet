@@ -54,7 +54,7 @@ fn run() -> Result<()> {
         }
         [cmd] if cmd == "l" => shell_create_literature(),
         [cmd, rest @ ..] if cmd == "n" => {
-            let at = parse_at(rest)?;
+            let at = parse_target_at(rest)?;
             shell_create_direct(&at)
         }
         [cmd, rest @ ..] if cmd == "b" => {
@@ -551,7 +551,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt");
         println!("  zt t <title>");
         println!("  zt l");
-        println!("  zt n --at <location>");
+        println!("  zt n --at <target>");
         println!("  zt b --at <location>");
         println!("  zt e --at <location>");
         println!("  zt e --at <citation-key> --part metadata");
@@ -718,10 +718,10 @@ fn is_valid_topic_location(location: &str) -> bool {
 }
 
 fn is_valid_regular_location(location: &str) -> bool {
-    let Some((topic, rest)) = location.split_once('/') else {
+    let Some((tree, rest)) = location.split_once('/') else {
         return false;
     };
-    if !valid_topic_id(topic) {
+    if !valid_tree_id(tree) {
         return false;
     }
     let mut segments = rest.split('|');
@@ -736,6 +736,49 @@ fn is_valid_regular_location(location: &str) -> bool {
 
 fn valid_topic_id(value: &str) -> bool {
     value == "0" || valid_positive_number(value)
+}
+
+/// A tree id is the Location text before `/`: a Topic number or a Citation key.
+fn valid_tree_id(value: &str) -> bool {
+    valid_topic_id(value) || is_literature_tree_id(value)
+}
+
+fn is_literature_tree_id(value: &str) -> bool {
+    literature::validate_citation_key(value).is_ok()
+}
+
+/// The tree an address belongs to. A Citation key is its own Literature tree id.
+fn tree_id(address: &str) -> &str {
+    address
+        .split_once('/')
+        .map(|(tree, _)| tree)
+        .unwrap_or(address)
+}
+
+fn tree_root_address(tree: &str) -> String {
+    if valid_topic_id(tree) {
+        format!("{tree}/0")
+    } else {
+        tree.to_string()
+    }
+}
+
+fn is_tree_member(address: &str, tree: &str) -> bool {
+    address == tree_root_address(tree) || address.starts_with(&format!("{tree}/"))
+}
+
+fn is_tree_root(card: &Card) -> bool {
+    card.is_topic || card.is_lit
+}
+
+fn ensure_side_parent(card: &Card) -> Result<()> {
+    if card.is_topic {
+        bail!("side successors cannot start from a Topic Card");
+    }
+    if card.is_lit {
+        bail!("side successors cannot start from a Literature Card");
+    }
+    Ok(())
 }
 
 fn valid_positive_number(value: &str) -> bool {
@@ -850,6 +893,9 @@ fn direct_successor(location: &str) -> Result<String> {
         let topic = topic_id(location)?;
         return Ok(format!("{topic}/1"));
     }
+    if is_literature_tree_id(location) {
+        return Ok(format!("{location}/1"));
+    }
     if !is_valid_regular_location(location) {
         bail!("invalid regular card location `{location}`");
     }
@@ -882,7 +928,7 @@ fn parent_location(location: &str) -> Option<String> {
     if let Some((prefix, _)) = location.rsplit_once('|') {
         Some(prefix.to_string())
     } else {
-        topic_id(location).ok().map(|topic| format!("{topic}/0"))
+        Some(tree_root_address(tree_id(location)))
     }
 }
 
@@ -1140,9 +1186,6 @@ fn shell_create_direct(at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt n is not valid on a Literature Card");
-    }
     let location = direct_successor(&parent.address)?;
     if location_exists(&conn, &location)? {
         bail!("direct successor already exists: {location}");
@@ -1162,12 +1205,7 @@ fn shell_create_side(at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
-    if parent.is_lit {
-        bail!("zt b is not valid on a Literature Card");
-    }
-    if parent.is_topic {
-        bail!("zt b is not valid on a topic card");
-    }
+    ensure_side_parent(&parent)?;
     let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
@@ -1260,9 +1298,10 @@ fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<
             continue;
         }
         if renaming {
-            let rewritten_links = count_target_links(conn, citation_key)?;
-            println!("{citation_key} -> {}", metadata.citation_key);
-            println!("link macros rewritten: {rewritten_links}");
+            let lines = citation_rename_lines(conn, citation_key, &metadata.citation_key)?;
+            for line in lines {
+                println!("{line}");
+            }
             let stdin = io::stdin();
             let mut input = stdin.lock();
             read_confirmation(&mut input, "move")?;
@@ -1272,11 +1311,40 @@ fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<
     }
 }
 
-fn count_target_links(conn: &Connection, target: &str) -> Result<usize> {
-    count_rewritten_links(
-        conn,
-        &BTreeMap::from([(target.to_string(), target.to_string())]),
-    )
+/// Renaming a Citation key renames its whole Literature tree: `Old -> New`
+/// and every `Old/<suffix> -> New/<suffix>`.
+fn citation_rename_mapping(
+    conn: &Connection,
+    old_key: &str,
+    new_key: &str,
+) -> Result<BTreeMap<String, String>> {
+    let old_prefix = format!("{old_key}/");
+    let new_prefix = format!("{new_key}/");
+    let mut mapping = BTreeMap::from([(old_key.to_string(), new_key.to_string())]);
+    for card in load_cards(conn)? {
+        if card.address.starts_with(&new_prefix) {
+            bail!(
+                "Location `{}` already uses Citation key `{new_key}`",
+                card.address
+            );
+        }
+        if let Some(suffix) = card.address.strip_prefix(&old_prefix) {
+            mapping.insert(card.address.clone(), format!("{new_prefix}{suffix}"));
+        }
+    }
+    Ok(mapping)
+}
+
+fn citation_rename_lines(conn: &Connection, old_key: &str, new_key: &str) -> Result<Vec<String>> {
+    let mapping = citation_rename_mapping(conn, old_key, new_key)?;
+    let rewritten_links = count_rewritten_links(conn, &mapping)?;
+    let mut lines = vec!["citation key rename:".to_string()];
+    for (old, new) in &mapping {
+        lines.push(format!("{old} -> {new}"));
+    }
+    lines.push(format!("renamed cards: {}", mapping.len()));
+    lines.push(format!("link macros rewritten: {rewritten_links}"));
+    Ok(lines)
 }
 
 fn update_literature_metadata(
@@ -1289,20 +1357,16 @@ fn update_literature_metadata(
     let parsed = parse_card_text(&card.text)?;
     let text = compose_card_text(title, &parsed.body, "");
     let tx = conn.transaction()?;
+    let mapping = if citation_key != card.address {
+        citation_rename_mapping(&tx, &card.address, citation_key)?
+    } else {
+        BTreeMap::new()
+    };
     tx.execute(
         "UPDATE cards SET citation_key = ?1, bibtex = ?2, text = ?3 WHERE row_id = ?4",
         params![citation_key, bibtex, text, card.row_id],
     )?;
-    if citation_key != card.address {
-        let mapping = BTreeMap::from([(card.address.clone(), citation_key.to_string())]);
-        for source in load_cards(&tx)? {
-            let rewritten = replace_link_locations(&source.text, &mapping)?;
-            tx.execute(
-                "UPDATE cards SET text = ?1 WHERE row_id = ?2",
-                params![rewritten, source.row_id],
-            )?;
-        }
-    }
+    apply_location_mapping_tx(&tx, &mapping)?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
     Ok(())
@@ -1391,32 +1455,33 @@ struct DeleteResult {
 struct DeletePlan {
     delete_set: BTreeSet<String>,
     confirmation: String,
-    is_lit: bool,
+    is_tree_root: bool,
 }
 
+/// Deleting a Tree root removes its whole tree and must be confirmed by
+/// typing the root's own address; any other Card is confirmed with `delete`.
 fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
     let card = load_card(conn, at)?;
-    let delete_set = if card.is_lit {
-        BTreeSet::from([card.address.clone()])
-    } else if card.is_topic {
-        let topic = topic_id(&card.address)?;
+    let is_tree_root = is_tree_root(&card);
+    let delete_set = if is_tree_root {
+        let tree = tree_id(&card.address);
         load_cards(conn)?
             .into_iter()
-            .filter(|card| card.address.starts_with(&format!("{topic}/")))
-            .map(|card| card.address)
+            .filter(|member| is_tree_member(&member.address, tree))
+            .map(|member| member.address)
             .collect::<BTreeSet<_>>()
     } else {
-        descendant_locations(conn, at)?
+        descendant_locations(conn, &card.address)?
     };
-    let confirmation = if card.is_topic {
-        at.to_string()
+    let confirmation = if is_tree_root {
+        card.address.clone()
     } else {
         "delete".to_string()
     };
     Ok(DeletePlan {
         delete_set,
         confirmation,
-        is_lit: card.is_lit,
+        is_tree_root,
     })
 }
 
@@ -1439,18 +1504,17 @@ fn print_delete_verification(plan: &DeletePlan) {
 }
 
 fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Result<DeleteResult> {
-    let compaction = if plan.is_lit {
+    let compaction = if plan.is_tree_root {
         BTreeMap::new()
     } else {
         side_compaction_mapping(conn, at, &plan.delete_set)?
     };
     let tx = conn.transaction()?;
     for address in &plan.delete_set {
-        if plan.is_lit {
-            tx.execute("DELETE FROM cards WHERE citation_key = ?1", [address])?;
-        } else {
-            tx.execute("DELETE FROM cards WHERE location = ?1", [address])?;
-        }
+        tx.execute(
+            "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",
+            [address],
+        )?;
     }
     apply_location_mapping_tx(&tx, &compaction)?;
     regenerate_reverse_links_tx(&tx)?;
@@ -1601,11 +1665,12 @@ fn move_plan(conn: &Connection, at: &str, new_location: &str) -> Result<MovePlan
         bail!("Literature Card cannot be moved; edit metadata to change its Citation key");
     }
     if card.is_topic {
-        bail!("topic cards cannot be moved");
+        bail!("Topic Cards cannot be moved");
     }
     if !is_valid_regular_location(new_location) {
         bail!("invalid move location `{new_location}`");
     }
+    ensure_same_tree_kind_boundary(&card.address, new_location)?;
     let moved = descendant_locations(conn, at)?;
     if moved.contains(new_location) {
         bail!("cannot move a card into its own successors");
@@ -1656,13 +1721,30 @@ fn apply_move_plan(conn: &mut Connection, plan: &MovePlan) -> Result<()> {
     Ok(())
 }
 
+/// Literature tree Cards stay in their originating Literature tree, and Topic
+/// tree Cards never move into a Literature tree.
+fn ensure_same_tree_kind_boundary(from: &str, to: &str) -> Result<()> {
+    let from_tree = tree_id(from);
+    let to_tree = tree_id(to);
+    if from_tree == to_tree {
+        return Ok(());
+    }
+    if is_literature_tree_id(from_tree) {
+        bail!("Literature tree Cards cannot leave Literature tree `{from_tree}`");
+    }
+    if is_literature_tree_id(to_tree) {
+        bail!("Topic tree Cards cannot move into Literature tree `{to_tree}`");
+    }
+    Ok(())
+}
+
 fn validate_move_target(
     conn: &Connection,
     moved: &BTreeSet<String>,
     new_location: &str,
 ) -> Result<()> {
     let parent = parent_location(new_location).context("move target has no parent")?;
-    if !location_exists(conn, &parent)? || moved.contains(&parent) {
+    if !target_exists(conn, &parent)? || moved.contains(&parent) {
         bail!("move target parent does not exist outside the moved subtree");
     }
     let last = last_segment(new_location);
@@ -1749,4 +1831,92 @@ fn cmd_lsbk() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literature_tree_locations_use_the_citation_key_as_tree_id() {
+        for valid in [
+            "Smith2024/1",
+            "Smith2024/2|a",
+            "Smith2024/1|a|3|bb",
+            "0/1|c",
+        ] {
+            assert!(is_valid_regular_location(valid), "{valid} should be valid");
+            assert!(is_valid_location(valid));
+        }
+        for invalid in [
+            "Smith2024/0",
+            "Smith2024",
+            "1Smith/1",
+            "Smith 2024/1",
+            "Smith2024/01",
+            "CON/1",
+        ] {
+            assert!(!is_valid_location(invalid), "{invalid} should be invalid");
+        }
+    }
+
+    #[test]
+    fn tree_ids_roots_and_membership_cover_both_tree_kinds() {
+        assert_eq!(tree_id("3/1|a"), "3");
+        assert_eq!(tree_id("Smith2024/1|a"), "Smith2024");
+        assert_eq!(tree_id("Smith2024"), "Smith2024");
+        assert_eq!(tree_root_address("3"), "3/0");
+        assert_eq!(tree_root_address("Smith2024"), "Smith2024");
+        assert!(is_tree_member("3/0", "3"));
+        assert!(is_tree_member("Smith2024", "Smith2024"));
+        assert!(is_tree_member("Smith2024/1", "Smith2024"));
+        assert!(!is_tree_member("Smith2024x/1", "Smith2024"));
+        assert!(!is_tree_member("30/1", "3"));
+    }
+
+    #[test]
+    fn literature_roots_have_direct_successors_and_parent_their_first_card() {
+        assert_eq!(direct_successor("Smith2024").unwrap(), "Smith2024/1");
+        assert_eq!(direct_successor("Smith2024/1").unwrap(), "Smith2024/2");
+        assert_eq!(
+            direct_successor("Smith2024/1|a").unwrap(),
+            "Smith2024/1|a|1"
+        );
+        assert_eq!(parent_location("Smith2024/1").as_deref(), Some("Smith2024"));
+        assert_eq!(
+            parent_location("Smith2024/2").as_deref(),
+            Some("Smith2024/1")
+        );
+        assert_eq!(
+            parent_location("Smith2024/1|b").as_deref(),
+            Some("Smith2024/1")
+        );
+        assert_eq!(parent_location("Smith2024"), None);
+        assert_eq!(parent_location("0/1").as_deref(), Some("0/0"));
+        assert_eq!(parent_location("0/0"), None);
+    }
+
+    #[test]
+    fn move_boundary_keeps_literature_trees_closed() {
+        ensure_same_tree_kind_boundary("Smith2024/1|a", "Smith2024/2").unwrap();
+        ensure_same_tree_kind_boundary("0/1|a", "1/2").unwrap();
+        assert_eq!(
+            ensure_same_tree_kind_boundary("Smith2024/1", "Jones2025/1")
+                .unwrap_err()
+                .to_string(),
+            "Literature tree Cards cannot leave Literature tree `Smith2024`"
+        );
+        assert_eq!(
+            ensure_same_tree_kind_boundary("Smith2024/1", "0/2")
+                .unwrap_err()
+                .to_string(),
+            "Literature tree Cards cannot leave Literature tree `Smith2024`"
+        );
+        assert_eq!(
+            ensure_same_tree_kind_boundary("0/1", "Smith2024/2")
+                .unwrap_err()
+                .to_string(),
+            "Topic tree Cards cannot move into Literature tree `Smith2024`"
+        );
+    }
 }

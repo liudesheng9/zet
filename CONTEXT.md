@@ -9,19 +9,29 @@ A note item in the system. A Card has a title, body text, Reverse link section, 
 _Avoid_: Note item, note record
 
 **Regular Card**:
-A Card in a Topic's successor tree that is neither a Topic nor a Literature Card.
+A non-root Card in a Topic tree or Literature tree.
 _Avoid_: Normal Card
 
 **Literature Card**:
-A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text.
+A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text, and is the root of its own Literature tree.
 _Avoid_: Reference Card
+
+**Tree root**:
+The Topic or Literature Card at the top of a tree. A Tree root has a direct successor but no side successors, cannot be moved, and deleting it deletes its whole tree.
+
+**Topic tree**:
+A Topic and all Regular Cards whose Location starts with `<topic>/`. Also called the idea tree.
+
+**Literature tree**:
+A Literature Card and all Regular Cards whose Location starts with `<citation-key>/`. Its Cards can never move to another tree, and Topic tree Cards can never move into it.
+_Avoid_: Reference tree
 
 **Citation key**:
 The client-assigned, case-significant string address of a Literature Card. It is exactly the entry key in that Card's BibTeX metadata, is never a valid Location, and cannot differ from another Citation key only by case.
 _Avoid_: Literature Location, Literature ID
 
 **Location**:
-A unique string address for a Topic or Regular Card, such as `1/0`, `1/1`, or `1/2|c|4|b|b`.
+A unique string address for a Topic or Regular Card, such as `1/0`, `1/1`, `1/2|c|4|b|b`, or `Smith2024/1|a`. The text before `/` is the tree id: a Topic number or a Citation key.
 _Avoid_: ID, path
 
 **Topic**:

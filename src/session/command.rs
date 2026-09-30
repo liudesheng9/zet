@@ -3,7 +3,111 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-pub(super) const HELP: &str = "go [<target>] | root | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q";
+/// Where the Pointer is decides which commands are available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PointerContext {
+    Root,
+    /// A Topic Card or Literature Card.
+    TreeRoot,
+    Regular,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Availability {
+    Always,
+    OnCard,
+    OnRegular,
+}
+
+const COMMANDS: &[(&str, &str, Availability)] = &[
+    (
+        "go [<target>]",
+        "go to a Location or Citation key; bare go returns to ROOT",
+        Availability::Always,
+    ),
+    ("root", "return to ROOT", Availability::Always),
+    (
+        "up",
+        "go to the parent card; a tree root goes to ROOT",
+        Availability::OnCard,
+    ),
+    (
+        "ls",
+        "list Topics and Literature at ROOT, or the current tree",
+        Availability::Always,
+    ),
+    ("t <title>", "create a Topic", Availability::Always),
+    (
+        "l",
+        "create a Literature Card from one BibTeX entry",
+        Availability::Always,
+    ),
+    ("n", "create the direct successor", Availability::OnCard),
+    (
+        "b",
+        "create the next side successor",
+        Availability::OnRegular,
+    ),
+    ("e", "edit the current card", Availability::OnCard),
+    (
+        "del",
+        "delete the current card and its successors",
+        Availability::OnCard,
+    ),
+    (
+        "mv <new-location>",
+        "move the current card and its successors",
+        Availability::OnRegular,
+    ),
+    ("stats", "count cards by kind", Availability::Always),
+    ("status", "show service status", Availability::Always),
+    ("lsbk", "list broken links", Availability::Always),
+    (
+        "help",
+        "show the commands available here",
+        Availability::Always,
+    ),
+    ("q", "quit the session", Availability::Always),
+];
+
+fn command_available(availability: Availability, context: PointerContext) -> bool {
+    match availability {
+        Availability::Always => true,
+        Availability::OnCard => context != PointerContext::Root,
+        Availability::OnRegular => context == PointerContext::Regular,
+    }
+}
+
+pub(super) fn help_for(context: PointerContext) -> Help {
+    let commands = COMMANDS
+        .iter()
+        .filter(|(_, _, availability)| command_available(*availability, context))
+        .map(|(syntax, description, _)| (*syntax, *description))
+        .collect::<Vec<_>>();
+    Help {
+        summary: commands
+            .iter()
+            .map(|(syntax, _)| *syntax)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        commands,
+    }
+}
+
+pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {
+    match pointer {
+        Pointer::Root => Ok(PointerContext::Root),
+        Pointer::Card(target) => {
+            let conn = crate::open_db(root)?;
+            let card = crate::load_card(&conn, target)?;
+            Ok(if crate::is_tree_root(&card) {
+                PointerContext::TreeRoot
+            } else {
+                PointerContext::Regular
+            })
+        }
+    }
+}
 
 pub(super) trait Interaction {
     fn edit(
@@ -44,9 +148,9 @@ impl SessionState {
         self.pointer = Pointer::Card(target);
     }
 
-    fn current_card(&self) -> Result<String> {
+    fn current_card(&self, command: &str) -> Result<String> {
         match &self.pointer {
-            Pointer::Root => bail!("pointer is on ROOT"),
+            Pointer::Root => bail!("{command} needs a Card; use go <target> first"),
             Pointer::Card(target) => Ok(target.clone()),
         }
     }
@@ -63,6 +167,36 @@ impl SessionState {
 pub(super) struct CardSummary {
     pub(super) address: String,
     pub(super) title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Listing {
+    pub(super) heading: String,
+    pub(super) cards: Vec<CardSummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Help {
+    pub(super) summary: String,
+    pub(super) commands: Vec<(&'static str, &'static str)>,
+}
+
+impl Help {
+    pub(super) fn lines(&self) -> Vec<String> {
+        let width = self
+            .commands
+            .iter()
+            .map(|(syntax, _)| syntax.len())
+            .max()
+            .unwrap_or(0);
+        std::iter::once(format!("commands: {}", self.summary))
+            .chain(
+                self.commands
+                    .iter()
+                    .map(|(syntax, description)| format!("  {syntax:<width$}  {description}")),
+            )
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,17 +221,42 @@ pub(super) enum CommandResult {
     Noop,
     Navigated,
     Changed,
-    List(Vec<CardSummary>),
+    List(Listing),
     Stats(Stats),
     Status(Status),
     BrokenLinks(Vec<crate::link::BrokenLink>),
-    Help(&'static str),
+    Help(Help),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Execution {
     Continue(CommandResult),
     Exit,
+}
+
+/// If another process removed the Pointer's Card, move the Pointer to its
+/// nearest existing ancestor (or ROOT) and describe what happened.
+pub(super) fn recover_missing_pointer(
+    root: &Path,
+    state: &mut SessionState,
+) -> Result<Option<String>> {
+    let Pointer::Card(target) = &state.pointer else {
+        return Ok(None);
+    };
+    let conn = crate::open_db(root)?;
+    if crate::target_exists(&conn, target)? {
+        return Ok(None);
+    }
+    let missing = target.clone();
+    let mut ancestor = crate::parent_location(&missing);
+    while let Some(candidate) = &ancestor {
+        if crate::target_exists(&conn, candidate)? {
+            break;
+        }
+        ancestor = crate::parent_location(candidate);
+    }
+    state.pointer = ancestor.map(Pointer::Card).unwrap_or(Pointer::Root);
+    Ok(Some(format!("card `{missing}` no longer exists")))
 }
 
 pub(super) fn execute(
@@ -123,9 +282,19 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["go", _, _, ..] => bail!("usage: go [<target>]"),
+        ["up"] => {
+            if let Pointer::Card(target) = &state.pointer {
+                state.pointer = crate::parent_location(target)
+                    .map(Pointer::Card)
+                    .unwrap_or(Pointer::Root);
+            }
+            Ok(Execution::Continue(CommandResult::Navigated))
+        }
+        ["up", ..] => bail!("usage: up"),
         ["ls"] => {
             let conn = crate::open_db(root)?;
-            let cards = super::cards_for_list(&conn, state.pointer())?
+            let (heading, cards) = super::cards_for_list(&conn, state.pointer())?;
+            let cards = cards
                 .into_iter()
                 .map(|card| {
                     let parsed = crate::parse_card_text(&card.text)?;
@@ -135,7 +304,10 @@ pub(super) fn execute(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Execution::Continue(CommandResult::List(cards)))
+            Ok(Execution::Continue(CommandResult::List(Listing {
+                heading,
+                cards,
+            })))
         }
         ["stats"] => {
             let counts = crate::card_counts(root)?;
@@ -164,7 +336,9 @@ pub(super) fn execute(
                 crate::link_lifecycle(&conn)?.broken_links()?,
             )))
         }
-        ["help"] => Ok(Execution::Continue(CommandResult::Help(HELP))),
+        ["help"] => Ok(Execution::Continue(CommandResult::Help(help_for(
+            pointer_context(root, state.pointer())?,
+        )))),
         ["t", title @ ..] => {
             let title = title.join(" ");
             if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
@@ -183,13 +357,10 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["n"] => {
-            let at = state.current_card()?;
+            let at = state.current_card("n")?;
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
             let parent = crate::load_card(&conn, &at)?;
-            if parent.is_lit {
-                bail!("zt n is not valid on a Literature Card");
-            }
             let location = crate::direct_successor(&parent.address)?;
             if crate::location_exists(&conn, &location)? {
                 bail!("direct successor already exists: {location}");
@@ -201,16 +372,11 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["b"] => {
-            let at = state.current_card()?;
+            let at = state.current_card("b")?;
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
             let parent = crate::load_card(&conn, &at)?;
-            if parent.is_lit {
-                bail!("zt b is not valid on a Literature Card");
-            }
-            if parent.is_topic {
-                bail!("zt b is not valid on a topic card");
-            }
+            crate::ensure_side_parent(&parent)?;
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
             let mut save = |text: &str| crate::insert_card(&mut conn, &location, false, text);
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
@@ -248,7 +414,7 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["e"] => {
-            let at = state.current_card()?;
+            let at = state.current_card("e")?;
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
@@ -288,15 +454,12 @@ pub(super) fn execute(
                         let (bibtex, metadata) =
                             accepted.context("validated Literature metadata is missing")?;
                         if metadata.citation_key != old_key {
-                            let rewritten_links = crate::count_target_links(&conn, old_key)?;
-                            interaction.confirm(
-                                "move",
-                                &[
-                                    "citation key rename:".to_string(),
-                                    format!("{old_key} -> {}", metadata.citation_key),
-                                    format!("link macros rewritten: {rewritten_links}"),
-                                ],
+                            let lines = crate::citation_rename_lines(
+                                &conn,
+                                old_key,
+                                &metadata.citation_key,
                             )?;
+                            interaction.confirm("move", &lines)?;
                         }
                         crate::update_literature_metadata(
                             &mut conn,
@@ -321,7 +484,7 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["del"] => {
-            let at = state.current_card()?;
+            let at = state.current_card("del")?;
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::delete_plan(&conn, &at)?;
@@ -333,7 +496,7 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mv", new_location] => {
-            let at = state.current_card()?;
+            let at = state.current_card("mv")?;
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::move_plan(&conn, &at, new_location)?;
@@ -504,16 +667,290 @@ mod tests {
 
         assert_eq!(
             execute_without_interaction(temp.path(), &mut state, "ls").expect("list Cards"),
-            Execution::Continue(CommandResult::List(vec![
-                CardSummary {
-                    address: "0/0".to_string(),
-                    title: "Topic".to_string(),
-                },
-                CardSummary {
-                    address: "LitA".to_string(),
-                    title: "Work".to_string(),
-                },
-            ]))
+            Execution::Continue(CommandResult::List(Listing {
+                heading: "topics and literature: 2".to_string(),
+                cards: vec![
+                    CardSummary {
+                        address: "0/0".to_string(),
+                        title: "Topic".to_string(),
+                    },
+                    CardSummary {
+                        address: "LitA".to_string(),
+                        title: "Work".to_string(),
+                    },
+                ],
+            }))
+        );
+    }
+
+    fn insert_literature_tree(root: &Path) {
+        let conn = crate::open_db(root).expect("open database");
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
+             ('0/0', NULL, 1, 0, NULL, 'Topic\n<--->\n\n<--->\n'),\
+             ('0/1', NULL, 0, 0, NULL, 'Idea\n<--->\n\n<--->\n'),\
+             (NULL, 'LitA', 0, 1, '@book{LitA, title={Work}}', 'Work\n<--->\n\n<--->\n'),\
+             ('LitA/1', NULL, 0, 0, NULL, 'Note\n<--->\n\n<--->\n'),\
+             ('LitA/1|a', NULL, 0, 0, NULL, 'Aside\n<--->\n\n<--->\n'),\
+             (NULL, 'LitB', 0, 1, '@book{LitB, title={Other}}', 'Other\n<--->\n\n<--->\n')",
+            [],
+        )
+        .expect("insert Literature tree");
+    }
+
+    #[test]
+    fn ls_on_a_literature_tree_lists_only_that_tree_root_first() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+
+        for pointer in ["LitA", "LitA/1|a"] {
+            let mut state = SessionState::at(pointer);
+            let Execution::Continue(CommandResult::List(listing)) =
+                execute_without_interaction(temp.path(), &mut state, "ls").expect("list tree")
+            else {
+                panic!("ls must return a Listing");
+            };
+            assert_eq!(listing.heading, "Literature tree LitA: 3 cards");
+            assert_eq!(
+                listing
+                    .cards
+                    .iter()
+                    .map(|card| card.address.as_str())
+                    .collect::<Vec<_>>(),
+                ["LitA", "LitA/1", "LitA/1|a"]
+            );
+        }
+    }
+
+    #[test]
+    fn up_walks_to_the_parent_then_the_tree_root_then_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA/1|a");
+
+        for expected in [
+            Pointer::Card("LitA/1".to_string()),
+            Pointer::Card("LitA".to_string()),
+            Pointer::Root,
+            Pointer::Root,
+        ] {
+            assert_eq!(
+                execute_without_interaction(temp.path(), &mut state, "up").expect("up"),
+                Execution::Continue(CommandResult::Navigated)
+            );
+            assert_eq!(state.pointer(), &expected);
+        }
+        let error = execute_without_interaction(temp.path(), &mut state, "up 2")
+            .expect_err("up takes no arguments");
+        assert_eq!(error.to_string(), "usage: up");
+    }
+
+    #[test]
+    fn literature_card_direct_successor_starts_its_own_tree() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitB");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::from([Some("First\n<--->\nnote\n<--->\n".to_string())]),
+            choices: VecDeque::new(),
+            confirmations: VecDeque::new(),
+        };
+
+        execute(temp.path(), &mut state, "n", &mut interaction).expect("create LitB/1");
+        assert_eq!(state.pointer(), &Pointer::Card("LitB/1".to_string()));
+        let conn = crate::open_db(temp.path()).expect("open database");
+        let card = crate::load_card(&conn, "LitB/1").expect("Literature tree Card");
+        assert!(!card.is_lit && !card.is_topic);
+        let root = crate::load_card(&conn, "LitB").expect("Literature Card");
+        assert_eq!(root.bibtex.as_deref(), Some("@book{LitB, title={Other}}"));
+    }
+
+    #[test]
+    fn tree_roots_refuse_side_successors_and_moves_with_consistent_wording() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+
+        for (pointer, line, expected) in [
+            ("0/0", "b", "side successors cannot start from a Topic Card"),
+            (
+                "LitA",
+                "b",
+                "side successors cannot start from a Literature Card",
+            ),
+            ("0/0", "mv 0/1|a", "Topic Cards cannot be moved"),
+            (
+                "LitA",
+                "mv 0/1|a",
+                "Literature Card cannot be moved; edit metadata to change its Citation key",
+            ),
+        ] {
+            let mut state = SessionState::at(pointer);
+            let error = execute_without_interaction(temp.path(), &mut state, line)
+                .expect_err("tree roots refuse this command");
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn literature_tree_cards_never_cross_the_tree_boundary() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+
+        for (pointer, line, expected) in [
+            (
+                "LitA/1|a",
+                "mv LitB/1",
+                "Literature tree Cards cannot leave Literature tree `LitA`",
+            ),
+            (
+                "LitA/1|a",
+                "mv 0/2",
+                "Literature tree Cards cannot leave Literature tree `LitA`",
+            ),
+            (
+                "0/1",
+                "mv LitA/2",
+                "Topic tree Cards cannot move into Literature tree `LitA`",
+            ),
+        ] {
+            let mut state = SessionState::at(pointer);
+            let error = execute_without_interaction(temp.path(), &mut state, line)
+                .expect_err("cross-tree move must fail before confirmation");
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(state.pointer(), &Pointer::Card(pointer.to_string()));
+        }
+        let conn = crate::open_db(temp.path()).expect("open database");
+        for location in ["LitA/1|a", "0/1"] {
+            crate::load_card(&conn, location).expect("refused move leaves Card in place");
+        }
+    }
+
+    #[test]
+    fn literature_tree_cards_move_within_their_own_tree() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA/1|a");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::new(),
+            choices: VecDeque::new(),
+            confirmations: VecDeque::from(["move".to_string()]),
+        };
+
+        execute(temp.path(), &mut state, "mv LitA/2", &mut interaction).expect("move in tree");
+        assert_eq!(state.pointer(), &Pointer::Card("LitA/2".to_string()));
+        let conn = crate::open_db(temp.path()).expect("open database");
+        assert!(crate::load_card(&conn, "LitA/1|a").is_err());
+        crate::load_card(&conn, "LitA/2").expect("moved within LitA");
+    }
+
+    #[test]
+    fn deleting_a_literature_card_deletes_its_tree_after_citation_key_confirmation() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::new(),
+            choices: VecDeque::new(),
+            confirmations: VecDeque::from(["delete".to_string(), "LitA".to_string()]),
+        };
+
+        let error = execute(temp.path(), &mut state, "del", &mut interaction)
+            .expect_err("a tree root needs its own address as confirmation");
+        assert_eq!(error.to_string(), "confirmation did not match");
+        execute(temp.path(), &mut state, "del", &mut interaction).expect("delete tree");
+        assert_eq!(state.pointer(), &Pointer::Root);
+        let conn = crate::open_db(temp.path()).expect("open database");
+        for address in ["LitA", "LitA/1", "LitA/1|a"] {
+            assert!(
+                crate::load_card(&conn, address).is_err(),
+                "{address} remains"
+            );
+        }
+        crate::load_card(&conn, "LitB").expect("other Literature tree survives");
+        crate::load_card(&conn, "0/1").expect("Topic tree survives");
+    }
+
+    #[test]
+    fn citation_key_rename_renames_the_whole_literature_tree_and_its_links() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let conn = crate::open_db(temp.path()).expect("open database");
+        conn.execute(
+            "UPDATE cards SET text = 'Idea\n<--->\nsee [[LitA/1|a]] and [[LitA]]\n<--->\n'\
+             WHERE location = '0/1'",
+            [],
+        )
+        .expect("link into the Literature tree");
+        drop(conn);
+        let mut state = SessionState::at("LitA");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::from([Some("@book{LitC, title={Work}}".to_string())]),
+            choices: VecDeque::from([crate::EditPart::Metadata]),
+            confirmations: VecDeque::from(["move".to_string()]),
+        };
+
+        execute(temp.path(), &mut state, "e", &mut interaction).expect("rename tree");
+        assert_eq!(state.pointer(), &Pointer::Card("LitC".to_string()));
+        let conn = crate::open_db(temp.path()).expect("open database");
+        for (old, new) in [("LitA/1", "LitC/1"), ("LitA/1|a", "LitC/1|a")] {
+            assert!(crate::load_card(&conn, old).is_err(), "{old} remains");
+            crate::load_card(&conn, new).expect("renamed tree Card");
+        }
+        assert!(
+            crate::load_card(&conn, "0/1")
+                .expect("link source")
+                .text
+                .contains("see [[LitC/1|a]] and [[LitC]]")
+        );
+        assert_eq!(
+            crate::citation_rename_lines(&conn, "LitC", "LitD").expect("rename preview"),
+            [
+                "citation key rename:",
+                "LitC -> LitD",
+                "LitC/1 -> LitD/1",
+                "LitC/1|a -> LitD/1|a",
+                "renamed cards: 3",
+                "link macros rewritten: 2",
+            ]
+        );
+    }
+
+    #[test]
+    fn pointer_commands_on_root_name_the_command_and_the_fix() {
+        let mut state = SessionState::root();
+        for command in ["n", "b", "e", "del"] {
+            let error = execute_without_interaction(Path::new("unused"), &mut state, command)
+                .expect_err("ROOT has no current Card");
+            assert_eq!(
+                error.to_string(),
+                format!("{command} needs a Card; use go <target> first")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_pointer_recovers_to_the_nearest_existing_ancestor() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA/1|a|3");
+
+        assert_eq!(
+            recover_missing_pointer(temp.path(), &mut state).expect("recover"),
+            Some("card `LitA/1|a|3` no longer exists".to_string())
+        );
+        assert_eq!(state.pointer(), &Pointer::Card("LitA/1|a".to_string()));
+        assert_eq!(
+            recover_missing_pointer(temp.path(), &mut state).expect("existing Pointer"),
+            None
         );
     }
 
@@ -589,16 +1026,40 @@ mod tests {
     }
 
     #[test]
-    fn help_returns_the_exact_session_only_command_text() {
-        let mut state = SessionState::root();
+    fn help_shows_only_the_commands_available_at_the_pointer() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
 
-        assert_eq!(
-            execute_without_interaction(Path::new("unused"), &mut state, "help")
-                .expect("Session help"),
-            Execution::Continue(CommandResult::Help(
-                "go [<target>] | root | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | q"
-            ))
-        );
+        for (pointer, expected) in [
+            (
+                SessionState::root(),
+                "go [<target>] | root | ls | t <title> | l | stats | status | lsbk | help | q",
+            ),
+            (
+                SessionState::at("0/0"),
+                "go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+            ),
+            (
+                SessionState::at("LitA"),
+                "go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+            ),
+            (
+                SessionState::at("LitA/1"),
+                "go [<target>] | root | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q",
+            ),
+        ] {
+            let mut state = pointer;
+            let Execution::Continue(CommandResult::Help(help)) =
+                execute_without_interaction(temp.path(), &mut state, "help").expect("help")
+            else {
+                panic!("help must return Help");
+            };
+            assert_eq!(help.summary, expected);
+            let lines = help.lines();
+            assert_eq!(lines[0], format!("commands: {expected}"));
+            assert_eq!(lines.len(), help.commands.len() + 1);
+        }
     }
 
     #[test]
