@@ -876,12 +876,6 @@
     if (card.body.trim()) md.innerHTML = card.html;
     else md.append(h('p', { class: 'empty', text: 'No body yet — press e to write in Markdown.' }));
     wireMarkdown(md);
-    const nav = (label, glyph, items) => h('div', { class: 'nav-cell' },
-      h('span', { class: 'lbl' }, glyph, ' ', label),
-      items.length
-        ? items.map((item) => h('button', { onclick: () => go(item.address), title: item.title },
-          h('span', { class: 'addr', text: item.address }), h('span', { class: 't', text: item.title || '(untitled)' })))
-        : h('span', { class: 'none', text: '—' }));
     const regular = card.context === 'regular';
     reader.replaceChildren(h('article', { class: 'card' },
       h('div', { class: 'card-head' },
@@ -898,11 +892,6 @@
       md,
       card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
-      h('div', { class: 'nav-grid' },
-        nav('parent', '↑', card.parent ? [card.parent] : []),
-        nav('direct', '↓', card.direct ? [card.direct] : []),
-        nav('side', '→', card.sides),
-      ),
       h('div', { class: 'actions' },
         actionButton('Edit', 'e', editCard, { primary: true }),
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
