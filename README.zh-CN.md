@@ -92,8 +92,8 @@ zt gui --port 4717     # 指定端口
 - **地图（Map）**：把当前树画成 Folgezettel 地图。Direct successor 沿同一列向下延伸，
   Side successor 分出新的一列，Link 显示为虚线弧。
 - **星图（Constellation）**：所有 Card 与 Link 组成的一张图，按树着色。
-- **阅读器**（右侧）：以索引卡片的样式渲染 Card，包含地址印章、Link 标签、Reverse link
-  以及存储的 Markdown 原文；parent/direct/side 移动交给地图和方向键。
+- **阅读器**（右侧）：把 Card 呈现为一张带横线的索引卡片：地址印章和标题在红线之上，Markdown 写在蓝色横线上；
+  Link 标签、Reverse link、操作按钮和存储的 Markdown 原文放在卡片下方。parent/direct/side 移动交给地图和方向键。
 - **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
   `Ctrl+S` 保存，`Esc` 取消。
 

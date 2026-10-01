@@ -94,8 +94,9 @@ zt gui --port 4717     # choose the port
 - **Map**: the current tree as a Folgezettel map. Direct successors run down a column,
   Side successors branch into new columns, and Links are drawn as dashed arcs.
 - **Constellation**: every Card and Link as one graph, colored by tree.
-- **Reader** (right): the Card rendered as an index card, with its address stamp, Link chips,
-  Reverse links, and its stored Markdown; the Map and arrow keys handle parent/direct/side moves.
+- **Reader** (right): the Card as a ruled index card, with its address stamp and title above the
+  red line and its Markdown written on the blue rules; Link chips, Reverse links, actions, and the
+  stored Markdown lie below it. The Map and arrow keys handle parent/direct/side moves.
 - **Writing desk**: raw Markdown next to a live preview, `[[` Link completion,
   `Ctrl+S` to save, and `Esc` to cancel.
 

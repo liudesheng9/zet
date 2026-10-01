@@ -4,8 +4,14 @@
   --desk-grain: #e2dbcd;
   --panel: #faf8f3;
   --paper: #fffefa;
-  --paper-rule: #eef1f5;
-  --paper-margin: #efcdc3;
+  --paper-rule: #d3e0ee;
+  --paper-margin: #e59c94;
+  --stock: #fdfaf2;
+  --stock-edge: rgba(90, 65, 30, .16);
+  --stock-shade: rgba(120, 90, 40, .07);
+  --grain-blend: multiply;
+  --card-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 1px rgba(60, 45, 20, .08), 0 2px 3px rgba(60, 45, 20, .06), 0 6px 8px -2px rgba(60, 45, 20, .07), 0 18px 28px -10px rgba(60, 45, 20, .18);
+  --card-shadow-lift: 0 0 0 .5px var(--stock-edge), 0 2px 2px rgba(60, 45, 20, .07), 0 6px 8px -2px rgba(60, 45, 20, .08), 0 14px 18px -6px rgba(60, 45, 20, .12), 0 30px 44px -14px rgba(60, 45, 20, .24);
   --ink: #1c1915;
   --ink-soft: #5a5348;
   --ink-faint: #9b9281;
@@ -43,8 +49,14 @@
   --desk-grain: #1d1f25;
   --panel: #17191e;
   --paper: #1f2228;
-  --paper-rule: #272b33;
-  --paper-margin: #4a3030;
+  --paper-rule: #34404e;
+  --paper-margin: #74403c;
+  --stock: #292722;
+  --stock-edge: rgba(0, 0, 0, .5);
+  --stock-shade: rgba(0, 0, 0, .18);
+  --grain-blend: screen;
+  --card-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 1px 2px rgba(0, 0, 0, .4), 0 8px 14px -4px rgba(0, 0, 0, .45), 0 22px 36px -10px rgba(0, 0, 0, .6);
+  --card-shadow-lift: 0 0 0 1px rgba(0, 0, 0, .45), 0 4px 8px rgba(0, 0, 0, .4), 0 16px 26px -6px rgba(0, 0, 0, .5), 0 34px 54px -14px rgba(0, 0, 0, .7);
   --ink: #efe9de;
   --ink-soft: #b7afa0;
   --ink-faint: #7a7467;
@@ -78,8 +90,14 @@
     --desk-grain: #1d1f25;
     --panel: #17191e;
     --paper: #1f2228;
-    --paper-rule: #272b33;
-    --paper-margin: #4a3030;
+    --paper-rule: #34404e;
+    --paper-margin: #74403c;
+    --stock: #292722;
+    --stock-edge: rgba(0, 0, 0, .5);
+    --stock-shade: rgba(0, 0, 0, .18);
+    --grain-blend: screen;
+    --card-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 1px 2px rgba(0, 0, 0, .4), 0 8px 14px -4px rgba(0, 0, 0, .45), 0 22px 36px -10px rgba(0, 0, 0, .6);
+    --card-shadow-lift: 0 0 0 1px rgba(0, 0, 0, .45), 0 4px 8px rgba(0, 0, 0, .4), 0 16px 26px -6px rgba(0, 0, 0, .5), 0 34px 54px -14px rgba(0, 0, 0, .7);
     --ink: #efe9de;
     --ink-soft: #b7afa0;
     --ink-faint: #7a7467;
@@ -345,22 +363,20 @@ kbd {
 @keyframes flow { to { stroke-dashoffset: -18; } }
 .nodes { position: absolute; left: 0; top: 0; }
 
+/* Map nodes are small ruled index cards: a red header line under the address, blue rules under the title. */
 .node {
-  position: absolute; width: 196px; height: 78px; padding: 9px 11px 8px 15px;
-  border: 1px solid var(--hairline); border-radius: 9px; background-color: var(--paper);
-  box-shadow: var(--shadow); cursor: pointer; text-align: left;
+  position: absolute; width: 196px; height: 78px; padding: 9px 11px 8px 12px;
+  border: 1px solid var(--stock-edge); border-radius: 3px; background-color: var(--stock);
+  box-shadow: var(--card-shadow); cursor: pointer; text-align: left;
   transition: transform .22s var(--ease), box-shadow .22s var(--ease), border-color .22s;
-  background-image: linear-gradient(transparent 29px, var(--paper-rule) 29px, var(--paper-rule) 30px, transparent 30px);
+  background-image: linear-gradient(transparent 27px, var(--paper-margin) 27px 28.5px, transparent 28.5px 49px,
+    var(--paper-rule) 49px 50px, transparent 50px 68px, var(--paper-rule) 68px 69px, transparent 69px);
 }
-.node::before {
-  content: ""; position: absolute; left: 7px; top: 9px; bottom: 9px; width: 1.5px; border-radius: 2px;
-  background: var(--paper-margin);
-}
-.node:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+.node:hover { transform: translateY(-2px) rotate(-.4deg); box-shadow: var(--card-shadow-lift); }
 .node .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; height: 18px; }
 .node .addr { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .node .t {
-  margin-top: 6px; font: 600 13.5px/1.32 var(--serif); color: var(--ink);
+  margin-top: 4px; font: 600 13.5px/19px var(--serif); color: var(--ink);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .node .t.untitled { color: var(--ink-faint); font-style: italic; font-weight: 400; }
@@ -370,19 +386,15 @@ kbd {
   background: var(--link-soft); color: var(--link);
 }
 .node .badge.in { background: var(--accent-soft); color: var(--accent); }
-.node.root {
-  border-color: color-mix(in srgb, var(--topic) 40%, transparent);
-  background-color: var(--topic-soft);
-  background-image: var(--sheen);
-}
-.node.root.literature { border-color: color-mix(in srgb, var(--lit) 40%, transparent); background-color: var(--lit-soft); }
-.node.root::before { display: none; }
+/* Tree roots are colored card stock, like the colored cards that head a drawer. */
+.node.root { background-color: color-mix(in srgb, var(--topic-soft) 80%, var(--stock)); }
+.node.root.literature { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); }
 .node.root .addr { color: var(--topic); font-weight: 600; }
 .node.root.literature .addr { color: var(--lit); }
 .node.linked { border-color: color-mix(in srgb, var(--link) 55%, transparent); }
 .node.on {
   border-color: var(--pointer); transform: translateY(-3px);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pointer) 28%, transparent), 0 0 28px -4px color-mix(in srgb, var(--pointer) 45%, transparent), var(--shadow-lift);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pointer) 28%, transparent), 0 0 28px -4px color-mix(in srgb, var(--pointer) 45%, transparent), var(--card-shadow-lift);
 }
 .node.on::after {
   content: "pointer"; position: absolute; right: 9px; bottom: -9px;
@@ -408,30 +420,32 @@ kbd {
   position: relative; height: 156px; border: 0; background: none; padding: 0; text-align: left;
 }
 .stack .sheet {
-  position: absolute; inset: 0; border-radius: 10px; border: 1px solid var(--hairline);
-  background: var(--paper); box-shadow: var(--shadow); transition: transform .35s var(--ease);
+  position: absolute; inset: 0; border-radius: 3px; border: 1px solid var(--stock-edge);
+  background: var(--stock); box-shadow: var(--card-shadow); transition: transform .35s var(--ease);
 }
 .stack .sheet.s2 { transform: rotate(-2deg) translate(-3px, 4px); }
 .stack .sheet.s3 { transform: rotate(1.6deg) translate(4px, 2px); }
 .stack:hover .sheet.s2 { transform: rotate(-4deg) translate(-9px, 7px); }
 .stack:hover .sheet.s3 { transform: rotate(3.5deg) translate(10px, 3px); }
+/* The top card of a stack: a red header line under the kind, then 24px blue rules the text sits on. */
 .stack .face {
-  position: absolute; inset: 0; padding: 15px 18px 13px 22px; border-radius: 10px;
-  border: 1px solid var(--hairline); background: var(--paper); box-shadow: var(--shadow);
-  background-image: linear-gradient(transparent 38px, var(--paper-margin) 38px, var(--paper-margin) 39px, transparent 39px),
+  position: absolute; inset: 0; padding: 14px 18px 10px 18px; border-radius: 3px;
+  border: 1px solid var(--stock-edge); background-color: var(--stock); box-shadow: var(--card-shadow);
+  background-image: linear-gradient(transparent 36px, var(--paper-margin) 36px 37.5px, transparent 37.5px),
                     repeating-linear-gradient(transparent 0 23px, var(--paper-rule) 23px 24px);
-  background-position: 0 0, 0 39px;
-  background-repeat: no-repeat, repeat;
-  display: flex; flex-direction: column; gap: 4px; transition: transform .35s var(--ease), box-shadow .35s var(--ease);
+  background-position: 0 0, 0 35px;
+  background-size: 100% 100%, 100% calc(100% - 62px);
+  background-repeat: no-repeat;
+  display: flex; flex-direction: column; transition: transform .35s var(--ease), box-shadow .35s var(--ease);
 }
-.stack:hover .face { transform: translateY(-5px); box-shadow: var(--shadow-lift); }
-.stack .face .kind { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--topic); }
+.stack:hover .face { transform: translateY(-5px) rotate(-.5deg); box-shadow: var(--card-shadow-lift); }
+.stack .face .kind { font: 600 10px/18px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--topic); }
 .stack.literature .face .kind { color: var(--lit); }
-.stack .face .t { font: 600 18.5px/1.25 var(--serif); margin-top: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.stack .face .x { color: var(--ink-soft); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.stack .face .t { font: 600 18px/24px var(--serif); margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.stack .face .x { color: var(--ink-soft); font: 13px/24px var(--serif); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .stack .face .foot { margin-top: auto; display: flex; justify-content: space-between; color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .stack.new .face {
-  align-items: center; justify-content: center; border: 1.5px dashed var(--line);
+  align-items: center; justify-content: center; gap: 4px; border: 1.5px dashed var(--line);
   background-image: none; background: transparent; box-shadow: none; color: var(--ink-soft);
 }
 .stack.new:hover .face { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 50%, transparent); }
@@ -456,36 +470,50 @@ kbd {
 
 /* ---------- reader: the index card ---------- */
 .reader {
-  min-height: 0; overflow: auto; background: var(--panel); border-left: 1px solid var(--hairline);
-  padding: 20px 20px 32px;
+  min-height: 0; overflow: auto; border-left: 1px solid var(--hairline);
+  padding: 28px 26px 40px;
+  background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--paper) 45%, transparent), transparent 70%), var(--desk);
 }
+/* The Reader card is a ruled index card lying on the desk: card stock with a little grain,
+   a header above the red line, and Markdown written on 28px blue rules. */
 .card {
-  position: relative; background: var(--paper); border: 1px solid var(--hairline); border-radius: 14px;
-  box-shadow: var(--shadow-lift); padding: 22px 26px 22px 36px; min-height: 300px;
-  background-image: var(--sheen);
-  background-size: 100% 120px; background-repeat: no-repeat;
-  animation: deal .4s var(--ease);
+  --rule: 28px;
+  position: relative; isolation: isolate;
+  display: flex; flex-direction: column; min-height: 360px;
+  padding: 0 24px var(--rule);
+  background-color: var(--stock);
+  background-image: radial-gradient(ellipse 120% 90% at 50% 35%, transparent 55%, var(--stock-shade));
+  border-radius: 3px;
+  box-shadow: var(--card-shadow);
+  animation: deal .45s var(--ease);
 }
 .card::before {
-  content: ""; position: absolute; left: 19px; top: 14px; bottom: 14px; width: 1px;
-  background: linear-gradient(180deg, transparent, var(--paper-margin) 8%, var(--paper-margin) 92%, transparent);
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  opacity: .16; mix-blend-mode: var(--grain-blend);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-@keyframes deal { from { opacity: 0; transform: translateY(10px) rotate(.5deg); } }
-.card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+@keyframes deal { from { opacity: 0; transform: translateY(12px) rotate(.8deg); } }
+.card-head { margin: 0 -24px; padding: 16px 24px 9px; border-bottom: 1.5px solid var(--paper-margin); }
+.card-meta { display: flex; align-items: center; gap: 8px; }
 .kind-tag {
-  font: 700 9.5px var(--sans); letter-spacing: .14em; text-transform: uppercase;
-  padding: 3px 9px; border-radius: 99px; background: var(--line-soft); color: var(--regular);
+  font: 700 10px var(--sans); letter-spacing: .18em; text-transform: uppercase; color: var(--ink-faint);
 }
-.kind-tag.topic { background: var(--topic-soft); color: var(--topic); }
-.kind-tag.literature { background: var(--lit-soft); color: var(--lit); }
+.kind-tag.topic { color: var(--topic); }
+.kind-tag.literature { color: var(--lit); }
 .stamp {
   margin-left: auto; font: 600 12.5px var(--mono); padding: 3px 9px; border-radius: 5px;
   border: 1.5px solid var(--accent); color: var(--accent); transform: rotate(-2deg);
   background: none; transition: background .15s, transform .2s var(--ease);
 }
 .stamp:hover { background: var(--accent-soft); transform: rotate(0deg); }
-.card h1.title { font: 600 27px/1.25 var(--serif); margin: 16px 0 10px; letter-spacing: -.005em; overflow-wrap: anywhere; text-wrap: pretty; }
-.biblio { margin: 6px 0 12px; }
+.card h1.title { font: 600 24px/1.3 var(--serif); margin: 8px 0 0; letter-spacing: -.005em; overflow-wrap: anywhere; text-wrap: pretty; }
+.card .md {
+  flex: 1; margin: 0 -24px; padding: 0 24px;
+  font-size: 16px; line-height: var(--rule); color: var(--ink);
+  background-image: repeating-linear-gradient(to bottom, transparent 0 calc(var(--rule) - 1px), var(--paper-rule) calc(var(--rule) - 1px) var(--rule));
+  background-position: 0 -5px;
+}
+.biblio { margin: 0 0 4px; }
 .biblio summary { cursor: pointer; color: var(--ink-soft); font-size: 12.5px; }
 .biblio pre { margin: 8px 0 0; }
 .md { font: 16px/1.75 var(--serif); color: color-mix(in srgb, var(--ink) 88%, var(--paper)); overflow-wrap: anywhere; }
@@ -509,16 +537,40 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .md li::marker { color: var(--accent); }
 .md input[type="checkbox"] { accent-color: var(--accent); }
 .md .empty { color: var(--ink-faint); font-style: italic; }
-.zt-link {
-  display: inline-flex; align-items: baseline; gap: 6px; vertical-align: baseline;
-  padding: 0 8px 0 0; border-radius: 6px; text-decoration: none; overflow: hidden;
-  background: var(--link-soft); color: var(--link); font-family: var(--sans); font-size: .8em; line-height: 1.6;
-  border: 1px solid color-mix(in srgb, var(--link) 18%, transparent); transition: border-color .15s, box-shadow .15s;
+/* On the card every block takes whole rules, so text keeps sitting on the lines. */
+.card .md > * { margin: 0 0 var(--rule); }
+.card .md > :last-child { margin-bottom: 0; }
+.card .md h1, .card .md h2, .card .md h3, .card .md h4 { line-height: var(--rule); margin: 0; }
+.card .md li, .card .md li > p { margin: 0; }
+.card .md blockquote { padding: 0 0 0 1em; background: none; border-radius: 0; }
+.card .md pre {
+  line-height: var(--rule); padding: 0 12px; border: 0; border-radius: 2px;
+  background: color-mix(in srgb, var(--desk) 55%, transparent); box-shadow: inset 0 0 0 1px var(--hairline);
 }
-.zt-link:hover { border-color: color-mix(in srgb, var(--link) 60%, transparent); box-shadow: 0 2px 8px -3px color-mix(in srgb, var(--link) 45%, transparent); }
-.zt-link .zt-link-addr { font: 600 .92em var(--mono); background: var(--link); color: var(--paper); padding: 1px 7px; align-self: stretch; display: inline-flex; align-items: center; white-space: nowrap; flex: none; }
+.card .md th, .card .md td { border: 0; padding: 0 14px 0 0; line-height: var(--rule); }
+.card .md hr {
+  height: var(--rule); margin: 0;
+  background: linear-gradient(90deg, transparent 38%, var(--ink-faint) 38% 62%, transparent 62%) no-repeat 0 calc(var(--rule) / 2 - 3px) / 100% 1px;
+}
+.card .md img { display: block; box-shadow: none; border-radius: 2px; }
+.card-tools { padding: 6px 2px 0; }
+.card-tools > :first-child { margin-top: 18px; }
+/* Inline so a long Link wraps like text and never makes its line taller than the rule. */
+.zt-link {
+  padding: 2px 7px 2px 0; border-radius: 5px; text-decoration: none;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  background: var(--link-soft); color: var(--link); font-family: var(--sans); font-size: .8em; line-height: 1;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--link) 18%, transparent); transition: box-shadow .15s;
+}
+.zt-link:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--link) 60%, transparent); }
+.zt-link .zt-link-addr {
+  font: 600 .92em var(--mono); background: var(--link); color: var(--paper);
+  padding: 2px 7px; margin-right: 6px; border-radius: 5px 0 0 5px; white-space: nowrap;
+}
 .zt-link .zt-link-title:empty { display: none; }
-.zt-link.broken { background: var(--broken-soft); color: var(--broken); text-decoration: line-through; border-color: transparent; }
+.zt-link:has(.zt-link-title:empty) { padding-right: 0; }
+.zt-link:has(.zt-link-title:empty) .zt-link-addr { margin-right: 0; border-radius: 5px; }
+.zt-link.broken { background: var(--broken-soft); color: var(--broken); text-decoration: line-through; box-shadow: none; }
 .zt-link.broken .zt-link-addr { background: var(--broken); }
 
 .section-label {
@@ -529,17 +581,14 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   display: inline-flex; align-items: baseline; gap: 7px; max-width: 100%;
-  border: 1px solid var(--hairline); background: var(--panel); border-radius: 9px; padding: 5px 10px;
+  border: 1px solid var(--hairline); background: var(--paper); border-radius: 9px; padding: 5px 10px;
   font-size: 12.5px; text-align: left; transition: border-color .15s, box-shadow .15s, background .15s;
 }
 .chip:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--paper); box-shadow: var(--shadow); }
 .chip .addr { color: var(--ink-faint); }
 .chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip.broken { border-color: var(--broken-soft); color: var(--broken); }
-.actions {
-  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; padding-top: 18px;
-  border-top: 1px solid var(--line-soft);
-}
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hairline);
   background: var(--paper); border-radius: 9px; padding: 6px 12px; font-size: 13px; font-weight: 500;
@@ -568,7 +617,6 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .welcome dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 20px 0; }
 .welcome dt { font-family: var(--mono); font-size: 12px; color: var(--ink); }
 .welcome dd { margin: 0; font-size: 13px; }
-.welcome .actions { border-top: 0; padding-top: 0; }
 
 /* ---------- overlay: the writing desk ---------- */
 .overlay {

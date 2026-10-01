@@ -877,19 +877,23 @@
     else md.append(h('p', { class: 'empty', text: 'No body yet — press e to write in Markdown.' }));
     wireMarkdown(md);
     const regular = card.context === 'regular';
-    reader.replaceChildren(h('article', { class: 'card' },
-      h('div', { class: 'card-head' },
-        h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
-        h('button', {
-          class: 'stamp', title: 'Copy address', text: card.address,
-          onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
-        }),
+    // The article is the physical index card; links and tools lie on the desk below it.
+    reader.replaceChildren(h('article', { class: 'card ' + card.kind },
+      h('header', { class: 'card-head' },
+        h('div', { class: 'card-meta' },
+          h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
+          h('button', {
+            class: 'stamp', title: 'Copy address', text: card.address,
+            onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
+          }),
+        ),
+        h('h1', { class: 'title', text: card.title || '(untitled)' }),
       ),
-      h('h1', { class: 'title', text: card.title || '(untitled)' }),
+      md,
+    ), h('div', { class: 'card-tools' },
       card.kind === 'literature' ? h('details', { class: 'biblio' },
         h('summary', { text: `BibTeX · ${card.citation_key}` }),
         h('pre', { text: card.bibtex })) : null,
-      md,
       card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
       h('div', { class: 'actions' },
