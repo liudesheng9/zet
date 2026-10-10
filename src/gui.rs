@@ -5,14 +5,17 @@
 //! through the same Card operations as the shell commands and the Session.
 
 use anyhow::{Context, Result, bail};
-use rusqlite::Connection;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::Card;
-use crate::link::{LinkBody, LinkLifecycle, LinkStatus};
+use crate::link::{LinkBody, LinkStatus};
+use crate::ops::{self, Snapshot};
+use crate::{Access, Workspace};
+
+/// The GUI is the human's own tool and may change both Workspaces.
+const ACCESS: Access = Access::Owner;
 
 const INDEX_HTML: &str = include_str!("gui/index.html");
 const APP_CSS: &str = include_str!("gui/app.css");
@@ -313,35 +316,26 @@ impl App {
     }
 
     fn snapshot(&self) -> Result<Snapshot> {
-        crate::ensure_markdown_cards(&self.root)?;
-        let conn = crate::open_db(&self.root)?;
-        Snapshot::load(&conn)
+        Snapshot::read(&self.root)
     }
 
     fn overview(&self) -> ApiResult {
         let snapshot = self.snapshot()?;
         let counts = crate::card_counts(&self.root)?;
-        let mut trees = Vec::new();
-        for card in snapshot
-            .cards
-            .iter()
-            .filter(|card| crate::is_tree_root(card))
-        {
-            let tree = crate::tree_id(&card.address);
-            let members = snapshot
-                .cards
-                .iter()
-                .filter(|member| crate::is_tree_member(&member.address, tree))
-                .count();
-            trees.push(json!({
-                "tree": tree,
-                "root": card.address,
-                "kind": if card.is_lit { "literature" } else { "topic" },
-                "title": snapshot.title(&card.address),
-                "excerpt": excerpt(&snapshot.parsed[&card.address].body),
-                "count": members,
-            }));
-        }
+        let workspaces = Workspace::ALL
+            .into_iter()
+            .map(|workspace| {
+                let counts = crate::workspace::counts(&snapshot.cards, workspace);
+                json!({
+                    "id": workspace.id(),
+                    "label": workspace.label(),
+                    "topic_trees": counts.topic_trees,
+                    "literature_trees": counts.literature_trees,
+                    "cards": counts.cards,
+                    "agent_writable": Access::Agent.can_write(workspace),
+                })
+            })
+            .collect::<Vec<_>>();
         let broken = snapshot.lifecycle.broken_links()?.len();
         Ok(json!({
             "fingerprint": snapshot.fingerprint(),
@@ -353,16 +347,17 @@ impl App {
                 "literature": counts.literature,
             },
             "broken": broken,
-            "trees": trees,
+            "workspaces": workspaces,
+            "trees": snapshot.trees(),
         }))
     }
 
     fn tree(&self, tree: &str) -> ApiResult {
         let snapshot = self.snapshot()?;
         let root = crate::tree_root_address(tree);
-        if !snapshot.by_address.contains_key(&root) {
+        let Some(root_card) = snapshot.by_address.get(&root) else {
             return Err(ApiError(format!("tree `{tree}` does not exist")));
-        }
+        };
         let cards = snapshot
             .cards
             .iter()
@@ -372,7 +367,8 @@ impl App {
         Ok(json!({
             "tree": tree,
             "root": root,
-            "kind": if snapshot.by_address[&root].is_lit { "literature" } else { "topic" },
+            "workspace": root_card.workspace.id(),
+            "kind": if root_card.is_lit { "literature" } else { "topic" },
             "title": snapshot.title(&root),
             "cards": cards,
         }))
@@ -395,31 +391,6 @@ impl App {
             .get(target)
             .ok_or_else(|| ApiError(format!("card `{target}` does not exist")))?;
         let parsed = &snapshot.parsed[&card.address];
-        let nav = |address: Option<String>| {
-            address
-                .filter(|address| snapshot.by_address.contains_key(address))
-                .map(|address| json!({ "address": address, "title": snapshot.title(&address) }))
-        };
-        let sides = if crate::is_tree_root(card) {
-            Vec::new()
-        } else {
-            snapshot
-                .cards
-                .iter()
-                .filter(|other| {
-                    crate::immediate_side_label(&other.address, &card.address)
-                        .is_some_and(|label| other.address == format!("{}|{label}", card.address))
-                })
-                .map(|other| json!({ "address": other.address, "title": snapshot.title(&other.address) }))
-                .collect()
-        };
-        let inbound = snapshot
-            .inbound
-            .get(&card.address)
-            .into_iter()
-            .flatten()
-            .map(|source| json!({ "address": source, "title": snapshot.title(source) }))
-            .collect::<Vec<_>>();
         let context = if crate::is_tree_root(card) {
             "tree-root"
         } else {
@@ -428,7 +399,8 @@ impl App {
         Ok(json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
-            "kind": kind(card),
+            "workspace": card.workspace.id(),
+            "kind": ops::kind(card),
             "context": context,
             "title": parsed.title,
             "text": card.text,
@@ -436,58 +408,22 @@ impl App {
             "html": render_markdown(&parsed.body, &snapshot),
             "bibtex": card.bibtex,
             "citation_key": card.citation_key,
-            "parent": nav(crate::parent_location(&card.address)),
-            "direct": nav(crate::direct_successor(&card.address).ok()),
-            "sides": sides,
-            "inbound": inbound,
+            "parent": snapshot.nav(crate::parent_location(&card.address)),
+            "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
+            "sides": snapshot.sides(card),
+            "inbound": snapshot.inbound_refs(&card.address),
             "outbound": snapshot.outbound(&card.address),
         }))
     }
 
     fn search(&self, query: &str) -> ApiResult {
         let snapshot = self.snapshot()?;
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Ok(json!({ "results": [] }));
-        }
-        let results = snapshot
-            .cards
-            .iter()
-            .filter_map(|card| {
-                let parsed = &snapshot.parsed[&card.address];
-                let haystack = format!("{}\n{}\n{}", card.address, parsed.title, parsed.body);
-                let lower = haystack.to_lowercase();
-                let at = lower.find(&needle)?;
-                let line = lower[..at].matches('\n').count();
-                let snippet = haystack.lines().nth(line).unwrap_or_default();
-                Some(json!({
-                    "address": card.address,
-                    "title": parsed.title,
-                    "kind": kind(card),
-                    "snippet": clip(snippet.trim(), 160),
-                }))
-            })
-            .take(60)
-            .collect::<Vec<_>>();
-        Ok(json!({ "results": results }))
+        Ok(json!({ "results": snapshot.search(query, None, 60) }))
     }
 
     fn broken(&self) -> ApiResult {
         let snapshot = self.snapshot()?;
-        let broken = snapshot
-            .lifecycle
-            .broken_links()?
-            .into_iter()
-            .map(|broken| {
-                json!({
-                    "source": broken.source_address,
-                    "title": broken.source_title,
-                    "target": broken.target,
-                    "line": broken.source_line,
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(json!({ "broken": broken }))
+        Ok(json!({ "broken": snapshot.broken(None)? }))
     }
 
     fn render(&self, body: &Value) -> ApiResult {
@@ -524,34 +460,22 @@ impl App {
     fn create(&self, body: &Value) -> ApiResult {
         let kind = str_field(body, "kind")?;
         let text = str_field(body, "text")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
         let location = match kind.as_str() {
-            "topic" => {
-                let location = crate::next_topic_location(&conn)?;
-                crate::insert_card(&mut conn, &location, true, &text)?;
-                crate::bump_next_topic_id(&conn, &location)?;
-                location
-            }
-            "direct" => {
-                let parent = crate::load_card(&conn, &str_field(body, "at")?)?;
-                let location = crate::direct_successor(&parent.address)?;
-                if crate::location_exists(&conn, &location)? {
-                    return Err(ApiError(format!(
-                        "direct successor already exists: {location}"
-                    )));
-                }
-                crate::insert_card(&mut conn, &location, false, &text)?;
-                location
-            }
-            "side" => {
-                let parent = crate::load_card(&conn, &str_field(body, "at")?)?;
-                crate::ensure_side_parent(&parent)?;
-                let location =
-                    crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
-                crate::insert_card(&mut conn, &location, false, &text)?;
-                location
-            }
+            "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
+            "direct" => ops::create_successor(
+                &self.root,
+                ACCESS,
+                ops::Successor::Direct,
+                &str_field(body, "at")?,
+                &text,
+            )?,
+            "side" => ops::create_successor(
+                &self.root,
+                ACCESS,
+                ops::Successor::Side,
+                &str_field(body, "at")?,
+                &text,
+            )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
         };
         Ok(json!({ "address": location }))
@@ -570,248 +494,58 @@ impl App {
     }
 
     fn create_literature(&self, body: &Value) -> ApiResult {
-        let bibtex = str_field(body, "bibtex")?;
-        let edited = str_field(body, "text")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
-        let metadata = crate::literature::parse_metadata(&bibtex)?;
-        let parsed = crate::parse_literature_edit_text(&edited)?;
-        let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-        crate::insert_literature_card(&mut conn, &metadata.citation_key, &bibtex, &text)?;
-        Ok(json!({ "address": metadata.citation_key }))
+        let address = ops::create_literature(
+            &self.root,
+            ACCESS,
+            workspace_field(body)?,
+            &str_field(body, "bibtex")?,
+            &str_field(body, "text")?,
+        )?;
+        Ok(json!({ "address": address }))
     }
 
     fn edit(&self, body: &Value) -> ApiResult {
-        let at = str_field(body, "at")?;
-        let text = str_field(body, "text")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
-        let card = self.unchanged_card(&conn, &at, body)?;
-        if card.is_lit {
-            crate::update_literature_text(&mut conn, &card, &text)?;
-        } else {
-            crate::update_card_text(&mut conn, &card, &text)?;
-        }
-        Ok(json!({ "address": card.address }))
+        let address = ops::edit_text(
+            &self.root,
+            ACCESS,
+            &str_field(body, "at")?,
+            &str_field(body, "text")?,
+            base_field(body),
+        )?;
+        Ok(json!({ "address": address }))
     }
 
     fn edit_metadata(&self, body: &Value) -> ApiResult {
-        let at = str_field(body, "at")?;
-        let bibtex = str_field(body, "bibtex")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
-        let card = self.unchanged_card(&conn, &at, body)?;
-        if !card.is_lit {
-            return Err(ApiError(
-                "only Literature Cards have BibTeX metadata".to_string(),
-            ));
-        }
-        let old_key = card
-            .citation_key
-            .clone()
-            .context("Literature Card is missing its Citation key")?;
-        let metadata = crate::literature::parse_metadata(&bibtex)?;
-        if metadata.citation_key != old_key {
-            if metadata.citation_key.eq_ignore_ascii_case(&old_key)
-                || crate::citation_key_conflicts(&conn, &metadata.citation_key, card.row_id)?
-            {
-                return Err(ApiError(format!(
-                    "Citation key `{}` conflicts with an existing Literature Card",
-                    metadata.citation_key
-                )));
-            }
-            if confirm_field(body) != Some("move") {
-                let lines = crate::citation_rename_lines(&conn, &old_key, &metadata.citation_key)?;
-                return Ok(json!({ "confirm": "move", "lines": lines }));
-            }
-        }
-        crate::update_literature_metadata(
-            &mut conn,
-            &card,
-            &metadata.citation_key,
-            &bibtex,
-            &metadata.title,
-        )?;
-        Ok(json!({ "address": metadata.citation_key }))
+        Ok(ops::edit_metadata(
+            &self.root,
+            ACCESS,
+            &str_field(body, "at")?,
+            &str_field(body, "bibtex")?,
+            base_field(body),
+            confirm_field(body),
+        )?
+        .into_value())
     }
 
     fn delete(&self, body: &Value) -> ApiResult {
-        let at = str_field(body, "at")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
-        let plan = crate::delete_plan(&conn, &at)?;
-        if confirm_field(body) != Some(plan.confirmation.as_str()) {
-            return Ok(json!({
-                "confirm": plan.confirmation,
-                "lines": crate::delete_verification_lines(&plan),
-            }));
-        }
-        let result = crate::apply_delete_plan(&mut conn, &at, plan)?;
-        let next = crate::parent_location(&at)
-            .filter(|parent| crate::target_exists(&conn, parent).unwrap_or(false));
-        Ok(json!({
-            "deleted": result.deleted_count,
-            "moved": result.moved,
-            "address": next,
-        }))
+        Ok(ops::delete(
+            &self.root,
+            ACCESS,
+            &str_field(body, "at")?,
+            confirm_field(body),
+        )?
+        .into_value())
     }
 
     fn move_card(&self, body: &Value) -> ApiResult {
-        let at = str_field(body, "at")?;
-        let to = str_field(body, "to")?;
-        let _lock = crate::acquire_edit_lock(&self.root)?;
-        let mut conn = crate::open_db(&self.root)?;
-        let plan = crate::move_plan(&conn, &at, &to)?;
-        if confirm_field(body) != Some("move") {
-            return Ok(json!({
-                "confirm": "move",
-                "lines": crate::move_verification_lines(&plan),
-            }));
-        }
-        crate::apply_move_plan(&mut conn, &plan)?;
-        Ok(json!({ "address": to, "moved": plan.mapping }))
-    }
-
-    /// Load a Card for saving, refusing if it changed since the GUI opened it.
-    fn unchanged_card(&self, conn: &Connection, at: &str, body: &Value) -> Result<Card> {
-        let card = crate::load_card(conn, at)?;
-        if let Some(base) = body.get("base").and_then(Value::as_str)
-            && base != card.text
-        {
-            bail!("card `{at}` changed since it was opened; reload it and try again");
-        }
-        Ok(card)
-    }
-}
-
-/// Every Card with its parsed text and Link graph, read once per request.
-struct Snapshot {
-    cards: Vec<Card>,
-    by_address: BTreeMap<String, Card>,
-    parsed: BTreeMap<String, crate::ParsedCard>,
-    lifecycle: LinkLifecycle,
-    inbound: BTreeMap<String, BTreeSet<String>>,
-}
-
-impl Snapshot {
-    fn load(conn: &Connection) -> Result<Self> {
-        let cards = crate::load_cards(conn)?;
-        let lifecycle = crate::link_lifecycle_from_cards(&cards)?;
-        let mut parsed = BTreeMap::new();
-        for card in &cards {
-            parsed.insert(card.address.clone(), crate::parse_card_text(&card.text)?);
-        }
-        let by_address: BTreeMap<String, Card> = cards
-            .iter()
-            .map(|card| (card.address.clone(), card.clone()))
-            .collect();
-        let mut inbound: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for card in &cards {
-            for occurrence in LinkBody::parse(&parsed[&card.address].body)?.occurrences() {
-                if by_address.contains_key(occurrence.target) {
-                    inbound
-                        .entry(occurrence.target.to_string())
-                        .or_default()
-                        .insert(card.address.clone());
-                }
-            }
-        }
-        Ok(Self {
-            cards,
-            by_address,
-            parsed,
-            lifecycle,
-            inbound,
-        })
-    }
-
-    /// Changes whenever any Card changes, so open windows can follow edits
-    /// made from the shell or a Session.
-    fn fingerprint(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        for card in &self.cards {
-            hasher.update(card.address.as_bytes());
-            hasher.update([0]);
-            hasher.update(card.text.as_bytes());
-            hasher.update([0]);
-            hasher.update(card.bibtex.as_deref().unwrap_or_default().as_bytes());
-            hasher.update([0]);
-        }
-        hasher
-            .finalize()
-            .iter()
-            .take(12)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-
-    fn title(&self, address: &str) -> String {
-        self.parsed
-            .get(address)
-            .map(|parsed| parsed.title.clone())
-            .unwrap_or_default()
-    }
-
-    fn outbound(&self, address: &str) -> Vec<Value> {
-        let Some(parsed) = self.parsed.get(address) else {
-            return Vec::new();
-        };
-        let mut seen = BTreeSet::new();
-        LinkBody::parse(&parsed.body)
-            .map(|body| {
-                body.occurrences()
-                    .iter()
-                    .filter(|occurrence| seen.insert(occurrence.target.to_string()))
-                    .map(|occurrence| {
-                        let exists = self.by_address.contains_key(occurrence.target);
-                        json!({
-                            "address": occurrence.target,
-                            "title": self.title(occurrence.target),
-                            "broken": !exists,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn summary(&self, card: &Card) -> Value {
-        let parent = crate::parent_location(&card.address);
-        let edge = if crate::is_tree_root(card) {
-            "root"
-        } else if crate::valid_side_label(crate::last_segment(&card.address)) {
-            "side"
-        } else {
-            "direct"
-        };
-        let links = self
-            .outbound(&card.address)
-            .into_iter()
-            .filter(|link| link["broken"] == false)
-            .filter_map(|link| link["address"].as_str().map(str::to_string))
-            .collect::<Vec<_>>();
-        json!({
-            "address": card.address,
-            "tree": crate::tree_id(&card.address),
-            "title": self.title(&card.address),
-            "kind": kind(card),
-            "edge": edge,
-            "parent": parent,
-            "excerpt": excerpt(&self.parsed[&card.address].body),
-            "links": links,
-            "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
-        })
-    }
-}
-
-fn kind(card: &Card) -> &'static str {
-    if card.is_lit {
-        "literature"
-    } else if card.is_topic {
-        "topic"
-    } else {
-        "regular"
+        Ok(ops::move_card(
+            &self.root,
+            ACCESS,
+            &str_field(body, "at")?,
+            &str_field(body, "to")?,
+            confirm_field(body),
+        )?
+        .into_value())
     }
 }
 
@@ -888,44 +622,22 @@ fn link_events<'a>(text: &str, snapshot: &Snapshot) -> Vec<pulldown_cmark::Event
     events
 }
 
-fn excerpt(body: &str) -> String {
-    let fenced = crate::link::fenced_code_ranges(body);
-    let mut start = 0;
-    for raw in body.split_inclusive('\n') {
-        let line_start = start;
-        start += raw.len();
-        if fenced.iter().any(|range| range.contains(&line_start)) {
-            continue;
-        }
-        let line = raw
-            .trim()
-            .trim_start_matches(['#', '>', '-', '*', '+', ' '])
-            .trim();
-        if !line.is_empty() {
-            let plain = ["**", "__", "~~", "`", "[[", "]]"]
-                .iter()
-                .fold(line.to_string(), |text, mark| text.replace(mark, ""));
-            return clip(&plain, 140);
-        }
-    }
-    String::new()
-}
-
-fn clip(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        text.to_string()
-    } else {
-        let mut clipped = text.chars().take(max_chars - 1).collect::<String>();
-        clipped.push('…');
-        clipped
-    }
-}
-
 fn str_field(body: &Value, name: &str) -> Result<String> {
     body.get(name)
         .and_then(Value::as_str)
         .map(str::to_string)
         .with_context(|| format!("missing `{name}` field"))
+}
+
+fn base_field(body: &Value) -> Option<&str> {
+    body.get("base").and_then(Value::as_str)
+}
+
+/// The Workspace for a new tree: the human's unless the request names one.
+fn workspace_field(body: &Value) -> Result<Workspace> {
+    body.get("workspace")
+        .and_then(Value::as_str)
+        .map_or(Ok(Workspace::Human), Workspace::parse)
 }
 
 fn confirm_field(body: &Value) -> Option<&str> {
@@ -1020,19 +732,6 @@ mod tests {
         assert_eq!(query["at"], "0/1|a");
         assert_eq!(query["q"], "hello world");
         assert_eq!(query["bad"], "%zz");
-    }
-
-    #[test]
-    fn excerpts_skip_headings_markers_and_code() {
-        assert_eq!(
-            excerpt("```\ncode\n```\n\n> ## Quote line\nrest"),
-            "Quote line"
-        );
-        assert_eq!(
-            excerpt("A **bold** `code` see [[0/1]]"),
-            "A bold code see 0/1"
-        );
-        assert_eq!(excerpt(""), "");
     }
 
     #[test]

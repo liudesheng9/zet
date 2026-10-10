@@ -121,7 +121,7 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
     register_session(&root)?;
     let guard = SessionGuard { root: root.clone() };
     let mut state = SessionState::root();
-    print_view(&root, state.pointer())?;
+    print_view(&root, &state)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
     loop {
@@ -145,7 +145,7 @@ fn cmd_line_session(root: PathBuf) -> Result<()> {
                 if let Some(notice) = command::recover_missing_pointer(&root, &mut state)? {
                     println!("{notice}");
                 }
-                print_view(&root, state.pointer())?;
+                print_view(&root, &state)?;
             }
             Err(err) => {
                 println!("{err:#}");
@@ -180,13 +180,14 @@ fn line_result_lines(result: CommandResult) -> Vec<String> {
             format!("cards: {}", status.cards),
             format!("sessions: {}", status.sessions),
         ],
-        CommandResult::List(_) | CommandResult::BrokenLinks(_) | CommandResult::Help(_) => {
-            result_panel(&result)
-                .unwrap_or_default()
-                .iter()
-                .map(ViewLine::text)
-                .collect()
-        }
+        CommandResult::List(_)
+        | CommandResult::BrokenLinks(_)
+        | CommandResult::Help(_)
+        | CommandResult::Workspaces(_) => result_panel(&result)
+            .unwrap_or_default()
+            .iter()
+            .map(ViewLine::text)
+            .collect(),
     }
 }
 
@@ -291,6 +292,24 @@ fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
             }));
             Some(lines)
         }
+        CommandResult::Workspaces(workspaces) => {
+            let mut lines = vec![ViewLine::Heading("workspaces:".to_string())];
+            lines.extend(workspaces.iter().map(|summary| {
+                ViewLine::Plain(format!(
+                    "{} {} ({}): {} topic trees, {} literature trees, {} cards",
+                    if summary.current { "*" } else { " " },
+                    summary.workspace.id(),
+                    summary.workspace.label(),
+                    summary.counts.topic_trees,
+                    summary.counts.literature_trees,
+                    summary.counts.cards,
+                ))
+            }));
+            lines.push(ViewLine::Hint(
+                "switch with ws human or ws agent".to_string(),
+            ));
+            Some(lines)
+        }
         CommandResult::Help(help) => {
             let mut lines = help.lines().into_iter();
             let mut panel = Vec::new();
@@ -323,12 +342,22 @@ fn markdown_view_lines(text: &str) -> Vec<ViewLine> {
         .collect()
 }
 
-/// The card view shared by the line Session and the TUI.
-fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
+/// The card view shared by the line Session and the TUI. ROOT shows the two
+/// Zones of the current Workspace: its Topics and its Literature Cards.
+fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Result<Vec<ViewLine>> {
     let mut lines = Vec::new();
     match pointer {
         Pointer::Root => {
             lines.push(ViewLine::Plain("ROOT".to_string()));
+            let other = Workspace::ALL
+                .into_iter()
+                .find(|other| *other != workspace)
+                .unwrap_or(workspace);
+            lines.push(ViewLine::Hint(format!(
+                "workspace: {} (switch with ws {})",
+                workspace.id(),
+                other.id()
+            )));
             let cards = load_cards(conn)?;
             for (heading, is_literature, empty_hint) in [
                 ("topics:", false, "  (none yet; create one with t <title>)"),
@@ -337,11 +366,12 @@ fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
                 lines.push(ViewLine::Heading(heading.to_string()));
                 let mut any = false;
                 for card in cards.iter().filter(|card| {
-                    if is_literature {
-                        card.is_lit
-                    } else {
-                        card.is_topic
-                    }
+                    card.workspace == workspace
+                        && if is_literature {
+                            card.is_lit
+                        } else {
+                            card.is_topic
+                        }
                 }) {
                     let parsed = parse_card_text(&card.text)?;
                     lines.push(ViewLine::entry(&card.address, &parsed.title));
@@ -385,6 +415,10 @@ fn view_lines(conn: &Connection, pointer: &Pointer) -> Result<Vec<ViewLine>> {
                     lines.push(ViewLine::Linked(format!("side: [[{side}]]")));
                 }
             }
+            lines.push(ViewLine::Hint(format!(
+                "workspace: {}",
+                card.workspace.id()
+            )));
         }
     }
     Ok(lines)
@@ -826,11 +860,11 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
     let mut clipboard = SessionClipboard::new();
     let mut selection = None;
     let mut mouse_gesture: Option<MouseGesture> = None;
-    let mut frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
+    let mut frame = draw_tui(&root, &state, &view, &command, selection.as_ref())?;
     loop {
         if !is_service_up(&root) {
             view.message = StatusMessage::Error("service disconnected".to_string());
-            draw_tui(&root, state.pointer(), &view, &command, None)?;
+            draw_tui(&root, &state, &view, &command, None)?;
             break;
         }
         match read_tui_event()? {
@@ -842,7 +876,7 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                         view.message =
                             StatusMessage::Error(format!("clipboard copy failed: {error:#}"));
                     }
-                    frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
+                    frame = draw_tui(&root, &state, &view, &command, selection.as_ref())?;
                     continue;
                 }
                 if is_paste_shortcut(&key) {
@@ -853,7 +887,7 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                                 StatusMessage::Error(format!("clipboard paste failed: {error:#}"));
                         }
                     }
-                    frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
+                    frame = draw_tui(&root, &state, &view, &command, selection.as_ref())?;
                     continue;
                 }
                 selection = None;
@@ -936,7 +970,7 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                         {
                             let conn = open_db(&root)?;
                             if target_exists(&conn, target)? {
-                                state.follow_link(target.to_string());
+                                state.follow_link(&root, target.to_string());
                                 present_tui_result(CommandResult::Navigated, &mut view);
                             } else {
                                 view.message = StatusMessage::Error(format!(
@@ -958,7 +992,7 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
             present_tui_result(CommandResult::Navigated, &mut view);
             view.message = StatusMessage::Info(notice);
         }
-        frame = draw_tui(&root, state.pointer(), &view, &command, selection.as_ref())?;
+        frame = draw_tui(&root, &state, &view, &command, selection.as_ref())?;
     }
     Ok(())
 }
@@ -1088,7 +1122,7 @@ fn link_target_at(links: &[LinkSpan], row: u16, column: u16) -> Option<&str> {
 /// panel) at the top, one status row, and the command bar on the last row.
 fn draw_tui(
     root: &Path,
-    pointer: &Pointer,
+    state: &SessionState,
     view: &TuiView,
     command: &str,
     selection: Option<&ScreenSelection>,
@@ -1097,7 +1131,7 @@ fn draw_tui(
     let link_lifecycle = link_lifecycle(&conn)?;
     let content = match &view.panel {
         Some(panel) => panel.clone(),
-        None => view_lines(&conn, pointer)?,
+        None => view_lines(&conn, state.pointer(), state.workspace())?,
     };
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let width = width.max(1);
@@ -2404,15 +2438,26 @@ fn draw_tui_confirmation(
 
 /// `ls` lists Topics and Literature Cards at ROOT, and otherwise the whole
 /// tree that holds the Pointer, root first.
-fn cards_for_list(conn: &Connection, pointer: &Pointer) -> Result<(String, Vec<Card>)> {
+fn cards_for_list(
+    conn: &Connection,
+    pointer: &Pointer,
+    workspace: Workspace,
+) -> Result<(String, Vec<Card>)> {
     let cards = load_cards(conn)?;
     match pointer {
         Pointer::Root => {
             let listed = cards
                 .into_iter()
-                .filter(|card| card.is_topic || card.is_lit)
+                .filter(|card| card.workspace == workspace && (card.is_topic || card.is_lit))
                 .collect::<Vec<_>>();
-            Ok((format!("topics and literature: {}", listed.len()), listed))
+            Ok((
+                format!(
+                    "{} workspace topics and literature: {}",
+                    workspace.id(),
+                    listed.len()
+                ),
+                listed,
+            ))
         }
         Pointer::Card(target) => {
             let current = load_card(conn, target)?;
@@ -2452,9 +2497,9 @@ fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPar
     }
 }
 
-fn print_view(root: &Path, pointer: &Pointer) -> Result<()> {
+fn print_view(root: &Path, state: &SessionState) -> Result<()> {
     let conn = open_db(root)?;
-    for line in view_lines(&conn, pointer)? {
+    for line in view_lines(&conn, state.pointer(), state.workspace())? {
         println!("{}", line.text());
     }
     Ok(())

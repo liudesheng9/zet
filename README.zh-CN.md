@@ -9,6 +9,8 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
 - 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
+- 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
+- 通过 `zt mcp` 服务器让编程 agent 在 agent Workspace 中工作，而你的 Workspace 对它只读。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
 - 使用 `[[target]]` Link 连接 Card，并自动生成 Reverse link、检查 Broken link。
 - 在 Session 或 Shell 中安全地创建、编辑、移动和删除 Card 树。
@@ -40,6 +42,7 @@ n                  # 创建当前 Card 的 Direct successor（也可用于 Liter
 b                  # 创建 Side successor
 l                  # 创建 Literature Card
 e                  # 编辑当前 Card
+ws [agent|human]   # 列出 Workspace，或切换到其中一个
 go <目标>          # 前往指定 Location 或 Citation key
 up                 # 前往父 Card（树根会回到 ROOT）
 ls                 # 列出当前树；在 ROOT 列出 Topic 与 Literature
@@ -87,8 +90,8 @@ zt gui --no-open       # 只打印本地地址
 zt gui --port 4717     # 指定端口
 ```
 
-- **卡片柜**（左侧）：所有 Topic 与 Literature 抽屉，以及全文搜索。
-- **书桌**（ROOT）：每棵树显示为一叠索引卡片。
+- **卡片柜**（左侧）：human 与 agent 两个 Workspace 的标签页、当前 Workspace 的 Topic zone 与 Literature zone，以及全文搜索。
+- **书桌**（ROOT）：当前 Workspace 的每棵树显示为一叠索引卡片，按 Zone 分组。
 - **地图（Map）**：把当前树画成 Folgezettel 地图。Direct successor 沿同一列向下延伸，
   Side successor 分出新的一列，Link 显示为虚线弧。
 - **星图（Constellation）**：所有 Card 与 Link 组成的一张图，按树着色。
@@ -97,13 +100,65 @@ zt gui --port 4717     # 指定端口
 - **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
   `Ctrl+S` 保存，`Esc` 取消。
 
-命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`del`、`mv 1/3`、
+命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`mv 1/3`、
 `lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
 `:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
-`v` 切换视图、`f` 适配窗口。
+`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
 GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
 因此需要先用电源按钮或 `Ctrl+C` 关闭 GUI，`zt down` 才能停止服务。
+
+## Workspace
+
+一个归档包含两个 **Workspace**：属于你自己的 **human** Workspace，以及属于 AI agent 的
+**agent** Workspace。每个 Workspace 都有两个 **Zone**：Topic zone 和 Literature zone，每个 Zone
+都可以容纳任意多棵树。
+
+- 每棵树只属于一个 Workspace；新建的 successor 自动加入所在树的 Workspace。
+- 地址在两个 Workspace 之间全局唯一，因此 `[[target]]` Link（以及生成的 Reverse link）可以跨 Workspace。
+- Card 和树永远不能在 Workspace 之间移动：`mv` 会拒绝另一个 Workspace 中的目标位置。
+- 在 Workspace 出现之前创建的归档会在 `zt up` 时自动升级，所有已有 Card 都归入 human Workspace。
+
+```sh
+zt ws                          # 列出两个 Workspace 及其 Zone
+zt t --ws agent "Agent topic"  # 在 agent Workspace 中创建 Topic（默认是 human）
+zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
+```
+
+在 Session 中，ROOT 显示当前 Workspace 的两个 Zone。`ws` 列出两个 Workspace，`ws agent` /
+`ws human` 切换；`t` 和 `l` 在当前 Workspace 中创建，沿 Link 进入另一个 Workspace 时会自动切换。
+在 GUI 中，卡片柜顶部的两个标签页（或快捷键 `w`、命令 `ws`）用于切换 Workspace；agent 的 Card
+带有紫色的 AI AGENT 标记，指向另一个 Workspace 的 Link 会用该 Workspace 的颜色显示。
+
+## MCP 服务器
+
+`zt mcp` 通过 stdio 运行一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，
+让编程 agent 也能使用卡片盒。它可以**读取两个 Workspace**，但**只能修改 agent Workspace**：
+对 human Workspace 的任何写入都会被拒绝；如果 agent 的修改会改写 human Card 中的 Link（例如移动或
+重命名一张被 human Card 链接的 agent Card），同样会被拒绝。agent 链接到 human Workspace 是允许的，
+这只会让 human Card 生成新的 Reverse link。
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
+| `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
+| `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
+| `search_cards`、`list_links`、`list_broken_links` | 全文搜索、Link 图（可只看跨 Workspace 的 Link）、Broken link |
+| `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文或 BibTeX |
+| `delete_card`、`move_card` | 删除或移动 agent Card |
+
+删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
+`move`）再次调用才会真正执行。使用前需要先启动服务。
+
+在本仓库中使用 Claude Code 时，已提交的 `.mcp.json` 已经注册了它。在其他地方只需注册一次：
+
+```sh
+claude mcp add zt -- zt mcp
+```
+
+其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
 
 ## 创建 Literature Card
 
@@ -152,6 +207,8 @@ zt help
 zt gui
 zt status
 zt stats
+zt ws
+zt mcp
 zt lsbk
 zt dp
 zt down

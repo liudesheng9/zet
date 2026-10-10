@@ -427,6 +427,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "is_lit",
             "bibtex",
             "text",
+            "workspace",
         ]
     );
     assert!(
@@ -1057,7 +1058,7 @@ fn session_root_topic_and_literature_lists_keep_their_locked_membership_and_orde
         .expect("automatic ROOT output");
     let automatic_root = String::from_utf8(automatic_root.stdout).unwrap();
     assert!(automatic_root.starts_with(
-        "ROOT\ntopics:\n0/0 Topic\nliterature:\nAlphaKey Alpha Work\nZebraKey Zebra Work\n"
+        "ROOT\nworkspace: human (switch with ws agent)\ntopics:\n0/0 Topic\nliterature:\nAlphaKey Alpha Work\nZebraKey Zebra Work\n"
     ));
     assert!(!automatic_root.contains("0/1 Base"));
 
@@ -1106,7 +1107,7 @@ fn empty_root_view_names_the_commands_that_create_topics_and_literature() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with(
-            "ROOT\ntopics:\n  (none yet; create one with t <title>)\n\
+            "ROOT\nworkspace: human (switch with ws agent)\ntopics:\n  (none yet; create one with t <title>)\n\
              literature:\n  (none yet; create one with l)\n",
         ));
 }
@@ -1171,7 +1172,7 @@ fn shell_literature_edit_selector_errors_fail_before_editor_launch() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("  zt l\n"))
+        .stdout(predicate::str::contains("  zt l [--ws <workspace>]\n"))
         .stdout(predicate::str::contains("  zt del --at <target>\n"))
         .stdout(predicate::str::contains("  zt n --at <target>\n"));
 
@@ -2019,6 +2020,10 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn session");
+    home.wait_until(|| {
+        fs::read_to_string(home.archive_root.join("zt.sessions"))
+            .is_ok_and(|pids| pids.lines().any(|pid| pid.trim() == child.id().to_string()))
+    });
     home.cmd()
         .arg("down")
         .assert()
@@ -3190,7 +3195,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     let stdout = String::from_utf8(output).expect("session output is UTF-8");
 
     assert!(stdout.contains(
-        "commands: go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains(
@@ -3198,7 +3203,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q\n"
     ));
     assert!(stdout.contains("  mv <new-location>  move the current card"));
     assert!(stdout.contains(

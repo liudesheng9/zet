@@ -10,7 +10,7 @@ This is a single-context repository.
 
 ## Vocabulary
 
-Use glossary terms exactly, including `Card`, `Regular Card`, `Literature Card`, `Citation key`, `Location`, `Topic`, `Pointer`, `Edit caret`, `Session`, `Link`, `Broken link`, `Reverse link`, `Direct successor`, and `Side successor`.
+Use glossary terms exactly, including `Card`, `Regular Card`, `Literature Card`, `Citation key`, `Location`, `Topic`, `Pointer`, `Edit caret`, `Session`, `Link`, `Broken link`, `Reverse link`, `Direct successor`, `Side successor`, `Workspace`, `Zone`, `Access`, and `MCP server`.
 
 Do not use an avoided synonym when the glossary names a canonical term. In particular, do not call the Session `Pointer` a cursor, and do not call the `Edit caret` a pointer.
 

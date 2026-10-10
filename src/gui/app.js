@@ -106,18 +106,35 @@
     card: null,
     tree: null,
     mode: store.get('zt-mode') === 'constellation' ? 'constellation' : 'map',
+    // The Workspace shown at ROOT and given new trees; it follows the Pointer.
+    workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
     editing: false,
   };
+
+  const WORKSPACES = {
+    human: { label: 'Human', short: 'human', mcp: 'read-only for AI agents' },
+    agent: { label: 'AI agent', short: 'agent', mcp: 'written by AI agents over MCP' },
+  };
+  const wsLabel = (id) => (WORKSPACES[id] || WORKSPACES.human).label;
+  const nodeWorkspace = (address) => state.nodes.find((node) => node.address === address)?.workspace;
+
+  function setWorkspace(id, { toRoot } = {}) {
+    if (!WORKSPACES[id]) throw new Error(`unknown workspace \`${id}\`; expected human or agent`);
+    state.workspace = id;
+    store.set('zt-workspace', id);
+    if (toRoot) go(null);
+  }
 
   // --------------------------------------------------------------- commands
   // Same vocabulary and availability as the terminal Session.
   const COMMANDS = [
     ['go [<target>]', 'go to a Location or Citation key; bare go returns to ROOT', 'always'],
     ['root', 'return to ROOT', 'always'],
+    ['ws [<workspace>]', 'list workspaces, or switch to the human or agent workspace ROOT', 'always'],
     ['up', 'go to the parent card; a tree root goes to ROOT', 'card'],
     ['ls', 'list Topics and Literature at ROOT, or the current tree', 'always'],
-    ['t <title>', 'create a Topic', 'always'],
-    ['l', 'create a Literature Card from one BibTeX entry', 'always'],
+    ['t <title>', 'create a Topic in the current workspace', 'always'],
+    ['l', 'create a Literature Card in the current workspace from one BibTeX entry', 'always'],
     ['n', 'create the direct successor', 'card'],
     ['b', 'create the next side successor', 'regular'],
     ['e', 'edit the current card', 'card'],
@@ -143,6 +160,10 @@
     switch (name) {
       case 'q': return quit();
       case 'root': return go(null);
+      case 'ws':
+        if (rest.length > 1) throw new Error('usage: ws [<workspace>]');
+        if (!rest.length) return showWorkspaces();
+        return setWorkspace(rest[0] === 'ai' ? 'agent' : rest[0].toLowerCase(), { toRoot: true });
       case 'go':
         if (rest.length > 1) throw new Error('usage: go [<target>]');
         if (!rest.length) return go(null);
@@ -216,6 +237,7 @@
       go(ancestor);
       return;
     }
+    if (state.card.workspace && state.card.workspace !== state.workspace) setWorkspace(state.card.workspace);
     const treeId = state.card.tree;
     if (!state.tree || state.tree.tree !== treeId) {
       const sameTree = state.lastTreeId === treeId;
@@ -240,8 +262,30 @@
   }
 
   // ------------------------------------------------------------------- rail
+  function renderWorkspaceSwitch() {
+    const summaries = state.overview.workspaces || [];
+    $('#workspace-switch').replaceChildren(...Object.keys(WORKSPACES).map((id) => {
+      const summary = summaries.find((item) => item.id === id) || { topic_trees: 0, literature_trees: 0, cards: 0 };
+      return h('button', {
+        class: 'ws-tab ' + id + (state.workspace === id ? ' on' : ''),
+        role: 'tab',
+        'aria-selected': state.workspace === id ? 'true' : 'false',
+        title: `${wsLabel(id)} workspace — ${WORKSPACES[id].mcp}`,
+        onclick: () => setWorkspace(id, { toRoot: true }),
+      },
+        h('span', { class: 'ws-dot' }),
+        h('span', { class: 'ws-name', text: wsLabel(id) }),
+        h('span', { class: 'ws-count', text: String(summary.cards) }),
+      );
+    }));
+    $('#workspace-note').textContent = state.workspace === 'agent'
+      ? 'Trees AI agents write over MCP. Links may cross workspaces; cards never move between them.'
+      : 'Your own trees. AI agents can read them over MCP but never change them.';
+  }
+
   function renderRail() {
-    const trees = state.overview.trees;
+    renderWorkspaceSwitch();
+    const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
     const drawer = (tree) => h('button', {
       class: 'drawer ' + tree.kind + (state.card && state.card.tree === tree.tree ? ' on' : ''),
       title: tree.title,
@@ -256,8 +300,8 @@
       const list = trees.filter((tree) => tree.kind === kind);
       $(id).replaceChildren(...(list.length ? list.map(drawer) : [h('div', { class: 'empty-hint', text: hint })]));
     };
-    fill('#topic-drawers', 'topic', 'No Topics yet — press t.');
-    fill('#literature-drawers', 'literature', 'No Literature yet — press l.');
+    fill('#topic-drawers', 'topic', state.workspace === 'agent' ? 'No agent Topics yet.' : 'No Topics yet — press t.');
+    fill('#literature-drawers', 'literature', state.workspace === 'agent' ? 'No agent Literature yet.' : 'No Literature yet — press l.');
     $('#archive-root').textContent = state.overview.archive_root;
   }
 
@@ -281,7 +325,7 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)'))),
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
           h('span', { class: 's' }, marked(hit.snippet)),
         )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
       );
@@ -295,7 +339,14 @@
     const pill = $('#broken-pill');
     pill.hidden = !state.overview.broken;
     pill.textContent = `${state.overview.broken} broken`;
-    const trail = [h('a', { href: '#/', text: 'ROOT' })];
+    const trail = [
+      h('button', {
+        class: 'ws-tag ' + state.workspace, title: 'Switch workspace (w)',
+        text: wsLabel(state.workspace),
+        onclick: () => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }),
+      }),
+      h('a', { href: '#/', text: 'ROOT' }),
+    ];
     if (state.pointer) {
       const chain = [];
       for (let at = state.pointer; at; at = parentOf(at)) chain.unshift(at);
@@ -336,7 +387,7 @@
       title.textContent = `Constellation · ${state.nodes.length} cards`;
       sky.show();
     } else if (!state.card) {
-      title.textContent = 'The cabinet';
+      title.textContent = `The cabinet · ${wsLabel(state.workspace)} workspace`;
       renderDesk();
     } else {
       const tree = state.tree;
@@ -346,7 +397,9 @@
   }
 
   function renderDesk() {
-    const trees = state.overview.trees;
+    const agent = state.workspace === 'agent';
+    const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
+    const zone = (kind) => trees.filter((tree) => tree.kind === kind);
     const stack = (tree) => h('button', {
       class: 'stack ' + tree.kind, onclick: () => go(tree.root), title: tree.title,
     },
@@ -361,18 +414,24 @@
     );
     const newStack = (label, key, action) => h('button', { class: 'stack new', onclick: action },
       h('span', { class: 'face' }, h('span', { class: 'plus', text: '+' }), h('span', { text: label }), h('kbd', { text: key })));
+    const zoneSection = (kind, label, newLabel, key, action) => [
+      h('h2', { class: 'zone-head ' + kind }, h('span', { text: label }), h('span', { class: 'n', text: String(zone(kind).length) })),
+      h('div', { class: 'desk-grid' }, zone(kind).map(stack), newStack(newLabel, key, action)),
+    ];
     $('#desk').replaceChildren(
       h('div', { class: 'desk-intro' },
-        h('h1', { text: trees.length ? 'Your slip-box' : 'An empty slip-box' }),
-        h('p', { text: trees.length
-          ? 'Every Topic and Literature Card roots its own tree. Open a stack to walk its cards.'
-          : 'Start a Topic for your own ideas, or a Literature Card for a work you are reading.' }),
+        h('span', { class: 'ws-tag ' + state.workspace, text: `${wsLabel(state.workspace)} workspace` }),
+        h('h1', { text: agent
+          ? (trees.length ? 'The agent’s slip-box' : 'The agent’s slip-box is empty')
+          : (trees.length ? 'Your slip-box' : 'An empty slip-box') }),
+        h('p', { text: agent
+          ? 'AI agents grow these trees through the zt MCP server. Their cards may link to yours; yours stay read-only to them.'
+          : (trees.length
+            ? 'Every Topic and Literature Card roots its own tree. Open a stack to walk its cards.'
+            : 'Start a Topic for your own ideas, or a Literature Card for a work you are reading.') }),
       ),
-      h('div', { class: 'desk-grid' },
-        trees.map(stack),
-        newStack('New Topic', 't', () => newCard('topic', '')),
-        newStack('New Literature', 'l', () => newLiterature()),
-      ),
+      ...zoneSection('topic', 'Topic zone', 'New Topic', 't', () => newCard('topic', '')),
+      ...zoneSection('literature', 'Literature zone', 'New Literature', 'l', () => newLiterature()),
     );
   }
 
@@ -831,9 +890,10 @@
 
   // ----------------------------------------------------------------- reader
   function chip(link, extraClass) {
+    const cross = !link.broken && link.workspace && state.card && link.workspace !== state.card.workspace;
     return h('button', {
-      class: 'chip' + (link.broken ? ' broken' : '') + (extraClass ? ' ' + extraClass : ''),
-      title: link.broken ? 'Broken link' : link.title,
+      class: 'chip' + (link.broken ? ' broken' : '') + (cross ? ' cross ' + link.workspace : '') + (extraClass ? ' ' + extraClass : ''),
+      title: link.broken ? 'Broken link' : cross ? `${link.title} · ${wsLabel(link.workspace)} workspace` : link.title,
       onclick: link.broken ? null : () => go(link.address),
     }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't', text: link.broken ? 'missing' : link.title || '(untitled)' }));
   }
@@ -851,10 +911,12 @@
     const reader = $('#reader');
     const card = state.card;
     if (!card) {
-      const stats = state.overview.stats;
+      const summary = (state.overview.workspaces || []).find((item) => item.id === state.workspace)
+        || { cards: 0, topic_trees: 0, literature_trees: 0 };
       reader.replaceChildren(h('div', { class: 'welcome' },
         h('h2', { text: 'ROOT' }),
-        h('p', { text: `${stats.total} cards in ${stats.topics} Topic trees and ${stats.literature} Literature trees. Pick a stack on the desk, a drawer in the cabinet, or type a command above.` }),
+        h('p', {}, h('span', { class: 'ws-tag ' + state.workspace, text: `${wsLabel(state.workspace)} workspace` })),
+        h('p', { text: `${summary.cards} cards in ${summary.topic_trees} Topic trees and ${summary.literature_trees} Literature trees. Pick a stack on the desk, a drawer in the cabinet, or type a command above.` }),
         h('dl', {}, [
           ['go <target>', 'open a Location or Citation key'],
           ['t <title>', 'start a Topic'],
@@ -862,6 +924,7 @@
           [': or /', 'command bar · search'],
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
           ['v', 'switch Map / Constellation'],
+          ['w · ws', 'switch the human / agent workspace'],
         ].flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })]),
         ),
         h('div', { class: 'actions' },
@@ -878,10 +941,11 @@
     wireMarkdown(md);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
-    reader.replaceChildren(h('article', { class: 'card ' + card.kind },
+    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') },
       h('header', { class: 'card-head' },
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
+          h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
@@ -911,6 +975,12 @@
   function wireMarkdown(root) {
     for (const anchor of root.querySelectorAll('a[href]')) {
       if (anchor.classList.contains('zt-link')) {
+        const targetWorkspace = nodeWorkspace(anchor.dataset.target);
+        const here = state.card ? state.card.workspace : state.workspace;
+        if (targetWorkspace && targetWorkspace !== here) {
+          anchor.classList.add('cross', targetWorkspace);
+          anchor.title = `${wsLabel(targetWorkspace)} workspace`;
+        }
         anchor.addEventListener('click', (event) => { event.preventDefault(); go(anchor.dataset.target); });
       } else {
         anchor.target = '_blank';
@@ -1004,6 +1074,24 @@
     ));
   }
 
+  function showWorkspaces() {
+    const summaries = state.overview.workspaces || [];
+    listDialog('Workspaces', (close) => [
+      h('div', { class: 'ws-list' }, Object.keys(WORKSPACES).map((id) => {
+        const summary = summaries.find((item) => item.id === id) || { topic_trees: 0, literature_trees: 0, cards: 0 };
+        return h('button', {
+          class: 'ws-row ' + id + (state.workspace === id ? ' on' : ''),
+          onclick: () => { close(); setWorkspace(id, { toRoot: true }); },
+        },
+          h('span', { class: 'ws-tag ' + id, text: wsLabel(id) }),
+          h('span', { class: 't', text: `${summary.topic_trees} Topic trees · ${summary.literature_trees} Literature trees · ${summary.cards} cards` }),
+          h('span', { class: 'x', text: WORKSPACES[id].mcp }),
+        );
+      })),
+      h('p', { class: 'hint', text: 'Links may cross workspaces; cards and trees never move between them.' }),
+    ]);
+  }
+
   async function showBroken() {
     const { broken } = await api('broken');
     listDialog(`Broken links · ${broken.length}`, (close) => (broken.length
@@ -1019,7 +1107,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(20)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -1191,21 +1279,21 @@
     if (kind === 'side' && parent.context !== 'regular') {
       throw new Error(`side successors cannot start from a ${parent.kind === 'literature' ? 'Literature' : 'Topic'} Card`);
     }
-    const heading = kind === 'topic' ? 'New Topic'
+    const heading = kind === 'topic' ? `New Topic · ${wsLabel(state.workspace)} workspace`
       : kind === 'direct' ? `New direct successor of ${parent.address}` : `New side successor of ${parent.address}`;
     // Same template as the terminal: heading, blank line, body line, marker.
     const initial = `# ${kind === 'topic' ? title || '' : ''}\n\n\n<!-- zt:reverse-links -->\n`;
     const address = await openEditor({
       heading,
       initial,
-      save: (text) => api('create', { kind, at: parent?.address, text }).then((result) => result.address),
+      save: (text) => api('create', { kind, at: parent?.address, text, workspace: state.workspace }).then((result) => result.address),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
 
   async function newLiterature() {
     const address = await openEditor({
-      heading: 'New Literature Card',
+      heading: `New Literature Card · ${wsLabel(state.workspace)} workspace`,
       initial: '',
       literature: {},
       bibtex: '',
@@ -1214,7 +1302,7 @@
         if (checked.exists) return { ...checked, warn: true, note: `Literature Card \`${checked.citation_key}\` already exists` };
         return { ...checked, note: `Citation key ${checked.citation_key} · “${checked.title}”` };
       },
-      save: (text, bibtex) => api('literature', { bibtex, text }).then((result) => result.address),
+      save: (text, bibtex) => api('literature', { bibtex, text, workspace: state.workspace }).then((result) => result.address),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
@@ -1453,6 +1541,7 @@
         case 'ArrowDown': return card?.direct ? run(() => go(card.direct.address)) : undefined;
         case 'ArrowRight': return card?.sides.length ? run(() => go(card.sides[0].address)) : undefined;
         case 'v': return run(() => setMode(state.mode === 'map' ? 'constellation' : 'map'));
+        case 'w': return run(() => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }));
         case 'f': return run(() => fitView());
         case '?': return run(showHelp);
         case 'Escape': return run(() => openRail(false));

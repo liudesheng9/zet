@@ -27,6 +27,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ),
     ("root", "return to ROOT", Availability::Always),
     (
+        "ws [<workspace>]",
+        "list workspaces, or switch to the human or agent workspace ROOT",
+        Availability::Always,
+    ),
+    (
         "up",
         "go to the parent card; a tree root goes to ROOT",
         Availability::OnCard,
@@ -36,10 +41,14 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "list Topics and Literature at ROOT, or the current tree",
         Availability::Always,
     ),
-    ("t <title>", "create a Topic", Availability::Always),
+    (
+        "t <title>",
+        "create a Topic in the current workspace",
+        Availability::Always,
+    ),
     (
         "l",
-        "create a Literature Card from one BibTeX entry",
+        "create a Literature Card in the current workspace from one BibTeX entry",
         Availability::Always,
     ),
     ("n", "create the direct successor", Availability::OnCard),
@@ -131,12 +140,16 @@ pub(super) enum Pointer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionState {
     pointer: Pointer,
+    /// The Workspace shown at ROOT and given new Topics and Literature. It
+    /// follows the Pointer into whichever Workspace holds its Card.
+    workspace: crate::Workspace,
 }
 
 impl SessionState {
     pub(super) fn root() -> Self {
         Self {
             pointer: Pointer::Root,
+            workspace: crate::Workspace::Human,
         }
     }
 
@@ -144,8 +157,23 @@ impl SessionState {
         &self.pointer
     }
 
-    pub(super) fn follow_link(&mut self, target: String) {
+    pub(super) fn workspace(&self) -> crate::Workspace {
+        self.workspace
+    }
+
+    pub(super) fn follow_link(&mut self, root: &Path, target: String) {
         self.pointer = Pointer::Card(target);
+        self.sync_workspace(root);
+    }
+
+    /// Adopt the Workspace of the Card under the Pointer, if there is one.
+    pub(super) fn sync_workspace(&mut self, root: &Path) {
+        if let Pointer::Card(target) = &self.pointer
+            && let Ok(conn) = crate::open_db(root)
+            && let Ok(card) = crate::load_card(&conn, target)
+        {
+            self.workspace = card.workspace;
+        }
     }
 
     fn current_card(&self, command: &str) -> Result<String> {
@@ -159,6 +187,7 @@ impl SessionState {
     fn at(target: &str) -> Self {
         Self {
             pointer: Pointer::Card(target.to_string()),
+            workspace: crate::Workspace::Human,
         }
     }
 }
@@ -226,6 +255,14 @@ pub(super) enum CommandResult {
     Status(Status),
     BrokenLinks(Vec<crate::link::BrokenLink>),
     Help(Help),
+    Workspaces(Vec<WorkspaceSummary>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct WorkspaceSummary {
+    pub(super) workspace: crate::Workspace,
+    pub(super) counts: crate::workspace::WorkspaceCounts,
+    pub(super) current: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -265,6 +302,17 @@ pub(super) fn execute(
     line: &str,
     interaction: &mut dyn Interaction,
 ) -> Result<Execution> {
+    let execution = execute_command(root, state, line, interaction);
+    state.sync_workspace(root);
+    execution
+}
+
+fn execute_command(
+    root: &Path,
+    state: &mut SessionState,
+    line: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<Execution> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     match parts.as_slice() {
         [] => Ok(Execution::Continue(CommandResult::Noop)),
@@ -282,6 +330,26 @@ pub(super) fn execute(
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["go", _, _, ..] => bail!("usage: go [<target>]"),
+        ["ws"] => {
+            let conn = crate::open_db(root)?;
+            let cards = crate::load_cards(&conn)?;
+            Ok(Execution::Continue(CommandResult::Workspaces(
+                crate::Workspace::ALL
+                    .into_iter()
+                    .map(|workspace| WorkspaceSummary {
+                        workspace,
+                        counts: crate::workspace::counts(&cards, workspace),
+                        current: workspace == state.workspace,
+                    })
+                    .collect(),
+            )))
+        }
+        ["ws", name] => {
+            state.workspace = crate::Workspace::parse(name)?;
+            state.pointer = Pointer::Root;
+            Ok(Execution::Continue(CommandResult::Navigated))
+        }
+        ["ws", ..] => bail!("usage: ws [<workspace>]"),
         ["up"] => {
             if let Pointer::Card(target) = &state.pointer {
                 state.pointer = crate::parent_location(target)
@@ -293,7 +361,7 @@ pub(super) fn execute(
         ["up", ..] => bail!("usage: up"),
         ["ls"] => {
             let conn = crate::open_db(root)?;
-            let (heading, cards) = super::cards_for_list(&conn, state.pointer())?;
+            let (heading, cards) = super::cards_for_list(&conn, state.pointer(), state.workspace)?;
             let cards = cards
                 .into_iter()
                 .map(|card| {
@@ -346,12 +414,15 @@ pub(super) fn execute(
             }
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
-            let location = crate::next_topic_location(&conn)?;
+            let workspace = state.workspace;
+            let mut created = None;
             let mut save = |text: &str| {
-                crate::insert_card(&mut conn, &location, true, text)?;
-                crate::bump_next_topic_id(&conn, &location)
+                created = Some(crate::create_topic(&mut conn, workspace, text)?);
+                Ok(())
             };
-            if interaction.edit(&crate::topic_template(&title), "edit mode", &mut save)? {
+            if interaction.edit(&crate::topic_template(&title), "edit mode", &mut save)?
+                && let Some(location) = created
+            {
                 state.pointer = Pointer::Card(location);
             }
             Ok(Execution::Continue(CommandResult::Changed))
@@ -365,7 +436,9 @@ pub(super) fn execute(
             if crate::location_exists(&conn, &location)? {
                 bail!("direct successor already exists: {location}");
             }
-            let mut save = |text: &str| crate::insert_card(&mut conn, &location, false, text);
+            let mut save = |text: &str| {
+                crate::insert_card(&mut conn, &location, false, parent.workspace, text)
+            };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
             }
@@ -378,7 +451,9 @@ pub(super) fn execute(
             let parent = crate::load_card(&conn, &at)?;
             crate::ensure_side_parent(&parent)?;
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
-            let mut save = |text: &str| crate::insert_card(&mut conn, &location, false, text);
+            let mut save = |text: &str| {
+                crate::insert_card(&mut conn, &location, false, parent.workspace, text)
+            };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
             }
@@ -403,10 +478,11 @@ pub(super) fn execute(
                 accepted.context("validated Literature metadata is missing")?;
             let initial_text = crate::card::card_template(&metadata.title);
             let citation_key = metadata.citation_key.clone();
+            let workspace = state.workspace;
             let mut save_text = |edited: &str| {
                 let parsed = crate::parse_literature_edit_text(edited)?;
                 let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-                crate::insert_literature_card(&mut conn, &citation_key, &bibtex, &text)
+                crate::insert_literature_card(&mut conn, &citation_key, workspace, &bibtex, &text)
             };
             if interaction.edit(&initial_text, "edit mode", &mut save_text)? {
                 state.pointer = Pointer::Card(citation_key);
@@ -668,7 +744,7 @@ mod tests {
         assert_eq!(
             execute_without_interaction(temp.path(), &mut state, "ls").expect("list Cards"),
             Execution::Continue(CommandResult::List(Listing {
-                heading: "topics and literature: 2".to_string(),
+                heading: "human workspace topics and literature: 2".to_string(),
                 cards: vec![
                     CardSummary {
                         address: "0/0".to_string(),
@@ -1036,19 +1112,19 @@ mod tests {
         for (pointer, expected) in [
             (
                 SessionState::root(),
-                "go [<target>] | root | ls | t <title> | l | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | ls | t <title> | l | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

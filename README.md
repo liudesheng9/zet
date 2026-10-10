@@ -9,6 +9,8 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
 - Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
+- Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
+- Let coding agents work in the agent Workspace through the `zt mcp` server, with read-only access to yours.
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
 - Connect Cards with `[[target]]` Links, with generated Reverse links and Broken link checks.
 - Safely create, edit, move, and delete Card trees from the Session or shell.
@@ -40,6 +42,7 @@ n                  # Create the Direct successor (also works on a Literature Car
 b                  # Create a Side successor
 l                  # Create a Literature Card
 e                  # Edit the current Card
+ws [agent|human]   # List Workspaces, or switch to one
 go <target>        # Go to a Location or Citation key
 up                 # Go to the parent Card (a tree root goes to ROOT)
 ls                 # List the current tree, or Topics and Literature at ROOT
@@ -89,8 +92,9 @@ zt gui --no-open       # just print the local URL
 zt gui --port 4717     # choose the port
 ```
 
-- **Cabinet** (left): every Topic and Literature drawer, plus full-text search.
-- **Desk** (ROOT): each tree as a stack of index cards.
+- **Cabinet** (left): tabs for the human and agent Workspaces, the Topic and Literature zones of
+  the open one, and full-text search.
+- **Desk** (ROOT): each tree of the open Workspace as a stack of index cards, grouped by Zone.
 - **Map**: the current tree as a Folgezettel map. Direct successors run down a column,
   Side successors branch into new columns, and Links are drawn as dashed arcs.
 - **Constellation**: every Card and Link as one graph, colored by tree.
@@ -101,12 +105,69 @@ zt gui --port 4717     # choose the port
   `Ctrl+S` to save, and `Esc` to cancel.
 
 The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
-`del`, `mv 1/3`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
+`ws agent`, `del`, `mv 1/3`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
 same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m`,
-`Delete`, `u` or arrows to walk the map, `v` to switch views, `f` to fit.
+`Delete`, `u` or arrows to walk the map, `v` to switch views, `w` to switch Workspaces, `f` to fit.
 
 The GUI listens on `127.0.0.1` only, requires a per-launch token, and counts as a Session,
 so `zt down` waits until you close it with the power button or `Ctrl+C`.
+
+## Workspaces
+
+One archive holds two **Workspaces**: the **human** Workspace for your own notes and the
+**agent** Workspace for an AI agent's. Each Workspace has two **Zones**: a Topic zone and a
+Literature zone, each holding any number of trees.
+
+- Every tree belongs to exactly one Workspace, and new successors join their tree's Workspace.
+- Addresses are unique across both Workspaces, so `[[target]]` Links (and their Reverse links)
+  cross freely between them.
+- Cards and trees never move between Workspaces: `mv` refuses a destination in the other one.
+- Archives created before Workspaces existed are upgraded on `zt up`, with every Card in the human
+  Workspace.
+
+```sh
+zt ws                          # list both Workspaces and their Zones
+zt t --ws agent "Agent topic"  # create a Topic in the agent Workspace (default: human)
+zt l --ws agent                # create a Literature Card in the agent Workspace
+```
+
+Inside a Session, ROOT shows the current Workspace's Zones. `ws` lists both Workspaces and
+`ws agent` / `ws human` switches; `t` and `l` create in the current Workspace, and following a
+Link into the other Workspace switches to it. In the GUI, the cabinet's two tabs (or `w`, or the
+`ws` command) switch Workspaces, agent Cards carry a violet AI AGENT tag, and Links into the
+other Workspace are inked in its color.
+
+## The MCP server
+
+`zt mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so
+coding agents can work in the slip-box. It can **read both Workspaces** but **change only the
+agent Workspace**: every write to the human Workspace is refused, as is any agent change that
+would rewrite a Link inside a human Card (for example moving or renaming an agent Card that a
+human Card links to). Agent Links into the human Workspace are fine; they only add generated
+Reverse links to the human Card.
+
+| Tool | What it does |
+| --- | --- |
+| `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
+| `list_trees` | tree roots, filtered by Workspace and Zone |
+| `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
+| `search_cards`, `list_links`, `list_broken_links` | full-text search, the Link graph (optionally only cross-Workspace Links), Broken links |
+| `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
+| `create_successor` | add a direct or side successor to an agent Card |
+| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, or BibTeX |
+| `delete_card`, `move_card` | delete or move agent Cards |
+
+Deletes, moves, and Citation key renames first return a plan; call again with the `confirm`
+text it names (`delete`, the tree root's address, or `move`) to apply it. The service must be up.
+
+To use it from Claude Code in this repository, the checked-in `.mcp.json` already registers it.
+Elsewhere, register it once:
+
+```sh
+claude mcp add zt -- zt mcp
+```
+
+Any other MCP client can launch `zt mcp` as a stdio server the same way.
 
 ## Create a Literature Card
 
@@ -158,6 +219,8 @@ zt help
 zt gui
 zt status
 zt stats
+zt ws
+zt mcp
 zt lsbk
 zt dp
 zt down

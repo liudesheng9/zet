@@ -23,7 +23,7 @@
     <div class="command" id="command">
       <span class="command-prompt" aria-hidden="true">›</span>
       <input id="command-input" autocomplete="off" spellcheck="false"
-             placeholder="go 1/2 · n · b · e · t Title · l · ls · lsbk · help — or search">
+             placeholder="go 1/2 · n · b · e · t Title · l · ws agent · ls · help — or search">
       <kbd class="command-hint">:</kbd>
       <div class="command-menu" id="command-menu" role="listbox" hidden></div>
     </div>
@@ -40,6 +40,8 @@
   </header>
 
   <aside class="rail" id="rail">
+    <div class="ws-switch" id="workspace-switch" role="tablist" aria-label="Workspace"></div>
+    <p class="ws-note" id="workspace-note"></p>
     <div class="rail-search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
       <input id="search" type="search" placeholder="Search cards" autocomplete="off">
@@ -47,11 +49,11 @@
     <div class="rail-scroll">
       <div id="search-results" class="search-results" hidden></div>
       <section class="drawer-group">
-        <header><h2>Topics</h2><button class="mini-btn" data-action="new-topic" title="New Topic (t)">+ t</button></header>
+        <header><h2>Topic zone</h2><button class="mini-btn" data-action="new-topic" title="New Topic (t)">+ t</button></header>
         <div id="topic-drawers" class="drawers"></div>
       </section>
       <section class="drawer-group">
-        <header><h2>Literature</h2><button class="mini-btn" data-action="new-literature" title="New Literature Card (l)">+ l</button></header>
+        <header><h2>Literature zone</h2><button class="mini-btn" data-action="new-literature" title="New Literature Card (l)">+ l</button></header>
         <div id="literature-drawers" class="drawers"></div>
       </section>
     </div>

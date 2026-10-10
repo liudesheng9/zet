@@ -589,18 +589,18 @@ fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scroll
     session.wait_for_text("ROOT");
     session.wait_for_text("(none yet; create one with t <title>)");
     session.wait_for_text("TreeKey Tree Work");
-    // ROOT, topics:, empty hint, literature:, then the clickable Literature entry.
-    session.send_left_click(4, 2);
+    // ROOT, workspace:, topics:, empty hint, literature:, then the clickable Literature entry.
+    session.send_left_click(5, 2);
     session.wait_for_text("citation key: TreeKey");
-    session.wait_for_text("lines 1-22 of 47");
+    session.wait_for_text("lines 1-22 of 48");
     assert!(!session.plain_output().contains("body line 40"));
     session.send_key(Key::PageDown);
-    session.wait_for_text("lines 22-43 of 47");
+    session.wait_for_text("lines 22-43 of 48");
     session.send_key(Key::PageDown);
-    session.wait_for_text("lines 26-47 of 47");
+    session.wait_for_text("lines 27-48 of 48");
     session.wait_for_text("body line 40");
     session.send_key(Key::PageUp);
-    session.wait_for_text("lines 5-26 of 47");
+    session.wait_for_text("lines 6-27 of 48");
 
     session.send_text("b");
     session.send_enter();
@@ -643,7 +643,9 @@ fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scroll
     session.wait_for_text_count("location: TreeKey/1", views + 2);
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("commands: go [<target>] | root | up | ls | t <title> | l | n | b | e");
+    session.wait_for_text(
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e",
+    );
     session.wait_for_text("go to the parent card; a tree root goes to ROOT");
     session.send_text("up");
     session.send_enter();
@@ -706,7 +708,7 @@ fn terminal_session_creates_navigates_and_lists_literature_card() {
     session.wait_for_text("Literature tree Session2025: 1 cards");
     session.send_text("help");
     session.send_enter();
-    session.wait_for_text("go [<target>] | root | up");
+    session.wait_for_text("go [<target>] | root | ws [<workspace>] | up");
     session.wait_for_text(" l ");
 
     session.send_text("q");

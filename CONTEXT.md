@@ -30,6 +30,21 @@ _Avoid_: Reference tree
 The client-assigned, case-significant string address of a Literature Card. It is exactly the entry key in that Card's BibTeX metadata, is never a valid Location, and cannot differ from another Citation key only by case.
 _Avoid_: Literature Location, Literature ID
 
+**Workspace**:
+One of the two halves of the archive: the **human** Workspace and the **agent** (AI agent) Workspace. Every tree belongs to exactly one Workspace, and every Card in a tree shares its Workspace. Addresses are unique across both Workspaces, so Links may cross them, but Cards and trees can never move between them. Archives created before Workspaces existed hold only human Cards.
+_Avoid_: Space, vault, account
+
+**Zone**:
+One of the two kinds of tree inside a Workspace: the Topic zone holds its Topic trees, and the Literature zone holds its Literature trees. Each Zone may hold many trees.
+_Avoid_: Section, folder
+
+**Access**:
+Which Workspaces a client may change. Every client may read both Workspaces. The human's own tools (the Session, the GUI, and shell commands) may change both; the MCP server may change only the agent Workspace, and refuses any change that would rewrite the body of a human Card. Regenerating a human Card's Reverse links is not a change to it.
+
+**MCP server**:
+The Model Context Protocol server started with `zt mcp`. It speaks JSON-RPC over stdio, offers every Card operation as a tool, and acts with agent Access.
+_Avoid_: API, bot
+
 **Location**:
 A unique string address for a Topic or Regular Card, such as `1/0`, `1/1`, `1/2|c|4|b|b`, or `Smith2024/1|a`. The text before `/` is the tree id: a Topic number or a Citation key.
 _Avoid_: ID, path
@@ -47,7 +62,7 @@ The text insertion position inside a card being edited.
 _Avoid_: Edit cursor, pointer
 
 **Session**:
-One interactive terminal view with its own pointer and command bar.
+One interactive terminal view with its own pointer, current Workspace, and command bar.
 _Avoid_: Window, shell
 
 **Link**:

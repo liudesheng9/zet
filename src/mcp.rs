@@ -1,0 +1,756 @@
+//! `zt mcp`: a Model Context Protocol server for AI agents.
+//!
+//! The server speaks JSON-RPC 2.0 over stdio, one message per line. Its tools
+//! read every Card in both Workspaces, but change only the agent Workspace:
+//! the human Workspace is read-only here. Changes go through the same
+//! operations as the GUI, so every Card rule still holds, and destructive
+//! changes need the same typed confirmation, passed as `confirm`.
+
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+
+use crate::ops::{self, Outcome, Snapshot, Successor};
+use crate::{Access, Workspace};
+
+/// Every change made through MCP is limited to the agent Workspace.
+const ACCESS: Access = Access::Agent;
+const SERVER_NAME: &str = "zt";
+const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+const INSTRUCTIONS: &str = "ZT is a slip-box of addressable Markdown Cards split into two Workspaces: \
+`human` (read-only for you) and `agent` (yours to read and change). Each Workspace has two Zones: \
+Topic trees (rooted at a Topic such as `3/0`) and Literature trees (rooted at a Literature Card \
+named by its BibTeX Citation key, such as `Smith2024`). Card addresses are unique across both \
+Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by writing \
+`[[address]]` in Markdown bodies; Links may cross Workspaces, but Cards and trees never move \
+between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
+create new trees with create_topic or create_literature, then grow them with create_successor. \
+delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
+`confirm` text the plan names to apply it.";
+
+pub(crate) fn run() -> Result<()> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    let mut server = Server::default();
+    for line in stdin.lock().lines() {
+        let line = line.context("failed to read an MCP message")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(reply) = server.handle_line(&line) {
+            writeln!(stdout, "{reply}")?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Server {
+    initialized: bool,
+}
+
+impl Server {
+    /// Answer one line: a request, a notification, or a batch of them.
+    fn handle_line(&mut self, line: &str) -> Option<String> {
+        let message: Value = match serde_json::from_str(line) {
+            Ok(message) => message,
+            Err(error) => {
+                return Some(
+                    error_response(Value::Null, -32700, &format!("parse error: {error}"))
+                        .to_string(),
+                );
+            }
+        };
+        match message {
+            Value::Array(batch) => {
+                let replies = batch
+                    .into_iter()
+                    .filter_map(|message| self.handle(message))
+                    .collect::<Vec<_>>();
+                (!replies.is_empty()).then(|| Value::Array(replies).to_string())
+            }
+            message => self.handle(message).map(|reply| reply.to_string()),
+        }
+    }
+
+    fn handle(&mut self, message: Value) -> Option<Value> {
+        let Some(object) = message.as_object() else {
+            return Some(error_response(
+                Value::Null,
+                -32600,
+                "invalid request: expected a JSON object",
+            ));
+        };
+        let id = object.get("id").cloned();
+        let Some(method) = object.get("method").and_then(Value::as_str) else {
+            // A response from the client: nothing to answer.
+            return id.map(|id| error_response(id, -32600, "invalid request: missing method"));
+        };
+        let params = object.get("params").cloned().unwrap_or(Value::Null);
+        let Some(id) = id else {
+            if method == "notifications/initialized" {
+                self.initialized = true;
+            }
+            return None;
+        };
+        Some(match self.request(method, &params) {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err(RpcError { code, message }) => error_response(id, code, &message),
+        })
+    }
+
+    fn request(&mut self, method: &str, params: &Value) -> std::result::Result<Value, RpcError> {
+        match method {
+            "initialize" => {
+                let requested = params.get("protocolVersion").and_then(Value::as_str);
+                let version = requested
+                    .filter(|version| PROTOCOL_VERSIONS.contains(version))
+                    .unwrap_or(PROTOCOL_VERSIONS[0]);
+                Ok(json!({
+                    "protocolVersion": version,
+                    "capabilities": { "tools": { "listChanged": false } },
+                    "serverInfo": {
+                        "name": SERVER_NAME,
+                        "title": "ZT slip-box",
+                        "version": crate::VERSION,
+                    },
+                    "instructions": INSTRUCTIONS,
+                }))
+            }
+            "ping" => Ok(json!({})),
+            "tools/list" => Ok(json!({ "tools": tool_definitions() })),
+            "tools/call" => {
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::invalid_params("missing tool `name`"))?;
+                let empty = Value::Object(Map::new());
+                let arguments = params.get("arguments").unwrap_or(&empty);
+                if !arguments.is_object() {
+                    return Err(RpcError::invalid_params(
+                        "tool `arguments` must be an object",
+                    ));
+                }
+                if !tool_definitions()
+                    .iter()
+                    .any(|tool| tool["name"].as_str() == Some(name))
+                {
+                    return Err(RpcError::invalid_params(&format!("unknown tool `{name}`")));
+                }
+                Ok(match call_tool(name, arguments) {
+                    Ok(value) => tool_result(value, false),
+                    Err(error) => tool_result(json!({ "error": format!("{error:#}") }), true),
+                })
+            }
+            "resources/list" => Ok(json!({ "resources": [] })),
+            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
+            "prompts/list" => Ok(json!({ "prompts": [] })),
+            other => Err(RpcError {
+                code: -32601,
+                message: format!("method not found: {other}"),
+            }),
+        }
+    }
+}
+
+struct RpcError {
+    code: i64,
+    message: String,
+}
+
+impl RpcError {
+    fn invalid_params(message: &str) -> Self {
+        Self {
+            code: -32602,
+            message: message.to_string(),
+        }
+    }
+}
+
+fn error_response(id: Value, code: i64, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+fn tool_result(value: Value, is_error: bool) -> Value {
+    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    let mut result = json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": is_error,
+    });
+    if value.is_object() {
+        result["structuredContent"] = value;
+    }
+    result
+}
+
+fn archive_root() -> Result<PathBuf> {
+    crate::require_service_up().context("the ZT service is not available; run `zt up`")
+}
+
+fn call_tool(name: &str, args: &Value) -> Result<Value> {
+    let root = archive_root()?;
+    match name {
+        "list_workspaces" => {
+            let snapshot = Snapshot::read(&root)?;
+            let workspaces = Workspace::ALL
+                .into_iter()
+                .map(|workspace| {
+                    let counts = crate::workspace::counts(&snapshot.cards, workspace);
+                    json!({
+                        "id": workspace.id(),
+                        "label": workspace.label(),
+                        "access": if ACCESS.can_write(workspace) { "read-write" } else { "read-only" },
+                        "zones": {
+                            "topic": { "trees": counts.topic_trees },
+                            "literature": { "trees": counts.literature_trees },
+                        },
+                        "cards": counts.cards,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "workspaces": workspaces,
+                "cards": snapshot.cards.len(),
+                "broken_links": snapshot.lifecycle.broken_links()?.len(),
+            }))
+        }
+        "list_trees" => {
+            let snapshot = Snapshot::read(&root)?;
+            let workspace = optional_workspace(args)?;
+            let zone = optional_zone(args)?;
+            let trees = snapshot
+                .trees()
+                .into_iter()
+                .filter(|tree| workspace.is_none_or(|ws| tree["workspace"] == ws.id()))
+                .filter(|tree| zone.is_none_or(|zone| tree["kind"] == zone))
+                .collect::<Vec<_>>();
+            Ok(json!({ "trees": trees }))
+        }
+        "get_tree" => {
+            let snapshot = Snapshot::read(&root)?;
+            let tree = string_arg(args, "tree")?;
+            let tree = crate::tree_id(&tree).to_string();
+            let root_address = crate::tree_root_address(&tree);
+            let Some(root_card) = snapshot.by_address.get(&root_address) else {
+                bail!("tree `{tree}` does not exist");
+            };
+            let cards = snapshot
+                .cards
+                .iter()
+                .filter(|card| crate::is_tree_member(&card.address, &tree))
+                .map(|card| snapshot.summary(card))
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "tree": tree,
+                "root": root_address,
+                "workspace": root_card.workspace.id(),
+                "zone": ops::zone(root_card),
+                "title": snapshot.title(&root_address),
+                "cards": cards,
+            }))
+        }
+        "get_card" => {
+            let snapshot = Snapshot::read(&root)?;
+            let at = string_arg(args, "at")?;
+            let card = snapshot
+                .by_address
+                .get(&at)
+                .with_context(|| format!("card `{at}` does not exist"))?;
+            let parsed = &snapshot.parsed[&card.address];
+            Ok(json!({
+                "address": card.address,
+                "tree": crate::tree_id(&card.address),
+                "workspace": card.workspace.id(),
+                "writable": ACCESS.can_write(card.workspace),
+                "kind": ops::kind(card),
+                "title": parsed.title,
+                "body": parsed.body,
+                "text": card.text,
+                "bibtex": card.bibtex,
+                "citation_key": card.citation_key,
+                "parent": snapshot.nav(crate::parent_location(&card.address)),
+                "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
+                "sides": snapshot.sides(card),
+                "outbound": snapshot.outbound(&card.address),
+                "inbound": snapshot.inbound_refs(&card.address),
+            }))
+        }
+        "search_cards" => {
+            let snapshot = Snapshot::read(&root)?;
+            let query = string_arg(args, "query")?;
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(30)
+                .clamp(1, 200) as usize;
+            Ok(json!({
+                "results": snapshot.search(&query, optional_workspace(args)?, limit),
+            }))
+        }
+        "list_links" => {
+            let snapshot = Snapshot::read(&root)?;
+            let workspace = optional_workspace(args)?;
+            let cross_only = args
+                .get("cross_workspace_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut links = Vec::new();
+            for card in &snapshot.cards {
+                for link in snapshot.outbound(&card.address) {
+                    let target_workspace = link["workspace"].as_str();
+                    let involved = workspace
+                        .is_none_or(|ws| card.workspace == ws || target_workspace == Some(ws.id()));
+                    let crosses = target_workspace.is_some_and(|ws| ws != card.workspace.id());
+                    if involved && (!cross_only || crosses) {
+                        links.push(json!({
+                            "source": card.address,
+                            "source_workspace": card.workspace.id(),
+                            "target": link["address"],
+                            "target_workspace": link["workspace"],
+                            "broken": link["broken"],
+                        }));
+                    }
+                }
+            }
+            Ok(json!({ "links": links }))
+        }
+        "list_broken_links" => {
+            let snapshot = Snapshot::read(&root)?;
+            Ok(json!({ "broken": snapshot.broken(optional_workspace(args)?)? }))
+        }
+        "create_topic" => {
+            let workspace = target_workspace(args)?;
+            let title = title_arg(args)?;
+            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+            let address = ops::create_topic(&root, ACCESS, workspace, &text)?;
+            Ok(json!({ "address": address, "workspace": workspace.id() }))
+        }
+        "create_literature" => {
+            let workspace = target_workspace(args)?;
+            let bibtex = string_arg(args, "bibtex")?;
+            let body = optional_string(args, "body")?;
+            let address = ops::create_literature(&root, ACCESS, workspace, &bibtex, &body)?;
+            Ok(json!({ "address": address, "workspace": workspace.id() }))
+        }
+        "create_successor" => {
+            let at = string_arg(args, "at")?;
+            let kind = match optional_string(args, "kind")?.as_str() {
+                "" | "direct" => Successor::Direct,
+                "side" => Successor::Side,
+                other => bail!("unknown successor kind `{other}`; expected direct or side"),
+            };
+            let title = title_arg(args)?;
+            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+            let address = ops::create_successor(&root, ACCESS, kind, &at, &text)?;
+            Ok(json!({ "address": address }))
+        }
+        "edit_card" => {
+            let at = string_arg(args, "at")?;
+            let conn = crate::open_db(&root)?;
+            let card = crate::load_card(&conn, &at)?;
+            drop(conn);
+            ACCESS.ensure_writable(card.workspace)?;
+            let parsed = crate::parse_card_text(&card.text)?;
+            let text = match args.get("text").and_then(Value::as_str) {
+                Some(text) => text.to_string(),
+                None => {
+                    if card.is_lit && args.get("title").is_some() {
+                        bail!(
+                            "a Literature Card takes its title from BibTeX; change it with edit_literature_metadata"
+                        );
+                    }
+                    let title = match args.get("title") {
+                        Some(_) => title_arg(args)?,
+                        None => parsed.title.clone(),
+                    };
+                    let body = match args.get("body") {
+                        Some(_) => optional_string(args, "body")?,
+                        None => parsed.body.clone(),
+                    };
+                    crate::compose_card_text(&title, &body, "")
+                }
+            };
+            let base = args.get("base").and_then(Value::as_str);
+            let address = ops::edit_text(&root, ACCESS, &at, &text, base)?;
+            Ok(json!({ "address": address }))
+        }
+        "edit_literature_metadata" => {
+            let outcome = ops::edit_metadata(
+                &root,
+                ACCESS,
+                &string_arg(args, "at")?,
+                &string_arg(args, "bibtex")?,
+                None,
+                args.get("confirm").and_then(Value::as_str),
+            )?;
+            Ok(plan_or_done(outcome))
+        }
+        "delete_card" => {
+            let outcome = ops::delete(
+                &root,
+                ACCESS,
+                &string_arg(args, "at")?,
+                args.get("confirm").and_then(Value::as_str),
+            )?;
+            Ok(plan_or_done(outcome))
+        }
+        "move_card" => {
+            let outcome = ops::move_card(
+                &root,
+                ACCESS,
+                &string_arg(args, "at")?,
+                &string_arg(args, "to")?,
+                args.get("confirm").and_then(Value::as_str),
+            )?;
+            Ok(plan_or_done(outcome))
+        }
+        other => bail!("unknown tool `{other}`"),
+    }
+}
+
+/// A plan that still needs confirmation says so plainly; nothing has changed.
+fn plan_or_done(outcome: Outcome) -> Value {
+    match outcome {
+        Outcome::Confirm { confirm, lines } => json!({
+            "applied": false,
+            "confirm": confirm,
+            "plan": lines,
+            "next": format!("nothing changed yet; call again with confirm = \"{confirm}\" to apply"),
+        }),
+        Outcome::Done(mut value) => {
+            value["applied"] = json!(true);
+            value
+        }
+    }
+}
+
+fn string_arg(args: &Value, name: &str) -> Result<String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .with_context(|| format!("missing string argument `{name}`"))
+}
+
+fn optional_string(args: &Value, name: &str) -> Result<String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => bail!("argument `{name}` must be a string"),
+    }
+}
+
+fn title_arg(args: &Value) -> Result<String> {
+    let title = string_arg(args, "title")?;
+    let title = title.trim();
+    if title.is_empty() || title.contains(['\n', '\r']) {
+        bail!("title must be non-empty single-line text");
+    }
+    Ok(title.to_string())
+}
+
+fn optional_workspace(args: &Value) -> Result<Option<Workspace>> {
+    match args.get("workspace") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value == "all" => Ok(None),
+        Some(Value::String(value)) => Workspace::parse(value).map(Some),
+        Some(_) => bail!("argument `workspace` must be a string"),
+    }
+}
+
+/// New trees go to the agent Workspace; naming another one is refused.
+fn target_workspace(args: &Value) -> Result<Workspace> {
+    let workspace = optional_workspace(args)?.unwrap_or(Workspace::Agent);
+    ACCESS.ensure_writable(workspace)?;
+    Ok(workspace)
+}
+
+fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
+    match args.get("zone").and_then(Value::as_str) {
+        None | Some("all") => Ok(None),
+        Some("topic") | Some("topics") => Ok(Some("topic")),
+        Some("literature") => Ok(Some("literature")),
+        Some(other) => bail!("unknown zone `{other}`; expected topic or literature"),
+    }
+}
+
+fn tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    properties: Value,
+    required: &[&str],
+    read_only: bool,
+    destructive: bool,
+) -> Value {
+    json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        },
+        "annotations": {
+            "title": title,
+            "readOnlyHint": read_only,
+            "destructiveHint": destructive,
+            "idempotentHint": read_only,
+            "openWorldHint": false,
+        },
+    })
+}
+
+fn tool_definitions() -> Vec<Value> {
+    let workspace_filter = json!({
+        "type": "string",
+        "enum": ["human", "agent", "all"],
+        "description": "Only this Workspace; omit for both.",
+    });
+    let at = json!({
+        "type": "string",
+        "description": "A Card address: a Location such as `3/1|a` or a Citation key such as `Smith2024`.",
+    });
+    let confirm = json!({
+        "type": "string",
+        "description": "The confirmation text returned by the plan. Omit it to see the plan without changing anything.",
+    });
+    let body = json!({
+        "type": "string",
+        "description": "Markdown body. Write `[[address]]` to link any Card in either Workspace.",
+    });
+    vec![
+        tool(
+            "list_workspaces",
+            "List workspaces",
+            "List the human and agent Workspaces with their Topic and Literature Zones, Card counts, and your access (the human Workspace is read-only).",
+            json!({}),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "list_trees",
+            "List trees",
+            "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, and size.",
+            json!({
+                "workspace": workspace_filter,
+                "zone": { "type": "string", "enum": ["topic", "literature", "all"], "description": "Only this Zone; omit for both." },
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "get_tree",
+            "Get tree",
+            "Every Card of one tree, root first, with its edge (root, direct, side), parent, excerpt, and Links.",
+            json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." } }),
+            &["tree"],
+            true,
+            false,
+        ),
+        tool(
+            "get_card",
+            "Get card",
+            "Read one Card: its title, Markdown body, stored text, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out.",
+            json!({ "at": at }),
+            &["at"],
+            true,
+            false,
+        ),
+        tool(
+            "search_cards",
+            "Search cards",
+            "Case-insensitive full-text search over Card addresses, titles, and bodies.",
+            json!({
+                "query": { "type": "string" },
+                "workspace": workspace_filter,
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
+            }),
+            &["query"],
+            true,
+            false,
+        ),
+        tool(
+            "list_links",
+            "List links",
+            "Every `[[target]]` Link with the Workspace at each end. Use cross_workspace_only to see how the two Workspaces connect.",
+            json!({
+                "workspace": workspace_filter,
+                "cross_workspace_only": { "type": "boolean" },
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "list_broken_links",
+            "List broken links",
+            "Links whose target Card no longer exists.",
+            json!({ "workspace": workspace_filter }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "create_topic",
+            "Create topic",
+            "Start a new Topic tree in the agent Workspace's Topic Zone. Returns the new Topic Location, such as `7/0`.",
+            json!({
+                "title": { "type": "string", "description": "The Topic name (one line)." },
+                "body": { "type": "string", "description": "A short description in Markdown." },
+                "workspace": { "type": "string", "enum": ["agent"], "description": "Always the agent Workspace." },
+            }),
+            &["title"],
+            false,
+            false,
+        ),
+        tool(
+            "create_literature",
+            "Create literature card",
+            "Start a new Literature tree in the agent Workspace's Literature Zone from one BibTeX entry. Its entry key becomes the Citation key and its `title` field the Card title.",
+            json!({
+                "bibtex": { "type": "string", "description": "Exactly one BibTeX entry with a title field, e.g. `@book{Smith2024, title = {Example}}`." },
+                "body": body,
+                "workspace": { "type": "string", "enum": ["agent"], "description": "Always the agent Workspace." },
+            }),
+            &["bibtex"],
+            false,
+            false,
+        ),
+        tool(
+            "create_successor",
+            "Create successor card",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root).",
+            json!({
+                "at": at,
+                "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
+                "title": { "type": "string", "description": "The Card title (one line)." },
+                "body": body,
+            }),
+            &["at", "title"],
+            false,
+            false,
+        ),
+        tool(
+            "edit_card",
+            "Edit card",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Reverse links are regenerated automatically.",
+            json!({
+                "at": at,
+                "title": { "type": "string", "description": "New title (not for Literature Cards)." },
+                "body": body,
+                "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
+                "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
+            }),
+            &["at"],
+            false,
+            false,
+        ),
+        tool(
+            "edit_literature_metadata",
+            "Edit literature metadata",
+            "Replace the BibTeX of an agent Literature Card. A new entry key renames the whole Literature tree and rewrites Links to it, so it first returns a plan to confirm with `move`.",
+            json!({ "at": at, "bibtex": { "type": "string" }, "confirm": confirm }),
+            &["at", "bibtex"],
+            false,
+            true,
+        ),
+        tool(
+            "delete_card",
+            "Delete card",
+            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. Returns a plan first; confirm with the text it names (`delete`, or the root's address).",
+            json!({ "at": at, "confirm": confirm }),
+            &["at"],
+            false,
+            true,
+        ),
+        tool(
+            "move_card",
+            "Move card",
+            "Move an agent Regular Card and its successors to a new Location in the agent Workspace, rewriting Links. Literature tree Cards stay in their tree; nothing moves between Workspaces. Returns a plan first; confirm with `move`.",
+            json!({
+                "at": at,
+                "to": { "type": "string", "description": "The new Location: the next direct or side successor slot of an existing Card." },
+                "confirm": confirm,
+            }),
+            &["at", "to"],
+            false,
+            true,
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_negotiates_a_known_protocol_version() {
+        let mut server = Server::default();
+        let reply = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#)
+            .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "zt");
+        let reply = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#)
+            .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
+    }
+
+    #[test]
+    fn notifications_get_no_reply_and_unknown_methods_are_errors() {
+        let mut server = Server::default();
+        assert!(
+            server
+                .handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .is_none()
+        );
+        assert!(server.initialized);
+        let reply: Value = serde_json::from_str(
+            &server
+                .handle_line(r#"{"jsonrpc":"2.0","id":"x","method":"bogus"}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reply["error"]["code"], -32601);
+        let reply: Value = serde_json::from_str(&server.handle_line("{not json").unwrap()).unwrap();
+        assert_eq!(reply["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn every_tool_has_a_unique_name_and_object_schema() {
+        let tools = tool_definitions();
+        let mut names = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), tools.len());
+        for tool in &tools {
+            assert_eq!(tool["inputSchema"]["type"], "object");
+            for required in tool["inputSchema"]["required"].as_array().unwrap() {
+                assert!(
+                    tool["inputSchema"]["properties"]
+                        .get(required.as_str().unwrap())
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_trees_cannot_target_the_human_workspace() {
+        assert_eq!(target_workspace(&json!({})).unwrap(), Workspace::Agent);
+        assert!(target_workspace(&json!({ "workspace": "human" })).is_err());
+    }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "zt": {
+      "type": "stdio",
+      "command": "zt",
+      "args": ["mcp"]
+    }
+  }
+}

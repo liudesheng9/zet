@@ -14,12 +14,16 @@ mod dump;
 mod gui;
 mod link;
 mod literature;
+mod mcp;
+mod ops;
 mod session;
+mod workspace;
 
 pub(crate) use card::{
     ParsedCard, compose_card_text, parse_card_text, parse_literature_edit_text, regular_template,
     topic_template,
 };
+pub(crate) use workspace::{Access, Workspace};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -49,17 +53,26 @@ fn run() -> Result<()> {
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
         [cmd] if cmd == "dp" => cmd_dump(),
         [cmd] if cmd == "clear" => cmd_clear(),
+        [cmd] if cmd == "ws" => cmd_workspaces(),
+        [cmd] if cmd == "mcp" => mcp::run(),
         [cmd, rest @ ..] if cmd == "gui" => gui::run(rest),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
             cmd_config_set_archive_root(value)
         }
-        [cmd, title @ ..] if cmd == "t" => {
+        [cmd, rest @ ..] if cmd == "t" => {
+            let (workspace, title) = parse_workspace_option(rest)?;
             let title = title.join(" ");
-            shell_create_topic(&title)
+            shell_create_topic(workspace, &title)
         }
-        [cmd] if cmd == "l" => shell_create_literature(),
+        [cmd, rest @ ..] if cmd == "l" => {
+            let (workspace, rest) = parse_workspace_option(rest)?;
+            if !rest.is_empty() {
+                bail!("unknown command");
+            }
+            shell_create_literature(workspace)
+        }
         [cmd, rest @ ..] if cmd == "n" => {
             let at = parse_target_at(rest)?;
             shell_create_direct(&at)
@@ -81,6 +94,16 @@ fn run() -> Result<()> {
             shell_move(&at, &new_location)
         }
         _ => bail!("unknown command"),
+    }
+}
+
+/// An optional leading `--ws <workspace>`; new trees go to the human
+/// workspace unless another is named.
+fn parse_workspace_option(args: &[String]) -> Result<(Workspace, &[String])> {
+    match args {
+        [flag, value, rest @ ..] if flag == "--ws" => Ok((Workspace::parse(value)?, rest)),
+        [flag] if flag == "--ws" => bail!("expected --ws <workspace>"),
+        rest => Ok((Workspace::Human, rest)),
     }
 }
 
@@ -392,7 +415,7 @@ fn initialize_database(root: &Path) -> Result<()> {
                 "legacy cards schema detected; back up and manually migrate the database before starting this ZT version"
             );
         }
-        let expected = [
+        let before_workspaces = [
             "row_id",
             "location",
             "citation_key",
@@ -401,7 +424,8 @@ fn initialize_database(root: &Path) -> Result<()> {
             "bibtex",
             "text",
         ];
-        if columns != expected {
+        let current = [&before_workspaces[..], &["workspace"]].concat();
+        if columns != before_workspaces && columns != current {
             bail!("unsupported cards schema; database was not modified");
         }
     }
@@ -415,6 +439,7 @@ fn initialize_database(root: &Path) -> Result<()> {
             is_lit INTEGER NOT NULL CHECK(is_lit IN (0, 1)),
             bibtex TEXT,
             text TEXT NOT NULL,
+            workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
@@ -431,8 +456,33 @@ fn initialize_database(root: &Path) -> Result<()> {
         ",
     )?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    ensure_workspace_column(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
+}
+
+/// Archives created before Workspaces existed hold only the human's Cards:
+/// add the `workspace` column with every existing Card in the human workspace.
+fn ensure_workspace_column(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'workspace')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE cards ADD COLUMN workspace TEXT NOT NULL DEFAULT 'human'
+             CHECK(workspace IN ('human', 'agent'));",
+    )
+    .context("failed to add Workspaces to the archive")?;
+    log_event(
+        root,
+        "added workspaces; existing cards are in the human workspace",
+    )
+    .ok();
+    Ok(())
 }
 
 const CARD_FORMAT: &str = "markdown";
@@ -442,6 +492,7 @@ const CARD_FORMAT: &str = "markdown";
 fn ensure_markdown_cards(root: &Path) -> Result<()> {
     use rusqlite::OptionalExtension;
     let mut conn = open_db(root)?;
+    ensure_workspace_column(&conn, root)?;
     let format: Option<String> = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'card_format'",
@@ -548,6 +599,29 @@ fn cmd_stats() -> Result<()> {
     Ok(())
 }
 
+fn cmd_workspaces() -> Result<()> {
+    let root = require_service_up()?;
+    let conn = open_db(&root)?;
+    let cards = load_cards(&conn)?;
+    for workspace in Workspace::ALL {
+        let counts = workspace::counts(&cards, workspace);
+        println!(
+            "{} ({}): {} topic trees, {} literature trees, {} cards; MCP access: {}",
+            workspace.id(),
+            workspace.label(),
+            counts.topic_trees,
+            counts.literature_trees,
+            counts.cards,
+            if Access::Agent.can_write(workspace) {
+                "read-write"
+            } else {
+                "read-only"
+            }
+        );
+    }
+    Ok(())
+}
+
 fn cmd_dump() -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
@@ -616,8 +690,8 @@ fn cmd_help() -> Result<()> {
     if up {
         println!("  zt");
         println!("  zt gui [--port <port>] [--no-open]");
-        println!("  zt t <title>");
-        println!("  zt l");
+        println!("  zt t [--ws <workspace>] <title>");
+        println!("  zt l [--ws <workspace>]");
         println!("  zt n --at <target>");
         println!("  zt b --at <location>");
         println!("  zt e --at <location>");
@@ -626,6 +700,8 @@ fn cmd_help() -> Result<()> {
         println!("  zt del --at <target>");
         println!("  zt mv --at <location> <new-location>");
         println!("  zt stats");
+        println!("  zt ws");
+        println!("  zt mcp");
         println!("  zt lsbk");
         println!("  zt dp");
         println!("  zt clear");
@@ -681,6 +757,7 @@ struct Card {
     is_lit: bool,
     bibtex: Option<String>,
     text: String,
+    workspace: Workspace,
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -840,7 +917,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text
+                is_topic, is_lit, bibtex, text, workspace
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -852,6 +929,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 is_lit: row.get::<_, i64>(4)? == 1,
                 bibtex: row.get(5)?,
                 text: row.get(6)?,
+                workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
             })
         },
     )
@@ -861,7 +939,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text
+                is_topic, is_lit, bibtex, text, workspace
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -873,6 +951,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             is_lit: row.get::<_, i64>(4)? == 1,
             bibtex: row.get(5)?,
             text: row.get(6)?,
+            workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1070,7 +1149,7 @@ fn run_editor_with_suffix(initial_text: &str, suffix: &str) -> Result<EditOutcom
     Ok(EditOutcome::Saved(edited))
 }
 
-fn shell_create_literature() -> Result<()> {
+fn shell_create_literature(workspace: Workspace) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
@@ -1098,7 +1177,7 @@ fn shell_create_literature() -> Result<()> {
     };
     let parsed = parse_literature_edit_text(&edited_text)?;
     let text = compose_card_text(&metadata.title, &parsed.body, "");
-    insert_literature_card(&mut conn, &metadata.citation_key, &bibtex, &text)?;
+    insert_literature_card(&mut conn, &metadata.citation_key, workspace, &bibtex, &text)?;
     println!("{}", metadata.citation_key);
     Ok(())
 }
@@ -1129,6 +1208,7 @@ fn citation_key_conflicts(
 fn insert_literature_card(
     conn: &mut Connection,
     citation_key: &str,
+    workspace: Workspace,
     bibtex: &str,
     text: &str,
 ) -> Result<()> {
@@ -1139,9 +1219,9 @@ fn insert_literature_card(
     validate_card_text(conn, citation_key, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
-         VALUES(NULL, ?1, 0, 1, ?2, ?3)",
-        params![citation_key, bibtex, text],
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
+         VALUES(NULL, ?1, 0, 1, ?2, ?3, ?4)",
+        params![citation_key, bibtex, text, workspace.id()],
     )?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
@@ -1171,19 +1251,17 @@ fn acquire_edit_lock(root: &Path) -> Result<EditLock> {
     }
 }
 
-fn shell_create_topic(title: &str) -> Result<()> {
+fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
     if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
         bail!("topic title must be non-empty single-line text");
     }
     let mut conn = open_db(&root)?;
-    let location = next_topic_location(&conn)?;
     match run_editor(&topic_template(title))? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(&mut conn, &location, true, &text)?;
-            bump_next_topic_id(&conn, &location)?;
+            let location = create_topic(&mut conn, workspace, &text)?;
             println!("{location}");
             Ok(())
         }
@@ -1202,7 +1280,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(&mut conn, &location, false, &text)?;
+            insert_card(&mut conn, &location, false, parent.workspace, &text)?;
             println!("{location}");
             Ok(())
         }
@@ -1219,7 +1297,7 @@ fn shell_create_side(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(&mut conn, &location, false, &text)?;
+            insert_card(&mut conn, &location, false, parent.workspace, &text)?;
             println!("{location}");
             Ok(())
         }
@@ -1381,23 +1459,47 @@ fn update_literature_metadata(
     Ok(())
 }
 
-fn insert_card(conn: &mut Connection, location: &str, is_topic: bool, text: &str) -> Result<()> {
+/// Insert a Topic or Regular Card. A Regular Card must name the Workspace of
+/// the tree it joins.
+fn insert_card(
+    conn: &mut Connection,
+    location: &str,
+    is_topic: bool,
+    workspace: Workspace,
+    text: &str,
+) -> Result<()> {
     if !is_valid_location(location) {
         bail!("invalid location `{location}`");
     }
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
     }
+    if !is_topic {
+        let tree_workspace = workspace::tree_workspace(conn, location)?;
+        if tree_workspace != workspace {
+            bail!(
+                "card `{location}` belongs to the {tree_workspace} workspace, not the {workspace} workspace"
+            );
+        }
+    }
     validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text)
-         VALUES(?1, NULL, ?2, 0, NULL, ?3)",
-        params![location, if is_topic { 1 } else { 0 }, text],
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4)",
+        params![location, if is_topic { 1 } else { 0 }, text, workspace.id()],
     )?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
     Ok(())
+}
+
+/// Create a Topic in `workspace` at the next Topic number.
+fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Result<String> {
+    let location = next_topic_location(conn)?;
+    insert_card(conn, &location, true, workspace, text)?;
+    bump_next_topic_id(conn, &location)?;
+    Ok(location)
 }
 
 fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()> {
@@ -1680,6 +1782,7 @@ fn move_plan(conn: &Connection, at: &str, new_location: &str) -> Result<MovePlan
         bail!("invalid move location `{new_location}`");
     }
     ensure_same_tree_kind_boundary(&card.address, new_location)?;
+    workspace::ensure_same_workspace(conn, &card.address, new_location)?;
     let moved = descendant_locations(conn, at)?;
     if moved.contains(new_location) {
         bail!("cannot move a card into its own successors");
