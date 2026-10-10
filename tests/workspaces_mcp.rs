@@ -957,3 +957,194 @@ fn gui_creates_trees_in_either_workspace_and_reports_workspaces() {
     api("POST", "/api/quit", Some("{}"));
     assert!(gui.wait().expect("gui exits").success());
 }
+
+#[cfg(windows)]
+fn zip_backend_available() -> bool {
+    StdCommand::new("tar.exe")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(windows))]
+fn zip_backend_available() -> bool {
+    StdCommand::new("zip")
+        .arg("-v")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// One Card as SQLite stores it: address, kind, Workspace, BibTeX, and text.
+type CardRow = (String, &'static str, String, Option<String>, String);
+
+#[test]
+fn dump_records_workspaces_and_next_topic_id_so_it_replicates_the_archive() {
+    if !zip_backend_available() {
+        return;
+    }
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    home.cmd()
+        .write_stdin(
+            "l\n@book{HumanLit, title={Human Lit}}\n\x13notes on [[0/1]]\n\x13q\n".as_bytes(),
+        )
+        .assert()
+        .success();
+    {
+        let mut mcp = home.mcp();
+        mcp.ok(
+            "create_topic",
+            json!({ "title": "Agent Topic", "body": "builds on [[0/1]]" }),
+        );
+        mcp.ok(
+            "create_successor",
+            json!({ "at": "1/0", "title": "Agent Card" }),
+        );
+        mcp.ok("create_topic", json!({ "title": "Discarded" }));
+        mcp.ok("delete_card", json!({ "at": "2/0", "confirm": "2/0" }));
+        mcp.ok(
+            "create_literature",
+            json!({ "bibtex": "@article{AgentLit,\n  title = {Agent Lit}\n}\n", "body": "agent notes" }),
+        );
+        mcp.ok(
+            "create_successor",
+            json!({ "at": "AgentLit", "title": "Agent Lit Note" }),
+        );
+    }
+    assert_eq!(home.workspace("HumanLit"), "human");
+
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dumped 7 cards to "));
+
+    let dump_dir = home.archive_root.join("dump");
+    let archive_path = fs::read_dir(&dump_dir)
+        .expect("dump directory")
+        .map(|entry| entry.expect("dump entry").path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "zip"))
+        .expect("zip dump");
+    let folder = archive_path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let mut archive = zip::ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap();
+    let mut read = |name: &str| {
+        let mut body = String::new();
+        std::io::Read::read_to_string(
+            &mut archive
+                .by_name(&format!("{folder}/{name}"))
+                .unwrap_or_else(|_| panic!("dump entry {name}")),
+            &mut body,
+        )
+        .expect("UTF-8 entry");
+        body
+    };
+    let mapping: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&read("mapping.json")).expect("mapping.json");
+    let manifest: Value = serde_json::from_str(&read("archive.json")).expect("archive.json");
+
+    // The manifest names a Workspace for exactly the dumped addresses.
+    let workspaces = manifest["workspaces"]
+        .as_object()
+        .expect("workspaces object");
+    assert_eq!(
+        workspaces.keys().collect::<Vec<_>>(),
+        mapping.keys().collect::<Vec<_>>()
+    );
+    // Topic 2 was deleted, so the next Topic number is not derivable from the Cards.
+    assert_eq!(manifest["next_topic_id"], 3);
+    let stored_next: String = home
+        .db()
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_next, "3");
+
+    // Rebuild every Card from the dump alone.
+    let mut rebuilt: Vec<CardRow> = mapping
+        .iter()
+        .map(|(address, file)| {
+            let markdown = read(file);
+            let (bibtex, text) = match markdown.strip_prefix("---\nzt_kind: literature\n") {
+                Some(rest) => {
+                    let closing = rest.find("\n---\n").expect("front matter end");
+                    (
+                        Some(read(&format!("{address}.bib"))),
+                        rest[closing + 5..].to_string(),
+                    )
+                }
+                None => (None, markdown),
+            };
+            let kind = if bibtex.is_some() {
+                "literature"
+            } else if address.ends_with("/0") {
+                "topic"
+            } else {
+                "regular"
+            };
+            let workspace = workspaces[address].as_str().expect("workspace").to_string();
+            (address.clone(), kind, workspace, bibtex, text)
+        })
+        .collect();
+    rebuilt.sort();
+
+    let conn = home.db();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(location, citation_key), is_topic, is_lit, bibtex, text, workspace
+             FROM cards ORDER BY COALESCE(location, citation_key)",
+        )
+        .unwrap();
+    let mut stored: Vec<CardRow> = stmt
+        .query_map([], |row| {
+            let kind = match (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?) {
+                (_, 1) => "literature",
+                (1, _) => "topic",
+                _ => "regular",
+            };
+            Ok((row.get(0)?, kind, row.get(5)?, row.get(3)?, row.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    stored.sort();
+
+    assert_eq!(rebuilt, stored);
+    let by_workspace = |workspace: &str| {
+        stored
+            .iter()
+            .filter(|row| row.2 == workspace)
+            .map(|row| (row.0.as_str(), row.1))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        by_workspace("human"),
+        [
+            ("0/0", "topic"),
+            ("0/1", "regular"),
+            ("HumanLit", "literature")
+        ]
+    );
+    assert_eq!(
+        by_workspace("agent"),
+        [
+            ("1/0", "topic"),
+            ("1/1", "regular"),
+            ("AgentLit", "literature"),
+            ("AgentLit/1", "regular")
+        ]
+    );
+}

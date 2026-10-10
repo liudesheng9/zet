@@ -2111,13 +2111,20 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
 
     let mut archive =
         zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
-    assert_eq!(archive.len(), 1);
+    assert_eq!(archive.len(), 2);
     let mut mapping = archive
         .by_name(&format!("{archive_name}/mapping.json"))
         .expect("mapping entry");
     let mut body = String::new();
     std::io::Read::read_to_string(&mut mapping, &mut body).expect("mapping text");
     assert_eq!(body, "{}");
+    drop(mapping);
+    let mut manifest = archive
+        .by_name(&format!("{archive_name}/archive.json"))
+        .expect("archive manifest entry");
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
+    assert_eq!(body, r#"{"next_topic_id":0,"workspaces":{}}"#);
 }
 
 #[test]
@@ -2170,13 +2177,17 @@ fn dump_preserves_card_text_hash_mapping_and_location_order() {
 
     let mut archive =
         zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
-    let expected_entries: Vec<String> = std::iter::once(format!("{archive_name}/mapping.json"))
-        .chain(
-            cards
-                .iter()
-                .map(|(location, _)| format!("{archive_name}/{}", expected_mapping[*location])),
-        )
-        .collect();
+    let expected_entries: Vec<String> = [
+        format!("{archive_name}/mapping.json"),
+        format!("{archive_name}/archive.json"),
+    ]
+    .into_iter()
+    .chain(
+        cards
+            .iter()
+            .map(|(location, _)| format!("{archive_name}/{}", expected_mapping[*location])),
+    )
+    .collect();
     let actual_entries: Vec<String> = (0..archive.len())
         .map(|index| {
             archive
@@ -2251,6 +2262,7 @@ fn dump_adds_hashed_literature_markdown_and_exact_citation_key_bibtex() {
         actual_entries,
         vec![
             format!("{archive_name}/mapping.json"),
+            format!("{archive_name}/archive.json"),
             format!("{archive_name}/{markdown_name}"),
             format!("{archive_name}/DumpKey.bib"),
         ]
@@ -2344,6 +2356,7 @@ fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
         actual_entries,
         vec![
             format!("{archive_name}/mapping.json"),
+            format!("{archive_name}/archive.json"),
             format!("{archive_name}/{topic_md}"),
             format!("{archive_name}/{alpha_md}"),
             format!("{archive_name}/{zebra_md}"),
@@ -2456,7 +2469,14 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
         .output()
         .expect("list tar.gz");
     assert!(listing.status.success());
-    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    assert_eq!(
+        String::from_utf8(listing.stdout)
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        [entry.clone(), format!("{archive_name}/archive.json")]
+    );
     let mapping = StdCommand::new("tar")
         .args(["-xOf"])
         .arg(&archive_path)
@@ -2496,7 +2516,14 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
         .output()
         .expect("list tar.zst");
     assert!(listing.status.success());
-    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    assert_eq!(
+        String::from_utf8(listing.stdout)
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        [entry.clone(), format!("{archive_name}/archive.json")]
+    );
     let mapping = StdCommand::new("tar")
         .args(["-xOf"])
         .arg(&archive_path)
@@ -2607,7 +2634,14 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
         .output()
         .expect("list 7z");
     assert!(listing.status.success());
-    assert_eq!(String::from_utf8(listing.stdout).unwrap().trim(), entry);
+    assert_eq!(
+        String::from_utf8(listing.stdout)
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        [entry.clone(), format!("{archive_name}/archive.json")]
+    );
     let mapping = StdCommand::new(system_tar)
         .args(["-xOf"])
         .arg(&archive_path)

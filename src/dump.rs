@@ -10,8 +10,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::Workspace;
+
+/// The archive manifest: the archive state that is not Card text.
+const MANIFEST: &str = "archive.json";
+
 pub(crate) struct DumpCard {
     address: String,
+    workspace: Workspace,
     bibtex: Option<String>,
     text: String,
 }
@@ -22,21 +28,43 @@ struct DumpPayload {
 }
 
 impl DumpCard {
-    pub(crate) fn new(address: String, text: String) -> Self {
+    pub(crate) fn new(address: String, workspace: Workspace, text: String) -> Self {
         Self {
             address,
+            workspace,
             bibtex: None,
             text,
         }
     }
 
-    pub(crate) fn literature(address: String, bibtex: String, text: String) -> Self {
+    pub(crate) fn literature(
+        address: String,
+        workspace: Workspace,
+        bibtex: String,
+        text: String,
+    ) -> Self {
         Self {
             address,
+            workspace,
             bibtex: Some(bibtex),
             text,
         }
     }
+}
+
+/// `archive.json`: everything beyond the Card files that a dump needs to
+/// replicate the archive. `workspaces` maps every address in `mapping.json`
+/// to its Workspace, and `next_topic_id` keeps deleted Topic numbers from
+/// being reused.
+fn manifest(cards: &[DumpCard], next_topic_id: u64) -> serde_json::Value {
+    let workspaces = cards
+        .iter()
+        .map(|card| (card.address.clone(), card.workspace.id()))
+        .collect::<BTreeMap<_, _>>();
+    serde_json::json!({
+        "next_topic_id": next_topic_id,
+        "workspaces": workspaces,
+    })
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -294,7 +322,7 @@ impl Drop for DumpArtifacts {
     }
 }
 
-pub(crate) fn run(root: &Path, cards: &[DumpCard]) -> Result<()> {
+pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result<()> {
     let options = require_detected_options(detect_compression_options())?;
 
     println!("compression options:");
@@ -332,10 +360,17 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard]) -> Result<()> {
         staging.join("mapping.json"),
         serde_json::to_vec(&payload.mapping)?,
     )?;
+    fs::write(
+        staging.join(MANIFEST),
+        serde_json::to_vec(&manifest(cards, next_topic_id))?,
+    )?;
     for (filename, text) in &payload.files {
         fs::write(staging.join(filename), text.as_bytes())?;
     }
-    let mut entries = vec![format!("{archive_name}/mapping.json")];
+    let mut entries = vec![
+        format!("{archive_name}/mapping.json"),
+        format!("{archive_name}/{MANIFEST}"),
+    ];
     entries.extend(
         payload
             .files
@@ -612,8 +647,8 @@ mod tests {
     #[test]
     fn collision_retry_appends_two_fresh_salts_until_filename_is_unique() {
         let cards = [
-            DumpCard::new("0/0".to_string(), "same".to_string()),
-            DumpCard::new("0/1".to_string(), "same".to_string()),
+            DumpCard::new("0/0".to_string(), Workspace::Human, "same".to_string()),
+            DumpCard::new("0/1".to_string(), Workspace::Agent, "same".to_string()),
         ];
         let digests = RefCell::new(VecDeque::from([
             "aaaaaaaaaa".to_string(),
@@ -655,6 +690,28 @@ mod tests {
             !serde_json::to_string(&payload.mapping)
                 .unwrap()
                 .contains("0000000000")
+        );
+    }
+
+    #[test]
+    fn manifest_records_every_workspace_and_the_next_topic_id() {
+        let cards = [
+            DumpCard::new("0/0".to_string(), Workspace::Human, "a".to_string()),
+            DumpCard::new("1/0".to_string(), Workspace::Agent, "b".to_string()),
+            DumpCard::literature(
+                "Smith2024".to_string(),
+                Workspace::Agent,
+                "@book{Smith2024,title={T}}".to_string(),
+                "c".to_string(),
+            ),
+        ];
+        assert_eq!(
+            serde_json::to_string(&manifest(&cards, 7)).unwrap(),
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","1/0":"agent","Smith2024":"agent"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&manifest(&[], 0)).unwrap(),
+            r#"{"next_topic_id":0,"workspaces":{}}"#
         );
     }
 

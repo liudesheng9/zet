@@ -160,6 +160,16 @@ claude mcp add zt -- zt mcp
 
 其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
 
+## 导出
+
+`zt dp` 会在 `<archive_root>/dump/` 下写出一个压缩归档，完整记录整个卡片系统：
+
+- `mapping.json`：每个 Card 地址到其 Markdown 文件的映射。
+- 每张 Card 一个 Markdown 文件，内容是其存储的原文；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
+  `<citation-key>.bib` 保存 BibTeX 的原始字节。
+- `archive.json`：每个 Card 地址所属的 Workspace，以及下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），例如
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","1/0":"agent"}}`。
+
 ## 创建 Literature Card
 
 在 Session 中运行 `l`，或在 Shell 中使用 `$EDITOR` 运行 `zt l`。先输入并保存一个完整的 BibTeX 条目，再输入并保存 Card 正文。BibTeX 条目的 key 会成为 Citation key，其中的 `title` 字段会成为 Card 标题。

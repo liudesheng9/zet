@@ -169,6 +169,18 @@ claude mcp add zt -- zt mcp
 
 Any other MCP client can launch `zt mcp` as a stdio server the same way.
 
+## Dumps
+
+`zt dp` writes a compressed archive under `<archive_root>/dump/` that records the whole card
+system:
+
+- `mapping.json`: every Card address mapped to its Markdown file.
+- One Markdown file per Card holding its exact stored text; a Literature Card's file starts with
+  YAML front matter holding its BibTeX, and `<citation-key>.bib` holds the exact BibTeX bytes.
+- `archive.json`: the Workspace of every Card address and the next Topic number, so deleted
+  Topic numbers are not reused, for example
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","1/0":"agent"}}`.
+
 ## Create a Literature Card
 
 Run `l` inside a Session, or run `zt l` from the shell (using `$EDITOR`). Enter and save one complete BibTeX entry, then enter and save the Card body. The BibTeX entry key becomes the Citation key, and its `title` field becomes the Card title.

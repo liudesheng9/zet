@@ -1,6 +1,6 @@
 # Workspaces and the MCP Server Design
 
-Status: implemented in zt 0.3.0.
+Status: implemented in zt 0.3.0; Workspace-aware dumps in zt 0.3.1.
 
 ## Source Authority
 
@@ -47,6 +47,16 @@ Regenerating a human Card's Reverse link section is not a change to it: the sect
 - Tools: `list_workspaces`, `list_trees`, `get_tree`, `get_card`, `search_cards`, `list_links`, `list_broken_links`, `create_topic`, `create_literature`, `create_successor`, `edit_card`, `edit_literature_metadata`, `delete_card`, `move_card`. Read tools carry `readOnlyHint`; delete, move, and metadata edits carry `destructiveHint`.
 - Tool failures are results with `isError: true` and an `error` message; protocol errors (unknown method or tool) are JSON-RPC errors.
 - Each call checks that the service is up, takes the edit lock for changes, and does not count as a Session, so `zt down` is never blocked by an idle agent.
+
+## Dump
+
+A dump must hold everything needed to replicate the archive. Besides Card text and BibTeX, the archive holds two facts: each Card's Workspace, and `metadata.next_topic_id` (deleted Topic numbers are never reused, so it can exceed the largest existing Topic number). `zt dp` records both in one new entry. This supersedes the rule in `doc/dump-and-clear-design.md` that `mapping.json` is the only JSON file; `mapping.json` itself is unchanged and still maps addresses to Markdown filenames only.
+
+- The new entry is `archive.json`, compact JSON with keys in this order: `{"next_topic_id":<integer>,"workspaces":{"<address>":"human"|"agent",...}}`.
+- `workspaces` has exactly the keys of `mapping.json`, in the same order.
+- Archive entries are ordered `mapping.json`, `archive.json`, the hashed Markdown files in address order, then the `<citation-key>.bib` files.
+- A new or cleared archive dumps `{"next_topic_id":0,"workspaces":{}}`.
+- Markdown files, their hashes, and `.bib` files are unchanged, so a Card's kind (Topic `<n>/0`, Literature front matter, otherwise Regular), Workspace, BibTeX, and exact text can all be rebuilt from a dump.
 
 ## Session and GUI
 

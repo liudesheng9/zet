@@ -632,16 +632,17 @@ fn cmd_dump() -> Result<()> {
             if card.is_lit {
                 Ok(dump::DumpCard::literature(
                     card.address,
+                    card.workspace,
                     card.bibtex
                         .context("Literature Card is missing its BibTeX metadata")?,
                     card.text,
                 ))
             } else {
-                Ok(dump::DumpCard::new(card.address, card.text))
+                Ok(dump::DumpCard::new(card.address, card.workspace, card.text))
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    dump::run(&root, &cards)
+    dump::run(&root, &cards, next_topic_id(&conn)?)
 }
 
 fn cmd_clear() -> Result<()> {
@@ -1087,6 +1088,12 @@ fn descendant_locations(conn: &Connection, root: &str) -> Result<BTreeSet<String
 }
 
 fn next_topic_location(conn: &Connection) -> Result<String> {
+    Ok(format!("{}/0", next_topic_id(conn)?))
+}
+
+/// The Topic number the next new Topic will take. Deleted Topic numbers are
+/// never reused, so this can exceed the largest existing Topic number.
+fn next_topic_id(conn: &Connection) -> Result<u64> {
     let next = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'next_topic_id'",
@@ -1104,7 +1111,7 @@ fn next_topic_location(conn: &Connection) -> Result<String> {
                 .max();
             max_existing.map(|value| value + 1).unwrap_or(0)
         });
-    Ok(format!("{next}/0"))
+    Ok(next)
 }
 
 fn bump_next_topic_id(conn: &Connection, topic_location: &str) -> Result<()> {
