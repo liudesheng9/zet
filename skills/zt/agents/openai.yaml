@@ -1,0 +1,3 @@
+interface:
+  display_name: "ZT slip-box"
+  short_description: "Read both Workspaces and write the agent Workspace of the ZT slip-box"

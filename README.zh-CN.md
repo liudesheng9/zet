@@ -152,13 +152,17 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
 `move`）再次调用才会真正执行。使用前需要先启动服务。
 
-在本仓库中使用 Claude Code 时，已提交的 `.mcp.json` 已经注册了它。在其他地方只需注册一次：
+要让每个 Claude Code 和 Codex 对话都能使用该服务器以及 `zt` agent skill（`skills/zt/SKILL.md`，
+向 agent 说明 Workspace、工具和规则），在 Windows 上运行一次以下命令；更新 skill 或移动 `zt` 可执行文件后再运行一次：
 
-```sh
-claude mcp add zt -- zt mcp
+```powershell
+pwsh -File scripts/install-agent-integrations.ps1
 ```
 
-其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
+它会把 skill 复制到 `~/.claude/skills/zt` 与 `~/.codex/skills/zt`，在 Claude Code 中把 `zt` 注册为用户级
+MCP 服务器（并允许其工具），在 Codex 中注册为全局服务器，并检查服务器握手；修改每个配置文件前都会先备份。
+已经打开的对话仍使用原来的服务器。在其他环境中，可以用 `claude mcp add -s user zt -- zt mcp` 或
+`codex mcp add zt -- zt mcp` 手动注册；其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
 
 ## 导出
 

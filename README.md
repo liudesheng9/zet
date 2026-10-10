@@ -160,14 +160,20 @@ Reverse links to the human Card.
 Deletes, moves, and Citation key renames first return a plan; call again with the `confirm`
 text it names (`delete`, the tree root's address, or `move`) to apply it. The service must be up.
 
-To use it from Claude Code in this repository, the checked-in `.mcp.json` already registers it.
-Elsewhere, register it once:
+To make the server and the `zt` agent skill (`skills/zt/SKILL.md`, which teaches agents the
+Workspaces, tools, and rules) available in every Claude Code and Codex conversation, run once on
+Windows, and again after updating the skill or moving the `zt` binary:
 
-```sh
-claude mcp add zt -- zt mcp
+```powershell
+pwsh -File scripts/install-agent-integrations.ps1
 ```
 
-Any other MCP client can launch `zt mcp` as a stdio server the same way.
+It copies the skill to `~/.claude/skills/zt` and `~/.codex/skills/zt`, registers `zt` as a
+user-scope MCP server in Claude Code (allowing its tools) and as a global server in Codex, and
+checks the server's handshake, backing up each config file it changes. Conversations that are
+already open keep their old servers. Elsewhere, `claude mcp add -s user zt -- zt mcp` or
+`codex mcp add zt -- zt mcp` registers the server by hand; any other MCP client can launch
+`zt mcp` as a stdio server the same way.
 
 ## Dumps
 
