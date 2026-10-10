@@ -164,6 +164,34 @@ MCP 服务器（并允许其工具），在 Codex 中注册为全局服务器，
 已经打开的对话仍使用原来的服务器。在其他环境中，可以用 `claude mcp add -s user zt -- zt mcp` 或
 `codex mcp add zt -- zt mcp` 手动注册；其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
 
+## Scholar Archive
+
+ZET 通过 **Scholar Archive bridge** 读取本机的 [Scholar Archive](https://github.com/liudesheng9/google_scholar_archive)。
+这是一条经过认证的只读连接，两个项目各有一个连接器。ZET 能看到 archive 中的全部信息：学者、Work 及其来源、版本、
+摘要与主题、期刊、workspace、来源更新记录、关联的 PDF 与 Markdown 文档、通过只读 SQL 访问的任意数据表、语义搜索，
+以及完整导出。通过 bridge 进行的任何操作都不会修改 archive，读到的内容也不会修改任何 Card。
+
+连接会自动运行。首次使用时，ZET 会运行 `scholar-archive bridge pair`（随 Scholar Archive 一起安装）完成配对，
+并把凭据保存在 ZET 配置目录下的 `scholar-bridge.json` 中。每个请求都用该密钥签名，ZET 也只接受用同一密钥签名的回复，
+因此只有已配对的 ZET 能读取 archive，ZET 也能确认读到的是真正的 archive。如果 archive 不再认识这份凭据，ZET 会重新配对；
+如果服务器未运行，ZET 会启动它。
+
+```text
+zt scholar                         # 连接并显示 archive 的标识与数量
+zt scholar tools                   # archive 的只读工具
+zt scholar call list_works '{"query":"democracy","limit":5}'
+zt scholar call get_work '{"work_id":42}'
+zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10"
+zt scholar file 22                 # 获取文档（校验 SHA-256）并存入 ZET 缓存
+zt scholar export --format bibtex --out works.bib
+zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断开连接
+```
+
+`zt mcp` 以五个只读工具向 agent 提供同样的读取能力：`scholar_archive_status`、`scholar_archive_read`
+（archive 的任意只读工具）、`scholar_archive_sql`、`scholar_archive_file`（Markdown 以文本返回，PDF 返回缓存路径）
+和 `scholar_archive_export`。这些工具不需要启动 ZET 服务。协议见
+[doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md)。
+
 ## 导出
 
 `zt dp` 会在 `<archive_root>/dump/` 下写出一个压缩归档，完整记录整个卡片系统：

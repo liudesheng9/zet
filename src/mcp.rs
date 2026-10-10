@@ -28,7 +28,9 @@ Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by 
 between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
 create new trees with create_topic or create_literature, then grow them with create_successor. \
 delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
-`confirm` text the plan names to apply it.";
+`confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
+(scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
+bridge; file a paper you use as a Literature Card and cite its DOI.";
 
 pub(crate) fn run() -> Result<()> {
     let stdin = io::stdin();
@@ -191,6 +193,9 @@ fn archive_root() -> Result<PathBuf> {
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value> {
+    if name.starts_with("scholar_archive_") {
+        return call_scholar_tool(name, args);
+    }
     let root = archive_root()?;
     match name {
         "list_workspaces" => {
@@ -683,7 +688,146 @@ fn tool_definitions() -> Vec<Value> {
             false,
             true,
         ),
+        scholar_tool(
+            "scholar_archive_status",
+            "Scholar Archive status",
+            "Connect to the local Scholar Archive through the read-only bridge (pairing and starting it automatically) and report its archive identity, counts, and the read tools it offers.",
+            json!({}),
+            &[],
+        ),
+        scholar_tool(
+            "scholar_archive_read",
+            "Read Scholar Archive",
+            &format!(
+                "Run one of Scholar Archive's read tools through the bridge and return its result: scholars, Works (titles, authors, years, venues, abstracts, DOIs, sources, versions, topics), journals, workspaces, linked PDF/Markdown files, source labels and history, duplicates, jobs, and semantic search. Tools: {}. Start with list_scholars, list_works, get_work, list_work_files, or semantic_search; pass the tool's own arguments in `arguments` (scholar_archive_status lists each schema). Nothing can change the archive.",
+                crate::scholar::READ_TOOLS.join(", ")
+            ),
+            json!({
+                "tool": { "type": "string", "enum": crate::scholar::READ_TOOLS, "description": "The Scholar Archive read tool." },
+                "arguments": { "type": "object", "description": "That tool's arguments, as its schema names them." },
+            }),
+            &["tool"],
+        ),
+        scholar_tool(
+            "scholar_archive_sql",
+            "Query Scholar Archive",
+            "Run one read-only SQL statement (a SELECT or a schema pragma such as `PRAGMA table_info(works)`) on Scholar Archive's SQLite database, or on its vector database. Writes, ATTACH, and other pragmas are refused. Tables include scholars, works, work_sources, work_files, workspaces, workspace_works, source_labels, and scholar_source_updates.",
+            json!({
+                "sql": { "type": "string", "description": "One SELECT statement; `?` placeholders take `params`." },
+                "params": { "type": "array", "description": "Values for the `?` placeholders." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Most rows to return; default 500." },
+                "database": { "type": "string", "enum": ["archive", "vectors"], "description": "Which database; default archive." },
+            }),
+            &["sql"],
+        ),
+        scholar_tool(
+            "scholar_archive_file",
+            "Read Scholar Archive document",
+            "Fetch the bytes of a PDF or Markdown document that Scholar Archive manages (a `file_id` from list_work_files or get_work), verify its SHA-256, and keep a copy in ZET's cache. Markdown and text come back as `text`; for a PDF, open the returned `path`.",
+            json!({
+                "file_id": { "type": "integer", "minimum": 1, "description": "The document's file_id." },
+                "max_text_bytes": { "type": "integer", "minimum": 0, "description": "Largest text document to return inline; default 1000000." },
+            }),
+            &["file_id"],
+        ),
+        scholar_tool(
+            "scholar_archive_export",
+            "Export Scholar Archive",
+            "Export the whole archive, or one scholar's Works, as JSON, CSV, or BibTeX through the bridge. The export is saved in ZET's cache; small ones also come back as `text`.",
+            json!({
+                "scholar_id": { "type": "integer", "minimum": 1, "description": "Only this scholar; omit for the whole archive." },
+                "format": { "type": "string", "enum": ["json", "csv", "bibtex"], "description": "Default json." },
+                "view": { "type": "string", "enum": ["profile", "combined"], "description": "combined unions a verified person's profiles; default profile." },
+            }),
+            &[],
+        ),
     ]
+}
+
+/// Scholar Archive bridge tools only read, and reach a separate local archive.
+fn scholar_tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    properties: Value,
+    required: &[&str],
+) -> Value {
+    let mut value = tool(name, title, description, properties, required, true, false);
+    value["annotations"]["openWorldHint"] = json!(true);
+    value
+}
+
+fn call_scholar_tool(name: &str, args: &Value) -> Result<Value> {
+    let mut bridge = crate::scholar::Bridge::connect()?;
+    match name {
+        "scholar_archive_status" => {
+            let hello = bridge.hello()?;
+            let status = bridge.call("archive_status", &json!({}))?;
+            Ok(json!({
+                "connected": true,
+                "url": bridge.url(),
+                "read_only": hello["read_only"],
+                "archive_uuid": hello["archive_uuid"],
+                "database": hello["database"],
+                "tools": hello["tools"],
+                "status": status,
+            }))
+        }
+        "scholar_archive_read" => {
+            let tool = string_arg(args, "tool")?;
+            let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            if !arguments.is_object() {
+                bail!("`arguments` must be an object");
+            }
+            Ok(json!({ "tool": tool, "result": bridge.call(&tool, &arguments)? }))
+        }
+        "scholar_archive_sql" => {
+            let params = args.get("params").cloned().unwrap_or_else(|| json!([]));
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(500);
+            let database = match optional_string(args, "database")?.as_str() {
+                "" => "archive".to_string(),
+                other => other.to_string(),
+            };
+            bridge.sql(&string_arg(args, "sql")?, &params, limit, &database)
+        }
+        "scholar_archive_file" => {
+            let file_id = args
+                .get("file_id")
+                .and_then(Value::as_u64)
+                .context("missing integer argument `file_id`")?;
+            let limit = args
+                .get("max_text_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(1_000_000) as usize;
+            let copy = bridge.file(file_id, None)?;
+            let mut value = copy.summary();
+            if let Some(text) = copy.text(limit) {
+                value["text"] = json!(text);
+            }
+            Ok(value)
+        }
+        "scholar_archive_export" => {
+            let scholar = args.get("scholar_id").and_then(Value::as_u64);
+            let format = match optional_string(args, "format")?.as_str() {
+                "" => "json".to_string(),
+                other => other.to_string(),
+            };
+            let view = match optional_string(args, "view")?.as_str() {
+                "" => "profile".to_string(),
+                other => other.to_string(),
+            };
+            let answer = bridge.export(scholar, &format, &view)?;
+            let path = crate::scholar::export_path(scholar, &format)?;
+            std::fs::write(&path, &answer.body)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            let mut value = json!({ "path": path.display().to_string(), "bytes": answer.body.len(), "format": format });
+            if answer.body.len() <= 1_000_000 {
+                value["text"] = json!(String::from_utf8_lossy(&answer.body));
+            }
+            Ok(value)
+        }
+        other => bail!("unknown tool `{other}`"),
+    }
 }
 
 #[cfg(test)]

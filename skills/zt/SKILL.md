@@ -30,6 +30,18 @@ Writing (agent Workspace only):
 
 Card bodies are Markdown. One idea per Card; link generously with `[[address]]` to related Cards in either Workspace, including the user's. Never write a Reverse links section: ZT generates it below the `<!-- zt:reverse-links -->` marker.
 
+## Read the Scholar Archive
+
+The `scholar_archive_*` tools read the user's local Scholar Archive (scholars, Works, abstracts, DOIs, journals, workspaces, and the PDF/Markdown documents linked to Works) through its read-only bridge. They pair and start the archive by themselves and do not need `zt up`.
+
+- `scholar_archive_status`: the archive's identity, counts, and its read tools with their schemas.
+- `scholar_archive_read` with `tool` and `arguments`: `list_scholars`, `list_works` (`query`, `scholar_id`, `journal_key`, `workspace_id`), `get_work`, `list_work_files`, `semantic_search` (`query`, `scope`), and the other read tools.
+- `scholar_archive_sql`: one SELECT or schema pragma, for counts and joins.
+- `scholar_archive_file` with `file_id`: Markdown comes back as `text`; for a PDF, read the returned `path`.
+- `scholar_archive_export`: JSON, CSV, or BibTeX of the archive or one scholar.
+
+Nothing here changes the archive. Copy titles, authors, and abstracts verbatim; when you file a paper in ZET, make a Literature Card from its actual metadata (DOI included) in the agent Workspace.
+
 ## Rules
 
 - Never change the human Workspace by any route. If the server refuses a change (for example ``the human workspace is read-only for AI agents``, or a change that would rewrite Links inside a human Card), that is the user's policy, not a bug: do not work around it with the `zt` shell commands, the GUI API, or the SQLite database. Tell the user what you wanted to change and let them do it.

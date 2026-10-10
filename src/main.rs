@@ -16,6 +16,7 @@ mod link;
 mod literature;
 mod mcp;
 mod ops;
+mod scholar;
 mod session;
 mod workspace;
 
@@ -55,6 +56,7 @@ fn run() -> Result<()> {
         [cmd] if cmd == "clear" => cmd_clear(),
         [cmd] if cmd == "ws" => cmd_workspaces(),
         [cmd] if cmd == "mcp" => mcp::run(),
+        [cmd, rest @ ..] if cmd == "scholar" => scholar::run_cli(rest),
         [cmd, rest @ ..] if cmd == "gui" => gui::run(rest),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
@@ -688,6 +690,13 @@ fn cmd_help() -> Result<()> {
     println!("  zt help");
     println!("  zt config show");
     println!("  zt config set archive_root <path>");
+    println!("  zt scholar [status|pair [--rotate]|unpair|tools]");
+    println!("  zt scholar call <tool> [<json-arguments>]");
+    println!("  zt scholar sql [--db archive|vectors] [--limit <n>] <sql>");
+    println!("  zt scholar file <file-id> [--out <path>]");
+    println!(
+        "  zt scholar export [--scholar <id>] [--format json|csv|bibtex] [--view profile|combined] [--out <path>]"
+    );
     if up {
         println!("  zt");
         println!("  zt gui [--port <port>] [--no-open]");

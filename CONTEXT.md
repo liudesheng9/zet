@@ -45,6 +45,14 @@ Which Workspaces a client may change. Every client may read both Workspaces. The
 The Model Context Protocol server started with `zt mcp`. It speaks JSON-RPC over stdio, offers every Card operation as a tool, and acts with agent Access.
 _Avoid_: API, bot
 
+**Scholar Archive**:
+The user's separate local archive of scholars' publications (Works, abstracts, sources, journals, workspaces) and the PDF/Markdown documents linked to them, served at `http://127.0.0.1:8765`. ZET reads it; it is never part of the card archive.
+_Avoid_: Paper database, library
+
+**Scholar Archive bridge**:
+The authenticated, read-only connection between ZET and the Scholar Archive. Each side has its own connector; only a paired ZET may use it, and every request and answer is signed with the pairing secret. It exchanges information only: it never changes the Scholar Archive, and nothing read through it changes a Card.
+_Avoid_: API, sync, import
+
 **Location**:
 A unique string address for a Topic or Regular Card, such as `1/0`, `1/1`, `1/2|c|4|b|b`, or `Smith2024/1|a`. The text before `/` is the tree id: a Topic number or a Citation key.
 _Avoid_: ID, path

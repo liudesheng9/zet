@@ -175,6 +175,39 @@ already open keep their old servers. Elsewhere, `claude mcp add -s user zt -- zt
 `codex mcp add zt -- zt mcp` registers the server by hand; any other MCP client can launch
 `zt mcp` as a stdio server the same way.
 
+## Scholar Archive
+
+ZET reads the local [Scholar Archive](https://github.com/liudesheng9/google_scholar_archive)
+through the **Scholar Archive bridge**, an authenticated, read-only connection with a connector on
+each side. ZET sees everything the archive holds: scholars, Works with their sources, versions,
+abstracts and topics, journals, workspaces, source history, the linked PDF and Markdown documents,
+any table through read-only SQL, semantic search, and whole exports. Nothing ZET does through the
+bridge changes the archive, and nothing read through it changes a Card.
+
+The connection runs by itself. The first use pairs ZET by running `scholar-archive bridge pair`
+(installed with Scholar Archive) and keeps the credential in ZET's config folder as
+`scholar-bridge.json`. Every request is signed with that secret, and ZET accepts only answers
+signed back with it, so only the paired ZET can read the archive and ZET knows it reads the real
+one. If the archive no longer knows the credential, ZET pairs again; if its server is stopped, ZET
+starts it.
+
+```text
+zt scholar                         # connect and show the archive's identity and counts
+zt scholar tools                   # the archive's read tools
+zt scholar call list_works '{"query":"democracy","limit":5}'
+zt scholar call get_work '{"work_id":42}'
+zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10"
+zt scholar file 22                 # fetch a document, SHA-256 checked, into ZET's cache
+zt scholar export --format bibtex --out works.bib
+zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` disconnects
+```
+
+`zt mcp` offers the same reads to agents as five read-only tools: `scholar_archive_status`,
+`scholar_archive_read` (any of the archive's read tools), `scholar_archive_sql`,
+`scholar_archive_file` (Markdown comes back as text, PDFs as a cached path), and
+`scholar_archive_export`. They do not need the ZET service to be up. The protocol is in
+[doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md).
+
 ## Dumps
 
 `zt dp` writes a compressed archive under `<archive_root>/dump/` that records the whole card
