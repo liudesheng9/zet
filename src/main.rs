@@ -431,18 +431,44 @@ fn initialize_database(root: &Path) -> Result<()> {
         ];
         let before_card_types = [&before_workspaces[..], &["workspace"]].concat();
         let before_facets = [&before_card_types[..], &["card_type"]].concat();
-        let current = [&before_facets[..], &["model_facet"]].concat();
+        let before_emphasis = [&before_facets[..], &["model_facet"]].concat();
+        let current = [&before_emphasis[..], &["model_emphasis"]].concat();
         if columns != before_workspaces
             && columns != before_card_types
             && columns != before_facets
+            && columns != before_emphasis
             && columns != current
         {
             bail!("unsupported cards schema; database was not modified");
         }
     }
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "
-        CREATE TABLE IF NOT EXISTS cards (
+        {}
+        CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+            ON cards(citation_key COLLATE NOCASE)
+            WHERE citation_key IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+        cards_table("IF NOT EXISTS cards")
+    ))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    ensure_workspace_column(&conn, root)?;
+    ensure_card_type_column(&conn, root)?;
+    ensure_model_facet_column(&conn, root)?;
+    ensure_open_model_parts(&conn, root)?;
+    drop(conn);
+    ensure_markdown_cards(root)
+}
+
+/// `CREATE TABLE <name> (…)` for the current cards schema. A Model facet is a
+/// short label of the model's author; only a Model part has an emphasis.
+fn cards_table(name: &str) -> String {
+    format!(
+        "CREATE TABLE {name} (
             row_id INTEGER PRIMARY KEY,
             location TEXT UNIQUE,
             citation_key TEXT UNIQUE,
@@ -452,30 +478,17 @@ fn initialize_database(root: &Path) -> Result<()> {
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
             card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model')),
-            model_facet TEXT CHECK(model_facet IS NULL OR model_facet IN (
-                'setting', 'assumptions', 'timing', 'dynamics',
-                'solution', 'results', 'intuition', 'limits')),
+            model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
+            model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
                 (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
-            )
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
-            ON cards(citation_key COLLATE NOCASE)
-            WHERE citation_key IS NOT NULL;
-        CREATE TABLE IF NOT EXISTS metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        ",
-    )?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    ensure_workspace_column(&conn, root)?;
-    ensure_card_type_column(&conn, root)?;
-    ensure_model_facet_column(&conn, root)?;
-    drop(conn);
-    ensure_markdown_cards(root)
+            ),
+            CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL)
+        );",
+        model::Facet::MAX_CHARS
+    )
 }
 
 /// Archives created before Workspaces existed hold only the human's Cards:
@@ -533,16 +546,61 @@ fn ensure_model_facet_column(conn: &Connection, root: &Path) -> Result<()> {
     if has_column {
         return Ok(());
     }
-    conn.execute_batch(
-        "ALTER TABLE cards ADD COLUMN model_facet TEXT
-             CHECK(model_facet IS NULL OR model_facet IN (
-                 'setting', 'assumptions', 'timing', 'dynamics',
-                 'solution', 'results', 'intuition', 'limits'));",
-    )
-    .context("failed to add Model facets to the archive")?;
+    conn.execute_batch("ALTER TABLE cards ADD COLUMN model_facet TEXT;")
+        .context("failed to add Model facets to the archive")?;
     log_event(
         root,
         "added model facets; existing model cards are model heads",
+    )
+    .ok();
+    Ok(())
+}
+
+/// Archives written before a model's author chose its facets allow only the
+/// eight common facets and have no emphasis. SQLite cannot drop a CHECK, so
+/// the cards table is rebuilt in one transaction after a backup copy; every
+/// Card keeps its row id, facet, and text, and no part has an emphasis.
+fn ensure_open_model_parts(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'model_emphasis')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-open-models-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {}
+         INSERT INTO cards_open_models ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_open_models RENAME TO cards;
+         CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+             ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;",
+        cards_table("cards_open_models")
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
+    .context("failed to let Model parts take any facet")?;
+    log_event(
+        root,
+        "model facets are free labels and model parts may carry an emphasis",
     )
     .ok();
     Ok(())
@@ -558,6 +616,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
     ensure_workspace_column(&conn, root)?;
     ensure_card_type_column(&conn, root)?;
     ensure_model_facet_column(&conn, root)?;
+    ensure_open_model_parts(&conn, root)?;
     let format: Option<String> = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'card_format'",
@@ -705,7 +764,7 @@ fn cmd_dump() -> Result<()> {
             } else {
                 Ok(
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
-                        .with_facet(card.facet),
+                        .with_part(card.facet, card.emphasis),
                 )
             }
         })
@@ -837,6 +896,8 @@ struct Card {
     card_type: CardType,
     /// Set only on a Model part: which facet of its model it presents.
     facet: Option<model::Facet>,
+    /// Set only on a Model part: how much of a reader's attention it asks for.
+    emphasis: Option<model::Emphasis>,
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -996,7 +1057,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -1011,6 +1072,9 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
                 card_type: CardType::from_stored(&row.get::<_, String>(8)?),
                 facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
+                emphasis: model::Emphasis::from_stored(
+                    row.get::<_, Option<String>>(10)?.as_deref(),
+                ),
             })
         },
     )
@@ -1020,7 +1084,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1035,6 +1099,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
             card_type: CardType::from_stored(&row.get::<_, String>(8)?),
             facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
+            emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1578,7 +1643,7 @@ fn insert_card(
     is_topic: bool,
     workspace: Workspace,
     card_type: CardType,
-    facet: Option<model::Facet>,
+    part: Option<&model::Part>,
     text: &str,
 ) -> Result<()> {
     if !is_valid_location(location) {
@@ -1598,19 +1663,22 @@ fn insert_card(
             );
         }
     }
-    model::ensure_allowed(conn, location, None, card_type, facet)?;
+    let facet = part.map(|part| &part.facet);
+    let emphasis = part.and_then(|part| part.emphasis);
+    model::ensure_allowed(conn, location, None, card_type, facet, emphasis)?;
     validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet)
-         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6)",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6, ?7)",
         params![
             location,
             if is_topic { 1 } else { 0 },
             text,
             workspace.id(),
             card_type.id(),
-            facet.map(model::Facet::id)
+            facet.map(model::Facet::id),
+            emphasis.map(model::Emphasis::id)
         ],
     )?;
     regenerate_reverse_links_tx(&tx)?;

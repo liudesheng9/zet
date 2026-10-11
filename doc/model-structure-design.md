@@ -1,28 +1,43 @@
 # Model Structure, Math, and HTML Charts Design
 
-Status: implemented in zt 0.6.0.
+Status: implemented in zt 0.6.0; the open model structure (free facets, emphasis, relations, loose parts, the model board) in zt 0.7.0.
 
 ## Source Authority
 
-- `CONTEXT.md` defines **Model Card**, **Model part**, **Model facet**, and **HTML chart**.
-- `event-and-model-cards-design.md` remains authoritative for Card types; this document adds the inner structure of a model and the GUI's rendering of math and charts.
+- `CONTEXT.md` defines **Model Card**, **Model part**, **Model facet**, **Emphasis**, **Model relation**, **Loose part**, **Model board**, and **HTML chart**.
+- `event-and-model-cards-design.md` remains authoritative for Card types; this document adds the inner structure of a model and the GUI's rendering of models, math, and charts.
 
 ## Goals
 
-1. A whole model rarely fits one Card. A model is presented by its **Model Card** and by **Model parts**, one per facet it needs, so that each part can state its facet in depth (the setting with a diagram, the timing as a timeline, the dynamics as an interactive plot) and every discussion can link the exact part it concerns.
-2. The parts of a model are connected the same way everywhere: by placement (they are filed under the Model Card), by their stored facet, and by Links between them, so that a reader who lands on any part can see and walk the whole model.
-3. The GUI renders the TeX that model Cards are full of, offline.
-4. A Card can hold an HTML chart that illustrates the model, without giving agent-written HTML any reach into the GUI.
+1. A whole model rarely fits one Card. A model is presented by its **Model Card** and by **Model parts**, so that each part can state one thing in depth (the setting with a diagram, the timing as a timeline, the mechanism as an interactive plot) and every discussion can link the exact part it concerns.
+2. **The author decides the model's structure.** Models differ: a formal model needs a setting, a mechanism, and propositions; a conceptual model two or three parts; another a proof sketch, a numerical example, or two regimes. So ZT fixes no list of parts and no order. The author (in the book digest, a Sonnet agent that has read the source) names each part's facet, marks which parts are core and which are asides, and relates the parts by Links.
+3. **Inside a model the structure is a graph, not a tree.** Parts relate by what rests on what; one part may rest on several, several on one, and some stand loose. This is separate from the Folgezettel tree the parts are filed in, which stays as it is, and from Links outside the model.
+4. **The GUI spends a reader's attention.** It shows the model laid out by its relations, emphasizing what the reader has open, what that relates to, and what the author called core, and lets the rest recede.
+5. The GUI renders the TeX that model Cards are full of, offline, and HTML charts that illustrate a model without giving agent-written HTML any reach into the GUI.
 
 ## Locked Model
 
-- **Facet storage.** `model_facet TEXT CHECK(model_facet IS NULL OR model_facet IN ('setting','assumptions','timing','dynamics','solution','results','intuition','limits'))` on `cards`. Opening an older archive adds the column with `ALTER TABLE`; every existing Model Card becomes a Model Card without parts.
+- **Storage.** `cards` has `model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND 32)` and `model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core','aside'))`, with `CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL)`.
+- **Upgrade.** A 0.6 archive allows only the eight common facets and has no emphasis. SQLite cannot drop a CHECK, so `zt up` rebuilds the cards table once, inside one transaction, after writing `zt.sqlite3.pre-open-models-<time>.bak` with `VACUUM INTO`: every Card keeps its row id, facet, and text, no part has an emphasis, and the Citation key index is recreated. The log records `model facets are free labels and model parts may carry an emphasis`. Older archives first gain the earlier columns as before.
+- **A facet is a label.** Trimmed, inner whitespace collapsed, one line, 1–32 characters, no control characters, no `[[`/`]]`. A common facet (`setting`, `assumptions`, `timing`, `dynamics`, `solution`, `results`, `intuition`, `limits`) in any case is stored in lower case; any other label is stored as written. An empty facet or `none` clears it.
 - **A facet requires the Model type.** Setting a facet makes a Card a Model Card with that facet; setting any other type clears it; naming the Model type alone keeps a part's facet.
-- **A part is filed under its Model Card.** The **head** of a Card at Location `L` is found by walking `parent_location` from `L`'s parent through Model parts until a Model Card without a facet. A facet is refused when there is no head: ``a Model part (`<facet>`) must be filed under its Model Card: create it as a successor of the Model Card or of one of its parts``. Parts may form a chain (`3/2|a` setting, `3/2|a|1` assumptions, …) or each branch from the head.
-- **The structure is computed, never stored.** A model's parts are the Model parts in the head's tree whose head is that Model Card, ordered by facet, then address. Moves keep facets on their rows, so a model moved with its subtree stays whole; a part moved away alone becomes detached and is reported as such.
+- **Emphasis requires a facet.** `core`, `aside`, or none (`""`, `none`, `regular` clear it). Refused on a Card without a facet: `only Model parts can have an emphasis; give the Card a Model facet first`. A part keeps its emphasis when its facet changes; a Card that stops being a part loses it.
+- **A part is filed under its Model Card.** The **head** of a Card at Location `L` is found by walking `parent_location` from `L`'s parent through Model parts until a Model Card without a facet. A facet is refused when there is no head: ``a Model part (`<facet>`) must be filed under its Model Card: create it as a successor of the Model Card or of one of its parts``. Filing is free: a chain of Direct successors, branches, or both.
+- **The structure is computed, never stored.** A model's parts are the Model parts in the head's tree whose head is that Model Card, in Folgezettel order (numbers by value, side letters by length then alphabet), which is the author's filing order. Its **relations** are the Links from one part to another part, once per pair, each with the sentence around the Link (CJK or ASCII end punctuation, a line break, or a period before a space ends it; Links in it read as `「facet」`; at most 140 characters). Its **loose** parts are the parts in no relation. Moves keep facets and emphasis on their rows, so a model moved with its subtree stays whole; a part moved away alone becomes detached and is reported as such.
 - **A Model Card cannot abandon its parts.** Retyping a Model Card that heads parts, or giving it a facet, is refused: ``` `<address>` is the Model Card of N Model part(s) (…); change or move them first```.
-- **Consistency is reported, not enforced.** `issues` lists each part the Model Card does not link and each part that does not link its Model Card. `missing` lists the facets with no part. `discussion` counts Cards outside the model that link any of its Cards.
+- **Consistency is reported, not enforced.** `issues` lists each part the Model Card does not link and each part that does not link its Model Card. There is no list of missing facets: a model has the parts its author chose. `discussion` counts Cards outside the model that link any of its Cards.
 - Tree summaries count models by their Model Cards, not their parts.
+
+## The model board
+
+Below a Model Card or Model part, on the desk, the GUI lays out the model:
+
+- **Header.** The Model Card, as a wide index card; it opens the Model Card.
+- **Rows by what rests on what.** A part's row is one below the deepest part it links (a Link that would close a cycle is left out of the depth, though its thread is drawn); parts that rest on nothing are in the first row. Within a row a part sits under the mean position of the parts it rests on, else in filing order. Rows of up to three parts shrink to fit; longer rows wrap. One pass over the parts, no simulation.
+- **Threads.** Each relation is a thread from the part rested on down to the part that rests on it, with an arrowhead; a Link against the grain is an arc beside the two cards. Hovering a thread shows its reason.
+- **Attention.** On a part: the open part is lifted, outlined in model ink, and fully titled; the parts it relates to stay inked with two-line titles, their threads are drawn in model ink, and their reasons are listed below the board (`↑` what it rests on, `↓` what rests on it, each opening that part); core parts stay legible with one-line titles; every other part recedes to a pale label slip. On the Model Card: core parts are inked, regular parts get one-line titles, asides recede. Titles drop a leading `facet：` the author wrote for the Folgezettel map.
+- **Loose tray.** Loose parts lie apart below a dashed rule.
+- **Tabs.** Divider tabs along the card's top edge name the Model Card and each part by its facet in filing order; the open Card's tab stands up, core tabs are inked with a dot, aside tabs are narrow and pale.
 
 ## Rendering
 
@@ -31,11 +46,11 @@ Status: implemented in zt 0.6.0.
 - **Chart isolation.** `/chart/<id>` serves pages only from an in-memory store of charts this server rendered (512 most recent), keyed by the SHA-256 of the page, so ids cannot be guessed. Its policy starts `sandbox allow-scripts`, which puts the page in an opaque origin: it cannot reach the GUI page, its DOM, or its token, and the API answers no preflights. The sandbox travels in the response, not in an iframe `sandbox` attribute, because some embedded browsers refuse to load attribute-sandboxed frames; for the same reason the page is self-contained: the frame script and, when the chart holds TeX, KaTeX with data-URI fonts are inlined when the page is served. The policy allows inline scripts, HTTPS libraries, and framing only by the GUI's own origins.
 - **Chart contract.** The frame script gives the chart the card's palette as `--zt-*` CSS variables for both themes, typesets TeX in its HTML text, turns `[[address]]` text into links (and SVG text with it into clickable text), and posts only two messages to the page: `{zt:'height'}` and `{zt:'go', target}` for a click on `[[address]]` or an element with `data-zt`. The page sizes the frame and opens the Card if it exists.
 - **Other HTML.** Raw HTML that is not a chart shows as text, except plain inline tags without attributes (`sub`, `sup`, `br`, `kbd`, `mark`, `small`, `u`, `ins`, `del`, `s`, `b`, `i`, `em`, `strong`); HTML comments are dropped. Excerpts skip lines that start with `<`.
-- **Links.** Link macros inside a chart fence are code to the Link engine, so they are not Links: a Model Card lists its parts in Markdown as well as drawing them. Raw HTML charts are prose to the Link engine, so `[[…]]` in them must be valid Links.
+- **Links.** Link macros inside a chart fence are code to the Link engine, so they are not Links (and make no relation): a Model Card lists its parts in Markdown. Raw HTML charts are prose to the Link engine, so `[[…]]` in them must be valid Links.
 
 ## Interfaces
 
-- **MCP.** `create_successor` takes `facet` (implies type `model`); `edit_card` takes `facet` (empty clears it), alone or with other changes; `get_card` reports `facet` and `model` (head, facet, parts with their Links inside the model, `head_links`, `missing`, `discussion`, `issues`); `get_tree` and `search_cards` report `facet`, and tree Cards report `head`; `get_model` returns the structure with every body and the facet glossary. The server instructions name facets, math, and charts.
-- **GUI.** Parts carry a `MODEL · <FACET>` stamp in the reader, the map, and search. A Model Card or part shows divider tabs along its top edge (Model, then each facet; blank dashed tabs for missing facets; the open Card's tab stands up) and, on the desk below it, a model map: its Cards in reading order with an arc for each Link between them, the open Card's arcs inked, plus missing facets and issues. The writing desk shows a facet selector beside the Model type; the command bar takes `ty <type> [<facet>]`.
-- **Session.** A part shows `[model · <facet>]` after its Location; `ty model <facet>` sets a facet, `ty model` makes a Model Card.
-- **Dump.** `archive.json` gains a fourth key, `facets`, after `types`, listing every Model part in address order (`{}` when there are none).
+- **MCP.** `create_successor` takes `facet` (any short label; implies type `model`) and `emphasis`; `edit_card` takes `facet` (empty clears it) and `emphasis` (empty for regular), alone or with other changes. The schemas give `facet` a `maxLength` of 32 and no enum, and `emphasis` the enum `core`, `aside`, `""`. `get_card` reports `facet`, `emphasis`, and `model` (head, facet, emphasis, parts with their facets, emphasis, and Links inside the model, `head_links`, `relations`, `loose`, `discussion`, `issues`); `get_tree` and `search_cards` report `facet` and `emphasis`, and tree Cards report `head`; `get_model` returns the structure with every body and `common_facets` for reference. The server instructions say facets are the author's labels and parts relate by Links, not order.
+- **GUI.** Parts carry a `MODEL · <facet>` stamp in the reader, the map, and search (a dot for core, pale for aside). The reader shows the divider tabs and the model board above. The writing desk shows, beside the Model type, a facet field (empty for the Model Card; the common facets offered as suggestions) and an emphasis choice; the command bar takes `ty <type> [<facet>]`, the facet being the rest of the line.
+- **Session.** A part shows `[model · <facet>]` or `[model · <facet> · <emphasis>]` after its Location; `ty model <facet…>` sets a facet (the rest of the line, so it may hold spaces) and keeps the part's emphasis; `ty model` makes a Model Card.
+- **Dump.** `archive.json` has the keys `next_topic_id`, `workspaces`, `types`, `facets` (every Model part's facet), and `emphasis` (every core or aside part), in that order, `{}` when empty.

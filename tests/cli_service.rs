@@ -439,6 +439,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "workspace",
             "card_type",
             "model_facet",
+            "model_emphasis",
         ]
     );
     assert!(
@@ -2137,7 +2138,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
     assert_eq!(
         body,
-        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{}}"#
+        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{}}"#
     );
 }
 
@@ -3254,7 +3255,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     assert!(stdout.contains("  mv <new-location>                move the current card"));
     assert!(
         stdout.contains(
-            "  ty <idea|event|model> [<facet>]  make the current card an Idea, Event, or Model Card; a facet makes it a Model part"
+            "  ty <idea|event|model> [<facet>]  make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part"
         )
     );
     assert!(stdout.contains(
@@ -3399,7 +3400,10 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
         .count();
-    assert_eq!(backups_after_restart, 1, "conversion runs only once");
+    assert_eq!(
+        backups_after_restart, 2,
+        "each conversion runs only once: Markdown cards, then open model facets"
+    );
 }
 
 fn http_request(

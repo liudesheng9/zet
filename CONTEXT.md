@@ -24,16 +24,28 @@ A Regular Card of type `event`: it records one event that happened in the real w
 _Avoid_: Fact card, case
 
 **Model Card**:
-A Regular Card of type `model` without a Model facet: it presents one whole model (its question, an overview, and a structure chart) and lists the model's Model parts with Links. Every Card that derives, interprets, extends, or criticises the model links to it or to the part it concerns, so their Reverse links list the discussion of the model.
+A Regular Card of type `model` without a Model facet: it presents one whole model (its question and an overview) and lists the model's Model parts with Links. Every Card that derives, interprets, extends, or criticises the model links to it or to the part it concerns, so their Reverse links list the discussion of the model.
 _Avoid_: Theory card, formula card
 
 **Model part**:
-A Regular Card of type `model` with a Model facet, filed under its Model Card: as a successor of the Model Card or of another of its parts. It presents one facet of the model in depth, links its Model Card, and links the other parts it depends on. A Model Card with its parts is one **model**; ZT computes this structure from Locations and facets.
+A Regular Card of type `model` with a Model facet, filed under its Model Card: as a successor of the Model Card or of another of its parts. It presents one part of the model in depth, links its Model Card, and links the other parts it rests on. A Model Card with its parts is one **model**; which parts it has, what they are called, and how they relate is decided by whoever writes the model. ZT computes the structure from Locations, facets, and Links.
 _Avoid_: Sub-card, child model, model section
 
 **Model facet**:
-Which part of a model a Model part presents, in reading order: `setting` (agents, assets, actions, payoffs), `assumptions`, `timing` (order of moves and information), `dynamics` (how the state evolves: laws of motion, best responses, feedback), `solution` (equilibrium or optimum), `results`, `intuition`, `limits`. A model may lack facets or hold several parts of one facet.
+What a Model part presents: a short label (at most 32 characters, one line) chosen by the model's author, such as `设定`, `均衡`, `a worked example`. The common facets `setting` (agents, assets, actions, payoffs), `assumptions`, `timing` (order of moves and information), `dynamics` (how the state evolves: laws of motion, best responses, feedback), `solution` (equilibrium or optimum), `results`, `intuition`, and `limits` are a suggested vocabulary, not a required set or order. A model may hold several parts with one facet.
 _Avoid_: Role, section, aspect
+
+**Emphasis**:
+How much of a reader's attention a Model part asks for: `core` (the heart of the model, what a reader must see first), `aside` (detail a reader may skip), or none (a regular part). Only Model parts have one; the GUI spends ink and space by it.
+_Avoid_: Priority, weight, importance
+
+**Model relation**:
+A Link from one Model part to another part of the same model: the linking part rests on the linked one. The sentence that holds the Link is the relation's reason. A model's relations need not form a sequence or a tree, and they are separate from where the parts are filed.
+_Avoid_: Dependency edge, arrow
+
+**Loose part**:
+A Model part in no Model relation: it links no other part and no part links it, such as a historical case or a variant set beside the model. It still links its Model Card.
+_Avoid_: Orphan, detached part (a detached part is one not filed under a Model Card)
 
 **HTML chart**:
 HTML in a Card body that the GUI shows as a figure: a ```` ```chart ```` fence, or a raw HTML block that opens with a chart element such as `<figure>`, `<div>`, `<svg>`, or `<table>`. It runs sandboxed, apart from the GUI and its token; it may draw with scripts, use TeX, and name Cards with `[[address]]` or `data-zt="<address>"` to let a reader open them. Text inside a chart fence is not a Link.
@@ -127,3 +139,7 @@ _Avoid_: Web app, frontend
 **Folgezettel map**:
 The GUI view of one tree, laid out by address: Direct successors continue downward and each Side successor starts a new column.
 _Avoid_: Tree diagram
+
+**Model board**:
+The GUI view of one model, below a Model Card or Model part: the Model Card as a header and each part as a small card under the parts it rests on, with a thread for each Model relation and Loose parts in a tray. It is laid out by Model relations, not by address, and inked by attention: the open part, the parts it relates to (with their reasons), and core parts stay legible; the rest recede to their facet.
+_Avoid_: Model map, model diagram

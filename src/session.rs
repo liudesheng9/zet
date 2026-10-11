@@ -397,11 +397,14 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                     .context("Literature Card is missing its BibTeX metadata")?;
                 lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
             } else {
-                // A non-Idea Card names its type, and a Model part its facet,
-                // after its Location.
-                let card_type = match (card.card_type, card.facet) {
+                // A non-Idea Card names its type, and a Model part its facet
+                // and emphasis, after its Location.
+                let card_type = match (card.card_type, &card.facet) {
                     (crate::CardType::Idea, _) => String::new(),
-                    (other, Some(facet)) => format!(" [{other} · {facet}]"),
+                    (other, Some(facet)) => match card.emphasis {
+                        Some(emphasis) => format!(" [{other} · {facet} · {emphasis}]"),
+                        None => format!(" [{other} · {facet}]"),
+                    },
                     (other, None) => format!(" [{other}]"),
                 };
                 lines.push(ViewLine::Plain(format!(

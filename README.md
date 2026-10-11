@@ -172,38 +172,41 @@ renamed; it changes nothing else about the Card. Archives created before 0.5.0 a
 
 ### Model structure
 
-A model is more than one Card can hold. Its **Model Card** states the question, a short overview,
-and a structure chart, and lists its **Model parts**: Model Cards filed under it (as successors
-of the Model Card or of another part), each with a **Model facet** saying which part of the model
-it presents, in reading order:
+A model is more than one Card can hold. Its **Model Card** states the question and a short
+overview, and lists its **Model parts**: Model Cards filed under it (as successors of the Model
+Card or of another part), each presenting one part of the model in depth. **Whoever writes the
+model decides its structure**:
 
-| Facet | Holds |
-| --- | --- |
-| `setting` | agents, assets, actions, and payoffs |
-| `assumptions` | what the model assumes, and what each assumption buys |
-| `timing` | the order of moves and who knows what when |
-| `dynamics` | how the state evolves: laws of motion, best responses, feedback |
-| `solution` | the equilibrium or optimum and how it is derived |
-| `results` | propositions and comparative statics |
-| `intuition` | why the results hold, in words |
-| `limits` | where the model stops applying, and its critics |
+- **Facet**: each part's name, a short label of the author's choosing (at most 32 characters):
+  `设定`, `均衡`, `a worked example`. The common facets `setting`, `assumptions`, `timing`,
+  `dynamics`, `solution`, `results`, `intuition`, and `limits` are suggestions, not a required set
+  or order.
+- **Emphasis**: a part may be `core` (the heart of the model, what a reader must see first) or
+  `aside` (detail a reader may skip).
+- **Relations**: a part links the parts it rests on, in a sentence that gives the reason. Inside
+  a model these Links form a graph, not a sequence or a tree: a part may rest on several others,
+  and a part in no relation is **loose** (a case or variant set beside the model).
 
-ZT computes each model's structure from Locations and facets. Links keep it readable from every
-Card: the Model Card links each part, each part links its Model Card and the parts it depends on
-(the dynamics on the timing and assumptions, the results on the dynamics), and `get_model` reports
-any part that is missing such a Link. A Model Card with parts cannot be retyped until its parts
-are changed or moved.
+ZT computes each model's structure from Locations, facets, and Links. The Model Card links each
+part and each part links its Model Card; `get_model` reports any part that is missing such a
+Link, and lists the relations (with their reasons) and the loose parts. A Model Card with parts
+cannot be retyped until its parts are changed or moved.
 
-- **Session**: a part shows `[model · <facet>]`; `ty model <facet>` makes the current Card a part,
-  and `ty model` alone makes it a Model Card again.
-- **GUI**: a Model Card or part carries divider tabs along its top edge (Model, then each facet;
-  blank tabs for facets with no part yet) and, on the desk below, a map of the model's Cards with
-  an arc for each Link between them; parts carry a `MODEL · <FACET>` stamp, and the writing desk
-  picks the facet beside the Model type.
-- **MCP**: `create_successor` and `edit_card` take `facet` (an empty `facet` clears it);
-  `get_card` reports `facet` and `model`; `get_model` returns the whole model with every body,
-  the facets still missing, and consistency issues.
-- **Dump**: `archive.json` lists every Model part's facet under `facets`.
+- **Session**: a part shows `[model · <facet>]` (and its emphasis); `ty model <facet>` makes the
+  current Card a part (the facet is the rest of the line), and `ty model` alone makes it a Model
+  Card again.
+- **GUI**: a Model Card or part carries divider tabs along its top edge, named by facet in filing
+  order (core tabs inked, asides pale), and below it the **model board**: the parts laid out by
+  what rests on what, a thread for each relation, loose parts apart in a tray. The board follows
+  the reader's attention: the open part is lifted and fully titled, the parts it relates to stay
+  inked with their reasons listed, core parts stay legible, and the rest recede to their labels.
+  The writing desk names the facet (with the common ones suggested) and the emphasis beside the
+  Model type.
+- **MCP**: `create_successor` and `edit_card` take `facet` and `emphasis` (empty clears either);
+  `get_card` reports `facet`, `emphasis`, and `model`; `get_model` returns the whole model with
+  every body, its relations and loose parts, and consistency issues.
+- **Dump**: `archive.json` lists every Model part's facet under `facets` and every core or aside
+  part under `emphasis`.
 
 ### Math and HTML charts
 
@@ -239,11 +242,11 @@ Reverse links to the human Card.
 | `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
-| `get_model` | a whole model: its Model Card and parts in reading order, with bodies, missing facets, and issues |
+| `get_model` | a whole model: its Model Card and parts with bodies, facets, and emphasis, its relations and loose parts, and issues |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
-| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) or a Model part (`facet`) |
-| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, or BibTeX |
+| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) or a Model part (`facet`, `emphasis`) |
+| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, or BibTeX |
 | `delete_card`, `move_card` | delete or move agent Cards |
 
 Deletes, moves, and Citation key renames first return a plan; call again with the `confirm`
@@ -310,9 +313,9 @@ system:
 - One Markdown file per Card holding its exact stored text; a Literature Card's file starts with
   YAML front matter holding its BibTeX, and `<citation-key>.bib` holds the exact BibTeX bytes.
 - `archive.json`: the Workspace of every Card address, the next Topic number (so deleted
-  Topic numbers are not reused), the type of every Event and Model Card, and the facet of every
-  Model part, for example
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"}}`.
+  Topic numbers are not reused), the type of every Event and Model Card, the facet of every
+  Model part, and the emphasis of every core or aside part, for example
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"}}`.
 
 `zt dp` offers each format (`zip`, `tar.gz`, `tar.zst`, `7z`) that a tool on the host can
 really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first whose probe

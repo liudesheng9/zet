@@ -31,9 +31,10 @@ function Invoke-Zt($calls) {
     foreach ($line in $lines) { if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String } }
 }
 function Cut($text) { if ($text.Length -le $TitleChars) { $text } else { $text.Substring(0, $TitleChars) + '…' } }
+# Common facets read in Chinese; any other facet is the label its author wrote.
 $facetNames = @{ setting = '设定'; assumptions = '假设'; timing = '时序'; dynamics = '动态'; solution = '求解'; results = '结论'; intuition = '直觉'; limits = '局限' }
 function Mark($card) {
-    if ($card.type -eq 'model' -and $card.facet) { return " [模型·$($facetNames[$card.facet])]" }
+    if ($card.type -eq 'model' -and $card.facet) { $name = if ($facetNames.ContainsKey($card.facet)) { $facetNames[$card.facet] } else { $card.facet }; return " [模型·$name]" }
     switch ($card.type) { 'model' { ' [模型]' } 'event' { ' [事件]' } default { '' } }
 }
 

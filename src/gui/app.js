@@ -117,8 +117,9 @@
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
     model: { label: 'Model', note: 'one whole model: setup, assumptions, solution, results, limits' },
   };
-  // A model is presented by its Model Card and by Model parts filed under it, one per facet,
-  // in reading order. Mirrors `Facet` in src/model.rs.
+  // A model is presented by its Model Card and by Model parts filed under it. A part's facet is
+  // a short label its author chose; these common facets are only suggestions (mirrors
+  // `COMMON_FACETS` in src/model.rs). An emphasis marks a part `core` or `aside`.
   const FACETS = {
     setting: { label: 'Setting', note: 'agents, assets, actions, and payoffs' },
     assumptions: { label: 'Assumptions', note: 'what the model assumes, and what each assumption buys' },
@@ -129,14 +130,21 @@
     intuition: { label: 'Intuition', note: 'why the results hold, in words' },
     limits: { label: 'Limits', note: 'where the model stops applying, and its critics' },
   };
+  const EMPHASIS = {
+    core: { label: 'Core', note: 'the heart of the model: read it first' },
+    aside: { label: 'Aside', note: 'detail a reader may skip' },
+  };
+  /** How a facet reads: a common facet by its English name, any other label as written. */
+  const facetLabel = (facet) => FACETS[facet]?.label || facet || '';
   /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. A Model part's
-   *  stamp names its facet. */
-  const typeStamp = (type, title, facet) => {
+   *  stamp names its facet; a core part's stamp carries a dot. */
+  const typeStamp = (type, title, facet, emphasis) => {
     if (!CARD_TYPES[type] || type === 'idea') return null;
-    const part = type === 'model' && FACETS[facet];
+    const part = type === 'model' && facet;
+    const note = part && [FACETS[facet]?.note, EMPHASIS[emphasis] && `${EMPHASIS[emphasis].label}: ${EMPHASIS[emphasis].note}`].filter(Boolean).join(' · ');
     return h('span', {
-      class: 'type-stamp ' + type + (part ? ' part' : ''),
-      title: title || (part ? `Model part · ${part.label} — ${part.note}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`),
+      class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : ''),
+      title: title || (part ? `Model part · ${facetLabel(facet)}${note ? ' — ' + note : ''}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`),
       text: part ? `${type} · ${facet}` : type,
     });
   };
@@ -223,7 +231,7 @@
     ['e', 'edit the current card', 'card'],
     ['del', 'delete the current card and its successors', 'card'],
     ['mv <new-location>', 'move the current card and its successors', 'regular'],
-    ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (setting, assumptions, timing, dynamics, solution, results, intuition, limits) makes it a Model part', 'regular'],
+    ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -279,8 +287,9 @@
         return moveCard(rest[0]);
       case 'ty':
         needCard();
-        if (rest.length < 1 || rest.length > 2) throw new Error('usage: ty <idea|event|model> [<facet>]');
-        return setCardType(rest[0].toLowerCase(), rest[1] && rest[1].toLowerCase());
+        if (rest.length < 1) throw new Error('usage: ty <idea|event|model> [<facet>]');
+        // A facet is the rest of the line, so it may hold spaces.
+        return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
       case 'stats': {
         const s = state.overview.stats;
         return toast(`total: ${s.total}\ntopics: ${s.topics}\nregular: ${s.regular}\nliterature: ${s.literature}`);
@@ -411,7 +420,7 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
           h('span', { class: 's' }, marked(hit.snippet)),
         )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
       );
@@ -571,7 +580,7 @@
 
     function content(el, card, n, outline) {
       const external = card.links.filter((target) => !outline.card.has(target)).length;
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.inbound, external, card.excerpt].join('\u0001');
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.inbound, external, card.excerpt].join('\u0001');
       el.className = ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type : '',
@@ -592,14 +601,14 @@
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet, card.emphasis), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
           h('span', { class: 'badges' },
-            typeStamp(card.type, null, card.facet),
+            typeStamp(card.type, null, card.facet, card.emphasis),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
             fold,
@@ -1178,7 +1187,7 @@
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
-          typeStamp(card.type, null, card.facet),
+          typeStamp(card.type, null, card.facet, card.emphasis),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
@@ -1188,7 +1197,7 @@
       ),
       md,
     ), h('div', { class: 'card-tools' },
-      card.model ? modelMap(card) : null,
+      card.model ? modelBoard(card) : null,
       card.kind === 'literature' ? h('details', { class: 'biblio' },
         h('summary', { text: `BibTeX · ${card.citation_key}` }),
         h('pre', { text: card.bibtex })) : null,
@@ -1208,97 +1217,202 @@
 
   /**
    * The divider tabs along the top of a Model Card or Model part: the Model Card, then one tab
-   * per facet in reading order. The open Card's tab stands up; facets without a part are blank
-   * tabs, so a reader sees at once what the model states and what it still lacks.
+   * per part in the order its author filed them, named by the part's own facet. The open Card's
+   * tab stands up; core tabs are inked, aside tabs are narrow and pale.
    */
   function modelTabs(card) {
     const model = card.model;
     const head = model.head;
     const tab = (label, address, here, title, extra) => h(address ? 'button' : 'span', {
-      class: 'model-tab' + (here ? ' here' : '') + (address ? '' : ' blank') + (extra ? ' ' + extra : ''),
+      class: 'model-tab' + (here ? ' here' : '') + (extra ? ' ' + extra : ''),
       title,
       onclick: address && !here ? () => go(address) : null,
     }, label);
     const tabs = [head
       ? tab('Model', head.address, head.address === card.address, `Model Card ${head.address} — ${head.title}`, 'head')
       : tab('Model', null, false, 'This part is not filed under a Model Card', 'head missing')];
-    for (const [id, info] of Object.entries(FACETS)) {
-      const parts = model.parts.filter((part) => part.facet === id);
-      if (!parts.length) {
-        tabs.push(tab(info.label, null, false, `No ${info.label} part yet — ${info.note}`));
-        continue;
-      }
-      parts.forEach((part, index) => tabs.push(tab(
-        parts.length > 1 ? `${info.label} ${index + 1}` : info.label,
-        part.address, part.address === card.address, `${part.address} — ${part.title}`)));
+    for (const part of model.parts) {
+      tabs.push(tab(facetLabel(part.facet), part.address, part.address === card.address,
+        `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''} · ${part.address} — ${part.title}`, part.emphasis));
     }
     return h('nav', { class: 'model-tabs', 'aria-label': 'Model structure' }, tabs);
   }
 
+  /** A part's title without a leading `facet：` its author wrote for the Folgezettel map. */
+  const bareTitle = (title) => (title || '').replace(/^[^：:$]{1,10}[：:]\s*/, '') || title || '(untitled)';
+
   /**
-   * The model's structure on the desk below the card: its Cards in reading order as a row of
-   * small index cards, with an arc for every Link between them. Arcs that touch the open Card
-   * are drawn in ink; the rest stay faint.
+   * The model on the desk below its card. The Model Card heads the board; its parts lie below
+   * as small index cards, each under the parts it links (what it rests on), with a thread for
+   * every such relation. The board is laid out for a reader's attention: the open part is
+   * lifted and fully titled, the parts it relates to stay inked with their threads drawn and
+   * their reasons listed, core parts stay legible, and every other part recedes to its label.
+   * On the Model Card itself, the core parts lead. Loose parts, which relate to no other part,
+   * lie apart in a tray. The layout is computed, not simulated: one pass over the parts.
    */
-  function modelMap(card) {
+  function modelBoard(card) {
     const model = card.model;
     if (!model.head) {
       return h('div', { class: 'model-issues' }, model.issues.map((issue) => h('p', { text: issue })));
     }
-    const members = [{ address: model.head.address, title: model.head.title, facet: null, links: model.head_links || [] }, ...model.parts];
-    const index = new Map(members.map((member, at) => [member.address, at]));
-    const step = 92;
-    const width = Math.max(1, members.length) * step;
-    const top = 54;
-    const height = 112;
-    const box = svg('svg', { class: 'model-svg', viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': 'Links between the Cards of this model' });
-    const arcs = [];
-    members.forEach((member, from) => {
-      for (const target of member.links || []) {
-        const to = index.get(target);
-        if (to === undefined || to === from) continue;
-        arcs.push([from, to, member.address === card.address || target === card.address]);
-      }
-    });
-    // Faint arcs first, so the open Card's arcs lie on top.
-    arcs.sort((a, b) => Number(a[2]) - Number(b[2]));
-    for (const [from, to, hot] of arcs) {
-      const x1 = from * step + step / 2;
-      const x2 = to * step + step / 2;
-      const lift = Math.min(46, 14 + Math.abs(to - from) * 9);
-      const path = svg('path', {
-        d: `M ${x1} ${top} C ${x1} ${top - lift}, ${x2} ${top - lift}, ${x2} ${top - 6}`,
-        class: 'model-arc' + (hot ? ' hot' : ''),
-      });
-      box.append(path);
-      box.append(svg('path', { d: `M ${x2 - 3.5} ${top - 11} L ${x2} ${top - 5} L ${x2 + 3.5} ${top - 11}`, class: 'model-arc head' + (hot ? ' hot' : '') }));
+    const parts = model.parts;
+    const here = card.address;
+    const onHead = here === model.head.address;
+    const order = new Map(parts.map((part, at) => [part.address, at]));
+    const facetOf = new Map(parts.map((part) => [part.address, part.facet]));
+    const loose = new Set(model.loose || []);
+    const relations = (model.relations || []).filter((r) => order.has(r.from) && order.has(r.to));
+    const restsOn = new Map(parts.map((part) => [part.address, []]));
+    const supports = new Map(parts.map((part) => [part.address, []]));
+    for (const relation of relations) {
+      restsOn.get(relation.from).push(relation);
+      supports.get(relation.to).push(relation);
     }
-    members.forEach((member, at) => {
-      const x = at * step + 8;
-      const here = member.address === card.address;
-      const group = svg('g', { class: 'model-node' + (here ? ' here' : '') + (member.facet ? '' : ' head'), tabindex: here ? -1 : 0 });
-      const title = svg('title', {});
-      title.textContent = `${member.address} — ${member.title}`;
-      group.append(title);
-      group.append(svg('rect', { x, y: top, width: step - 16, height: 40, rx: 3 }));
-      group.append(svg('line', { x1: x, y1: top + 13, x2: x + step - 16, y2: top + 13, class: 'rule' }));
-      const label = svg('text', { x: x + (step - 16) / 2, y: top + 10, 'text-anchor': 'middle', class: 'facet' });
-      label.textContent = member.facet ? FACETS[member.facet].label : 'Model';
-      const addr = svg('text', { x: x + (step - 16) / 2, y: top + 30, 'text-anchor': 'middle', class: 'addr' });
-      const slash = member.address.indexOf('/');
-      addr.textContent = slash > 4 ? '…' + member.address.slice(slash) : member.address;
-      group.append(label, addr);
-      if (!here) {
-        group.addEventListener('click', () => go(member.address));
-        group.addEventListener('keydown', (event) => { if (event.key === 'Enter') go(member.address); });
+
+    // Depth: one row below the deepest part a part rests on; a Link that closes a cycle is
+    // left out of the depth (its thread is still drawn).
+    const depth = new Map();
+    const visiting = new Set();
+    const depthOf = (address) => {
+      if (depth.has(address)) return depth.get(address);
+      visiting.add(address);
+      let d = 0;
+      for (const relation of restsOn.get(address)) {
+        if (!visiting.has(relation.to)) d = Math.max(d, depthOf(relation.to) + 1);
       }
-      box.append(group);
-    });
-    const missing = (model.missing || []).map((id) => FACETS[id]?.label).filter(Boolean);
+      visiting.delete(address);
+      depth.set(address, d);
+      return d;
+    };
+    const rows = [];
+    for (const part of parts) {
+      if (!loose.has(part.address)) (rows[depthOf(part.address)] ||= []).push(part);
+    }
+    // Within a row, a part sits under the parts it rests on (their mean slot), else in filing order.
+    const slot = new Map();
+    for (const row of rows.filter(Boolean)) {
+      const key = (part) => {
+        const xs = restsOn.get(part.address).map((r) => slot.get(r.to)).filter((x) => x !== undefined);
+        return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : (order.get(part.address) + 0.5) / parts.length;
+      };
+      const keys = new Map(row.map((part) => [part.address, key(part)]));
+      row.sort((a, b) => keys.get(a.address) - keys.get(b.address) || order.get(a.address) - order.get(b.address));
+      row.forEach((part, at) => slot.set(part.address, (at + 0.5) / row.length));
+    }
+
+    // Attention: what the reader has open, what it relates to, what its author called core.
+    const near = new Set();
+    if (!onHead) {
+      for (const r of restsOn.get(here) || []) near.add(r.to);
+      for (const r of supports.get(here) || []) near.add(r.from);
+    }
+    const level = (part) => {
+      if (part.address === here) return 'here';
+      if (onHead) {
+        if (part.emphasis === 'core') return 'near';
+        return part.emphasis === 'aside' ? 'far' : 'mid';
+      }
+      if (near.has(part.address)) return 'near';
+      return part.emphasis === 'core' ? 'mid' : 'far';
+    };
+    const isHot = (relation) => (onHead
+      ? level(parts[order.get(relation.from)]) === 'near' && level(parts[order.get(relation.to)]) === 'near'
+      : relation.from === here || relation.to === here);
+
+    const slips = new Map();
+    const slip = (part) => {
+      const at = level(part);
+      const node = h(part.address === here ? 'div' : 'button', {
+        class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}`,
+        title: `${facetLabel(part.facet)}${part.emphasis ? ` · ${part.emphasis}` : ''} · ${part.address}\n${part.title}`,
+        'aria-current': part.address === here ? 'true' : null,
+        onclick: part.address === here ? null : () => go(part.address),
+      },
+        h('span', { class: 'mb-facet', text: facetLabel(part.facet) }),
+        h('span', { class: 'mb-title' }, titleNodes(bareTitle(part.title))),
+      );
+      slips.set(part.address, node);
+      return node;
+    };
+    const headSlip = h(onHead ? 'div' : 'button', {
+      class: 'mb-head' + (onHead ? ' here' : ''),
+      title: `Model Card ${model.head.address}\n${model.head.title}`,
+      onclick: onHead ? null : () => go(model.head.address),
+    }, h('span', { class: 'mb-facet', text: 'Model' }), h('span', { class: 'mb-title' }, titleNodes(model.head.title)));
+
+    const threads = svg('svg', { class: 'mb-threads', 'aria-hidden': 'true' });
+    const board = h('div', { class: 'model-board' + (onHead ? ' on-head' : '') },
+      threads,
+      headSlip,
+      rows.filter(Boolean).map((row) => h('div', { class: 'mb-row' + (row.length > 3 ? ' wide' : '') }, row.map(slip))),
+      loose.size ? h('div', { class: 'mb-loose' },
+        h('span', { class: 'mb-tray', text: 'Loose', title: 'Parts that relate to no other part of the model' }),
+        parts.filter((part) => loose.has(part.address)).map(slip)) : null,
+    );
+    // Threads run from a part down to the parts that rest on it; faint threads first, so the
+    // ones that matter now lie on top.
+    const draw = () => {
+      const box = board.getBoundingClientRect();
+      if (!box.width) return;
+      threads.setAttribute('width', box.width);
+      threads.setAttribute('height', box.height);
+      threads.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+      threads.replaceChildren();
+      const place = (address) => {
+        const r = slips.get(address)?.getBoundingClientRect();
+        return r && { l: r.left - box.left, r: r.right - box.left, t: r.top - box.top, b: r.bottom - box.top, x: r.left - box.left + r.width / 2, y: r.top - box.top + r.height / 2 };
+      };
+      const drawn = relations
+        .filter((r) => !loose.has(r.from) && !loose.has(r.to))
+        .map((r) => ({ r, hot: isHot(r) }))
+        .sort((a, b) => Number(a.hot) - Number(b.hot));
+      for (const { r, hot } of drawn) {
+        const from = place(r.to);
+        const to = place(r.from);
+        if (!from || !to) continue;
+        let d;
+        let tip;
+        if (from.b + 4 <= to.t) {
+          const mid = (from.b + to.t) / 2;
+          d = `M ${from.x} ${from.b} C ${from.x} ${mid}, ${to.x} ${mid}, ${to.x} ${to.t - 2}`;
+          tip = `M ${to.x - 3.5} ${to.t - 7} L ${to.x} ${to.t - 2} L ${to.x + 3.5} ${to.t - 7}`;
+        } else {
+          // A Link against the grain (up or across): an arc beside the two cards.
+          const side = Math.max(from.r, to.r) + 16;
+          d = `M ${from.r} ${from.y} C ${side} ${from.y}, ${side} ${to.y}, ${to.r + 2} ${to.y}`;
+          tip = `M ${to.r + 7} ${to.y - 3.5} L ${to.r + 2} ${to.y} L ${to.r + 7} ${to.y + 3.5}`;
+        }
+        const group = svg('g', { class: 'mb-thread' + (hot ? ' hot' : '') });
+        const hit = svg('path', { d, class: 'hit' });
+        const label = svg('title', {});
+        label.textContent = `${facetLabel(facetOf.get(r.from))} rests on ${facetLabel(facetOf.get(r.to))}: ${r.note}`;
+        hit.append(label);
+        group.append(svg('path', { d, class: 'line' }), svg('path', { d: tip, class: 'tip' }), hit);
+        threads.append(group);
+      }
+    };
+    new ResizeObserver(() => requestAnimationFrame(draw)).observe(board);
+
+    // The reasons behind the open part's relations, in its own and its neighbours' words.
+    const reasons = onHead ? [] : [
+      ...(restsOn.get(here) || []).map((r) => ({ way: 'up', at: r.to, note: r.note, label: 'rests on' })),
+      ...(supports.get(here) || []).map((r) => ({ way: 'down', at: r.from, note: r.note, label: 'carries' })),
+    ];
+    const kept = parts.length - loose.size;
     return [
-      h('div', { class: 'section-label', text: `Model · ${model.parts.length} part${model.parts.length === 1 ? '' : 's'}${model.discussion ? ` · discussed by ${model.discussion}` : ''}` }),
-      h('div', { class: 'model-map' }, box),
-      missing.length ? h('p', { class: 'model-note', text: `No part yet for ${missing.join(', ')}.` }) : null,
+      h('div', { class: 'section-label', text: [
+        `Model · ${parts.length} part${parts.length === 1 ? '' : 's'}`,
+        relations.length ? `${relations.length} relation${relations.length === 1 ? '' : 's'}` : null,
+        loose.size && kept ? `${loose.size} loose` : null,
+        model.discussion ? `discussed by ${model.discussion}` : null,
+      ].filter(Boolean).join(' · ') }),
+      board,
+      reasons.length ? h('div', { class: 'mb-reasons', 'aria-label': 'Why this part relates to the others' },
+        reasons.map((reason) => h('button', { class: 'mb-reason ' + reason.way, onclick: () => go(reason.at), title: `${reason.label} ${reason.at}` },
+          h('span', { class: 'way', text: reason.way === 'up' ? '↑' : '↓' }),
+          h('span', { class: 'mb-facet', text: facetLabel(facetOf.get(reason.at)) }),
+          h('span', { class: 'note', text: reason.note }),
+        ))) : null,
       model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'Links that keep the model readable from every Card' },
         model.issues.map((issue) => h('p', { text: issue }))) : null,
     ];
@@ -1454,21 +1568,33 @@
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
-      // A Model Card is the head of its model, or one of its parts when it has a facet.
+      // A Model Card is the head of its model, or one of its parts when it has a facet: any
+      // short label, with the common facets offered as suggestions. A part may be core or aside.
       let chosenType = cardType;
       let chosenFacet = facet || '';
-      const facetPick = cardType ? h('select', {
-        class: 'facet-pick', 'aria-label': 'Model facet', hidden: cardType !== 'model',
-        title: 'A Model Card presents the whole model; a Model part, filed under it, presents one facet',
-        onchange: (event) => { chosenFacet = event.target.value; dirty = true; update(); },
+      let chosenEmphasis = emphasis || '';
+      const facetInput = cardType ? h('input', {
+        class: 'facet-input', 'aria-label': 'Model facet', list: 'zt-facets', maxlength: 32, spellcheck: 'false',
+        placeholder: 'whole model', value: chosenFacet,
+        title: 'Empty: the Model Card of a whole model. A label (setting, 动态, a worked example…): a Model part filed under it',
+        oninput: (event) => { chosenFacet = event.target.value.trim(); dirty = true; emphasisPick.hidden = !chosenFacet; update(); },
+      }) : null;
+      const emphasisPick = cardType ? h('select', {
+        class: 'emphasis-pick', 'aria-label': 'Emphasis', hidden: !chosenFacet,
+        title: 'How much of a reader\'s attention this part asks for',
+        onchange: (event) => { chosenEmphasis = event.target.value; dirty = true; update(); },
       },
-        h('option', { value: '', text: 'Model Card (whole model)' }),
-        Object.entries(FACETS).map(([id, info]) => h('option', { value: id, text: `Part · ${info.label}`, title: info.note })),
+        h('option', { value: '', text: 'regular' }),
+        Object.entries(EMPHASIS).map(([id, info]) => h('option', { value: id, text: id, title: info.note })),
       ) : null;
-      if (facetPick) facetPick.value = chosenFacet;
+      if (emphasisPick) emphasisPick.value = chosenEmphasis;
+      const facetPick = cardType ? h('span', { class: 'facet-pick', hidden: cardType !== 'model' },
+        h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick,
+        h('datalist', { id: 'zt-facets' }, Object.entries(FACETS).map(([id, info]) => h('option', { value: id, label: info.note }))),
+      ) : null;
       const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },
         h('span', { class: 'lbl', text: 'Type' }),
         Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
@@ -1520,7 +1646,7 @@
           const title = literature ? (bibTitle ?? literature.title ?? '') : rendered.title;
           preview.innerHTML = rendered.html;
           preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled') }, title ? titleNodes(title) : 'Untitled — start with “# Title”'));
-          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null);
+          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null, chosenFacet ? chosenEmphasis : null);
           if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
           wireMarkdown(preview);
           if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
@@ -1546,7 +1672,7 @@
       const doSave = async () => {
         saveBtn.disabled = true;
         try {
-          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '');
+          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           setMsg(error.message, 'err');
@@ -1659,7 +1785,7 @@
       initial,
       // Every successor is a Regular Card, so it may be an Event or Model Card.
       cardType: kind === 'topic' ? null : 'idea',
-      save: (text, _bibtex, type, facet) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined }).then((result) => result.address),
+      save: (text, _bibtex, type, facet, emphasis) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined }).then((result) => result.address),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
@@ -1694,8 +1820,10 @@
       literature: card.kind === 'literature' ? { title: card.title } : null,
       cardType: card.context === 'regular' ? card.type || 'idea' : null,
       facet: card.facet,
-      save: (text, _bibtex, type, facet) => api('edit', {
-        at: card.address, text, base: card.text, type: type || undefined, facet: type === 'model' ? facet || '' : undefined,
+      emphasis: card.emphasis,
+      save: (text, _bibtex, type, facet, emphasis) => api('edit', {
+        at: card.address, text, base: card.text, type: type || undefined,
+        facet: type === 'model' ? facet || '' : undefined, emphasis: type === 'model' ? emphasis || '' : undefined,
       }).then((result) => result.address),
     });
     if (address) await afterChange(address, `saved ${address}`);
@@ -1707,10 +1835,9 @@
     if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, or model`);
     if (card.context !== 'regular') throw new Error('only Regular Cards can be Event or Model Cards');
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
-    if (facet && !FACETS[facet]) throw new Error(`unknown model facet \`${facet}\`; expected ${Object.keys(FACETS).join(', ')}`);
     const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
     await afterChange(result.address, facet
-      ? `${result.address} is the ${FACETS[facet].label} part of its model`
+      ? `${result.address} is the ${facetLabel(facet)} part of its model`
       : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : 'a Model'} Card`);
   }
 

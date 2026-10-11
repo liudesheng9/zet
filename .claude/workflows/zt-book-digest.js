@@ -1,11 +1,11 @@
 export const meta = {
   name: 'zt-book-digest',
-  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, Sonnet rebuilds every new Model Card into a structured model (parts per facet, HTML charts); a link pass ties the parts of the book together, then Opus organizes the structure',
+  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, Sonnet studies the source behind every new Model Card and designs its structure (parts it names, core and aside parts, reasoned relations, HTML charts); a link pass ties the parts of the book together, then Opus organizes the structure',
   whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the Sonnet model stage on its Model Cards.',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
-    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet agent per new Model Card studies the source, splits the model into Model parts (setting, assumptions, timing, dynamics, solution, results, ...), links them, and draws HTML charts', model: 'sonnet' },
+    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet agent per new Model Card reads a context pack (the card, its discussion, its group source files, the other models of the book), studies the source, and designs the model: the parts it needs under its own facet labels, core and aside parts, reasoned relations (loose parts allowed), and HTML charts', model: 'sonnet' },
     { title: 'Link', detail: 'each DeepSeek run gets only the Cards it owns, searches the book and the Card index on disk, and appends reasoned cross-part Links', model: 'haiku' },
     { title: 'Cleanup', detail: 'Haiku archives conversations, removes the DeepSeek workspace and scratch files', model: 'haiku' },
     { title: 'Organize', detail: 'Opus merges Topics, writes hubs, entry points, the book structure Card, and links', model: 'opus' },
@@ -163,8 +163,10 @@ const MODEL_REPORT = {
   type: 'object',
   properties: {
     model: { type: 'string' }, status: { type: 'string', enum: ['done', 'skipped', 'failed'] },
-    parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' } }, required: ['address', 'facet'] } },
-    charts: { type: 'number' }, issues: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' },
+    parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' }, emphasis: { type: 'string' } }, required: ['address', 'facet'] } },
+    relations: { type: 'number' }, loose: { type: 'number' },
+    charts: { type: 'number' }, issues: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' },
   },
   required: ['model', 'status', 'parts', 'charts', 'issues'],
 }
@@ -174,15 +176,23 @@ pwsh -NoProfile -File ${SCRIPTS}\\list-models.ps1 -Staging "${OUT}" ${selector}
 If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
   { label, phase: 'Models', model: 'haiku', effort: 'low', schema: MODEL_LIST },
 )
-const elaborate = (model) => agent(
-  `Elaborate one Model Card of the ZET digest of 《${A.bookTitle}》. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly.
+// Sonnet decides the model's structure itself: it starts from a context pack (model-context.ps1)
+// and may read any book file, any Card, and the Scholar Archive.
+const elaborate = (model) => {
+  const work = `${MODEL_WORK}\\${model.address.replace(/[\/|]/g, '_')}`
+  return agent(
+    `Elaborate one Model Card of the ZET digest of 《${A.bookTitle}》: understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly.
 MODEL: ${model.address} (${model.title || ''})
 KEY: ${KEY}
-BOOK: ${OUT} (sections\\sNN.md, book.zh.md, index.md; the bilingual source is ${A.source || 'in the Scholar Archive'})
+GROUP: ${model.group ? `${model.group} (anchor [[${KEY}/${model.group}]])` : 'unknown; the context script finds it'}
+BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, manifest.json; the bilingual source is ${A.source || 'in the Scholar Archive'})
+SCRIPTS: ${SCRIPTS}
+CONTEXT: ${work}\\context.md
 HELPER: ${HELPER}
-WORK: ${MODEL_WORK}\\${model.address.replace(/[\/|]/g, '_')} (create it for your calls files)`,
-  { label: `model ${model.address}`, phase: 'Models', model: 'sonnet', schema: MODEL_REPORT },
-)
+WORK: ${work} (create it for your calls files)${A.redoModels ? '\nREDO: restructure this model even if it already has parts.' : ''}`,
+    { label: `model ${model.address}`, phase: 'Models', model: 'sonnet', schema: MODEL_REPORT },
+  )
+}
 const elaborateAll = async (models, label) => {
   const todo = models.filter(m => A.redoModels || !(m.parts > 0 && !m.issues))
   if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
@@ -230,7 +240,8 @@ const runStage = async (stage, stageBlocks, after) => {
 
 const logModels = (reports) => {
   const done = reports.filter(r => r.status === 'done')
-  log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + (r.charts || 0), 0)} charts), ${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
+  const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
+  log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations, ${sum('loose')} loose, ${sum('charts')} charts),${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
 }
 
 let digestReports = []
@@ -320,7 +331,7 @@ if (usageBefore && cleanup && cleanup.usage_after) {
 // --- Organize ------------------------------------------------------------------------------------
 let organize = null
 if (MODE === 'full' || A.organize) {
-  const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]：${r.parts.map(p => `${p.facet} [[${p.address}]]`).join('、')}${r.issues.length ? `；未解决：${r.issues.join('；')}` : ''}`).join('\n')
+  const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]：${r.parts.map(p => `${p.facet}${p.emphasis === 'core' ? '（核心）' : ''} [[${p.address}]]`).join('、')}${r.issues.length ? `；未解决：${r.issues.join('；')}` : ''}${r.notes && r.notes.length ? `；建议：${r.notes.join('；')}` : ''}`).join('\n')
   phase('Organize')
   const groupLines = (MODE === 'full' ? digestReports : linkReports).map(r => `- 第 ${r.group} 组 [[${KEY}/${r.group}]]：${r.status}${r.cards ? `，${r.cards} 张` : ''}${r.models ? `，模型卡 ${r.models}` : ''}${r.events ? `，事件卡 ${r.events}` : ''}${r.topics && r.topics.length ? `；新主题：${r.topics.join('、')}` : ''}${r.errors && r.errors !== '无' ? `；问题：${r.errors}` : ''}`).join('\n')
   organize = await agent(
@@ -333,14 +344,14 @@ Each output line is "N <json>", "N ok <address>", or "N error <reason>" (then a 
 Book: Literature Card [[${KEY}]] (agent Workspace, Literature Zone). Its Direct-successor line [[${KEY}/1]] … [[${KEY}/${groupCount}]] holds one anchor Card per group, in book order; each anchor holds that part's central claim, a section index, and its place in the whole book.
 Group reports:
 ${groupLines}
-${modelLines ? `Structured models (Sonnet split each Model Card into Model parts with charts):\n${modelLines}\n` : ''}
+${modelLines ? `Structured models (Sonnet designed each model's parts, facets, core parts, and relations, with charts; act on its suggestions for Cards outside the model):\n${modelLines}\n` : ''}
 Work in this order, reading cheaply (list_trees, get_tree excerpts; get_card only when you need a body):
 1. Survey every agent tree (list_trees with workspace "agent", then get_tree each).
 2. Merge duplicate or overlapping Topics: keep the clearer Topic, move_card the other's first Card (with its subtree) to the best free slot in the kept tree (plan first, then confirm with "move"), then delete the emptied Topic root (plan, then confirm with its address). Fix clearly misplaced Cards the same way. Never delete a Card that still has content.
 3. Rewrite every agent Topic body: 2–3 sentences on the question it pursues, then Links to its 1–3 best entry Cards.
 4. For a Topic or subject with about seven or more Cards, write a hub Card as a Side successor of <n>/1 that lists Links to the core Cards with one line each on what they contribute, and Link to it from the Topic body.
 5. Write the book's structure Card as a Side successor of [[${KEY}/1]]: title = the book's central thesis as one sentence; body = the argument in reading order, one line per part linking its anchor and its 1–2 key Topic Cards, each line saying what it contributes and how it follows from the previous part; then a paragraph listing the book's Model Cards (search_cards with type "model") in order, one line each on what the model shows and which later models build on it, and a paragraph listing its Event Cards (type "event") with the ideas each supports.
-5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (the Model Card links every part, every part links its Model Card); every Card that derives, interprets, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the assumptions part), in a sentence naming which part of the model it concerns (read the inbound Links, then search for discussions that miss it); every Card that uses a real-world event as evidence links to its Event Card.
+5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (the Model Card links every part, every part links its Model Card), but keep the structure Sonnet designed (its facets, core and aside parts, relations, and loose parts); every Card that derives, interprets, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the assumptions part), in a sentence naming which part of the model it concerns (read the inbound Links, then search for discussions that miss it); every Card that uses a real-world event as evidence links to its Event Card.
 6. Rewrite the Literature Card [[${KEY}]] body (edit_card body only) as the book's index: one line per chapter, "第N章 章名 - 讲了什么 → [[anchor]]", then a line linking the structure Card.
 7. Check the cross-part Links the DeepSeek agents added: keep those whose sentence states a real relationship and reason; rewrite vague ones. Add Links still missing between Topics that share a mechanism, and to related human Cards (search_cards with workspace "human"). Remove a "# 标题" line that repeats the title at the top of a body.
 8. Check list_broken_links and fix any in the agent Workspace.

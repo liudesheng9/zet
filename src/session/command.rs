@@ -70,7 +70,7 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ),
     (
         "ty <idea|event|model> [<facet>]",
-        "make the current card an Idea, Event, or Model Card; a facet makes it a Model part",
+        "make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
     ("stats", "count cards by kind", Availability::Always),
@@ -602,20 +602,23 @@ fn execute_command(
             state.pointer = Pointer::Card((*new_location).to_string());
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", name] | ["ty", name, _] => {
+        ["ty", name, label @ ..] => {
             let at = state.current_card("ty")?;
             let card_type = crate::CardType::parse(name)?;
-            let facet = match parts.as_slice() {
-                [_, _, facet] if card_type == crate::CardType::Model => {
-                    Some(crate::model::Facet::parse(facet)?)
+            // A facet is the rest of the line, so it may hold spaces.
+            let facet = match label {
+                [] => None,
+                _ if card_type == crate::CardType::Model => {
+                    Some(crate::model::Facet::parse(&label.join(" "))?)
                 }
-                [_, _, _] => bail!("only Model Cards can have a Model facet"),
-                _ => None,
+                _ => bail!("only Model Cards can have a Model facet"),
             };
             let _lock = crate::acquire_edit_lock(root)?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            crate::model::set(&conn, &card, card_type, facet)?;
+            // A part keeps its emphasis while it stays a part.
+            let emphasis = card.emphasis.filter(|_| facet.is_some());
+            crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["ty", ..] => bail!("usage: ty <idea|event|model> [<facet>]"),
@@ -1093,7 +1096,10 @@ mod tests {
                 "unknown card type `fact`; expected idea, event, or model",
             ),
             ("ty", "usage: ty <idea|event|model> [<facet>]"),
-            ("ty event model x", "usage: ty <idea|event|model> [<facet>]"),
+            (
+                "ty event model x",
+                "only Model Cards can have a Model facet",
+            ),
             (
                 "ty event setting",
                 "only Model Cards can have a Model facet",

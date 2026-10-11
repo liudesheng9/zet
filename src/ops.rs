@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::link::{LinkBody, LinkLifecycle};
-use crate::model::Facet;
+use crate::model::{Emphasis, Facet, Part};
 use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
@@ -57,7 +57,7 @@ pub(crate) fn create_successor(
     kind: Successor,
     at: &str,
     card_type: CardType,
-    facet: Option<Facet>,
+    part: Option<Part>,
     text: &str,
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock(root)?;
@@ -83,7 +83,7 @@ pub(crate) fn create_successor(
         false,
         parent.workspace,
         card_type,
-        facet,
+        part.as_ref(),
         text,
     )?;
     Ok(location)
@@ -108,36 +108,45 @@ pub(crate) fn create_literature(
     Ok(metadata.citation_key)
 }
 
-/// A change to a Card's type and Model facet. `facet` is `None` to leave the
-/// facet alone and `Some(None)` to clear it.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// A change to a Card's type, Model facet, and emphasis. `facet` and
+/// `emphasis` are `None` to leave them alone and `Some(None)` to clear them.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TypeChange {
     pub(crate) card_type: Option<CardType>,
     pub(crate) facet: Option<Option<Facet>>,
+    pub(crate) emphasis: Option<Option<Emphasis>>,
 }
 
 impl TypeChange {
-    pub(crate) fn is_empty(self) -> bool {
-        self.card_type.is_none() && self.facet.is_none()
+    pub(crate) fn is_empty(&self) -> bool {
+        self.card_type.is_none() && self.facet.is_none() && self.emphasis.is_none()
     }
 
-    /// The type and facet the Card has after the change. A facet makes the
-    /// Card a Model Card; any other type clears the facet; naming the Model
-    /// type alone keeps a part's facet.
-    pub(crate) fn resolve(self, card: &Card) -> (CardType, Option<Facet>) {
-        match (self.card_type, self.facet) {
+    /// The type, facet, and emphasis the Card has after the change. A facet
+    /// makes the Card a Model Card; any other type clears the facet; naming
+    /// the Model type alone keeps a part's facet. A Card that is no longer a
+    /// part loses its emphasis; a part keeps it unless the change names one.
+    pub(crate) fn resolve(&self, card: &Card) -> (CardType, Option<Facet>, Option<Emphasis>) {
+        let (card_type, facet) = match (self.card_type, &self.facet) {
             (Some(card_type), _) if card_type != CardType::Model => (card_type, None),
-            (_, Some(Some(facet))) => (CardType::Model, Some(facet)),
+            (_, Some(Some(facet))) => (CardType::Model, Some(facet.clone())),
             (Some(card_type), Some(None)) => (card_type, None),
             (None, Some(None)) => (card.card_type, None),
-            (Some(card_type), None) if card.card_type == card_type => (card_type, card.facet),
+            (Some(card_type), None) if card.card_type == card_type => {
+                (card_type, card.facet.clone())
+            }
             (Some(card_type), None) => (card_type, None),
-            (None, None) => (card.card_type, card.facet),
-        }
+            (None, None) => (card.card_type, card.facet.clone()),
+        };
+        let emphasis = match self.emphasis {
+            Some(emphasis) => emphasis,
+            None => card.emphasis.filter(|_| facet.is_some()),
+        };
+        (card_type, facet, emphasis)
     }
 }
 
-/// Replace a Card's text, change its Card type or Model facet, or both. With
+/// Replace a Card's text, change its Card type, Model facet, or emphasis, or both. With
 /// `base`, refuse if the stored text changed since the caller read it.
 pub(crate) fn edit(
     root: &Path,
@@ -151,11 +160,18 @@ pub(crate) fn edit(
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
-    let (card_type, facet) = change.resolve(&card);
-    let retyped = (card_type, facet) != (card.card_type, card.facet);
+    let (card_type, facet, emphasis) = change.resolve(&card);
+    let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
-        crate::model::ensure_allowed(&conn, &card.address, Some(&card), card_type, facet)?;
+        crate::model::ensure_allowed(
+            &conn,
+            &card.address,
+            Some(&card),
+            card_type,
+            facet.as_ref(),
+            emphasis,
+        )?;
     }
     match text {
         Some(text) if card.is_lit => crate::update_literature_text(&mut conn, &card, text)?,
@@ -163,7 +179,7 @@ pub(crate) fn edit(
         None => {}
     }
     if retyped {
-        crate::model::set(&conn, &card, card_type, facet)?;
+        crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
     }
     Ok(card.address)
 }
@@ -350,7 +366,9 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.card_type.id().as_bytes());
             hasher.update([0]);
-            hasher.update(card.facet.map_or("", Facet::id).as_bytes());
+            hasher.update(card.facet.as_ref().map_or("", Facet::id).as_bytes());
+            hasher.update([0]);
+            hasher.update(card.emphasis.map_or("", Emphasis::id).as_bytes());
             hasher.update([0]);
         }
         hasher
@@ -427,7 +445,8 @@ impl Snapshot {
             "title": self.title(&card.address),
             "kind": kind(card),
             "type": card.card_type.id(),
-            "facet": card.facet.map(Facet::id),
+            "facet": card.facet.as_ref().map(Facet::id),
+            "emphasis": card.emphasis.map(Emphasis::id),
             "head": self.model_head(card),
             "edge": edge,
             "parent": parent,
@@ -474,16 +493,16 @@ impl Snapshot {
 
     /// The Model Card a Model part belongs to; `None` for any other Card.
     pub(crate) fn model_head(&self, card: &Card) -> Option<String> {
-        card.facet?;
+        card.facet.as_ref()?;
         crate::model::find_head(crate::parent_location(&card.address), |at| {
             self.by_address
                 .get(at)
-                .map(|card| (card.card_type, card.facet))
+                .map(|card| (card.card_type, card.facet.is_some()))
         })
     }
 
     /// The structure of the model a Card belongs to: its Model Card, its
-    /// parts in reading order, the Links between them, and what is missing.
+    /// parts, the relations between them, and its loose parts.
     pub(crate) fn model(&self, address: &str) -> Option<Value> {
         crate::model::structure(address, &self.by_address, &self.parsed, &self.inbound)
     }
@@ -553,7 +572,8 @@ impl Snapshot {
                     "title": parsed.title,
                     "kind": kind(card),
                     "type": card.card_type.id(),
-                    "facet": card.facet.map(Facet::id),
+                    "facet": card.facet.as_ref().map(Facet::id),
+                    "emphasis": card.emphasis.map(Emphasis::id),
                     "workspace": card.workspace.id(),
                     "snippet": snippet,
                 }))
@@ -648,6 +668,7 @@ mod tests {
         TypeChange {
             card_type: Some(card_type),
             facet: None,
+            emphasis: None,
         }
     }
 
@@ -692,15 +713,34 @@ The model"
         crate::load_card(&conn, at).expect("card").text
     }
 
-    fn facet_of(root: &Path, at: &str) -> Option<Facet> {
+    fn facet_of(root: &Path, at: &str) -> Option<String> {
         let conn = crate::open_db(root).expect("open database");
-        crate::load_card(&conn, at).expect("card").facet
+        crate::load_card(&conn, at)
+            .expect("card")
+            .facet
+            .map(|facet| facet.id().to_string())
     }
 
-    fn part(facet: Facet) -> TypeChange {
+    fn emphasis_of(root: &Path, at: &str) -> Option<Emphasis> {
+        let conn = crate::open_db(root).expect("open database");
+        crate::load_card(&conn, at).expect("card").emphasis
+    }
+
+    fn label(value: &str) -> Option<Facet> {
+        Some(Facet::parse(value).unwrap())
+    }
+
+    fn part(facet: &str) -> TypeChange {
         TypeChange {
-            card_type: None,
-            facet: Some(Some(facet)),
+            facet: Some(label(facet)),
+            ..TypeChange::default()
+        }
+    }
+
+    fn stress(emphasis: Option<Emphasis>) -> TypeChange {
+        TypeChange {
+            emphasis: Some(emphasis),
+            ..TypeChange::default()
         }
     }
 
@@ -709,8 +749,19 @@ The model"
         let temp = archive();
         let root = temp.path();
         let owner = Access::Owner;
-        let make = |kind, at: &str, card_type, facet, text: &str| {
-            create_successor(root, owner, kind, at, card_type, facet, text)
+        let make = |kind, at: &str, card_type, facet: Option<Facet>, text: &str| {
+            create_successor(
+                root,
+                owner,
+                kind,
+                at,
+                card_type,
+                facet.map(|facet| Part {
+                    facet,
+                    emphasis: None,
+                }),
+                text,
+            )
         };
         create_topic(root, owner, Workspace::Agent, "# Firms\n").unwrap();
         make(
@@ -726,26 +777,47 @@ The model"
                 Successor::Side,
                 "0/1",
                 CardType::Model,
-                Some(Facet::Setting),
+                label("Setting"),
                 "# Setting\n\nof [[0/1]]\n"
             )
             .unwrap(),
             "0/1|a"
         );
+        // The author names a part's facet; it need not be a common facet.
         assert_eq!(
             make(
                 Successor::Direct,
                 "0/1|a",
                 CardType::Model,
-                Some(Facet::Assumptions),
-                "# Assumptions\n\nof [[0/1]], on [[0/1|a]]\n"
+                label("讨价还价"),
+                "# Bargaining\n\nof [[0/1]]. 它依赖设定 [[0/1|a]]：双方各有一项资产。\n"
             )
             .unwrap(),
             "0/1|a|1"
         );
-        assert_eq!(facet_of(root, "0/1|a|1"), Some(Facet::Assumptions));
+        assert_eq!(facet_of(root, "0/1|a").as_deref(), Some("setting"));
+        assert_eq!(facet_of(root, "0/1|a|1").as_deref(), Some("讨价还价"));
+        // A part may carry an emphasis from the start.
+        assert_eq!(
+            create_successor(
+                root,
+                owner,
+                Successor::Side,
+                "0/1",
+                CardType::Model,
+                Some(Part {
+                    facet: Facet::parse("a worked example").unwrap(),
+                    emphasis: Some(Emphasis::Aside),
+                }),
+                "# Example\n\nof [[0/1]]\n",
+            )
+            .unwrap(),
+            "0/1|b"
+        );
+        assert_eq!(emphasis_of(root, "0/1|b"), Some(Emphasis::Aside));
 
-        // A facet needs a Model Card above it, and only Model Cards have facets.
+        // A facet needs a Model Card above it, only Model Cards have facets,
+        // and only parts have an emphasis.
         make(
             Successor::Direct,
             "0/1",
@@ -759,7 +831,7 @@ The model"
                 Successor::Direct,
                 "0/2",
                 CardType::Model,
-                Some(Facet::Results),
+                label("results"),
                 "# Stray\n"
             )
             .unwrap_err()
@@ -771,38 +843,56 @@ The model"
                 Successor::Side,
                 "0/1",
                 CardType::Event,
-                Some(Facet::Results),
+                label("results"),
                 "# Event\n"
             )
             .unwrap_err()
             .to_string(),
             "only Model Cards can have a Model facet"
         );
+        assert_eq!(
+            edit(root, owner, "0/1", None, stress(Some(Emphasis::Core)), None)
+                .unwrap_err()
+                .to_string(),
+            "only Model parts can have an emphasis; give the Card a Model facet first"
+        );
 
         let snapshot = Snapshot::read(root).unwrap();
         let model = snapshot.model("0/1|a|1").expect("a Model part");
         assert_eq!(model["head"]["address"], "0/1");
-        assert_eq!(model["facet"], "assumptions");
+        assert_eq!(model["facet"], "讨价还价");
         let parts = model["parts"].as_array().unwrap();
         assert_eq!(
             parts
                 .iter()
                 .map(|part| (
                     part["address"].as_str().unwrap(),
-                    part["facet"].as_str().unwrap()
+                    part["facet"].as_str().unwrap(),
+                    part["emphasis"].as_str()
                 ))
                 .collect::<Vec<_>>(),
-            [("0/1|a", "setting"), ("0/1|a|1", "assumptions")]
+            [
+                ("0/1|a", "setting", None),
+                ("0/1|a|1", "讨价还价", None),
+                ("0/1|b", "a worked example", Some("aside"))
+            ]
         );
         assert_eq!(parts[1]["links"], json!(["0/1", "0/1|a"]));
+        // Parts relate by their Links, each with the sentence that makes it;
+        // a part in no relation is loose.
+        assert_eq!(
+            model["relations"],
+            json!([{ "from": "0/1|a|1", "to": "0/1|a", "note": "它依赖设定 「setting」：双方各有一项资产。" }])
+        );
+        assert_eq!(model["loose"], json!(["0/1|b"]));
         assert_eq!(
             model["issues"],
             json!([
                 "the Model Card `0/1` does not link its part `0/1|a`",
-                "the Model Card `0/1` does not link its part `0/1|a|1`"
+                "the Model Card `0/1` does not link its part `0/1|a|1`",
+                "the Model Card `0/1` does not link its part `0/1|b`"
             ])
         );
-        assert_eq!(model["missing"][0], "timing");
         assert_eq!(
             snapshot.summary(snapshot.by_address.get("0/1|a").unwrap())["head"],
             "0/1"
@@ -815,7 +905,7 @@ The model"
             root,
             owner,
             "0/1",
-            Some("# GHM\n\nparts: [[0/1|a]] [[0/1|a|1]]\n"),
+            Some("# GHM\n\nparts: [[0/1|a]] [[0/1|a|1]] [[0/1|b]]\n"),
             TypeChange::default(),
             None,
         )
@@ -824,7 +914,30 @@ The model"
         assert_eq!(snapshot.model("0/1").unwrap()["issues"], json!([]));
         assert_eq!(
             snapshot.model("0/1").unwrap()["head_links"],
-            json!(["0/1|a", "0/1|a|1"])
+            json!(["0/1|a", "0/1|a|1", "0/1|b"])
+        );
+
+        // An emphasis changes alone and refreshes open windows; it survives a
+        // new facet.
+        let before = snapshot.fingerprint();
+        edit(
+            root,
+            owner,
+            "0/1|a|1",
+            None,
+            stress(Some(Emphasis::Core)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(emphasis_of(root, "0/1|a|1"), Some(Emphasis::Core));
+        assert_ne!(Snapshot::read(root).unwrap().fingerprint(), before);
+        edit(root, owner, "0/1|a|1", None, part("dynamics"), None).unwrap();
+        assert_eq!(
+            (
+                facet_of(root, "0/1|a|1").as_deref(),
+                emphasis_of(root, "0/1|a|1")
+            ),
+            (Some("dynamics"), Some(Emphasis::Core))
         );
 
         // A Model Card with parts cannot stop heading them.
@@ -832,9 +945,10 @@ The model"
             edit(root, owner, "0/1", None, ty(CardType::Idea), None)
                 .unwrap_err()
                 .to_string(),
-            "`0/1` is the Model Card of 2 Model part(s) (0/1|a, 0/1|a|1); change or move them first"
+            "`0/1` is the Model Card of 3 Model part(s) (0/1|a, 0/1|a|1, 0/1|b); change or move them first"
         );
-        // A facet alone makes a Card a Model part; an empty facet makes it a Model Card again.
+        // A facet alone makes a Card a Model part; an empty facet makes it a
+        // Model Card again and drops its emphasis.
         make(
             Successor::Side,
             "0/1",
@@ -843,27 +957,35 @@ The model"
             "# Results\n\nof [[0/1]]\n",
         )
         .unwrap();
-        edit(root, owner, "0/1|b", None, part(Facet::Results), None).unwrap();
+        edit(root, owner, "0/1|c", None, part("results"), None).unwrap();
         assert_eq!(
-            (type_of(root, "0/1|b"), facet_of(root, "0/1|b")),
-            (CardType::Model, Some(Facet::Results))
+            (type_of(root, "0/1|c"), facet_of(root, "0/1|c").as_deref()),
+            (CardType::Model, Some("results"))
         );
         let cleared = TypeChange {
-            card_type: None,
             facet: Some(None),
+            ..TypeChange::default()
         };
         edit(root, owner, "0/1|b", None, cleared, None).unwrap();
         assert_eq!(
-            (type_of(root, "0/1|b"), facet_of(root, "0/1|b")),
-            (CardType::Model, None)
+            (
+                type_of(root, "0/1|b"),
+                facet_of(root, "0/1|b"),
+                emphasis_of(root, "0/1|b")
+            ),
+            (CardType::Model, None, None)
         );
         // Naming the Model type alone keeps a part's facet; another type clears it.
         edit(root, owner, "0/1|a|1", None, ty(CardType::Model), None).unwrap();
-        assert_eq!(facet_of(root, "0/1|a|1"), Some(Facet::Assumptions));
+        assert_eq!(facet_of(root, "0/1|a|1").as_deref(), Some("dynamics"));
         edit(root, owner, "0/1|a|1", None, ty(CardType::Idea), None).unwrap();
         assert_eq!(
-            (type_of(root, "0/1|a|1"), facet_of(root, "0/1|a|1")),
-            (CardType::Idea, None)
+            (
+                type_of(root, "0/1|a|1"),
+                facet_of(root, "0/1|a|1"),
+                emphasis_of(root, "0/1|a|1")
+            ),
+            (CardType::Idea, None, None)
         );
     }
 

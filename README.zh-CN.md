@@ -157,23 +157,29 @@ Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移�
 
 ### 模型结构
 
-一个模型往往一张卡写不下。**Model Card** 写问题、简短概要和结构图，并用 Link 列出它的 **Model part**：
-归档在它之下（作为 Model Card 或另一个 part 的 successor）的 Model Card，每张带一个 **Model facet**，
-说明它呈现模型的哪一部分，按阅读顺序为：`setting`（主体、资产、行动、收益）、`assumptions`（假设及其作用）、
-`timing`（行动顺序与信息）、`dynamics`（状态如何演化：运动方程、最优反应、反馈）、`solution`（均衡或最优解及推导）、
-`results`（命题与比较静态）、`intuition`（结论为何成立）、`limits`（适用边界与批评）。
+一个模型往往一张卡写不下。**Model Card** 写问题和简短概要，并用 Link 列出它的 **Model part**：归档在它之下
+（作为 Model Card 或另一个 part 的 successor）的 Model Card，每张深入呈现模型的一部分。**模型的结构由撰写者决定**：
 
-ZT 根据 Location 和 facet 计算每个模型的结构。Link 让每张卡都能读懂整体：Model Card 链接每个 part，
-每个 part 链接它的 Model Card 和它依赖的 part（动态依赖时序与假设，结论依赖动态），`get_model` 会报告缺少这些
-Link 的 part。带有 part 的 Model Card 在其 part 被修改或移走之前不能改类型。
+- **Model facet**：每个 part 的名字，由作者自拟的简短标签（不超过 32 个字符），如 `设定`、`均衡`、`数值例子`。
+  常见的 `setting`、`assumptions`、`timing`、`dynamics`、`solution`、`results`、`intuition`、`limits` 只是建议，
+  不是必须齐备的集合，也不规定顺序。
+- **Emphasis**：part 可以标为 `core`（模型的核心，读者首先要看的）或 `aside`（可以跳过的细节）。
+- **关系**：part 链接它所依赖的 part，并用一句话说明理由。模型内部的这些 Link 构成一张图，而不是序列或树：
+  一个 part 可以依赖多个 part；不与任何 part 相关的 part 是**松散**的（例如放在模型旁的案例或变体）。
 
-- **Session**：part 显示为 `[model · <facet>]`；`ty model <facet>` 把当前 Card 设为 part，`ty model` 则恢复为 Model Card。
-- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签（Model，然后是各 facet；尚无 part 的 facet 显示为空白标签），
-  卡片下方的桌面上有一张模型地图，用弧线画出模型各卡之间的 Link；part 带有 `MODEL · <FACET>` 印章，写作台在
-  Model 类型旁选择 facet。
-- **MCP**：`create_successor` 和 `edit_card` 接受 `facet`（空字符串清除 facet）；`get_card` 返回 `facet` 和 `model`；
-  `get_model` 返回整个模型及每张卡的正文、缺失的 facet 和一致性问题。
-- **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet。
+ZT 根据 Location、facet 和 Link 计算每个模型的结构。Model Card 链接每个 part，每个 part 链接它的 Model Card；
+`get_model` 会报告缺少这些 Link 的 part，并列出各条关系（及其理由）和松散的 part。带有 part 的 Model Card
+在其 part 被修改或移走之前不能改类型。
+
+- **Session**：part 显示为 `[model · <facet>]`（以及它的 emphasis）；`ty model <facet>` 把当前 Card 设为 part
+  （facet 取该行余下的全部文字），`ty model` 则恢复为 Model Card。
+- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签，按归档顺序以 facet 命名（核心标签着墨，aside 标签浅淡）；
+  卡片下方是**模型板**：part 按依赖关系排布，每条关系一根细线，松散的 part 放在一旁的托盘里。模型板随读者的
+  注意力而变：打开的 part 被抬起并显示完整标题，与它相关的 part 保持着墨并列出理由，核心 part 保持可读，其余
+  退为标签。写作台在 Model 类型旁填写 facet（提示常见的几种）并选择 emphasis。
+- **MCP**：`create_successor` 和 `edit_card` 接受 `facet` 和 `emphasis`（空字符串清除）；`get_card` 返回 `facet`、
+  `emphasis` 和 `model`；`get_model` 返回整个模型及每张卡的正文、各条关系与松散的 part，以及一致性问题。
+- **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet，在 `emphasis` 中列出每个 core 或 aside part。
 
 ### 数学公式与 HTML 图表
 
@@ -203,11 +209,11 @@ Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
-| `get_model` | 整个模型：Model Card 及按阅读顺序排列的 part、各卡正文、缺失的 facet 与一致性问题 |
+| `get_model` | 整个模型：Model Card 与各 part 的正文、facet 和 emphasis，各条关系与松散的 part，以及一致性问题 |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
-| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`） |
-| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet 或 BibTeX |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`、`emphasis`） |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis 或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card |
 
 删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
@@ -263,8 +269,8 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 - `mapping.json`：每个 Card 地址到其 Markdown 文件的映射。
 - 每张 Card 一个 Markdown 文件，内容是其存储的原文；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
   `<citation-key>.bib` 保存 BibTeX 的原始字节。
-- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event 与 Model Card 的类型，以及每个 Model part 的 facet，例如
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"}}`。
+- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event 与 Model Card 的类型，每个 Model part 的 facet，以及每个 core 或 aside part 的 emphasis，例如
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"}}`。
 
 `zt dp` 只列出主机上的工具真正能写出的格式（`zip`、`tar.gz`、`tar.zst`、`7z`）：它会依次尝试 `PATH` 上的每个
 `tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar

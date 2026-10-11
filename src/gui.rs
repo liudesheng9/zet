@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
-use crate::model::Facet;
+use crate::model::{Emphasis, Facet};
 use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
 
@@ -529,7 +529,8 @@ impl App {
             "workspace": card.workspace.id(),
             "kind": ops::kind(card),
             "type": card.card_type.id(),
-            "facet": card.facet.map(Facet::id),
+            "facet": card.facet.as_ref().map(Facet::id),
+            "emphasis": card.emphasis.map(Emphasis::id),
             "model": snapshot.model(&card.address),
             "context": context,
             "title": parsed.title,
@@ -590,8 +591,11 @@ impl App {
     fn create(&self, body: &Value) -> ApiResult {
         let kind = str_field(body, "kind")?;
         let text = str_field(body, "text")?;
-        let facet = facet_field(body)?.flatten();
-        let card_type = match (type_field(body)?, facet) {
+        let part = crate::model::Part::from_args(
+            facet_field(body)?.flatten(),
+            emphasis_field(body)?.flatten(),
+        )?;
+        let card_type = match (type_field(body)?, &part) {
             (Some(card_type), Some(_)) if card_type != CardType::Model => {
                 return Err(ApiError(
                     "only Model Cards can have a Model facet".to_string(),
@@ -613,7 +617,7 @@ impl App {
                 ops::Successor::Direct,
                 &str_field(body, "at")?,
                 card_type,
-                facet,
+                part.clone(),
                 &text,
             )?,
             "side" => ops::create_successor(
@@ -622,7 +626,7 @@ impl App {
                 ops::Successor::Side,
                 &str_field(body, "at")?,
                 card_type,
-                facet,
+                part,
                 &text,
             )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
@@ -653,11 +657,12 @@ impl App {
         Ok(json!({ "address": address }))
     }
 
-    /// Save a Card's text, its type and facet, or both.
+    /// Save a Card's text, its type, facet, and emphasis, or both.
     fn edit(&self, body: &Value) -> ApiResult {
         let change = TypeChange {
             card_type: type_field(body)?,
             facet: facet_field(body)?,
+            emphasis: emphasis_field(body)?,
         };
         let text = if change.is_empty() {
             Some(str_field(body, "text")?)
@@ -1165,6 +1170,16 @@ fn facet_field(body: &Value) -> Result<Option<Option<Facet>>> {
         Some(Value::Null) => Ok(Some(None)),
         Some(Value::String(value)) => crate::model::parse_optional(value).map(Some),
         Some(_) => bail!("`facet` must be a string"),
+    }
+}
+
+/// An optional emphasis: absent leaves it alone, `""` or null clears it.
+fn emphasis_field(body: &Value) -> Result<Option<Option<Emphasis>>> {
+    match body.get("emphasis") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::model::parse_optional_emphasis(value).map(Some),
+        Some(_) => bail!("`emphasis` must be a string"),
     }
 }
 

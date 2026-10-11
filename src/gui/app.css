@@ -904,51 +904,120 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
 .type-stamp.part { letter-spacing: .1em; }
 .card-meta .type-stamp.part { font-size: 10px; }
 .node.model-part { border-left: 2px solid color-mix(in srgb, var(--model) 55%, var(--stock-edge)); }
-/* The Cards of one model are a set of dividers: tabs along the top edge name the Model Card
-   and each facet in reading order. The open Card's tab stands up in model ink; a facet with
-   no part yet is a blank, dashed tab. */
+/* The Cards of one model are a set of dividers: tabs along the top edge name the Model Card and
+   each part by its own facet, in filing order. The open Card's tab stands up in model ink; a
+   core part's tab is inked with a dot, an aside's is narrow and pale. */
 .model-tabs {
   display: flex; gap: 3px; margin: -24px -6px 0; padding: 0 6px; height: 24px; align-items: flex-end;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .model-tabs::-webkit-scrollbar { display: none; }
 .model-tab {
-  flex: none; height: 19px; padding: 0 9px; border: 0; border-radius: 5px 5px 0 0;
+  flex: none; height: 19px; max-width: 120px; padding: 0 9px; border: 0; border-radius: 5px 5px 0 0;
   font: 700 9px/19px var(--sans); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
   color: var(--ink-faint); background: color-mix(in srgb, var(--stock) 82%, var(--desk));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 0 0 .5px var(--stock-edge);
-  transition: height .18s var(--ease), color .15s, background .15s;
+  transition: height .18s var(--ease), color .15s, background .15s, opacity .15s;
 }
 button.model-tab { cursor: pointer; color: var(--ink-soft); }
-button.model-tab:hover { height: 21px; color: var(--model); }
-.model-tab.here { height: 24px; line-height: 24px; color: var(--model); background: var(--stock); box-shadow: 0 -1px 0 .5px var(--stock-edge); }
+button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
+.model-tab.core { color: var(--model); }
+.model-tab.core::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
+.model-tab.aside { max-width: 70px; opacity: .6; letter-spacing: .06em; }
+.model-tab.here { height: 24px; line-height: 24px; max-width: 200px; opacity: 1; color: var(--model); background: var(--stock); box-shadow: 0 -1px 0 .5px var(--stock-edge); }
 .model-tab.head { color: var(--model); }
-.model-tab.blank { background: none; box-shadow: none; outline: 1px dashed color-mix(in srgb, var(--ink-faint) 55%, transparent); outline-offset: -1px; opacity: .7; }
 .model-tab.head.missing { color: var(--broken); }
 .card.in-model { margin-top: 22px; border-top-left-radius: 0; }
-/* The model's structure on the desk: its Cards as small index cards in reading order, with
-   an arc for each Link between them. Only the open Card's arcs are inked. */
-.model-map { overflow-x: auto; padding: 2px 0 4px; }
-.model-svg { display: block; }
-.model-node rect { fill: var(--stock); stroke: var(--stock-edge); stroke-width: 1; transition: transform .18s var(--ease); }
-.model-node .rule { stroke: var(--paper-margin); stroke-width: 1; }
-.model-node text.facet { font: 700 7.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; fill: var(--model); }
-.model-node text.addr { font: 10px var(--mono); fill: var(--ink-soft); }
-.model-node:not(.here) { cursor: pointer; }
-.model-node:not(.here):hover rect, .model-node:focus-visible rect { stroke: var(--model); }
-.model-node.here rect { stroke: var(--model); stroke-width: 1.6; fill: color-mix(in srgb, var(--model) 8%, var(--stock)); }
-.model-node.head text.facet { fill: var(--ink); }
-.model-arc { fill: none; stroke: var(--ink-faint); stroke-width: 1; opacity: .35; }
-.model-arc.hot { stroke: var(--model); opacity: .9; stroke-width: 1.4; }
-.model-note { margin: 4px 0 0; font-size: 12px; color: var(--ink-faint); }
-.model-issues { margin: 6px 0 0; padding: 4px 10px; border-left: 2px solid var(--pointer); font-size: 12px; color: var(--ink-soft); }
-.model-issues p { margin: 2px 0; }
-/* The editor's facet choice sits beside the Model stamp. */
-.facet-pick {
-  font: 600 11px var(--sans); color: var(--model); background: var(--paper);
-  border: 1.5px solid color-mix(in srgb, var(--model) 40%, var(--line)); border-radius: 4px; padding: 2px 6px; margin-left: 4px;
+
+/* The model board: the model laid out on the desk below its card. The Model Card heads it;
+   each part is a small index card under the parts it rests on, joined to them by a thread.
+   Ink follows attention: the open part is lifted and fully titled, its neighbours stay
+   inked, core parts stay legible, everything else recedes to a label slip. */
+.model-board {
+  position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 24px;
+  margin: 0 -8px; padding: 14px 10px 16px; border-radius: 8px;
+  background: radial-gradient(ellipse 90% 70% at 50% 0%, color-mix(in srgb, var(--model) 5%, transparent), transparent 75%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--model) 9%, transparent);
 }
+.mb-threads { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.mb-thread .line, .mb-thread .tip { fill: none; stroke: var(--ink-faint); stroke-width: 1; opacity: .38; stroke-linecap: round; stroke-linejoin: round; transition: opacity .15s, stroke .15s; }
+.mb-thread .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: help; }
+.mb-thread.hot .line, .mb-thread.hot .tip { stroke: var(--model); stroke-width: 1.6; opacity: .85; }
+.mb-thread:hover .line, .mb-thread:hover .tip { stroke: var(--model); opacity: 1; }
+.mb-row, .mb-loose { position: relative; display: flex; flex-wrap: nowrap; justify-content: center; align-items: flex-start; gap: 14px 14px; pointer-events: none; }
+.mb-row.wide, .mb-loose { flex-wrap: wrap; }
+.mb-head, .mb-slip {
+  position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 0 10px 8px; border: 0; border-radius: 2px; text-align: left; font: inherit; color: var(--ink);
+  background: var(--stock); box-shadow: var(--card-shadow); pointer-events: auto; cursor: pointer;
+  transition: transform .2s var(--ease), box-shadow .2s, opacity .2s;
+}
+.mb-facet {
+  display: block; margin: 0 -10px; padding: 5px 10px 3px; border-bottom: 1px solid var(--paper-margin);
+  font: 700 8.5px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--model);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mb-title {
+  font: 500 12.5px/1.5 var(--serif); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.mb-title .katex { font-size: 1em; }
+.mb-head { align-self: center; width: min(100%, 440px); }
+.mb-head .mb-title { font: 600 14px/1.45 var(--serif); }
+.mb-head.here { cursor: default; box-shadow: 0 0 0 1.5px var(--model), var(--card-shadow-lift); }
+.model-board:not(.on-head) .mb-head { opacity: .8; }
+.model-board:not(.on-head) .mb-head .mb-title { -webkit-line-clamp: 1; font-size: 13px; }
+button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-2px) rotate(-.4deg); box-shadow: var(--card-shadow-lift); }
+/* Attention levels. */
+.mb-slip { flex: 0 1 172px; width: 172px; min-width: 104px; }
+.mb-slip.here {
+  flex-basis: 228px; width: 228px; min-width: 150px; cursor: default; z-index: 1; transform: translateY(-3px) rotate(-.6deg);
+  box-shadow: 0 0 0 1.5px var(--model), 0 0 30px -8px color-mix(in srgb, var(--model) 45%, transparent), var(--card-shadow-lift);
+}
+.mb-slip.here .mb-facet { background: color-mix(in srgb, var(--model) 9%, transparent); }
+.mb-slip.here .mb-title { -webkit-line-clamp: 5; font-size: 13.5px; font-weight: 600; }
+.mb-slip.mid { flex-basis: 148px; width: 148px; opacity: .8; }
+.mb-slip.mid .mb-title { -webkit-line-clamp: 1; color: var(--ink-soft); }
+.mb-slip.far {
+  flex: 0 1 auto; width: auto; min-width: 0; max-width: 132px; padding-bottom: 0; opacity: .5;
+  box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .08);
+}
+.mb-slip.far .mb-facet { border-bottom: 0; padding-bottom: 5px; color: var(--ink-soft); }
+.mb-slip.far .mb-title { display: none; }
+.mb-slip.core:not(.here) { box-shadow: inset 0 2px 0 color-mix(in srgb, var(--model) 75%, transparent), var(--card-shadow); }
+.mb-slip.core .mb-facet::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
+.mb-slip.aside .mb-facet { letter-spacing: .08em; font-style: italic; }
+.mb-loose { gap: 8px 10px; align-items: center; padding-top: 12px; border-top: 1px dashed color-mix(in srgb, var(--ink-faint) 45%, transparent); }
+.mb-tray { font: 600 9px var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); margin-right: 2px; }
+/* Why the open part relates to the others: the sentence that makes each Link. */
+.mb-reasons { display: flex; flex-direction: column; gap: 1px; margin: 10px 0 0; }
+.mb-reason {
+  display: grid; grid-template-columns: 12px auto minmax(0, 1fr); gap: 9px; align-items: baseline;
+  padding: 5px 8px; border: 0; border-radius: 6px; background: none; text-align: left; color: var(--ink-soft); cursor: pointer;
+  transition: background .15s;
+}
+.mb-reason:hover { background: color-mix(in srgb, var(--model) 7%, transparent); }
+.mb-reason .way { font: 600 12px var(--mono); color: var(--model); }
+.mb-reason .mb-facet { margin: 0; padding: 0; border: 0; font-size: 8.5px; }
+.mb-reason .note { font: italic 13px/1.5 var(--serif); overflow-wrap: anywhere; }
+.model-issues { margin: 8px 0 0; padding: 4px 10px; border-left: 2px solid var(--pointer); font-size: 12px; color: var(--ink-soft); }
+.model-issues p { margin: 2px 0; }
+/* The editor names a part: a free facet label, suggestions offered, and an emphasis. */
+.facet-pick { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; }
 .facet-pick[hidden] { display: none; }
+.facet-pick .lbl { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+.facet-input, .emphasis-pick {
+  font: 600 11.5px var(--sans); color: var(--model); background: var(--paper);
+  border: 1.5px solid color-mix(in srgb, var(--model) 40%, var(--line)); border-radius: 4px; padding: 2px 6px;
+}
+.facet-input { width: 150px; }
+.facet-input::placeholder { color: var(--ink-faint); font-weight: 400; font-style: italic; }
+.emphasis-pick[hidden] { display: none; }
+/* A core part's stamp carries a dot; an aside's is pale. */
+.type-stamp.part.core::before { content: ""; width: 4px; height: 4px; margin-right: 4px; border-radius: 50%; background: currentColor; }
+.type-stamp.part.aside { opacity: .6; }
+.type-stamp.part { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- math and charts ---------- */
 .md .math-display { display: block; margin: .4em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }

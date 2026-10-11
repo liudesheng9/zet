@@ -689,6 +689,6 @@ fn dump_records_event_and_model_cards_after_the_workspaces() {
     .unwrap();
     assert_eq!(
         manifest,
-        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent"},"types":{"1/1":"model","1/1|a":"event"},"facets":{}}"#
+        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent"},"types":{"1/1":"model","1/1|a":"event"},"facets":{},"emphasis":{}}"#
     );
 }
