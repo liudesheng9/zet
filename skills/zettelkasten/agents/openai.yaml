@@ -1,0 +1,3 @@
+interface:
+  display_name: "Zettelkasten"
+  short_description: "Compose ZT Cards and connect them the way Luhmann worked his slip-box"

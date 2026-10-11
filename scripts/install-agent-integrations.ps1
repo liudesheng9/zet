@@ -1,11 +1,13 @@
 #Requires -Version 7.5
 <#
 .SYNOPSIS
-  Install the zt skill and register the `zt mcp` server globally for Claude Code and Codex.
+  Install the zt skills globally for Claude Code, Codex, and DeepSeek Harness, and register the
+  `zt mcp` server for Claude Code and Codex.
 
 .DESCRIPTION
   Safe to re-run; it replaces only what it owns.
-  - Copies skills/zt to ~/.claude/skills/zt and ~/.codex/skills/zt.
+  - Copies each skills/<name> (zt, zettelkasten) to ~/.claude/skills/<name> and
+    ~/.codex/skills/<name>, and links ~/.dsh/skills/<name> to the Codex copy for DeepSeek Harness.
   - Registers the stdio server `zt` (`<zt.exe> mcp`) in Claude Code's user scope (~/.claude.json),
     approves this repository's .mcp.json server, and allows the server's tools in
     ~/.claude/settings.json so every conversation can call them without a prompt. The server
@@ -22,7 +24,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$skillSource = Join-Path $repo 'skills\zt'
+$skillsSource = Join-Path $repo 'skills'
 if (-not $ZtPath -or -not (Test-Path $ZtPath)) {
     throw 'zt is not installed; run `cargo install --path . --locked` in the zt repository first.'
 }
@@ -45,14 +47,31 @@ function Set-Member($object, $name, $value) {
     else { $object | Add-Member -NotePropertyName $name -NotePropertyValue $value }
 }
 
-# --- skill -------------------------------------------------------------------------------------
-foreach ($home_ in @("$HOME\.claude\skills", "$HOME\.codex\skills")) {
-    New-Item -ItemType Directory -Force -Path $home_ | Out-Null
-    $target = Join-Path $home_ 'zt'
-    if (Test-Path $target) { Remove-Item -LiteralPath $target -Recurse -Force }
-    Copy-Item -LiteralPath $skillSource -Destination $target -Recurse
-    Write-Host "skill installed: $target"
+# --- skills ------------------------------------------------------------------------------------
+foreach ($skill in Get-ChildItem -LiteralPath $skillsSource -Directory) {
+    foreach ($home_ in @("$HOME\.claude\skills", "$HOME\.codex\skills")) {
+        New-Item -ItemType Directory -Force -Path $home_ | Out-Null
+        $target = Join-Path $home_ $skill.Name
+        if (Test-Path $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+        Copy-Item -LiteralPath $skill.FullName -Destination $target -Recurse
+        Write-Host "skill installed: $target"
+    }
+    # DeepSeek Harness reads ~/.dsh/skills, whose entries link to the Codex copies.
+    $dshSkills = "$HOME\.dsh\skills"
+    if (Test-Path "$HOME\.dsh") {
+        New-Item -ItemType Directory -Force -Path $dshSkills | Out-Null
+        $link = Join-Path $dshSkills $skill.Name
+        $codexCopy = Join-Path "$HOME\.codex\skills" $skill.Name
+        $existing = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+        if ($existing -and -not $existing.LinkType) {
+            throw "$link is a real directory, not a link; move it aside and re-run."
+        }
+        if ($existing) { $existing.Delete() }
+        New-Item -ItemType Junction -Path $link -Target $codexCopy | Out-Null
+        Write-Host "skill linked: $link -> $codexCopy"
+    }
 }
+if (-not (Test-Path "$HOME\.dsh")) { Write-Warning '~/.dsh does not exist; skipped the DeepSeek Harness skills.' }
 
 # --- Claude Code -------------------------------------------------------------------------------
 $claudeJson = "$HOME\.claude.json"

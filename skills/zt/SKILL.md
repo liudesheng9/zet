@@ -26,9 +26,10 @@ Writing (agent Workspace only):
 - New paper or book: `create_literature` with exactly one BibTeX entry that has a `title`; its entry key becomes the Citation key.
 - Grow a tree: `create_successor` with `at`, `title`, `body`, and `kind` `direct` (continue the line) or `side` (a tangent; not from a tree root).
 - Change a Card: `edit_card` with `title` and/or `body` (or the whole `text`). A Literature Card's title comes from its BibTeX; change that with `edit_literature_metadata`.
+- Card types: a Regular Card is an Idea Card by default; pass `type` `event` (one real-world event: what, when, where, who, source) or `model` (one whole model) to `create_successor` or `edit_card` (`type` may be given alone). Topic and Literature Cards are always `idea`. `get_card`, `get_tree`, and `search_cards` report `type`; `search_cards` with `type` and an empty `query` lists every Card of that type.
 - `delete_card`, `move_card`, and Citation key renames return a plan first and change nothing. Show the plan to the user when the change is significant, then call again with the `confirm` text the plan names (`delete`, the tree root's address, or `move`).
 
-Card bodies are Markdown. One idea per Card; link generously with `[[address]]` to related Cards in either Workspace, including the user's. Never write a Reverse links section: ZT generates it below the `<!-- zt:reverse-links -->` marker.
+Card bodies are Markdown. Compose, place, and link every Card by the `zettelkasten` skill: one idea in your own words under a claim title, placed beside the Card it continues, with Links that state their reason. Never write a Reverse links section: ZT generates it below the `<!-- zt:reverse-links -->` marker.
 
 ## Read the Scholar Archive
 
@@ -51,7 +52,7 @@ Nothing here changes the archive. Copy titles, authors, and abstracts verbatim; 
 ## When the server is unavailable
 
 - A tool error saying the service is not available: run `zt status`; if it is down, run `zt up`, then retry.
-- No `zt` tools at all: the server is not loaded in this conversation. Check that `zt mcp` runs (`zt version`), re-run the installer from the zt repository (`scripts/install-agent-integrations.ps1`), and ask the user to start a new conversation. Meanwhile you may read with `zt ws`, `zt stats`, `zt lsbk`, or a piped line Session such as `printf 'go 3/1\nq\n' | zt`; do not write.
+- No `zt` tools at all (DeepSeek Harness has none; elsewhere the server may not be loaded): call the same tools, with the same agent Access, through this skill's `scripts/zt-mcp.ps1`. Write the calls to a UTF-8 JSON file, `[{"tool": "create_successor", "arguments": {...}}, ...]`, and run `pwsh -NoProfile -File <skill dir>/scripts/zt-mcp.ps1 calls.json`; a single call can also go inline as `-Tool get_card -Json '{"at":"3/1"}'`. In any string argument, `@@N` becomes the address returned by call N, so one file can build a chain of Cards and link them. The output is one line per call (`N ok <address>`, `N <json>`, or `N error <reason>`), and the run stops at the first error, so re-run only from the failed call. Batch reads in one file and writes in another to save turns. The `zt` shell commands act with human Access, so never write with them.
 
 ## Developing zt itself
 
@@ -59,4 +60,4 @@ The source is the `zet` repository (github.com/liudesheng9/zet; a Rust crate tha
 
 - Test with `cargo test` from PowerShell. Under Git Bash the dump tests fail because of PATH, not the code.
 - Deploy a change: `zt down`, back up `<archive_root>\zt.sqlite3` when the schema changes (`zt status` prints the archive root), `cargo install --path . --locked`, `zt up`, then confirm with `zt version` and `zt status`. `zt down` refuses while a Session or the GUI is open.
-- After changing this skill (`skills/zt/`) or the server registration, re-run `scripts/install-agent-integrations.ps1` so Claude Code and Codex get the update. New conversations pick up MCP changes; open ones keep the server they started with.
+- After changing a skill (`skills/zt/`, `skills/zettelkasten/`) or the server registration, re-run `scripts/install-agent-integrations.ps1` so Claude Code, Codex, and DeepSeek Harness get the update. New conversations pick up MCP changes; open ones keep the server they started with.
