@@ -13,6 +13,9 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[path = "support/host_tools.rs"]
+mod host_tools;
+
 struct TestHome {
     _tmp: TempDir,
     config_dir: std::path::PathBuf,
@@ -960,7 +963,7 @@ fn gui_creates_trees_in_either_workspace_and_reports_workspaces() {
 
 #[cfg(windows)]
 fn zip_backend_available() -> bool {
-    StdCommand::new("tar.exe")
+    StdCommand::new(host_tools::host_tar())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

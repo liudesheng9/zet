@@ -11,6 +11,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+#[path = "support/host_tools.rs"]
+mod host_tools;
+
 struct TestHome {
     _tmp: TempDir,
     config_dir: std::path::PathBuf,
@@ -191,7 +194,7 @@ impl Drop for TestHome {
 
 #[cfg(windows)]
 fn host_zip_backend_available() -> bool {
-    StdCommand::new("tar.exe")
+    StdCommand::new(host_tools::host_tar())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -206,7 +209,7 @@ fn host_tar_gz_backend_available() -> bool {
     let folder = temp.path().join("probe");
     fs::create_dir_all(&folder).expect("probe folder");
     fs::write(folder.join("mapping.json"), "{}").expect("probe payload");
-    StdCommand::new("tar.exe")
+    StdCommand::new(host_tools::host_tar())
         .args(["-a", "-cf"])
         .arg(temp.path().join("probe.tar.gz"))
         .arg("-C")
@@ -225,7 +228,7 @@ fn host_tar_zst_backend_available() -> bool {
     let folder = temp.path().join("probe");
     fs::create_dir_all(&folder).expect("probe folder");
     fs::write(folder.join("mapping.json"), "{}").expect("probe payload");
-    StdCommand::new("tar.exe")
+    StdCommand::new(host_tools::host_tar())
         .args(["-a", "-cf"])
         .arg(temp.path().join("probe.tar.zst"))
         .arg("-C")
@@ -240,7 +243,7 @@ fn host_tar_zst_backend_available() -> bool {
 
 #[cfg(not(windows))]
 fn host_tar_zst_backend_available() -> bool {
-    StdCommand::new("tar")
+    StdCommand::new(host_tools::host_tar())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -258,7 +261,7 @@ fn host_tar_zst_backend_available() -> bool {
 
 #[cfg(not(windows))]
 fn host_tar_gz_backend_available() -> bool {
-    StdCommand::new("tar")
+    StdCommand::new(host_tools::host_tar())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -353,11 +356,17 @@ fn build_probe_matrix() -> TempDir {
     output
 }
 
+/// PATH with the fake compressors in `directory` as the only ones: `zt dp` tries every
+/// tar.exe, 7z.exe, and 7zz.exe on PATH, so the host's real ones are left out.
 #[cfg(windows)]
-fn path_with_prepend(directory: &std::path::Path) -> std::ffi::OsString {
+fn path_with_only_fakes(directory: &std::path::Path) -> std::ffi::OsString {
     let mut paths = vec![directory.to_path_buf()];
     if let Some(path) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&path));
+        paths.extend(std::env::split_paths(&path).filter(|entry| {
+            !["tar.exe", "7z.exe", "7zz.exe"]
+                .iter()
+                .any(|program| entry.join(program).is_file())
+        }));
     }
     std::env::join_paths(paths).expect("test PATH")
 }
@@ -2464,7 +2473,7 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".tar.gz").unwrap();
     let entry = format!("{archive_name}/mapping.json");
-    let listing = StdCommand::new("tar")
+    let listing = StdCommand::new(host_tools::host_tar())
         .arg("-tf")
         .arg(&archive_path)
         .output()
@@ -2478,7 +2487,7 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
             .collect::<Vec<_>>(),
         [entry.clone(), format!("{archive_name}/archive.json")]
     );
-    let mapping = StdCommand::new("tar")
+    let mapping = StdCommand::new(host_tools::host_tar())
         .args(["-xOf"])
         .arg(&archive_path)
         .arg(&entry)
@@ -2511,7 +2520,7 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".tar.zst").unwrap();
     let entry = format!("{archive_name}/mapping.json");
-    let listing = StdCommand::new("tar")
+    let listing = StdCommand::new(host_tools::host_tar())
         .arg("-tf")
         .arg(&archive_path)
         .output()
@@ -2525,7 +2534,7 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
             .collect::<Vec<_>>(),
         [entry.clone(), format!("{archive_name}/archive.json")]
     );
-    let mapping = StdCommand::new("tar")
+    let mapping = StdCommand::new(host_tools::host_tar())
         .args(["-xOf"])
         .arg(&archive_path)
         .arg(&entry)
@@ -2568,7 +2577,7 @@ fn dump_probe_falls_back_to_7zz_and_lists_only_the_usable_format() {
 
     home.cmd()
         .current_dir(compressors.path())
-        .env("PATH", path_with_prepend(compressors.path()))
+        .env("PATH", path_with_only_fakes(compressors.path()))
         .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
         .arg("dp")
         .write_stdin("0\n")
@@ -2591,7 +2600,7 @@ fn dump_reports_all_supported_names_when_every_probe_fails() {
 
     home.cmd()
         .current_dir(compressors.path())
-        .env("PATH", path_with_prepend(compressors.path()))
+        .env("PATH", path_with_only_fakes(compressors.path()))
         .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
         .env("ZT_FAKE_7Z_ALL_FAIL", "1")
         .arg("dp")
@@ -2613,7 +2622,7 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
 
     home.cmd()
         .current_dir(compressors.path())
-        .env("PATH", path_with_prepend(compressors.path()))
+        .env("PATH", path_with_only_fakes(compressors.path()))
         .env("ZT_FAKE_TAR_ALWAYS_FAIL", "1")
         .arg("dp")
         .write_stdin("1\n")
@@ -2626,9 +2635,7 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".7z").unwrap();
     let entry = format!("{archive_name}/mapping.json");
-    let system_tar = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-        .join("System32")
-        .join("tar.exe");
+    let system_tar = host_tools::host_tar();
     let listing = StdCommand::new(&system_tar)
         .arg("-tf")
         .arg(&archive_path)
@@ -2709,7 +2716,7 @@ fn failed_compression_removes_partial_archive_and_timestamped_staging() {
 
     home.cmd()
         .current_dir(fake_tar.path())
-        .env("PATH", path_with_prepend(fake_tar.path()))
+        .env("PATH", path_with_only_fakes(fake_tar.path()))
         .arg("dp")
         .write_stdin("1\n")
         .assert()
@@ -2754,7 +2761,7 @@ fn preexisting_dump_archive_is_never_overwritten_or_cleaned_up() {
 
     home.cmd()
         .current_dir(fake_tar.path())
-        .env("PATH", path_with_prepend(fake_tar.path()))
+        .env("PATH", path_with_only_fakes(fake_tar.path()))
         .arg("dp")
         .write_stdin("1\n")
         .assert()

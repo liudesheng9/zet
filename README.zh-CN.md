@@ -230,6 +230,10 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 - `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），以及每张 Event 与 Model Card 的类型，例如
   `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent"},"types":{"0/1":"event"}}`。
 
+`zt dp` 只列出主机上的工具真正能写出的格式（`zip`、`tar.gz`、`tar.zst`、`7z`）：它会依次尝试 `PATH` 上的每个
+`tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar
+会被跳过，改用系统自带的 `tar.exe`。
+
 ## 创建 Literature Card
 
 在 Session 中运行 `l`，或在 Shell 中使用 `$EDITOR` 运行 `zt l`。先输入并保存一个完整的 BibTeX 条目，再输入并保存 Card 正文。BibTeX 条目的 key 会成为 Citation key，其中的 `title` 字段会成为 Card 标题。

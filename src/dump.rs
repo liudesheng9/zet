@@ -127,23 +127,26 @@ enum Backend {
     SevenZip(&'static str),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One way to write one format. `program` pins the executable that detection proved
+/// can write the format; `None` leaves the backend's command name to the system.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Candidate {
     format: CompressionFormat,
     backend: Backend,
+    program: Option<PathBuf>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 struct CommandSpec {
-    program: &'static str,
+    program: PathBuf,
     args: Vec<OsString>,
     current_dir: Option<PathBuf>,
 }
 
 impl CommandSpec {
-    fn new(program: &'static str) -> Self {
+    fn new(program: impl Into<PathBuf>) -> Self {
         Self {
-            program,
+            program: program.into(),
             args: Vec::new(),
             current_dir: None,
         }
@@ -208,7 +211,38 @@ impl CompressionPlan {
 
 impl Candidate {
     const fn new(format: CompressionFormat, backend: Backend) -> Self {
-        Self { format, backend }
+        Self {
+            format,
+            backend,
+            program: None,
+        }
+    }
+
+    fn pinned(&self, program: PathBuf) -> Self {
+        Self {
+            program: Some(program),
+            ..self.clone()
+        }
+    }
+
+    fn name(&self, default: &'static str) -> PathBuf {
+        self.program
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(default))
+    }
+}
+
+impl Backend {
+    /// The single executable that writes the archive, if the backend is one command.
+    /// A host may hold several executables of that name (Git for Windows puts GNU tar
+    /// ahead of Windows' bsdtar on PATH), so detection tries each of them.
+    const fn program(self) -> Option<&'static str> {
+        match self {
+            Self::WindowsTar => Some("tar.exe"),
+            Self::UnixZip => Some("zip"),
+            Self::SevenZip(program) => Some(program),
+            Self::UnixTarGzip | Self::UnixTarZstd => None,
+        }
     }
 }
 
@@ -231,9 +265,52 @@ fn compression_candidates(platform: Platform) -> Vec<Candidate> {
     }
 }
 
+/// Replace each single-command candidate by one candidate per executable of that name,
+/// in search order, so a later executable can stand in when an earlier one cannot write
+/// the format. A command found nowhere is left to the system to resolve.
+fn expand_with<L>(candidates: Vec<Candidate>, mut locate: L) -> Vec<Candidate>
+where
+    L: FnMut(&str) -> Vec<PathBuf>,
+{
+    let mut expanded = Vec::new();
+    for candidate in candidates {
+        let found = candidate
+            .backend
+            .program()
+            .map(&mut locate)
+            .unwrap_or_default();
+        if found.is_empty() {
+            expanded.push(candidate);
+        } else {
+            expanded.extend(found.into_iter().map(|program| candidate.pinned(program)));
+        }
+    }
+    expanded
+}
+
+/// Every executable named `program` on PATH, in PATH order, without duplicates.
+fn locate_on_path(program: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+    let directories = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for directory in directories {
+        let candidate = directory.join(program);
+        if !candidate.is_file() {
+            continue;
+        }
+        let key = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+        if seen.insert(key) {
+            found.push(candidate);
+        }
+    }
+    found
+}
+
 fn detect_with<F>(candidates: Vec<Candidate>, mut probe: F) -> Vec<Candidate>
 where
-    F: FnMut(Candidate) -> bool,
+    F: FnMut(&Candidate) -> bool,
 {
     let mut detected = Vec::new();
     for candidate in candidates {
@@ -243,11 +320,31 @@ where
         {
             continue;
         }
-        if probe(candidate) {
+        if probe(&candidate) {
             detected.push(candidate);
         }
     }
     detected
+}
+
+/// Whether the file at `path` starts with the signature of `format`. A tool that accepts
+/// the command but writes another format (GNU tar writes a plain tar named `.zip`) fails.
+fn written_as(path: &Path, format: CompressionFormat) -> bool {
+    let mut head = Vec::with_capacity(6);
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    if io::Read::read_to_end(&mut io::Read::take(file, 6), &mut head).is_err() {
+        return false;
+    }
+    match format {
+        CompressionFormat::Zip => {
+            head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06")
+        }
+        CompressionFormat::TarGz => head.starts_with(&[0x1f, 0x8b]),
+        CompressionFormat::TarZst => head.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]),
+        CompressionFormat::SevenZip => head.starts_with(&[b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c]),
+    }
 }
 
 fn current_platform() -> Platform {
@@ -354,7 +451,7 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result
         .iter()
         .enumerate()
         .find(|(index, _)| choice == (index + 1).to_string())
-        .map(|(_, option)| *option)
+        .map(|(_, option)| option.clone())
         .context("invalid compression option")?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -395,11 +492,18 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result
         selected.format.extension()
     ));
     compress(
-        selected,
+        &selected,
         staging.parent().context("dump staging parent is missing")?,
         &entries,
         &partial_archive,
     )?;
+    if !written_as(&partial_archive, selected.format) {
+        bail!(
+            "compression command for {} did not write a {} archive",
+            selected.format.name(),
+            selected.format.name()
+        );
+    }
     artifacts.publish(&partial_archive)?;
     artifacts.commit()?;
 
@@ -500,10 +604,15 @@ fn random_hex_10() -> Result<String> {
 }
 
 fn detect_compression_options() -> Vec<Candidate> {
-    detect_with(compression_candidates(current_platform()), probe_candidate)
+    detect_with(
+        expand_with(compression_candidates(current_platform()), locate_on_path),
+        probe_candidate,
+    )
 }
 
-fn probe_candidate(candidate: Candidate) -> bool {
+/// A candidate is usable only if it really writes its format: it compresses a small probe
+/// folder, and the result must carry the format's signature.
+fn probe_candidate(candidate: &Candidate) -> bool {
     let Ok(temp) = tempfile::tempdir() else {
         return false;
     };
@@ -517,26 +626,41 @@ fn probe_candidate(candidate: Candidate) -> bool {
         .path()
         .join(format!("probe{}", candidate.format.extension()));
     let entries = ["zt-probe/mapping.json".to_string()];
-    compress(candidate, temp.path(), &entries, &output).is_ok() && output.is_file()
+    compress(candidate, temp.path(), &entries, &output).is_ok()
+        && written_as(&output, candidate.format)
 }
 
 fn command_plan(
-    candidate: Candidate,
+    candidate: &Candidate,
     source_root: &Path,
     entries: &[String],
     archive_path: &Path,
 ) -> CompressionPlan {
     match candidate.backend {
-        Backend::WindowsTar => CompressionPlan::Single(
-            CommandSpec::new("tar.exe")
+        Backend::WindowsTar => {
+            // The archive is named from inside its own folder: a GNU tar on PATH reads
+            // `C:\...` as a remote host and stalls before it fails.
+            let folder = archive_path
+                .parent()
+                .filter(|folder| !folder.as_os_str().is_empty());
+            let mut command = CommandSpec::new(candidate.name("tar.exe"))
                 .args(["-a", "-cf"])
-                .arg(archive_path)
+                .arg(match folder {
+                    Some(_) => archive_path
+                        .file_name()
+                        .map_or_else(|| archive_path.as_os_str().to_owned(), ToOwned::to_owned),
+                    None => archive_path.as_os_str().to_owned(),
+                })
                 .arg("-C")
                 .arg(source_root)
-                .args(entries),
-        ),
+                .args(entries);
+            if let Some(folder) = folder {
+                command = command.current_dir(folder);
+            }
+            CompressionPlan::Single(command)
+        }
         Backend::UnixZip => CompressionPlan::Single(
-            CommandSpec::new("zip")
+            CommandSpec::new(candidate.name("zip"))
                 .arg("-q")
                 .arg(archive_path)
                 .args(entries)
@@ -557,7 +681,7 @@ fn command_plan(
             compressor: CommandSpec::new("zstd").args(["-q", "-c"]),
         },
         Backend::SevenZip(program) => CompressionPlan::Single(
-            CommandSpec::new(program)
+            CommandSpec::new(candidate.name(program))
                 .args(["a", "-t7z", "-bd", "-y"])
                 .arg(archive_path)
                 .args(entries)
@@ -567,7 +691,7 @@ fn command_plan(
 }
 
 fn compress(
-    candidate: Candidate,
+    candidate: &Candidate,
     source_root: &Path,
     entries: &[String],
     archive_path: &Path,
@@ -580,13 +704,15 @@ fn compress(
 }
 
 fn command_from_spec(spec: &CommandSpec) -> Command {
-    let program = env::var_os("PATH")
-        .and_then(|path| {
-            env::split_paths(&path)
-                .map(|directory| directory.join(spec.program))
-                .find(|candidate| candidate.is_file())
-        })
-        .unwrap_or_else(|| PathBuf::from(spec.program));
+    // A pinned executable runs as is; a bare name runs as the first match on PATH.
+    let program = if spec.program.components().count() > 1 {
+        spec.program.clone()
+    } else {
+        locate_on_path(&spec.program.to_string_lossy())
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| spec.program.clone())
+    };
     let mut command = Command::new(program);
     command.args(&spec.args);
     if let Some(path) = &spec.current_dir {
@@ -609,7 +735,7 @@ fn execute_plan(
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .with_context(|| format!("failed to run {}", spec.program))?;
+            .with_context(|| format!("failed to run {}", spec.program.display()))?;
         if !status.success() {
             bail!(
                 "compression command for {} failed with {status}",
@@ -636,7 +762,7 @@ fn execute_plan(
         .stdout(Stdio::from(output))
         .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("failed to run {}", compressor.program));
+        .with_context(|| format!("failed to run {}", compressor.program.display()));
     let tar_status = tar_child.wait().context("failed to wait for tar")?;
     let compression_status = compression?;
     if !tar_status.success() {
@@ -645,7 +771,7 @@ fn execute_plan(
     if !compression_status.success() {
         bail!(
             "compression command {} failed with {compression_status}",
-            compressor.program
+            compressor.program.display()
         );
     }
     Ok(())
@@ -807,16 +933,11 @@ mod tests {
     fn detection_offers_only_successful_formats_and_falls_back_to_7zz() {
         let probes = RefCell::new(Vec::new());
         let detected = detect_with(compression_candidates(Platform::Windows), |candidate| {
-            probes.borrow_mut().push(candidate);
+            probes.borrow_mut().push(candidate.clone());
             matches!(
-                candidate,
-                Candidate {
-                    format: CompressionFormat::TarGz,
-                    backend: Backend::WindowsTar,
-                } | Candidate {
-                    format: CompressionFormat::SevenZip,
-                    backend: Backend::SevenZip("7zz.exe"),
-                }
+                (candidate.format, candidate.backend),
+                (CompressionFormat::TarGz, Backend::WindowsTar)
+                    | (CompressionFormat::SevenZip, Backend::SevenZip("7zz.exe"))
             )
         });
 
@@ -834,13 +955,126 @@ mod tests {
     }
 
     #[test]
+    fn detection_tries_every_executable_of_a_name_and_pins_the_first_that_writes_the_format() {
+        let gnu = PathBuf::from(r"C:\Git\usr\bin\tar.exe");
+        let bsd = PathBuf::from(r"C:\Windows\System32\tar.exe");
+        let tar = |format| Candidate::new(format, Backend::WindowsTar);
+        let expanded = expand_with(compression_candidates(Platform::Windows), |program| {
+            if program == "tar.exe" {
+                vec![gnu.clone(), bsd.clone()]
+            } else {
+                Vec::new()
+            }
+        });
+        assert_eq!(
+            expanded,
+            vec![
+                tar(CompressionFormat::Zip).pinned(gnu.clone()),
+                tar(CompressionFormat::Zip).pinned(bsd.clone()),
+                tar(CompressionFormat::TarGz).pinned(gnu.clone()),
+                tar(CompressionFormat::TarGz).pinned(bsd.clone()),
+                tar(CompressionFormat::TarZst).pinned(gnu.clone()),
+                tar(CompressionFormat::TarZst).pinned(bsd.clone()),
+                Candidate::new(CompressionFormat::SevenZip, Backend::SevenZip("7z.exe")),
+                Candidate::new(CompressionFormat::SevenZip, Backend::SevenZip("7zz.exe")),
+            ]
+        );
+        // GNU tar cannot write the archive formats; bsdtar can, so bsdtar is pinned.
+        let detected = detect_with(expanded, |candidate| {
+            candidate.program.as_deref() == Some(bsd.as_path())
+        });
+        assert_eq!(
+            detected,
+            vec![
+                tar(CompressionFormat::Zip).pinned(bsd.clone()),
+                tar(CompressionFormat::TarGz).pinned(bsd.clone()),
+                tar(CompressionFormat::TarZst).pinned(bsd.clone()),
+            ]
+        );
+        assert_eq!(
+            command_plan(
+                &detected[0],
+                Path::new("source"),
+                &["folder/mapping.json".to_string()],
+                Path::new("archive.zip"),
+            ),
+            CompressionPlan::Single(CommandSpec::new(bsd).args([
+                "-a",
+                "-cf",
+                "archive.zip",
+                "-C",
+                "source",
+                "folder/mapping.json",
+            ]))
+        );
+    }
+
+    #[test]
+    fn windows_tar_names_the_archive_from_inside_its_folder() {
+        let folder = Path::new(r"C:\archive\dump\.tmp\zt-archive-1");
+        assert_eq!(
+            command_plan(
+                &Candidate::new(CompressionFormat::Zip, Backend::WindowsTar),
+                Path::new(r"C:\archive\dump\.tmp"),
+                &["zt-archive-1/mapping.json".to_string()],
+                &folder.join(".zt-archive-1.partial.zip"),
+            ),
+            CompressionPlan::single(
+                "tar.exe",
+                [
+                    "-a",
+                    "-cf",
+                    ".zt-archive-1.partial.zip",
+                    "-C",
+                    r"C:\archive\dump\.tmp",
+                    "zt-archive-1/mapping.json",
+                ],
+                Some(folder),
+            )
+        );
+    }
+
+    #[test]
+    fn only_a_file_with_the_format_signature_counts_as_written() {
+        let temp = tempfile::tempdir().unwrap();
+        let cases: [(CompressionFormat, &[u8]); 5] = [
+            (CompressionFormat::Zip, b"PK\x03\x04rest"),
+            (CompressionFormat::Zip, b"PK\x05\x06"),
+            (CompressionFormat::TarGz, &[0x1f, 0x8b, 8]),
+            (CompressionFormat::TarZst, &[0x28, 0xb5, 0x2f, 0xfd, 0]),
+            (
+                CompressionFormat::SevenZip,
+                &[b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c, 0],
+            ),
+        ];
+        for (index, (format, bytes)) in cases.into_iter().enumerate() {
+            let path = temp.path().join(format!("good{index}"));
+            fs::write(&path, bytes).unwrap();
+            assert!(written_as(&path, format), "{format:?}");
+        }
+        // A plain tar archive named .zip, as GNU tar writes for `-a -cf x.zip`.
+        let tar = temp.path().join("tar.zip");
+        let mut header = vec![0_u8; 512];
+        header[257..262].copy_from_slice(b"ustar");
+        fs::write(&tar, header).unwrap();
+        assert!(!written_as(&tar, CompressionFormat::Zip));
+        assert!(!written_as(
+            &temp.path().join("missing.zip"),
+            CompressionFormat::Zip
+        ));
+        let empty = temp.path().join("empty.7z");
+        fs::write(&empty, b"").unwrap();
+        assert!(!written_as(&empty, CompressionFormat::SevenZip));
+    }
+
+    #[test]
     fn command_plans_route_every_backend_with_the_locked_archive_path() {
         let source = Path::new("source");
         let entries = ["folder/mapping.json".to_string()];
 
         assert_eq!(
             command_plan(
-                Candidate::new(CompressionFormat::Zip, Backend::WindowsTar),
+                &Candidate::new(CompressionFormat::Zip, Backend::WindowsTar),
                 source,
                 &entries,
                 Path::new("archive.zip"),
@@ -860,7 +1094,7 @@ mod tests {
         );
         assert_eq!(
             command_plan(
-                Candidate::new(CompressionFormat::Zip, Backend::UnixZip),
+                &Candidate::new(CompressionFormat::Zip, Backend::UnixZip),
                 source,
                 &entries,
                 Path::new("archive.zip"),
@@ -873,7 +1107,7 @@ mod tests {
         );
         assert_eq!(
             command_plan(
-                Candidate::new(CompressionFormat::TarGz, Backend::UnixTarGzip),
+                &Candidate::new(CompressionFormat::TarGz, Backend::UnixTarGzip),
                 source,
                 &entries,
                 Path::new("archive.tar.gz"),
@@ -886,7 +1120,7 @@ mod tests {
         );
         assert_eq!(
             command_plan(
-                Candidate::new(CompressionFormat::TarZst, Backend::UnixTarZstd),
+                &Candidate::new(CompressionFormat::TarZst, Backend::UnixTarZstd),
                 source,
                 &entries,
                 Path::new("archive.tar.zst"),
@@ -899,7 +1133,7 @@ mod tests {
         );
         assert_eq!(
             command_plan(
-                Candidate::new(CompressionFormat::SevenZip, Backend::SevenZip("7zz")),
+                &Candidate::new(CompressionFormat::SevenZip, Backend::SevenZip("7zz")),
                 source,
                 &entries,
                 Path::new("archive.7z"),
@@ -968,24 +1202,25 @@ mod tests {
         assert!(!staging.exists());
         assert_eq!(fs::read(archive).unwrap(), b"someone else's archive");
     }
-}
-#[test]
-fn literature_yaml_round_trips_all_trailing_newline_states_and_exact_card_text() {
-    let card_text = "# Title\n\nbody\n\n<!-- zt:reverse-links -->\nreverse";
-    for (bibtex, indicator) in [
-        ("@book{K,title={T}}", "|-"),
-        ("@book{K,title={T}}\n", "|"),
-        ("@book{K,title={T}}\n\n", "|+"),
-    ] {
-        let markdown = literature_markdown("K", bibtex, card_text);
-        assert!(markdown.contains(&format!("bibtex: {indicator}\n")));
-        let closing = markdown.find("\n---\n").expect("closing front matter");
-        let yaml = &markdown[4..=closing];
-        let metadata: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(yaml).expect("valid YAML front matter");
-        assert_eq!(metadata["zt_kind"].as_str(), Some("literature"));
-        assert_eq!(metadata["citation_key"].as_str(), Some("K"));
-        assert_eq!(metadata["bibtex"].as_str(), Some(bibtex));
-        assert_eq!(&markdown[closing + 5..], card_text);
+
+    #[test]
+    fn literature_yaml_round_trips_all_trailing_newline_states_and_exact_card_text() {
+        let card_text = "# Title\n\nbody\n\n<!-- zt:reverse-links -->\nreverse";
+        for (bibtex, indicator) in [
+            ("@book{K,title={T}}", "|-"),
+            ("@book{K,title={T}}\n", "|"),
+            ("@book{K,title={T}}\n\n", "|+"),
+        ] {
+            let markdown = literature_markdown("K", bibtex, card_text);
+            assert!(markdown.contains(&format!("bibtex: {indicator}\n")));
+            let closing = markdown.find("\n---\n").expect("closing front matter");
+            let yaml = &markdown[4..=closing];
+            let metadata: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(yaml).expect("valid YAML front matter");
+            assert_eq!(metadata["zt_kind"].as_str(), Some("literature"));
+            assert_eq!(metadata["citation_key"].as_str(), Some("K"));
+            assert_eq!(metadata["bibtex"].as_str(), Some(bibtex));
+            assert_eq!(&markdown[closing + 5..], card_text);
+        }
     }
 }

@@ -22,7 +22,18 @@ fn main() {
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with("probe"))
     {
-        fs::write(archive, b"probe archive").unwrap();
+        // A probe archive carries the signature of the format its name asks for.
+        let name = archive.to_string_lossy().into_owned();
+        let signature: &[u8] = if name.ends_with(".zip") {
+            b"PK\x03\x04probe"
+        } else if name.ends_with(".tar.gz") {
+            &[0x1f, 0x8b, 0x08]
+        } else if name.ends_with(".tar.zst") {
+            &[0x28, 0xb5, 0x2f, 0xfd]
+        } else {
+            b"probe archive"
+        };
+        fs::write(archive, signature).unwrap();
         return;
     }
     fs::write(archive, b"partial archive").unwrap();

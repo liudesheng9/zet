@@ -257,6 +257,11 @@ system:
   Topic numbers are not reused), and the type of every Event and Model Card, for example
   `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent"},"types":{"0/1":"event"}}`.
 
+`zt dp` offers each format (`zip`, `tar.gz`, `tar.zst`, `7z`) that a tool on the host can
+really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first whose probe
+archive carries the right format signature. On Windows a GNU tar from Git for Windows is passed
+over for the bundled `tar.exe`.
+
 ## Create a Literature Card
 
 Run `l` inside a Session, or run `zt l` from the shell (using `$EDITOR`). Enter and save one complete BibTeX entry, then enter and save the Card body. The BibTeX entry key becomes the Citation key, and its `title` field becomes the Card title.

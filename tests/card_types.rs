@@ -12,6 +12,9 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[path = "support/host_tools.rs"]
+mod host_tools;
+
 const ROOT_REFUSAL: &str = "only Regular Cards can be Event or Model Cards";
 
 struct TestHome {
@@ -623,7 +626,7 @@ fn gui_creates_and_edits_typed_cards_and_reports_types() {
 
 #[cfg(windows)]
 fn zip_backend_available() -> bool {
-    StdCommand::new("tar.exe")
+    StdCommand::new(host_tools::host_tar())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
