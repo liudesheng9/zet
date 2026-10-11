@@ -1125,7 +1125,7 @@
       class: 'chip' + (link.broken ? ' broken' : '') + (cross ? ' cross ' + link.workspace : '') + (extraClass ? ' ' + extraClass : ''),
       title: link.broken ? 'Broken link' : cross ? `${link.title} · ${wsLabel(link.workspace)} workspace` : link.title,
       onclick: link.broken ? null : () => go(link.address),
-    }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't', text: link.broken ? 'missing' : link.title || '(untitled)' }));
+    }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't' }, link.broken ? 'missing' : titleNodes(link.title || '(untitled)')));
   }
 
   function actionButton(label, key, handler, options = {}) {
@@ -1307,6 +1307,10 @@
   function wireMarkdown(root) {
     typeset(root);
     wireCharts(root);
+    // Link chips carry their target's title, which may hold TeX.
+    for (const title of root.querySelectorAll('.zt-link-title')) {
+      if (title.textContent.includes('$')) title.replaceChildren(...titleNodes(title.textContent));
+    }
     for (const anchor of root.querySelectorAll('a[href]')) {
       if (anchor.classList.contains('zt-link')) {
         const targetWorkspace = nodeWorkspace(anchor.dataset.target);
