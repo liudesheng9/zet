@@ -16,7 +16,8 @@ export const meta = {
 //         groups (modes 'link' and 'models': the existing group count), organize (modes 'link' and 'models': default false),
 //         perManager (5), maxChars (20000), maxUnits (3),
 //         dshModel ('deepseek-official/deepseek-flash'), dshEffort ('low'),
-//         models (true: run the Sonnet model stage), redoModels (false: also redo models that already have parts) }
+//         models (true: run the Sonnet model stage), redoModels (false: also redo models that already have parts),
+//         perSonnet (1: Model Cards per Sonnet agent; neighbouring models of the book share one agent) }
 //
 // How the stages hand work on:
 //   Prepare ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (Haiku lists, Sonnet ×N) ─┐
@@ -36,6 +37,7 @@ const SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 const MODELS = A.models !== false
 const MODEL_DOC = `${SCRIPTS}\\model-elaboration.md`
 const MODEL_WORK = `${OUT}\\models`
+const PER_SONNET = Math.max(1, A.perSonnet || 1)
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_archive'
 
@@ -193,12 +195,48 @@ WORK: ${work} (create it for your calls files)${A.redoModels ? '\nREDO: restruct
     { label: `model ${model.address}`, phase: 'Models', model: 'sonnet', schema: MODEL_REPORT },
   )
 }
+// With perSonnet > 1, one Sonnet agent elaborates several neighbouring Model Cards in turn, each by
+// the same instructions, so what it learns from the source for one serves the next.
+const MODEL_BATCH = {
+  type: 'object',
+  properties: { reports: { type: 'array', items: MODEL_REPORT } },
+  required: ['reports'],
+}
+const elaborateBatch = (batch) => {
+  if (batch.length === 1) return elaborate(batch[0]).then(r => [r])
+  const entry = (m, i) => {
+    const work = `${MODEL_WORK}\\${m.address.replace(/[\/|]/g, '_')}`
+    return `## Model ${i + 1}
+MODEL: ${m.address} (${m.title || ''})
+GROUP: ${m.group ? `${m.group} (anchor [[${KEY}/${m.group}]])` : 'unknown; the context script finds it'}
+CONTEXT: ${work}\\context.md
+WORK: ${work} (create it for your calls files)`
+  }
+  return agent(
+    `Elaborate ${batch.length} Model Cards of the ZET digest of 《${A.bookTitle}》, one after another: for each, understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly for each model in turn, as if it were the only one (its own context pack, WORK folder, filing, and get_model check). Finish one model before you start the next. These models sit near each other in the book: what you learn from the source for one may serve the next, and where the book relates two of them, link the parts concerned.
+KEY: ${KEY}
+BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, manifest.json; the bilingual source is ${A.source || 'in the Scholar Archive'})
+SCRIPTS: ${SCRIPTS}
+HELPER: ${HELPER}${A.redoModels ? '\nREDO: restructure each model even if it already has parts.' : ''}
+
+${batch.map(entry).join('\n\n')}
+
+Return reports: one report per model, in this order, each as the instructions' Report section describes.`,
+    { label: `models ${batch.map(m => m.address).join(', ')}`, phase: 'Models', model: 'sonnet', schema: MODEL_BATCH },
+  ).then(r => batch.map(m => ((r && r.reports) || []).find(x => x.model === m.address) || null))
+}
+const groupNo = (m) => Number(m.group) || Number(String(m.address).split('/')[1].split('|')[0]) || 0
 const elaborateAll = async (models, label) => {
   const todo = models.filter(m => A.redoModels || !(m.parts > 0 && !m.issues))
+    .sort((a, b) => groupNo(a) - groupNo(b) || String(a.address).localeCompare(String(b.address)))
   if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
-  return (await parallel(todo.map(m => () => elaborate(m)))).map((r, i) => r || { model: todo[i].address, status: 'failed', parts: [], charts: 0, issues: ['no report from its agent'] })
+  const batches = []
+  for (let i = 0; i < todo.length; i += PER_SONNET) batches.push(todo.slice(i, i + PER_SONNET))
+  if (PER_SONNET > 1) log(`${label}: ${todo.length} models in ${batches.length} Sonnet agents, up to ${PER_SONNET} each.`)
+  const results = (await parallel(batches.map(b => () => elaborateBatch(b)))).flatMap((r, i) => r || batches[i].map(() => null))
+  return results.map((r, i) => r || { model: todo[i].address, status: 'failed', parts: [], charts: 0, issues: ['no report from its agent'] })
 }
-// After a digest block: the Model Cards its DeepSeek runs wrote, each to its own Sonnet agent.
+// After a digest block: the Model Cards its DeepSeek runs wrote, to Sonnet agents (perSonnet each).
 const elaborateBlock = async (block, managed) => {
   const reports = (managed && managed.reports) || []
   const groups = block.map(g => g.n).filter(n => {
