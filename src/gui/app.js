@@ -1391,7 +1391,11 @@
         threads.append(group);
       }
     };
-    new ResizeObserver(() => requestAnimationFrame(draw)).observe(board);
+    // Draw once the board is on the page (measuring forces layout, even in a background tab,
+    // where resize notifications wait for the next rendered frame), and again whenever it
+    // resizes. The threads are absolutely placed and never resize the board, so this cannot loop.
+    setTimeout(draw);
+    new ResizeObserver(draw).observe(board);
 
     // The reasons behind the open part's relations, in its own and its neighbours' words.
     const reasons = onHead ? [] : [
