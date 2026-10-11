@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "zt"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1889,5 +1889,6 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "ureq",
+ "windows-sys 0.61.2",
  "zip",
 ]

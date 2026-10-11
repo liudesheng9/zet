@@ -16,6 +16,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 使用 `[[target]]` Link 连接 Card，并自动生成 Reverse link、检查 Broken link。
 - 在 Session 或 Shell 中安全地创建、编辑、移动和删除 Card 树。
 - 使用本地 SQLite 存储数据，并提供状态、统计、导出和清空命令。
+- 使用 `zt autostart on` 让服务在登录时启动、在机器关机时停止（Windows）。
 
 ## 安装
 
@@ -55,6 +56,24 @@ q                  # 退出 Session
 ROOT 视图会列出所有 Topic 和 Literature Card。每个 Card 视图末尾都有可点击的
 `parent:`、`direct:`、`side:` 链接。`ls`、`lsbk`、`help` 会打开可点击地址的结果面板，
 按 `Esc` 关闭。内容过长时可用 `PageUp`/`PageDown` 或鼠标滚轮滚动。
+
+## 随机器启停
+
+在 Windows 上，可以让服务跟随机器启动和停止：
+
+```sh
+zt autostart on    # 每次登录时启动服务
+zt autostart       # 查看登录命令，以及上一次登录启动的结果
+zt autostart off   # 不再在登录时启动
+```
+
+`zt autostart on` 会把与 `zt` 一同安装的无窗口程序 `zt-boot` 登记到当前账户的 Run 键下（任务管理器的
+“启动应用”中可以看到它），因此不需要管理员权限，登录时也不会弹出控制台窗口。每次登录启动的结果都记录在
+配置文件旁的 `autostart.log` 中；`zt status` 会显示自动启动是否开启。
+
+机器关机、重启或你注销时，守护进程会自行停止服务，并把原因写入 `zt.log`；它不会等待仍打开的 Session，
+因为它们会随机器一起结束。如果守护进程没有机会清理就结束了（断电、进程被强制结束），服务会显示为已停止，
+下一次登录或 `zt up` 会重新启动它。
 
 ## Markdown Card
 
@@ -322,6 +341,7 @@ ZT 不给 Topic 和 Regular Card 分配任意 ID，而是自动为它们分配 *
 zt help
 zt gui
 zt status
+zt autostart [on|off]
 zt stats
 zt ws
 zt mcp

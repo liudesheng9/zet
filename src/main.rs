@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod autostart;
 mod card;
 mod card_type;
 mod dump;
@@ -20,6 +21,7 @@ mod model;
 mod ops;
 mod scholar;
 mod session;
+mod shutdown;
 mod workspace;
 
 pub(crate) use card::{
@@ -61,6 +63,8 @@ fn run() -> Result<()> {
         [cmd] if cmd == "mcp" => mcp::run(),
         [cmd, rest @ ..] if cmd == "scholar" => scholar::run_cli(rest),
         [cmd, rest @ ..] if cmd == "gui" => gui::run(rest),
+        [cmd, rest @ ..] if cmd == "autostart" => autostart::run(rest),
+        [cmd] if cmd == "__boot" => cmd_boot(),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
@@ -272,8 +276,74 @@ fn log_event(root: &Path, event: &str) -> Result<()> {
     Ok(())
 }
 
+fn daemon_lock_path(root: &Path) -> PathBuf {
+    root.join("zt.daemon.lock")
+}
+
+/// Whether the service is up: its record names a daemon that still holds the daemon lock. A
+/// record left by a daemon that ended without `zt down` (the machine lost power, or the daemon
+/// was killed) is cleared, so the service reads as down.
 fn is_service_up(root: &Path) -> bool {
-    service_path(root).exists()
+    if !service_path(root).exists() {
+        return false;
+    }
+    if daemon_alive(root) != Some(false) {
+        return true;
+    }
+    clear_stale_service(root);
+    false
+}
+
+/// Whether a daemon holds the daemon lock; `None` when no daemon has made one (a daemon from
+/// zt 0.7 or earlier) or the lock cannot be tested.
+fn daemon_alive(root: &Path) -> Option<bool> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(daemon_lock_path(root))
+        .ok()?;
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            Some(false)
+        }
+        Err(fs::TryLockError::WouldBlock) => Some(true),
+        Err(fs::TryLockError::Error(_)) => None,
+    }
+}
+
+fn clear_stale_service(root: &Path) {
+    let Ok(pid) = fs::read_to_string(service_path(root)) else {
+        return;
+    };
+    if fs::remove_file(service_path(root)).is_ok() {
+        log_event(
+            root,
+            &format!(
+                "service record of daemon {} cleared: the daemon ended without `zt down`",
+                pid.trim()
+            ),
+        )
+        .ok();
+    }
+}
+
+/// A record from a daemon of zt 0.7 or earlier, which holds no daemon lock, is stale when no
+/// process has its pid.
+fn clear_stale_legacy_service(root: &Path) {
+    if daemon_alive(root).is_some() {
+        return;
+    }
+    let Ok(pid) = fs::read_to_string(service_path(root)) else {
+        return;
+    };
+    if pid
+        .trim()
+        .parse::<u32>()
+        .is_ok_and(|pid| !session::process_exists(pid))
+    {
+        clear_stale_service(root);
+    }
 }
 
 fn cmd_config_show() -> Result<()> {
@@ -301,12 +371,34 @@ fn cmd_config_set_archive_root(value: &str) -> Result<()> {
 }
 
 fn cmd_up() -> Result<()> {
+    println!("{}", start_service()?);
+    Ok(())
+}
+
+/// What `zt-boot` runs at sign-in: bring the service up and record how it went, since there
+/// is no console to tell.
+fn cmd_boot() -> Result<()> {
+    let outcome = start_service();
+    let line = match &outcome {
+        Ok(message) => message.clone(),
+        Err(error) => format!("error: {error:#}"),
+    };
+    if outcome.is_ok()
+        && let Ok(root) = require_archive_root()
+    {
+        log_event(&root, &format!("login start: {line}")).ok();
+    }
+    autostart::record_boot(&line)?;
+    outcome.map(|_| ())
+}
+
+fn start_service() -> Result<String> {
     let root = require_archive_root()?;
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    clear_stale_legacy_service(&root);
     if is_service_up(&root) {
         let pid = fs::read_to_string(service_path(&root)).unwrap_or_else(|_| "unknown".to_string());
-        println!("service already running pid: {}", pid.trim());
-        return Ok(());
+        return Ok(format!("service already running pid: {}", pid.trim()));
     }
     initialize_database(&root)?;
     fs::OpenOptions::new()
@@ -315,7 +407,9 @@ fn cmd_up() -> Result<()> {
         .open(log_path(&root))
         .with_context(|| format!("failed to open {}", log_path(&root).display()))?;
     let child_id = spawn_daemon(&root)?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Generous, for a machine still busy signing in; a daemon that starts promptly ends the
+    // wait at once.
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !service_path(&root).exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
@@ -327,8 +421,7 @@ fn cmd_up() -> Result<()> {
             .map(|id| id.to_string())
             .unwrap_or_else(|| "unknown".to_string())
     });
-    println!("service started pid: {}", pid.trim());
-    Ok(())
+    Ok(format!("service started pid: {}", pid.trim()))
 }
 
 #[cfg(windows)]
@@ -378,6 +471,18 @@ fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
 
 fn cmd_daemon(root: PathBuf) -> Result<()> {
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    // Held for the daemon's whole life and released by the system however the daemon ends,
+    // so a record whose daemon is gone reads as down. A daemon that is still stopping holds it
+    // a moment longer; wait for it.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(daemon_lock_path(&root))
+        .with_context(|| format!("failed to open {}", daemon_lock_path(&root).display()))?;
+    lock.lock()
+        .with_context(|| format!("failed to lock {}", daemon_lock_path(&root).display()))?;
     log_event(&root, "daemon started")?;
     let pid = std::process::id().to_string();
     fs::write(service_path(&root), &pid)
@@ -385,15 +490,34 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
     if !sessions_path(&root).exists() {
         fs::write(sessions_path(&root), "").ok();
     }
-    loop {
-        thread::sleep(Duration::from_millis(250));
-        match fs::read_to_string(service_path(&root)) {
-            Ok(current) if current.trim() == pid => {}
-            _ => break,
-        }
+    let ended = shutdown::watch(
+        {
+            let (root, pid) = (root.clone(), pid.clone());
+            move || owns_service(&root, &pid)
+        },
+        {
+            let (root, pid) = (root.clone(), pid.clone());
+            move |end| stop_for_system(&root, &pid, end)
+        },
+    );
+    if ended.is_none() {
+        log_event(&root, "daemon stopped")?;
     }
-    log_event(&root, "daemon stopped")?;
+    drop(lock);
     Ok(())
+}
+
+fn owns_service(root: &Path, pid: &str) -> bool {
+    matches!(fs::read_to_string(service_path(root)), Ok(current) if current.trim() == pid)
+}
+
+/// The machine is ending the user's session: stop the service as `zt down` does, without
+/// waiting for open Sessions, which the system is ending too.
+fn stop_for_system(root: &Path, pid: &str, end: shutdown::SystemEnd) {
+    if owns_service(root, pid) {
+        let _ = fs::remove_file(service_path(root));
+    }
+    let _ = log_event(root, &format!("service stopped: {}", end.describe()));
 }
 
 fn initialize_database(root: &Path) -> Result<()> {
@@ -695,6 +819,9 @@ fn cmd_status() -> Result<()> {
     let Some(root) = config.archive_root else {
         println!("state: down");
         println!("archive_root: <unset>");
+        if let Some(line) = autostart::status_line() {
+            println!("{line}");
+        }
         return Ok(());
     };
     let up = is_service_up(&root);
@@ -710,6 +837,9 @@ fn cmd_status() -> Result<()> {
         card_counts(&root).map(|c| c.total).unwrap_or(0)
     );
     println!("sessions: {}", session::session_count(&root));
+    if let Some(line) = autostart::status_line() {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -811,6 +941,7 @@ fn cmd_help() -> Result<()> {
     println!("  zt up");
     println!("  zt down");
     println!("  zt status");
+    println!("  zt autostart [on|off]");
     println!("  zt version");
     println!("  zt help");
     println!("  zt config show");

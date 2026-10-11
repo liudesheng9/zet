@@ -500,7 +500,7 @@ fn write_session_pids(root: &Path, pids: &[u32]) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn process_exists(pid: u32) -> bool {
+pub(crate) fn process_exists(pid: u32) -> bool {
     let filter = format!("PID eq {pid}");
     Command::new("tasklist")
         .args(["/FI", &filter, "/NH"])
@@ -514,7 +514,7 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn process_exists(pid: u32) -> bool {
+pub(crate) fn process_exists(pid: u32) -> bool {
     Command::new("sh")
         .args(["-c", &format!("kill -0 {pid}")])
         .stdout(Stdio::null())

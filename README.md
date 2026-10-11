@@ -16,6 +16,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Connect Cards with `[[target]]` Links, with generated Reverse links and Broken link checks.
 - Safely create, edit, move, and delete Card trees from the Session or shell.
 - Store everything locally in SQLite, with status, statistics, dump, and clear commands.
+- Start the service when you sign in and stop it when the machine goes down, with `zt autostart on` (Windows).
 
 ## Install
 
@@ -56,6 +57,26 @@ The ROOT view lists every Topic and Literature Card. Every Card view ends with
 clickable `parent:`, `direct:`, and `side:` links. `ls`, `lsbk`, and `help` open a
 panel whose addresses you can click; press `Esc` to close it. Long views scroll
 with `PageUp`/`PageDown` or the mouse wheel.
+
+## Start with the machine
+
+On Windows, the service can follow the machine:
+
+```sh
+zt autostart on    # start the service whenever you sign in
+zt autostart       # show the login command and how the last login start went
+zt autostart off   # stop starting it at sign-in
+```
+
+`zt autostart on` registers `zt-boot`, a window-less program installed beside `zt`, under your
+account's Run key (it is listed in Task Manager's Startup apps), so it needs no admin rights and
+signing in opens no console. Each login start is recorded in `autostart.log` next to the config
+file, and `zt status` shows whether autostart is on.
+
+When the machine shuts down or restarts, or you sign out, the daemon stops the service itself and
+writes the reason to `zt.log`; it does not wait for open Sessions, which end with the machine. If
+the daemon dies without warning (a power cut, a killed process), the service reads as down, and
+the next sign-in or `zt up` starts it again.
 
 ## Markdown Cards
 
