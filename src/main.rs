@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod card;
+mod card_type;
 mod dump;
 mod gui;
 mod link;
@@ -24,6 +25,7 @@ pub(crate) use card::{
     ParsedCard, compose_card_text, parse_card_text, parse_literature_edit_text, regular_template,
     topic_template,
 };
+pub(crate) use card_type::CardType;
 pub(crate) use workspace::{Access, Workspace};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -426,8 +428,9 @@ fn initialize_database(root: &Path) -> Result<()> {
             "bibtex",
             "text",
         ];
-        let current = [&before_workspaces[..], &["workspace"]].concat();
-        if columns != before_workspaces && columns != current {
+        let before_card_types = [&before_workspaces[..], &["workspace"]].concat();
+        let current = [&before_card_types[..], &["card_type"]].concat();
+        if columns != before_workspaces && columns != before_card_types && columns != current {
             bail!("unsupported cards schema; database was not modified");
         }
     }
@@ -442,6 +445,7 @@ fn initialize_database(root: &Path) -> Result<()> {
             bibtex TEXT,
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
+            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
@@ -459,6 +463,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     )?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     ensure_workspace_column(&conn, root)?;
+    ensure_card_type_column(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
@@ -487,6 +492,26 @@ fn ensure_workspace_column(conn: &Connection, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Archives created before Card types existed hold only Idea Cards: add the
+/// `card_type` column with every existing Card an Idea Card.
+fn ensure_card_type_column(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'card_type')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'idea'
+             CHECK(card_type IN ('idea', 'event', 'model'));",
+    )
+    .context("failed to add Card types to the archive")?;
+    log_event(root, "added card types; existing cards are idea cards").ok();
+    Ok(())
+}
+
 const CARD_FORMAT: &str = "markdown";
 
 /// Convert an archive written before Cards were Markdown documents. The
@@ -495,6 +520,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
     use rusqlite::OptionalExtension;
     let mut conn = open_db(root)?;
     ensure_workspace_column(&conn, root)?;
+    ensure_card_type_column(&conn, root)?;
     let format: Option<String> = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'card_format'",
@@ -640,7 +666,12 @@ fn cmd_dump() -> Result<()> {
                     card.text,
                 ))
             } else {
-                Ok(dump::DumpCard::new(card.address, card.workspace, card.text))
+                Ok(dump::DumpCard::new(
+                    card.address,
+                    card.workspace,
+                    card.card_type,
+                    card.text,
+                ))
             }
         })
         .collect::<Result<Vec<_>>>()?;
@@ -768,6 +799,7 @@ struct Card {
     bibtex: Option<String>,
     text: String,
     workspace: Workspace,
+    card_type: CardType,
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -927,7 +959,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace
+                is_topic, is_lit, bibtex, text, workspace, card_type
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -940,6 +972,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 bibtex: row.get(5)?,
                 text: row.get(6)?,
                 workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
+                card_type: CardType::from_stored(&row.get::<_, String>(8)?),
             })
         },
     )
@@ -949,7 +982,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace
+                is_topic, is_lit, bibtex, text, workspace, card_type
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -962,6 +995,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             bibtex: row.get(5)?,
             text: row.get(6)?,
             workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
+            card_type: CardType::from_stored(&row.get::<_, String>(8)?),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1235,9 +1269,15 @@ fn insert_literature_card(
     validate_card_text(conn, citation_key, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
-         VALUES(NULL, ?1, 0, 1, ?2, ?3, ?4)",
-        params![citation_key, bibtex, text, workspace.id()],
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
+         VALUES(NULL, ?1, 0, 1, ?2, ?3, ?4, ?5)",
+        params![
+            citation_key,
+            bibtex,
+            text,
+            workspace.id(),
+            CardType::Idea.id()
+        ],
     )?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
@@ -1296,7 +1336,14 @@ fn shell_create_direct(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(&mut conn, &location, false, parent.workspace, &text)?;
+            insert_card(
+                &mut conn,
+                &location,
+                false,
+                parent.workspace,
+                CardType::Idea,
+                &text,
+            )?;
             println!("{location}");
             Ok(())
         }
@@ -1313,7 +1360,14 @@ fn shell_create_side(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(&mut conn, &location, false, parent.workspace, &text)?;
+            insert_card(
+                &mut conn,
+                &location,
+                false,
+                parent.workspace,
+                CardType::Idea,
+                &text,
+            )?;
             println!("{location}");
             Ok(())
         }
@@ -1476,16 +1530,20 @@ fn update_literature_metadata(
 }
 
 /// Insert a Topic or Regular Card. A Regular Card must name the Workspace of
-/// the tree it joins.
+/// the tree it joins; only a Regular Card may be an Event or Model Card.
 fn insert_card(
     conn: &mut Connection,
     location: &str,
     is_topic: bool,
     workspace: Workspace,
+    card_type: CardType,
     text: &str,
 ) -> Result<()> {
     if !is_valid_location(location) {
         bail!("invalid location `{location}`");
+    }
+    if is_topic && card_type != CardType::Idea {
+        bail!("only Regular Cards can be Event or Model Cards");
     }
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
@@ -1501,9 +1559,15 @@ fn insert_card(
     validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace)
-         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4)",
-        params![location, if is_topic { 1 } else { 0 }, text, workspace.id()],
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5)",
+        params![
+            location,
+            if is_topic { 1 } else { 0 },
+            text,
+            workspace.id(),
+            card_type.id()
+        ],
     )?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
@@ -1513,7 +1577,7 @@ fn insert_card(
 /// Create a Topic in `workspace` at the next Topic number.
 fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Result<String> {
     let location = next_topic_location(conn)?;
-    insert_card(conn, &location, true, workspace, text)?;
+    insert_card(conn, &location, true, workspace, CardType::Idea, text)?;
     bump_next_topic_id(conn, &location)?;
     Ok(location)
 }

@@ -55,8 +55,9 @@ A dump must hold everything needed to replicate the archive. Besides Card text a
 - The new entry is `archive.json`, compact JSON with keys in this order: `{"next_topic_id":<integer>,"workspaces":{"<address>":"human"|"agent",...}}`.
 - `workspaces` has exactly the keys of `mapping.json`, in the same order.
 - Archive entries are ordered `mapping.json`, `archive.json`, the hashed Markdown files in address order, then the `<citation-key>.bib` files.
-- A new or cleared archive dumps `{"next_topic_id":0,"workspaces":{}}`.
+- A new or cleared archive dumps `{"next_topic_id":0,"workspaces":{},"types":{}}` (the `types` key since zt 0.5.0; see `doc/event-and-model-cards-design.md`).
 - Markdown files, their hashes, and `.bib` files are unchanged, so a Card's kind (Topic `<n>/0`, Literature front matter, otherwise Regular), Workspace, BibTeX, and exact text can all be rebuilt from a dump.
+- Since zt 0.5.0 `archive.json` has a third key, `types`, after `workspaces`; see `doc/event-and-model-cards-design.md`.
 
 ## Session and GUI
 

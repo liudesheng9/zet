@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::Workspace;
+use crate::{CardType, Workspace};
 
 /// The archive manifest: the archive state that is not Card text.
 const MANIFEST: &str = "archive.json";
@@ -18,6 +18,7 @@ const MANIFEST: &str = "archive.json";
 pub(crate) struct DumpCard {
     address: String,
     workspace: Workspace,
+    card_type: CardType,
     bibtex: Option<String>,
     text: String,
 }
@@ -28,10 +29,16 @@ struct DumpPayload {
 }
 
 impl DumpCard {
-    pub(crate) fn new(address: String, workspace: Workspace, text: String) -> Self {
+    pub(crate) fn new(
+        address: String,
+        workspace: Workspace,
+        card_type: CardType,
+        text: String,
+    ) -> Self {
         Self {
             address,
             workspace,
+            card_type,
             bibtex: None,
             text,
         }
@@ -46,6 +53,7 @@ impl DumpCard {
         Self {
             address,
             workspace,
+            card_type: CardType::Idea,
             bibtex: Some(bibtex),
             text,
         }
@@ -54,17 +62,25 @@ impl DumpCard {
 
 /// `archive.json`: everything beyond the Card files that a dump needs to
 /// replicate the archive. `workspaces` maps every address in `mapping.json`
-/// to its Workspace, and `next_topic_id` keeps deleted Topic numbers from
-/// being reused.
-fn manifest(cards: &[DumpCard], next_topic_id: u64) -> serde_json::Value {
+/// to its Workspace, `types` maps every Event and Model Card to its Card type
+/// (Idea Cards are left out), and `next_topic_id` keeps deleted Topic numbers
+/// from being reused.
+fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
     let workspaces = cards
         .iter()
         .map(|card| (card.address.clone(), card.workspace.id()))
         .collect::<BTreeMap<_, _>>();
-    serde_json::json!({
-        "next_topic_id": next_topic_id,
-        "workspaces": workspaces,
-    })
+    let types = cards
+        .iter()
+        .filter(|card| card.card_type != CardType::Idea)
+        .map(|card| (card.address.clone(), card.card_type.id()))
+        .collect::<BTreeMap<_, _>>();
+    // serde_json sorts object keys, so the documented key order is written out.
+    Ok(format!(
+        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{}}}"#,
+        serde_json::to_string(&workspaces)?,
+        serde_json::to_string(&types)?
+    ))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -360,10 +376,7 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result
         staging.join("mapping.json"),
         serde_json::to_vec(&payload.mapping)?,
     )?;
-    fs::write(
-        staging.join(MANIFEST),
-        serde_json::to_vec(&manifest(cards, next_topic_id))?,
-    )?;
+    fs::write(staging.join(MANIFEST), manifest(cards, next_topic_id)?)?;
     for (filename, text) in &payload.files {
         fs::write(staging.join(filename), text.as_bytes())?;
     }
@@ -647,8 +660,18 @@ mod tests {
     #[test]
     fn collision_retry_appends_two_fresh_salts_until_filename_is_unique() {
         let cards = [
-            DumpCard::new("0/0".to_string(), Workspace::Human, "same".to_string()),
-            DumpCard::new("0/1".to_string(), Workspace::Agent, "same".to_string()),
+            DumpCard::new(
+                "0/0".to_string(),
+                Workspace::Human,
+                CardType::Idea,
+                "same".to_string(),
+            ),
+            DumpCard::new(
+                "0/1".to_string(),
+                Workspace::Agent,
+                CardType::Idea,
+                "same".to_string(),
+            ),
         ];
         let digests = RefCell::new(VecDeque::from([
             "aaaaaaaaaa".to_string(),
@@ -694,10 +717,32 @@ mod tests {
     }
 
     #[test]
-    fn manifest_records_every_workspace_and_the_next_topic_id() {
+    fn manifest_records_every_workspace_the_non_idea_types_and_the_next_topic_id() {
         let cards = [
-            DumpCard::new("0/0".to_string(), Workspace::Human, "a".to_string()),
-            DumpCard::new("1/0".to_string(), Workspace::Agent, "b".to_string()),
+            DumpCard::new(
+                "0/0".to_string(),
+                Workspace::Human,
+                CardType::Idea,
+                "a".to_string(),
+            ),
+            DumpCard::new(
+                "0/1".to_string(),
+                Workspace::Human,
+                CardType::Model,
+                "m".to_string(),
+            ),
+            DumpCard::new(
+                "1/0".to_string(),
+                Workspace::Agent,
+                CardType::Idea,
+                "b".to_string(),
+            ),
+            DumpCard::new(
+                "1/1|a".to_string(),
+                Workspace::Agent,
+                CardType::Event,
+                "e".to_string(),
+            ),
             DumpCard::literature(
                 "Smith2024".to_string(),
                 Workspace::Agent,
@@ -706,12 +751,16 @@ mod tests {
             ),
         ];
         assert_eq!(
-            serde_json::to_string(&manifest(&cards, 7)).unwrap(),
-            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","1/0":"agent","Smith2024":"agent"}}"#
+            manifest(&cards, 7).unwrap(),
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1|a":"agent","Smith2024":"agent"},"types":{"0/1":"model","1/1|a":"event"}}"#
         );
         assert_eq!(
-            serde_json::to_string(&manifest(&[], 0)).unwrap(),
-            r#"{"next_topic_id":0,"workspaces":{}}"#
+            manifest(&cards[..1], 1).unwrap(),
+            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{}}"#
+        );
+        assert_eq!(
+            manifest(&[], 0).unwrap(),
+            r#"{"next_topic_id":0,"workspaces":{},"types":{}}"#
         );
     }
 

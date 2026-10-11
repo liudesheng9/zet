@@ -12,7 +12,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use crate::ops::{self, Outcome, Snapshot, Successor};
-use crate::{Access, Workspace};
+use crate::{Access, CardType, Workspace};
 
 /// Every change made through MCP is limited to the agent Workspace.
 const ACCESS: Access = Access::Agent;
@@ -27,6 +27,9 @@ Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by 
 `[[address]]` in Markdown bodies; Links may cross Workspaces, but Cards and trees never move \
 between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
 create new trees with create_topic or create_literature, then grow them with create_successor. \
+Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
+real-world event with its date, place, actors, and source) or a Model Card (`model`: one whole \
+model), set with `type` on create_successor or edit_card and listed with search_cards by `type`. \
 delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
 `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
@@ -271,6 +274,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "workspace": card.workspace.id(),
                 "writable": ACCESS.can_write(card.workspace),
                 "kind": ops::kind(card),
+                "type": card.card_type.id(),
                 "title": parsed.title,
                 "body": parsed.body,
                 "text": card.text,
@@ -285,14 +289,19 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         }
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
-            let query = string_arg(args, "query")?;
+            let card_type = optional_card_type(args)?;
+            // With a type, the query may be left out to list every Card of that type.
+            let query = match card_type {
+                Some(_) => optional_string(args, "query")?,
+                None => string_arg(args, "query")?,
+            };
             let limit = args
                 .get("limit")
                 .and_then(Value::as_u64)
                 .unwrap_or(30)
                 .clamp(1, 200) as usize;
             Ok(json!({
-                "results": snapshot.search(&query, optional_workspace(args)?, limit),
+                "results": snapshot.search(&query, optional_workspace(args)?, card_type, limit),
             }))
         }
         "list_links" => {
@@ -347,10 +356,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "side" => Successor::Side,
                 other => bail!("unknown successor kind `{other}`; expected direct or side"),
             };
+            let card_type = optional_card_type(args)?.unwrap_or_default();
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
-            let address = ops::create_successor(&root, ACCESS, kind, &at, &text)?;
-            Ok(json!({ "address": address }))
+            let address = ops::create_successor(&root, ACCESS, kind, &at, card_type, &text)?;
+            Ok(json!({ "address": address, "type": card_type.id() }))
         }
         "edit_card" => {
             let at = string_arg(args, "at")?;
@@ -358,9 +368,15 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let card = crate::load_card(&conn, &at)?;
             drop(conn);
             ACCESS.ensure_writable(card.workspace)?;
+            let card_type = optional_card_type(args)?;
             let parsed = crate::parse_card_text(&card.text)?;
+            let text_given = ["text", "title", "body"]
+                .iter()
+                .any(|name| args.get(name).is_some());
             let text = match args.get("text").and_then(Value::as_str) {
-                Some(text) => text.to_string(),
+                // A type alone changes only the type.
+                _ if card_type.is_some() && !text_given => None,
+                Some(text) => Some(text.to_string()),
                 None => {
                     if card.is_lit && args.get("title").is_some() {
                         bail!(
@@ -375,11 +391,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                         Some(_) => optional_string(args, "body")?,
                         None => parsed.body.clone(),
                     };
-                    crate::compose_card_text(&title, &body, "")
+                    Some(crate::compose_card_text(&title, &body, ""))
                 }
             };
             let base = args.get("base").and_then(Value::as_str);
-            let address = ops::edit_text(&root, ACCESS, &at, &text, base)?;
+            let address = ops::edit(&root, ACCESS, &at, text.as_deref(), card_type, base)?;
             Ok(json!({ "address": address }))
         }
         "edit_literature_metadata" => {
@@ -472,6 +488,14 @@ fn target_workspace(args: &Value) -> Result<Workspace> {
     Ok(workspace)
 }
 
+fn optional_card_type(args: &Value) -> Result<Option<CardType>> {
+    match args.get("type") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => CardType::parse(value).map(Some),
+        Some(_) => bail!("argument `type` must be a string"),
+    }
+}
+
 fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
     match args.get("zone").and_then(Value::as_str) {
         None | Some("all") => Ok(None),
@@ -528,6 +552,13 @@ fn tool_definitions() -> Vec<Value> {
         "type": "string",
         "description": "Markdown body. Write `[[address]]` to link any Card in either Workspace.",
     });
+    let card_type = |description: &str| {
+        json!({
+            "type": "string",
+            "enum": ["idea", "event", "model"],
+            "description": description,
+        })
+    };
     vec![
         tool(
             "list_workspaces",
@@ -553,7 +584,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_tree",
             "Get tree",
-            "Every Card of one tree, root first, with its edge (root, direct, side), parent, excerpt, and Links.",
+            "Every Card of one tree, root first, with its type (idea, event, model), edge (root, direct, side), parent, excerpt, and Links.",
             json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." } }),
             &["tree"],
             true,
@@ -562,7 +593,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, or model), BibTeX, Workspace, whether you may change it, neighbors, and Links in and out.",
             json!({ "at": at }),
             &["at"],
             true,
@@ -571,13 +602,14 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "search_cards",
             "Search cards",
-            "Case-insensitive full-text search over Card addresses, titles, and bodies.",
+            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type`, only Cards of that type match, and `query` may be empty or left out to list every Card of that type.",
             json!({
-                "query": { "type": "string" },
+                "query": { "type": "string", "description": "Text to find; required unless `type` is given." },
+                "type": card_type("Only Cards of this type: idea, event (Event Cards), or model (Model Cards)."),
                 "workspace": workspace_filter,
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
             }),
-            &["query"],
+            &[],
             true,
             false,
         ),
@@ -631,12 +663,13 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root).",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model).",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
+                "type": card_type("The Card type: idea (default), event, or model."),
             }),
             &["at", "title"],
             false,
@@ -645,11 +678,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card; it may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
+                "type": card_type("New Card type: idea, event, or model (event and model only for Regular Cards)."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
             }),

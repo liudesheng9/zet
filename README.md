@@ -9,6 +9,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
 - Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
+- Mark a Regular Card as an Event Card (one real-world event) or a Model Card (one whole model); the other Cards that cite it link to it.
 - Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
 - Let coding agents work in the agent Workspace through the `zt mcp` server, with read-only access to yours.
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
@@ -42,6 +43,7 @@ n                  # Create the Direct successor (also works on a Literature Car
 b                  # Create a Side successor
 l                  # Create a Literature Card
 e                  # Edit the current Card
+ty event           # Make the current Card an Event Card (or ty model, ty idea)
 ws [agent|human]   # List Workspaces, or switch to one
 go <target>        # Go to a Location or Citation key
 up                 # Go to the parent Card (a tree root goes to ROOT)
@@ -105,7 +107,7 @@ zt gui --port 4717     # choose the port
   `Ctrl+S` to save, and `Esc` to cancel.
 
 The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
-`ws agent`, `del`, `mv 1/3`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
+`ws agent`, `del`, `mv 1/3`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
 same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m`,
 `Delete`, `u` or arrows to walk the map, `v` to switch views, `w` to switch Workspaces, `f` to fit.
 
@@ -137,6 +139,32 @@ Link into the other Workspace switches to it. In the GUI, the cabinet's two tabs
 `ws` command) switch Workspaces, agent Cards carry a violet AI AGENT tag, and Links into the
 other Workspace are inked in its color.
 
+## Event and Model Cards
+
+Every Card has a **Card type**. Most Cards are **Idea Cards** (`idea`, the default): one idea in
+your own words. A Regular Card may instead be
+
+- an **Event Card** (`event`): one event that happened in the real world (what, when, where,
+  who, and the source that reports it), with no interpretation in its description; or
+- a **Model Card** (`model`): one whole model (question, setup, assumptions, timing and
+  information, solution, results, intuition, limits, source).
+
+Idea Cards cite them with ordinary `[[target]]` Links, so a Model Card's Reverse links list every
+Card that discusses the model. Topic and Literature Cards are always Idea Cards. The type stays
+with the Card when it moves, when Side successors are compacted, and when a Citation key is
+renamed; it changes nothing else about the Card. Archives created before 0.5.0 are upgraded on
+`zt up`, with every Card an Idea Card.
+
+- **Session**: the Card view shows `[event]` or `[model]` after the Location; `ty event`,
+  `ty model`, or `ty idea` sets the type of the current Regular Card.
+- **GUI**: Event and Model Cards carry an EVENT or MODEL stamp on the Reader card, in the map,
+  and in search results, and each desk stack counts them; the writing desk of a Regular Card has a
+  type selector, and the command bar takes `ty`.
+- **MCP**: `create_successor` and `edit_card` take `type` (`idea`, `event`, or `model`;
+  `edit_card` accepts it alone), `get_card`, `get_tree`, and `search_cards` report it, and
+  `search_cards` filters by `type`, with an empty `query` listing every Card of that type.
+- **Dump**: `archive.json` lists the non-Idea Cards under `types`.
+
 ## The MCP server
 
 `zt mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so
@@ -151,24 +179,28 @@ Reverse links to the human Card.
 | `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
-| `search_cards`, `list_links`, `list_broken_links` | full-text search, the Link graph (optionally only cross-Workspace Links), Broken links |
+| `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
-| `create_successor` | add a direct or side successor to an agent Card |
-| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, or BibTeX |
+| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) |
+| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, or BibTeX |
 | `delete_card`, `move_card` | delete or move agent Cards |
 
 Deletes, moves, and Citation key renames first return a plan; call again with the `confirm`
 text it names (`delete`, the tree root's address, or `move`) to apply it. The service must be up.
 
-To make the server and the `zt` agent skill (`skills/zt/SKILL.md`, which teaches agents the
-Workspaces, tools, and rules) available in every Claude Code and Codex conversation, run once on
-Windows, and again after updating the skill or moving the `zt` binary:
+Two agent skills come with zt: `zt` (`skills/zt/SKILL.md`) teaches the Workspaces, tools, and
+rules, and `zettelkasten` (`skills/zettelkasten/SKILL.md`) teaches how to compose a Card and
+connect it, after Niklas Luhmann's practice and later practitioners' experience (sources in
+`skills/zettelkasten/references/`). To make the skills available in every Claude Code, Codex,
+and DeepSeek Harness conversation, and the server in Claude Code and Codex, run once on Windows, and again after updating a skill
+or moving the `zt` binary:
 
 ```powershell
 pwsh -File scripts/install-agent-integrations.ps1
 ```
 
-It copies the skill to `~/.claude/skills/zt` and `~/.codex/skills/zt`, registers `zt` as a
+It copies each skill to `~/.claude/skills/<name>` and `~/.codex/skills/<name>`, links
+`~/.dsh/skills/<name>` to the Codex copy for DeepSeek Harness, registers `zt` as a
 user-scope MCP server in Claude Code (allowing its tools) and as a global server in Codex, and
 checks the server's handshake, backing up each config file it changes. Conversations that are
 already open keep their old servers. Elsewhere, `claude mcp add -s user zt -- zt mcp` or
@@ -216,9 +248,9 @@ system:
 - `mapping.json`: every Card address mapped to its Markdown file.
 - One Markdown file per Card holding its exact stored text; a Literature Card's file starts with
   YAML front matter holding its BibTeX, and `<citation-key>.bib` holds the exact BibTeX bytes.
-- `archive.json`: the Workspace of every Card address and the next Topic number, so deleted
-  Topic numbers are not reused, for example
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","1/0":"agent"}}`.
+- `archive.json`: the Workspace of every Card address, the next Topic number (so deleted
+  Topic numbers are not reused), and the type of every Event and Model Card, for example
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent"},"types":{"0/1":"event"}}`.
 
 ## Create a Literature Card
 

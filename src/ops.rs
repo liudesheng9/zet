@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::link::{LinkBody, LinkLifecycle};
-use crate::{Access, Card, Workspace};
+use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
 pub(crate) enum Outcome {
@@ -55,6 +55,7 @@ pub(crate) fn create_successor(
     access: Access,
     kind: Successor,
     at: &str,
+    card_type: CardType,
     text: &str,
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock(root)?;
@@ -74,7 +75,14 @@ pub(crate) fn create_successor(
             crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?
         }
     };
-    crate::insert_card(&mut conn, &location, false, parent.workspace, text)?;
+    crate::insert_card(
+        &mut conn,
+        &location,
+        false,
+        parent.workspace,
+        card_type,
+        text,
+    )?;
     Ok(location)
 }
 
@@ -97,23 +105,32 @@ pub(crate) fn create_literature(
     Ok(metadata.citation_key)
 }
 
-/// Replace a Card's text. With `base`, refuse if the stored text changed
-/// since the caller read it.
-pub(crate) fn edit_text(
+/// Replace a Card's text, change its Card type, or both. With `base`, refuse
+/// if the stored text changed since the caller read it.
+pub(crate) fn edit(
     root: &Path,
     access: Access,
     at: &str,
-    text: &str,
+    text: Option<&str>,
+    card_type: Option<CardType>,
     base: Option<&str>,
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock(root)?;
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
-    if card.is_lit {
-        crate::update_literature_text(&mut conn, &card, text)?;
-    } else {
-        crate::update_card_text(&mut conn, &card, text)?;
+    if let Some(card_type) = card_type {
+        crate::card_type::ensure_allowed(&card, card_type)?;
+    }
+    match text {
+        Some(text) if card.is_lit => crate::update_literature_text(&mut conn, &card, text)?,
+        Some(text) => crate::update_card_text(&mut conn, &card, text)?,
+        None => {}
+    }
+    if let Some(card_type) = card_type
+        && card_type != card.card_type
+    {
+        crate::card_type::set(&conn, &card, card_type)?;
     }
     Ok(card.address)
 }
@@ -298,6 +315,8 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.workspace.id().as_bytes());
             hasher.update([0]);
+            hasher.update(card.card_type.id().as_bytes());
+            hasher.update([0]);
         }
         hasher
             .finalize()
@@ -372,6 +391,7 @@ impl Snapshot {
             "workspace": card.workspace.id(),
             "title": self.title(&card.address),
             "kind": kind(card),
+            "type": card.card_type.id(),
             "edge": edge,
             "parent": parent,
             "excerpt": excerpt(&self.parsed[&card.address].body),
@@ -380,7 +400,8 @@ impl Snapshot {
         })
     }
 
-    /// Every tree root, with its Workspace, Zone, and size.
+    /// Every tree root, with its Workspace, Zone, size, and how many of its
+    /// Cards are Event and Model Cards.
     pub(crate) fn trees(&self) -> Vec<Value> {
         self.cards
             .iter()
@@ -391,7 +412,13 @@ impl Snapshot {
                     .cards
                     .iter()
                     .filter(|member| crate::is_tree_member(&member.address, tree))
-                    .count();
+                    .collect::<Vec<_>>();
+                let typed = |card_type: CardType| {
+                    members
+                        .iter()
+                        .filter(|member| member.card_type == card_type)
+                        .count()
+                };
                 json!({
                     "tree": tree,
                     "root": card.address,
@@ -399,7 +426,9 @@ impl Snapshot {
                     "kind": zone(card),
                     "title": self.title(&card.address),
                     "excerpt": excerpt(&self.parsed[&card.address].body),
-                    "count": members,
+                    "count": members.len(),
+                    "events": typed(CardType::Event),
+                    "models": typed(CardType::Model),
                 })
             })
             .collect()
@@ -436,33 +465,42 @@ impl Snapshot {
             .map(|address| self.reference(&address))
     }
 
-    /// Case-insensitive full-text search over address, title, and body.
+    /// Case-insensitive full-text search over address, title, and body. With
+    /// a Card type, only Cards of that type match, and an empty query lists
+    /// them all.
     pub(crate) fn search(
         &self,
         query: &str,
         workspace: Option<Workspace>,
+        card_type: Option<CardType>,
         limit: usize,
     ) -> Vec<Value> {
         let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
+        if needle.is_empty() && card_type.is_none() {
             return Vec::new();
         }
         self.cards
             .iter()
             .filter(|card| workspace.is_none_or(|workspace| card.workspace == workspace))
+            .filter(|card| card_type.is_none_or(|card_type| card.card_type == card_type))
             .filter_map(|card| {
                 let parsed = &self.parsed[&card.address];
-                let haystack = format!("{}\n{}\n{}", card.address, parsed.title, parsed.body);
-                let lower = haystack.to_lowercase();
-                let at = lower.find(&needle)?;
-                let line = lower[..at].matches('\n').count();
-                let snippet = haystack.lines().nth(line).unwrap_or_default();
+                let snippet = if needle.is_empty() {
+                    excerpt(&parsed.body)
+                } else {
+                    let haystack = format!("{}\n{}\n{}", card.address, parsed.title, parsed.body);
+                    let lower = haystack.to_lowercase();
+                    let at = lower.find(&needle)?;
+                    let line = lower[..at].matches('\n').count();
+                    clip(haystack.lines().nth(line).unwrap_or_default().trim(), 160)
+                };
                 Some(json!({
                     "address": card.address,
                     "title": parsed.title,
                     "kind": kind(card),
+                    "type": card.card_type.id(),
                     "workspace": card.workspace.id(),
-                    "snippet": clip(snippet.trim(), 160),
+                    "snippet": snippet,
                 }))
             })
             .take(limit)
@@ -559,5 +597,349 @@ mod tests {
             "A bold code see 0/1"
         );
         assert_eq!(excerpt(""), "");
+    }
+
+    const ROOT_REFUSAL: &str = "only Regular Cards can be Event or Model Cards";
+
+    fn archive() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        temp
+    }
+
+    fn type_of(root: &Path, at: &str) -> CardType {
+        let conn = crate::open_db(root).expect("open database");
+        crate::load_card(&conn, at).expect("card").card_type
+    }
+
+    fn text_of(root: &Path, at: &str) -> String {
+        let conn = crate::open_db(root).expect("open database");
+        crate::load_card(&conn, at).expect("card").text
+    }
+
+    #[test]
+    fn successors_take_a_card_type_and_edits_change_it_within_access() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        assert_eq!(
+            create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap(),
+            "0/0"
+        );
+        assert_eq!(
+            create_topic(root, owner, Workspace::Agent, "# Agent\n").unwrap(),
+            "1/0"
+        );
+        let event = "# 1926 GM buys Fisher Body\n\nwhat happened\n";
+        assert_eq!(
+            create_successor(
+                root,
+                owner,
+                Successor::Direct,
+                "0/0",
+                CardType::Event,
+                event
+            )
+            .unwrap(),
+            "0/1"
+        );
+        assert_eq!(type_of(root, "0/1"), CardType::Event);
+        assert_eq!(type_of(root, "0/0"), CardType::Idea);
+
+        // A type alone changes only the type.
+        let before = text_of(root, "0/1");
+        edit(root, owner, "0/1", None, Some(CardType::Model), None).unwrap();
+        assert_eq!(type_of(root, "0/1"), CardType::Model);
+        assert_eq!(text_of(root, "0/1"), before);
+        edit(
+            root,
+            owner,
+            "0/1",
+            Some("# Renamed\n\nnew body\n"),
+            Some(CardType::Idea),
+            None,
+        )
+        .unwrap();
+        assert_eq!(type_of(root, "0/1"), CardType::Idea);
+        assert!(text_of(root, "0/1").starts_with("# Renamed\n\nnew body\n"));
+        edit(root, owner, "0/1", Some("# Renamed\n\nagain\n"), None, None).unwrap();
+        assert_eq!(
+            type_of(root, "0/1"),
+            CardType::Idea,
+            "text edits keep the type"
+        );
+
+        // Tree roots stay Idea Cards.
+        assert_eq!(
+            edit(root, owner, "0/0", None, Some(CardType::Event), None)
+                .unwrap_err()
+                .to_string(),
+            ROOT_REFUSAL
+        );
+        let before = text_of(root, "0/0");
+        assert_eq!(
+            edit(
+                root,
+                owner,
+                "0/0",
+                Some("# Changed\n"),
+                Some(CardType::Model),
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            ROOT_REFUSAL,
+            "a refused type leaves the text alone too"
+        );
+        assert_eq!(text_of(root, "0/0"), before);
+        edit(root, owner, "0/0", None, Some(CardType::Idea), None).unwrap();
+        let mut conn = crate::open_db(root).unwrap();
+        assert_eq!(
+            crate::insert_card(
+                &mut conn,
+                "9/0",
+                true,
+                Workspace::Human,
+                CardType::Event,
+                "# Topic\n"
+            )
+            .unwrap_err()
+            .to_string(),
+            ROOT_REFUSAL
+        );
+        drop(conn);
+        create_literature(
+            root,
+            owner,
+            Workspace::Human,
+            "@book{Lit2020, title={Lit}}",
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            edit(root, owner, "Lit2020", None, Some(CardType::Event), None)
+                .unwrap_err()
+                .to_string(),
+            ROOT_REFUSAL
+        );
+
+        // Agent Access changes types only in the agent Workspace.
+        let read_only = "the human workspace is read-only for AI agents";
+        assert!(
+            create_successor(
+                root,
+                Access::Agent,
+                Successor::Side,
+                "0/1",
+                CardType::Event,
+                event
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(read_only)
+        );
+        assert!(
+            edit(
+                root,
+                Access::Agent,
+                "0/1",
+                None,
+                Some(CardType::Event),
+                None
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(read_only)
+        );
+        assert_eq!(type_of(root, "0/1"), CardType::Idea);
+        assert_eq!(
+            create_successor(
+                root,
+                Access::Agent,
+                Successor::Direct,
+                "1/0",
+                CardType::Model,
+                "# GHM property-rights model\n"
+            )
+            .unwrap(),
+            "1/1"
+        );
+        edit(
+            root,
+            Access::Agent,
+            "1/1",
+            None,
+            Some(CardType::Event),
+            None,
+        )
+        .unwrap();
+        assert_eq!(type_of(root, "1/1"), CardType::Event);
+    }
+
+    #[test]
+    fn snapshots_report_types_and_search_lists_a_type_without_a_query() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap();
+        create_topic(root, owner, Workspace::Agent, "# Agent\n").unwrap();
+        for (at, card_type, text) in [
+            (
+                "0/0",
+                CardType::Idea,
+                "# Integration idea\n\nsee the event\n",
+            ),
+            (
+                "0/1",
+                CardType::Event,
+                "# Fisher Body event\n\nGM bought it\n",
+            ),
+            (
+                "0/2",
+                CardType::Model,
+                "# GHM model\n\nownership and investment\n",
+            ),
+            ("1/0", CardType::Event, "# Agent event\n\nan agent event\n"),
+        ] {
+            create_successor(root, owner, Successor::Direct, at, card_type, text).unwrap();
+        }
+        let snapshot = Snapshot::read(root).unwrap();
+        let types = |results: Vec<Value>| {
+            results
+                .iter()
+                .map(|hit| {
+                    (
+                        hit["address"].as_str().unwrap().to_string(),
+                        hit["type"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let pairs = |items: &[(&str, &str)]| {
+            items
+                .iter()
+                .map(|(address, card_type)| (address.to_string(), card_type.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            types(snapshot.search("", None, Some(CardType::Event), 30)),
+            pairs(&[("0/2", "event"), ("1/1", "event")])
+        );
+        assert_eq!(
+            types(snapshot.search("  ", Some(Workspace::Agent), Some(CardType::Event), 30)),
+            pairs(&[("1/1", "event")])
+        );
+        assert_eq!(
+            types(snapshot.search("", None, Some(CardType::Event), 1)),
+            pairs(&[("0/2", "event")])
+        );
+        assert_eq!(
+            types(snapshot.search("event", None, Some(CardType::Idea), 30)),
+            pairs(&[("0/1", "idea")])
+        );
+        assert_eq!(
+            types(snapshot.search("model", None, None, 30)),
+            pairs(&[("0/3", "model")])
+        );
+        assert!(snapshot.search("", None, None, 30).is_empty());
+        assert_eq!(
+            snapshot.search("", None, Some(CardType::Model), 30)[0]["snippet"],
+            "ownership and investment"
+        );
+
+        let summary = snapshot.summary(&snapshot.by_address["0/3"]);
+        assert_eq!(summary["type"], "model");
+        assert_eq!(
+            snapshot.summary(&snapshot.by_address["0/0"])["type"],
+            "idea"
+        );
+        let trees = snapshot.trees();
+        assert_eq!(
+            (&trees[0]["root"], &trees[0]["events"], &trees[0]["models"]),
+            (&json!("0/0"), &json!(1), &json!(1))
+        );
+        assert_eq!(
+            (&trees[1]["root"], &trees[1]["events"], &trees[1]["models"]),
+            (&json!("1/0"), &json!(1), &json!(0))
+        );
+        let before = snapshot.fingerprint();
+        edit(root, owner, "0/1", None, Some(CardType::Event), None).unwrap();
+        assert_ne!(
+            Snapshot::read(root).unwrap().fingerprint(),
+            before,
+            "a type change alone refreshes open windows"
+        );
+    }
+
+    #[test]
+    fn types_stay_with_cards_through_moves_side_compaction_and_citation_renames() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap();
+        create_successor(
+            root,
+            owner,
+            Successor::Direct,
+            "0/0",
+            CardType::Idea,
+            "# Base\n",
+        )
+        .unwrap();
+        for (card_type, title) in [
+            (CardType::Event, "# Side event\n"),
+            (CardType::Model, "# Side model\n"),
+            (CardType::Event, "# Third side\n"),
+        ] {
+            create_successor(root, owner, Successor::Side, "0/1", card_type, title).unwrap();
+        }
+        assert_eq!(
+            [
+                type_of(root, "0/1|a"),
+                type_of(root, "0/1|b"),
+                type_of(root, "0/1|c")
+            ],
+            [CardType::Event, CardType::Model, CardType::Event]
+        );
+
+        // Deleting 0/1|a compacts 0/1|b and 0/1|c one label down.
+        delete(root, owner, "0/1|a", Some("delete")).unwrap();
+        assert!(text_of(root, "0/1|a").starts_with("# Side model\n"));
+        assert_eq!(type_of(root, "0/1|a"), CardType::Model);
+        assert_eq!(type_of(root, "0/1|b"), CardType::Event);
+
+        move_card(root, owner, "0/1|a", "0/2", Some("move")).unwrap();
+        assert!(text_of(root, "0/2").starts_with("# Side model\n"));
+        assert_eq!(type_of(root, "0/2"), CardType::Model);
+        assert_eq!(type_of(root, "0/1|b"), CardType::Event);
+
+        create_literature(
+            root,
+            owner,
+            Workspace::Human,
+            "@book{Lit2020, title={Lit}}",
+            "",
+        )
+        .unwrap();
+        create_successor(
+            root,
+            owner,
+            Successor::Direct,
+            "Lit2020",
+            CardType::Event,
+            "# Reported event\n",
+        )
+        .unwrap();
+        edit_metadata(
+            root,
+            owner,
+            "Lit2020",
+            "@book{Lit2021, title={Lit}}",
+            None,
+            Some("move"),
+        )
+        .unwrap();
+        assert_eq!(type_of(root, "Lit2021/1"), CardType::Event);
+        assert_eq!(type_of(root, "Lit2021"), CardType::Idea);
     }
 }

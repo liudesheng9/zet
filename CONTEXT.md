@@ -12,6 +12,21 @@ _Avoid_: Note item, note record
 A non-root Card in a Topic tree or Literature tree.
 _Avoid_: Normal Card
 
+**Card type**:
+What a Card holds: `idea` (the default), `event`, or `model`. Only Regular Cards can be Event or Model Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
+_Avoid_: Card kind (kind means Topic, Literature, or Regular), tag, category
+
+**Idea Card**:
+A Card of type `idea`: one idea or claim, in the Card's own words. Most Cards are Idea Cards.
+
+**Event Card**:
+A Regular Card of type `event`: it records one event that happened in the real world (what, when, where, who, and the source that reports it), not an idea or an argument. Idea Cards that use the event as evidence or illustration link to it.
+_Avoid_: Fact card, case
+
+**Model Card**:
+A Regular Card of type `model`: it presents one whole model (question, setup, assumptions, timing and information, solution, results, intuition, limits). Every Card that derives, interprets, extends, or criticises the model links to it, so its Reverse links list the discussion of the model.
+_Avoid_: Theory card, formula card
+
 **Literature Card**:
 A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text, and is the root of its own Literature tree.
 _Avoid_: Reference Card

@@ -397,7 +397,15 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                     .context("Literature Card is missing its BibTeX metadata")?;
                 lines.extend(bibtex.lines().map(|line| ViewLine::Plain(line.to_string())));
             } else {
-                lines.push(ViewLine::Plain(format!("location: {}", card.address)));
+                // A non-Idea Card names its type after its Location.
+                let card_type = match card.card_type {
+                    crate::CardType::Idea => String::new(),
+                    other => format!(" [{other}]"),
+                };
+                lines.push(ViewLine::Plain(format!(
+                    "location: {}{card_type}",
+                    card.address
+                )));
             }
             lines.extend(markdown_view_lines(&card.text));
             if let Some(parent) = parent_location(&card.address)

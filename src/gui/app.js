@@ -118,6 +118,17 @@
   const wsLabel = (id) => (WORKSPACES[id] || WORKSPACES.human).label;
   const nodeWorkspace = (address) => state.nodes.find((node) => node.address === address)?.workspace;
 
+  // Card types: most Cards hold an idea; a Regular Card may record an event or present a model.
+  const CARD_TYPES = {
+    idea: { label: 'Idea', note: 'one idea or claim' },
+    event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
+    model: { label: 'Model', note: 'one whole model: setup, assumptions, solution, results, limits' },
+  };
+  /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. */
+  const typeStamp = (type, title) => (CARD_TYPES[type] && type !== 'idea'
+    ? h('span', { class: 'type-stamp ' + type, title: title || `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`, text: type })
+    : null);
+
   function setWorkspace(id, { toRoot } = {}) {
     if (!WORKSPACES[id]) throw new Error(`unknown workspace \`${id}\`; expected human or agent`);
     state.workspace = id;
@@ -140,6 +151,7 @@
     ['e', 'edit the current card', 'card'],
     ['del', 'delete the current card and its successors', 'card'],
     ['mv <new-location>', 'move the current card and its successors', 'regular'],
+    ['ty <idea|event|model>', 'make the current card an Idea, Event, or Model Card', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -193,6 +205,10 @@
         needCard();
         if (rest.length !== 1) throw new Error('usage: mv <new-location>');
         return moveCard(rest[0]);
+      case 'ty':
+        needCard();
+        if (rest.length !== 1) throw new Error('usage: ty <idea|event|model>');
+        return setCardType(rest[0].toLowerCase());
       case 'stats': {
         const s = state.overview.stats;
         return toast(`total: ${s.total}\ntopics: ${s.topics}\nregular: ${s.regular}\nliterature: ${s.literature}`);
@@ -325,7 +341,7 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
           h('span', { class: 's' }, marked(hit.snippet)),
         )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
       );
@@ -400,6 +416,10 @@
     const agent = state.workspace === 'agent';
     const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
     const zone = (kind) => trees.filter((tree) => tree.kind === kind);
+    // A stack shows a stamp for each kind of non-Idea Card it holds, with a tally past one.
+    const tally = (type, count) => (count
+      ? h('span', { class: 'tally' }, typeStamp(type, `${count} ${CARD_TYPES[type].label} Card${count === 1 ? '' : 's'}`), count > 1 ? `×${count}` : null)
+      : null);
     const stack = (tree) => h('button', {
       class: 'stack ' + tree.kind, onclick: () => go(tree.root), title: tree.title,
     },
@@ -409,7 +429,13 @@
         h('span', { class: 'kind', text: `${tree.kind === 'literature' ? 'Literature' : 'Topic'} · ${tree.root}` }),
         h('span', { class: 't', text: tree.title || '(untitled)' }),
         tree.excerpt ? h('span', { class: 'x', text: tree.excerpt }) : null,
-        h('span', { class: 'foot' }, h('span', { text: `${tree.count} card${tree.count === 1 ? '' : 's'}` }), h('span', { class: 'addr', text: '→' })),
+        h('span', { class: 'foot' },
+          h('span', { class: 'types' },
+            h('span', { text: `${tree.count} card${tree.count === 1 ? '' : 's'}` }),
+            tally('event', tree.events),
+            tally('model', tree.models),
+          ),
+          h('span', { class: 'addr', text: '→' })),
       ),
     );
     const newStack = (label, key, action) => h('button', { class: 'stack new', onclick: action },
@@ -504,7 +530,7 @@
       }
       const external = card.links.filter((target) => !byAddress.has(target)).length;
       const node = h('button', {
-        class: 'node' + (card.edge === 'root' ? ' root ' + card.kind : ''),
+        class: 'node' + (card.edge === 'root' ? ' root ' + card.kind : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : ''),
         dataset: { address: card.address },
         title: card.excerpt || card.title,
         onclick: (event) => { event.stopPropagation(); go(card.address); },
@@ -512,6 +538,7 @@
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: card.address }),
           h('span', { class: 'badges' },
+            typeStamp(card.type),
             card.inbound ? h('span', { class: 'badge in', title: 'Referred by', text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
           ),
@@ -941,11 +968,12 @@
     wireMarkdown(md);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
-    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') },
+    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : '') },
       h('header', { class: 'card-head' },
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
+          typeStamp(card.type),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
@@ -1116,8 +1144,26 @@
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType }) {
     return new Promise((resolve) => {
+      // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
+      let chosenType = cardType;
+      const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },
+        h('span', { class: 'lbl', text: 'Type' }),
+        Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
+          class: id + (id === cardType ? ' on' : ''), role: 'radio', 'aria-checked': id === cardType ? 'true' : 'false',
+          title: `${info.label} Card — ${info.note}`, text: info.label, dataset: { type: id },
+          onclick: (event) => {
+            chosenType = id;
+            dirty = dirty || id !== cardType;
+            for (const button of event.currentTarget.parentNode.querySelectorAll('button')) {
+              button.classList.toggle('on', button.dataset.type === id);
+              button.setAttribute('aria-checked', button.dataset.type === id ? 'true' : 'false');
+            }
+            update();
+          },
+        })),
+      ) : null;
       const text = h('textarea', { spellcheck: 'true', 'aria-label': 'Card Markdown' });
       text.value = initial;
       const bib = bibtex !== undefined
@@ -1151,13 +1197,15 @@
           const title = literature ? (bibTitle ?? literature.title ?? '') : rendered.title;
           preview.innerHTML = rendered.html;
           preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled'), text: title || 'Untitled — start with “# Title”' }));
+          const stamp = chosenType && typeStamp(chosenType);
+          if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
           wireMarkdown(preview);
           if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
         } catch (error) { setMsg(error.message, 'err'); }
       }, 160);
 
       const close = openOverlay(h('div', { class: 'sheet-dlg', role: 'dialog' },
-        h('div', { class: 'dlg-head' }, h('h3', { text: heading })),
+        h('div', { class: 'dlg-head' }, h('h3', { text: heading }), typePick),
         h('div', { class: 'dlg-body' },
           h('div', { class: 'pane' },
             bib ? h('div', { class: 'pane-label' }, h('span', { text: 'BibTeX metadata' })) : null,
@@ -1175,7 +1223,7 @@
       const doSave = async () => {
         saveBtn.disabled = true;
         try {
-          const address = await save(text.value, bib ? bib.value : undefined);
+          const address = await save(text.value, bib ? bib.value : undefined, chosenType);
           if (address !== undefined) finish(address);
         } catch (error) {
           setMsg(error.message, 'err');
@@ -1286,7 +1334,9 @@
     const address = await openEditor({
       heading,
       initial,
-      save: (text) => api('create', { kind, at: parent?.address, text, workspace: state.workspace }).then((result) => result.address),
+      // Every successor is a Regular Card, so it may be an Event or Model Card.
+      cardType: kind === 'topic' ? null : 'idea',
+      save: (text, _bibtex, type) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined }).then((result) => result.address),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
@@ -1319,9 +1369,19 @@
       heading: `Edit ${card.address}`,
       initial: card.text,
       literature: card.kind === 'literature' ? { title: card.title } : null,
-      save: (text) => api('edit', { at: card.address, text, base: card.text }).then((result) => result.address),
+      cardType: card.context === 'regular' ? card.type || 'idea' : null,
+      save: (text, _bibtex, type) => api('edit', { at: card.address, text, base: card.text, type: type || undefined }).then((result) => result.address),
     });
     if (address) await afterChange(address, `saved ${address}`);
+  }
+
+  /** `ty <idea|event|model>`: change only the current Regular Card's type. */
+  async function setCardType(type) {
+    const card = state.card;
+    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, or model`);
+    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event or Model Cards');
+    const result = await api('edit', { at: card.address, type });
+    await afterChange(result.address, `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : 'a Model'} Card`);
   }
 
   function choosePart() {

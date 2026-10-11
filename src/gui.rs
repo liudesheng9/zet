@@ -12,7 +12,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
 use crate::ops::{self, Snapshot};
-use crate::{Access, Workspace};
+use crate::{Access, CardType, Workspace};
 
 /// The GUI is the human's own tool and may change both Workspaces.
 const ACCESS: Access = Access::Owner;
@@ -401,6 +401,7 @@ impl App {
             "tree": crate::tree_id(&card.address),
             "workspace": card.workspace.id(),
             "kind": ops::kind(card),
+            "type": card.card_type.id(),
             "context": context,
             "title": parsed.title,
             "text": card.text,
@@ -418,7 +419,7 @@ impl App {
 
     fn search(&self, query: &str) -> ApiResult {
         let snapshot = self.snapshot()?;
-        Ok(json!({ "results": snapshot.search(query, None, 60) }))
+        Ok(json!({ "results": snapshot.search(query, None, None, 60) }))
     }
 
     fn broken(&self) -> ApiResult {
@@ -460,13 +461,20 @@ impl App {
     fn create(&self, body: &Value) -> ApiResult {
         let kind = str_field(body, "kind")?;
         let text = str_field(body, "text")?;
+        let card_type = type_field(body)?.unwrap_or_default();
         let location = match kind.as_str() {
+            "topic" if card_type != CardType::Idea => {
+                return Err(ApiError(
+                    "only Regular Cards can be Event or Model Cards".to_string(),
+                ));
+            }
             "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
             "direct" => ops::create_successor(
                 &self.root,
                 ACCESS,
                 ops::Successor::Direct,
                 &str_field(body, "at")?,
+                card_type,
                 &text,
             )?,
             "side" => ops::create_successor(
@@ -474,6 +482,7 @@ impl App {
                 ACCESS,
                 ops::Successor::Side,
                 &str_field(body, "at")?,
+                card_type,
                 &text,
             )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
@@ -504,12 +513,19 @@ impl App {
         Ok(json!({ "address": address }))
     }
 
+    /// Save a Card's text, its type, or both.
     fn edit(&self, body: &Value) -> ApiResult {
-        let address = ops::edit_text(
+        let card_type = type_field(body)?;
+        let text = match card_type {
+            Some(_) => body.get("text").and_then(Value::as_str).map(str::to_string),
+            None => Some(str_field(body, "text")?),
+        };
+        let address = ops::edit(
             &self.root,
             ACCESS,
             &str_field(body, "at")?,
-            &str_field(body, "text")?,
+            text.as_deref(),
+            card_type,
             base_field(body),
         )?;
         Ok(json!({ "address": address }))
@@ -638,6 +654,14 @@ fn workspace_field(body: &Value) -> Result<Workspace> {
     body.get("workspace")
         .and_then(Value::as_str)
         .map_or(Ok(Workspace::Human), Workspace::parse)
+}
+
+/// An optional Card type: `idea`, `event`, or `model`.
+fn type_field(body: &Value) -> Result<Option<CardType>> {
+    body.get("type")
+        .and_then(Value::as_str)
+        .map(CardType::parse)
+        .transpose()
 }
 
 fn confirm_field(body: &Value) -> Option<&str> {

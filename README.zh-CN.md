@@ -9,6 +9,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
 - 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
+- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
 - 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
 - 通过 `zt mcp` 服务器让编程 agent 在 agent Workspace 中工作，而你的 Workspace 对它只读。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
@@ -42,6 +43,7 @@ n                  # 创建当前 Card 的 Direct successor（也可用于 Liter
 b                  # 创建 Side successor
 l                  # 创建 Literature Card
 e                  # 编辑当前 Card
+ty event           # 把当前 Card 设为 Event Card（或 ty model、ty idea）
 ws [agent|human]   # 列出 Workspace，或切换到其中一个
 go <目标>          # 前往指定 Location 或 Citation key
 up                 # 前往父 Card（树根会回到 ROOT）
@@ -101,7 +103,7 @@ zt gui --port 4717     # 指定端口
   `Ctrl+S` 保存，`Esc` 取消。
 
 命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`mv 1/3`、
-`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
+`ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
 `:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
 `v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
@@ -130,6 +132,27 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 在 GUI 中，卡片柜顶部的两个标签页（或快捷键 `w`、命令 `ws`）用于切换 Workspace；agent 的 Card
 带有紫色的 AI AGENT 标记，指向另一个 Workspace 的 Link 会用该 Workspace 的颜色显示。
 
+## Event Card 与 Model Card
+
+每张 Card 都有一个 **Card type**。大多数 Card 是 **Idea Card**（`idea`，默认值）：用自己的话写下一个想法。
+Regular Card 也可以是：
+
+- **Event Card**（`event`）：记录一个真实发生的事件（什么、何时、何地、谁，以及报道它的来源），描述部分不做解释；
+- **Model Card**（`model`）：完整呈现一个模型（问题、设定、假设、时序与信息、求解、结果、直觉、局限、来源）。
+
+Idea Card 用普通的 `[[target]]` Link 引用它们，因此 Model Card 的 Reverse link 会列出所有讨论该模型的 Card。
+Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移动、Side successor 压缩编号和修改 Citation key
+都不会改变它，它也不影响 Card 的其他任何内容。0.5.0 之前创建的归档会在 `zt up` 时自动升级，所有已有 Card 都是 Idea Card。
+
+- **Session**：非 Idea Card 的视图会在 Location 后显示 `[event]` 或 `[model]`；`ty event`、`ty model` 或
+  `ty idea` 设置当前 Regular Card 的类型。
+- **GUI**：Event 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
+  Regular Card 的写作台有类型选择器，命令栏也支持 `ty`。
+- **MCP**：`create_successor` 和 `edit_card` 接受 `type`（`idea`、`event` 或 `model`；`edit_card` 可以只传 `type`），
+  `get_card`、`get_tree` 和 `search_cards` 会返回类型；`search_cards` 可按 `type` 筛选，此时 `query` 可以为空，
+  用来列出该类型的全部 Card。
+- **导出**：`archive.json` 在 `types` 中列出所有非 Idea Card。
+
 ## MCP 服务器
 
 `zt mcp` 通过 stdio 运行一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，
@@ -143,23 +166,26 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
-| `search_cards`、`list_links`、`list_broken_links` | 全文搜索、Link 图（可只看跨 Workspace 的 Link）、Broken link |
+| `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
-| `create_successor` | 为 agent Card 添加 direct 或 side successor |
-| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文或 BibTeX |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`） |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card |
 
 删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
 `move`）再次调用才会真正执行。使用前需要先启动服务。
 
-要让每个 Claude Code 和 Codex 对话都能使用该服务器以及 `zt` agent skill（`skills/zt/SKILL.md`，
-向 agent 说明 Workspace、工具和规则），在 Windows 上运行一次以下命令；更新 skill 或移动 `zt` 可执行文件后再运行一次：
+zt 附带两个 agent skill：`zt`（`skills/zt/SKILL.md`）说明 Workspace、工具和规则；`zettelkasten`
+（`skills/zettelkasten/SKILL.md`）依据卢曼（Niklas Luhmann）的做法和后来实践者的经验，说明如何撰写一张 Card
+以及如何组织 Card 之间的关系（资料来源见 `skills/zettelkasten/references/`）。要让每个 Claude Code、Codex 和
+DeepSeek Harness 对话都能使用这两个 skill，并让 Claude Code 与 Codex 能使用该服务器，在 Windows 上运行一次以下命令；更新 skill 或移动 `zt` 可执行文件后再运行一次：
 
 ```powershell
 pwsh -File scripts/install-agent-integrations.ps1
 ```
 
-它会把 skill 复制到 `~/.claude/skills/zt` 与 `~/.codex/skills/zt`，在 Claude Code 中把 `zt` 注册为用户级
+它会把每个 skill 复制到 `~/.claude/skills/<name>` 与 `~/.codex/skills/<name>`，把 `~/.dsh/skills/<name>`
+链接到 Codex 副本供 DeepSeek Harness 使用，在 Claude Code 中把 `zt` 注册为用户级
 MCP 服务器（并允许其工具），在 Codex 中注册为全局服务器，并检查服务器握手；修改每个配置文件前都会先备份。
 已经打开的对话仍使用原来的服务器。在其他环境中，可以用 `claude mcp add -s user zt -- zt mcp` 或
 `codex mcp add zt -- zt mcp` 手动注册；其他 MCP 客户端也可以用同样的方式把 `zt mcp` 作为 stdio 服务器启动。
@@ -199,8 +225,8 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 - `mapping.json`：每个 Card 地址到其 Markdown 文件的映射。
 - 每张 Card 一个 Markdown 文件，内容是其存储的原文；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
   `<citation-key>.bib` 保存 BibTeX 的原始字节。
-- `archive.json`：每个 Card 地址所属的 Workspace，以及下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），例如
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","1/0":"agent"}}`。
+- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），以及每张 Event 与 Model Card 的类型，例如
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent"},"types":{"0/1":"event"}}`。
 
 ## 创建 Literature Card
 

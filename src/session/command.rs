@@ -68,6 +68,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "move the current card and its successors",
         Availability::OnRegular,
     ),
+    (
+        "ty <idea|event|model>",
+        "make the current card an Idea, Event, or Model Card",
+        Availability::OnRegular,
+    ),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),
@@ -437,7 +442,14 @@ fn execute_command(
                 bail!("direct successor already exists: {location}");
             }
             let mut save = |text: &str| {
-                crate::insert_card(&mut conn, &location, false, parent.workspace, text)
+                crate::insert_card(
+                    &mut conn,
+                    &location,
+                    false,
+                    parent.workspace,
+                    crate::CardType::Idea,
+                    text,
+                )
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
@@ -452,7 +464,14 @@ fn execute_command(
             crate::ensure_side_parent(&parent)?;
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
             let mut save = |text: &str| {
-                crate::insert_card(&mut conn, &location, false, parent.workspace, text)
+                crate::insert_card(
+                    &mut conn,
+                    &location,
+                    false,
+                    parent.workspace,
+                    crate::CardType::Idea,
+                    text,
+                )
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
@@ -581,6 +600,16 @@ fn execute_command(
             state.pointer = Pointer::Card((*new_location).to_string());
             Ok(Execution::Continue(CommandResult::Changed))
         }
+        ["ty", name] => {
+            let at = state.current_card("ty")?;
+            let card_type = crate::CardType::parse(name)?;
+            let _lock = crate::acquire_edit_lock(root)?;
+            let conn = crate::open_db(root)?;
+            let card = crate::load_card(&conn, &at)?;
+            crate::card_type::set(&conn, &card, card_type)?;
+            Ok(Execution::Continue(CommandResult::Changed))
+        }
+        ["ty", ..] => bail!("usage: ty <idea|event|model>"),
         [name, ..] => bail!("unknown session command: {name}"),
     }
 }
@@ -1012,6 +1041,64 @@ mod tests {
                 format!("{command} needs a Card; use go <target> first")
             );
         }
+        let error = execute_without_interaction(Path::new("unused"), &mut state, "ty event")
+            .expect_err("ROOT has no current Card");
+        assert_eq!(error.to_string(), "ty needs a Card; use go <target> first");
+    }
+
+    #[test]
+    fn ty_sets_the_type_of_the_current_regular_card_only() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let conn = crate::open_db(temp.path()).expect("open database");
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# Base\n\nbody\n\n<!-- zt:reverse-links -->\n')",
+            [],
+        )
+        .expect("insert Cards");
+        drop(conn);
+        let card_type = |at: &str| {
+            let conn = crate::open_db(temp.path()).expect("open database");
+            crate::load_card(&conn, at).expect("card").card_type
+        };
+        assert_eq!(card_type("0/1"), crate::CardType::Idea);
+
+        let mut state = SessionState::at("0/1");
+        for (line, expected) in [
+            ("ty event", crate::CardType::Event),
+            ("ty MODEL", crate::CardType::Model),
+            ("ty idea", crate::CardType::Idea),
+        ] {
+            assert_eq!(
+                execute_without_interaction(temp.path(), &mut state, line).expect("set type"),
+                Execution::Continue(CommandResult::Changed)
+            );
+            assert_eq!(card_type("0/1"), expected);
+            assert_eq!(state.pointer(), &Pointer::Card("0/1".to_string()));
+        }
+        for (line, expected) in [
+            (
+                "ty fact",
+                "unknown card type `fact`; expected idea, event, or model",
+            ),
+            ("ty", "usage: ty <idea|event|model>"),
+            ("ty event model", "usage: ty <idea|event|model>"),
+        ] {
+            let error =
+                execute_without_interaction(temp.path(), &mut state, line).expect_err("invalid ty");
+            assert_eq!(error.to_string(), expected);
+        }
+
+        let mut state = SessionState::at("0/0");
+        let error = execute_without_interaction(temp.path(), &mut state, "ty event")
+            .expect_err("tree roots stay Idea Cards");
+        assert_eq!(
+            error.to_string(),
+            "only Regular Cards can be Event or Model Cards"
+        );
+        assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }
 
     #[test]
@@ -1124,7 +1211,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

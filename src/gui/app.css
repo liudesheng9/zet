@@ -40,6 +40,8 @@
   --human-soft: #f3e7d8;
   --agent: #5a4fb0;
   --agent-soft: #e9e6f8;
+  --event: #b3262f;
+  --model: #26457d;
   --radius: 12px;
   --ease: cubic-bezier(.2, .8, .25, 1);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
@@ -89,6 +91,8 @@
   --human-soft: #33281c;
   --agent: #ada1f7;
   --agent-soft: #262242;
+  --event: #f08c86;
+  --model: #94b0ee;
   --grain-opacity: .035;
   color-scheme: dark;
 }
@@ -134,6 +138,8 @@
     --human-soft: #33281c;
     --agent: #ada1f7;
     --agent-soft: #262242;
+    --event: #f08c86;
+    --model: #94b0ee;
     --grain-opacity: .035;
     color-scheme: dark;
   }
@@ -763,6 +769,39 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
 .zone-head.topic span:first-child { color: var(--topic); }
 .zone-head.literature span:first-child { color: var(--lit); }
 .hit .top .ws-tag { margin-left: auto; font-size: 8.5px; }
+/* Event and Model Cards carry a rubber stamp: inked capitals in a double-ruled box,
+   pressed a little askew and a little unevenly, as a desk stamp leaves them. */
+.type-stamp {
+  display: inline-flex; align-items: center; flex: none; position: relative;
+  padding: 1px 6px; border: 1.5px solid currentColor; border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--stock), inset 0 0 0 2px currentColor;
+  font: 800 9.5px var(--sans); letter-spacing: .2em; text-transform: uppercase; line-height: 1.55;
+  color: var(--event); opacity: .86; transform: rotate(-3deg);
+  -webkit-mask-image: radial-gradient(ellipse 140% 120% at 30% 40%, #000 55%, rgba(0, 0, 0, .78) 100%);
+  mask-image: radial-gradient(ellipse 140% 120% at 30% 40%, #000 55%, rgba(0, 0, 0, .78) 100%);
+}
+.type-stamp.model { color: var(--model); transform: rotate(2deg); }
+.card-meta .type-stamp { font-size: 11px; padding: 2px 9px; transform: rotate(-5deg); }
+.card-meta .type-stamp.model { transform: rotate(3deg); }
+.node .type-stamp { font-size: 7.5px; padding: 0 4px; letter-spacing: .14em; line-height: 1.5; }
+.node.type-event { border-color: color-mix(in srgb, var(--event) 30%, var(--stock-edge)); }
+.node.type-model { border-color: color-mix(in srgb, var(--model) 30%, var(--stock-edge)); }
+.stack .face .types { display: flex; gap: 8px; align-items: center; }
+.stack .face .types .type-stamp { font-size: 8px; padding: 0 5px; }
+.stack .face .types .tally { display: inline-flex; align-items: center; gap: 3px; font: 500 10.5px var(--mono); }
+.hit .top .type-stamp { font-size: 7.5px; padding: 0 4px; }
+/* The editor's type selector: three stamps to choose from; the chosen one is inked. */
+.type-pick { display: inline-flex; gap: 6px; align-items: center; }
+.type-pick .lbl { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-right: 2px; }
+.type-pick button {
+  font: 700 10px var(--sans); letter-spacing: .16em; text-transform: uppercase; line-height: 1.6;
+  padding: 2px 9px; border: 1.5px dashed var(--line); border-radius: 3px; background: none; color: var(--ink-faint);
+  transition: color .15s, border-color .15s, transform .2s var(--ease);
+}
+.type-pick button:hover { color: var(--ink-soft); border-color: var(--ink-faint); }
+.type-pick button.on { border-style: solid; color: var(--ink); border-color: currentColor; transform: rotate(-2deg); }
+.type-pick button.on.event { color: var(--event); }
+.type-pick button.on.model { color: var(--model); }
 /* A Link into the other workspace is inked in that workspace's color. */
 .zt-link.cross.agent { background: var(--agent-soft); color: var(--agent); }
 .zt-link.cross.agent .zt-link-addr { background: var(--agent); }

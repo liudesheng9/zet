@@ -428,6 +428,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "bibtex",
             "text",
             "workspace",
+            "card_type",
         ]
     );
     assert!(
@@ -2124,7 +2125,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
         .expect("archive manifest entry");
     let mut body = String::new();
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
-    assert_eq!(body, r#"{"next_topic_id":0,"workspaces":{}}"#);
+    assert_eq!(body, r#"{"next_topic_id":0,"workspaces":{},"types":{}}"#);
 }
 
 #[test]
@@ -3237,9 +3238,14 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> | stats | status | lsbk | help | q\n"
     ));
-    assert!(stdout.contains("  mv <new-location>  move the current card"));
+    assert!(stdout.contains("  mv <new-location>      move the current card"));
+    assert!(
+        stdout.contains(
+            "  ty <idea|event|model>  make the current card an Idea, Event, or Model Card"
+        )
+    );
     assert!(stdout.contains(
         "Literature tree LineTree: 2 cards\nLineTree Line Tree\nLineTree/1 First Note\n"
     ));
