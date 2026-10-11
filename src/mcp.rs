@@ -41,7 +41,7 @@ TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the G
 delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
 `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
-bridge; file a paper you use as a Literature Card and cite its DOI.";
+bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns.";
 
 pub(crate) fn run() -> Result<()> {
     let stdin = io::stdin();
@@ -204,6 +204,17 @@ fn archive_root() -> Result<PathBuf> {
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value> {
+    if name == "scholar_archive_artifact" {
+        let root = archive_root()?;
+        let file_id = args
+            .get("file_id")
+            .and_then(Value::as_u64)
+            .context("missing integer argument `file_id`")?;
+        let path = string_arg(args, "path")?;
+        let caption = args.get("caption").and_then(Value::as_str);
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        return crate::scholar::keep_artifact(&mut bridge, &root, file_id, &path, caption);
+    }
     if name.starts_with("scholar_archive_") {
         return call_scholar_tool(name, args);
     }
@@ -386,6 +397,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let workspace = target_workspace(args)?;
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+            crate::artifact::require_present(&root, &text)?;
             let address = ops::create_topic(&root, ACCESS, workspace, &text)?;
             Ok(json!({ "address": address, "workspace": workspace.id() }))
         }
@@ -393,6 +405,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let workspace = target_workspace(args)?;
             let bibtex = string_arg(args, "bibtex")?;
             let body = optional_string(args, "body")?;
+            crate::artifact::require_present(&root, &body)?;
             let address = ops::create_literature(&root, ACCESS, workspace, &bibtex, &body)?;
             Ok(json!({ "address": address, "workspace": workspace.id() }))
         }
@@ -416,6 +429,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             };
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+            crate::artifact::require_present(&root, &text)?;
             let address =
                 ops::create_successor(&root, ACCESS, kind, &at, card_type, part.clone(), &text)?;
             Ok(json!({
@@ -461,6 +475,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                     Some(crate::compose_card_text(&title, &body, ""))
                 }
             };
+            if let Some(text) = &text {
+                crate::artifact::require_present(&root, text)?;
+            }
             let base = args.get("base").and_then(Value::as_str);
             let address = ops::edit(&root, ACCESS, &at, text.as_deref(), change, base)?;
             Ok(json!({ "address": address }))
@@ -853,7 +870,7 @@ fn tool_definitions() -> Vec<Value> {
             "scholar_archive_read",
             "Read Scholar Archive",
             &format!(
-                "Run one of Scholar Archive's read tools through the bridge and return its result: scholars, Works (titles, authors, years, venues, abstracts, DOIs, sources, versions, topics), journals, workspaces, linked PDF/Markdown files, source labels and history, duplicates, jobs, and semantic search. Tools: {}. Start with list_scholars, list_works, get_work, list_work_files, or semantic_search; pass the tool's own arguments in `arguments` (scholar_archive_status lists each schema). Nothing can change the archive.",
+                "Run one of Scholar Archive's read tools through the bridge and return its result: scholars, Works (titles, authors, years, venues, abstracts, DOIs, sources, versions, topics), journals, workspaces, linked PDF/Markdown files, source labels and history, duplicates, jobs, and semantic search. Tools: {}. Start with list_scholars, list_works, get_work, list_work_files, or semantic_search; list_work_artifacts lists a Work's figures for scholar_archive_artifact; pass the tool's own arguments in `arguments` (scholar_archive_status lists each schema). Nothing can change the archive.",
                 crate::scholar::READ_TOOLS.join(", ")
             ),
             json!({
@@ -884,6 +901,24 @@ fn tool_definitions() -> Vec<Value> {
             }),
             &["file_id"],
         ),
+        {
+            // Reads the Scholar Archive, but keeps the image in this archive's artifact store.
+            let mut value = tool(
+                "scholar_archive_artifact",
+                "Take a figure from Scholar Archive",
+                "Copy one artifact (a figure or table image of a Work's Markdown, as `list_work_artifacts` lists it: its Markdown's `file_id` and its `path`) into this archive's artifact store, verified by SHA-256, and return the `markdown` that shows it in a Card: `![caption](artifact:<sha256>)`. Paste that into a Card body; a Card may show only artifacts kept this way. The returned `path` is the local image, which you can open to see the figure. `caption` overrides the caption the archive read from the Markdown.",
+                json!({
+                    "file_id": { "type": "integer", "minimum": 1, "description": "The Markdown document's file_id (the artifact's `file_id`)." },
+                    "path": { "type": "string", "description": "The artifact's path below the archive's files folder, exactly as listed." },
+                    "caption": { "type": "string", "description": "The figure's caption in the Card; default the archive's caption." },
+                }),
+                &["file_id", "path"],
+                false,
+                false,
+            );
+            value["annotations"]["openWorldHint"] = json!(true);
+            value
+        },
         scholar_tool(
             "scholar_archive_export",
             "Export Scholar Archive",

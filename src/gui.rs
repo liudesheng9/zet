@@ -318,6 +318,18 @@ impl App {
                 }
                 return Flow::Continue;
             }
+            (Method::Get, path) if path.starts_with("/artifact/") => {
+                match crate::artifact::read(&self.root, &path["/artifact/".len()..]) {
+                    Some((bytes, media_type)) => respond_artifact(request, media_type, bytes),
+                    None => respond_text(
+                        request,
+                        404,
+                        "text/plain",
+                        "artifact not in this archive".to_string(),
+                    ),
+                }
+                return Flow::Continue;
+            }
             (Method::Get, path) if path.starts_with("/chart/") => {
                 let id = &path["/chart/".len()..];
                 match self.charts.get(id) {
@@ -437,6 +449,11 @@ impl App {
             (Method::Post, "/api/metadata") => self.edit_metadata(body),
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
+            (Method::Get, "/api/artifact") => self.artifact(&param("sha")?),
+            (Method::Get, "/api/scholar/works") => self.scholar_works(&param("q")?),
+            (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
+            (Method::Post, "/api/scholar/preview") => self.scholar_preview(body),
+            (Method::Post, "/api/scholar/artifact") => self.scholar_keep(body),
             (Method::Post, "/api/quit") => Ok(json!({ "ok": true })),
             _ => Err(ApiError(format!("unknown endpoint {path}"))),
         }
@@ -550,6 +567,76 @@ impl App {
     fn search(&self, query: &str) -> ApiResult {
         let snapshot = self.snapshot()?;
         Ok(json!({ "results": snapshot.search(query, None, None, 60) }))
+    }
+
+    /// Where a kept artifact came from.
+    fn artifact(&self, digest: &str) -> ApiResult {
+        let held = crate::artifact::path(&self.root, digest).is_some();
+        Ok(
+            json!({ "sha256": digest, "held": held, "source": crate::artifact::source(&self.root, digest) }),
+        )
+    }
+
+    /// Works in the Scholar Archive with Markdown documents, whose figures a Card can show.
+    fn scholar_works(&self, query: &str) -> ApiResult {
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        let rows = bridge.sql(
+            "SELECT w.id, w.title, w.year, w.authors, w.doi FROM works w \
+             WHERE w.id IN (SELECT work_id FROM work_files WHERE kind='markdown' AND work_id IS NOT NULL) \
+             AND (?1 = '' OR instr(lower(w.title), lower(?1)) > 0 OR instr(lower(coalesce(w.authors,'')), lower(?1)) > 0) \
+             ORDER BY w.year DESC, w.title LIMIT 40",
+            &json!([query.trim()]),
+            40,
+            "archive",
+        )?;
+        let works = rows["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| json!({ "work_id": row[0], "title": row[1], "year": row[2], "authors": row[3], "doi": row[4] }))
+            .collect::<Vec<_>>();
+        Ok(json!({ "works": works }))
+    }
+
+    fn scholar_artifacts(&self, work_id: &str) -> ApiResult {
+        let work_id = work_id
+            .parse::<u64>()
+            .map_err(|_| ApiError("work_id must be a number".into()))?;
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        Ok(bridge.call("list_work_artifacts", &json!({ "work_id": work_id }))?)
+    }
+
+    fn artifact_target(body: &Value) -> std::result::Result<(u64, String), ApiError> {
+        let file_id = body
+            .get("file_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ApiError("missing `file_id`".into()))?;
+        Ok((file_id, str_field(body, "path")?))
+    }
+
+    /// A figure to look at before choosing it; nothing is kept.
+    fn scholar_preview(&self, body: &Value) -> ApiResult {
+        let (file_id, path) = Self::artifact_target(body)?;
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        let (bytes, _) = bridge.artifact(file_id, &path)?;
+        let media_type = crate::artifact::sniff(&bytes)
+            .map(|(_, media_type)| media_type)
+            .ok_or_else(|| ApiError("the artifact is not an image".into()))?;
+        Ok(json!({ "data_url": format!("data:{media_type};base64,{}", base64(&bytes)) }))
+    }
+
+    /// Keep a figure in this archive and return the Markdown that shows it.
+    fn scholar_keep(&self, body: &Value) -> ApiResult {
+        let (file_id, path) = Self::artifact_target(body)?;
+        let caption = body.get("caption").and_then(Value::as_str);
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        Ok(crate::scholar::keep_artifact(
+            &mut bridge,
+            &self.root,
+            file_id,
+            &path,
+            caption,
+        )?)
     }
 
     fn broken(&self) -> ApiResult {
@@ -736,6 +823,7 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
     let mut pending = String::new();
     let mut in_code_block = false;
     let mut chart: Option<String> = None;
+    let mut figure: Option<(String, String)> = None;
     let flush = |pending: &mut String, events: &mut Vec<Event>, in_code_block: bool| {
         if pending.is_empty() {
             return;
@@ -748,6 +836,20 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
         }
     };
     for event in Parser::new_ext(&source, options) {
+        if let Some((_, caption)) = figure.as_mut() {
+            match event {
+                Event::Text(text)
+                | Event::Code(text)
+                | Event::InlineMath(text)
+                | Event::InlineHtml(text) => caption.push_str(&text),
+                Event::End(TagEnd::Image) => {
+                    let (digest, caption) = figure.take().unwrap_or_default();
+                    events.push(Event::InlineHtml(figure_html(&digest, &caption).into()));
+                }
+                _ => {}
+            }
+            continue;
+        }
         if let Some(chart_source) = chart.as_mut() {
             match event {
                 Event::Text(text) => chart_source.push_str(&text),
@@ -770,6 +872,15 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) if is_chart_info(&info) => {
                 flush(&mut pending, &mut events, in_code_block);
                 chart = Some(String::new());
+            }
+            Event::Start(Tag::Image { dest_url, .. })
+                if dest_url.starts_with(crate::artifact::SCHEME) =>
+            {
+                flush(&mut pending, &mut events, in_code_block);
+                figure = Some((
+                    dest_url[crate::artifact::SCHEME.len()..].to_string(),
+                    String::new(),
+                ));
             }
             Event::Text(text) => pending.push_str(&text),
             Event::InlineHtml(raw) if is_plain_inline_tag(&raw) => {
@@ -794,6 +905,30 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
     let mut output = String::new();
     html::push_html(&mut output, events.into_iter());
     output
+}
+
+/// An artifact shown in a Card: the image, framed like a print clipped to the
+/// card, with its caption. Inline spans keep it valid inside a paragraph; the
+/// page marks a figure whose image this archive does not hold.
+fn figure_html(digest: &str, caption: &str) -> String {
+    let caption = caption.trim();
+    let digest = if crate::artifact::is_digest(digest) {
+        digest
+    } else {
+        ""
+    };
+    format!(
+        "<span class=\"zt-figure\" data-artifact=\"{digest}\"><img src=\"/artifact/{digest}\" alt=\"{alt}\" loading=\"lazy\">{caption}</span>",
+        alt = escape_html(caption),
+        caption = if caption.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<span class=\"zt-figcaption\">{}</span>",
+                escape_html(caption)
+            )
+        },
+    )
 }
 
 /// A fence opens a chart when its info string is `chart` or `html chart`.
@@ -1265,6 +1400,20 @@ fn respond_asset(request: Request, content_type: &str, body: &[u8]) {
     request.respond(response).ok();
 }
 
+/// An artifact's bytes. They never change (the address is their hash), and an
+/// SVG opened on its own is sandboxed so it cannot script the GUI's origin.
+fn respond_artifact(request: Request, media_type: &str, body: Vec<u8>) {
+    let response = Response::from_data(body)
+        .with_header(header("Content-Type", media_type))
+        .with_header(header("Cache-Control", "max-age=31536000, immutable"))
+        .with_header(header("X-Content-Type-Options", "nosniff"))
+        .with_header(header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+        ));
+    request.respond(response).ok();
+}
+
 /// A chart page, framed only by the GUI page. It may run its own scripts and
 /// load libraries over HTTPS, but its policy sandboxes it into an opaque
 /// origin: it cannot reach the GUI page or its token, and the API answers no
@@ -1440,6 +1589,29 @@ mod render_tests {
         );
         assert!(html.contains("class=\"zt-link\""), "{html}");
         assert!(!html.contains("editor note"), "{html}");
+    }
+
+    #[test]
+    fn an_artifact_image_becomes_a_figure_with_its_caption() {
+        let (_temp, snapshot) = snapshot();
+        let digest = "ab".repeat(32);
+        let html = render_markdown(
+            &format!(
+                "Before.\n\n![Figure 1: <GDP> & growth](artifact:{digest})\n\n![web](https://example.org/x.png)"
+            ),
+            &snapshot,
+            &Charts::default(),
+        );
+        assert!(
+            html.contains(&format!("<span class=\"zt-figure\" data-artifact=\"{digest}\"><img src=\"/artifact/{digest}\" alt=\"Figure 1: &lt;GDP&gt; &amp; growth\" loading=\"lazy\"><span class=\"zt-figcaption\">Figure 1: &lt;GDP&gt; &amp; growth</span></span>")),
+            "{html}"
+        );
+        assert!(
+            html.contains("<img src=\"https://example.org/x.png\""),
+            "{html}"
+        );
+        let forged = render_markdown("![x](artifact:../../secret)", &snapshot, &Charts::default());
+        assert!(forged.contains("data-artifact=\"\""), "{forged}");
     }
 
     #[test]

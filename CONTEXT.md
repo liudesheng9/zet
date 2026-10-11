@@ -51,6 +51,10 @@ _Avoid_: Orphan, detached part (a detached part is one not filed under a Model C
 HTML in a Card body that the GUI shows as a figure: a ```` ```chart ```` fence, or a raw HTML block that opens with a chart element such as `<figure>`, `<div>`, `<svg>`, or `<table>`. It runs sandboxed, apart from the GUI and its token; it may draw with scripts, use TeX, and name Cards with `[[address]]` or `data-zt="<address>"` to let a reader open them. Text inside a chart fence is not a Link.
 _Avoid_: Widget, embed, diagram card
 
+**Artifact**:
+An image a Card shows: a figure, table, or cover taken from a Scholar Archive Work's Markdown. A Card shows it with `![caption](artifact:<sha256>)`, where the address is the SHA-256 of the image's bytes. ZET keeps the bytes once, in the archive's `artifacts/` folder, beside a record of where they came from; an artifact belongs to no Card, never changes, and stays when the Scholar Archive moves or drops its copy. A Card may show only artifacts ZET holds.
+_Avoid_: Attachment, asset, embed, image card
+
 **Literature Card**:
 A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text, and is the root of its own Literature tree.
 _Avoid_: Reference Card
@@ -89,7 +93,7 @@ The user's separate local archive of scholars' publications (Works, abstracts, s
 _Avoid_: Paper database, library
 
 **Scholar Archive bridge**:
-The authenticated, read-only connection between ZET and the Scholar Archive. Each side has its own connector; only a paired ZET may use it, and every request and answer is signed with the pairing secret. It exchanges information only: it never changes the Scholar Archive, and nothing read through it changes a Card.
+The authenticated, read-only connection between ZET and the Scholar Archive. Each side has its own connector; only a paired ZET may use it, and every request and answer is signed with the pairing secret. It exchanges information only: it never changes the Scholar Archive, and nothing read through it changes a Card. Taking an artifact through it copies the image into ZET's own `artifacts/` folder.
 _Avoid_: API, sync, import
 
 **Location**:

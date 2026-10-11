@@ -41,6 +41,7 @@ pub(crate) const READ_TOOLS: &[&str] = &[
     "get_workspace",
     "list_work_files",
     "get_work_file",
+    "list_work_artifacts",
     "list_source_labels",
     "list_source_updates",
     "find_duplicate_works",
@@ -546,6 +547,16 @@ impl Bridge {
         })
     }
 
+    /// Fetch one artifact (an image of a Markdown document) and verify its SHA-256.
+    pub(crate) fn artifact(&mut self, file_id: u64, path: &str) -> Result<(Vec<u8>, String)> {
+        let answer = self.request("artifact", &json!({ "file_id": file_id, "path": path }))?;
+        let digest = sha256_hex(&answer.body);
+        if answer.header("X-Zet-Bridge-File-Sha256") != Some(digest.as_str()) {
+            bail!("artifact {path} arrived damaged: its SHA-256 does not match");
+        }
+        Ok((answer.body, digest))
+    }
+
     pub(crate) fn export(
         &mut self,
         scholar_id: Option<u64>,
@@ -557,6 +568,53 @@ impl Bridge {
             &json!({ "scholar_id": scholar_id, "format": format, "view": view }),
         )
     }
+}
+
+/// Take an artifact from the Scholar Archive into this archive's artifact store, and say how a
+/// Card shows it. The caption is the one given, else the one the archive read from its Markdown.
+pub(crate) fn keep_artifact(
+    bridge: &mut Bridge,
+    root: &Path,
+    file_id: u64,
+    path: &str,
+    caption: Option<&str>,
+) -> Result<Value> {
+    let listing = bridge.call("list_work_artifacts", &json!({ "file_id": file_id }))?;
+    let listed = listing["artifacts"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["path"] == path))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let (bytes, digest) = bridge.artifact(file_id, path)?;
+    let source = json!({
+        "scholar_archive": bridge.url(),
+        "work_id": listing["work_id"],
+        "file_id": file_id,
+        "path": path,
+        "caption": listed["caption"],
+    });
+    let stored = crate::artifact::store(root, &bytes, &source)?;
+    debug_assert_eq!(stored, digest);
+    let caption = caption
+        .map(str::to_string)
+        .or_else(|| listed["caption"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let alt = caption
+        .replace(['\r', '\n'], " ")
+        .replace('[', "(")
+        .replace(']', ")");
+    let alt = alt.trim();
+    Ok(json!({
+        "sha256": digest,
+        "address": format!("{}{digest}", crate::artifact::SCHEME),
+        "markdown": format!("![{alt}]({}{digest})", crate::artifact::SCHEME),
+        "caption": caption,
+        "work_id": listing["work_id"],
+        "file_id": file_id,
+        "path": crate::artifact::path(root, &digest).map(|path| path.display().to_string()),
+        "media_type": crate::artifact::sniff(&bytes).map(|(_, media_type)| media_type),
+        "bytes": bytes.len(),
+    }))
 }
 
 /// Where an export is kept in ZET's cache.
@@ -690,6 +748,40 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             print(&Bridge::connect()?.sql(sql, &json!([]), limit, &database)?);
             Ok(())
         }
+        [sub, id] if sub == "figures" => {
+            let work_id: u64 = id.parse().context("work id must be a number")?;
+            let listing =
+                Bridge::connect()?.call("list_work_artifacts", &json!({ "work_id": work_id }))?;
+            for item in listing["artifacts"].as_array().into_iter().flatten() {
+                println!(
+                    "{:>3} {} {}  {}  [file {} · {}]",
+                    item["number"],
+                    if item["shown"] == true { "•" } else { " " },
+                    item["availability"].as_str().unwrap_or(""),
+                    item["caption"].as_str().unwrap_or("(no caption)"),
+                    item["file_id"],
+                    item["path"].as_str().unwrap_or(""),
+                );
+            }
+            Ok(())
+        }
+        [sub, id, path, rest @ ..] if sub == "figure" => {
+            let file_id: u64 = id.parse().context("file id must be a number")?;
+            let caption = match rest {
+                [] => None,
+                [flag, caption] if flag == "--caption" => Some(caption.as_str()),
+                _ => bail!("expected `zt scholar figure <file-id> <path> [--caption <text>]`"),
+            };
+            let root = crate::require_archive_root()?;
+            print(&keep_artifact(
+                &mut Bridge::connect()?,
+                &root,
+                file_id,
+                path,
+                caption,
+            )?);
+            Ok(())
+        }
         [sub, id, rest @ ..] if sub == "file" => {
             let file_id: u64 = id.parse().context("file id must be a number")?;
             let out = match rest {
@@ -730,7 +822,7 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|export ...]`"
+            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|figures <work-id>|figure <file-id> <path>|export ...]`"
         ),
     }
 }
@@ -743,7 +835,7 @@ fn status_cli() -> Result<()> {
     println!("archive: {}", hello["archive_uuid"].as_str().unwrap_or("?"));
     println!("database: {}", hello["database"].as_str().unwrap_or("?"));
     println!(
-        "access: read-only ({} read tools, SQL, documents, exports)",
+        "access: read-only ({} read tools, SQL, documents, figures, exports)",
         hello["tools"].as_array().map_or(0, Vec::len)
     );
     for (label, key) in [

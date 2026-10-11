@@ -315,6 +315,8 @@ zt scholar call list_works '{"query":"democracy","limit":5}'
 zt scholar call get_work '{"work_id":42}'
 zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10"
 zt scholar file 22                 # fetch a document, SHA-256 checked, into ZET's cache
+zt scholar figures 42              # a Work's figures: number, caption, file id and path
+zt scholar figure 22 nber/w1_mineru/images/a1.jpg   # keep one; prints the Markdown that shows it
 zt scholar export --format bibtex --out works.bib
 zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` disconnects
 ```
@@ -324,6 +326,18 @@ zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` dis
 `scholar_archive_file` (Markdown comes back as text, PDFs as a cached path), and
 `scholar_archive_export`. They do not need the ZET service to be up. The protocol is in
 [doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md).
+
+### Figures from the archive
+
+The Scholar Archive lists each Work's **artifacts**: the figure and table images its Markdown
+shows, with their captions (`list_work_artifacts`). A Card shows one as
+`![caption](artifact:<sha256>)`. ZET keeps the image itself, once, in
+`<archive_root>/artifacts/<sha256>.<ext>`, with a `.json` record of where it came from, so a Card
+never breaks when the archive reorganises its folders, and `zt dp` dumps carry the figures their
+Cards show. Agents take a figure with the `scholar_archive_artifact` tool, which returns the
+Markdown to paste; the MCP server refuses a Card that shows a figure ZET does not hold. In the GUI,
+**＋ Figure** in the editor opens a picker that starts at the Work of the Literature tree you are
+writing in. In a Card, a figure sits like a print clipped to the card; clicking it opens it large.
 
 ## Dumps
 

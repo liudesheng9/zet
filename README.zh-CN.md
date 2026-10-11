@@ -271,6 +271,8 @@ zt scholar tools                   # archive 的只读工具
 zt scholar call list_works '{"query":"democracy","limit":5}'
 zt scholar call get_work '{"work_id":42}'
 zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10"
+zt scholar figures 42              # 一个 Work 的图：编号、图题、file id 与路径
+zt scholar figure 22 nber/w1_mineru/images/a1.jpg   # 收下一张图，并打印显示它的 Markdown
 zt scholar file 22                 # 获取文档（校验 SHA-256）并存入 ZET 缓存
 zt scholar export --format bibtex --out works.bib
 zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断开连接
@@ -280,6 +282,15 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 （archive 的任意只读工具）、`scholar_archive_sql`、`scholar_archive_file`（Markdown 以文本返回，PDF 返回缓存路径）
 和 `scholar_archive_export`。这些工具不需要启动 ZET 服务。协议见
 [doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md)。
+
+
+### 来自 archive 的图
+
+Scholar Archive 会列出每个 Work 的 **artifact**：其 Markdown 显示的图与表的图片及图题（`list_work_artifacts`）。
+Card 用 `![图题](artifact:<sha256>)` 显示一张图。ZET 把图片本身只存一次，放在 `<archive_root>/artifacts/<sha256>.<ext>`，
+旁边的 `.json` 记录来源，因此 archive 整理文件夹不会让 Card 失效，`zt dp` 的转储也会带上 Card 显示的图。
+Agent 用 `scholar_archive_artifact` 工具取图，它返回可直接粘贴的 Markdown；MCP 服务器拒绝显示 ZET 未保存的图的 Card。
+在 GUI 中，编辑器里的 **＋ Figure** 打开选图面板，从当前 Literature 树对应的 Work 开始。Card 中的图像一张夹在卡片上的照片，点击即可放大。
 
 ## 导出
 

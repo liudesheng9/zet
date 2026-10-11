@@ -86,6 +86,10 @@ A chart illustrates what prose explains poorly: who interacts with whom (setting
 - Let a reader walk the model from the chart: give an element `data-zt="3/2|a|2"` (or write `[[3/2|a|2]]` in HTML text) and a click opens that Card. Links inside a chart fence are not Links, so also list the parts in Markdown.
 - Interactivity helps when it shows a mechanism: a slider for a parameter that moves a curve and an equilibrium.
 
+### The source's own figures
+
+When the paper's own figure says it best (an event study, the data's pattern, a diagram the argument rests on), show that figure instead of redrawing it: list the Work's figures (`list_work_artifacts`), look at the candidate, take it with `scholar_archive_artifact`, and paste the `![caption](artifact:…)` it returns. Show one figure per claim, in the Card whose claim it supports (often a `results` part or a Literature note), with a caption that says what to see in it and where it is in the source: `![图 3：民主化后 GDP 逐年上升，约 25 年后高出 20%（原文 Figure 3）](artifact:…)`. A figure is evidence, not decoration: the Card's prose still states the claim, and a chart of your own remains better for a mechanism the paper only describes.
+
 ## ZET addresses
 
 ZET keeps Luhmann's idea of an address that encodes where a thought grew from, but its rules differ from his drawer numbers (57/12 → 57/13, 57/12a, 57/12a1). Plan placement with ZET's rules:

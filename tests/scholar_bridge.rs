@@ -17,6 +17,8 @@ use tempfile::TempDir;
 
 const SECRET: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const DOCUMENT: &str = "# Fixture paper\n\nExact Unicode: α，β.";
+const FIGURE: &[u8] = b"\x89PNG\r\n\x1a\nfixture figure";
+const FIGURE_PATH: &str = "nber/paper_mineru/images/one.png";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -91,6 +93,8 @@ impl FakeArchive {
                         200,
                         json!({ "tool": payload["tool"], "result": match payload["tool"].as_str() {
                             Some("archive_status") => json!({ "scholars": 1, "works": 2 }),
+                            Some("list_work_artifacts") => json!({ "work_id": 42, "artifacts": [
+                                { "path": FIGURE_PATH, "file_id": 3, "caption": "FIGURE 1: GROWTH [REWEIGHTED]", "shown": true } ] }),
                             _ => json!([{ "id": 7, "name": "Fixture Scholar" }]),
                         }})
                         .to_string()
@@ -110,6 +114,11 @@ impl FakeArchive {
                             ("X-Zet-Bridge-File-Path".into(), "cGFwZXIubWQ=".into()),
                             ("X-Zet-Bridge-File-Sha256".into(), hex(&Sha256::digest(DOCUMENT.as_bytes()))),
                         ],
+                    ),
+                    "/bridge/v1/artifact" if payload["path"] == FIGURE_PATH => (
+                        200,
+                        FIGURE.to_vec(),
+                        vec![("X-Zet-Bridge-File-Sha256".into(), hex(&Sha256::digest(FIGURE)))],
                     ),
                     _ => (404, b"{\"error\":\"unknown_action\"}".to_vec(), vec![]),
                 };
@@ -311,12 +320,11 @@ fn zt_mcp_offers_the_bridge_as_read_only_tools() {
                 .starts_with("scholar_archive_")
         })
         .collect::<Vec<_>>();
-    assert_eq!(bridge_tools.len(), 5);
-    assert!(
-        bridge_tools
-            .iter()
-            .all(|tool| tool["annotations"]["readOnlyHint"] == true)
-    );
+    assert_eq!(bridge_tools.len(), 6);
+    // Every bridge tool only reads; taking a figure also keeps it in ZET's own artifact store.
+    assert!(bridge_tools.iter().all(|tool| {
+        tool["annotations"]["readOnlyHint"] == (tool["name"] != "scholar_archive_artifact")
+    }));
 
     let reply = request(
         2,
@@ -347,4 +355,79 @@ fn zt_mcp_offers_the_bridge_as_read_only_tools() {
     assert_eq!(reply["result"]["isError"], true, "{reply}");
     drop(stdin);
     child.wait().unwrap();
+}
+
+#[test]
+fn a_card_shows_a_figure_only_after_zet_keeps_it_from_the_archive() {
+    let archive = FakeArchive::start(false);
+    let home = Home::new(&archive);
+    let root = home.config_dir.parent().unwrap().join("archive");
+    home.zt()
+        .args(["config", "set", "archive_root", root.to_str().unwrap()])
+        .assert()
+        .success();
+    home.zt().arg("up").assert().success();
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .arg("mcp")
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_SCHOLAR_ARCHIVE", &home.fake_command)
+        .env("ZT_SCHOLAR_NO_START", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut call = |id: u64, name: &str, arguments: Value| -> Value {
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": arguments } })
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()["result"].clone()
+    };
+    let digest = hex(&Sha256::digest(FIGURE));
+    let unknown = "f".repeat(64);
+    let refused = call(
+        1,
+        "create_topic",
+        json!({ "title": "Growth", "body": format!("![x](artifact:{unknown})") }),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+
+    let kept = call(
+        2,
+        "scholar_archive_artifact",
+        json!({ "file_id": 3, "path": FIGURE_PATH }),
+    );
+    assert_eq!(kept["isError"], false, "{kept}");
+    let kept = &kept["structuredContent"];
+    assert_eq!(kept["sha256"], digest);
+    assert_eq!(
+        kept["markdown"],
+        format!("![FIGURE 1: GROWTH (REWEIGHTED)](artifact:{digest})")
+    );
+    assert_eq!(kept["work_id"], 42);
+    let stored = root.join("artifacts").join(format!("{digest}.png"));
+    assert_eq!(fs::read(&stored).unwrap(), FIGURE);
+    let record: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("artifacts").join(format!("{digest}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["source"]["path"], FIGURE_PATH);
+
+    let created = call(
+        3,
+        "create_topic",
+        json!({ "title": "Growth", "body": kept["markdown"] }),
+    );
+    assert_eq!(created["isError"], false, "{created}");
+    drop(stdin);
+    child.wait().unwrap();
+    let _ = fs::remove_file(root.join("zt.pid"));
 }

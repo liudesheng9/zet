@@ -4,8 +4,8 @@ This specification is shared: Scholar Archive keeps it as `docs/zet-bridge.md` a
 
 The ZET bridge is the one connection between Scholar Archive and ZET (`zt`, github.com/liudesheng9/zet).
 Through it, ZET reads everything the archive holds: scholars, Works and their sources, versions and
-topics, journals, workspaces, source history, the linked PDF/Markdown documents, any table through
-read-only SQL, and whole exports. The exchange is **information only**: nothing on the bridge can change
+topics, journals, workspaces, source history, the linked PDF/Markdown documents and their artifacts
+(the figure images the Markdown shows), any table through read-only SQL, and whole exports. The exchange is **information only**: nothing on the bridge can change
 the archive, start collection, contact a provider, or write a file in the archive folder.
 
 Each project has its half of the connector:
@@ -59,11 +59,12 @@ All actions are `POST` with a JSON object body.
 | `call` | `{"tool", "arguments"}` | `{"tool", "result"}` from one of the archive's read MCP tools |
 | `sql` | `{"sql", "params"?, "limit"? (1–10000, default 500), "database"? ("archive" or "vectors")}` | `{"columns", "rows", "truncated"}`; BLOBs come as `{"base64": ...}` |
 | `file` | `{"file_id"}` | the document's bytes, with `X-Zet-Bridge-File-Sha256` and URL-safe base64 `X-Zet-Bridge-File-Name`/`-Path` |
+| `artifact` | `{"file_id", "path"}` | one artifact's bytes (an image a Markdown document references, or one in its artifact folder), with its media type and the same headers as `file` |
 | `export` | `{"scholar_id"?, "format"? (json, csv, bibtex), "view"?}` | the export's bytes, as the Export action renders them |
 
 Read tools: `archive_status`, `list_scholars`, `scholar_report`, `list_works`, `get_work`,
 `list_journals`, `list_workspaces`, `get_workspace`, `list_work_files`, `get_work_file`,
-`list_source_labels`, `list_source_updates`, `find_duplicate_works`, `job_status`,
+`list_work_artifacts`, `list_source_labels`, `list_source_updates`, `find_duplicate_works`, `job_status`,
 `vector_index_status`, `semantic_search`, `similar_works`. Every other MCP tool (edits, operations,
 collection, provider searches, imports, export files, backups, vector updates) is refused with `403`.
 
@@ -72,6 +73,21 @@ only reads, functions, recursive queries and schema pragmas (`table_info`, `inde
 `foreign_key_list` and the like); writes, `ATTACH` and other pragmas are refused before they run.
 A query stops after 20 seconds. Documents are opened with the same pinned-path checks as the cockpit's
 downloads and are limited to 512 MB.
+
+## Artifacts
+
+An artifact is an image a Work's Markdown document shows. `list_work_artifacts` (`work_id` or a
+Markdown's `file_id`) reads the Markdown's own image references and lists each artifact in reading
+order: its `path` below `files/`, the `file_id` of the Markdown that shows it, its caption(s), media
+type, size and availability, and whether a document the Work shows first uses it (`shown`). It also
+names the artifact folders and lists the images there that no document references (`unused`) and the
+references that cannot resolve (`problems`). The `artifact` action returns one artifact's bytes; it
+accepts only an image the named Markdown references or one in its artifact folders, limited to 64 MB.
+
+ZET keeps every artifact a Card shows in its own archive, as `artifacts/<sha256>.<ext>` beside a
+`<sha256>.json` record of its source (`work_id`, `file_id`, `path`, caption). A Card shows it with
+`![caption](artifact:<sha256>)`. The Card depends only on ZET's copy, so the archive may move,
+rename or drop its file without breaking the Card.
 
 ## Running automatically
 

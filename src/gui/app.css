@@ -1032,3 +1032,52 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   display: block; width: 100%; height: 160px; border: 0; border-radius: 2px;
   background: var(--paper); box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 3px rgba(60, 45, 20, .08);
 }
+
+/* Figures: a print clipped to the card, its caption pencilled under it. */
+.zt-figure { display: block; margin: .6em 0; text-align: center; }
+.card .md .zt-figure { margin: 0 0 var(--rule); padding-top: 4px; }
+.zt-figure img {
+  display: block; max-width: 100%; max-height: 360px; margin: 0 auto; padding: 6px; cursor: zoom-in;
+  background: #fff; border-radius: 2px; box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .12), 0 6px 14px -8px rgba(60, 45, 20, .28);
+}
+.card .md .zt-figure img { box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .12), 0 6px 14px -8px rgba(60, 45, 20, .28); border-radius: 2px; }
+.zt-figcaption { display: block; margin-top: 4px; font: italic 13px/1.5 var(--serif); color: var(--ink-soft); text-wrap: pretty; }
+.zt-figure.missing { text-align: left; }
+.zt-figure-gap {
+  display: inline-block; padding: 2px 8px; border: 1px dashed var(--line); border-radius: 4px;
+  font: 11.5px var(--sans); color: var(--ink-faint);
+}
+.zt-figure.missing .zt-figcaption { display: inline; margin-left: 8px; font-size: 12.5px; color: var(--ink-faint); }
+.figure-view {
+  display: grid; justify-items: center; gap: 10px; max-width: min(1100px, 94vw); max-height: 94vh; padding: 18px 20px 14px;
+  background: var(--paper); border-radius: var(--radius); box-shadow: var(--shadow-lift); overflow: auto;
+}
+.figure-view img { max-width: 100%; max-height: 74vh; background: #fff; padding: 8px; box-shadow: 0 0 0 .5px var(--stock-edge); }
+.figure-caption { margin: 0; max-width: 70ch; font: 16px/1.5 var(--serif); text-align: center; color: var(--ink); }
+.figure-source { margin: 0; font: 11.5px var(--sans); color: var(--ink-faint); }
+.figure-source:empty { display: none; }
+.pane-label .figure-btn {
+  font: 600 10px var(--sans); letter-spacing: .08em; text-transform: none; color: var(--accent);
+  border: 0; background: none; padding: 0; cursor: pointer;
+}
+.pane-label .figure-btn:hover { text-decoration: underline; }
+.sheet-dlg.figure-pick { width: min(1040px, 100%); }
+.figure-pick-body { display: grid; grid-template-columns: 300px 1fr; min-height: 420px; max-height: 66vh; }
+.figure-side { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-right: 1px solid var(--line-soft); min-height: 0; }
+.figure-side input { width: 100%; }
+.figure-works { overflow: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.figure-work { display: grid; gap: 1px; text-align: left; padding: 7px 9px; border-radius: 8px; border: 1px solid transparent; background: none; }
+.figure-work .t { font: 13.5px/1.35 var(--serif); color: var(--ink-soft); }
+.figure-work .y { font: 11px var(--sans); color: var(--ink-faint); }
+.figure-work:hover .t, .figure-work.on .t { color: var(--ink); }
+.figure-work.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.figure-grid { overflow: auto; padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; align-content: start; }
+.figure-cell { display: grid; gap: 6px; text-align: left; padding: 8px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--paper); transition: box-shadow .15s, transform .15s; }
+.figure-cell:hover { box-shadow: var(--shadow-lift); transform: translateY(-1px); }
+.figure-thumb { display: grid; place-items: center; height: 120px; background: #fff; color: var(--ink-faint); border-radius: 4px; overflow: hidden; }
+.figure-thumb img { max-width: 100%; max-height: 120px; object-fit: contain; }
+.figure-cell-caption { font: 12px/1.4 var(--sans); color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.figure-cell-caption b { color: var(--ink); }
+.figure-hint { margin: 6px 2px; font: 12.5px var(--sans); color: var(--ink-faint); grid-column: 1 / -1; }
+.figure-hint.err { color: var(--broken); }
+@media (max-width: 720px) { .figure-pick-body { grid-template-columns: 1fr; } .figure-side { border-right: 0; border-bottom: 1px solid var(--line-soft); } }

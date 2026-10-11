@@ -518,6 +518,26 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result
             .iter()
             .map(|(filename, _)| format!("{archive_name}/{filename}")),
     );
+    // The figures the Cards show travel with them, under their content names.
+    let shown = cards
+        .iter()
+        .flat_map(|card| crate::artifact::references(&card.text))
+        .collect::<BTreeSet<_>>();
+    for digest in &shown {
+        let Some(source) = crate::artifact::path(root, digest) else {
+            continue;
+        };
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("artifact file name is not UTF-8")?
+            .to_string();
+        let folder = staging.join("artifacts");
+        fs::create_dir_all(&folder)?;
+        fs::copy(&source, folder.join(&name))
+            .with_context(|| format!("failed to copy {}", source.display()))?;
+        entries.push(format!("{archive_name}/artifacts/{name}"));
+    }
     let partial_archive = staging.join(format!(
         ".{archive_name}.partial{}",
         selected.format.extension()

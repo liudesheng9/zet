@@ -1425,6 +1425,19 @@
   function wireMarkdown(root) {
     typeset(root);
     wireCharts(root);
+    // Figures: a print clipped to the card. One the archive lacks recedes to a quiet gap.
+    for (const figure of root.querySelectorAll('.zt-figure')) {
+      const image = figure.querySelector('img');
+      const lost = () => {
+        figure.classList.add('missing');
+        if (image) image.replaceWith(h('span', { class: 'zt-figure-gap', text: 'figure not in this archive' }));
+      };
+      if (!figure.dataset.artifact || !image) { lost(); continue; }
+      image.addEventListener('error', lost, { once: true });
+      if (image.complete && image.naturalWidth === 0 && image.src) lost();
+      image.addEventListener('click', () => showFigure(figure.dataset.artifact, image.alt));
+      image.title = 'Open figure';
+    }
     // Link chips carry their target's title, which may hold TeX.
     for (const title of root.querySelectorAll('.zt-link-title')) {
       if (title.textContent.includes('$')) title.replaceChildren(...titleNodes(title.textContent));
@@ -1567,6 +1580,108 @@
     ]);
   }
 
+  // ---------------------------------------------------------------- figures
+  /** One figure, large, over a dimmed desk: the only thing to look at. */
+  function showFigure(sha, caption) {
+    const source = h('p', { class: 'figure-source' });
+    const close = openOverlay(h('div', { class: 'figure-view', role: 'dialog', 'aria-label': 'Figure', onclick: (event) => { if (event.target === event.currentTarget) close(); } },
+      h('img', { src: '/artifact/' + sha, alt: caption || '' }),
+      caption ? h('p', { class: 'figure-caption' }, titleNodes(caption)) : null,
+      source,
+      h('button', { class: 'btn', text: 'Close', onclick: () => close() }),
+    ));
+    const onKey = (event) => { if (event.key === 'Escape') { close(); document.removeEventListener('keydown', onKey, true); } };
+    document.addEventListener('keydown', onKey, true);
+    api('artifact?sha=' + enc(sha)).then((info) => {
+      const from = info.source || {};
+      if (from.work_id) source.textContent = `From Scholar Archive · Work ${from.work_id} · ${from.path || ''}`;
+    }).catch(() => {});
+  }
+
+  /**
+   * Choose a figure of a Scholar Archive Work and return its Markdown. The
+   * search starts from the Literature tree being written in, so the likely
+   * figures come first; everything else stays one search away.
+   */
+  function pickFigure() {
+    return new Promise((resolve) => {
+      const tree = state.card ? state.card.address.split('/')[0] : '';
+      const rootNode = state.nodes.find((node) => node.address === tree && node.kind === 'literature');
+      const query = h('input', { type: 'search', placeholder: 'Search Works by title or author', autocomplete: 'off', spellcheck: 'false', value: rootNode ? rootNode.title || '' : '' });
+      const works = h('div', { class: 'figure-works' });
+      const figures = h('div', { class: 'figure-grid' }, h('p', { class: 'figure-hint', text: 'Choose a Work to see its figures.' }));
+      const msg = h('span', { class: 'msg' });
+      let done = false;
+      const finish = (markdown) => { if (done) return; done = true; close(); resolve(markdown); };
+      const close = openOverlay(h('div', { class: 'sheet-dlg figure-pick', role: 'dialog' },
+        h('div', { class: 'dlg-head' }, h('h3', { text: 'Figure from Scholar Archive' })),
+        h('div', { class: 'figure-pick-body' }, h('div', { class: 'figure-side' }, query, works), figures),
+        h('div', { class: 'dlg-foot' }, msg, h('button', { class: 'btn', text: 'Cancel', onclick: () => finish(null) })),
+      ));
+      let searchTicket = 0;
+      const search = debounce(async () => {
+        const ticket = ++searchTicket;
+        try {
+          const found = await api('scholar/works?q=' + enc(query.value.trim()));
+          if (ticket !== searchTicket) return;
+          if (!found.works.length && query.value.trim() && rootNode && query.value === rootNode.title) {
+            query.value = ''; search(); return;  // No exact title match: show every Work with documents.
+          }
+          works.replaceChildren(...(found.works.length ? found.works.map((work) => h('button', {
+            class: 'figure-work', onclick: (event) => {
+              for (const other of works.querySelectorAll('.on')) other.classList.remove('on');
+              event.currentTarget.classList.add('on');
+              openWork(work);
+            },
+          }, h('span', { class: 't', text: work.title || `Work ${work.work_id}` }), h('span', { class: 'y', text: [work.year, (work.authors || '').split(',')[0]].filter(Boolean).join(' · ') })))
+            : [h('p', { class: 'figure-hint', text: 'No Work with Markdown documents matches.' })]));
+          if (found.works.length === 1) works.querySelector('.figure-work').click();
+        } catch (error) { msg.textContent = error.message; msg.className = 'msg err'; }
+      }, 220);
+      let workTicket = 0;
+      async function openWork(work) {
+        const ticket = ++workTicket;
+        figures.replaceChildren(h('p', { class: 'figure-hint', text: 'Reading figures…' }));
+        try {
+          const listing = await api('scholar/artifacts?work_id=' + work.work_id);
+          if (ticket !== workTicket) return;
+          const shown = listing.artifacts.filter((item) => item.shown && item.availability === 'present');
+          const items = shown.length ? shown : listing.artifacts.filter((item) => item.availability === 'present');
+          if (!items.length) { figures.replaceChildren(h('p', { class: 'figure-hint', text: 'This Work\'s Markdown shows no figures.' })); return; }
+          figures.replaceChildren(...items.map((item) => {
+            const frame = h('span', { class: 'figure-thumb' });
+            const cell = h('button', { class: 'figure-cell', title: item.path, onclick: async () => {
+              cell.disabled = true;
+              try {
+                const kept = await api('scholar/artifact', { file_id: item.file_id, path: item.path });
+                finish(kept.markdown);
+              } catch (error) { msg.textContent = error.message; msg.className = 'msg err'; cell.disabled = false; }
+            } }, frame, h('span', { class: 'figure-cell-caption' }, h('b', { text: String(item.number) }), ' ', item.caption || 'no caption'));
+            preview(item, frame, ticket);
+            return cell;
+          }));
+          msg.textContent = `${items.length} figure${items.length === 1 ? '' : 's'} · choose one to show it in the Card`;
+          msg.className = 'msg';
+        } catch (error) { figures.replaceChildren(h('p', { class: 'figure-hint err', text: error.message })); }
+      }
+      // Thumbnails load one after another, so the first figures appear first.
+      let queue = Promise.resolve();
+      function preview(item, frame, ticket) {
+        queue = queue.then(async () => {
+          if (ticket !== workTicket || done) return;
+          try {
+            const shot = await api('scholar/preview', { file_id: item.file_id, path: item.path });
+            frame.replaceChildren(h('img', { src: shot.data_url, alt: '' }));
+          } catch { frame.textContent = '—'; }
+        });
+      }
+      query.addEventListener('input', search);
+      query.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); finish(null); } });
+      search();
+      query.focus();
+    });
+  }
+
   // ----------------------------------------------------------- the editor
   /**
    * The writing desk: raw Markdown on the left, rendered on the right.
@@ -1663,7 +1778,19 @@
           h('div', { class: 'pane' },
             bib ? h('div', { class: 'pane-label' }, h('span', { text: 'BibTeX metadata' })) : null,
             bib,
-            h('div', { class: 'pane-label' }, h('span', { text: 'Markdown' }), h('span', { text: '[[ links · text below the reverse-links marker is generated' })),
+            h('div', { class: 'pane-label' }, h('span', { text: 'Markdown' }), h('span', {},
+              h('button', { class: 'figure-btn', type: 'button', title: 'Show a figure of a Scholar Archive Work in this Card', onclick: async () => {
+                const markdown = await pickFigure();
+                if (!markdown) { text.focus(); return; }
+                const at = text.selectionStart;
+                const before = text.value.slice(0, at);
+                const lead = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+                text.setRangeText(lead + markdown + '\n\n', at, text.selectionEnd, 'end');
+                text.focus();
+                dirty = true;
+                update();
+              } }, '＋ Figure'),
+              ' · [[ links · text below the reverse-links marker is generated')),
             text,
           ),
           h('div', { class: 'pane' }, h('div', { class: 'pane-label' }, h('span', { text: 'Preview' })), preview),

@@ -633,6 +633,7 @@ pub(crate) fn excerpt(body: &str) -> String {
         // Code, charts, and raw HTML are not prose to preview.
         if fenced.iter().any(|range| range.contains(&line_start))
             || raw.trim_start().starts_with('<')
+            || raw.trim_start().starts_with("![")
         {
             continue;
         }
@@ -683,6 +684,10 @@ mod tests {
             "A bold code see 0/1"
         );
         assert_eq!(excerpt(""), "");
+        assert_eq!(
+            excerpt("![Figure 1](artifact:abc)\n\nThe figure shows"),
+            "The figure shows"
+        );
         assert_eq!(
             excerpt(
                 "<div class=\"chart\">

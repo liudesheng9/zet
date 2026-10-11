@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod artifact;
 mod autostart;
 mod card;
 mod card_type;
@@ -227,7 +228,7 @@ fn config_file() -> Result<PathBuf> {
     }
 }
 
-fn require_archive_root() -> Result<PathBuf> {
+pub(crate) fn require_archive_root() -> Result<PathBuf> {
     Config::load()?
         .archive_root
         .context("archive_root is not configured; run `zt config set archive_root <path>`")
@@ -950,6 +951,8 @@ fn cmd_help() -> Result<()> {
     println!("  zt scholar call <tool> [<json-arguments>]");
     println!("  zt scholar sql [--db archive|vectors] [--limit <n>] <sql>");
     println!("  zt scholar file <file-id> [--out <path>]");
+    println!("  zt scholar figures <work-id>");
+    println!("  zt scholar figure <file-id> <path> [--caption <text>]");
     println!(
         "  zt scholar export [--scholar <id>] [--format json|csv|bibtex] [--view profile|combined] [--out <path>]"
     );
