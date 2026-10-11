@@ -94,9 +94,11 @@ zt gui --port 4717     # 指定端口
 
 - **卡片柜**（左侧）：human 与 agent 两个 Workspace 的标签页、当前 Workspace 的 Topic zone 与 Literature zone，以及全文搜索。
 - **书桌**（ROOT）：当前 Workspace 的每棵树显示为一叠索引卡片，按 Zone 分组。
-- **地图（Map）**：把当前树画成 Folgezettel 地图。Direct successor 沿同一列向下延伸，
-  Side successor 分出新的一列，Link 显示为虚线弧。
-- **星图（Constellation）**：所有 Card 与 Link 组成的一张图，按树着色。
+- **地图（Map）**：用聚焦透镜呈现当前树的 Folgezettel 地图。Direct successor 沿同一列向下延伸，
+  Side successor 进入右边一列。Pointer 所在的卡片被拉到前面；它的路径、后继和相邻卡片以小卡片立起；
+  其余卡片只露出一行卡头，远离 Pointer 的分支折叠为 "+N" 卡叠。只画 Pointer 的 Link。按 `x` 展开整棵树。
+- **星图（Constellation）**：每棵树画成一个径向大纲，所有树排成一圈；两棵树之间的 Link
+  合并为一条按数量加粗的弧线。Pointer 所在的树会被突出。
 - **阅读器**（右侧）：把 Card 呈现为一张带横线的索引卡片：地址印章和标题在红线之上，Markdown 写在蓝色横线上；
   Link 标签、Reverse link、操作按钮和存储的 Markdown 原文放在卡片下方。parent/direct/side 移动交给地图和方向键。
 - **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
@@ -105,7 +107,7 @@ zt gui --port 4717     # 指定端口
 命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`mv 1/3`、
 `ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
 `:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
-`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
+`x` 展开或折叠整棵树、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
 GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
 因此需要先用电源按钮或 `Ctrl+C` 关闭 GUI，`zt down` 才能停止服务。

@@ -97,9 +97,13 @@ zt gui --port 4717     # choose the port
 - **Cabinet** (left): tabs for the human and agent Workspaces, the Topic and Literature zones of
   the open one, and full-text search.
 - **Desk** (ROOT): each tree of the open Workspace as a stack of index cards, grouped by Zone.
-- **Map**: the current tree as a Folgezettel map. Direct successors run down a column,
-  Side successors branch into new columns, and Links are drawn as dashed arcs.
-- **Constellation**: every Card and Link as one graph, colored by tree.
+- **Map**: the current tree as a Folgezettel map seen through a focus lens. Direct successors
+  run down a column and Side successors branch into the next column. The Pointer card is pulled
+  forward; its path, children, and neighbours stand up as cards; the rest lie as one-line slips,
+  and branches away from the Pointer fold into "+N" stacks. Only the Pointer's Links are drawn.
+  Press `x` to unfold the whole tree.
+- **Constellation**: every tree as a radial outline set around one ring, with the Links between
+  two trees bundled into one arc weighted by their count. The Pointer's tree stands out.
 - **Reader** (right): the Card as a ruled index card, with its address stamp and title above the
   red line and its Markdown written on the blue rules; Link chips, Reverse links, actions, and the
   stored Markdown lie below it. The Map and arrow keys handle parent/direct/side moves.
@@ -109,7 +113,8 @@ zt gui --port 4717     # choose the port
 The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
 `ws agent`, `del`, `mv 1/3`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
 same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m`,
-`Delete`, `u` or arrows to walk the map, `v` to switch views, `w` to switch Workspaces, `f` to fit.
+`Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `v` to switch views,
+`w` to switch Workspaces, `f` to fit.
 
 The GUI listens on `127.0.0.1` only, requires a per-launch token, and counts as a Session,
 so `zt down` waits until you close it with the power button or `Ctrl+C`.

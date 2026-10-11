@@ -3,10 +3,6 @@
   'use strict';
 
   const TOKEN = document.querySelector('meta[name="zt-token"]').content;
-  const NODE_W = 196;
-  const NODE_H = 78;
-  const COL_W = 236;
-  const ROW_H = 112;
 
   // ---------------------------------------------------------------- helpers
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -90,11 +86,6 @@
     if (segments.length > 1) return tree + '/' + segments.slice(0, -1).join('|');
     return /^\d+$/.test(tree) ? tree + '/0' : tree;
   }
-  const treeOf = (address) => address.split('/')[0];
-  const sideRank = (address) => {
-    const label = address.slice(address.lastIndexOf('|') + 1);
-    return [...label].reduce((acc, ch) => acc * 26 + ch.charCodeAt(0) - 96, 0);
-  };
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   // ------------------------------------------------------------------ state
@@ -105,6 +96,8 @@
     pointer: null,        // Card address, or null for ROOT
     card: null,
     tree: null,
+    outline: null,        // the current tree as an outline (layout.js)
+    expandAll: store.get('zt-expand') === '1',
     mode: store.get('zt-mode') === 'constellation' ? 'constellation' : 'map',
     // The Workspace shown at ROOT and given new trees; it follows the Pointer.
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
@@ -256,10 +249,8 @@
     if (state.card.workspace && state.card.workspace !== state.workspace) setWorkspace(state.card.workspace);
     const treeId = state.card.tree;
     if (!state.tree || state.tree.tree !== treeId) {
-      const sameTree = state.lastTreeId === treeId;
       state.tree = await api('tree?id=' + enc(treeId));
-      state.lastTreeId = treeId;
-      layoutMap(!sameTree);
+      state.outline = ZtLayout.outline(state.tree.cards, state.tree.root);
     }
     renderAll();
   }
@@ -379,6 +370,7 @@
 
   // ------------------------------------------------------------------ stage
   const camera = { map: { x: 40, y: 70, k: 1 }, constellation: { x: 0, y: 0, k: 1 } };
+  const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function setMode(mode) {
     state.mode = mode;
@@ -386,6 +378,12 @@
     for (const button of document.querySelectorAll('.seg button')) {
       button.classList.toggle('on', button.dataset.mode === mode);
     }
+    renderStage();
+  }
+
+  function setExpandAll(on) {
+    state.expandAll = on;
+    store.set('zt-expand', on ? '1' : '0');
     renderStage();
   }
 
@@ -398,17 +396,25 @@
     $('#sky-label').hidden = true;
     $('#legend').hidden = !inTree;
     $('.zoom').hidden = state.mode === 'map' && !state.card;
+    const lens = $('#lens-toggle');
+    lens.hidden = !inTree;
+    lens.classList.toggle('on', state.expandAll);
+    lens.title = state.expandAll ? 'Focus on the pointer and fold the rest (x)' : 'Unfold the whole tree (x)';
+    lens.querySelector('span').textContent = state.expandAll ? 'Whole tree' : 'Focus';
     const title = $('#stage-title');
     if (state.mode === 'constellation') {
-      title.textContent = `Constellation · ${state.nodes.length} cards`;
+      title.textContent = `Constellation · ${state.overview.trees.length} trees · ${state.nodes.length} cards`;
       sky.show();
     } else if (!state.card) {
       title.textContent = `The cabinet · ${wsLabel(state.workspace)} workspace`;
       renderDesk();
     } else {
+      map.render();
       const tree = state.tree;
-      title.textContent = `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.tree} · ${tree.title} — ${tree.cards.length} card${tree.cards.length === 1 ? '' : 's'}`;
-      highlightMap();
+      const shown = map.shownCount();
+      const total = tree.cards.length;
+      title.textContent = `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.tree} · ${tree.title} — `
+        + (shown < total ? `${shown} of ${total} cards in view` : `${total} card${total === 1 ? '' : 's'}`);
     }
   }
 
@@ -416,13 +422,16 @@
     const agent = state.workspace === 'agent';
     const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
     const zone = (kind) => trees.filter((tree) => tree.kind === kind);
+    const largest = Math.max(1, ...trees.map((tree) => tree.count));
     // A stack shows a stamp for each kind of non-Idea Card it holds, with a tally past one.
     const tally = (type, count) => (count
       ? h('span', { class: 'tally' }, typeStamp(type, `${count} ${CARD_TYPES[type].label} Card${count === 1 ? '' : 's'}`), count > 1 ? `×${count}` : null)
       : null);
+    // A bigger tree is a thicker stack: up to four sheets under the face.
     const stack = (tree) => h('button', {
       class: 'stack ' + tree.kind, onclick: () => go(tree.root), title: tree.title,
     },
+      tree.count > 6 ? h('span', { class: 'sheet s4' }) : null,
       tree.count > 2 ? h('span', { class: 'sheet s3' }) : null,
       tree.count > 1 ? h('span', { class: 'sheet s2' }) : null,
       h('span', { class: 'face' },
@@ -431,11 +440,13 @@
         tree.excerpt ? h('span', { class: 'x', text: tree.excerpt }) : null,
         h('span', { class: 'foot' },
           h('span', { class: 'types' },
-            h('span', { text: `${tree.count} card${tree.count === 1 ? '' : 's'}` }),
+            h('span', { class: 'count', text: `${tree.count} card${tree.count === 1 ? '' : 's'}` }),
             tally('event', tree.events),
             tally('model', tree.models),
           ),
-          h('span', { class: 'addr', text: '→' })),
+          h('span', { class: 'gauge', title: `${tree.count} of the ${largest} cards in the largest tree` },
+            h('i', { style: `width: ${Math.max(6, Math.round(100 * tree.count / largest))}%` })),
+        ),
       ),
     );
     const newStack = (label, key, action) => h('button', { class: 'stack new', onclick: action },
@@ -461,166 +472,251 @@
     );
   }
 
-  // Folgezettel layout: a Direct successor continues its column downward; each
-  // Side successor starts a new column to the right, one row below its parent.
-  function layoutMap(resetCamera) {
-    const tree = state.tree;
-    const byAddress = new Map(tree.cards.map((card) => [card.address, card]));
-    const children = new Map();
-    for (const card of tree.cards) {
-      if (!card.parent || !byAddress.has(card.parent)) continue;
-      const entry = children.get(card.parent) || { direct: null, sides: [] };
-      if (card.edge === 'side') entry.sides.push(card.address);
-      else entry.direct = card.address;
-      children.set(card.parent, entry);
-    }
-    for (const entry of children.values()) entry.sides.sort((a, b) => sideRank(a) - sideRank(b));
-    const position = new Map();
-    let nextColumn = 0;
-    const spine = (start, column, row) => {
-      const chain = [];
-      for (let at = start, r = row; at; at = children.get(at)?.direct, r += 1) {
-        position.set(at, { col: column, row: r });
-        chain.push(at);
-      }
-      for (const at of chain) {
-        for (const side of children.get(at)?.sides || []) {
-          nextColumn += 1;
-          spine(side, nextColumn, position.get(at).row + 1);
-        }
-      }
-    };
-    spine(tree.root, 0, 0);
-    for (const card of tree.cards) {
-      if (!position.has(card.address)) { nextColumn += 1; spine(card.address, nextColumn, 0); }
-    }
-    const xy = (address) => {
-      const p = position.get(address);
-      return { x: p.col * COL_W, y: p.row * ROW_H };
-    };
-    tree.xy = xy;
+  // -------------------------------------------------------------------- map
+  // The Map is a focus lens over the current tree (see layout.js). The Pointer card is
+  // pulled out of the drawer; its path, parent, children, and run neighbours stand up as
+  // cards; the rest of what is shown lies as slips; everything else is folded into "+N"
+  // counts. Only the Pointer's Links are drawn. Each move of the Pointer re-runs the
+  // layout and glides the cards to their new places.
+  const map = (() => {
+    const els = new Map();   // address -> node element
+    const paths = new Map(); // edge key -> SVG path
+    let drawn = new Map();   // address -> geometry on screen now
+    let view = null;
+    let hovered = null;
+    let frame = 0;
+    const cam = camera.map;
 
-    const edges = $('#edges');
-    edges.replaceChildren();
-    const nodes = $('#nodes');
-    nodes.replaceChildren();
-    let maxX = 0;
-    let maxY = 0;
-    for (const card of tree.cards) {
-      const { x, y } = xy(card.address);
-      maxX = Math.max(maxX, x + NODE_W);
-      maxY = Math.max(maxY, y + NODE_H);
-      if (card.parent && byAddress.has(card.parent)) {
-        const p = xy(card.parent);
-        const cx = x + NODE_W / 2;
-        const d = card.edge === 'side'
-          ? `M ${p.x + NODE_W} ${p.y + NODE_H / 2} H ${cx - 14} Q ${cx} ${p.y + NODE_H / 2} ${cx} ${p.y + NODE_H / 2 + 14} V ${y}`
-          : `M ${p.x + NODE_W / 2} ${p.y + NODE_H} V ${y}`;
-        edges.append(svg('path', { d, class: card.edge === 'side' ? 'e-side' : 'e-direct' }));
+    const STAGE_TOP = 62;
+    const lerp = (a, b, t) => a + (b - a) * t;
+
+    function content(el, card, n, outline) {
+      const external = card.links.filter((target) => !outline.card.has(target)).length;
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, external, card.excerpt].join('\u0001');
+      el.className = ['node', n.lod, 'role-' + n.role,
+        card.edge === 'root' ? 'root ' + card.kind : '',
+        card.type && card.type !== 'idea' ? 'type-' + card.type : '',
+        n.folded ? 'folded' : '',
+        state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
+        state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
+      ].filter(Boolean).join(' ');
+      if (el.dataset.sig === signature) return;
+      el.dataset.sig = signature;
+      el.title = card.title + (card.excerpt ? '\n\n' + card.excerpt : '');
+      const fold = n.folded ? h('span', {
+        class: 'badge fold', title: `${n.folded} more card${n.folded === 1 ? '' : 's'} filed behind — open this card to unfold them`,
+        text: '+' + n.folded,
+      }) : null;
+      const title = h('span', { class: 't' + (card.title ? '' : ' untitled'), text: card.title || 'untitled' });
+      const slash = card.address.indexOf('/');
+      // Inside a Literature tree the long Citation key is known, so cards show the rest.
+      const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
+      if (n.lod === 'slip') {
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type), fold].filter(Boolean));
+        return;
       }
-      for (const target of card.links) {
-        if (!byAddress.has(target) || target === card.address) continue;
-        const t = xy(target);
-        const ax = x + NODE_W / 2; const ay = y + NODE_H / 2;
-        const bx = t.x + NODE_W / 2; const by = t.y + NODE_H / 2;
-        const mx = (ax + bx) / 2; const my = (ay + by) / 2;
-        const bend = 0.28;
-        const cx = mx - (by - ay) * bend; const cy = my + (bx - ax) * bend;
-        edges.append(svg('path', { d: `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`, class: 'e-link', 'data-a': card.address, 'data-b': target }));
-      }
-      const external = card.links.filter((target) => !byAddress.has(target)).length;
-      const node = h('button', {
-        class: 'node' + (card.edge === 'root' ? ' root ' + card.kind : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : ''),
-        dataset: { address: card.address },
-        title: card.excerpt || card.title,
-        onclick: (event) => { event.stopPropagation(); go(card.address); },
-      },
+      el.replaceChildren(...[
         h('span', { class: 'top' },
-          h('span', { class: 'addr', text: card.address }),
+          h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
           h('span', { class: 'badges' },
             typeStamp(card.type),
-            card.inbound ? h('span', { class: 'badge in', title: 'Referred by', text: '←' + card.inbound }) : null,
+            card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
+            fold,
           ),
         ),
-        h('span', { class: 't' + (card.title ? '' : ' untitled'), text: card.title || 'untitled' }),
-      );
-      node.style.left = x + 'px';
-      node.style.top = y + 'px';
-      nodes.append(node);
+        title,
+        n.lod === 'focus' && card.excerpt ? h('span', { class: 'x', text: card.excerpt }) : null,
+      ].filter(Boolean));
     }
-    edges.setAttribute('width', maxX + 40);
-    edges.setAttribute('height', maxY + 40);
-    tree.bounds = { w: maxX, h: maxY };
-    if (resetCamera) requestAnimationFrame(() => fitMap(true));
-  }
 
-  function highlightMap() {
-    const card = state.card;
-    if (!card || !state.tree) return;
-    const linked = new Set([...card.outbound.map((l) => l.address), ...card.inbound.map((l) => l.address)]);
-    for (const node of document.querySelectorAll('.node')) {
-      const address = node.dataset.address;
-      node.classList.toggle('on', address === card.address);
-      node.classList.toggle('linked', linked.has(address));
+    /** Where the camera should be: a view that fits is centred and stays still; a larger
+     *  one follows the Pointer, held a little left of centre and in the upper third. */
+    function cameraTarget(k) {
+      const viewport = $('#viewport');
+      const vw = viewport.clientWidth; const vh = viewport.clientHeight;
+      const b = view.bounds;
+      const f = view.index.get(view.focus);
+      const room = { w: vw - 64, h: vh - STAGE_TOP - 56 };
+      const reach = 110; // Link arcs swing out to the right of the cards.
+      let x; let y;
+      if ((b.w + reach) * k <= room.w) x = 32 + (room.w - (b.w + reach) * k) / 2;
+      else {
+        // Show the right edge (the pointer's successors) and as much context to the left
+        // as fits, but never push the pointer card itself out of view.
+        const lo = vw - 32 - (f.x + f.w) * k;
+        const hi = 32 - f.x * k;
+        x = Math.min(40, Math.max(lo, Math.min(hi, vw - 32 - b.w * k)));
+      }
+      if (b.h * k <= room.h) y = STAGE_TOP + (room.h - b.h * k) / 2;
+      else {
+        y = STAGE_TOP + room.h * 0.36 - (f.y + f.h / 2) * k;
+        y = Math.min(STAGE_TOP + 10, Math.max(vh - 56 - b.h * k, y));
+      }
+      return { x, y, k };
     }
-    for (const path of document.querySelectorAll('.e-link')) {
-      path.classList.toggle('hot', path.dataset.a === card.address || path.dataset.b === card.address);
+
+    function paint(geometry) {
+      for (const [address, g] of geometry) {
+        const el = els.get(address);
+        if (!el) continue;
+        el.style.transform = `translate(${g.x}px, ${g.y}px)`;
+        el.style.width = g.w + 'px';
+        el.style.height = g.h + 'px';
+      }
+      const edges = $('#edges');
+      const keep = new Set();
+      const put = (key, d, cls) => {
+        keep.add(key);
+        let path = paths.get(key);
+        if (!path) { path = svg('path', {}); paths.set(key, path); edges.append(path); }
+        path.setAttribute('d', d);
+        path.setAttribute('class', cls);
+      };
+      for (const edge of view.edges) {
+        const a = geometry.get(edge.from); const b = geometry.get(edge.to);
+        if (a && b) put('e' + edge.from + '>' + edge.to, ZtLayout.edgePath(edge, a, b), 'e-' + edge.kind + (edge.hot ? ' hot' : ''));
+      }
+      const focus = geometry.get(view.focus);
+      if (focus) {
+        const near = structural(view.focus);
+        for (const address of state.linkedOut || []) {
+          const b = geometry.get(address);
+          if (b && !near.has(address)) put('o' + address, ZtLayout.linkArc(focus, b), 'e-link out');
+        }
+        for (const address of state.linkedIn || []) {
+          const b = geometry.get(address);
+          if (b && !near.has(address) && !state.linkedOut.has(address)) put('i' + address, ZtLayout.linkArc(b, focus), 'e-link in');
+        }
+      }
+      const over = hovered && hovered !== view.focus ? geometry.get(hovered) : null;
+      if (over) {
+        const near = structural(hovered);
+        for (const target of state.outline.card.get(hovered).links) {
+          const b = geometry.get(target);
+          if (b && target !== hovered && !near.has(target)) put('h' + target, ZtLayout.linkArc(over, b), 'e-link peek');
+        }
+      }
+      for (const [key, path] of paths) if (!keep.has(key)) { path.remove(); paths.delete(key); }
     }
-    revealPointer();
-  }
+
+    /** Cards the tree structure already ties to `address`; a Link arc to one adds nothing. */
+    function structural(address) {
+      const outline = state.outline;
+      const up = outline.up.get(address);
+      const tied = new Set([...outline.kids.get(address), up, outline.card.get(address).parent]);
+      for (const sibling of up != null ? outline.kids.get(up) : []) {
+        if (outline.card.get(sibling).parent === address) tied.add(sibling);
+      }
+      return tied;
+    }
+
+    function glide(from, to, camFrom, camTo, ms) {
+      const id = ++frame;
+      const t0 = performance.now();
+      const step = (now) => {
+        if (id !== frame) return;
+        const t = ms <= 0 || reduceMotion() ? 1 : Math.min(1, (now - t0) / ms);
+        const e = 1 - Math.pow(1 - t, 3);
+        const geometry = new Map();
+        for (const [address, b] of to) {
+          const a = from.get(address) || b;
+          geometry.set(address, { x: lerp(a.x, b.x, e), y: lerp(a.y, b.y, e), w: lerp(a.w, b.w, e), h: lerp(a.h, b.h, e) });
+        }
+        drawn = geometry;
+        paint(geometry);
+        cam.x = lerp(camFrom.x, camTo.x, e); cam.y = lerp(camFrom.y, camTo.y, e); cam.k = lerp(camFrom.k, camTo.k, e);
+        applyCamera();
+        if (t < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+
+    function render() {
+      const card = state.card;
+      const outline = state.outline;
+      if (!card || !outline) return;
+      const inTree = (address) => outline.card.has(address) && address !== card.address;
+      state.linkedOut = new Set(card.outbound.map((link) => link.address).filter(inTree));
+      const inbound = card.inbound.map((link) => link.address).filter(inTree);
+      // A Card that half the tree refers to (a tree root) would light up everything.
+      state.linkedIn = new Set(inbound.length <= 16 ? inbound : []);
+      const fresh = !view || view.tree !== state.tree.tree;
+      view = ZtLayout.focusLens(outline, card.address, {
+        links: [...state.linkedOut, ...state.linkedIn], expandAll: state.expandAll,
+      });
+      view.tree = state.tree.tree;
+
+      const nodes = $('#nodes');
+      const from = new Map(drawn);
+      const to = new Map(view.nodes.map((n) => [n.address, { x: n.x, y: n.y, w: n.w, h: n.h }]));
+      if (fresh) {
+        for (const el of els.values()) el.remove();
+        for (const path of paths.values()) path.remove();
+        els.clear(); paths.clear(); from.clear();
+      }
+      for (const n of view.nodes) {
+        let el = els.get(n.address);
+        if (!el) {
+          const address = n.address;
+          el = h('button', {
+            class: 'node',
+            dataset: { address },
+            onclick: (event) => { event.stopPropagation(); go(address); },
+            onpointerenter: () => { hovered = address; paint(drawn); },
+            onpointerleave: () => { if (hovered === address) { hovered = null; paint(drawn); } },
+          });
+          el.classList.add('entering');
+          els.set(address, el);
+          nodes.append(el);
+          // A newly shown card slides out from behind its nearest card already on screen.
+          let at = outline.up.get(address);
+          while (at != null && !from.has(at)) at = outline.up.get(at);
+          const origin = at != null ? from.get(at) : null;
+          if (origin) from.set(address, { x: origin.x, y: origin.y, w: n.w, h: n.h });
+          setTimeout(() => el.classList.remove('entering'), 400);
+        }
+        content(el, outline.card.get(n.address), n, outline);
+      }
+      for (const [address, el] of els) {
+        if (to.has(address)) continue;
+        els.delete(address);
+        el.classList.add('leaving');
+        setTimeout(() => el.remove(), 240);
+      }
+      if (hovered && !to.has(hovered)) hovered = null;
+      const edges = $('#edges');
+      edges.setAttribute('width', view.bounds.w + 400);
+      edges.setAttribute('height', view.bounds.h + 40);
+      // Reading needs legible type: navigating out of a zoomed-out overview zooms back in.
+      const k = fresh || cam.k < 0.8 ? 1 : cam.k;
+      const target = cameraTarget(k);
+      if (fresh) glide(to, to, target, target, 0);
+      else glide(from, to, { ...cam }, target, 360);
+    }
+
+    return {
+      render,
+      shownCount: () => (view ? view.nodes.length : 0),
+      fit() {
+        if (!view) return;
+        const viewport = $('#viewport');
+        const room = { w: viewport.clientWidth - 64, h: viewport.clientHeight - STAGE_TOP - 56 };
+        const k = Math.max(0.22, Math.min(1.1, room.w / (view.bounds.w + 110), room.h / view.bounds.h));
+        glide(drawn, drawn, { ...cam }, cameraTarget(k), 300);
+      },
+      reset() { view = null; drawn = new Map(); },
+    };
+  })();
 
   function applyCamera() {
     const cam = camera.map;
     $('#plane').style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
-    if (state.mode === 'constellation') sky.draw();
   }
 
   function fitView() {
     if (state.mode === 'constellation') sky.fit();
-    else fitMap(false);
-  }
-
-  function fitMap(preferPointer) {
-    const viewport = $('#viewport');
-    const vw = viewport.clientWidth; const vh = viewport.clientHeight;
-    const tree = state.tree;
-    if (!tree || !tree.bounds) return;
-    const pad = 60;
-    const k = Math.max(0.3, Math.min(1.05, (vw - pad * 2) / tree.bounds.w, (vh - pad * 2 - 40) / tree.bounds.h));
-    const cam = camera.map;
-    cam.k = k;
-    cam.x = Math.max(pad, (vw - tree.bounds.w * k) / 2);
-    cam.y = Math.max(pad + 16, (vh - tree.bounds.h * k) / 2);
-    applyCamera();
-    if (preferPointer) revealPointer();
-  }
-
-  function revealPointer() {
-    const tree = state.tree;
-    if (!tree || !tree.xy || !state.card || state.mode !== 'map') return;
-    const viewport = $('#viewport');
-    const cam = camera.map;
-    const { x, y } = tree.xy(state.card.address);
-    const sx = cam.x + x * cam.k; const sy = cam.y + y * cam.k;
-    const margin = 60;
-    const w = NODE_W * cam.k; const hh = NODE_H * cam.k;
-    let dx = 0; let dy = 0;
-    if (sx < margin) dx = margin - sx;
-    else if (sx + w > viewport.clientWidth - margin) dx = viewport.clientWidth - margin - (sx + w);
-    if (sy < margin + 20) dy = margin + 20 - sy;
-    else if (sy + hh > viewport.clientHeight - margin) dy = viewport.clientHeight - margin - (sy + hh);
-    if (!dx && !dy) return;
-    const start = { x: cam.x, y: cam.y };
-    const t0 = performance.now();
-    const step = (now) => {
-      const t = Math.min(1, (now - t0) / 260);
-      const ease = 1 - Math.pow(1 - t, 3);
-      cam.x = start.x + dx * ease; cam.y = start.y + dy * ease;
-      applyCamera();
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+    else map.fit();
   }
 
   function zoomAt(factor, px, py) {
@@ -657,6 +753,7 @@
     };
     viewport.addEventListener('pointerup', end);
     viewport.addEventListener('pointercancel', () => { drag = null; viewport.classList.remove('dragging'); });
+    viewport.addEventListener('pointerleave', () => { if (state.mode === 'constellation') sky.leave(); });
     viewport.addEventListener('wheel', (event) => {
       if (state.mode === 'map' && !state.card) return; // the desk scrolls normally
       event.preventDefault();
@@ -677,13 +774,15 @@
   }
 
   // ---------------------------------------------------------- constellation
+  // Every tree as a radial outline, the trees set around one ring (layout.js), and the
+  // Links between two trees bundled into one arc whose weight is their count. Attention
+  // goes to the Pointer's tree (or, at ROOT, the open Workspace); the rest recedes. Single
+  // Links are drawn only for the Pointer and the hovered card.
   const sky = (() => {
-    let nodes = null;
-    let byAddress = new Map();
-    let edges = [];
-    let alpha = 0;
-    let running = false;
+    let layout = null;
     let hovered = null;
+    let hoveredTree = null;
+    let userMoved = false;
     const cam = camera.constellation;
     const canvas = () => $('#sky');
 
@@ -694,78 +793,17 @@
       for (const ch of tree) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
       return hash % 360;
     };
-    let fitted = false;
-    let userMoved = false;
 
     function build() {
-      const previous = byAddress;
-      nodes = state.nodes.map((node, index) => {
-        const old = previous.get(node.address);
-        const angle = index * 2.399963;
-        const radius = 12 * Math.sqrt(index + 1);
-        return {
-          ...node,
-          x: old ? old.x : Math.cos(angle) * radius,
-          y: old ? old.y : Math.sin(angle) * radius,
-          vx: 0, vy: 0,
-          hue: hue(node.tree),
-          r: node.edge === 'root' ? 7 : 3.6 + Math.min(node.inbound, 6) * 0.7,
-        };
-      });
-      byAddress = new Map(nodes.map((node) => [node.address, node]));
-      edges = [];
-      for (const node of nodes) {
-        if (node.parent && byAddress.has(node.parent)) edges.push({ a: byAddress.get(node.parent), b: node, kind: 'tree' });
-        for (const target of node.links) {
-          if (byAddress.has(target) && target !== node.address) edges.push({ a: node, b: byAddress.get(target), kind: 'link' });
-        }
-      }
-      alpha = previous.size ? 0.4 : 1;
-    }
-
-    function tick() {
-      const list = nodes;
-      for (let i = 0; i < list.length; i += 1) {
-        const a = list[i];
-        for (let j = i + 1; j < list.length; j += 1) {
-          const b = list[j];
-          let dx = a.x - b.x; let dy = a.y - b.y;
-          let d2 = dx * dx + dy * dy;
-          if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.5; }
-          if (d2 > 90000) continue;
-          const force = (a.tree === b.tree ? 260 : 700) / d2 * alpha;
-          a.vx += dx * force; a.vy += dy * force;
-          b.vx -= dx * force; b.vy -= dy * force;
-        }
-      }
-      for (const edge of edges) {
-        const length = edge.kind === 'tree' ? 34 : 120;
-        const strength = edge.kind === 'tree' ? 0.12 : 0.02;
-        const dx = edge.b.x - edge.a.x; const dy = edge.b.y - edge.a.y;
-        const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const pull = (d - length) / d * strength * alpha;
-        edge.a.vx += dx * pull; edge.a.vy += dy * pull;
-        edge.b.vx -= dx * pull; edge.b.vy -= dy * pull;
-      }
-      for (const node of list) {
-        node.vx -= node.x * 0.01 * alpha; node.vy -= node.y * 0.01 * alpha;
-        node.vx *= 0.82; node.vy *= 0.82;
-        node.x += node.vx; node.y += node.vy;
-      }
-      alpha *= 0.985;
-    }
-
-    function loop() {
-      if (state.mode !== 'constellation' || alpha < 0.01) {
-        running = false;
-        if (state.mode === 'constellation' && !userMoved) { fitted = true; self.fit(); }
-        draw();
-        return;
-      }
-      if (!fitted && alpha < 0.3) { fitted = true; self.fit(); }
-      tick(); tick();
-      draw();
-      requestAnimationFrame(loop);
+      layout = ZtLayout.constellation(state.nodes, state.overview ? state.overview.trees : []);
+      layout.dots = state.nodes.map((node) => ({
+        ...node, ...layout.pos.get(node.address),
+        hue: hue(node.tree),
+        r: node.edge === 'root' ? 5.5 : 2.3 + Math.min(node.inbound, 12) * 0.3,
+      }));
+      layout.byAddress = new Map(layout.dots.map((dot) => [dot.address, dot]));
+      layout.byTree = new Map(layout.trees.map((tree) => [tree.id, tree]));
+      layout.extent = layout.R + Math.max(...layout.trees.map((tree) => tree.r), 0) + 150;
     }
 
     function resize() {
@@ -778,69 +816,147 @@
       return { w, h: hh, dpr };
     }
 
+    /** A Link between two cards: a curve that bows toward the middle of the ring. */
+    function arc(ctx, a, b) {
+      ctx.moveTo(a.x, a.y);
+      const bow = a.tree === b.tree ? 0.75 : 0.35;
+      ctx.quadraticCurveTo((a.x + b.x) / 2 * bow, (a.y + b.y) / 2 * bow, b.x, b.y);
+    }
+
     function draw() {
-      if (!nodes || state.mode !== 'constellation') return;
+      if (!layout || state.mode !== 'constellation') return;
       const c = canvas();
       const { w, h: hh, dpr } = resize();
       const ctx = c.getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, c.width, c.height);
       ctx.setTransform(dpr * cam.k, 0, 0, dpr * cam.k, dpr * (w / 2 + cam.x), dpr * (hh / 2 + cam.y));
+      const px = 1 / cam.k;
       const dark = document.documentElement.dataset.theme === 'dark'
         || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
-      const light = dark ? 62 : 42;
-      const pointer = state.pointer;
-      const focus = hovered || (pointer && byAddress.get(pointer));
-      for (const edge of edges) {
-        const hot = focus && (edge.a === focus || edge.b === focus);
+      const light = dark ? 64 : 40;
+      const ink = cssVar('--ink'); const faint = cssVar('--ink-faint'); const link = cssVar('--link');
+      const paper = cssVar('--paper');
+      const focus = state.pointer ? layout.byAddress.get(state.pointer) : null;
+      const focusTree = focus ? focus.tree : null;
+      const lit = (id) => {
+        if (hoveredTree) return id === hoveredTree || id === focusTree;
+        if (focusTree) return id === focusTree;
+        return (layout.byTree.get(id).workspace || 'human') === state.workspace;
+      };
+
+      // Bundled Links between trees.
+      ctx.lineCap = 'round';
+      for (const bundle of layout.bundles) {
+        const a = layout.byTree.get(bundle.a); const b = layout.byTree.get(bundle.b);
+        const touch = [hoveredTree, focusTree].some((id) => id && (id === bundle.a || id === bundle.b));
         ctx.beginPath();
-        ctx.moveTo(edge.a.x, edge.a.y);
-        if (edge.kind === 'link') {
-          const mx = (edge.a.x + edge.b.x) / 2 - (edge.b.y - edge.a.y) * 0.2;
-          const my = (edge.a.y + edge.b.y) / 2 + (edge.b.x - edge.a.x) * 0.2;
-          ctx.quadraticCurveTo(mx, my, edge.b.x, edge.b.y);
-          ctx.setLineDash([4 / cam.k, 4 / cam.k]);
-          ctx.strokeStyle = cssVar('--link');
-          ctx.globalAlpha = hot ? 0.95 : 0.35;
-          ctx.lineWidth = (hot ? 1.8 : 1) / cam.k;
-        } else {
-          ctx.lineTo(edge.b.x, edge.b.y);
-          ctx.setLineDash([]);
-          ctx.strokeStyle = `hsl(${edge.b.hue} 45% ${light}%)`;
-          ctx.globalAlpha = hot ? 0.9 : 0.4;
-          ctx.lineWidth = 1.4 / cam.k;
-        }
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo((a.x + b.x) * 0.16, (a.y + b.y) * 0.16, b.x, b.y);
+        ctx.strokeStyle = touch ? link : faint;
+        ctx.globalAlpha = touch ? 0.42 : (focusTree || hoveredTree ? 0.07 : 0.16);
+        ctx.lineWidth = Math.max(px, 1 + 1.7 * Math.log2(1 + bundle.count));
         ctx.stroke();
       }
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      for (const node of nodes) {
+
+      // Each tree's disc and its outline edges.
+      for (const tree of layout.trees) {
+        const on = lit(tree.id);
+        ctx.globalAlpha = on ? 0.9 : 0.5;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
-        ctx.fillStyle = `hsl(${node.hue} ${node.kind === 'literature' ? 62 : 55}% ${light}%)`;
+        ctx.arc(tree.x, tree.y, tree.r, 0, Math.PI * 2);
+        ctx.fillStyle = paper;
         ctx.fill();
-        if (node.edge === 'root') {
-          ctx.lineWidth = 2 / cam.k;
-          ctx.strokeStyle = cssVar('--paper');
-          ctx.stroke();
+        ctx.lineWidth = (on ? 1.4 : 1) * px;
+        ctx.strokeStyle = cssVar(tree.workspace === 'agent' ? '--agent' : '--human');
+        ctx.globalAlpha = on ? 0.55 : 0.2;
+        ctx.stroke();
+        ctx.beginPath();
+        for (const [address, p] of tree.local) {
+          const up = tree.outline.up.get(address);
+          if (up == null) continue;
+          const q = tree.local.get(up);
+          ctx.moveTo(tree.x + q.x, tree.y + q.y);
+          ctx.lineTo(tree.x + p.x, tree.y + p.y);
         }
-        if (node.address === pointer) {
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, node.r + 5 / cam.k, 0, Math.PI * 2);
-          ctx.lineWidth = 2.5 / cam.k;
-          ctx.strokeStyle = cssVar('--pointer');
-          ctx.stroke();
-        }
+        ctx.strokeStyle = `hsl(${hue(tree.id)} 40% ${light}%)`;
+        ctx.globalAlpha = on ? 0.5 : 0.16;
+        ctx.lineWidth = 1.1 * px;
+        ctx.stroke();
       }
-      ctx.font = `${12 / cam.k}px ${cssVar('--sans')}`;
-      ctx.fillStyle = cssVar('--ink');
-      ctx.textAlign = 'center';
-      for (const node of nodes) {
-        if (node.edge === 'root' || node.address === pointer || cam.k > 1.7) {
-          const label = node.edge === 'root' ? node.title || node.address : node.address;
-          ctx.globalAlpha = node.edge === 'root' ? 0.95 : 0.7;
-          ctx.fillText(label.length > 28 ? label.slice(0, 27) + '…' : label, node.x, node.y - node.r - 5 / cam.k);
+
+      // Cards.
+      for (const dot of layout.dots) {
+        ctx.globalAlpha = lit(dot.tree) ? 1 : 0.32;
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, dot.r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${dot.hue} ${dot.kind === 'literature' ? 62 : 52}% ${light}%)`;
+        ctx.fill();
+        if (dot.edge === 'root') { ctx.lineWidth = 2 * px; ctx.strokeStyle = paper; ctx.stroke(); }
+      }
+
+      // Single Links: the Pointer's in blue, the hovered card's in ink.
+      const spray = (from, color, alpha) => {
+        if (!from) return;
+        ctx.beginPath();
+        for (const target of from.links) {
+          const to = layout.byAddress.get(target);
+          if (to && to !== from) arc(ctx, from, to);
         }
+        ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = 1.3 * px;
+        ctx.stroke();
+        for (const target of from.links) {
+          const to = layout.byAddress.get(target);
+          if (!to || to === from) continue;
+          ctx.beginPath();
+          ctx.arc(to.x, to.y, to.r + 2.5 * px, 0, Math.PI * 2);
+          ctx.lineWidth = 1.4 * px; ctx.strokeStyle = color; ctx.globalAlpha = Math.min(1, alpha + 0.2);
+          ctx.stroke();
+        }
+      };
+      spray(focus, link, 0.75);
+      if (hovered && hovered !== focus) spray(hovered, ink, 0.55);
+      if (focus) {
+        ctx.globalAlpha = 1;
+        ctx.beginPath();
+        ctx.arc(focus.x, focus.y, focus.r + 5 * px, 0, Math.PI * 2);
+        ctx.lineWidth = 2.5 * px;
+        ctx.strokeStyle = cssVar('--pointer');
+        ctx.stroke();
+      }
+
+      // Tree labels sit outside the ring, so they never cover a disc.
+      ctx.textBaseline = 'middle';
+      for (const tree of layout.trees) {
+        const on = lit(tree.id);
+        const dx = Math.cos(tree.angle); const dy = Math.sin(tree.angle);
+        const x = tree.x + dx * (tree.r + 12 * px); const y = tree.y + dy * (tree.r + 12 * px);
+        ctx.textAlign = Math.abs(dx) < 0.3 ? 'center' : dx > 0 ? 'left' : 'right';
+        const title = tree.title || tree.id;
+        const label = title.length > 18 ? title.slice(0, 17) + '…' : title;
+        ctx.font = `${on ? 600 : 400} ${13 * px}px ${cssVar('--serif')}`;
+        ctx.fillStyle = on ? ink : faint;
+        ctx.globalAlpha = on ? 0.95 : 0.7;
+        const ly = y + (Math.abs(dx) < 0.3 ? dy * 6 * px : 0);
+        ctx.fillText(label, x, ly);
+        ctx.font = `${10.5 * px}px ${cssVar('--mono')}`;
+        ctx.fillStyle = faint;
+        ctx.fillText(`${tree.id} · ${tree.count}`, x, ly + 15 * px);
+      }
+
+      // The two Workspaces, named inside the ring at the middle of their arcs.
+      ctx.textAlign = 'center';
+      for (const id of ['human', 'agent']) {
+        const own = layout.trees.filter((tree) => (tree.workspace || 'human') === id);
+        if (!own.length || !layout.R) continue;
+        const sx = own.reduce((s, t) => s + Math.cos(t.angle), 0);
+        const sy = own.reduce((s, t) => s + Math.sin(t.angle), 0);
+        const len = Math.hypot(sx, sy) || 1;
+        const inner = Math.max(40, layout.R - Math.max(...own.map((t) => t.r)) - 46);
+        ctx.font = `700 ${10.5 * px}px ${cssVar('--sans')}`;
+        ctx.fillStyle = cssVar(id === 'agent' ? '--agent' : '--human');
+        ctx.globalAlpha = id === state.workspace ? 0.9 : 0.5;
+        ctx.fillText(`${wsLabel(id).toUpperCase()} · ${own.reduce((s, t) => s + t.count, 0)}`, sx / len * inner, sy / len * inner);
       }
       ctx.globalAlpha = 1;
     }
@@ -854,34 +970,32 @@
     }
 
     function pick(event) {
-      if (!nodes) return null;
+      if (!layout) return { dot: null, tree: null };
       const p = screenToWorld(event);
-      let best = null;
-      let bestD = (12 / cam.k) ** 2;
-      for (const node of nodes) {
+      let dot = null;
+      let best = (11 / cam.k) ** 2;
+      for (const node of layout.dots) {
         const d = (node.x - p.x) ** 2 + (node.y - p.y) ** 2;
-        if (d < Math.max(bestD, node.r * node.r)) { best = node; bestD = d; }
+        if (d < Math.max(best, node.r * node.r)) { dot = node; best = d; }
       }
-      return best;
+      const tree = layout.trees.find((t) => (t.x - p.x) ** 2 + (t.y - p.y) ** 2 <= (t.r + 6) ** 2) || null;
+      return { dot, tree };
     }
 
     const self = {
-      invalidate() { if (nodes) build(); },
+      invalidate() { if (layout) build(); },
       show() {
-        if (!nodes) build();
-        if (!running) { running = true; requestAnimationFrame(loop); }
+        if (!layout) build();
+        if (!userMoved) self.fit();
         draw();
       },
       draw,
       fit() {
-        if (!nodes || !nodes.length) return;
-        const xs = nodes.map((n) => n.x); const ys = nodes.map((n) => n.y);
-        const w = Math.max(...xs) - Math.min(...xs) + 80;
-        const hh = Math.max(...ys) - Math.min(...ys) + 80;
+        if (!layout) return;
         const c = canvas();
-        cam.k = Math.max(0.2, Math.min(2.2, c.clientWidth / w, c.clientHeight / hh));
-        cam.x = -((Math.max(...xs) + Math.min(...xs)) / 2) * cam.k;
-        cam.y = -((Math.max(...ys) + Math.min(...ys)) / 2) * cam.k;
+        cam.k = Math.max(0.15, Math.min(2.2, c.clientWidth / (2 * layout.extent), (c.clientHeight - 60) / (2 * layout.extent)));
+        cam.x = 0;
+        cam.y = 20;
         draw();
       },
       pan(dx, dy) { userMoved = true; cam.x += dx; cam.y += dy; draw(); },
@@ -889,27 +1003,36 @@
         userMoved = true;
         const c = canvas();
         const ox = px - c.clientWidth / 2; const oy = py - c.clientHeight / 2;
-        const k = Math.max(0.15, Math.min(5, cam.k * factor));
+        const k = Math.max(0.15, Math.min(6, cam.k * factor));
         cam.x = ox - (ox - cam.x) * (k / cam.k);
         cam.y = oy - (oy - cam.y) * (k / cam.k);
         cam.k = k;
         draw();
       },
       hover(event) {
-        const node = pick(event);
+        const { dot, tree } = pick(event);
         const label = $('#sky-label');
-        if (node !== hovered) { hovered = node; draw(); }
-        if (!node) { label.hidden = true; canvas().style.cursor = ''; return; }
+        const treeId = dot ? null : tree ? tree.id : null;
+        if (dot !== hovered || treeId !== hoveredTree) { hovered = dot; hoveredTree = treeId; draw(); }
+        if (!dot && !tree) { label.hidden = true; canvas().style.cursor = ''; return; }
         const rect = canvas().getBoundingClientRect();
+        const at = dot || tree;
         label.hidden = false;
-        label.replaceChildren(h('span', { class: 'addr', text: node.address + '  ' }), node.title || '(untitled)');
-        label.style.left = (rect.width / 2 + cam.x + node.x * cam.k) + 'px';
-        label.style.top = (rect.height / 2 + cam.y + node.y * cam.k - node.r * cam.k) + 'px';
+        label.replaceChildren(...(dot
+          ? [h('span', { class: 'addr', text: dot.address + '  ' }), dot.title || '(untitled)']
+          : [h('span', { class: 'addr', text: tree.id + '  ' }), `${tree.title || '(untitled)'} · ${tree.count} cards`]));
+        label.style.left = (rect.width / 2 + cam.x + at.x * cam.k) + 'px';
+        label.style.top = (rect.height / 2 + cam.y + (at.y - (dot ? dot.r : tree.r)) * cam.k) + 'px';
         canvas().style.cursor = 'pointer';
       },
+      leave() {
+        if (hovered || hoveredTree) { hovered = null; hoveredTree = null; draw(); }
+        $('#sky-label').hidden = true;
+      },
       click(event) {
-        const node = pick(event);
-        if (node) go(node.address);
+        const { dot, tree } = pick(event);
+        if (dot) go(dot.address);
+        else if (tree) go(tree.root);
       },
     };
     return self;
@@ -950,6 +1073,7 @@
           ['l', 'add a Literature Card from BibTeX'],
           [': or /', 'command bar · search'],
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
+          ['x', 'unfold the whole tree, or fold it back around the pointer'],
           ['v', 'switch Map / Constellation'],
           ['w · ws', 'switch the human / agent workspace'],
         ].flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })]),
@@ -1135,7 +1259,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(20)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · w workspace · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · x unfold · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -1603,6 +1727,7 @@
         case 'v': return run(() => setMode(state.mode === 'map' ? 'constellation' : 'map'));
         case 'w': return run(() => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }));
         case 'f': return run(() => fitView());
+        case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
         case '?': return run(showHelp);
         case 'Escape': return run(() => openRail(false));
         default: return undefined;
@@ -1643,6 +1768,7 @@
     }
     setMode(state.mode);
     $('#rail-toggle').addEventListener('click', () => openRail());
+    $('#lens-toggle').addEventListener('click', () => setExpandAll(!state.expandAll));
     $('#quit').addEventListener('click', () => quit().catch(fail));
     $('#broken-pill').addEventListener('click', () => showBroken().catch(fail));
     $('#search').addEventListener('input', (event) => runSearch(event.target.value));
@@ -1650,7 +1776,7 @@
       button.addEventListener('click', () => (button.dataset.action === 'new-topic' ? newCard('topic', '') : newLiterature()).catch(fail));
     }
     window.addEventListener('hashchange', route);
-    window.addEventListener('resize', debounce(() => { if (state.mode === 'constellation') sky.draw(); }, 100));
+    window.addEventListener('resize', debounce(() => renderStage(), 120));
     window.addEventListener('focus', () => watchForChanges());
     setInterval(watchForChanges, 4000);
     try {

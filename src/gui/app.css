@@ -361,6 +361,16 @@ kbd {
 .seg button:hover { color: var(--ink); }
 .seg button.on { background: var(--paper); color: var(--ink); box-shadow: var(--shadow); font-weight: 600; }
 .zoom .icon-btn { width: 28px; height: 28px; border-radius: 8px; }
+.lens-toggle {
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 9px 0 10px; border-radius: 11px;
+  background: var(--glass); backdrop-filter: blur(12px) saturate(1.3);
+  border: 1px solid var(--hairline); box-shadow: var(--shadow); color: var(--ink-soft); font-size: 12.5px;
+  transition: color .15s, border-color .15s;
+}
+.lens-toggle:hover { color: var(--ink); }
+.lens-toggle svg { width: 16px; height: 16px; }
+.lens-toggle.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.lens-toggle kbd { padding: 2px 4px; font-size: 9.5px; }
 .stage-title { font: italic 15px var(--serif); color: var(--ink-soft); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .01em; }
 .viewport {
   position: relative; flex: 1; overflow: hidden; cursor: grab;
@@ -374,54 +384,112 @@ kbd {
 .plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .edges { position: absolute; left: 0; top: 0; overflow: visible; }
 .edges path { fill: none; }
-.edges .e-direct { stroke: color-mix(in srgb, var(--ink-faint) 75%, transparent); stroke-width: 1.6; }
-.edges .e-side { stroke: var(--ink-faint); stroke-width: 1.6; stroke-dasharray: 1 5; stroke-linecap: round; }
-.edges .e-link { stroke: var(--link); stroke-width: 1.3; opacity: .26; stroke-dasharray: 5 4; }
-.edges .e-link.hot { opacity: .9; stroke-width: 1.8; animation: flow 1s linear infinite; }
+.edges .e-direct { stroke: color-mix(in srgb, var(--ink-faint) 55%, transparent); stroke-width: 1.3; }
+.edges .e-side { stroke: color-mix(in srgb, var(--ink-faint) 80%, transparent); stroke-width: 1.5; stroke-dasharray: 1 4.5; stroke-linecap: round; }
+.edges .hot { stroke: var(--ink-soft); stroke-width: 1.8; }
+.edges .e-link { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.edges .e-link.out { opacity: .78; animation: flow 1.1s linear infinite; }
+.edges .e-link.in { opacity: .4; stroke-dasharray: 2 4; stroke-linecap: round; }
+.edges .e-link.peek { stroke: var(--ink-soft); opacity: .5; stroke-width: 1.2; }
 @keyframes flow { to { stroke-dashoffset: -18; } }
 .nodes { position: absolute; left: 0; top: 0; }
 
-/* Map nodes are small ruled index cards: a red header line under the address, blue rules under the title. */
+/* Map nodes are ruled index cards at three levels of detail. The pointer card is pulled out
+   of the drawer toward you; near cards stand up in it; the rest lie as slips that show only
+   their top edge, as cards do in a drawer. Depth is lift, size, and ink, never blur, so
+   every title stays sharp. JS places each card with `transform`; hover uses `translate`. */
 .node {
-  position: absolute; width: 196px; height: 78px; padding: 9px 11px 8px 12px;
+  position: absolute; left: 0; top: 0; padding: 8px 12px 8px 13px;
   border: 1px solid var(--stock-edge); border-radius: 3px; background-color: var(--stock);
-  box-shadow: var(--card-shadow); cursor: pointer; text-align: left;
-  transition: transform .22s var(--ease), box-shadow .22s var(--ease), border-color .22s;
+  box-shadow: var(--card-shadow); cursor: pointer; text-align: left; color: var(--ink);
+  transition: box-shadow .22s var(--ease), border-color .22s, opacity .24s, translate .22s var(--ease), rotate .22s var(--ease), color .2s;
+}
+.node.near, .node.focus { display: flex; flex-direction: column; }
+.node.near {
   background-image: linear-gradient(transparent 27px, var(--paper-margin) 27px 28.5px, transparent 28.5px 49px,
     var(--paper-rule) 49px 50px, transparent 50px 68px, var(--paper-rule) 68px 69px, transparent 69px);
 }
-.node:hover { transform: translateY(-2px) rotate(-.4deg); box-shadow: var(--card-shadow-lift); }
-.node .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; height: 18px; }
-.node .addr { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.node:hover { translate: 0 -2px; rotate: -.4deg; box-shadow: var(--card-shadow-lift); }
+.node .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; height: 18px; flex: none; }
+.node .addr { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; flex: none; max-width: 60%; }
 .node .t {
   margin-top: 4px; font: 600 13.5px/19px var(--serif); color: var(--ink);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .node .t.untitled { color: var(--ink-faint); font-style: italic; font-weight: 400; }
-.node .badges { display: flex; gap: 4px; }
+.node .badges { display: flex; gap: 4px; align-items: center; min-width: 0; }
 .node .badge {
-  font: 500 9.5px var(--mono); padding: 0 6px; border-radius: 99px; line-height: 16px;
+  font: 500 9.5px var(--mono); padding: 0 6px; border-radius: 99px; line-height: 16px; white-space: nowrap;
   background: var(--link-soft); color: var(--link);
 }
 .node .badge.in { background: var(--accent-soft); color: var(--accent); }
-/* Tree roots are colored card stock, like the colored cards that head a drawer. */
-.node.root { background-color: color-mix(in srgb, var(--topic-soft) 80%, var(--stock)); }
-.node.root.literature { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); }
-.node.root .addr { color: var(--topic); font-weight: 600; }
-.node.root.literature .addr { color: var(--lit); }
-.node.linked { border-color: color-mix(in srgb, var(--link) 55%, transparent); }
-.node.on {
-  border-color: var(--pointer); transform: translateY(-3px);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pointer) 28%, transparent), 0 0 28px -4px color-mix(in srgb, var(--pointer) 45%, transparent), var(--card-shadow-lift);
+.node .badge.fold { background: var(--line-soft); color: var(--ink-soft); font-weight: 600; }
+
+/* The pointer card: bigger, lifted, ruled like the Reader card, with its opening lines. */
+.node.focus {
+  padding: 10px 15px 10px 16px; z-index: 3;
+  border-color: var(--pointer);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pointer) 26%, transparent), 0 0 34px -6px color-mix(in srgb, var(--pointer) 50%, transparent), var(--card-shadow-lift);
+  background-image: linear-gradient(transparent 29px, var(--paper-margin) 29px 30.5px, transparent 30.5px),
+    repeating-linear-gradient(transparent 0 21px, var(--paper-rule) 21px 22px);
+  background-size: 100% 100%, 100% calc(100% - 52px);
+  background-position: 0 0, 0 52px;
+  background-repeat: no-repeat;
 }
-.node.on::after {
-  content: "pointer"; position: absolute; right: 9px; bottom: -9px;
+.node.focus:hover { translate: 0 -1px; rotate: 0deg; }
+.node.focus .addr { color: var(--ink-soft); font-weight: 600; font-size: 12px; }
+.node.focus .t { margin-top: 6px; font-size: 15.5px; line-height: 22px; flex: none; }
+.node.focus .x {
+  color: var(--ink-soft); font: 12.5px/22px var(--serif);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.node.focus::after {
+  content: "pointer"; position: absolute; right: 10px; bottom: -9px;
   font: 700 9px var(--mono); letter-spacing: .1em; text-transform: uppercase;
   background: linear-gradient(180deg, color-mix(in srgb, var(--pointer) 80%, #fff), var(--pointer));
   color: #2a2000; padding: 2px 7px; border-radius: 99px;
   box-shadow: 0 2px 6px -1px color-mix(in srgb, var(--pointer) 60%, transparent);
 }
-.node.dim { opacity: .4; }
+
+/* Slips: one line, the card's top edge in the drawer. Muted until you reach for one. */
+.node.slip {
+  display: flex; align-items: center; gap: 8px; padding: 0 10px 0 11px;
+  background-color: color-mix(in srgb, var(--stock) 82%, var(--desk));
+  box-shadow: 0 1px 0 var(--stock-edge), 0 2px 4px -3px rgba(60, 45, 20, .25);
+  color: var(--ink-soft);
+}
+.node.slip .t {
+  margin: 0; flex: 1; min-width: 0; font: 500 12.5px/1.2 var(--serif); color: var(--ink-soft);
+  display: block; white-space: nowrap; text-overflow: ellipsis;
+}
+.node.slip .addr { font-size: 10.5px; max-width: 45%; }
+.node.slip:hover { background-color: var(--stock); }
+.node.slip:hover .t { color: var(--ink); }
+
+/* What the pointer passes through or links to keeps a mark on its left edge. */
+.node.role-path { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--pointer) 75%, transparent), var(--card-shadow); }
+.node.slip.role-path { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--pointer) 75%, transparent), 0 1px 0 var(--stock-edge); }
+.node.role-path .t { color: var(--ink); }
+.node.in, .node.out { border-color: color-mix(in srgb, var(--link) 50%, var(--stock-edge)); }
+.node.slip.in, .node.slip.out { box-shadow: inset 3px 0 0 var(--link), 0 1px 0 var(--stock-edge); }
+.node.slip.in .t, .node.slip.out .t { color: var(--ink); }
+
+/* A card with folded successors sits on a little stack of them. */
+.node.folded {
+  box-shadow: 3px 3px 0 -1px var(--stock), 3px 3px 0 0 var(--stock-edge), 6px 6px 0 -1px var(--stock), 6px 6px 0 0 var(--stock-edge), var(--card-shadow);
+}
+.node.slip.folded { box-shadow: 3px 3px 0 -1px var(--stock), 3px 3px 0 0 var(--stock-edge), 0 1px 0 var(--stock-edge); }
+.node.slip.folded.role-path { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--pointer) 75%, transparent), 3px 3px 0 -1px var(--stock), 3px 3px 0 0 var(--stock-edge); }
+.node.slip.folded.in, .node.slip.folded.out { box-shadow: inset 3px 0 0 var(--link), 3px 3px 0 -1px var(--stock), 3px 3px 0 0 var(--stock-edge); }
+
+/* Tree roots are colored card stock, like the colored cards that head a drawer. */
+.node.root { background-color: color-mix(in srgb, var(--topic-soft) 80%, var(--stock)); }
+.node.root.literature { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); }
+.node.root .addr { color: var(--topic); font-weight: 600; }
+.node.root.literature .addr { color: var(--lit); }
+.node.entering { animation: appear .34s var(--ease); }
+.node.leaving { opacity: 0; pointer-events: none; }
+@keyframes appear { from { opacity: 0; } }
 
 /* ROOT desk */
 .desk {
@@ -443,6 +511,8 @@ kbd {
 }
 .stack .sheet.s2 { transform: rotate(-2deg) translate(-3px, 4px); }
 .stack .sheet.s3 { transform: rotate(1.6deg) translate(4px, 2px); }
+.stack .sheet.s4 { transform: rotate(-.7deg) translate(2px, 8px); }
+.stack:hover .sheet.s4 { transform: rotate(-1.5deg) translate(3px, 13px); }
 .stack:hover .sheet.s2 { transform: rotate(-4deg) translate(-9px, 7px); }
 .stack:hover .sheet.s3 { transform: rotate(3.5deg) translate(10px, 3px); }
 /* The top card of a stack: a red header line under the kind, then 24px blue rules the text sits on. */
@@ -461,7 +531,10 @@ kbd {
 .stack.literature .face .kind { color: var(--lit); }
 .stack .face .t { font: 600 18px/24px var(--serif); margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .stack .face .x { color: var(--ink-soft); font: 13px/24px var(--serif); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.stack .face .foot { margin-top: auto; display: flex; justify-content: space-between; color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.stack .face .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.stack .face .gauge { width: 56px; height: 4px; border-radius: 99px; background: var(--line-soft); overflow: hidden; }
+.stack .face .gauge i { display: block; height: 100%; border-radius: inherit; background: var(--topic); opacity: .7; }
+.stack.literature .face .gauge i { background: var(--lit); }
 .stack.new .face {
   align-items: center; justify-content: center; gap: 4px; border: 1.5px dashed var(--line);
   background-image: none; background: transparent; box-shadow: none; color: var(--ink-soft);
@@ -485,6 +558,11 @@ kbd {
 .legend i { display: inline-block; width: 18px; height: 0; vertical-align: middle; margin-right: 6px; border-top: 2px solid var(--ink-faint); }
 .legend .lg-side { border-top-style: dotted; }
 .legend .lg-link { border-top: 2px dashed var(--link); }
+.legend .lg-fold {
+  font: 600 9.5px/16px var(--mono); padding: 0 6px; margin-right: 6px; border-radius: 99px;
+  background: var(--line-soft); color: var(--ink-soft);
+  box-shadow: 2px 2px 0 -1px var(--paper), 2px 2px 0 0 var(--stock-edge);
+}
 
 /* ---------- reader: the index card ---------- */
 .reader {

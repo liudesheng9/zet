@@ -7,6 +7,7 @@
 <title>zt · slip-box</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='19' rx='3' fill='%23c4622d'/%3E%3Crect x='6' y='4' width='20' height='4' rx='1.5' fill='%23e9b38f'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
+<script src="/layout.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -69,6 +70,10 @@
         <button role="tab" data-mode="constellation">Constellation</button>
       </div>
       <div class="stage-title" id="stage-title"></div>
+      <button class="lens-toggle" id="lens-toggle" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="11" height="5" rx="1"/><rect x="9" y="14" width="11" height="5" rx="1"/><path d="M7 10v6.5h2"/></svg>
+        <span>Focus</span><kbd>x</kbd>
+      </button>
       <div class="zoom">
         <button class="icon-btn" data-zoom="out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
         <button class="icon-btn" data-zoom="fit" title="Fit" aria-label="Fit to view"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -87,7 +92,8 @@
     <div class="legend" id="legend">
       <span><i class="lg-direct"></i>direct successor</span>
       <span><i class="lg-side"></i>side successor</span>
-      <span><i class="lg-link"></i>link</span>
+      <span><i class="lg-link"></i>link of the pointer</span>
+      <span><b class="lg-fold">+3</b>cards filed behind</span>
     </div>
   </main>
 

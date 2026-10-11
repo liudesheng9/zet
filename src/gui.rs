@@ -20,6 +20,7 @@ const ACCESS: Access = Access::Owner;
 const INDEX_HTML: &str = include_str!("gui/index.html");
 const APP_CSS: &str = include_str!("gui/app.css");
 const APP_JS: &str = include_str!("gui/app.js");
+const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const DEFAULT_PORT: u16 = 4717;
 const TOKEN_HEADER: &str = "X-ZT-Token";
 
@@ -207,6 +208,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     APP_JS.to_string(),
+                );
+                return Flow::Continue;
+            }
+            (Method::Get, "/layout.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    LAYOUT_JS.to_string(),
                 );
                 return Flow::Continue;
             }
