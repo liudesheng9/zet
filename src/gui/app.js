@@ -117,10 +117,89 @@
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
     model: { label: 'Model', note: 'one whole model: setup, assumptions, solution, results, limits' },
   };
-  /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. */
-  const typeStamp = (type, title) => (CARD_TYPES[type] && type !== 'idea'
-    ? h('span', { class: 'type-stamp ' + type, title: title || `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`, text: type })
-    : null);
+  // A model is presented by its Model Card and by Model parts filed under it, one per facet,
+  // in reading order. Mirrors `Facet` in src/model.rs.
+  const FACETS = {
+    setting: { label: 'Setting', note: 'agents, assets, actions, and payoffs' },
+    assumptions: { label: 'Assumptions', note: 'what the model assumes, and what each assumption buys' },
+    timing: { label: 'Timing', note: 'the order of moves and who knows what when' },
+    dynamics: { label: 'Dynamics', note: 'how the state evolves: laws of motion, best responses, feedback' },
+    solution: { label: 'Solution', note: 'the equilibrium or optimum and how it is derived' },
+    results: { label: 'Results', note: 'propositions and comparative statics' },
+    intuition: { label: 'Intuition', note: 'why the results hold, in words' },
+    limits: { label: 'Limits', note: 'where the model stops applying, and its critics' },
+  };
+  /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. A Model part's
+   *  stamp names its facet. */
+  const typeStamp = (type, title, facet) => {
+    if (!CARD_TYPES[type] || type === 'idea') return null;
+    const part = type === 'model' && FACETS[facet];
+    return h('span', {
+      class: 'type-stamp ' + type + (part ? ' part' : ''),
+      title: title || (part ? `Model part · ${part.label} — ${part.note}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`),
+      text: part ? `${type} · ${facet}` : type,
+    });
+  };
+
+  // ------------------------------------------------------------------ math
+  // TeX renders with the bundled KaTeX: `$…$` and `$$…$$` in bodies arrive as math spans
+  // from the server; titles are plain text, so their `$…$` runs are typeset here.
+  const katexReady = () => typeof window.katex !== 'undefined';
+  function typeset(root) {
+    if (!katexReady()) return;
+    for (const node of root.querySelectorAll('span.math-inline, span.math-display')) {
+      if (node.dataset.typeset) continue;
+      const tex = node.textContent;
+      try {
+        window.katex.render(tex, node, { displayMode: node.classList.contains('math-display'), throwOnError: false, output: 'htmlAndMathml' });
+        node.dataset.typeset = '1';
+        node.title = tex;
+      } catch { /* leave the TeX as text */ }
+    }
+  }
+  const titleCache = new Map();
+  /** A title as nodes, with its `$…$` runs typeset. */
+  function titleNodes(text) {
+    if (!text || !text.includes('$') || !katexReady()) return [text];
+    let html = titleCache.get(text);
+    if (html === undefined) {
+      const escape = (value) => value.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+      html = text.split(/(\$[^$]+\$)/).map((part) => {
+        if (part.length > 2 && part.startsWith('$') && part.endsWith('$')) {
+          try { return window.katex.renderToString(part.slice(1, -1), { throwOnError: false }); } catch { return escape(part); }
+        }
+        return escape(part);
+      }).join('');
+      if (titleCache.size > 4000) titleCache.clear();
+      titleCache.set(text, html);
+    }
+    const holder = document.createElement('span');
+    holder.innerHTML = html;
+    return [...holder.childNodes];
+  }
+
+  // ---------------------------------------------------------------- charts
+  // A Card's HTML chart runs in a sandboxed frame served by `/chart/<id>`; it can only post
+  // its height and the Card a reader clicked.
+  const theme = () => (document.documentElement.dataset.theme === 'dark'
+    || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light');
+  function wireCharts(root) {
+    for (const frame of root.querySelectorAll('iframe.zt-chart-frame[data-chart]')) {
+      frame.src = `/chart/${frame.dataset.chart}?theme=${theme()}`;
+    }
+  }
+  window.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    const frame = [...document.querySelectorAll('iframe.zt-chart-frame')].find((item) => item.contentWindow === event.source);
+    if (!frame) return;
+    if (data.zt === 'height' && Number.isFinite(data.height)) {
+      frame.style.height = Math.max(40, Math.min(4000, data.height)) + 'px';
+    } else if (data.zt === 'go' && typeof data.target === 'string') {
+      if (state.nodes.some((node) => node.address === data.target)) go(data.target);
+      else toast(`card \`${data.target}\` does not exist`, 'err');
+    }
+  });
 
   function setWorkspace(id, { toRoot } = {}) {
     if (!WORKSPACES[id]) throw new Error(`unknown workspace \`${id}\`; expected human or agent`);
@@ -144,7 +223,7 @@
     ['e', 'edit the current card', 'card'],
     ['del', 'delete the current card and its successors', 'card'],
     ['mv <new-location>', 'move the current card and its successors', 'regular'],
-    ['ty <idea|event|model>', 'make the current card an Idea, Event, or Model Card', 'regular'],
+    ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (setting, assumptions, timing, dynamics, solution, results, intuition, limits) makes it a Model part', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -200,8 +279,8 @@
         return moveCard(rest[0]);
       case 'ty':
         needCard();
-        if (rest.length !== 1) throw new Error('usage: ty <idea|event|model>');
-        return setCardType(rest[0].toLowerCase());
+        if (rest.length < 1 || rest.length > 2) throw new Error('usage: ty <idea|event|model> [<facet>]');
+        return setCardType(rest[0].toLowerCase(), rest[1] && rest[1].toLowerCase());
       case 'stats': {
         const s = state.overview.stats;
         return toast(`total: ${s.total}\ntopics: ${s.topics}\nregular: ${s.regular}\nliterature: ${s.literature}`);
@@ -332,7 +411,7 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
           h('span', { class: 's' }, marked(hit.snippet)),
         )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
       );
@@ -492,10 +571,11 @@
 
     function content(el, card, n, outline) {
       const external = card.links.filter((target) => !outline.card.has(target)).length;
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.inbound, external, card.excerpt].join('\u0001');
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.inbound, external, card.excerpt].join('\u0001');
       el.className = ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type : '',
+        card.facet ? 'model-part' : '',
         n.folded ? 'folded' : '',
         state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
         state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
@@ -507,19 +587,19 @@
         class: 'badge fold', title: `${n.folded} more card${n.folded === 1 ? '' : 's'} filed behind — open this card to unfold them`,
         text: '+' + n.folded,
       }) : null;
-      const title = h('span', { class: 't' + (card.title ? '' : ' untitled'), text: card.title || 'untitled' });
+      const title = h('span', { class: 't' + (card.title ? '' : ' untitled') }, card.title ? titleNodes(card.title) : 'untitled');
       const slash = card.address.indexOf('/');
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
           h('span', { class: 'badges' },
-            typeStamp(card.type),
+            typeStamp(card.type, null, card.facet),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
             fold,
@@ -1092,21 +1172,23 @@
     wireMarkdown(md);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
-    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : '') },
+    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : '') + (card.model ? ' in-model' : '') },
+      card.model ? modelTabs(card) : null,
       h('header', { class: 'card-head' },
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
-          typeStamp(card.type),
+          typeStamp(card.type, null, card.facet),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
           }),
         ),
-        h('h1', { class: 'title', text: card.title || '(untitled)' }),
+        h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),
       ),
       md,
     ), h('div', { class: 'card-tools' },
+      card.model ? modelMap(card) : null,
       card.kind === 'literature' ? h('details', { class: 'biblio' },
         h('summary', { text: `BibTeX · ${card.citation_key}` }),
         h('pre', { text: card.bibtex })) : null,
@@ -1124,7 +1206,107 @@
     reader.scrollTop = 0;
   }
 
+  /**
+   * The divider tabs along the top of a Model Card or Model part: the Model Card, then one tab
+   * per facet in reading order. The open Card's tab stands up; facets without a part are blank
+   * tabs, so a reader sees at once what the model states and what it still lacks.
+   */
+  function modelTabs(card) {
+    const model = card.model;
+    const head = model.head;
+    const tab = (label, address, here, title, extra) => h(address ? 'button' : 'span', {
+      class: 'model-tab' + (here ? ' here' : '') + (address ? '' : ' blank') + (extra ? ' ' + extra : ''),
+      title,
+      onclick: address && !here ? () => go(address) : null,
+    }, label);
+    const tabs = [head
+      ? tab('Model', head.address, head.address === card.address, `Model Card ${head.address} — ${head.title}`, 'head')
+      : tab('Model', null, false, 'This part is not filed under a Model Card', 'head missing')];
+    for (const [id, info] of Object.entries(FACETS)) {
+      const parts = model.parts.filter((part) => part.facet === id);
+      if (!parts.length) {
+        tabs.push(tab(info.label, null, false, `No ${info.label} part yet — ${info.note}`));
+        continue;
+      }
+      parts.forEach((part, index) => tabs.push(tab(
+        parts.length > 1 ? `${info.label} ${index + 1}` : info.label,
+        part.address, part.address === card.address, `${part.address} — ${part.title}`)));
+    }
+    return h('nav', { class: 'model-tabs', 'aria-label': 'Model structure' }, tabs);
+  }
+
+  /**
+   * The model's structure on the desk below the card: its Cards in reading order as a row of
+   * small index cards, with an arc for every Link between them. Arcs that touch the open Card
+   * are drawn in ink; the rest stay faint.
+   */
+  function modelMap(card) {
+    const model = card.model;
+    if (!model.head) {
+      return h('div', { class: 'model-issues' }, model.issues.map((issue) => h('p', { text: issue })));
+    }
+    const members = [{ address: model.head.address, title: model.head.title, facet: null, links: model.head_links || [] }, ...model.parts];
+    const index = new Map(members.map((member, at) => [member.address, at]));
+    const step = 92;
+    const width = Math.max(1, members.length) * step;
+    const top = 54;
+    const height = 112;
+    const box = svg('svg', { class: 'model-svg', viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': 'Links between the Cards of this model' });
+    const arcs = [];
+    members.forEach((member, from) => {
+      for (const target of member.links || []) {
+        const to = index.get(target);
+        if (to === undefined || to === from) continue;
+        arcs.push([from, to, member.address === card.address || target === card.address]);
+      }
+    });
+    // Faint arcs first, so the open Card's arcs lie on top.
+    arcs.sort((a, b) => Number(a[2]) - Number(b[2]));
+    for (const [from, to, hot] of arcs) {
+      const x1 = from * step + step / 2;
+      const x2 = to * step + step / 2;
+      const lift = Math.min(46, 14 + Math.abs(to - from) * 9);
+      const path = svg('path', {
+        d: `M ${x1} ${top} C ${x1} ${top - lift}, ${x2} ${top - lift}, ${x2} ${top - 6}`,
+        class: 'model-arc' + (hot ? ' hot' : ''),
+      });
+      box.append(path);
+      box.append(svg('path', { d: `M ${x2 - 3.5} ${top - 11} L ${x2} ${top - 5} L ${x2 + 3.5} ${top - 11}`, class: 'model-arc head' + (hot ? ' hot' : '') }));
+    }
+    members.forEach((member, at) => {
+      const x = at * step + 8;
+      const here = member.address === card.address;
+      const group = svg('g', { class: 'model-node' + (here ? ' here' : '') + (member.facet ? '' : ' head'), tabindex: here ? -1 : 0 });
+      const title = svg('title', {});
+      title.textContent = `${member.address} — ${member.title}`;
+      group.append(title);
+      group.append(svg('rect', { x, y: top, width: step - 16, height: 40, rx: 3 }));
+      group.append(svg('line', { x1: x, y1: top + 13, x2: x + step - 16, y2: top + 13, class: 'rule' }));
+      const label = svg('text', { x: x + (step - 16) / 2, y: top + 10, 'text-anchor': 'middle', class: 'facet' });
+      label.textContent = member.facet ? FACETS[member.facet].label : 'Model';
+      const addr = svg('text', { x: x + (step - 16) / 2, y: top + 30, 'text-anchor': 'middle', class: 'addr' });
+      const slash = member.address.indexOf('/');
+      addr.textContent = slash > 4 ? '…' + member.address.slice(slash) : member.address;
+      group.append(label, addr);
+      if (!here) {
+        group.addEventListener('click', () => go(member.address));
+        group.addEventListener('keydown', (event) => { if (event.key === 'Enter') go(member.address); });
+      }
+      box.append(group);
+    });
+    const missing = (model.missing || []).map((id) => FACETS[id]?.label).filter(Boolean);
+    return [
+      h('div', { class: 'section-label', text: `Model · ${model.parts.length} part${model.parts.length === 1 ? '' : 's'}${model.discussion ? ` · discussed by ${model.discussion}` : ''}` }),
+      h('div', { class: 'model-map' }, box),
+      missing.length ? h('p', { class: 'model-note', text: `No part yet for ${missing.join(', ')}.` }) : null,
+      model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'Links that keep the model readable from every Card' },
+        model.issues.map((issue) => h('p', { text: issue }))) : null,
+    ];
+  }
+
   function wireMarkdown(root) {
+    typeset(root);
+    wireCharts(root);
     for (const anchor of root.querySelectorAll('a[href]')) {
       if (anchor.classList.contains('zt-link')) {
         const targetWorkspace = nodeWorkspace(anchor.dataset.target);
@@ -1268,10 +1450,21 @@
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
+      // A Model Card is the head of its model, or one of its parts when it has a facet.
       let chosenType = cardType;
+      let chosenFacet = facet || '';
+      const facetPick = cardType ? h('select', {
+        class: 'facet-pick', 'aria-label': 'Model facet', hidden: cardType !== 'model',
+        title: 'A Model Card presents the whole model; a Model part, filed under it, presents one facet',
+        onchange: (event) => { chosenFacet = event.target.value; dirty = true; update(); },
+      },
+        h('option', { value: '', text: 'Model Card (whole model)' }),
+        Object.entries(FACETS).map(([id, info]) => h('option', { value: id, text: `Part · ${info.label}`, title: info.note })),
+      ) : null;
+      if (facetPick) facetPick.value = chosenFacet;
       const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },
         h('span', { class: 'lbl', text: 'Type' }),
         Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
@@ -1284,9 +1477,11 @@
               button.classList.toggle('on', button.dataset.type === id);
               button.setAttribute('aria-checked', button.dataset.type === id ? 'true' : 'false');
             }
+            facetPick.hidden = id !== 'model';
             update();
           },
         })),
+        facetPick,
       ) : null;
       const text = h('textarea', { spellcheck: 'true', 'aria-label': 'Card Markdown' });
       text.value = initial;
@@ -1320,8 +1515,8 @@
           const rendered = await api('render', { text: text.value, literature: !!literature });
           const title = literature ? (bibTitle ?? literature.title ?? '') : rendered.title;
           preview.innerHTML = rendered.html;
-          preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled'), text: title || 'Untitled — start with “# Title”' }));
-          const stamp = chosenType && typeStamp(chosenType);
+          preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled') }, title ? titleNodes(title) : 'Untitled — start with “# Title”'));
+          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null);
           if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
           wireMarkdown(preview);
           if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
@@ -1347,7 +1542,7 @@
       const doSave = async () => {
         saveBtn.disabled = true;
         try {
-          const address = await save(text.value, bib ? bib.value : undefined, chosenType);
+          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           setMsg(error.message, 'err');
@@ -1460,7 +1655,7 @@
       initial,
       // Every successor is a Regular Card, so it may be an Event or Model Card.
       cardType: kind === 'topic' ? null : 'idea',
-      save: (text, _bibtex, type) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined }).then((result) => result.address),
+      save: (text, _bibtex, type, facet) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined }).then((result) => result.address),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
@@ -1494,18 +1689,25 @@
       initial: card.text,
       literature: card.kind === 'literature' ? { title: card.title } : null,
       cardType: card.context === 'regular' ? card.type || 'idea' : null,
-      save: (text, _bibtex, type) => api('edit', { at: card.address, text, base: card.text, type: type || undefined }).then((result) => result.address),
+      facet: card.facet,
+      save: (text, _bibtex, type, facet) => api('edit', {
+        at: card.address, text, base: card.text, type: type || undefined, facet: type === 'model' ? facet || '' : undefined,
+      }).then((result) => result.address),
     });
     if (address) await afterChange(address, `saved ${address}`);
   }
 
-  /** `ty <idea|event|model>`: change only the current Regular Card's type. */
-  async function setCardType(type) {
+  /** `ty <idea|event|model> [<facet>]`: change only the current Regular Card's type and facet. */
+  async function setCardType(type, facet) {
     const card = state.card;
     if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, or model`);
     if (card.context !== 'regular') throw new Error('only Regular Cards can be Event or Model Cards');
-    const result = await api('edit', { at: card.address, type });
-    await afterChange(result.address, `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : 'a Model'} Card`);
+    if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
+    if (facet && !FACETS[facet]) throw new Error(`unknown model facet \`${facet}\`; expected ${Object.keys(FACETS).join(', ')}`);
+    const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
+    await afterChange(result.address, facet
+      ? `${result.address} is the ${FACETS[facet].label} part of its model`
+      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : 'a Model'} Card`);
   }
 
   function choosePart() {
@@ -1746,6 +1948,7 @@
       document.documentElement.dataset.theme = next;
       store.set('zt-theme', next);
       sky.draw();
+      wireCharts(document);
     });
   }
 

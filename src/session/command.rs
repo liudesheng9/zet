@@ -69,8 +69,8 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
-        "ty <idea|event|model>",
-        "make the current card an Idea, Event, or Model Card",
+        "ty <idea|event|model> [<facet>]",
+        "make the current card an Idea, Event, or Model Card; a facet makes it a Model part",
         Availability::OnRegular,
     ),
     ("stats", "count cards by kind", Availability::Always),
@@ -448,6 +448,7 @@ fn execute_command(
                     false,
                     parent.workspace,
                     crate::CardType::Idea,
+                    None,
                     text,
                 )
             };
@@ -470,6 +471,7 @@ fn execute_command(
                     false,
                     parent.workspace,
                     crate::CardType::Idea,
+                    None,
                     text,
                 )
             };
@@ -600,16 +602,23 @@ fn execute_command(
             state.pointer = Pointer::Card((*new_location).to_string());
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", name] => {
+        ["ty", name] | ["ty", name, _] => {
             let at = state.current_card("ty")?;
             let card_type = crate::CardType::parse(name)?;
+            let facet = match parts.as_slice() {
+                [_, _, facet] if card_type == crate::CardType::Model => {
+                    Some(crate::model::Facet::parse(facet)?)
+                }
+                [_, _, _] => bail!("only Model Cards can have a Model facet"),
+                _ => None,
+            };
             let _lock = crate::acquire_edit_lock(root)?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            crate::card_type::set(&conn, &card, card_type)?;
+            crate::model::set(&conn, &card, card_type, facet)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", ..] => bail!("usage: ty <idea|event|model>"),
+        ["ty", ..] => bail!("usage: ty <idea|event|model> [<facet>]"),
         [name, ..] => bail!("unknown session command: {name}"),
     }
 }
@@ -1083,8 +1092,12 @@ mod tests {
                 "ty fact",
                 "unknown card type `fact`; expected idea, event, or model",
             ),
-            ("ty", "usage: ty <idea|event|model>"),
-            ("ty event model", "usage: ty <idea|event|model>"),
+            ("ty", "usage: ty <idea|event|model> [<facet>]"),
+            ("ty event model x", "usage: ty <idea|event|model> [<facet>]"),
+            (
+                "ty event setting",
+                "only Model Cards can have a Model facet",
+            ),
         ] {
             let error =
                 execute_without_interaction(temp.path(), &mut state, line).expect_err("invalid ty");
@@ -1211,7 +1224,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

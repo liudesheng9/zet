@@ -1,6 +1,6 @@
 # Event and Model Cards Design
 
-Status: implemented in zt 0.5.0.
+Status: implemented in zt 0.5.0. Model parts, facets, math, and HTML charts were added in zt 0.6.0; see `model-structure-design.md`.
 
 ## Source Authority
 

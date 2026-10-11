@@ -6,7 +6,6 @@
 //! when it moves; Topic and Literature Cards are always Idea Cards.
 
 use anyhow::{Result, bail};
-use rusqlite::{Connection, params};
 
 use crate::Card;
 
@@ -54,16 +53,6 @@ pub(crate) fn ensure_allowed(card: &Card, card_type: CardType) -> Result<()> {
     if card_type != CardType::Idea && crate::is_tree_root(card) {
         bail!("only Regular Cards can be Event or Model Cards");
     }
-    Ok(())
-}
-
-/// Set the type of an existing Card.
-pub(crate) fn set(conn: &Connection, card: &Card, card_type: CardType) -> Result<()> {
-    ensure_allowed(card, card_type)?;
-    conn.execute(
-        "UPDATE cards SET card_type = ?1 WHERE row_id = ?2",
-        params![card_type.id(), card.row_id],
-    )?;
     Ok(())
 }
 

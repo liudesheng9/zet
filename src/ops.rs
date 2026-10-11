@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::link::{LinkBody, LinkLifecycle};
+use crate::model::Facet;
 use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
@@ -56,6 +57,7 @@ pub(crate) fn create_successor(
     kind: Successor,
     at: &str,
     card_type: CardType,
+    facet: Option<Facet>,
     text: &str,
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock(root)?;
@@ -81,6 +83,7 @@ pub(crate) fn create_successor(
         false,
         parent.workspace,
         card_type,
+        facet,
         text,
     )?;
     Ok(location)
@@ -105,32 +108,62 @@ pub(crate) fn create_literature(
     Ok(metadata.citation_key)
 }
 
-/// Replace a Card's text, change its Card type, or both. With `base`, refuse
-/// if the stored text changed since the caller read it.
+/// A change to a Card's type and Model facet. `facet` is `None` to leave the
+/// facet alone and `Some(None)` to clear it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TypeChange {
+    pub(crate) card_type: Option<CardType>,
+    pub(crate) facet: Option<Option<Facet>>,
+}
+
+impl TypeChange {
+    pub(crate) fn is_empty(self) -> bool {
+        self.card_type.is_none() && self.facet.is_none()
+    }
+
+    /// The type and facet the Card has after the change. A facet makes the
+    /// Card a Model Card; any other type clears the facet; naming the Model
+    /// type alone keeps a part's facet.
+    pub(crate) fn resolve(self, card: &Card) -> (CardType, Option<Facet>) {
+        match (self.card_type, self.facet) {
+            (Some(card_type), _) if card_type != CardType::Model => (card_type, None),
+            (_, Some(Some(facet))) => (CardType::Model, Some(facet)),
+            (Some(card_type), Some(None)) => (card_type, None),
+            (None, Some(None)) => (card.card_type, None),
+            (Some(card_type), None) if card.card_type == card_type => (card_type, card.facet),
+            (Some(card_type), None) => (card_type, None),
+            (None, None) => (card.card_type, card.facet),
+        }
+    }
+}
+
+/// Replace a Card's text, change its Card type or Model facet, or both. With
+/// `base`, refuse if the stored text changed since the caller read it.
 pub(crate) fn edit(
     root: &Path,
     access: Access,
     at: &str,
     text: Option<&str>,
-    card_type: Option<CardType>,
+    change: TypeChange,
     base: Option<&str>,
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock(root)?;
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
-    if let Some(card_type) = card_type {
+    let (card_type, facet) = change.resolve(&card);
+    let retyped = (card_type, facet) != (card.card_type, card.facet);
+    if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
+        crate::model::ensure_allowed(&conn, &card.address, Some(&card), card_type, facet)?;
     }
     match text {
         Some(text) if card.is_lit => crate::update_literature_text(&mut conn, &card, text)?,
         Some(text) => crate::update_card_text(&mut conn, &card, text)?,
         None => {}
     }
-    if let Some(card_type) = card_type
-        && card_type != card.card_type
-    {
-        crate::card_type::set(&conn, &card, card_type)?;
+    if retyped {
+        crate::model::set(&conn, &card, card_type, facet)?;
     }
     Ok(card.address)
 }
@@ -317,6 +350,8 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.card_type.id().as_bytes());
             hasher.update([0]);
+            hasher.update(card.facet.map_or("", Facet::id).as_bytes());
+            hasher.update([0]);
         }
         hasher
             .finalize()
@@ -392,6 +427,8 @@ impl Snapshot {
             "title": self.title(&card.address),
             "kind": kind(card),
             "type": card.card_type.id(),
+            "facet": card.facet.map(Facet::id),
+            "head": self.model_head(card),
             "edge": edge,
             "parent": parent,
             "excerpt": excerpt(&self.parsed[&card.address].body),
@@ -400,8 +437,8 @@ impl Snapshot {
         })
     }
 
-    /// Every tree root, with its Workspace, Zone, size, and how many of its
-    /// Cards are Event and Model Cards.
+    /// Every tree root, with its Workspace, Zone, size, and how many Event
+    /// Cards and models (Model Cards, not counting their parts) it holds.
     pub(crate) fn trees(&self) -> Vec<Value> {
         self.cards
             .iter()
@@ -413,10 +450,11 @@ impl Snapshot {
                     .iter()
                     .filter(|member| crate::is_tree_member(&member.address, tree))
                     .collect::<Vec<_>>();
+                // A model counts once: its Model Card, not its parts.
                 let typed = |card_type: CardType| {
                     members
                         .iter()
-                        .filter(|member| member.card_type == card_type)
+                        .filter(|member| member.card_type == card_type && member.facet.is_none())
                         .count()
                 };
                 json!({
@@ -432,6 +470,22 @@ impl Snapshot {
                 })
             })
             .collect()
+    }
+
+    /// The Model Card a Model part belongs to; `None` for any other Card.
+    pub(crate) fn model_head(&self, card: &Card) -> Option<String> {
+        card.facet?;
+        crate::model::find_head(crate::parent_location(&card.address), |at| {
+            self.by_address
+                .get(at)
+                .map(|card| (card.card_type, card.facet))
+        })
+    }
+
+    /// The structure of the model a Card belongs to: its Model Card, its
+    /// parts in reading order, the Links between them, and what is missing.
+    pub(crate) fn model(&self, address: &str) -> Option<Value> {
+        crate::model::structure(address, &self.by_address, &self.parsed, &self.inbound)
     }
 
     /// The direct child Side successors of a Regular Card.
@@ -499,6 +553,7 @@ impl Snapshot {
                     "title": parsed.title,
                     "kind": kind(card),
                     "type": card.card_type.id(),
+                    "facet": card.facet.map(Facet::id),
                     "workspace": card.workspace.id(),
                     "snippet": snippet,
                 }))
@@ -555,7 +610,10 @@ pub(crate) fn excerpt(body: &str) -> String {
     for raw in body.split_inclusive('\n') {
         let line_start = start;
         start += raw.len();
-        if fenced.iter().any(|range| range.contains(&line_start)) {
+        // Code, charts, and raw HTML are not prose to preview.
+        if fenced.iter().any(|range| range.contains(&line_start))
+            || raw.trim_start().starts_with('<')
+        {
             continue;
         }
         let line = raw
@@ -586,6 +644,13 @@ pub(crate) fn clip(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    fn ty(card_type: CardType) -> TypeChange {
+        TypeChange {
+            card_type: Some(card_type),
+            facet: None,
+        }
+    }
+
     #[test]
     fn excerpts_skip_headings_markers_and_code() {
         assert_eq!(
@@ -597,6 +662,16 @@ mod tests {
             "A bold code see 0/1"
         );
         assert_eq!(excerpt(""), "");
+        assert_eq!(
+            excerpt(
+                "<div class=\"chart\">
+<svg></svg>
+</div>
+
+The model"
+            ),
+            "The model"
+        );
     }
 
     const ROOT_REFUSAL: &str = "only Regular Cards can be Event or Model Cards";
@@ -615,6 +690,181 @@ mod tests {
     fn text_of(root: &Path, at: &str) -> String {
         let conn = crate::open_db(root).expect("open database");
         crate::load_card(&conn, at).expect("card").text
+    }
+
+    fn facet_of(root: &Path, at: &str) -> Option<Facet> {
+        let conn = crate::open_db(root).expect("open database");
+        crate::load_card(&conn, at).expect("card").facet
+    }
+
+    fn part(facet: Facet) -> TypeChange {
+        TypeChange {
+            card_type: None,
+            facet: Some(Some(facet)),
+        }
+    }
+
+    #[test]
+    fn model_parts_are_filed_under_their_model_card_and_form_its_structure() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        let make = |kind, at: &str, card_type, facet, text: &str| {
+            create_successor(root, owner, kind, at, card_type, facet, text)
+        };
+        create_topic(root, owner, Workspace::Agent, "# Firms\n").unwrap();
+        make(
+            Successor::Direct,
+            "0/0",
+            CardType::Model,
+            None,
+            "# GHM\n\nthe model\n",
+        )
+        .unwrap();
+        assert_eq!(
+            make(
+                Successor::Side,
+                "0/1",
+                CardType::Model,
+                Some(Facet::Setting),
+                "# Setting\n\nof [[0/1]]\n"
+            )
+            .unwrap(),
+            "0/1|a"
+        );
+        assert_eq!(
+            make(
+                Successor::Direct,
+                "0/1|a",
+                CardType::Model,
+                Some(Facet::Assumptions),
+                "# Assumptions\n\nof [[0/1]], on [[0/1|a]]\n"
+            )
+            .unwrap(),
+            "0/1|a|1"
+        );
+        assert_eq!(facet_of(root, "0/1|a|1"), Some(Facet::Assumptions));
+
+        // A facet needs a Model Card above it, and only Model Cards have facets.
+        make(
+            Successor::Direct,
+            "0/1",
+            CardType::Idea,
+            None,
+            "# An idea\n",
+        )
+        .unwrap();
+        assert_eq!(
+            make(
+                Successor::Direct,
+                "0/2",
+                CardType::Model,
+                Some(Facet::Results),
+                "# Stray\n"
+            )
+            .unwrap_err()
+            .to_string(),
+            "a Model part (`results`) must be filed under its Model Card: create it as a successor of the Model Card or of one of its parts"
+        );
+        assert_eq!(
+            make(
+                Successor::Side,
+                "0/1",
+                CardType::Event,
+                Some(Facet::Results),
+                "# Event\n"
+            )
+            .unwrap_err()
+            .to_string(),
+            "only Model Cards can have a Model facet"
+        );
+
+        let snapshot = Snapshot::read(root).unwrap();
+        let model = snapshot.model("0/1|a|1").expect("a Model part");
+        assert_eq!(model["head"]["address"], "0/1");
+        assert_eq!(model["facet"], "assumptions");
+        let parts = model["parts"].as_array().unwrap();
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| (
+                    part["address"].as_str().unwrap(),
+                    part["facet"].as_str().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            [("0/1|a", "setting"), ("0/1|a|1", "assumptions")]
+        );
+        assert_eq!(parts[1]["links"], json!(["0/1", "0/1|a"]));
+        assert_eq!(
+            model["issues"],
+            json!([
+                "the Model Card `0/1` does not link its part `0/1|a`",
+                "the Model Card `0/1` does not link its part `0/1|a|1`"
+            ])
+        );
+        assert_eq!(model["missing"][0], "timing");
+        assert_eq!(
+            snapshot.summary(snapshot.by_address.get("0/1|a").unwrap())["head"],
+            "0/1"
+        );
+        assert!(snapshot.model("0/2").is_none());
+        assert_eq!(snapshot.trees()[0]["models"], 1);
+
+        // Linking the parts from the Model Card settles the issues.
+        edit(
+            root,
+            owner,
+            "0/1",
+            Some("# GHM\n\nparts: [[0/1|a]] [[0/1|a|1]]\n"),
+            TypeChange::default(),
+            None,
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(root).unwrap();
+        assert_eq!(snapshot.model("0/1").unwrap()["issues"], json!([]));
+        assert_eq!(
+            snapshot.model("0/1").unwrap()["head_links"],
+            json!(["0/1|a", "0/1|a|1"])
+        );
+
+        // A Model Card with parts cannot stop heading them.
+        assert_eq!(
+            edit(root, owner, "0/1", None, ty(CardType::Idea), None)
+                .unwrap_err()
+                .to_string(),
+            "`0/1` is the Model Card of 2 Model part(s) (0/1|a, 0/1|a|1); change or move them first"
+        );
+        // A facet alone makes a Card a Model part; an empty facet makes it a Model Card again.
+        make(
+            Successor::Side,
+            "0/1",
+            CardType::Idea,
+            None,
+            "# Results\n\nof [[0/1]]\n",
+        )
+        .unwrap();
+        edit(root, owner, "0/1|b", None, part(Facet::Results), None).unwrap();
+        assert_eq!(
+            (type_of(root, "0/1|b"), facet_of(root, "0/1|b")),
+            (CardType::Model, Some(Facet::Results))
+        );
+        let cleared = TypeChange {
+            card_type: None,
+            facet: Some(None),
+        };
+        edit(root, owner, "0/1|b", None, cleared, None).unwrap();
+        assert_eq!(
+            (type_of(root, "0/1|b"), facet_of(root, "0/1|b")),
+            (CardType::Model, None)
+        );
+        // Naming the Model type alone keeps a part's facet; another type clears it.
+        edit(root, owner, "0/1|a|1", None, ty(CardType::Model), None).unwrap();
+        assert_eq!(facet_of(root, "0/1|a|1"), Some(Facet::Assumptions));
+        edit(root, owner, "0/1|a|1", None, ty(CardType::Idea), None).unwrap();
+        assert_eq!(
+            (type_of(root, "0/1|a|1"), facet_of(root, "0/1|a|1")),
+            (CardType::Idea, None)
+        );
     }
 
     #[test]
@@ -638,6 +888,7 @@ mod tests {
                 Successor::Direct,
                 "0/0",
                 CardType::Event,
+                None,
                 event
             )
             .unwrap(),
@@ -648,7 +899,7 @@ mod tests {
 
         // A type alone changes only the type.
         let before = text_of(root, "0/1");
-        edit(root, owner, "0/1", None, Some(CardType::Model), None).unwrap();
+        edit(root, owner, "0/1", None, ty(CardType::Model), None).unwrap();
         assert_eq!(type_of(root, "0/1"), CardType::Model);
         assert_eq!(text_of(root, "0/1"), before);
         edit(
@@ -656,13 +907,21 @@ mod tests {
             owner,
             "0/1",
             Some("# Renamed\n\nnew body\n"),
-            Some(CardType::Idea),
+            ty(CardType::Idea),
             None,
         )
         .unwrap();
         assert_eq!(type_of(root, "0/1"), CardType::Idea);
         assert!(text_of(root, "0/1").starts_with("# Renamed\n\nnew body\n"));
-        edit(root, owner, "0/1", Some("# Renamed\n\nagain\n"), None, None).unwrap();
+        edit(
+            root,
+            owner,
+            "0/1",
+            Some("# Renamed\n\nagain\n"),
+            TypeChange::default(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             type_of(root, "0/1"),
             CardType::Idea,
@@ -671,7 +930,7 @@ mod tests {
 
         // Tree roots stay Idea Cards.
         assert_eq!(
-            edit(root, owner, "0/0", None, Some(CardType::Event), None)
+            edit(root, owner, "0/0", None, ty(CardType::Event), None)
                 .unwrap_err()
                 .to_string(),
             ROOT_REFUSAL
@@ -683,7 +942,7 @@ mod tests {
                 owner,
                 "0/0",
                 Some("# Changed\n"),
-                Some(CardType::Model),
+                ty(CardType::Model),
                 None
             )
             .unwrap_err()
@@ -692,7 +951,7 @@ mod tests {
             "a refused type leaves the text alone too"
         );
         assert_eq!(text_of(root, "0/0"), before);
-        edit(root, owner, "0/0", None, Some(CardType::Idea), None).unwrap();
+        edit(root, owner, "0/0", None, ty(CardType::Idea), None).unwrap();
         let mut conn = crate::open_db(root).unwrap();
         assert_eq!(
             crate::insert_card(
@@ -701,6 +960,7 @@ mod tests {
                 true,
                 Workspace::Human,
                 CardType::Event,
+                None,
                 "# Topic\n"
             )
             .unwrap_err()
@@ -717,7 +977,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            edit(root, owner, "Lit2020", None, Some(CardType::Event), None)
+            edit(root, owner, "Lit2020", None, ty(CardType::Event), None)
                 .unwrap_err()
                 .to_string(),
             ROOT_REFUSAL
@@ -732,6 +992,7 @@ mod tests {
                 Successor::Side,
                 "0/1",
                 CardType::Event,
+                None,
                 event
             )
             .unwrap_err()
@@ -739,17 +1000,10 @@ mod tests {
             .contains(read_only)
         );
         assert!(
-            edit(
-                root,
-                Access::Agent,
-                "0/1",
-                None,
-                Some(CardType::Event),
-                None
-            )
-            .unwrap_err()
-            .to_string()
-            .contains(read_only)
+            edit(root, Access::Agent, "0/1", None, ty(CardType::Event), None)
+                .unwrap_err()
+                .to_string()
+                .contains(read_only)
         );
         assert_eq!(type_of(root, "0/1"), CardType::Idea);
         assert_eq!(
@@ -759,20 +1013,13 @@ mod tests {
                 Successor::Direct,
                 "1/0",
                 CardType::Model,
+                None,
                 "# GHM property-rights model\n"
             )
             .unwrap(),
             "1/1"
         );
-        edit(
-            root,
-            Access::Agent,
-            "1/1",
-            None,
-            Some(CardType::Event),
-            None,
-        )
-        .unwrap();
+        edit(root, Access::Agent, "1/1", None, ty(CardType::Event), None).unwrap();
         assert_eq!(type_of(root, "1/1"), CardType::Event);
     }
 
@@ -801,7 +1048,7 @@ mod tests {
             ),
             ("1/0", CardType::Event, "# Agent event\n\nan agent event\n"),
         ] {
-            create_successor(root, owner, Successor::Direct, at, card_type, text).unwrap();
+            create_successor(root, owner, Successor::Direct, at, card_type, None, text).unwrap();
         }
         let snapshot = Snapshot::read(root).unwrap();
         let types = |results: Vec<Value>| {
@@ -863,7 +1110,7 @@ mod tests {
             (&json!("1/0"), &json!(1), &json!(0))
         );
         let before = snapshot.fingerprint();
-        edit(root, owner, "0/1", None, Some(CardType::Event), None).unwrap();
+        edit(root, owner, "0/1", None, ty(CardType::Event), None).unwrap();
         assert_ne!(
             Snapshot::read(root).unwrap().fingerprint(),
             before,
@@ -883,6 +1130,7 @@ mod tests {
             Successor::Direct,
             "0/0",
             CardType::Idea,
+            None,
             "# Base\n",
         )
         .unwrap();
@@ -891,7 +1139,7 @@ mod tests {
             (CardType::Model, "# Side model\n"),
             (CardType::Event, "# Third side\n"),
         ] {
-            create_successor(root, owner, Successor::Side, "0/1", card_type, title).unwrap();
+            create_successor(root, owner, Successor::Side, "0/1", card_type, None, title).unwrap();
         }
         assert_eq!(
             [
@@ -927,6 +1175,7 @@ mod tests {
             Successor::Direct,
             "Lit2020",
             CardType::Event,
+            None,
             "# Reported event\n",
         )
         .unwrap();

@@ -155,6 +155,41 @@ Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移�
   用来列出该类型的全部 Card。
 - **导出**：`archive.json` 在 `types` 中列出所有非 Idea Card。
 
+### 模型结构
+
+一个模型往往一张卡写不下。**Model Card** 写问题、简短概要和结构图，并用 Link 列出它的 **Model part**：
+归档在它之下（作为 Model Card 或另一个 part 的 successor）的 Model Card，每张带一个 **Model facet**，
+说明它呈现模型的哪一部分，按阅读顺序为：`setting`（主体、资产、行动、收益）、`assumptions`（假设及其作用）、
+`timing`（行动顺序与信息）、`dynamics`（状态如何演化：运动方程、最优反应、反馈）、`solution`（均衡或最优解及推导）、
+`results`（命题与比较静态）、`intuition`（结论为何成立）、`limits`（适用边界与批评）。
+
+ZT 根据 Location 和 facet 计算每个模型的结构。Link 让每张卡都能读懂整体：Model Card 链接每个 part，
+每个 part 链接它的 Model Card 和它依赖的 part（动态依赖时序与假设，结论依赖动态），`get_model` 会报告缺少这些
+Link 的 part。带有 part 的 Model Card 在其 part 被修改或移走之前不能改类型。
+
+- **Session**：part 显示为 `[model · <facet>]`；`ty model <facet>` 把当前 Card 设为 part，`ty model` 则恢复为 Model Card。
+- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签（Model，然后是各 facet；尚无 part 的 facet 显示为空白标签），
+  卡片下方的桌面上有一张模型地图，用弧线画出模型各卡之间的 Link；part 带有 `MODEL · <FACET>` 印章，写作台在
+  Model 类型旁选择 facet。
+- **MCP**：`create_successor` 和 `edit_card` 接受 `facet`（空字符串清除 facet）；`get_card` 返回 `facet` 和 `model`；
+  `get_model` 返回整个模型及每张卡的正文、缺失的 facet 和一致性问题。
+- **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet。
+
+### 数学公式与 HTML 图表
+
+GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$` 独立成行，`\(...\)` 与 `\[...\]` 也可以；标题中也可以写
+`$...$`。**HTML 图表**写在 ```` ```chart ```` 代码块中（或以 `<figure>`、`<div>`、`<svg>`、`<table>` 等开头的原始 HTML 块），
+显示为卡片上的一幅插图。每个图表运行在独立的沙箱页面中，与 GUI 及其令牌隔离，因此可以使用脚本（以及通过 HTTPS 加载的库）；
+它通过 `--zt-*` CSS 变量（`--zt-ink`、`--zt-model`、`--zt-series-1` 等）使用卡片的配色，随明暗主题切换，会排版其中的 TeX，
+读者点击 `[[地址]]` 文本或带 `data-zt="<地址>"` 的元素即可打开对应 Card。其他原始 HTML 以文本显示，
+`<sub>`、`<sup>`、`<br>`、`<kbd>` 等简单行内标签除外。
+
+### 消化一本书
+
+Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
+每一批完成后，由 Sonnet 把其中写出的每张 Model Card 对照原文重建为带图表的结构化模型，随后连接全书各部分，最后由 Opus 整理结构。
+详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
+
 ## MCP 服务器
 
 `zt mcp` 通过 stdio 运行一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，
@@ -168,10 +203,11 @@ Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移�
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
+| `get_model` | 整个模型：Model Card 及按阅读顺序排列的 part、各卡正文、缺失的 facet 与一致性问题 |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
-| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`） |
-| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型或 BibTeX |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`） |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet 或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card |
 
 删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
@@ -227,8 +263,8 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 - `mapping.json`：每个 Card 地址到其 Markdown 文件的映射。
 - 每张 Card 一个 Markdown 文件，内容是其存储的原文；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
   `<citation-key>.bib` 保存 BibTeX 的原始字节。
-- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），以及每张 Event 与 Model Card 的类型，例如
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent"},"types":{"0/1":"event"}}`。
+- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event 与 Model Card 的类型，以及每个 Model part 的 facet，例如
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"}}`。
 
 `zt dp` 只列出主机上的工具真正能写出的格式（`zip`、`tar.gz`、`tar.zst`、`7z`）：它会依次尝试 `PATH` 上的每个
 `tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar

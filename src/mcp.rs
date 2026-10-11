@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::model::Facet;
 use crate::ops::{self, Outcome, Snapshot, Successor};
 use crate::{Access, CardType, Workspace};
 
@@ -30,6 +31,10 @@ create new trees with create_topic or create_literature, then grow them with cre
 Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
 real-world event with its date, place, actors, and source) or a Model Card (`model`: one whole \
 model), set with `type` on create_successor or edit_card and listed with search_cards by `type`. \
+A model is presented by its Model Card (question, overview, structure) and by Model parts filed under \
+it: Model Cards with a `facet` (setting, assumptions, timing, dynamics, solution, results, intuition, \
+limits); get_model shows the whole structure and what is missing or unlinked. Card bodies may hold \
+TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI renders. \
 delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
 `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
@@ -275,6 +280,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "writable": ACCESS.can_write(card.workspace),
                 "kind": ops::kind(card),
                 "type": card.card_type.id(),
+                "facet": card.facet.map(Facet::id),
+                "model": snapshot.model(&card.address),
                 "title": parsed.title,
                 "body": parsed.body,
                 "text": card.text,
@@ -286,6 +293,41 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "outbound": snapshot.outbound(&card.address),
                 "inbound": snapshot.inbound_refs(&card.address),
             }))
+        }
+        "get_model" => {
+            let snapshot = Snapshot::read(&root)?;
+            let at = string_arg(args, "at")?;
+            if !snapshot.by_address.contains_key(&at) {
+                bail!("card `{at}` does not exist");
+            }
+            let mut model = snapshot.model(&at).with_context(|| {
+                format!("`{at}` is not a Model Card or Model part; set type `model` first")
+            })?;
+            // Each Card of the model with its body, so one call reads the whole model.
+            let body = |address: &str| {
+                snapshot
+                    .parsed
+                    .get(address)
+                    .map(|parsed| parsed.body.clone())
+                    .unwrap_or_default()
+            };
+            if let Some(head) = model["head"]["address"].as_str().map(str::to_string) {
+                model["head"]["body"] = json!(body(&head));
+            }
+            if let Some(parts) = model["parts"].as_array_mut() {
+                for part in parts {
+                    if let Some(address) = part["address"].as_str().map(str::to_string) {
+                        part["body"] = json!(body(&address));
+                    }
+                }
+            }
+            model["facets"] = json!(
+                Facet::ALL
+                    .iter()
+                    .map(|facet| json!({ "facet": facet.id(), "holds": facet.note() }))
+                    .collect::<Vec<_>>()
+            );
+            Ok(model)
         }
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
@@ -356,11 +398,18 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "side" => Successor::Side,
                 other => bail!("unknown successor kind `{other}`; expected direct or side"),
             };
-            let card_type = optional_card_type(args)?.unwrap_or_default();
+            let facet = optional_facet(args)?.flatten();
+            let card_type = match (optional_card_type(args)?, facet) {
+                (Some(card_type), Some(_)) if card_type != CardType::Model => {
+                    bail!("only Model Cards can have a Model facet")
+                }
+                (_, Some(_)) => CardType::Model,
+                (card_type, None) => card_type.unwrap_or_default(),
+            };
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
-            let address = ops::create_successor(&root, ACCESS, kind, &at, card_type, &text)?;
-            Ok(json!({ "address": address, "type": card_type.id() }))
+            let address = ops::create_successor(&root, ACCESS, kind, &at, card_type, facet, &text)?;
+            Ok(json!({ "address": address, "type": card_type.id(), "facet": facet.map(Facet::id) }))
         }
         "edit_card" => {
             let at = string_arg(args, "at")?;
@@ -368,14 +417,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let card = crate::load_card(&conn, &at)?;
             drop(conn);
             ACCESS.ensure_writable(card.workspace)?;
-            let card_type = optional_card_type(args)?;
+            let change = ops::TypeChange {
+                card_type: optional_card_type(args)?,
+                facet: optional_facet(args)?,
+            };
             let parsed = crate::parse_card_text(&card.text)?;
             let text_given = ["text", "title", "body"]
                 .iter()
                 .any(|name| args.get(name).is_some());
             let text = match args.get("text").and_then(Value::as_str) {
-                // A type alone changes only the type.
-                _ if card_type.is_some() && !text_given => None,
+                // A type or facet alone changes only the type.
+                _ if !change.is_empty() && !text_given => None,
                 Some(text) => Some(text.to_string()),
                 None => {
                     if card.is_lit && args.get("title").is_some() {
@@ -395,7 +447,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 }
             };
             let base = args.get("base").and_then(Value::as_str);
-            let address = ops::edit(&root, ACCESS, &at, text.as_deref(), card_type, base)?;
+            let address = ops::edit(&root, ACCESS, &at, text.as_deref(), change, base)?;
             Ok(json!({ "address": address }))
         }
         "edit_literature_metadata" => {
@@ -496,6 +548,17 @@ fn optional_card_type(args: &Value) -> Result<Option<CardType>> {
     }
 }
 
+/// `None` when absent; `Some(None)` for an empty string or `none`, which
+/// clears a facet.
+fn optional_facet(args: &Value) -> Result<Option<Option<Facet>>> {
+    match args.get("facet") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::model::parse_optional(value).map(Some),
+        Some(_) => bail!("argument `facet` must be a string"),
+    }
+}
+
 fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
     match args.get("zone").and_then(Value::as_str) {
         None | Some("all") => Ok(None),
@@ -552,6 +615,15 @@ fn tool_definitions() -> Vec<Value> {
         "type": "string",
         "description": "Markdown body. Write `[[address]]` to link any Card in either Workspace.",
     });
+    let facet = |description: &str| {
+        let mut values = Facet::ALL.map(Facet::id).to_vec();
+        values.push("");
+        json!({
+            "type": "string",
+            "enum": values,
+            "description": description,
+        })
+    };
     let card_type = |description: &str| {
         json!({
             "type": "string",
@@ -593,7 +665,16 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, or model), BibTeX, Workspace, whether you may change it, neighbors, and Links in and out.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, or model), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. A Model Card or Model part also reports `model`: its model's structure.",
+            json!({ "at": at }),
+            &["at"],
+            true,
+            false,
+        ),
+        tool(
+            "get_model",
+            "Get model",
+            "Read a whole model from its Model Card or any of its Model parts: the Model Card, its parts in reading order (setting, assumptions, timing, dynamics, solution, results, intuition, limits) with their bodies, the Links between them, the facets still missing, how many outside Cards discuss it, and consistency issues (a part the Model Card does not link, or a part that does not link its Model Card).",
             json!({ "at": at }),
             &["at"],
             true,
@@ -663,13 +744,14 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model).",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one facet of the model whose Model Card it is filed under (at the Model Card or one of its parts).",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
                 "type": card_type("The Card type: idea (default), event, or model."),
+                "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
             }),
             &["at", "title"],
             false,
@@ -678,12 +760,13 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card; it may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, and `facet` to make a Model Card a Model part (an empty `facet` makes it a Model Card again); either may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
                 "type": card_type("New Card type: idea, event, or model (event and model only for Regular Cards)."),
+                "facet": facet("New Model facet (implies type model); empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
             }),

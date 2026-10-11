@@ -58,9 +58,30 @@ Every Card has a **Card type**. Most are Idea Cards (the default, everything abo
 
 - Write one for each model a source sets out (a formal model, or a conceptual model with explicit assumptions), before the Cards that discuss it.
 - Title: the model's name and what it shows: `GHM 产权模型：资产所有权决定事前专用性投资激励`.
-- Body sections in order: 问题; 设定 (agents, assets, actions); 假设; 时序与信息; 求解或均衡; 主要结论; 直觉; 局限; 来源. Formulas in `$...$`. A Model Card may run longer than an Idea Card (up to about 600 words); it is still one model.
+- A model first written as one Card has these body sections in order: 问题; 设定 (agents, assets, actions); 假设; 时序与信息; 求解或均衡; 主要结论; 直觉; 局限; 来源. Formulas in `$...$`. It may run longer than an Idea Card (up to about 600 words); it is still one model.
 - Place it in the Literature tree as a Side successor of the anchor for the part that presents it; the derivation steps, results, and interpretations follow as its successors or live in Topic trees.
-- **Every Card that derives, interprets, extends, applies, or criticises the model links to its Model Card**, in a sentence saying which part of the model it concerns: `在 [[hart1995firms/7|a]] 的设定下，……`. The Model Card's Reverse links then list the whole discussion of the model.
+- **Every Card that derives, interprets, extends, applies, or criticises the model links to its Model Card**, or to the Model part it concerns, in a sentence saying which part of the model it concerns: `在 [[hart1995firms/7|a]] 的设定下，……`. The Reverse links then list the whole discussion of the model.
+
+### Model structure: the Model Card and its parts
+
+When a model deserves more than one Card (most formal models do), split it into **Model parts**: Model Cards with a `facet`, filed under the Model Card, each presenting one facet in depth. The Model Card becomes the model's index.
+
+- **Facets**, in reading order: `setting` (agents, assets, actions, payoffs), `assumptions` (each assumption and what it buys; what changes if it is relaxed), `timing` (order of moves, who knows what when), `dynamics` (how the state evolves: laws of motion, best responses, bargaining, feedback loops), `solution` (equilibrium or optimum and its derivation), `results` (propositions, comparative statics), `intuition` (why the results hold), `limits` (where it stops applying; critics). Write only the facets the source supports; several parts may share a facet (two propositions under `results`).
+- **Placement.** The first part is a Side successor of the Model Card (`kind: side`, `facet: setting`); the next parts continue it as Direct successors in reading order (`3/2|a` setting, `3/2|a|1` assumptions, `3/2|a|2` timing, …), so the model reads down one column of the Folgezettel map. ZT refuses a facet on a Card that is not filed under a Model Card.
+- **The Model Card** keeps: 问题; a 3–5 sentence 概要 of the mechanism; a structure chart (see below) drawing the parts and how they feed each other; a 结构 list with one line per part, `- 设定 [[3/2|a]]：……`; 来源. Its long sections move into the parts.
+- **Each part**: title = what this facet of the model says, as a claim (`时序：先投资，部件类型揭示后再平分增益`); first line names its model, `本卡是模型 [[3/2]] 的时序。`; then the facet in depth, with formulas and, where a picture explains better than prose, an HTML chart; then Links to the parts it depends on, with the reason (`依赖时序 [[3/2|a|2]]：投资在议价之前，所以……`).
+- **Links make the structure readable from every Card**: the Model Card links every part, every part links its Model Card, and dependent parts link what they rest on (dynamics → timing and assumptions; solution → dynamics; results → solution; intuition → results; limits → the assumptions they relax). `get_model` lists any missing Link as an issue; fix them all.
+- Discussion Cards outside the model link the part they concern: a critique of an assumption links the `assumptions` part; an application of a result links the `results` part.
+
+### HTML charts
+
+A chart illustrates what prose explains poorly: who interacts with whom (setting), a timeline (timing), a flow or feedback loop, a phase or best-response diagram, a plotted curve or comparative static (dynamics, results), an assumptions table (what each buys, what happens if relaxed).
+
+- Write it in a ```` ```chart ```` fence; the GUI shows it as a figure in its own sandbox. Use HTML with inline SVG and plain JavaScript (no build step); a library over HTTPS works but needs a network. Keep each chart under about 200 lines.
+- Use the card's palette so it fits both light and dark themes: `var(--zt-ink)`, `--zt-ink-soft`, `--zt-ink-faint`, `--zt-paper`, `--zt-line`, `--zt-model` and `--zt-model-soft` (the model's own ink), `--zt-accent`, `--zt-series-1` … `--zt-series-6` for data series, and `--zt-serif`, `--zt-sans`, `--zt-mono`. Do not hard-code colors or white backgrounds. Size SVG with a `viewBox` and a width up to about 440.
+- TeX in the chart's HTML text (`$x_i$`, `$$...$$`) is typeset; SVG `<text>` is not, so label SVG with plain text.
+- Let a reader walk the model from the chart: give an element `data-zt="3/2|a|2"` (or write `[[3/2|a|2]]` in HTML text) and a click opens that Card. Links inside a chart fence are not Links, so also list the parts in Markdown.
+- Interactivity helps when it shows a mechanism: a slider for a parameter that moves a curve and an equilibrium.
 
 ## ZET addresses
 

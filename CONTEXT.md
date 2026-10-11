@@ -24,8 +24,20 @@ A Regular Card of type `event`: it records one event that happened in the real w
 _Avoid_: Fact card, case
 
 **Model Card**:
-A Regular Card of type `model`: it presents one whole model (question, setup, assumptions, timing and information, solution, results, intuition, limits). Every Card that derives, interprets, extends, or criticises the model links to it, so its Reverse links list the discussion of the model.
+A Regular Card of type `model` without a Model facet: it presents one whole model (its question, an overview, and a structure chart) and lists the model's Model parts with Links. Every Card that derives, interprets, extends, or criticises the model links to it or to the part it concerns, so their Reverse links list the discussion of the model.
 _Avoid_: Theory card, formula card
+
+**Model part**:
+A Regular Card of type `model` with a Model facet, filed under its Model Card: as a successor of the Model Card or of another of its parts. It presents one facet of the model in depth, links its Model Card, and links the other parts it depends on. A Model Card with its parts is one **model**; ZT computes this structure from Locations and facets.
+_Avoid_: Sub-card, child model, model section
+
+**Model facet**:
+Which part of a model a Model part presents, in reading order: `setting` (agents, assets, actions, payoffs), `assumptions`, `timing` (order of moves and information), `dynamics` (how the state evolves: laws of motion, best responses, feedback), `solution` (equilibrium or optimum), `results`, `intuition`, `limits`. A model may lack facets or hold several parts of one facet.
+_Avoid_: Role, section, aspect
+
+**HTML chart**:
+HTML in a Card body that the GUI shows as a figure: a ```` ```chart ```` fence, or a raw HTML block that opens with a chart element such as `<figure>`, `<div>`, `<svg>`, or `<table>`. It runs sandboxed, apart from the GUI and its token; it may draw with scripts, use TeX, and name Cards with `[[address]]` or `data-zt="<address>"` to let a reader open them. Text inside a chart fence is not a Link.
+_Avoid_: Widget, embed, diagram card
 
 **Literature Card**:
 A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text, and is the root of its own Literature tree.
@@ -109,7 +121,7 @@ An alternative continuation from another regular card. It is recorded with a let
 _Avoid_: Side success, branch
 
 **GUI**:
-The local browser interface started with `zt gui`. It renders Card Markdown and changes Cards through the same rules as the Session; it counts as a Session while open.
+The local browser interface started with `zt gui`. It renders Card Markdown (with TeX math in `$...$` and `$$...$$`, and HTML charts) and changes Cards through the same rules as the Session; it counts as a Session while open.
 _Avoid_: Web app, frontend
 
 **Folgezettel map**:

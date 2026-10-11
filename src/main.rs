@@ -16,6 +16,7 @@ mod gui;
 mod link;
 mod literature;
 mod mcp;
+mod model;
 mod ops;
 mod scholar;
 mod session;
@@ -429,8 +430,13 @@ fn initialize_database(root: &Path) -> Result<()> {
             "text",
         ];
         let before_card_types = [&before_workspaces[..], &["workspace"]].concat();
-        let current = [&before_card_types[..], &["card_type"]].concat();
-        if columns != before_workspaces && columns != before_card_types && columns != current {
+        let before_facets = [&before_card_types[..], &["card_type"]].concat();
+        let current = [&before_facets[..], &["model_facet"]].concat();
+        if columns != before_workspaces
+            && columns != before_card_types
+            && columns != before_facets
+            && columns != current
+        {
             bail!("unsupported cards schema; database was not modified");
         }
     }
@@ -446,6 +452,9 @@ fn initialize_database(root: &Path) -> Result<()> {
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
             card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model')),
+            model_facet TEXT CHECK(model_facet IS NULL OR model_facet IN (
+                'setting', 'assumptions', 'timing', 'dynamics',
+                'solution', 'results', 'intuition', 'limits')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
@@ -464,6 +473,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     ensure_workspace_column(&conn, root)?;
     ensure_card_type_column(&conn, root)?;
+    ensure_model_facet_column(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
@@ -512,6 +522,32 @@ fn ensure_card_type_column(conn: &Connection, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Archives created before Model parts existed have no facets: add the
+/// `model_facet` column with every existing Model Card a head.
+fn ensure_model_facet_column(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'model_facet')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE cards ADD COLUMN model_facet TEXT
+             CHECK(model_facet IS NULL OR model_facet IN (
+                 'setting', 'assumptions', 'timing', 'dynamics',
+                 'solution', 'results', 'intuition', 'limits'));",
+    )
+    .context("failed to add Model facets to the archive")?;
+    log_event(
+        root,
+        "added model facets; existing model cards are model heads",
+    )
+    .ok();
+    Ok(())
+}
+
 const CARD_FORMAT: &str = "markdown";
 
 /// Convert an archive written before Cards were Markdown documents. The
@@ -521,6 +557,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
     let mut conn = open_db(root)?;
     ensure_workspace_column(&conn, root)?;
     ensure_card_type_column(&conn, root)?;
+    ensure_model_facet_column(&conn, root)?;
     let format: Option<String> = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'card_format'",
@@ -666,12 +703,10 @@ fn cmd_dump() -> Result<()> {
                     card.text,
                 ))
             } else {
-                Ok(dump::DumpCard::new(
-                    card.address,
-                    card.workspace,
-                    card.card_type,
-                    card.text,
-                ))
+                Ok(
+                    dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
+                        .with_facet(card.facet),
+                )
             }
         })
         .collect::<Result<Vec<_>>>()?;
@@ -800,6 +835,8 @@ struct Card {
     text: String,
     workspace: Workspace,
     card_type: CardType,
+    /// Set only on a Model part: which facet of its model it presents.
+    facet: Option<model::Facet>,
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -959,7 +996,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -973,6 +1010,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 text: row.get(6)?,
                 workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
                 card_type: CardType::from_stored(&row.get::<_, String>(8)?),
+                facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
             })
         },
     )
@@ -982,7 +1020,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -996,6 +1034,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             text: row.get(6)?,
             workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
             card_type: CardType::from_stored(&row.get::<_, String>(8)?),
+            facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1342,6 +1381,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
                 false,
                 parent.workspace,
                 CardType::Idea,
+                None,
                 &text,
             )?;
             println!("{location}");
@@ -1366,6 +1406,7 @@ fn shell_create_side(at: &str) -> Result<()> {
                 false,
                 parent.workspace,
                 CardType::Idea,
+                None,
                 &text,
             )?;
             println!("{location}");
@@ -1537,6 +1578,7 @@ fn insert_card(
     is_topic: bool,
     workspace: Workspace,
     card_type: CardType,
+    facet: Option<model::Facet>,
     text: &str,
 ) -> Result<()> {
     if !is_valid_location(location) {
@@ -1556,17 +1598,19 @@ fn insert_card(
             );
         }
     }
+    model::ensure_allowed(conn, location, None, card_type, facet)?;
     validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
-         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5)",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6)",
         params![
             location,
             if is_topic { 1 } else { 0 },
             text,
             workspace.id(),
-            card_type.id()
+            card_type.id(),
+            facet.map(model::Facet::id)
         ],
     )?;
     regenerate_reverse_links_tx(&tx)?;
@@ -1577,7 +1621,7 @@ fn insert_card(
 /// Create a Topic in `workspace` at the next Topic number.
 fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Result<String> {
     let location = next_topic_location(conn)?;
-    insert_card(conn, &location, true, workspace, CardType::Idea, text)?;
+    insert_card(conn, &location, true, workspace, CardType::Idea, None, text)?;
     bump_next_topic_id(conn, &location)?;
     Ok(location)
 }
