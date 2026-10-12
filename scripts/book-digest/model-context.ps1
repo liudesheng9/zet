@@ -37,7 +37,8 @@ $key = ($Model -split '/', 2)[0]
 $card, $structure, $found = Invoke-Zt @(
     @{ tool = 'get_card'; arguments = @{ at = $Model } },
     @{ tool = 'get_model'; arguments = @{ at = $Model } },
-    @{ tool = 'search_cards'; arguments = @{ type = 'model'; workspace = 'agent'; limit = 200 } }
+    # The book's own tree, not search_cards: a search stops at 200 results.
+    @{ tool = 'get_tree'; arguments = @{ tree = $key } }
 )
 
 # Which group wrote the Model Card.
@@ -151,7 +152,7 @@ if ($anchorCard) {
     & $line ''
 }
 
-$others = @($found.results | Where-Object { -not $_.facet -and $_.address -ne $Model -and $_.address -like "$key/*" })
+$others = @($found.cards | Where-Object { $_.type -eq 'model' -and -not $_.facet -and $_.address -ne $Model })
 if ($others.Count) {
     & $line "## 本书的其他模型（可链接；不要重复它们的内容）"
     & $line ''

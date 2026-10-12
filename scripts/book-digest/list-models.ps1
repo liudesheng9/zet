@@ -38,7 +38,12 @@ foreach ($file in Get-ChildItem -LiteralPath $Staging -Filter 'owned-g*.txt' -Fi
     }
 }
 
-$found = (Invoke-Zt @(@{ tool = 'search_cards'; arguments = @{ type = 'model'; workspace = 'agent'; limit = 200 } })).results
+# Read whole trees, not search_cards: a search stops at 200 results, and a book's Model Cards
+# and parts easily pass that. The trees are the book's and those the groups wrote into.
+$trees = @(@($owner.Keys | ForEach-Object { ($_ -split '/', 2)[0] }) + @($CitationKey) |
+    Where-Object { $_ } | Sort-Object -Unique)
+$read = if ($trees.Count) { @(Invoke-Zt @($trees | ForEach-Object { @{ tool = 'get_tree'; arguments = @{ tree = $_ } } })) } else { @() }
+$found = @($read | ForEach-Object { $_.cards } | Where-Object { $_.workspace -eq 'agent' -and $_.type -eq 'model' })
 $heads = @($found | Where-Object {
     -not $_.facet -and ($owner.ContainsKey($_.address) -or
         ($All -and $CitationKey -and ($_.address -like "$CitationKey/*")))
