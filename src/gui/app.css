@@ -993,14 +993,32 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* Why the open part relates to the others: the sentence that makes each Link. */
 .mb-reasons { display: flex; flex-direction: column; gap: 1px; margin: 10px 0 0; }
 .mb-reason {
-  display: grid; grid-template-columns: 12px auto minmax(0, 1fr); gap: 9px; align-items: baseline;
+  display: grid; grid-template-columns: 12px minmax(64px, auto) minmax(0, 1fr); gap: 9px; align-items: baseline;
   padding: 5px 8px; border: 0; border-radius: 6px; background: none; text-align: left; color: var(--ink-soft); cursor: pointer;
   transition: background .15s;
 }
 .mb-reason:hover { background: color-mix(in srgb, var(--model) 7%, transparent); }
 .mb-reason .way { font: 600 12px var(--mono); color: var(--model); }
-.mb-reason .mb-facet { margin: 0; padding: 0; border: 0; font-size: 8.5px; }
+.mb-reason .mb-facet { display: inline; margin: 0; padding: 0; border: 0; font-size: 8.5px; }
 .mb-reason .note { font: italic 13px/1.5 var(--serif); overflow-wrap: anywhere; }
+.mb-reason.side .way { color: var(--ink-faint); }
+.mb-kind { font: 600 9px/1.6 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--model); white-space: nowrap; }
+/* A thread of another kind than `rests on`: a dashed arc, named while it matters. */
+.mb-thread.beside .line { stroke-dasharray: 3 3; }
+.mb-thread .word { font: 600 8.5px var(--sans); letter-spacing: .06em; text-transform: uppercase; fill: var(--model); text-anchor: end; dominant-baseline: middle; paint-order: stroke; stroke: var(--desk); stroke-width: 3px; }
+/* A part its Model Card took in by a Link, filed elsewhere; a part shared with another model. */
+.mb-slip.joined { outline: 1px dashed color-mix(in srgb, var(--model) 55%, transparent); outline-offset: 2px; }
+.mb-slip.shared .mb-facet::after { content: " ⧉"; color: var(--ink-faint); font-style: normal; }
+/* The model's place in the rest of the slip-box: other models, and Cards outside it. */
+.mb-also { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+.mb-beyond { margin-top: 14px; padding-top: 8px; border-top: 1px dashed color-mix(in srgb, var(--ink-faint) 45%, transparent); }
+.mb-beyond > .mb-tray { margin: 0 0 4px 8px; }
+.mb-reason.beyond .note { font: 13px/1.45 var(--serif); color: var(--ink); }
+.mb-reason.beyond.plain { opacity: .72; }
+.mb-reason.beyond.plain .mb-kind { color: var(--ink-faint); }
+.mb-reason.beyond .type-stamp { margin-left: 6px; font-style: normal; }
+.mb-more > summary { cursor: pointer; padding: 3px 8px; font: 600 9px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint); list-style: none; }
+.mb-more > summary::-webkit-details-marker { display: none; }
 .model-issues { margin: 8px 0 0; padding: 4px 10px; border-left: 2px solid var(--pointer); font-size: 12px; color: var(--ink-soft); }
 .model-issues p { margin: 2px 0; }
 /* The editor names a part: a free facet label, suggestions offered, and an emphasis. */

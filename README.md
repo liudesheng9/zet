@@ -173,7 +173,7 @@ your own words. A Regular Card may instead be
 - an **Event Card** (`event`): one event that happened in the real world (what, when, where,
   who, and the source that reports it), with no interpretation in its description; or
 - a **Model Card** (`model`): one whole model (question, setup, assumptions, timing and
-  information, solution, results, intuition, limits, source).
+  one part of a model (see Model structure).
 
 Idea Cards cite them with ordinary `[[target]]` Links, so a Model Card's Reverse links list every
 Card that discusses the model. Topic and Literature Cards are always Idea Cards. The type stays
@@ -193,39 +193,47 @@ renamed; it changes nothing else about the Card. Archives created before 0.5.0 a
 
 ### Model structure
 
-A model is more than one Card can hold. Its **Model Card** states the question and a short
-overview, and lists its **Model parts**: Model Cards filed under it (as successors of the Model
-Card or of another part), each presenting one part of the model in depth. **Whoever writes the
-model decides its structure**:
+A model is more than one Card can hold. Its **Model Card** is the way in: it states the question
+and what the model shows. Its **Model parts** are Model Cards with a facet, each presenting one
+part of the model in depth. Following Luhmann, where a Card is filed does not decide what it
+belongs to: a part belongs to the Model Card it is filed under (as a successor of the Model Card
+or of another part), if any, **and to every Model Card that links it**. So a part may sit where it
+was first written, and one part may serve several models. **Whoever writes the model decides its
+structure**:
 
 - **Facet**: each part's name, a short label of the author's choosing (at most 32 characters):
-  `设定`, `均衡`, `a worked example`. The common facets `setting`, `assumptions`, `timing`,
-  `dynamics`, `solution`, `results`, `intuition`, and `limits` are suggestions, not a required set
-  or order.
+  `设定`, `均衡`, `数值例子`, `a worked example`. There is no required set or order of facets.
 - **Emphasis**: a part may be `core` (the heart of the model, what a reader must see first) or
   `aside` (detail a reader may skip).
-- **Relations**: a part links the parts it rests on, in a sentence that gives the reason. Inside
-  a model these Links form a graph, not a sequence or a tree: a part may rest on several others,
-  and a part in no relation is **loose** (a case or variant set beside the model).
+- **Relations**: a part links the other parts it relates to, in a sentence that gives the reason,
+  and the words before the Link give it a **Relation kind**: `rests-on` (`依赖`, `基于`, `uses`),
+  `illustrates` (`例示`, `案例`), `contrasts` (`对照`, `区别`), `relaxes` (`放宽`, `推广`),
+  `corresponds` (`对应`, `类比`), `objects` (`反驳`, `批评`), or `refers` with no such word. Inside a
+  model these Links form a graph, not a sequence or a tree, and a part in no relation is **loose**
+  (a case or variant set beside the model).
+- **Neighbours**: the Links between the model and Cards outside it, either way and with their
+  kinds, such as an Idea Card that relaxes an assumption or another model a part corresponds to.
 
-ZT computes each model's structure from Locations, facets, and Links. The Model Card links each
-part and each part links its Model Card; `get_model` reports any part that is missing such a
-Link, and lists the relations (with their reasons) and the loose parts. A Model Card with parts
-cannot be retyped until its parts are changed or moved.
+ZT computes each model's structure from Locations, facets, and Links; nothing but the facet and
+emphasis is stored. Neither the Model Card nor its parts must link each other; `get_model` reports
+only a part that belongs to no model. A Model Card with parts cannot be retyped until its parts
+are changed, moved, or no longer linked. See `doc/open-models-design.md`.
 
 - **Session**: a part shows `[model · <facet>]` (and its emphasis); `ty model <facet>` makes the
   current Card a part (the facet is the rest of the line), and `ty model` alone makes it a Model
   Card again.
-- **GUI**: a Model Card or part carries divider tabs along its top edge, named by facet in filing
-  order (core tabs inked, asides pale), and below it the **model board**: the parts laid out by
-  what rests on what, a thread for each relation, loose parts apart in a tray. The board follows
-  the reader's attention: the open part is lifted and fully titled, the parts it relates to stay
-  inked with their reasons listed, core parts stay legible, and the rest recede to their labels.
-  The writing desk names the facet (with the common ones suggested) and the emphasis beside the
-  Model type.
+- **GUI**: a Model Card or part carries divider tabs along its top edge, named by facet in the
+  order the Model Card names its parts (core tabs inked, asides pale), and below it the **model
+  board**: the parts laid out by what rests on what, a thread for each `rests-on` relation and a
+  dashed arc named by its kind for every other relation, loose parts apart in a tray. The board
+  follows the reader's attention: the open part is lifted and fully titled, the parts it relates
+  to stay inked with their kinds and reasons listed, core parts stay legible, and the rest recede
+  to their labels. Below it lie the open Card's neighbours beyond the model, and above it the other
+  models a shared part serves. The writing desk names the facet (with common ones suggested) and
+  the emphasis beside the Model type.
 - **MCP**: `create_successor` and `edit_card` take `facet` and `emphasis` (empty clears either);
   `get_card` reports `facet`, `emphasis`, and `model`; `get_model` returns the whole model with
-  every body, its relations and loose parts, and consistency issues.
+  every body, the models a Card belongs to, its kinded relations, loose parts, and neighbours.
 - **Dump**: `archive.json` lists every Model part's facet under `facets` and every core or aside
   part under `emphasis`.
 
@@ -263,7 +271,7 @@ Reverse links to the human Card.
 | `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
-| `get_model` | a whole model: its Model Card and parts with bodies, facets, and emphasis, its relations and loose parts, and issues |
+| `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, and neighbours outside it |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
 | `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) or a Model part (`facet`, `emphasis`) |

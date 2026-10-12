@@ -1,5 +1,5 @@
-//! Model structure: a Model Card and the Model parts filed under it, one per
-//! facet, read and written over MCP and the GUI; and the GUI's rendering of
+//! Model structure: a Model Card and the Model parts that belong to it, by
+//! filing or by Link, read and written over MCP and the GUI; and the GUI's rendering of
 //! TeX math and HTML charts in Card bodies.
 
 use assert_cmd::Command;
@@ -189,13 +189,19 @@ fn mcp_builds_a_model_from_its_model_card_and_facet_parts() {
         json!({ "at": "0/1|a", "title": "Timing: invest, then bargain", "body": "Part of [[0/1]]; uses [[0/1|a]].\n\n```chart\n<svg viewBox=\"0 0 10 10\"></svg>\n```", "facet": "timing" }),
     );
     assert_eq!(home.facet("0/1|a|1").as_deref(), Some("timing"));
+    // A part may be filed anywhere; it belongs to no model until a Model
+    // Card links it or it is filed under one.
     mcp.ok("create_topic", json!({ "title": "Elsewhere" }));
+    let stray = mcp.ok(
+        "create_successor",
+        json!({ "at": "1/0", "title": "Results: underinvestment", "body": "Rests on [[0/1|a|1]].", "facet": "results" }),
+    );
+    assert_eq!(stray["address"], "1/1");
     assert!(
-        mcp.err(
-            "create_successor",
-            json!({ "at": "1/0", "title": "Stray part", "facet": "results" })
-        )
-        .contains("must be filed under its Model Card")
+        mcp.ok("get_model", json!({ "at": "1/1" }))["issues"][0]
+            .as_str()
+            .unwrap()
+            .contains("belongs to no model")
     );
     assert_eq!(
         mcp.err(
@@ -248,28 +254,81 @@ fn mcp_builds_a_model_from_its_model_card_and_facet_parts() {
     );
     assert!(parts[1]["body"].as_str().unwrap().contains("```chart"));
     assert_eq!(parts[1]["links"], json!(["0/1", "0/1|a"]));
+    // Each relation says what it is, by the words before its Link.
     assert_eq!(
         model["relations"],
-        json!([{ "from": "0/1|a|1", "to": "0/1|a", "note": "uses 「setting」." }])
+        json!([{ "from": "0/1|a|1", "to": "0/1|a", "kind": "rests-on", "note": "uses 「setting」." }])
     );
     assert_eq!(model["loose"], json!(["0/1|b"]));
-    assert_eq!(model["issues"].as_array().unwrap().len(), 3);
-    assert_eq!(model["common_facets"].as_array().unwrap().len(), 8);
-    assert_eq!(model["missing"], Value::Null);
+    // Neither the Model Card nor its parts must link each other.
+    assert_eq!(model["issues"], json!([]));
+    assert_eq!(model["common_facets"], Value::Null);
     assert!(
         mcp.err("get_model", json!({ "at": "0/0" }))
             .contains("is not a Model Card or Model part")
     );
 
-    // The Model Card lists its parts; then the model is consistent.
+    // The Model Card names its parts in its own order, and its Link takes in
+    // the part filed elsewhere.
     mcp.ok(
         "edit_card",
-        json!({ "at": "0/1", "body": "Question.\n\n- [[0/1|a]] setting\n- [[0/1|a|1]] timing\n- [[0/1|b]] proof" }),
+        json!({ "at": "0/1", "body": "Question.\n\n- [[0/1|a]] setting\n- [[0/1|a|1]] timing\n- [[1/1]] results\n- [[0/1|b]] proof" }),
+    );
+    let model = mcp.ok("get_model", json!({ "at": "1/1" }));
+    assert_eq!(model["head"]["address"], "0/1");
+    assert_eq!(
+        model["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|part| (part["address"].clone(), part["filed"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (json!("0/1|a"), json!(true)),
+            (json!("0/1|a|1"), json!(true)),
+            (json!("1/1"), json!(false)),
+            (json!("0/1|b"), json!(true))
+        ]
     );
     assert_eq!(
-        mcp.ok("get_model", json!({ "at": "0/1" }))["issues"],
-        json!([])
+        model["relations"][1],
+        json!({ "from": "1/1", "to": "0/1|a|1", "kind": "rests-on", "note": "Rests on 「timing」." })
     );
+    // A second Model Card that links a part shares it; Cards outside the
+    // model that link it, or that it links, are its neighbours, with kinds.
+    let other = mcp.ok(
+        "create_successor",
+        json!({ "at": "1/1", "kind": "side", "title": "Hold-up model", "body": "Shares [[0/1|a]].", "type": "model" }),
+    );
+    let critique = mcp.ok(
+        "create_successor",
+        json!({ "at": "1/1", "title": "Contracts can fix it", "body": "This relaxes [[0/1|a]]: write the contract first." }),
+    );
+    let model = mcp.ok("get_model", json!({ "at": "0/1|a" }));
+    assert_eq!(model["models"][0]["address"], "0/1");
+    assert_eq!(model["models"][1]["address"], other["address"]);
+    assert_eq!(model["parts"][0]["also"][0]["address"], other["address"]);
+    let neighbours = model["neighbours"].as_array().unwrap();
+    let relaxing = neighbours
+        .iter()
+        .find(|n| n["from"] == critique["address"])
+        .expect("the critique is a neighbour");
+    assert_eq!(
+        (&relaxing["way"], &relaxing["to"], &relaxing["kind"]),
+        (&json!("in"), &json!("0/1|a"), &json!("relaxes"))
+    );
+    assert_eq!(relaxing["card"]["title"], "Contracts can fix it");
+    assert!(neighbours.iter().all(|n| n["card"]["address"] != "1/0"));
+    mcp.ok("edit_card", json!({ "at": "0/1", "body": "Question.\n\n- [[0/1|a]] setting\n- [[0/1|a|1]] timing\n- [[0/1|b]] proof" }));
+    mcp.ok("edit_card", json!({ "at": "1/1", "type": "idea" }));
+    // A Model Card that links a part cannot stop being a Model Card.
+    let other = other["address"].as_str().unwrap();
+    assert!(
+        mcp.err("edit_card", json!({ "at": other, "type": "idea" }))
+            .contains("is the Model Card of 1 Model part(s) (0/1|a)")
+    );
+    mcp.ok("edit_card", json!({ "at": other, "body": "No parts." }));
+    mcp.ok("edit_card", json!({ "at": other, "type": "idea" }));
     // A facet alone retypes; an emphasis alone stresses a part; an empty
     // facet makes the part a Model Card of its own.
     mcp.ok("edit_card", json!({ "at": "0/1|a|1", "facet": "dynamics" }));
@@ -420,11 +479,8 @@ fn gui_renders_math_and_sandboxed_charts_and_edits_model_parts() {
     );
     assert_eq!(html.matches("zt-chart-frame").count(), 1, "{html}");
     assert_eq!(card["model"]["parts"][0]["facet"], "assumptions");
-    // The part links its Model Card, which does not yet list the part.
-    assert_eq!(
-        card["model"]["issues"],
-        json!(["the Model Card `0/1` does not link its part `0/1|a`"])
-    );
+    // The Model Card need not list a part filed under it.
+    assert_eq!(card["model"]["issues"], json!([]));
     let id = html
         .split("data-chart=\"")
         .nth(1)

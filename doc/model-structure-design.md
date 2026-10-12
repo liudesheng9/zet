@@ -1,6 +1,6 @@
 # Model Structure, Math, and HTML Charts Design
 
-Status: implemented in zt 0.6.0; the open model structure (free facets, emphasis, relations, loose parts, the model board) in zt 0.7.0.
+Status: implemented in zt 0.6.0; the open model structure (free facets, emphasis, relations, loose parts, the model board) in zt 0.7.0. zt 0.10.0 opens models to the rest of the slip-box (membership by Link, Relation kinds, Model neighbours): see `open-models-design.md`, which overrides the filing rule, the consistency issues, and the relations below.
 
 ## Source Authority
 

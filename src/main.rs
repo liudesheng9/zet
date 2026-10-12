@@ -1799,7 +1799,7 @@ fn insert_card(
     }
     let facet = part.map(|part| &part.facet);
     let emphasis = part.and_then(|part| part.emphasis);
-    model::ensure_allowed(conn, location, None, card_type, facet, emphasis)?;
+    model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     validate_card_text(conn, location, text, None)?;
     let tx = conn.transaction()?;
     tx.execute(

@@ -115,10 +115,10 @@
   const CARD_TYPES = {
     idea: { label: 'Idea', note: 'one idea or claim' },
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
-    model: { label: 'Model', note: 'one whole model: setup, assumptions, solution, results, limits' },
+    model: { label: 'Model', note: 'one whole model: its question and what it shows, or one part of it' },
   };
-  // A model is presented by its Model Card and by Model parts filed under it. A part's facet is
-  // a short label its author chose; these common facets are only suggestions (mirrors
+  // A model is presented by its Model Card and by Model parts: filed under it or linked from it. A
+  // part's facet is a short label its author chose; these common facets are only suggestions (mirrors
   // `COMMON_FACETS` in src/model.rs). An emphasis marks a part `core` or `aside`.
   const FACETS = {
     setting: { label: 'Setting', note: 'agents, assets, actions, and payoffs' },
@@ -1217,7 +1217,7 @@
 
   /**
    * The divider tabs along the top of a Model Card or Model part: the Model Card, then one tab
-   * per part in the order its author filed them, named by the part's own facet. The open Card's
+   * per part in the order its Model Card names them (then filing order), named by its facet. The open Card's
    * tab stands up; core tabs are inked, aside tabs are narrow and pale.
    */
   function modelTabs(card) {
@@ -1230,7 +1230,7 @@
     }, label);
     const tabs = [head
       ? tab('Model', head.address, head.address === card.address, `Model Card ${head.address} — ${head.title}`, 'head')
-      : tab('Model', null, false, 'This part is not filed under a Model Card', 'head missing')];
+      : tab('Model', null, false, 'This part belongs to no model: file it under a Model Card, or link it from one', 'head missing')];
     for (const part of model.parts) {
       tabs.push(tab(facetLabel(part.facet), part.address, part.address === card.address,
         `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''} · ${part.address} — ${part.title}`, part.emphasis));
@@ -1242,13 +1242,32 @@
   const bareTitle = (title) => (title || '').replace(/^[^：:$]{1,10}[：:]\s*/, '') || title || '(untitled)';
 
   /**
-   * The model on the desk below its card. The Model Card heads the board; its parts lie below
-   * as small index cards, each under the parts it links (what it rests on), with a thread for
-   * every such relation. The board is laid out for a reader's attention: the open part is
-   * lifted and fully titled, the parts it relates to stay inked with their threads drawn and
+   * What a Link says, read by ZT from the words its author wrote before it (mirrors
+   * `RelationKind` in src/model.rs): how it reads from the Card that writes it (`fwd`) and
+   * from the Card it names (`back`). Only `rests-on` decides where a part lies on the board.
+   */
+  const KINDS = {
+    'rests-on': { fwd: 'rests on', back: 'carries' },
+    illustrates: { fwd: 'illustrates', back: 'illustrated by' },
+    contrasts: { fwd: 'contrasts with', back: 'contrasted by' },
+    relaxes: { fwd: 'relaxes', back: 'relaxed by' },
+    corresponds: { fwd: 'corresponds to', back: 'mirrored by' },
+    objects: { fwd: 'objects to', back: 'objected to by' },
+    refers: { fwd: 'refers to', back: 'referred to by' },
+  };
+  const kindOf = (relation) => (KINDS[relation.kind] ? relation.kind : 'rests-on');
+
+  /**
+   * The model on the desk below its card. The Model Card is the way in; its parts lie below
+   * as small index cards, each under the parts it rests on, with a thread for every relation:
+   * a `rests on` thread runs down to the part that rests on it, and every other kind
+   * (illustrates, contrasts, relaxes, corresponds, objects, refers) is a dashed arc beside the
+   * two cards, named by its kind. The board is laid out for a reader's attention: the open part
+   * is lifted and fully titled, the parts it relates to stay inked with their threads drawn and
    * their reasons listed, core parts stay legible, and every other part recedes to its label.
-   * On the Model Card itself, the core parts lead. Loose parts, which relate to no other part,
-   * lie apart in a tray. The layout is computed, not simulated: one pass over the parts.
+   * On the Model Card itself, the core parts lead. Loose parts lie apart in a tray. Below, the
+   * Cards outside the model that the open Card relates to, and the other models a shared part
+   * serves, keep the model open to the rest of the slip-box. One pass over the parts.
    */
   function modelBoard(card) {
     const model = card.model;
@@ -1264,13 +1283,19 @@
     const relations = (model.relations || []).filter((r) => order.has(r.from) && order.has(r.to));
     const restsOn = new Map(parts.map((part) => [part.address, []]));
     const supports = new Map(parts.map((part) => [part.address, []]));
+    const besides = new Map(parts.map((part) => [part.address, []]));
     for (const relation of relations) {
-      restsOn.get(relation.from).push(relation);
-      supports.get(relation.to).push(relation);
+      if (kindOf(relation) === 'rests-on') {
+        restsOn.get(relation.from).push(relation);
+        supports.get(relation.to).push(relation);
+      } else {
+        besides.get(relation.from).push(relation);
+        besides.get(relation.to).push(relation);
+      }
     }
 
     // Depth: one row below the deepest part a part rests on; a Link that closes a cycle is
-    // left out of the depth (its thread is still drawn).
+    // left out of the depth (its thread is still drawn). Other kinds leave the rows alone.
     const depth = new Map();
     const visiting = new Set();
     const depthOf = (address) => {
@@ -1288,7 +1313,8 @@
     for (const part of parts) {
       if (!loose.has(part.address)) (rows[depthOf(part.address)] ||= []).push(part);
     }
-    // Within a row, a part sits under the parts it rests on (their mean slot), else in filing order.
+    // Within a row, a part sits under the parts it rests on (their mean slot), else in the
+    // order its Model Card names it.
     const slot = new Map();
     for (const row of rows.filter(Boolean)) {
       const key = (part) => {
@@ -1305,6 +1331,7 @@
     if (!onHead) {
       for (const r of restsOn.get(here) || []) near.add(r.to);
       for (const r of supports.get(here) || []) near.add(r.from);
+      for (const r of besides.get(here) || []) near.add(r.from === here ? r.to : r.from);
     }
     const level = (part) => {
       if (part.address === here) return 'here';
@@ -1322,9 +1349,12 @@
     const slips = new Map();
     const slip = (part) => {
       const at = level(part);
+      // A part its Model Card took in by a Link, filed elsewhere in the slip-box.
+      const joined = part.filed === false;
+      const also = (part.also || []).map((other) => other.address).join(', ');
       const node = h(part.address === here ? 'div' : 'button', {
-        class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}`,
-        title: `${facetLabel(part.facet)}${part.emphasis ? ` · ${part.emphasis}` : ''} · ${part.address}\n${part.title}`,
+        class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}${joined ? ' joined' : ''}${also ? ' shared' : ''}`,
+        title: `${facetLabel(part.facet)}${part.emphasis ? ` · ${part.emphasis}` : ''} · ${part.address}${joined ? ' (filed elsewhere, joined by Link)' : ''}${also ? `\nalso in ${also}` : ''}\n${part.title}`,
         'aria-current': part.address === here ? 'true' : null,
         onclick: part.address === here ? null : () => go(part.address),
       },
@@ -1349,7 +1379,8 @@
         h('span', { class: 'mb-tray', text: 'Loose', title: 'Parts that relate to no other part of the model' }),
         parts.filter((part) => loose.has(part.address)).map(slip)) : null,
     );
-    // Threads run from a part down to the parts that rest on it; faint threads first, so the
+    // A `rests on` thread runs from a part down to the parts that rest on it; any other kind,
+    // or a Link against the grain, is an arc beside the two cards. Faint threads first, so the
     // ones that matter now lie on top.
     const draw = () => {
       const box = board.getBoundingClientRect();
@@ -1367,27 +1398,34 @@
         .map((r) => ({ r, hot: isHot(r) }))
         .sort((a, b) => Number(a.hot) - Number(b.hot));
       for (const { r, hot } of drawn) {
+        const kind = kindOf(r);
         const from = place(r.to);
         const to = place(r.from);
         if (!from || !to) continue;
         let d;
         let tip;
-        if (from.b + 4 <= to.t) {
+        let mark = null;
+        if (kind === 'rests-on' && from.b + 4 <= to.t) {
           const mid = (from.b + to.t) / 2;
           d = `M ${from.x} ${from.b} C ${from.x} ${mid}, ${to.x} ${mid}, ${to.x} ${to.t - 2}`;
           tip = `M ${to.x - 3.5} ${to.t - 7} L ${to.x} ${to.t - 2} L ${to.x + 3.5} ${to.t - 7}`;
         } else {
-          // A Link against the grain (up or across): an arc beside the two cards.
           const side = Math.max(from.r, to.r) + 16;
           d = `M ${from.r} ${from.y} C ${side} ${from.y}, ${side} ${to.y}, ${to.r + 2} ${to.y}`;
           tip = `M ${to.r + 7} ${to.y - 3.5} L ${to.r + 2} ${to.y} L ${to.r + 7} ${to.y + 3.5}`;
+          mark = { x: side - 4, y: (from.y + to.y) / 2 };
         }
-        const group = svg('g', { class: 'mb-thread' + (hot ? ' hot' : '') });
+        const group = svg('g', { class: 'mb-thread' + (kind === 'rests-on' ? '' : ' beside kind-' + kind) + (hot ? ' hot' : '') });
         const hit = svg('path', { d, class: 'hit' });
         const label = svg('title', {});
-        label.textContent = `${facetLabel(facetOf.get(r.from))} rests on ${facetLabel(facetOf.get(r.to))}: ${r.note}`;
+        label.textContent = `${facetLabel(facetOf.get(r.from))} ${KINDS[kind].fwd} ${facetLabel(facetOf.get(r.to))}: ${r.note}`;
         hit.append(label);
         group.append(svg('path', { d, class: 'line' }), svg('path', { d: tip, class: 'tip' }), hit);
+        if (mark && hot && kind !== 'rests-on') {
+          const word = svg('text', { x: mark.x, y: mark.y, class: 'word' });
+          word.textContent = KINDS[kind].fwd;
+          group.append(word);
+        }
         threads.append(group);
       }
     };
@@ -1397,11 +1435,48 @@
     setTimeout(draw);
     new ResizeObserver(draw).observe(board);
 
-    // The reasons behind the open part's relations, in its own and its neighbours' words.
-    const reasons = onHead ? [] : [
-      ...(restsOn.get(here) || []).map((r) => ({ way: 'up', at: r.to, note: r.note, label: 'rests on' })),
-      ...(supports.get(here) || []).map((r) => ({ way: 'down', at: r.from, note: r.note, label: 'carries' })),
-    ];
+    // The reasons behind the open part's relations, in its own and its neighbours' words:
+    // what it rests on, what rests on it, then its other relations.
+    const rank = { up: 0, down: 1, side: 2 };
+    const reasons = onHead ? [] : relations
+      .filter((r) => r.from === here || r.to === here)
+      .map((r) => {
+        const kind = kindOf(r);
+        const forward = r.from === here;
+        return {
+          way: kind === 'rests-on' ? (forward ? 'up' : 'down') : 'side',
+          at: forward ? r.to : r.from,
+          note: r.note,
+          label: forward ? KINDS[kind].fwd : KINDS[kind].back,
+        };
+      })
+      .sort((a, b) => rank[a.way] - rank[b.way]);
+    const glyph = { up: '↑', down: '↓', side: '↔', in: '←', out: '→' };
+
+    // Beyond the model: the Cards outside it that the open Card links or is linked by,
+    // announced kinds first, the plain references after.
+    const focus = onHead ? model.head.address : here;
+    const beyond = (model.neighbours || [])
+      .filter((n) => (n.way === 'in' ? n.to : n.from) === focus)
+      .map((n, at) => ({ n, at }))
+      .sort((a, b) => Number(a.n.kind === 'refers') - Number(b.n.kind === 'refers') || a.at - b.at)
+      .map(({ n }) => n);
+    const outsideRow = (n) => {
+      const kind = KINDS[n.kind] ? n.kind : 'refers';
+      return h('button', {
+        class: 'mb-reason beyond ' + n.way + (kind === 'refers' ? ' plain' : ''),
+        onclick: () => go(n.card.address),
+        title: `${n.card.address} — ${n.card.title}\n${n.note}`,
+      },
+        h('span', { class: 'way', text: glyph[n.way] }),
+        h('span', { class: 'mb-kind', text: n.way === 'out' ? KINDS[kind].fwd : KINDS[kind].back }),
+        h('span', { class: 'note' }, titleNodes(n.card.title || n.card.address),
+          n.card.type !== 'idea' ? typeStamp(n.card.type, null, n.card.facet, null) : null),
+      );
+    };
+    const shown = beyond.slice(0, 6);
+    const folded = beyond.slice(6);
+    const others = onHead ? [] : (model.models || []).slice(1);
     const kept = parts.length - loose.size;
     return [
       h('div', { class: 'section-label', text: [
@@ -1410,14 +1485,23 @@
         loose.size && kept ? `${loose.size} loose` : null,
         model.discussion ? `discussed by ${model.discussion}` : null,
       ].filter(Boolean).join(' · ') }),
+      others.length ? h('div', { class: 'mb-also' },
+        h('span', { class: 'mb-tray', text: 'Also in' }),
+        others.map((other) => h('button', { class: 'chip', title: `Model Card ${other.address}`, onclick: () => go(other.address) }, titleNodes(other.title || other.address)))) : null,
       board,
       reasons.length ? h('div', { class: 'mb-reasons', 'aria-label': 'Why this part relates to the others' },
         reasons.map((reason) => h('button', { class: 'mb-reason ' + reason.way, onclick: () => go(reason.at), title: `${reason.label} ${reason.at}` },
-          h('span', { class: 'way', text: reason.way === 'up' ? '↑' : '↓' }),
-          h('span', { class: 'mb-facet', text: facetLabel(facetOf.get(reason.at)) }),
-          h('span', { class: 'note', text: reason.note }),
+          h('span', { class: 'way', text: glyph[reason.way] }),
+          h('span', { class: 'mb-kind', text: reason.label }),
+          h('span', { class: 'note' }, h('span', { class: 'mb-facet', text: facetLabel(facetOf.get(reason.at)) }), ' ', titleNodes(reason.note)),
         ))) : null,
-      model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'Links that keep the model readable from every Card' },
+      beyond.length ? h('div', { class: 'mb-reasons mb-beyond', 'aria-label': 'Cards outside the model' },
+        h('div', { class: 'mb-tray', text: `Beyond the model · ${beyond.length}` }),
+        shown.map(outsideRow),
+        folded.length ? h('details', { class: 'mb-more' },
+          h('summary', { text: `+${folded.length} more` }),
+          folded.map(outsideRow)) : null) : null,
+      model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'A part that belongs to no model' },
         model.issues.map((issue) => h('p', { text: issue }))) : null,
     ];
   }
@@ -1690,7 +1774,7 @@
   function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
-      // A Model Card is the head of its model, or one of its parts when it has a facet: any
+      // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
       // short label, with the common facets offered as suggestions. A part may be core or aside.
       let chosenType = cardType;
       let chosenFacet = facet || '';
@@ -1698,7 +1782,7 @@
       const facetInput = cardType ? h('input', {
         class: 'facet-input', 'aria-label': 'Model facet', list: 'zt-facets', maxlength: 32, spellcheck: 'false',
         placeholder: 'whole model', value: chosenFacet,
-        title: 'Empty: the Model Card of a whole model. A label (setting, 动态, a worked example…): a Model part filed under it',
+        title: 'Empty: the Model Card of a whole model. A label (设定, 均衡, a worked example…): a Model part, which belongs to the Model Card it is filed under and to every Model Card that links it',
         oninput: (event) => { chosenFacet = event.target.value.trim(); dirty = true; emphasisPick.hidden = !chosenFacet; update(); },
       }) : null;
       const emphasisPick = cardType ? h('select', {

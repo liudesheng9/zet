@@ -68,7 +68,27 @@ if (@($structure.parts).Count) {
     & $line "## 已有的模型分卡"
     & $line ''
     foreach ($part in $structure.parts) {
-        & $line "- [[$($part.address)]] ``$($part.facet)``$(if ($part.emphasis) { " ($($part.emphasis))" })：$($part.title)"
+        $where = if ($part.filed -eq $false) { '（归档在别处，由模型卡的 Link 纳入）' } else { '' }
+        $also = @($part.also | ForEach-Object { "[[$($_.address)]]" }) -join '、'
+        & $line "- [[$($part.address)]] ``$($part.facet)``$(if ($part.emphasis) { " ($($part.emphasis))" })$where$(if ($also) { "（也属于 $also）" })：$($part.title)"
+    }
+    & $line ''
+    if (@($structure.relations).Count) {
+        & $line "已有的关系（类型取自 Link 紧前的词；refers 表示没有关系词）："
+        & $line ''
+        foreach ($relation in $structure.relations) {
+            & $line "- [[$($relation.from)]] → [[$($relation.to)]] ``$($relation.kind)``：$($relation.note)"
+        }
+        & $line ''
+    }
+}
+$neighbours = @($structure.neighbours)
+if ($neighbours.Count) {
+    & $line "## 模型外的邻居（与模型的卡互相链接的卡，带关系类型）"
+    & $line ''
+    foreach ($n in $neighbours) {
+        $arrow = "[[$($n.from)]] → [[$($n.to)]]"
+        & $line "- $arrow ``$($n.kind)``（$($n.card.title)）：$($n.note)"
     }
     & $line ''
 }

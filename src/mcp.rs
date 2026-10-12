@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::model::{COMMON_FACETS, Emphasis, Facet};
+use crate::model::{Emphasis, Facet};
 use crate::ops::{self, Outcome, Snapshot, Successor};
 use crate::{Access, CardType, Workspace};
 
@@ -31,12 +31,16 @@ create new trees with create_topic or create_literature, then grow them with cre
 Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
 real-world event with its date, place, actors, and source) or a Model Card (`model`: one whole \
 model), set with `type` on create_successor or edit_card and listed with search_cards by `type`. \
-A model is presented by its Model Card (question, overview, structure) and by Model parts filed under \
-it: Model Cards with a `facet`, a short label you choose for what the part presents (common ones: \
-setting, assumptions, timing, dynamics, solution, results, intuition, limits), and optionally an \
-`emphasis` (`core` for what a reader must see, `aside` for detail). Parts relate by Links, not by \
-their order: a part may rest on several others or stand loose. get_model shows the whole structure, \
-its relations, and what is unlinked. Card bodies may hold \
+A model is presented by its Model Card (its entry point: the question and what the model shows) and \
+by Model parts: Model Cards with a `facet`, a short label you choose for what the part presents in \
+this model (`设定`, `均衡`, `数值例子`), and optionally an `emphasis` (`core` for what a reader must \
+see, `aside` for detail). Where a part is filed does not decide its model: a part belongs to the \
+Model Card it is filed under and to every Model Card that links it, so file it where it first \
+connects and let one part serve several models. Every Link says what it is by the words before it \
+in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`), contrasts (`对照`, `区别`), \
+relaxes (`放宽`, `推广`), corresponds (`对应`, `类比`), objects (`反驳`, `批评`); with none it is a \
+plain reference. get_model shows a model's parts, their kinded relations, its loose parts, and its \
+Links with Cards outside it. Card bodies may hold \
 TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI renders. \
 delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
 `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
@@ -336,13 +340,6 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                     }
                 }
             }
-            // Facets are the author's own labels; these are only the common ones.
-            model["common_facets"] = json!(
-                COMMON_FACETS
-                    .iter()
-                    .map(|(facet, holds)| json!({ "facet": facet, "holds": holds }))
-                    .collect::<Vec<_>>()
-            );
             Ok(model)
         }
         "search_cards" => {
@@ -663,9 +660,8 @@ fn tool_definitions() -> Vec<Value> {
             "type": "string",
             "maxLength": Facet::MAX_CHARS,
             "description": format!(
-                "{description} A short label of your choice (at most {} characters), in the Card's language; common ones are {}.",
-                Facet::MAX_CHARS,
-                Facet::common_names()
+                "{description} A short label of your choice (at most {} characters), in the Card's language, naming what this part presents in this model (`设定`, `均衡`, `数值例子`, `两种情形`); no fixed list or order.",
+                Facet::MAX_CHARS
             ),
         })
     };
@@ -726,7 +722,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_model",
             "Get model",
-            "Read a whole model from its Model Card or any of its Model parts: the Model Card, its parts in Folgezettel order with their facets, emphasis, and bodies, the relations between parts (each Link from one part to another, with the sentence that makes it), the loose parts that relate to no other part, how many outside Cards discuss the model, consistency issues (a part the Model Card does not link, or a part that does not link its Model Card), and the common facets for reference.",
+            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model).",
             json!({ "at": at }),
             &["at"],
             true,
@@ -796,7 +792,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one facet of the model whose Model Card it is filed under (at the Model Card or one of its parts); `emphasis` marks it `core` or `aside`.",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`.",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },

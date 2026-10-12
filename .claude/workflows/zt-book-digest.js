@@ -166,7 +166,8 @@ const MODEL_REPORT = {
   properties: {
     model: { type: 'string' }, status: { type: 'string', enum: ['done', 'skipped', 'failed'] },
     parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' }, emphasis: { type: 'string' } }, required: ['address', 'facet'] } },
-    relations: { type: 'number' }, loose: { type: 'number' },
+    relations: { type: 'number' }, kinds: { type: 'object', additionalProperties: { type: 'number' } },
+    neighbours: { type: 'number' }, loose: { type: 'number' },
     charts: { type: 'number' }, issues: { type: 'array', items: { type: 'string' } },
     notes: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' },
   },
@@ -213,7 +214,7 @@ CONTEXT: ${work}\\context.md
 WORK: ${work} (create it for your calls files)`
   }
   return agent(
-    `Elaborate ${batch.length} Model Cards of the ZET digest of 《${A.bookTitle}》, one after another: for each, understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly for each model in turn, as if it were the only one (its own context pack, WORK folder, filing, and get_model check). Finish one model before you start the next. These models sit near each other in the book: what you learn from the source for one may serve the next, and where the book relates two of them, link the parts concerned.
+    `Elaborate ${batch.length} Model Cards of the ZET digest of 《${A.bookTitle}》, one after another: for each, understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly for each model in turn, as if it were the only one (its own context pack, WORK folder, filing, and get_model check). Finish one model before you start the next. These models sit near each other in the book: what you learn from the source for one may serve the next. Where the book relates two of them, link the parts concerned with the word that names the relation (对照, 对应, 放宽, 反驳, …); where one part belongs to both models (a correspondence, a shared setting), keep it filed under one and link it from the other Model Card's 结构 list, so it serves both, instead of writing a duplicate.
 KEY: ${KEY}
 BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, manifest.json; the bilingual source is ${A.source || 'in the Scholar Archive'})
 SCRIPTS: ${SCRIPTS}
@@ -276,10 +277,16 @@ const runStage = async (stage, stageBlocks, after) => {
   return reports
 }
 
+// How many relations of each kind the model agents wrote, e.g. "rests-on 12, illustrates 3".
+const kindTally = (reports) => {
+  const tally = {}
+  for (const r of reports) for (const [kind, n] of Object.entries(r.kinds || {})) tally[kind] = (tally[kind] || 0) + n
+  return Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([kind, n]) => `${kind} ${n}`).join(', ') || 'no kinds reported'
+}
 const logModels = (reports) => {
   const done = reports.filter(r => r.status === 'done')
   const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
-  log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations, ${sum('loose')} loose, ${sum('charts')} charts),${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
+  log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts),${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
 }
 
 let digestReports = []
@@ -382,14 +389,14 @@ Each output line is "N <json>", "N ok <address>", or "N error <reason>" (then a 
 Book: Literature Card [[${KEY}]] (agent Workspace, Literature Zone). Its Direct-successor line [[${KEY}/1]] … [[${KEY}/${groupCount}]] holds one anchor Card per group, in book order; each anchor holds that part's central claim, a section index, and its place in the whole book.
 Group reports:
 ${groupLines}
-${modelLines ? `Structured models (Sonnet designed each model's parts, facets, core parts, and relations, with charts; act on its suggestions for Cards outside the model):\n${modelLines}\n` : ''}
+${modelLines ? `Structured models (Sonnet designed each model's parts, facets, core parts, and kinded relations, with charts; act on its suggestions for Cards outside the model and for other Model Cards that should link a part to share it):\n${modelLines}\n` : ''}
 Work in this order, reading cheaply (list_trees, get_tree excerpts; get_card only when you need a body):
 1. Survey every agent tree (list_trees with workspace "agent", then get_tree each).
 2. Merge duplicate or overlapping Topics: keep the clearer Topic, move_card the other's first Card (with its subtree) to the best free slot in the kept tree (plan first, then confirm with "move"), then delete the emptied Topic root (plan, then confirm with its address). Fix clearly misplaced Cards the same way. Never delete a Card that still has content.
 3. Rewrite every agent Topic body: 2–3 sentences on the question it pursues, then Links to its 1–3 best entry Cards.
 4. For a Topic or subject with about seven or more Cards, write a hub Card as a Side successor of <n>/1 that lists Links to the core Cards with one line each on what they contribute, and Link to it from the Topic body.
 5. Write the book's structure Card as a Side successor of [[${KEY}/1]]: title = the book's central thesis as one sentence; body = the argument in reading order, one line per part linking its anchor and its 1–2 key Topic Cards, each line saying what it contributes and how it follows from the previous part; then a paragraph listing the book's Model Cards (search_cards with type "model") in order, one line each on what the model shows and which later models build on it, and a paragraph listing its Event Cards (type "event") with the ideas each supports.
-5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (the Model Card links every part, every part links its Model Card), but keep the structure Sonnet designed (its facets, core and aside parts, relations, and loose parts); every Card that derives, interprets, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the assumptions part), in a sentence naming which part of the model it concerns (read the inbound Links, then search for discussions that miss it); every Card that uses a real-world event as evidence links to its Event Card.
+5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (a part that belongs to no model: link it from its Model Card's 结构 list), but keep the structure Sonnet designed (its facets, core and aside parts, kinded relations, and loose parts). A part belongs to the Model Card it is filed under and to every Model Card that links it, so where two models of the book share a part (a correspondence, a common setting), link it from the second Model Card's 结构 list rather than writing a duplicate. Every Card that derives, interprets, applies, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the part that states it), and the word right before the Link names the kind of relation, which ZT reads: 依赖/基于 (rests on), 例示/案例 (illustrates), 对照/区别 (contrasts), 放宽/推广 (relaxes), 对应/类比 (corresponds), 反驳/批评 (objects). Read each model's neighbours in get_model, rewrite those that read "refers" but state a real relation so the kind word stands right before the Link, then search for discussions that miss the model; every Card that uses a real-world event as evidence links to its Event Card.
 6. Rewrite the Literature Card [[${KEY}]] body (edit_card body only) as the book's index: one line per chapter, "第N章 章名 - 讲了什么 → [[anchor]]", then a line linking the structure Card.
 7. Check the cross-part Links the DeepSeek agents added: keep those whose sentence states a real relationship and reason; rewrite vague ones. Add Links still missing between Topics that share a mechanism, and to related human Cards (search_cards with workspace "human"). Remove a "# 标题" line that repeats the title at the top of a body.
 8. Check list_broken_links and fix any in the agent Workspace.
@@ -401,7 +408,7 @@ Return a short Chinese report: the final agent Topics (address and name), merges
 return {
   mode: MODE, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
   digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
-  models: modelReports.map(r => ({ model: r.model, status: r.status, parts: r.parts.length, charts: r.charts, issues: r.issues })),
+  models: modelReports.map(r => ({ model: r.model, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, neighbours: r.neighbours, charts: r.charts, issues: r.issues })),
   link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
   deepseek_usage: dshUsage, cleanup, organize,
 }

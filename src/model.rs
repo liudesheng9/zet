@@ -1,19 +1,21 @@
-//! Model structure: one Model Card and the Model parts filed under it.
+//! Model structure: one Model Card and the Model parts that belong to it.
 //!
-//! A whole model is presented by its Model Card (the head: question, overview,
-//! structure chart) and by Model parts: Model Cards that each carry a Model
-//! facet and are filed below the head, as its successors or as successors of
-//! other parts. A facet is a short label the author of the model chooses
-//! (`setting`, `动态`, `a worked example`); the common facets are only a
-//! suggested vocabulary. A part may also carry an Emphasis: `core` for the
-//! parts a reader must see, `aside` for detail a reader may skip.
+//! A whole model is presented by its Model Card (its entry point: the question
+//! and what the model shows) and by Model parts: Model Cards that each carry a
+//! Model facet, a short label the author chooses (`setting`, `动态`, `a worked
+//! example`). A part may also carry an Emphasis: `core` for the parts a reader
+//! must see, `aside` for detail a reader may skip.
 //!
-//! Inside a model the structure is a graph, not the tree its Cards are filed
-//! in: two parts are related when one links the other, and a part that links
-//! no other part and is linked by none is loose. Facets and emphasis are
-//! stored on the Card row like the Card type; the structure is computed from
-//! Locations, facets, and Links, never stored, so it follows the Cards when
-//! they move.
+//! Following Luhmann, where a Card is filed says nothing about what it belongs
+//! to: a part belongs to the Model Card it is filed under, if any, and to every
+//! Model Card that links it, so a part may sit wherever it was first written
+//! and serve several models. Inside a model the structure is a graph of Links,
+//! not the tree its Cards are filed in, and each Link says what it is: the
+//! words before it (`依赖`, `例示`, `对照`, `放宽`, `对应`, `反驳`, …) give it a
+//! [`RelationKind`]. Links between the model and Cards outside it belong to the
+//! structure too. Facets and emphasis are stored on the Card row like the Card
+//! type; everything else is computed from Locations, facets, and Links, never
+//! stored, so it follows the Cards when they move.
 
 use anyhow::{Result, bail};
 use rusqlite::{Connection, params};
@@ -28,8 +30,9 @@ use crate::{Card, CardType};
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct Facet(String);
 
-/// The facets most models need, in the order a model is usually read, with
-/// what a part of each holds. A suggestion for authors, not a rule.
+/// Facets many formal models use, with what a part of each holds. They are
+/// stored in one spelling whatever their case, and are no list to fill: a
+/// model has the parts its author names, in no fixed order.
 pub(crate) const COMMON_FACETS: [(&str, &str); 8] = [
     ("setting", "agents, assets, actions, and payoffs"),
     (
@@ -81,16 +84,6 @@ impl Facet {
             .find(|(id, _)| id.eq_ignore_ascii_case(&label))
             .map(|(id, _)| (*id).to_string());
         Ok(Facet(common.unwrap_or(label)))
-    }
-
-    /// `setting, assumptions, …, or limits`.
-    pub(crate) fn common_names() -> String {
-        let ids = COMMON_FACETS.map(|(id, _)| id);
-        format!(
-            "{}, or {}",
-            ids[..ids.len() - 1].join(", "),
-            ids[ids.len() - 1]
-        )
     }
 
     /// Read a stored value; an empty or unreadable one is no facet.
@@ -189,9 +182,10 @@ pub(crate) fn parse_optional_emphasis(value: &str) -> Result<Option<Emphasis>> {
     }
 }
 
-/// The Model Card a Card filed at `start` belongs to: walk up through Model
+/// The Model Card a Card filed at `start` sits under: walk up through Model
 /// parts until a Model Card without a facet. `lookup` tells whether the Card at
-/// an address is a Model Card and whether it has a facet.
+/// an address is a Model Card and whether it has a facet. Filing is one way a
+/// part joins a model; a Link from a Model Card is the other (see [`heads`]).
 pub(crate) fn find_head(
     start: Option<String>,
     lookup: impl Fn(&str) -> Option<(CardType, bool)>,
@@ -215,25 +209,20 @@ fn db_lookup(conn: &Connection) -> impl Fn(&str) -> Option<(CardType, bool)> + '
     }
 }
 
-/// Check the type, facet, and emphasis a Card at `location` would have. A
-/// facet needs a Model Card filed below another Model Card; only a part has an
-/// emphasis; a Model Card with parts under it cannot stop being their head.
+/// Check the type, facet, and emphasis a Card would have. Only Model Cards have
+/// a facet and only parts have an emphasis. A part may be filed anywhere: it
+/// belongs to the Model Card it is filed under, if any, and to every Model Card
+/// that links it. A Model Card with parts cannot stop being their Model Card.
 pub(crate) fn ensure_allowed(
     conn: &Connection,
-    location: &str,
     current: Option<&Card>,
     card_type: CardType,
     facet: Option<&Facet>,
     emphasis: Option<Emphasis>,
 ) -> Result<()> {
-    if let Some(facet) = facet {
+    if facet.is_some() {
         if card_type != CardType::Model {
             bail!("only Model Cards can have a Model facet");
-        }
-        if find_head(crate::parent_location(location), db_lookup(conn)).is_none() {
-            bail!(
-                "a Model part (`{facet}`) must be filed under its Model Card: create it as a successor of the Model Card or of one of its parts"
-            );
         }
     } else if emphasis.is_some() {
         bail!(EMPHASIS_NEEDS_FACET);
@@ -243,7 +232,7 @@ pub(crate) fn ensure_allowed(
         && card.facet.is_none()
         && (card_type != CardType::Model || facet.is_some())
     {
-        let parts = parts_in_db(conn, &card.address)?;
+        let parts = parts_in_db(conn, card)?;
         if !parts.is_empty() {
             bail!(
                 "`{}` is the Model Card of {} Model part(s) ({}); change or move them first",
@@ -256,22 +245,28 @@ pub(crate) fn ensure_allowed(
     Ok(())
 }
 
-fn parts_in_db(conn: &Connection, head: &str) -> Result<Vec<String>> {
+/// The parts of the Model Card `head`: those filed under it and those it links.
+fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
+    let linked = crate::parse_card_text(&head.text)
+        .ok()
+        .and_then(|parsed| {
+            LinkBody::parse(&parsed.body).ok().map(|body| {
+                body.occurrences()
+                    .iter()
+                    .map(|occurrence| occurrence.target.to_string())
+                    .collect::<BTreeSet<_>>()
+            })
+        })
+        .unwrap_or_default();
     let cards = crate::load_cards(conn)?;
-    let by_address: BTreeMap<&str, &Card> = cards
-        .iter()
-        .map(|card| (card.address.as_str(), card))
-        .collect();
-    let lookup = |address: &str| {
-        by_address
-            .get(address)
-            .map(|card| (card.card_type, card.facet.is_some()))
-    };
+    let lookup = db_lookup(conn);
     Ok(cards
         .iter()
-        .filter(|card| card.facet.is_some())
+        .filter(|card| card.card_type == CardType::Model && card.facet.is_some())
         .filter(|card| {
-            find_head(crate::parent_location(&card.address), lookup).as_deref() == Some(head)
+            linked.contains(&card.address)
+                || find_head(crate::parent_location(&card.address), &lookup).as_deref()
+                    == Some(head.address.as_str())
         })
         .map(|card| card.address.clone())
         .collect())
@@ -286,7 +281,7 @@ pub(crate) fn set(
     emphasis: Option<Emphasis>,
 ) -> Result<()> {
     crate::card_type::ensure_allowed(card, card_type)?;
-    ensure_allowed(conn, &card.address, Some(card), card_type, facet, emphasis)?;
+    ensure_allowed(conn, Some(card), card_type, facet, emphasis)?;
     conn.execute(
         "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3 WHERE row_id = ?4",
         params![
@@ -314,6 +309,203 @@ pub(crate) fn address_order(a: &str, b: &str) -> Ordering {
     segments(a).cmp(&segments(b)).then_with(|| a.cmp(b))
 }
 
+/// What a Link says about the Card it names. ZT reads it from the words its
+/// author wrote before the Link in the same sentence (`依赖设定 [[…]]`,
+/// `relaxes [[…]]`), so the reason a Link gives is also its kind. A Link with
+/// no such word is a plain reference; a Link that follows another in the same
+/// sentence with no word of its own (`依赖 [[a]] 与 [[b]]`) shares its kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) enum RelationKind {
+    /// The linking Card rests on the linked one: a premise or a derivation step.
+    RestsOn,
+    /// An example, case, or numerical illustration.
+    Illustrates,
+    /// A comparison or a difference.
+    Contrasts,
+    /// Relaxes, extends, or generalizes the linked Card.
+    Relaxes,
+    /// A correspondence, analogy, or equivalence.
+    Corresponds,
+    /// An objection, critique, or counterexample.
+    Objects,
+    /// A plain reference.
+    Refers,
+}
+
+/// Each announced kind with what it means and the words that announce it.
+/// English words match at the start of a word, so `relax` covers `relaxes`.
+pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
+    (
+        RelationKind::RestsOn,
+        "rests on the linked Card: a premise or a derivation step",
+        &[
+            "依赖",
+            "依据",
+            "基于",
+            "建立在",
+            "取自",
+            "沿用",
+            "承接",
+            "用到",
+            "借用",
+            "rests on",
+            "builds on",
+            "depends on",
+            "relies on",
+            "derived from",
+            "follows from",
+            "uses",
+        ],
+    ),
+    (
+        RelationKind::Illustrates,
+        "an example, case, or numerical illustration of it",
+        &[
+            "例示",
+            "举例",
+            "例子",
+            "示例",
+            "演示",
+            "例证",
+            "实例",
+            "案例",
+            "illustrat",
+            "example of",
+            "instance of",
+            "for example",
+            "e.g.",
+        ],
+    ),
+    (
+        RelationKind::Contrasts,
+        "a comparison with it, or how it differs",
+        &[
+            "对照",
+            "对比",
+            "相比",
+            "不同于",
+            "区别",
+            "相反",
+            "contrast",
+            "unlike",
+            "compared with",
+            "compare",
+            "versus",
+            "differs from",
+        ],
+    ),
+    (
+        RelationKind::Relaxes,
+        "relaxes, extends, or generalizes it",
+        &[
+            "放宽",
+            "放松",
+            "推广",
+            "扩展",
+            "拓展",
+            "一般化",
+            "relax",
+            "extend",
+            "generaliz",
+        ],
+    ),
+    (
+        RelationKind::Corresponds,
+        "a correspondence, analogy, or equivalence with it",
+        &[
+            "对应",
+            "类比",
+            "同构",
+            "相当于",
+            "等价",
+            "correspond",
+            "maps onto",
+            "analog",
+            "equivalent",
+            "mirrors",
+        ],
+    ),
+    (
+        RelationKind::Objects,
+        "an objection, critique, or counterexample to it",
+        &[
+            "反驳",
+            "批评",
+            "质疑",
+            "反例",
+            "否定",
+            "挑战",
+            "objection",
+            "objects to",
+            "critici",
+            "refut",
+            "counterexample",
+            "challeng",
+        ],
+    ),
+];
+
+impl RelationKind {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            RelationKind::RestsOn => "rests-on",
+            RelationKind::Illustrates => "illustrates",
+            RelationKind::Contrasts => "contrasts",
+            RelationKind::Relaxes => "relaxes",
+            RelationKind::Corresponds => "corresponds",
+            RelationKind::Objects => "objects",
+            RelationKind::Refers => "refers",
+        }
+    }
+
+    /// The kind announced last in `words`, the text just before a Link.
+    fn announced_in(words: &str) -> Option<Self> {
+        let lower = words.to_lowercase();
+        let mut best: Option<(usize, usize, RelationKind)> = None;
+        for (kind, _, cues) in RELATION_KINDS {
+            for cue in cues {
+                let word = cue.starts_with(|ch: char| ch.is_ascii_alphabetic());
+                for (at, _) in lower.match_indices(cue) {
+                    let inside_word = lower[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric());
+                    if word && inside_word {
+                        continue;
+                    }
+                    let found = (at + cue.len(), cue.len(), kind);
+                    if best.is_none_or(|(end, len, _)| (found.0, found.1) > (end, len)) {
+                        best = Some(found);
+                    }
+                }
+            }
+        }
+        best.map(|(_, _, kind)| kind)
+    }
+}
+
+impl std::fmt::Display for RelationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+/// A sentence ends at CJK or ASCII end punctuation, a line break, or a period
+/// followed by a space.
+fn ends_sentence(body: &str, index: usize, ch: char) -> bool {
+    ['。', '！', '？', '!', '?', '；', ';', '\n'].contains(&ch)
+        || (ch == '.' && body[index + 1..].starts_with(char::is_whitespace))
+}
+
+/// Where the sentence holding byte `at` of `body` starts.
+fn sentence_start(body: &str, at: usize) -> usize {
+    body[..at]
+        .char_indices()
+        .rev()
+        .find(|&(index, ch)| ends_sentence(body, index, ch))
+        .map_or(0, |(index, ch)| index + ch.len_utf8())
+}
+
 /// The sentence of `body` around the byte range `at`, with every Link in it
 /// replaced by `name(target)`, clipped for a tooltip.
 fn sentence_around(
@@ -321,20 +513,10 @@ fn sentence_around(
     at: std::ops::Range<usize>,
     name: impl Fn(&str) -> String,
 ) -> String {
-    // A sentence ends at CJK or ASCII end punctuation, a line break, or a
-    // period followed by a space.
-    let ends_at = |index: usize, ch: char| {
-        ['。', '！', '？', '!', '?', '；', ';', '\n'].contains(&ch)
-            || (ch == '.' && body[index + 1..].starts_with(char::is_whitespace))
-    };
-    let start = body[..at.start]
-        .char_indices()
-        .rev()
-        .find(|&(index, ch)| ends_at(index, ch))
-        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let start = sentence_start(body, at.start);
     let end = body[at.end..]
         .char_indices()
-        .find(|&(index, ch)| ends_at(at.end + index, ch))
+        .find(|&(index, ch)| ends_sentence(body, at.end + index, ch))
         .map_or(body.len(), |(index, ch)| {
             at.end + index + if ch == '\n' { 0 } else { ch.len_utf8() }
         });
@@ -368,12 +550,133 @@ fn sentence_around(
     }
 }
 
+/// One Link of a body, read: its target, its kind, and the sentence that holds
+/// it, with the Links in that sentence named by the reader's `name`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LinkRead {
+    pub(crate) target: String,
+    pub(crate) kind: RelationKind,
+    pub(crate) note: String,
+}
+
+/// Every Link of `body`, in order, read with its kind and sentence.
+pub(crate) fn read_links(body: &str, name: impl Fn(&str) -> String) -> Vec<LinkRead> {
+    let Ok(parsed) = LinkBody::parse(body) else {
+        return Vec::new();
+    };
+    let mut previous: Option<(usize, RelationKind)> = None;
+    parsed
+        .occurrences()
+        .iter()
+        .map(|occurrence| {
+            let range = occurrence.macro_range.clone();
+            let start = sentence_start(body, range.start);
+            // After a Link earlier in the same sentence, only the words since it count.
+            let shared = previous.filter(|&(end, _)| end > start);
+            let from = shared.map_or(start, |(end, _)| end);
+            let kind = RelationKind::announced_in(&body[from..range.start])
+                .or(shared.map(|(_, kind)| kind))
+                .unwrap_or(RelationKind::Refers);
+            previous = Some((range.end, kind));
+            LinkRead {
+                target: occurrence.target.to_string(),
+                kind,
+                note: sentence_around(body, range, &name),
+            }
+        })
+        .collect()
+}
+
+/// Every model a Card belongs to, by Model Card address. A Model Card is its
+/// own model. A Model part belongs to the Model Card it is filed under, if
+/// any, then to every other Model Card that links it, in Folgezettel order.
+/// Any other Card belongs to no model.
+pub(crate) fn heads(
+    address: &str,
+    by_address: &BTreeMap<String, Card>,
+    inbound: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    let Some(card) = by_address.get(address) else {
+        return Vec::new();
+    };
+    if card.card_type != CardType::Model {
+        return Vec::new();
+    }
+    if card.facet.is_none() {
+        return vec![address.to_string()];
+    }
+    let lookup = |at: &str| {
+        by_address
+            .get(at)
+            .map(|card| (card.card_type, card.facet.is_some()))
+    };
+    let filed = find_head(crate::parent_location(address), lookup);
+    let mut linking = inbound
+        .get(address)
+        .into_iter()
+        .flatten()
+        .filter(|source| filed.as_ref() != Some(*source))
+        .filter(|source| {
+            by_address
+                .get(*source)
+                .is_some_and(|card| card.card_type == CardType::Model && card.facet.is_none())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    linking.sort_by(|a, b| address_order(a, b));
+    filed.into_iter().chain(linking).collect()
+}
+
+/// The parts of the model whose Model Card is `head`: first the parts it
+/// links, in the order it names them, then the parts filed under it that it
+/// does not name, in Folgezettel order.
+fn parts_of<'a>(
+    head: &str,
+    by_address: &'a BTreeMap<String, Card>,
+    parsed: &BTreeMap<String, crate::ParsedCard>,
+) -> Vec<&'a Card> {
+    let is_part = |card: &Card| card.card_type == CardType::Model && card.facet.is_some();
+    let mut parts = Vec::new();
+    let mut named = BTreeSet::new();
+    let body = parsed.get(head).map_or("", |parsed| parsed.body.as_str());
+    if let Ok(links) = LinkBody::parse(body) {
+        for occurrence in links.occurrences() {
+            if let Some(card) = by_address.get(occurrence.target)
+                && is_part(card)
+                && named.insert(card.address.as_str())
+            {
+                parts.push(card);
+            }
+        }
+    }
+    let lookup = |at: &str| {
+        by_address
+            .get(at)
+            .map(|card| (card.card_type, card.facet.is_some()))
+    };
+    let tree = crate::tree_id(head);
+    let mut filed = by_address
+        .values()
+        .filter(|card| is_part(card) && !named.contains(card.address.as_str()))
+        .filter(|card| crate::is_tree_member(&card.address, tree))
+        .filter(|card| {
+            find_head(crate::parent_location(&card.address), lookup).as_deref() == Some(head)
+        })
+        .collect::<Vec<_>>();
+    filed.sort_by(|a, b| address_order(&a.address, &b.address));
+    parts.extend(filed);
+    parts
+}
+
 /// The structure of the model a Card belongs to, computed over a set of
-/// Cards. `None` when the Card is neither a Model Card nor a Model part.
+/// Cards. `None` when the Card is neither a Model Card nor a Model part. A
+/// part in several models is shown in the first of them; `models` lists all.
 ///
-/// Parts are listed in Folgezettel order. `relations` lists every Link from
-/// one part to another, once per pair, with the sentence that makes it;
-/// `loose` lists the parts in no relation.
+/// `relations` lists every Link from one part to another, once per pair, with
+/// its kind and the sentence that makes it; `loose` lists the parts in no
+/// relation. `neighbours` lists the Links between the model's Cards and Cards
+/// outside it (tree roots aside), either way, with their kind and sentence:
+/// the model's place in the rest of the slip-box.
 pub(crate) fn structure(
     address: &str,
     by_address: &BTreeMap<String, Card>,
@@ -384,15 +687,6 @@ pub(crate) fn structure(
     if card.card_type != CardType::Model {
         return None;
     }
-    let lookup = |at: &str| {
-        by_address
-            .get(at)
-            .map(|card| (card.card_type, card.facet.is_some()))
-    };
-    let head = match card.facet {
-        None => Some(card.address.clone()),
-        Some(_) => find_head(crate::parent_location(&card.address), lookup),
-    };
     let title = |at: &str| {
         parsed
             .get(at)
@@ -405,41 +699,27 @@ pub(crate) fn structure(
             .map(|parsed| parsed.body.as_str())
             .unwrap_or_default()
     };
-    let links_of = |at: &str| -> BTreeSet<String> {
-        LinkBody::parse(body_of(at))
-            .map(|body| {
-                body.occurrences()
-                    .iter()
-                    .map(|occurrence| occurrence.target.to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let Some(head) = head else {
+    let reference = |at: &str| json!({ "address": at, "title": title(at) });
+    let models = heads(address, by_address, inbound);
+    let Some(head) = models.first().cloned() else {
         return Some(json!({
             "head": null,
+            "models": [],
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
             "parts": [],
             "relations": [],
             "loose": [],
+            "neighbours": [],
+            "discussion": 0,
             "issues": [format!(
-                "`{}` is a Model part ({}) but is not filed under a Model Card",
+                "`{}` is a Model part ({}) but belongs to no model: file it under a Model Card, or link it from one",
                 card.address,
                 card.facet.as_ref().map(Facet::id).unwrap_or_default()
             )],
         }));
     };
-    let tree = crate::tree_id(&head);
-    let mut parts = by_address
-        .values()
-        .filter(|other| other.facet.is_some() && crate::is_tree_member(&other.address, tree))
-        .filter(|other| {
-            find_head(crate::parent_location(&other.address), lookup).as_deref()
-                == Some(head.as_str())
-        })
-        .collect::<Vec<_>>();
-    parts.sort_by(|a, b| address_order(&a.address, &b.address));
+    let parts = parts_of(&head, by_address, parsed);
     let facet_of = parts
         .iter()
         .map(|part| {
@@ -452,70 +732,114 @@ pub(crate) fn structure(
     let members = std::iter::once(head.clone())
         .chain(parts.iter().map(|part| part.address.clone()))
         .collect::<BTreeSet<_>>();
-    let head_links = links_of(&head);
-    let mut issues = Vec::new();
+    let name = |at: &str| {
+        facet_of.get(at).map_or_else(
+            || {
+                if at == head {
+                    "模型".to_string()
+                } else {
+                    at.to_string()
+                }
+            },
+            |facet| (*facet).to_string(),
+        )
+    };
+    // Outside Cards worth showing beside the model: not its own, not a tree root.
+    let outside = |at: &str| {
+        !members.contains(at)
+            && by_address
+                .get(at)
+                .is_some_and(|card| !crate::is_tree_root(card))
+    };
+    let neighbour = |way: &str, from: &str, to: &str, read: &LinkRead| {
+        let other = if way == "in" { from } else { to };
+        let card = &by_address[other];
+        json!({
+            "way": way,
+            "from": from,
+            "to": to,
+            "kind": read.kind.id(),
+            "note": read.note,
+            "card": {
+                "address": other,
+                "title": title(other),
+                "type": card.card_type.id(),
+                "facet": card.facet.as_ref().map(Facet::id),
+            },
+        })
+    };
     let mut relations = Vec::new();
     let mut related = BTreeSet::new();
-    let part_values = parts
-        .iter()
-        .map(|part| {
-            let links = links_of(&part.address);
-            if !head_links.contains(&part.address) {
-                issues.push(format!(
-                    "the Model Card `{head}` does not link its part `{}`",
-                    part.address
-                ));
+    let mut neighbours = Vec::new();
+    let mut met = BTreeSet::new();
+    let head_reads = read_links(body_of(&head), name);
+    for read in &head_reads {
+        if outside(&read.target) && met.insert((head.clone(), read.target.clone())) {
+            neighbours.push(neighbour("out", &head, &read.target, read));
+        }
+    }
+    let mut part_values = Vec::new();
+    for part in &parts {
+        let reads = read_links(body_of(&part.address), name);
+        let mut seen = BTreeSet::new();
+        for read in &reads {
+            if read.target == part.address {
+                continue;
             }
-            if !links.contains(&head) {
-                issues.push(format!(
-                    "the Model part `{}` does not link its Model Card `{head}`",
-                    part.address
-                ));
-            }
-            let body = body_of(&part.address);
-            let mut seen = BTreeSet::new();
-            if let Ok(parsed_body) = LinkBody::parse(body) {
-                for occurrence in parsed_body.occurrences() {
-                    let target = occurrence.target;
-                    if target == part.address
-                        || !facet_of.contains_key(target)
-                        || !seen.insert(target)
-                    {
-                        continue;
-                    }
+            if facet_of.contains_key(read.target.as_str()) {
+                if seen.insert(read.target.as_str()) {
                     related.insert(part.address.clone());
-                    related.insert(target.to_string());
-                    let name = |at: &str| {
-                        facet_of.get(at).map_or_else(
-                            || {
-                                if at == head {
-                                    "模型".to_string()
-                                } else {
-                                    at.to_string()
-                                }
-                            },
-                            |facet| (*facet).to_string(),
-                        )
-                    };
+                    related.insert(read.target.clone());
                     relations.push(json!({
                         "from": part.address,
-                        "to": target,
-                        "note": sentence_around(body, occurrence.macro_range.clone(), name),
+                        "to": read.target,
+                        "kind": read.kind.id(),
+                        "note": read.note,
                     }));
                 }
+            } else if outside(&read.target)
+                && met.insert((part.address.clone(), read.target.clone()))
+            {
+                neighbours.push(neighbour("out", &part.address, &read.target, read));
             }
-            json!({
-                "address": part.address,
-                "title": title(&part.address),
-                "facet": part.facet.as_ref().map(Facet::id),
-                "emphasis": part.emphasis.map(Emphasis::id),
-                "links": links
-                    .iter()
-                    .filter(|target| members.contains(*target) && **target != part.address)
-                    .collect::<Vec<_>>(),
-            })
-        })
-        .collect::<Vec<_>>();
+        }
+        let filed_under = find_head(crate::parent_location(&part.address), |at| {
+            by_address
+                .get(at)
+                .map(|card| (card.card_type, card.facet.is_some()))
+        });
+        part_values.push(json!({
+            "address": part.address,
+            "title": title(&part.address),
+            "facet": part.facet.as_ref().map(Facet::id),
+            "emphasis": part.emphasis.map(Emphasis::id),
+            "filed": filed_under.as_deref() == Some(head.as_str()),
+            "also": heads(&part.address, by_address, inbound)
+                .iter()
+                .filter(|other| **other != head)
+                .map(|other| reference(other))
+                .collect::<Vec<_>>(),
+            "links": reads
+                .iter()
+                .map(|read| read.target.as_str())
+                .filter(|target| members.contains(*target) && *target != part.address)
+                .collect::<BTreeSet<_>>(),
+        }));
+    }
+    // Links into the model, in the words of the Cards that write them.
+    for member in std::iter::once(&head).chain(parts.iter().map(|part| &part.address)) {
+        for source in inbound.get(member).into_iter().flatten() {
+            if !outside(source) {
+                continue;
+            }
+            let reads = read_links(body_of(source), name);
+            if let Some(read) = reads.iter().find(|read| read.target == *member)
+                && met.insert((source.clone(), member.clone()))
+            {
+                neighbours.push(neighbour("in", source, member, read));
+            }
+        }
+    }
     let loose = parts
         .iter()
         .filter(|part| !related.contains(&part.address))
@@ -528,18 +852,21 @@ pub(crate) fn structure(
         .filter(|source| !members.contains(*source))
         .collect::<BTreeSet<_>>();
     Some(json!({
-        "head": { "address": head, "title": title(&head) },
+        "head": reference(&head),
+        "models": models.iter().map(|at| reference(at)).collect::<Vec<_>>(),
         "facet": card.facet.as_ref().map(Facet::id),
         "emphasis": card.emphasis.map(Emphasis::id),
-        "head_links": head_links
+        "head_links": head_reads
             .iter()
-            .filter(|target| members.contains(*target) && **target != head)
-            .collect::<Vec<_>>(),
+            .map(|read| read.target.as_str())
+            .filter(|target| members.contains(*target) && *target != head)
+            .collect::<BTreeSet<_>>(),
         "parts": part_values,
         "relations": relations,
         "loose": loose,
+        "neighbours": neighbours,
         "discussion": discussion.len(),
-        "issues": issues,
+        "issues": [],
     }))
 }
 
@@ -571,10 +898,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("without Links")
-        );
-        assert_eq!(
-            Facet::common_names(),
-            "setting, assumptions, timing, dynamics, solution, results, intuition, or limits"
         );
         assert_eq!(Facet::from_stored(Some("")), None);
         assert_eq!(Facet::from_stored(None), None);
@@ -650,5 +973,55 @@ mod tests {
             sentence_around(body, at..at + 11, |_| "setting".into()),
             "uses 「setting」 for the payoffs"
         );
+    }
+
+    #[test]
+    fn a_link_takes_its_kind_from_the_words_before_it_in_its_sentence() {
+        let kinds = |body: &str| {
+            read_links(body, |at| at.to_string())
+                .into_iter()
+                .map(|read| (read.target, read.kind.id()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |target: &str, kind: &'static str| (target.to_string(), kind);
+        // The last announcing word before a Link names its kind; a Link right
+        // after another in the same sentence shares it; a new sentence starts over.
+        assert_eq!(
+            kinds("依赖可承诺的还款 [[a]] 与清算比例 [[b]]。本卡是模型 [[m]] 的设定。"),
+            [
+                pair("a", "rests-on"),
+                pair("b", "rests-on"),
+                pair("m", "refers")
+            ]
+        );
+        assert_eq!(
+            kinds("依赖设定 [[s]]：区别在触发条件——[[x]] 里由状态触发，回应了 [[y]] 的不足。"),
+            [
+                pair("s", "rests-on"),
+                pair("x", "contrasts"),
+                pair("y", "contrasts")
+            ]
+        );
+        assert_eq!(
+            kinds("放宽“两期”：多期推广见 [[p]]；例 1 例示 [[q]]；反驳 [[r]]；类比 [[t]]。"),
+            [
+                pair("p", "relaxes"),
+                pair("q", "illustrates"),
+                pair("r", "objects"),
+                pair("t", "corresponds")
+            ]
+        );
+        // English words match at the start of a word only.
+        assert_eq!(
+            kinds("It relaxes [[a]]. This causes [[b]]. It uses [[c]]. A counterexample to [[d]]."),
+            [
+                pair("a", "relaxes"),
+                pair("b", "refers"),
+                pair("c", "rests-on"),
+                pair("d", "objects")
+            ]
+        );
+        // 比较静态 is no contrast.
+        assert_eq!(kinds("均衡与比较静态见 [[e]]。"), [pair("e", "refers")]);
     }
 }

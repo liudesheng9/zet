@@ -159,7 +159,7 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 Regular Card 也可以是：
 
 - **Event Card**（`event`）：记录一个真实发生的事件（什么、何时、何地、谁，以及报道它的来源），描述部分不做解释；
-- **Model Card**（`model`）：完整呈现一个模型（问题、设定、假设、时序与信息、求解、结果、直觉、局限、来源）。
+- **Model Card**（`model`）：一个完整模型的入口（它的问题和它说明了什么），带 facet 时则是模型的一个 part（见“模型结构”）。
 
 Idea Card 用普通的 `[[target]]` Link 引用它们，因此 Model Card 的 Reverse link 会列出所有讨论该模型的 Card。
 Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移动、Side successor 压缩编号和修改 Citation key
@@ -176,28 +176,35 @@ Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移�
 
 ### 模型结构
 
-一个模型往往一张卡写不下。**Model Card** 写问题和简短概要，并用 Link 列出它的 **Model part**：归档在它之下
-（作为 Model Card 或另一个 part 的 successor）的 Model Card，每张深入呈现模型的一部分。**模型的结构由撰写者决定**：
+一个模型往往一张卡写不下。**Model Card** 是模型的入口：写明问题和模型说明了什么。**Model part** 是带 facet 的
+Model Card，每张深入呈现模型的一部分。按照卢曼的原则，卡片归档在哪里并不决定它属于什么：part 属于它归档在其下
+的 Model Card（作为 Model Card 或另一个 part 的 successor），**也属于每一张链接它的 Model Card**。所以 part 可以
+留在它最初写下的位置，一个 part 也可以同时服务几个模型。**模型的结构由撰写者决定**：
 
 - **Model facet**：每个 part 的名字，由作者自拟的简短标签（不超过 32 个字符），如 `设定`、`均衡`、`数值例子`。
-  常见的 `setting`、`assumptions`、`timing`、`dynamics`、`solution`、`results`、`intuition`、`limits` 只是建议，
-  不是必须齐备的集合，也不规定顺序。
+  没有必须齐备的集合，也不规定顺序。
 - **Emphasis**：part 可以标为 `core`（模型的核心，读者首先要看的）或 `aside`（可以跳过的细节）。
-- **关系**：part 链接它所依赖的 part，并用一句话说明理由。模型内部的这些 Link 构成一张图，而不是序列或树：
-  一个 part 可以依赖多个 part；不与任何 part 相关的 part 是**松散**的（例如放在模型旁的案例或变体）。
+- **关系**：part 链接与它相关的其他 part，并用一句话说明理由；Link 前面的词给出**关系类型**：`rests-on`
+  （`依赖`、`基于`）、`illustrates`（`例示`、`案例`）、`contrasts`（`对照`、`区别`）、`relaxes`（`放宽`、`推广`）、
+  `corresponds`（`对应`、`类比`）、`objects`（`反驳`、`批评`），没有这类词时为 `refers`。模型内部的这些 Link 构成
+  一张图，而不是序列或树；不与任何 part 相关的 part 是**松散**的（例如放在模型旁的案例或变体）。
+- **模型邻居**：模型与模型外 Card 之间的 Link（双向，带类型），例如放宽某条假设的 Idea Card，或某个 part 所对应的
+  另一个模型。
 
-ZT 根据 Location、facet 和 Link 计算每个模型的结构。Model Card 链接每个 part，每个 part 链接它的 Model Card；
-`get_model` 会报告缺少这些 Link 的 part，并列出各条关系（及其理由）和松散的 part。带有 part 的 Model Card
-在其 part 被修改或移走之前不能改类型。
+ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 emphasis 外不存储任何结构。Model Card 与 part
+之间不必互相链接；`get_model` 只报告不属于任何模型的 part。带有 part 的 Model Card 在其 part 被修改、移走或
+不再被它链接之前不能改类型。详见 `doc/open-models-design.md`。
 
 - **Session**：part 显示为 `[model · <facet>]`（以及它的 emphasis）；`ty model <facet>` 把当前 Card 设为 part
   （facet 取该行余下的全部文字），`ty model` 则恢复为 Model Card。
-- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签，按归档顺序以 facet 命名（核心标签着墨，aside 标签浅淡）；
-  卡片下方是**模型板**：part 按依赖关系排布，每条关系一根细线，松散的 part 放在一旁的托盘里。模型板随读者的
-  注意力而变：打开的 part 被抬起并显示完整标题，与它相关的 part 保持着墨并列出理由，核心 part 保持可读，其余
-  退为标签。写作台在 Model 类型旁填写 facet（提示常见的几种）并选择 emphasis。
+- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签，按 Model Card 列出 part 的顺序以 facet 命名（核心标签着墨，
+  aside 标签浅淡）；卡片下方是**模型板**：part 按依赖关系排布，每条 `rests-on` 关系一根细线，其他类型的关系画成
+  标出类型的虚线弧，松散的 part 放在一旁的托盘里。模型板随读者的注意力而变：打开的 part 被抬起并显示完整标题，
+  与它相关的 part 保持着墨并列出类型和理由，核心 part 保持可读，其余退为标签。模型板下方列出打开的卡在模型之外
+  的邻居，上方列出共享 part 所服务的其他模型。写作台在 Model 类型旁填写 facet（提示常见的几种）并选择 emphasis。
 - **MCP**：`create_successor` 和 `edit_card` 接受 `facet` 和 `emphasis`（空字符串清除）；`get_card` 返回 `facet`、
-  `emphasis` 和 `model`；`get_model` 返回整个模型及每张卡的正文、各条关系与松散的 part，以及一致性问题。
+  `emphasis` 和 `model`；`get_model` 返回整个模型及每张卡的正文、该卡所属的各个模型、带类型的关系、松散的 part
+  和模型邻居。
 - **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet，在 `emphasis` 中列出每个 core 或 aside part。
 
 ### 数学公式与 HTML 图表
@@ -228,7 +235,7 @@ Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
-| `get_model` | 整个模型：Model Card 与各 part 的正文、facet 和 emphasis，各条关系与松散的 part，以及一致性问题 |
+| `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part 和模型外的邻居 |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
 | `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`、`emphasis`） |

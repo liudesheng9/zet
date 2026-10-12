@@ -164,14 +164,7 @@ pub(crate) fn edit(
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
-        crate::model::ensure_allowed(
-            &conn,
-            &card.address,
-            Some(&card),
-            card_type,
-            facet.as_ref(),
-            emphasis,
-        )?;
+        crate::model::ensure_allowed(&conn, Some(&card), card_type, facet.as_ref(), emphasis)?;
     }
     match text {
         Some(text) if card.is_lit => crate::update_literature_text(&mut conn, &card, text)?,
@@ -491,18 +484,18 @@ impl Snapshot {
             .collect()
     }
 
-    /// The Model Card a Model part belongs to; `None` for any other Card.
+    /// The Model Card a Model part belongs to first (the one it is filed
+    /// under, else the first that links it); `None` for any other Card.
     pub(crate) fn model_head(&self, card: &Card) -> Option<String> {
         card.facet.as_ref()?;
-        crate::model::find_head(crate::parent_location(&card.address), |at| {
-            self.by_address
-                .get(at)
-                .map(|card| (card.card_type, card.facet.is_some()))
-        })
+        crate::model::heads(&card.address, &self.by_address, &self.inbound)
+            .into_iter()
+            .next()
     }
 
     /// The structure of the model a Card belongs to: its Model Card, its
-    /// parts, the relations between them, and its loose parts.
+    /// parts, the kinded relations between them, its loose parts, and its
+    /// Links with Cards outside it.
     pub(crate) fn model(&self, address: &str) -> Option<Value> {
         crate::model::structure(address, &self.by_address, &self.parsed, &self.inbound)
     }
@@ -821,8 +814,9 @@ The model"
         );
         assert_eq!(emphasis_of(root, "0/1|b"), Some(Emphasis::Aside));
 
-        // A facet needs a Model Card above it, only Model Cards have facets,
-        // and only parts have an emphasis.
+        // A part may be filed anywhere; until it is filed under a Model Card or
+        // linked from one, it belongs to no model. Only Model Cards have
+        // facets, and only parts have an emphasis.
         make(
             Successor::Direct,
             "0/1",
@@ -839,9 +833,16 @@ The model"
                 label("results"),
                 "# Stray\n"
             )
-            .unwrap_err()
-            .to_string(),
-            "a Model part (`results`) must be filed under its Model Card: create it as a successor of the Model Card or of one of its parts"
+            .unwrap(),
+            "0/3"
+        );
+        let stray = Snapshot::read(root).unwrap().model("0/3").unwrap();
+        assert_eq!(stray["head"], Value::Null);
+        assert_eq!(
+            stray["issues"],
+            json!([
+                "`0/3` is a Model part (results) but belongs to no model: file it under a Model Card, or link it from one"
+            ])
         );
         assert_eq!(
             make(
@@ -883,20 +884,18 @@ The model"
             ]
         );
         assert_eq!(parts[1]["links"], json!(["0/1", "0/1|a"]));
-        // Parts relate by their Links, each with the sentence that makes it;
-        // a part in no relation is loose.
+        // Parts relate by their Links, each with its kind and the sentence that
+        // makes it; a part in no relation is loose. Neither the Model Card nor
+        // its parts need to link each other.
         assert_eq!(
             model["relations"],
-            json!([{ "from": "0/1|a|1", "to": "0/1|a", "note": "它依赖设定 「setting」：双方各有一项资产。" }])
+            json!([{ "from": "0/1|a|1", "to": "0/1|a", "kind": "rests-on", "note": "它依赖设定 「setting」：双方各有一项资产。" }])
         );
         assert_eq!(model["loose"], json!(["0/1|b"]));
+        assert_eq!(model["issues"], json!([]));
         assert_eq!(
-            model["issues"],
-            json!([
-                "the Model Card `0/1` does not link its part `0/1|a`",
-                "the Model Card `0/1` does not link its part `0/1|a|1`",
-                "the Model Card `0/1` does not link its part `0/1|b`"
-            ])
+            model["models"],
+            json!([{ "address": "0/1", "title": "GHM" }])
         );
         assert_eq!(
             snapshot.summary(snapshot.by_address.get("0/1|a").unwrap())["head"],
@@ -905,7 +904,38 @@ The model"
         assert!(snapshot.model("0/2").is_none());
         assert_eq!(snapshot.trees()[0]["models"], 1);
 
-        // Linking the parts from the Model Card settles the issues.
+        // The Model Card names its parts in its own order, and a Link from it
+        // takes in the stray part filed elsewhere.
+        edit(
+            root,
+            owner,
+            "0/1",
+            Some("# GHM\n\nparts: [[0/1|b]] [[0/1|a]] [[0/3]]\n"),
+            TypeChange::default(),
+            None,
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(root).unwrap();
+        let model = snapshot.model("0/1").unwrap();
+        assert_eq!(
+            model["parts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| (
+                    part["address"].as_str().unwrap(),
+                    part["filed"].as_bool().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("0/1|b", true),
+                ("0/1|a", true),
+                ("0/3", false),
+                ("0/1|a|1", true)
+            ]
+        );
+        assert_eq!(model["head_links"], json!(["0/1|a", "0/1|b", "0/3"]));
+        assert_eq!(snapshot.model("0/3").unwrap()["head"]["address"], "0/1");
         edit(
             root,
             owner,
@@ -915,12 +945,8 @@ The model"
             None,
         )
         .unwrap();
+        edit(root, owner, "0/3", None, ty(CardType::Idea), None).unwrap();
         let snapshot = Snapshot::read(root).unwrap();
-        assert_eq!(snapshot.model("0/1").unwrap()["issues"], json!([]));
-        assert_eq!(
-            snapshot.model("0/1").unwrap()["head_links"],
-            json!(["0/1|a", "0/1|a|1", "0/1|b"])
-        );
 
         // An emphasis changes alone and refreshes open windows; it survives a
         // new facet.
