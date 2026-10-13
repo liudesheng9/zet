@@ -19,7 +19,8 @@ export const meta = {
 //         dshModel ('deepseek-official/deepseek-flash'), dshEffort ('low'),
 //         models (true: run the Sonnet model stage), rebuild (false: also rebuild models that already have parts;
 //         redoModels is the old name), perSonnet (4: models per Sonnet manager; neighbouring models of the book
-//         share one manager), dshPerSonnet (8: DeepSeek runs one manager keeps going at the same time) }
+//         share one manager), dshPerSonnet (8: DeepSeek runs one manager keeps going at the same time),
+//         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all) }
 //
 // How the stages hand work on:
 //   Prepare ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (Haiku lists, Sonnet ×N) ─┐
@@ -236,7 +237,8 @@ Return reports: one report per model, in this order, as the Report section says,
 }
 const groupNo = (m) => Number(m.group) || Number(String(m.address).split('/')[1].split('|')[0]) || 0
 const elaborateAll = async (models, label) => {
-  const todo = models.filter(m => REBUILD || !(m.parts > 0 && !m.issues))
+  const only = Array.isArray(A.only) && A.only.length ? new Set(A.only) : null
+  const todo = models.filter(m => !only || only.has(m.address)).filter(m => REBUILD || !(m.parts > 0 && !m.issues))
     .sort((a, b) => groupNo(a) - groupNo(b) || String(a.address).localeCompare(String(b.address)))
   if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
   const batches = []

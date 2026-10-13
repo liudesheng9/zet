@@ -130,6 +130,7 @@ Arguments (`args`):
 | `rebuild` | `true` rebuilds models that already have parts (a rerun skips them by default), keeping the facets, emphasis, and charts that still fit; `redoModels` is its old name |
 | `perSonnet` | models per Sonnet manager (default 4); neighbouring models of the book share one manager |
 | `dshPerSonnet` | DeepSeek runs one manager keeps going at the same time (default 8; may be higher) |
+| `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the
