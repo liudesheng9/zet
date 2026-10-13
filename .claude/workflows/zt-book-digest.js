@@ -13,6 +13,7 @@ export const meta = {
 }
 
 // args: { mode ('full' | 'link' | 'models'), source, out, citationKey, bibtex, bookTitle,
+//         startHeading ('导论'), endHeading ('参考'): the Chinese headings where the digested text starts and stops,
 //         groups (modes 'link' and 'models': the existing group count), organize (modes 'link' and 'models': default false),
 //         perManager (5), maxChars (20000), maxUnits (3),
 //         dshModel ('deepseek-official/deepseek-flash'), dshEffort ('low'),
@@ -59,7 +60,7 @@ if (MODE === 'full') {
   const prep = await agent(
     `You prepare a book for a ZET digest. Do exactly these steps and nothing else.
 1. Run this PowerShell command (one call) and read its last output line, a compact JSON manifest:
-pwsh -NoProfile -File ${SCRIPTS}\\prepare-book-digest.ps1 -Source "${A.source}" -Out "${OUT}" -CitationKey ${KEY} -BibTeX '${A.bibtex}' -BookTitle '${A.bookTitle}' -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3} -Apply
+pwsh -NoProfile -File ${SCRIPTS}\\prepare-book-digest.ps1 -Source "${A.source}" -Out "${OUT}" -CitationKey ${KEY} -BibTeX '${A.bibtex}' -BookTitle '${A.bookTitle}' -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''} -Apply
 If it fails, return ok=false with the error text; do not retry with other options and do not delete anything.
 2. ${usageStep}
 Return groups = the number of entries in manifest.groups and usage_before = the summed usage.`,
@@ -247,6 +248,8 @@ const elaborateBlock = async (block, managed) => {
   if (!groups.length) return []
   const listed = await listModels(`-Groups ${groups.join(',')}`, `find models: groups ${groups[0]}-${groups[groups.length - 1]}`)
   if (!listed || !listed.ok) { log(`Models for groups ${groups.join(',')}: listing failed (${listed && listed.error})`); return [] }
+  const reported = reports.filter(r => groups.includes(r.group)).reduce((s, r) => s + (r.models || 0), 0)
+  if (reported && !listed.models.length) log(`Models for groups ${groups.join(',')}: the runs reported ${reported} Model Cards but the listing found none; the whole-book sweep will pick them up.`)
   return elaborateAll(listed.models, `groups ${groups[0]}-${groups[groups.length - 1]}`)
 }
 
@@ -296,7 +299,18 @@ if (MODE === 'full') {
   log(`${groupCount} groups in ${KEY}; ${blocks.length} Haiku managers, up to ${PER_MANAGER} DeepSeek runs each${MODELS ? '; each block\'s Model Cards go to Sonnet as soon as the block finishes' : ''}.`)
   digestReports = await runStage('digest', blocks, MODELS ? elaborateBlock : null)
   modelReports = digestReports.extras
-  if (MODELS) logModels(modelReports)
+  // Sweep the whole book before linking: a block whose listing failed or missed a Model Card
+  // would otherwise leave it unelaborated without any error.
+  if (MODELS) {
+    const listed = await listModels(`-All -CitationKey ${KEY}`, 'find models: sweep')
+    if (!listed || !listed.ok) log(`Model sweep: listing failed (${listed && listed.error})`)
+    else {
+      const covered = new Set(modelReports.filter(r => r && r.status === 'done').map(r => r.model))
+      const missed = listed.models.filter(m => !covered.has(m.address))
+      if (missed.length) modelReports = modelReports.concat(await elaborateAll(missed, 'sweep'))
+    }
+    logModels(modelReports)
+  }
 }
 if (MODE === 'models') {
   phase('Models')

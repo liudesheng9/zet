@@ -15,11 +15,14 @@
 [CmdletBinding(DefaultParameterSetName = 'Groups')]
 param(
     [Parameter(Mandatory)][string]$Staging,
-    [Parameter(ParameterSetName = 'Groups', Mandatory)][int[]]$Groups,
+    # A string, not [int[]]: under `pwsh -File`, `-Groups 1,2,3` arrives as one argument that
+    # [int[]] binds as the single number 123 (commas read as thousands separators).
+    [Parameter(ParameterSetName = 'Groups', Mandatory)][string]$Groups,
     [Parameter(ParameterSetName = 'All', Mandatory)][switch]$All,
     [Parameter(ParameterSetName = 'All')][string]$CitationKey = ''
 )
 $ErrorActionPreference = 'Stop'
+$groupNumbers = @(($Groups -split '[,\s]+') | Where-Object { $_ } | ForEach-Object { [int]$_ })
 $helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 
 function Invoke-Zt($calls) {
@@ -32,7 +35,7 @@ function Invoke-Zt($calls) {
 $owner = @{}
 foreach ($file in Get-ChildItem -LiteralPath $Staging -Filter 'owned-g*.txt' -File -ErrorAction SilentlyContinue) {
     $n = [int]($file.BaseName -replace '^owned-g', '')
-    if ($PSCmdlet.ParameterSetName -eq 'Groups' -and $n -notin $Groups) { continue }
+    if ($PSCmdlet.ParameterSetName -eq 'Groups' -and $n -notin $groupNumbers) { continue }
     foreach ($address in Get-Content -LiteralPath $file.FullName -Encoding utf8) {
         if ($address.Trim()) { $owner[$address.Trim()] = $n }
     }
@@ -42,6 +45,9 @@ foreach ($file in Get-ChildItem -LiteralPath $Staging -Filter 'owned-g*.txt' -Fi
 # and parts easily pass that. The trees are the book's and those the groups wrote into.
 $trees = @(@($owner.Keys | ForEach-Object { ($_ -split '/', 2)[0] }) + @($CitationKey) |
     Where-Object { $_ } | Sort-Object -Unique)
+# A Topic the groups wrote into may since have been merged away; get_tree on it would fail.
+$existing = @((Invoke-Zt @(@{ tool = 'list_trees'; arguments = @{ workspace = 'agent' } })).trees | ForEach-Object { $_.tree })
+$trees = @($trees | Where-Object { $_ -in $existing })
 $read = if ($trees.Count) { @(Invoke-Zt @($trees | ForEach-Object { @{ tool = 'get_tree'; arguments = @{ tree = $_ } } })) } else { @() }
 $found = @($read | ForEach-Object { $_.cards } | Where-Object { $_.workspace -eq 'agent' -and $_.type -eq 'model' })
 $heads = @($found | Where-Object {
