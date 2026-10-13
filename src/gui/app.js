@@ -33,6 +33,9 @@
 
   async function api(path, body) {
     const options = { headers: { 'X-ZT-Token': TOKEN } };
+    // A change to the Cards may move or delete Cards on a Spread; the server rewrites the
+    // Spreads it holds, so it must hold the latest ones first.
+    if (body !== undefined && path !== 'spreads' && path !== 'render') await spreads.flush();
     if (body !== undefined) {
       options.method = 'POST';
       options.headers['Content-Type'] = 'application/json';
@@ -92,13 +95,16 @@
   const state = {
     overview: null,
     nodes: [],            // every Card summary, for link completion and the sky
+    byAddress: new Map(), // address -> Card summary
+    inboundOf: new Map(), // address -> addresses of the Cards that link it
+    childrenOf: new Map(), // address -> summaries of its Direct and Side successors
     fingerprint: '',
     pointer: null,        // Card address, or null for ROOT
     card: null,
     tree: null,
     outline: null,        // the current tree as an outline (layout.js)
     expandAll: store.get('zt-expand') === '1',
-    mode: store.get('zt-mode') === 'constellation' ? 'constellation' : 'map',
+    mode: ['constellation', 'table'].includes(store.get('zt-mode')) ? store.get('zt-mode') : 'map',
     // The Workspace shown at ROOT and given new trees; it follows the Pointer.
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
     editing: false,
@@ -109,7 +115,25 @@
     agent: { label: 'AI agent', short: 'agent', mcp: 'written by AI agents over MCP' },
   };
   const wsLabel = (id) => (WORKSPACES[id] || WORKSPACES.human).label;
-  const nodeWorkspace = (address) => state.nodes.find((node) => node.address === address)?.workspace;
+  const nodeWorkspace = (address) => state.byAddress.get(address)?.workspace;
+
+  /** Take a fresh list of Card summaries and index it. */
+  function setNodes(nodes) {
+    state.nodes = nodes;
+    state.byAddress = new Map(nodes.map((node) => [node.address, node]));
+    state.inboundOf = new Map();
+    state.childrenOf = new Map();
+    for (const node of nodes) {
+      for (const target of node.links || []) {
+        if (!state.inboundOf.has(target)) state.inboundOf.set(target, []);
+        state.inboundOf.get(target).push(node.address);
+      }
+      if (node.parent && node.edge !== 'root') {
+        if (!state.childrenOf.has(node.parent)) state.childrenOf.set(node.parent, []);
+        state.childrenOf.get(node.parent).push(node);
+      }
+    }
+  }
 
   // Card types: most Cards hold an idea; a Regular Card may record an event or present a model.
   const CARD_TYPES = {
@@ -345,10 +369,13 @@
 
   /** Reload everything, e.g. after a change here or from the CLI. */
   async function refresh() {
-    const [overview, graph] = await Promise.all([api('overview'), api('graph')]);
+    // The server may have moved Cards on a Spread: read the Spreads back, after saving ours.
+    await spreads.flush();
+    const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
+    spreads.take(kept);
     state.overview = overview;
     state.fingerprint = overview.fingerprint;
-    state.nodes = graph.nodes;
+    setNodes(graph.nodes);
     state.tree = null;
     sky.invalidate();
     renderRail();
@@ -420,7 +447,18 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null),
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null,
+            h('span', {
+              class: 'pull' + (spreads.has(hit.address) ? ' on' : ''), role: 'button',
+              title: spreads.has(hit.address) ? 'On the Table — click to put it back' : 'Lay it on the Table',
+              onclick: (event) => {
+                event.stopPropagation();
+                const mark = event.currentTarget;
+                toggleTable(hit.address);
+                mark.classList.toggle('on', spreads.has(hit.address));
+                mark.textContent = spreads.has(hit.address) ? '✓' : '+';
+              },
+            }, spreads.has(hit.address) ? '✓' : '+')),
           h('span', { class: 's' }, marked(hit.snippet)),
         )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
       );
@@ -457,13 +495,16 @@
   }
 
   // ------------------------------------------------------------------ stage
-  const camera = { map: { x: 40, y: 70, k: 1 }, constellation: { x: 0, y: 0, k: 1 } };
+  const camera = { map: { x: 40, y: 70, k: 1 }, table: { x: 0, y: 0, k: 1 }, constellation: { x: 0, y: 0, k: 1 } };
+  const MODES = ['map', 'table', 'constellation'];
+  /** The camera of the view that lays Cards on a plane: the Map's or the Table's. */
+  const planeCamera = () => (state.mode === 'table' ? camera.table : camera.map);
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function setMode(mode) {
     state.mode = mode;
     store.set('zt-mode', mode);
-    for (const button of document.querySelectorAll('.seg button')) {
+    for (const button of document.querySelectorAll('.seg [data-mode]')) {
       button.classList.toggle('on', button.dataset.mode === mode);
     }
     renderStage();
@@ -478,12 +519,19 @@
   function renderStage() {
     if (!state.overview) return;
     const inTree = state.mode === 'map' && state.card;
+    const onTableMode = state.mode === 'table';
     $('#desk').hidden = !(state.mode === 'map' && !state.card);
     $('#plane').hidden = !inTree;
+    $('#table-plane').hidden = !onTableMode;
+    $('#table-tools').hidden = !onTableMode;
+    $('#viewport').classList.toggle('table-mode', onTableMode);
+    $('#app').classList.toggle('at-table', onTableMode);
+    if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; }
     $('#sky').hidden = state.mode !== 'constellation';
     $('#sky-label').hidden = true;
     $('#legend').hidden = !inTree;
     $('.zoom').hidden = state.mode === 'map' && !state.card;
+    renderTableCount();
     const lens = $('#lens-toggle');
     lens.hidden = !inTree;
     lens.classList.toggle('on', state.expandAll);
@@ -493,6 +541,9 @@
     if (state.mode === 'constellation') {
       title.textContent = `Constellation · ${state.overview.trees.length} trees · ${state.nodes.length} cards`;
       sky.show();
+    } else if (onTableMode) {
+      const count = tableView.render();
+      title.textContent = count ? `On the Table · ${count} card${count === 1 ? '' : 's'}` : 'The Table';
     } else if (!state.card) {
       title.textContent = `The cabinet · ${wsLabel(state.workspace)} workspace`;
       renderDesk();
@@ -588,6 +639,7 @@
         n.folded ? 'folded' : '',
         state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
         state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
+        spreads.has(card.address) ? 'on-table' : '',
       ].filter(Boolean).join(' ');
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
@@ -751,7 +803,12 @@
           el = h('button', {
             class: 'node',
             dataset: { address },
-            onclick: (event) => { event.stopPropagation(); go(address); },
+            onclick: (event) => {
+              event.stopPropagation();
+              // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
+              if (event.shiftKey) { toggleTable(address); render(); return; }
+              go(address);
+            },
             onpointerenter: () => { hovered = address; paint(drawn); },
             onpointerleave: () => { if (hovered === address) { hovered = null; paint(drawn); } },
           });
@@ -801,16 +858,19 @@
   function applyCamera() {
     const cam = camera.map;
     $('#plane').style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
+    const t = camera.table;
+    $('#table-plane').style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.k})`;
   }
 
   function fitView() {
     if (state.mode === 'constellation') sky.fit();
+    else if (state.mode === 'table') tableView.fit(true, true);
     else map.fit();
   }
 
   function zoomAt(factor, px, py) {
     if (state.mode === 'constellation') { sky.zoom(factor, px, py); return; }
-    const cam = camera.map;
+    const cam = planeCamera();
     const k = Math.max(0.2, Math.min(2.5, cam.k * factor));
     cam.x = px - (px - cam.x) * (k / cam.k);
     cam.y = py - (py - cam.y) * (k / cam.k);
@@ -822,7 +882,7 @@
     const viewport = $('#viewport');
     let drag = null;
     viewport.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.target.closest('.node, .stack, .desk')) return;
+      if (event.button !== 0 || event.target.closest('.node, .stack, .desk, .tcard, .reach, .table-hand, .table-empty')) return;
       drag = { x: event.clientX, y: event.clientY, moved: false };
       viewport.setPointerCapture(event.pointerId);
       viewport.classList.add('dragging');
@@ -833,7 +893,7 @@
       if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
       drag.x = event.clientX; drag.y = event.clientY;
       if (state.mode === 'constellation') sky.pan(dx, dy);
-      else { camera.map.x += dx; camera.map.y += dy; applyCamera(); }
+      else { const cam = planeCamera(); cam.x += dx; cam.y += dy; applyCamera(); }
     });
     const end = (event) => {
       if (drag && !drag.moved && state.mode === 'constellation') sky.click(event);
@@ -850,7 +910,8 @@
       if (event.ctrlKey || event.metaKey || state.mode === 'constellation') {
         zoomAt(Math.exp(-event.deltaY * 0.0022), event.clientX - rect.left, event.clientY - rect.top);
       } else {
-        camera.map.x -= event.deltaX; camera.map.y -= event.deltaY; applyCamera();
+        const cam = planeCamera();
+        cam.x -= event.deltaX; cam.y -= event.deltaY; applyCamera();
       }
     }, { passive: false });
     for (const button of document.querySelectorAll('[data-zoom]')) {
@@ -861,6 +922,706 @@
       });
     }
   }
+
+  // ---------------------------------------------------------------- spreads
+  // A Spread is a set of Cards laid out together on the Table: which Cards, where each lies,
+  // and which lies on top (the last listed). The archive keeps them (src/spread.rs) and moves
+  // them with their Cards; every change here is saved a moment later.
+  const spreads = (() => {
+    let doc = { current: null, spreads: [] };
+    let dirty = false;
+    let timer = 0;
+    let saving = Promise.resolve();
+    const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const self = {
+      get doc() { return doc; },
+      now: () => doc.spreads.find((spread) => spread.id === doc.current) || null,
+      /** The Spread on the Table, made when the first Card is laid down. */
+      ensure() {
+        let spread = self.now();
+        if (!spread) {
+          spread = { id: newId(), name: `Spread ${doc.spreads.length + 1}`, cards: [] };
+          doc.spreads.push(spread);
+          doc.current = spread.id;
+        }
+        return spread;
+      },
+      create(name) {
+        const spread = { id: newId(), name, cards: [] };
+        doc.spreads.push(spread);
+        doc.current = spread.id;
+        self.changed();
+        return spread;
+      },
+      has: (address) => !!self.now()?.cards.some((card) => card.at === address),
+      /** The Cards on the Table that still exist, in the order they lie (the last on top). */
+      cards: () => (self.now()?.cards || []).filter((card) => state.byAddress.has(card.at)),
+      changed() {
+        dirty = true;
+        clearTimeout(timer);
+        timer = setTimeout(() => self.flush(), 450);
+        renderTableCount();
+      },
+      flush() {
+        clearTimeout(timer);
+        if (!dirty) return saving;
+        dirty = false;
+        const body = JSON.parse(JSON.stringify(doc));
+        saving = saving.then(() => api('spreads', body)).then(() => {}, fail);
+        return saving;
+      },
+      take(kept) {
+        if (dirty) return;
+        doc = kept && Array.isArray(kept.spreads) ? kept : { current: null, spreads: [] };
+      },
+    };
+    return self;
+  })();
+
+  function renderTableCount() {
+    const count = spreads.cards().length;
+    const badge = $('#table-count');
+    badge.hidden = !count;
+    badge.textContent = String(count);
+    $('#spread-name').textContent = spreads.now()?.name || 'Spread';
+    // Only the Reader's Table button changes; re-rendering the Reader would lose its scroll.
+    const button = $('#reader .table-btn');
+    if (button && state.card) {
+      const on = spreads.has(state.card.address);
+      button.firstChild.textContent = on ? 'On the Table ✓' : 'To the Table';
+      button.title = on ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)';
+    }
+  }
+
+  /** Cards the open Card relates to: what it links, what links it, and its place in its tree. */
+  function relatedTo(address) {
+    const node = state.byAddress.get(address);
+    const related = new Set(node ? node.links : []);
+    for (const source of state.inboundOf.get(address) || []) related.add(source);
+    if (node && node.edge !== 'root' && node.parent) related.add(node.parent);
+    for (const child of state.childrenOf.get(address) || []) related.add(child.address);
+    related.delete(address);
+    return related;
+  }
+
+  /**
+   * Lay Cards on the Table. Each lies in the nearest free place beside `near` (a Card on the
+   * Table), else beside the Card held, else in the middle of the view. `from` is where a Card
+   * comes from on the Table plane, so it slides out from there.
+   */
+  function pull(addresses, { near, from } = {}) {
+    const spread = spreads.ensure();
+    const lying = new Map(spread.cards.map((card) => [card.at, card]));
+    const size = ZtLayout.TABLE;
+    const anchorCard = lying.get(near) || lying.get(state.pointer) || spread.cards[spread.cards.length - 1];
+    const want = anchorCard ? { x: anchorCard.x + size.w + size.gap, y: anchorCard.y } : tableView.middle();
+    const added = [];
+    for (const address of addresses) {
+      if (!state.byAddress.has(address) || lying.has(address)) continue;
+      const rects = spread.cards.map((card) => ({ x: card.x, y: card.y, w: size.w, h: size.h }));
+      const spot = ZtLayout.freeSpot(rects, want, size);
+      const card = { at: address, x: spot.x, y: spot.y };
+      spread.cards.push(card);
+      lying.set(address, card);
+      if (from) tableView.arriveFrom(address, from);
+      added.push(address);
+    }
+    if (added.length) spreads.changed();
+    return added;
+  }
+
+  function putBack(address) {
+    const spread = spreads.now();
+    if (!spread) return;
+    const at = spread.cards.findIndex((card) => card.at === address);
+    if (at < 0) return;
+    spread.cards.splice(at, 1);
+    spreads.changed();
+  }
+
+  /** `p`: lay a Card on the Table, or put it back in the box. */
+  function toggleTable(address) {
+    if (!address) throw new Error('p needs a Card; open one first');
+    if (spreads.has(address)) {
+      putBack(address);
+      toast(`${address} is back in the box`);
+    } else {
+      pull([address]);
+      toast(`${address} lies on the Table · ${spreads.cards().length} card${spreads.cards().length === 1 ? '' : 's'}`);
+    }
+    renderStage();
+  }
+
+  /** `P`: lay a Card on the Table with every Card it relates to, gathered around it. */
+  function spreadAround(address) {
+    if (!address) throw new Error('P needs a Card; open one first');
+    pull([address]);
+    const added = pull([...relatedTo(address)], { near: address });
+    tableView.arrange('gather', address, added);
+    setMode('table');
+    setTimeout(() => tableView.fit(), 160);
+  }
+
+  /** Write a Card that lists the Cards on the Table in reading order, filed after the Card held. */
+  async function fileSpread() {
+    const cards = spreads.cards();
+    if (!cards.length) throw new Error('the Table is empty: lay some cards on it first');
+    if (!state.card) throw new Error('open the card to file the new card after, then try again');
+    const order = ZtLayout.readingOrder(cards.map((card) => card.at), (at) => state.byAddress.get(at)?.links || []);
+    const body = order.map((at) => `- [[${at}]] ${state.byAddress.get(at)?.title || ''}`.trimEnd()).join('\n');
+    const kind = state.card.context === 'regular' ? 'side' : 'direct';
+    await newCard(kind, '', { title: spreads.now()?.name || '', body, onTable: true });
+  }
+
+  function showSpreads() {
+    const doc = spreads.doc;
+    const open = (spread, close) => {
+      doc.current = spread.id;
+      spreads.changed();
+      close();
+      tableView.reset();
+      setMode('table');
+    };
+    listDialog(`Spreads · ${doc.spreads.length}`, (close) => [
+      doc.spreads.length ? h('div', { class: 'spread-list' }, doc.spreads.map((spread) => h('div', { class: 'spread-row' + (spread.id === doc.current ? ' on' : '') },
+        h('button', { class: 'spread-open', onclick: () => open(spread, close), title: 'Lay this spread on the Table' },
+          h('span', { class: 't', text: spread.name || 'Untitled' }),
+          h('span', { class: 'n', text: `${spread.cards.length} card${spread.cards.length === 1 ? '' : 's'}` })),
+        h('button', { class: 'mini-btn', text: 'Rename', onclick: async () => {
+          close();
+          const name = await promptValue('Rename spread', 'Name:', spread.name);
+          if (name) { spread.name = name; spreads.changed(); renderStage(); }
+        } }),
+        h('button', { class: 'mini-btn danger', text: 'Remove', onclick: () => {
+          if (!window.confirm(`Remove the spread “${spread.name}”? Its cards stay filed in the slip-box.`)) return;
+          doc.spreads.splice(doc.spreads.indexOf(spread), 1);
+          if (doc.current === spread.id) doc.current = doc.spreads[0]?.id || null;
+          spreads.changed();
+          close();
+          tableView.reset();
+          renderStage();
+        } }),
+      ))) : h('p', { text: 'No spreads yet.' }),
+      h('div', { class: 'actions' }, actionButton('New spread', null, async () => {
+        close();
+        const name = await promptValue('New spread', 'Name — what the cards on it are about:', `Spread ${doc.spreads.length + 1}`);
+        if (name === null) return;
+        spreads.create(name || `Spread ${doc.spreads.length + 1}`);
+        tableView.reset();
+        setMode('table');
+      }, { primary: true })),
+      h('p', { class: 'hint', text: 'A spread is a set of cards laid out together. It changes no card and survives restarts; “File as card” writes it into the slip-box as a card that lists them.' }),
+    ]);
+  }
+
+  // ------------------------------------------------------------------ table
+  // The Table is where a reader builds a set of related Cards, wherever each is filed. It
+  // follows the desk: Cards lie at a slight angle where they were put down; the Card held is
+  // squared up, lifted, and on top; the Cards it relates to keep their ink and their threads;
+  // the rest recede. Its unlaid neighbours wait within reach, tucked under its edge, one click
+  // from the Table. A Card picked up tilts with the hand, settles when laid down, and goes
+  // back in the box when dropped there.
+  const tableView = (() => {
+    const els = new Map();
+    const arrivals = new Map(); // address -> where on the plane a Card slides in from
+    const cam = camera.table;
+    const size = ZtLayout.TABLE;
+    let shown = null;           // the Spread last laid out, by id
+    let lastFocus = null;
+    let hovered = null;
+    let drag = null;
+    let reachOpen = false;
+    let current = { cards: [], focus: null, near: new Set() };
+
+    /** A Card's angle at rest: a few degrees either way, the same every time. */
+    const restAngle = (address) => {
+      let hash = 7;
+      for (const ch of address) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+      return ((hash % 1000) / 1000) * 3.4 - 1.7;
+    };
+    const place = (el, card, angle) => {
+      el.style.transform = `translate(${card.x}px, ${card.y}px) rotate(${angle}deg)`;
+    };
+    const rectOf = (card) => ({ x: card.x, y: card.y, w: size.w, h: size.h });
+
+    function content(el, address) {
+      const node = state.byAddress.get(address);
+      const signature = [node.title, node.type, node.facet, node.emphasis, node.excerpt, node.links.length, node.inbound, node.workspace].join('\u0001');
+      if (el.dataset.sig === signature) return;
+      el.dataset.sig = signature;
+      el.title = node.title + (node.excerpt ? '\n\n' + node.excerpt : '');
+      el.replaceChildren(
+        h('span', { class: 'top' },
+          h('span', { class: 'addr', text: address }),
+          h('span', { class: 'badges' },
+            typeStamp(node.type, null, node.facet, node.emphasis),
+            node.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null)),
+        h('span', { class: 't' + (node.title ? '' : ' untitled') }, node.title ? titleNodes(node.title) : 'untitled'),
+        node.excerpt ? h('span', { class: 'x' }, titleNodes(node.excerpt)) : null,
+        h('span', { class: 'foot' },
+          node.inbound ? h('span', { title: `Linked from ${node.inbound} card${node.inbound === 1 ? '' : 's'}`, text: '←' + node.inbound }) : null,
+          node.links.length ? h('span', { title: `Links to ${node.links.length} card${node.links.length === 1 ? '' : 's'}`, text: '→' + node.links.length }) : null),
+        h('button', {
+          class: 'put-back', title: 'Put it back in the box', 'aria-label': `Put ${address} back in the box`,
+          onpointerdown: (event) => event.stopPropagation(),
+          onclick: (event) => { event.stopPropagation(); sendToBox(address); },
+        }, '↩'),
+      );
+    }
+
+    function make(address) {
+      const node = state.byAddress.get(address);
+      const el = h('div', {
+        class: 'tcard' + (node.edge === 'root' ? ' root ' + node.kind : '') + (node.type && node.type !== 'idea' ? ' type-' + node.type : ''),
+        dataset: { address }, role: 'button', tabindex: '0',
+      });
+      el.addEventListener('pointerdown', (event) => grab(event, address, el));
+      el.addEventListener('pointerenter', () => { if (!drag) { hovered = address; paintThreads(); } });
+      el.addEventListener('pointerleave', () => { if (hovered === address) { hovered = null; paintThreads(); } });
+      el.addEventListener('keydown', (event) => { if (event.key === 'Enter') go(address); });
+      return el;
+    }
+
+    /** A Card comes onto the Table: from where it was (a slip within reach), else dealt from above. */
+    function enter(el, card, index) {
+      const from = arrivals.get(card.at);
+      arrivals.delete(card.at);
+      el.classList.add('arriving');
+      if (from) el.style.transform = `translate(${from.x}px, ${from.y}px) rotate(${from.angle || 0}deg) scale(.86)`;
+      else el.style.transform = `translate(${card.x - 26}px, ${card.y - 54}px) rotate(${restAngle(card.at) - 7}deg) scale(1.06)`;
+      el.style.transitionDelay = Math.min(index, 14) * 32 + 'ms';
+      // Commit the starting place before moving on, so the move is a transition.
+      void el.offsetWidth;
+      el.classList.remove('arriving');
+      place(el, card, card.at === current.focus ? 0 : restAngle(card.at));
+      setTimeout(() => { el.style.transitionDelay = ''; }, 600);
+    }
+
+    function render() {
+      const spread = spreads.now();
+      if (!spread || shown !== spread.id) {
+        for (const el of els.values()) el.remove();
+        els.clear();
+        lastFocus = null;
+      }
+      const fresh = !spread || shown !== spread.id;
+      shown = spread ? spread.id : null;
+      const cards = spreads.cards();
+      const focus = state.pointer && cards.some((card) => card.at === state.pointer) ? state.pointer : null;
+      const near = focus ? relatedTo(focus) : new Set();
+      current = { cards, focus, near };
+      if (focus !== lastFocus) reachOpen = false;
+      const holder = $('#tcards');
+      const keep = new Set();
+      let entering = 0;
+      cards.forEach((card, index) => {
+        keep.add(card.at);
+        let el = els.get(card.at);
+        const isNew = !el;
+        if (isNew) {
+          el = make(card.at);
+          els.set(card.at, el);
+          holder.append(el);
+        }
+        content(el, card.at);
+        el.classList.toggle('focus', card.at === focus);
+        el.classList.toggle('near', near.has(card.at));
+        el.classList.toggle('recede', !!focus && card.at !== focus && !near.has(card.at));
+        // Paper lies in the order it was put down; the Card held lies on top of it all.
+        el.style.zIndex = card.at === focus ? 900 : String(index + 1);
+        if (isNew) enter(el, card, fresh ? index : entering++);
+        else if (!drag || drag.at !== card.at) place(el, card, card.at === focus ? 0 : restAngle(card.at));
+      });
+      for (const [address, el] of els) {
+        if (keep.has(address)) continue;
+        els.delete(address);
+        leave(el);
+      }
+      paintThreads();
+      renderReach();
+      renderHand();
+      const empty = $('#table-empty');
+      empty.hidden = cards.length > 0;
+      if (!cards.length) renderEmpty(empty);
+      if (fresh) fit(false);
+      else if (focus && focus !== lastFocus) keepInView(focus);
+      lastFocus = focus;
+      applyCamera();
+      return cards.length;
+    }
+
+    /** A Card put back slides toward the box and drops into it. */
+    function leave(el) {
+      const box = $('#table-box').getBoundingClientRect();
+      const view = $('#viewport').getBoundingClientRect();
+      const x = (box.left + box.width / 2 - view.left - cam.x) / cam.k - size.w / 2;
+      const y = (box.top - view.top - cam.y) / cam.k;
+      el.classList.add('leaving');
+      el.style.transform = `translate(${x}px, ${y}px) rotate(-4deg) scale(.42)`;
+      setTimeout(() => el.remove(), 460);
+    }
+
+    function sendToBox(address) {
+      $('#table-box').classList.add('open');
+      putBack(address);
+      renderStage();
+      setTimeout(() => $('#table-box').classList.remove('open'), 520);
+    }
+
+    function paintThreads() {
+      const layer = $('#threads');
+      const { cards, focus } = current;
+      const lying = new Map(cards.map((card) => [card.at, card]));
+      const groups = [];
+      for (const card of cards) {
+        const node = state.byAddress.get(card.at);
+        for (const target of node.links) {
+          if (target === card.at || !lying.has(target)) continue;
+          const kind = (node.kinds && node.kinds[target]) || 'refers';
+          const hot = !!focus && (card.at === focus || target === focus);
+          const warm = !hot && !!hovered && (card.at === hovered || target === hovered);
+          const back = (state.byAddress.get(target)?.links || []).includes(card.at) && card.at > target;
+          const geometry = ZtLayout.thread(rectOf(card), rectOf(lying.get(target)), back);
+          const group = svg('g', { class: 'thread kind-' + kind + (hot ? ' hot' : warm ? ' warm' : focus ? ' faint' : '') });
+          const label = svg('title', {});
+          label.textContent = `${card.at} ${KINDS[kind] ? KINDS[kind].fwd : 'refers to'} ${target}`;
+          const tip = geometry.end;
+          const a = geometry.angle;
+          const arrow = `M ${tip.x - 8 * Math.cos(a - 0.45)} ${tip.y - 8 * Math.sin(a - 0.45)} L ${tip.x} ${tip.y} L ${tip.x - 8 * Math.cos(a + 0.45)} ${tip.y - 8 * Math.sin(a + 0.45)}`;
+          group.append(label, svg('path', { d: geometry.d, class: 'line' }), svg('path', { d: arrow, class: 'tip' }));
+          if ((hot || warm) && kind !== 'refers' && KINDS[kind]) {
+            const word = svg('text', { x: geometry.mid.x, y: geometry.mid.y, class: 'word' });
+            word.textContent = KINDS[kind].fwd;
+            group.append(word);
+          }
+          groups.push([hot ? 2 : warm ? 1 : 0, group]);
+        }
+      }
+      groups.sort((a, b) => a[0] - b[0]);
+      layer.replaceChildren(...groups.map(([, group]) => group));
+    }
+
+    /** The Card held's neighbours not yet on the Table: kinded Links first, then plain ones, then its tree. */
+    function candidates(focus) {
+      const node = state.byAddress.get(focus);
+      const list = [];
+      const seen = new Set([focus]);
+      const add = (at, way, label) => {
+        if (seen.has(at) || !state.byAddress.has(at) || spreads.has(at)) return;
+        seen.add(at);
+        list.push({ at, way, label });
+      };
+      const kindOfLink = (from, to) => state.byAddress.get(from)?.kinds?.[to];
+      const sources = state.inboundOf.get(focus) || [];
+      for (const target of node.links) { const k = kindOfLink(focus, target); if (k && KINDS[k]) add(target, 'out', KINDS[k].fwd); }
+      for (const source of sources) { const k = kindOfLink(source, focus); if (k && KINDS[k]) add(source, 'in', KINDS[k].back); }
+      for (const target of node.links) add(target, 'out', 'links to');
+      for (const source of sources) add(source, 'in', 'linked from');
+      if (node.edge !== 'root' && node.parent) add(node.parent, 'tree', 'filed after');
+      for (const child of state.childrenOf.get(focus) || []) add(child.address, 'tree', child.edge === 'side' ? 'branches to' : 'continued by');
+      return list;
+    }
+
+    /**
+     * Where the slips within reach lie: in the nearest gap beside the card held, right before
+     * left, so they never cover a card on the Table; if no gap is near, against its right edge.
+     */
+    function reachOrigin(count) {
+      const card = current.cards.find((item) => item.at === current.focus);
+      if (!card) return null;
+      const box = { w: 250, h: 24 + Math.min(count, 6) * 41 + (count > 6 ? 24 : 0), gap: 14 };
+      const rects = current.cards.map((item) => ({ ...rectOf(item), w: size.w * (item.at === current.focus ? 1.07 : 1) }));
+      const right = { x: card.x + size.w * 1.04 + 14, y: card.y + 6 };
+      const spot = ZtLayout.freeSpot(rects, right, box);
+      const far = Math.hypot(spot.x - right.x, spot.y - right.y) > size.w * 1.6;
+      return far ? right : spot;
+    }
+
+    function renderReach() {
+      const box = $('#reach');
+      const focus = current.focus;
+      const list = focus ? candidates(focus) : [];
+      if (!list.length) { box.hidden = true; box.replaceChildren(); return; }
+      const origin = reachOrigin(reachOpen ? list.length : Math.min(list.length, 7));
+      box.hidden = false;
+      box.style.transform = `translate(${origin.x}px, ${origin.y}px)`;
+      const limit = reachOpen ? list.length : 6;
+      const slip = (item, index) => h('button', {
+        class: 'reach-slip way-' + item.way, style: `--i: ${index}`,
+        title: `${item.label} ${item.at} — lay it on the Table`,
+        onclick: (event) => {
+          const top = event.currentTarget.offsetTop;
+          pull([item.at], { near: focus, from: { x: origin.x, y: origin.y + top, angle: index % 2 ? 0.8 : -0.8 } });
+          renderStage();
+        },
+      },
+        h('span', { class: 'k', text: (item.way === 'in' ? '← ' : item.way === 'out' ? '→ ' : '') + item.label }),
+        h('span', { class: 't' }, titleNodes(state.byAddress.get(item.at).title || item.at)),
+        h('span', { class: 'addr', text: item.at }),
+      );
+      box.replaceChildren(
+        h('div', { class: 'reach-head' },
+          h('span', { text: `Within reach · ${list.length}` }),
+          list.length > 1 ? h('button', {
+            class: 'reach-all', title: 'Lay every card within reach on the Table',
+            onclick: () => {
+              const added = pull(list.map((item) => item.at), { near: focus, from: { x: origin.x, y: origin.y } });
+              arrange('gather', focus, added);
+            },
+          }, 'Lay all') : null),
+        ...list.slice(0, limit).map(slip),
+        ...(list.length > limit ? [h('button', { class: 'reach-more', onclick: () => { reachOpen = true; renderReach(); } }, `+${list.length - limit} more`)] : []),
+      );
+    }
+
+    /** The Card being read but not on the Table is in the reader's hand, ready to lay down. */
+    function renderHand() {
+      const hand = $('#table-hand');
+      const card = state.card;
+      if (!card || spreads.has(card.address)) { hand.hidden = true; return; }
+      hand.hidden = false;
+      hand.replaceChildren(
+        h('span', { class: 'lbl', text: 'In hand' }),
+        h('span', { class: 'addr', text: card.address }),
+        h('span', { class: 't' }, titleNodes(card.title || '(untitled)')),
+        h('span', { class: 'act' }, 'Lay it down', h('kbd', { text: 'p' })),
+      );
+      hand.onclick = () => {
+        const from = middle();
+        pull([card.address], { from: { x: from.x, y: from.y + 400 } });
+        renderStage();
+      };
+    }
+
+    function renderEmpty(empty) {
+      empty.replaceChildren(
+        h('h2', { text: spreads.now() ? `${spreads.now().name} is empty` : 'An empty Table' }),
+        h('p', { text: 'Pull related cards out of the box and lay them side by side, wherever each is filed.' }),
+        h('dl', {}, [
+          ['p', 'lay the card you are reading on the Table — or put it back'],
+          ['P', 'lay it down with every card it relates to'],
+          ['Shift-click', 'a card in the Map, or + on a search hit'],
+          ['within reach', 'click the card you hold: its neighbours wait beside it'],
+        ].flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })])),
+      );
+    }
+
+    // ---- the hand: pick up, carry, lay down
+    function grab(event, address, el) {
+      if (event.button !== 0 || event.target.closest('.put-back')) return;
+      event.stopPropagation();
+      const card = spreads.now()?.cards.find((item) => item.at === address);
+      if (!card) return;
+      try { el.setPointerCapture(event.pointerId); } catch { /* a pointer the browser no longer tracks */ }
+      drag = { at: address, card, sx: event.clientX, sy: event.clientY, ox: card.x, oy: card.y, moved: false, last: event.clientX, vx: 0, overBox: false };
+      const box = $('#table-box');
+      const move = (e) => {
+        if (!drag.moved) {
+          if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
+          drag.moved = true;
+          el.classList.add('held');
+          el.style.zIndex = 1000;
+          box.classList.add('open');
+          $('#reach').classList.add('away');
+        }
+        drag.vx = drag.vx * 0.72 + (e.clientX - drag.last) * 0.28;
+        drag.last = e.clientX;
+        card.x = drag.ox + (e.clientX - drag.sx) / cam.k;
+        card.y = drag.oy + (e.clientY - drag.sy) / cam.k;
+        // The card swings with the hand that carries it.
+        place(el, card, Math.max(-9, Math.min(9, drag.vx * 0.9)));
+        // Where the box stands once open (its layout box, without the slide), so a quick
+        // throw lands in it too.
+        const v = $('#viewport').getBoundingClientRect();
+        const left = v.left + box.offsetLeft; const top = v.top + box.offsetTop;
+        drag.overBox = e.clientX >= left - 10 && e.clientX <= left + box.offsetWidth + 10 && e.clientY >= top - 20;
+        box.classList.toggle('over', drag.overBox);
+        el.classList.toggle('to-box', drag.overBox);
+        paintThreads();
+      };
+      const up = () => {
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        const done = drag;
+        drag = null;
+        box.classList.remove('open', 'over');
+        $('#reach').classList.remove('away');
+        el.classList.remove('held', 'to-box');
+        if (!done.moved) { go(address); return; }
+        if (done.overBox) { sendToBox(address); return; }
+        // The card laid down last lies on top.
+        const spread = spreads.now();
+        spread.cards.splice(spread.cards.indexOf(card), 1);
+        spread.cards.push(card);
+        spreads.changed();
+        render();
+      };
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    }
+
+    // ---- camera
+    let cameraFrame = 0;
+    function glideCamera(target, ms) {
+      const id = ++cameraFrame;
+      if (document.hidden) { Object.assign(cam, target); applyCamera(); return; }
+      const from = { ...cam };
+      const t0 = performance.now();
+      const step = (now) => {
+        if (id !== cameraFrame) return;
+        const t = ms <= 0 || reduceMotion() ? 1 : Math.min(1, (now - t0) / ms);
+        const e = 1 - Math.pow(1 - t, 3);
+        cam.x = from.x + (target.x - from.x) * e;
+        cam.y = from.y + (target.y - from.y) * e;
+        cam.k = from.k + (target.k - from.k) * e;
+        applyCamera();
+        if (t < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+
+    const STAGE_TOP = 62;
+    // Below this scale a card's title is hard to read; the Table only goes there when asked.
+    const LEGIBLE = 0.72;
+    const reachWidth = () => (current.focus && !$('#reach').hidden ? 270 : 0);
+
+    /**
+     * Frame the Table. Asked for (`overview`), it fits every card, however small. Otherwise it
+     * keeps the cards legible: if they do not all fit, it frames the card held (or the middle).
+     */
+    function fit(animate = true, overview = false) {
+      const viewport = $('#viewport');
+      const vw = viewport.clientWidth; const vh = viewport.clientHeight;
+      const cards = spreads.cards();
+      if (!cards.length) {
+        const target = { x: vw / 2, y: STAGE_TOP + (vh - STAGE_TOP) / 2, k: 1 };
+        if (animate) glideCamera(target, 320); else Object.assign(cam, target);
+        return;
+      }
+      const xs = cards.map((card) => card.x); const ys = cards.map((card) => card.y);
+      const b = { x: Math.min(...xs) - 20, y: Math.min(...ys) - 20, w: Math.max(...xs) - Math.min(...xs) + size.w + 40, h: Math.max(...ys) - Math.min(...ys) + size.h + 40 };
+      const reach = reachWidth();
+      const room = { w: vw - 64, h: vh - STAGE_TOP - 40 };
+      const whole = Math.min(1.05, room.w / (b.w + reach), room.h / b.h);
+      let target;
+      if (overview || whole >= LEGIBLE) {
+        const k = Math.max(0.2, whole);
+        target = { k, x: 32 + (room.w - (b.w + reach) * k) / 2 - b.x * k, y: STAGE_TOP + (room.h - b.h * k) / 2 - b.y * k };
+      } else {
+        // Each way the cards fit, centre them; each way they do not, centre the card held,
+        // but never past the last card.
+        const held = cards.find((card) => card.at === current.focus);
+        const k = LEGIBLE;
+        const axis = (start, length, extent, low, mid) => {
+          if (length * k <= extent) return low + (extent - length * k) / 2 - start * k;
+          const centred = low + extent / 2 - mid * k;
+          return Math.min(low - start * k, Math.max(low + extent - (start + length) * k, centred));
+        };
+        target = {
+          k,
+          x: axis(b.x, b.w + reach, room.w, 32, held ? held.x + (size.w + reach) / 2 : b.x + b.w / 2),
+          y: axis(b.y, b.h, room.h, STAGE_TOP, held ? held.y + size.h / 2 : b.y + b.h / 2),
+        };
+      }
+      if (animate) glideCamera(target, 340); else Object.assign(cam, target);
+    }
+
+    /** Bring the Card held (and what lies within its reach) into view, if it is not. */
+    function keepInView(address) {
+      const card = current.cards.find((item) => item.at === address);
+      if (!card) return;
+      const viewport = $('#viewport');
+      const vw = viewport.clientWidth; const vh = viewport.clientHeight;
+      const left = cam.x + card.x * cam.k; const top = cam.y + card.y * cam.k;
+      const right = left + (size.w + reachWidth()) * cam.k;
+      const bottom = top + size.h * cam.k;
+      if (left >= 24 && right <= vw - 24 && top >= STAGE_TOP && bottom <= vh - 24) return;
+      glideCamera({ k: cam.k, x: vw / 2 - (card.x + size.w / 2 + 120) * cam.k, y: STAGE_TOP + (vh - STAGE_TOP) * 0.42 - (card.y + size.h / 2) * cam.k }, 380);
+    }
+
+    /** The middle of the view, on the Table plane: where a Card goes on an empty Table. */
+    function middle() {
+      const viewport = $('#viewport');
+      const vw = viewport.clientWidth || 800; const vh = viewport.clientHeight || 600;
+      return { x: (vw / 2 - cam.x) / cam.k - size.w / 2, y: ((STAGE_TOP + vh) / 2 - cam.y) / cam.k - size.h / 2 };
+    }
+
+    /**
+     * Rearrange the Cards: gathered around the one held, lined up in reading order, or stood by
+     * tree. With `only`, just those Cards move (the rest stay where the reader put them). The
+     * arrangement keeps the middle of the Cards it moves, and they slide one after another.
+     */
+    function arrange(kind, focusAt, only) {
+      const spread = spreads.now();
+      if (!spread) return;
+      const cards = spreads.cards();
+      if (!cards.length) return;
+      const addresses = cards.map((card) => card.at);
+      const linksOf = (at) => state.byAddress.get(at)?.links || [];
+      let pos;
+      if (kind === 'gather') {
+        const focus = focusAt || (addresses.includes(state.pointer) ? state.pointer : addresses[addresses.length - 1]);
+        const near = relatedTo(focus);
+        const set = only ? [focus, ...only] : addresses;
+        pos = ZtLayout.gather(set.filter((at, i) => set.indexOf(at) === i), focus, (at) => near.has(at), size);
+        // Keep the Card held where it lies; its neighbours come to it.
+        const held = cards.find((card) => card.at === focus);
+        const at = pos.get(focus);
+        if (held && at) {
+          const dx = held.x - at.x; const dy = held.y - at.y;
+          for (const p of pos.values()) { p.x += dx; p.y += dy; }
+        }
+        if (only) {
+          // Only the newcomers move; put each in the free place nearest its ring spot.
+          const fixed = cards.filter((card) => !only.includes(card.at)).map(rectOf);
+          for (const address of only) {
+            const want = pos.get(address);
+            if (!want) continue;
+            const spot = ZtLayout.freeSpot(fixed, want, size);
+            pos.set(address, spot);
+            fixed.push({ ...spot, w: size.w, h: size.h });
+          }
+          pos.delete(focus);
+        }
+      } else {
+        pos = kind === 'line' ? ZtLayout.lineUp(ZtLayout.readingOrder(addresses, linksOf), size) : ZtLayout.byTree(addresses, size);
+        const centre = (list) => ({ x: list.reduce((s, p) => s + p.x, 0) / list.length, y: list.reduce((s, p) => s + p.y, 0) / list.length });
+        const was = centre(cards); const now = centre([...pos.values()]);
+        for (const p of pos.values()) { p.x += was.x - now.x; p.y += was.y - now.y; }
+        // Lined up or stood in a drawer, the cards lie in that order: the later on top.
+        const rank = new Map([...pos.keys()].map((at, i) => [at, i]));
+        spread.cards.sort((a, b) => (rank.get(a.at) ?? -1) - (rank.get(b.at) ?? -1));
+      }
+      let i = 0;
+      for (const card of spread.cards) {
+        const p = pos.get(card.at);
+        if (!p) continue;
+        card.x = p.x; card.y = p.y;
+        const el = els.get(card.at);
+        if (el) {
+          el.style.transitionDelay = Math.min(i, 20) * 22 + 'ms';
+          setTimeout(() => { el.style.transitionDelay = ''; }, 900);
+        }
+        i += 1;
+      }
+      spreads.changed();
+      if (state.mode === 'table') {
+        render();
+        setTimeout(() => fit(true), 120);
+      }
+    }
+
+    return {
+      render,
+      fit,
+      middle,
+      arrange,
+      arriveFrom(address, from) { arrivals.set(address, from); },
+      reset() { shown = null; reachOpen = false; },
+    };
+  })();
 
   // ---------------------------------------------------------- constellation
   // Every tree as a radial outline, the trees set around one ring (layout.js), and the
@@ -1139,7 +1900,7 @@
 
   function actionButton(label, key, handler, options = {}) {
     return h('button', {
-      class: 'btn' + (options.primary ? ' primary' : '') + (options.danger ? ' danger' : ''),
+      class: 'btn' + (options.primary ? ' primary' : '') + (options.danger ? ' danger' : '') + (options.cls ? ' ' + options.cls : ''),
       disabled: options.disabled,
       title: options.title,
       onclick: () => Promise.resolve().then(handler).catch(fail),
@@ -1163,7 +1924,8 @@
           [': or /', 'command bar · search'],
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
           ['x', 'unfold the whole tree, or fold it back around the pointer'],
-          ['v', 'switch Map / Constellation'],
+          ['p · P', 'lay the card on the Table · with every card it relates to'],
+          ['v', 'switch Map / Table / Constellation'],
           ['w · ws', 'switch the human / agent workspace'],
         ].flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })]),
         ),
@@ -1204,6 +1966,10 @@
       card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
       h('div', { class: 'actions' },
+        actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p', () => toggleTable(card.address), {
+          title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
+          cls: 'table-btn',
+        }),
         actionButton('Edit', 'e', editCard, { primary: true }),
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
         actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),
@@ -1660,7 +2426,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(20)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · x unfold · w workspace · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -1984,7 +2750,8 @@
     go(address);
   }
 
-  async function newCard(kind, title) {
+  /** A new Card; `preset` may give its title and body, and lay it on the Table once saved. */
+  async function newCard(kind, title, preset = {}) {
     if (kind !== 'topic' && !state.card) throw new Error(`${kind === 'side' ? 'b' : 'n'} needs a Card; use go <target> first`);
     const parent = state.card;
     if (kind === 'direct' && parent.direct) throw new Error(`direct successor already exists: ${parent.direct.address}`);
@@ -1994,7 +2761,7 @@
     const heading = kind === 'topic' ? `New Topic · ${wsLabel(state.workspace)} workspace`
       : kind === 'direct' ? `New direct successor of ${parent.address}` : `New side successor of ${parent.address}`;
     // Same template as the terminal: heading, blank line, body line, marker.
-    const initial = `# ${kind === 'topic' ? title || '' : ''}\n\n\n<!-- zt:reverse-links -->\n`;
+    const initial = `# ${kind === 'topic' ? title || '' : preset.title || ''}\n\n${preset.body ? preset.body + '\n' : ''}\n<!-- zt:reverse-links -->\n`;
     const address = await openEditor({
       heading,
       initial,
@@ -2002,7 +2769,9 @@
       cardType: kind === 'topic' ? null : 'idea',
       save: (text, _bibtex, type, facet, emphasis) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined }).then((result) => result.address),
     });
-    if (address) await afterChange(address, `created ${address}`);
+    if (!address) return;
+    await afterChange(address, `created ${address}`);
+    if (preset.onTable) { pull([address]); renderStage(); }
   }
 
   async function newLiterature() {
@@ -2272,7 +3041,10 @@
           return card ? run(() => go(card.parent ? card.parent.address : null)) : undefined;
         case 'ArrowDown': return card?.direct ? run(() => go(card.direct.address)) : undefined;
         case 'ArrowRight': return card?.sides.length ? run(() => go(card.sides[0].address)) : undefined;
-        case 'v': return run(() => setMode(state.mode === 'map' ? 'constellation' : 'map'));
+        case 'v': return run(() => setMode(MODES[(MODES.indexOf(state.mode) + 1) % MODES.length]));
+        case 'p': case 'P':
+          if (!card) return undefined;
+          return run(() => (event.shiftKey ? spreadAround(card.address) : toggleTable(card.address)));
         case 'w': return run(() => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }));
         case 'f': return run(() => fitView());
         case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
@@ -2312,12 +3084,17 @@
     installPanZoom();
     installCommandBar();
     installKeys();
-    for (const button of document.querySelectorAll('.seg button')) {
+    for (const button of document.querySelectorAll('.seg [data-mode]')) {
       button.addEventListener('click', () => setMode(button.dataset.mode));
     }
     setMode(state.mode);
     $('#rail-toggle').addEventListener('click', () => openRail());
     $('#lens-toggle').addEventListener('click', () => setExpandAll(!state.expandAll));
+    $('#spread-pick').addEventListener('click', () => showSpreads());
+    $('#file-spread').addEventListener('click', () => fileSpread().catch(fail));
+    for (const button of document.querySelectorAll('[data-arrange]')) {
+      button.addEventListener('click', () => tableView.arrange(button.dataset.arrange));
+    }
     $('#quit').addEventListener('click', () => quit().catch(fail));
     $('#broken-pill').addEventListener('click', () => showBroken().catch(fail));
     $('#search').addEventListener('input', (event) => runSearch(event.target.value));
@@ -2329,10 +3106,11 @@
     window.addEventListener('focus', () => watchForChanges());
     setInterval(watchForChanges, 4000);
     try {
-      const [overview, graph] = await Promise.all([api('overview'), api('graph')]);
+      const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
       state.overview = overview;
       state.fingerprint = overview.fingerprint;
-      state.nodes = graph.nodes;
+      setNodes(graph.nodes);
+      spreads.take(kept);
       route();
     } catch (error) {
       fail(error);

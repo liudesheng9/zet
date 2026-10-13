@@ -7,7 +7,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 ## 功能
 
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
-- 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
+- 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、把各处相关 Card 并排摊开的桌面（Table）、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
 - 可以把 Regular Card 标为 Event Card（一个真实发生的事件）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
 - 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
@@ -116,6 +116,13 @@ zt gui --port 4717     # 指定端口
 - **地图（Map）**：用聚焦透镜呈现当前树的 Folgezettel 地图。Direct successor 沿同一列向下延伸，
   Side successor 进入右边一列。Pointer 所在的卡片被拉到前面；它的路径、后继和相邻卡片以小卡片立起；
   其余卡片只露出一行卡头，远离 Pointer 的分支折叠为 "+N" 卡叠。只画 Pointer 的 Link。按 `x` 展开整棵树。
+- **桌面（Table）**：一块自由的工作台面，用来把一组相关 Card 摊开并排，不论它们归档在哪里。按 `p`
+  把正在读的 Card 放上桌面（再按一次放回卡盒），按 `P` 连同与它相关的所有 Card 一起放上；也可以在地图中
+  Shift-点击卡片，或点搜索结果上的 `+`。点击桌上的卡片即“拿起”它：它被摆正、抬起，与它相关的卡片保持清晰并以
+  丝线相连（丝线标出关系类型：依赖、对照……），其余卡片退后；尚未上桌的相邻卡片放在它旁边“触手可及”，点一下即可上桌。
+  卡片可任意拖动，拖到卡盒上即放回。**Gather** 把卡片围绕手中那张摆开，**Line up** 沿 Link 按阅读顺序排成行，
+  **By tree** 按树各排一列。每组卡片是一个 **Spread**：保存在档案中，Card 移动或改名时随之更新，且不改动任何 Card；
+  **File as card** 把它写成一张列出这些卡片的 Card，归入卡片盒。
 - **星图（Constellation）**：每棵树画成一个径向大纲，所有树排成一圈；两棵树之间的 Link
   合并为一条按数量加粗的弧线。Pointer 所在的树会被突出。
 - **阅读器**（右侧）：把 Card 呈现为一张带横线的索引卡片：地址印章和标题在红线之上，Markdown 写在蓝色横线上；
@@ -126,7 +133,7 @@ zt gui --port 4717     # 指定端口
 命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`mv 1/3`、
 `ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
 `:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
-`x` 展开或折叠整棵树、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
+`x` 展开或折叠整棵树、`p` / `P` 把卡片放上桌面、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
 GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
 因此需要先用电源按钮或 `Ctrl+C` 关闭 GUI，`zt down` 才能停止服务。

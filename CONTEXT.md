@@ -152,6 +152,14 @@ _Avoid_: Web app, frontend
 The GUI view of one tree, laid out by address: Direct successors continue downward and each Side successor starts a new column.
 _Avoid_: Tree diagram
 
+**Table**:
+The GUI view where a reader lays Cards from anywhere in the slip-box side by side to work with them as one set. A Card on the Table stays filed in its tree. The Card held (the Pointer, when it lies on the Table) is squared up and lifted, the Cards it relates to keep their ink and their threads (each named by its Link kind), and the rest recede; its neighbours not yet on the Table wait within reach beside it.
+_Avoid_: Canvas, board, workspace
+
+**Spread**:
+One named set of Cards laid out on the Table: which Cards, where each lies, and which lies on top. The archive keeps every Spread; a Spread follows its Cards through moves and renames, loses a Card that is deleted, and changes no Card. Filing a Spread as a card writes a Card that lists its Cards with Links.
+_Avoid_: Collection, selection, set
+
 **Model board**:
 The GUI view of one model, below a Model Card or Model part: the Model Card as the way in and each part as a small card under the parts it rests on, with a thread for each Model relation (a dashed arc named by its kind when it is not `rests-on`) and Loose parts in a tray. It is laid out by `rests-on` relations, not by address, and inked by attention: the open part, the parts it relates to (with their kinds and reasons), and core parts stay legible; the rest recede to their facet. Below it lie the open Card's Model neighbours and the other models a shared part serves.
 _Avoid_: Model map, model diagram

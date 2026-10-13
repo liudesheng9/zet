@@ -353,16 +353,16 @@ kbd {
 }
 .stage-bar > * { pointer-events: auto; }
 .seg, .zoom {
-  display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px;
+  display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; flex: none;
   background: var(--glass); backdrop-filter: blur(12px) saturate(1.3);
   border: 1px solid var(--hairline); box-shadow: var(--shadow);
 }
-.seg button { border: 0; background: none; padding: 5px 13px; border-radius: 8px; font-size: 12.5px; color: var(--ink-soft); transition: background .15s, color .15s; }
+.seg button { white-space: nowrap; border: 0; background: none; padding: 5px 13px; border-radius: 8px; font-size: 12.5px; color: var(--ink-soft); transition: background .15s, color .15s; }
 .seg button:hover { color: var(--ink); }
 .seg button.on { background: var(--paper); color: var(--ink); box-shadow: var(--shadow); font-weight: 600; }
 .zoom .icon-btn { width: 28px; height: 28px; border-radius: 8px; }
 .lens-toggle {
-  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 9px 0 10px; border-radius: 11px;
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 9px 0 10px; border-radius: 11px; white-space: nowrap; flex: none;
   background: var(--glass); backdrop-filter: blur(12px) saturate(1.3);
   border: 1px solid var(--hairline); box-shadow: var(--shadow); color: var(--ink-soft); font-size: 12.5px;
   transition: color .15s, border-color .15s;
@@ -1099,3 +1099,251 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .figure-hint { margin: 6px 2px; font: 12.5px var(--sans); color: var(--ink-faint); grid-column: 1 / -1; }
 .figure-hint.err { color: var(--broken); }
 @media (max-width: 720px) { .figure-pick-body { grid-template-columns: 1fr; } .figure-side { border-right: 0; border-bottom: 1px solid var(--line-soft); } }
+
+/* ---------- the Table ----------
+   A working surface for a set of related cards, wherever each is filed. It is a desk under a
+   lamp: light in the middle where the work is, darker toward the edges. Attention is spent
+   by lift, size, and ink, never blur: the card held is squared up, lifted, and on top; the
+   cards it relates to keep their ink and their threads; the rest lie flatter and paler. The
+   motion is a hand's: a card picked up tilts with the hand, a card laid down settles with a
+   little give, a new card slides out from where it was, and a card put back drops into the box. */
+.viewport.table-mode {
+  background-image:
+    radial-gradient(ellipse 70% 62% at 50% 46%, color-mix(in srgb, var(--paper) 62%, transparent), transparent 72%),
+    radial-gradient(ellipse 120% 100% at 50% 50%, transparent 55%, color-mix(in srgb, var(--ink) 9%, transparent)),
+    radial-gradient(var(--desk-grain) 1.1px, transparent 1.2px);
+  background-size: 100% 100%, 100% 100%, 24px 24px;
+}
+.table-plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.tcards { position: absolute; left: 0; top: 0; }
+.threads { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 0; }
+.thread .line, .thread .tip {
+  fill: none; stroke: var(--ink-faint); stroke-width: 1.4; opacity: .5;
+  stroke-linecap: round; stroke-linejoin: round; transition: opacity .2s, stroke .2s;
+}
+.thread.kind-refers .line { stroke-dasharray: 5 5; }
+.thread.kind-illustrates .line { stroke-dasharray: .5 5; stroke-width: 2; }
+.thread.kind-contrasts .line { stroke-dasharray: 9 5; }
+.thread.kind-relaxes .line { stroke-dasharray: 12 4 2 4; }
+.thread.kind-corresponds .line { stroke-dasharray: 2 3; }
+.thread.faint .line, .thread.faint .tip { opacity: .14; }
+.thread.warm .line, .thread.warm .tip { stroke: var(--ink-soft); opacity: .75; }
+.thread.hot .line, .thread.hot .tip { stroke: var(--link); stroke-width: 2; opacity: .92; }
+.thread.hot.kind-objects .line, .thread.hot.kind-objects .tip { stroke: var(--broken); }
+.thread .word {
+  font: 700 9.5px var(--sans); letter-spacing: .07em; text-transform: uppercase; fill: var(--link);
+  text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: var(--desk); stroke-width: 4px; stroke-linejoin: round;
+}
+.thread.warm .word { fill: var(--ink-soft); }
+.thread.kind-objects .word { fill: var(--broken); }
+
+.tcard {
+  position: absolute; left: 0; top: 0; width: 236px; height: 150px;
+  display: flex; flex-direction: column; padding: 9px 14px 8px 15px;
+  border: 1px solid var(--stock-edge); border-radius: 3px; background-color: var(--stock); color: var(--ink);
+  background-image: linear-gradient(transparent 30px, var(--paper-margin) 30px 31.5px, transparent 31.5px),
+    repeating-linear-gradient(transparent 0 21px, var(--paper-rule) 21px 22px);
+  background-size: 100% 100%, 100% calc(100% - 52px);
+  background-position: 0 0, 0 52px;
+  background-repeat: no-repeat;
+  box-shadow: var(--card-shadow); cursor: grab; user-select: none; touch-action: none; outline: none;
+  /* Laid down, a card settles with a little give. */
+  transition: transform .52s cubic-bezier(.22, 1.28, .46, 1), translate .2s var(--ease), scale .3s var(--ease),
+    box-shadow .3s var(--ease), background-color .3s, border-color .3s, opacity .3s;
+}
+.tcard:hover { translate: 0 -3px; box-shadow: var(--card-shadow-lift); }
+.tcard:focus-visible { border-color: var(--accent); }
+.tcard .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; height: 18px; flex: none; }
+.tcard .addr { font: 11px var(--mono); color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tcard .badges { display: flex; gap: 4px; align-items: center; flex: none; }
+.tcard .t {
+  margin-top: 7px; font: 600 14.5px/22px var(--serif); color: var(--ink); flex: none;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; transition: color .3s;
+}
+.tcard .t.untitled { color: var(--ink-faint); font-style: italic; font-weight: 400; }
+.tcard .x {
+  font: 12.5px/22px var(--serif); color: var(--ink-soft); min-height: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; transition: color .3s, opacity .3s;
+}
+.tcard .foot { margin-top: auto; display: flex; gap: 8px; font: 10px var(--mono); color: var(--ink-faint); flex: none; }
+.tcard .put-back {
+  position: absolute; right: -9px; top: -9px; width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--stock-edge); background: var(--paper); color: var(--ink-soft); font-size: 12px; line-height: 1;
+  box-shadow: var(--shadow); opacity: 0; scale: .8; transition: opacity .15s, scale .15s; cursor: pointer;
+}
+.tcard:hover .put-back { opacity: 1; scale: 1; }
+.tcard .put-back:hover { color: var(--accent); border-color: var(--accent); }
+.tcard.root { background-color: color-mix(in srgb, var(--topic-soft) 80%, var(--stock)); }
+.tcard.root.literature { background-color: color-mix(in srgb, var(--lit-soft) 80%, var(--stock)); }
+.tcard.root .addr { color: var(--topic); font-weight: 600; }
+.tcard.root.literature .addr { color: var(--lit); }
+
+/* The card held: squared up, pulled toward you, ringed like the pointer card in the Map. */
+.tcard.focus {
+  scale: 1.07; border-color: var(--pointer);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pointer) 24%, transparent), 0 0 36px -6px color-mix(in srgb, var(--pointer) 48%, transparent), var(--card-shadow-lift);
+}
+.tcard.focus .addr { color: var(--ink-soft); font-weight: 600; }
+.tcard.focus .x { -webkit-line-clamp: 3; }
+/* What the card held relates to keeps its ink and a mark on its edge. */
+.tcard.near { box-shadow: inset 3px 0 0 var(--link), var(--card-shadow); }
+.tcard.near:hover { box-shadow: inset 3px 0 0 var(--link), var(--card-shadow-lift); }
+/* The rest lie flat and pale: still there, still legible, not asking to be read. */
+.tcard.recede {
+  background-color: color-mix(in srgb, var(--stock) 74%, var(--desk));
+  box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .08);
+}
+.tcard.recede .t { color: var(--ink-soft); }
+.tcard.recede .x { opacity: .55; }
+.tcard.recede:hover .t { color: var(--ink); }
+.tcard.recede:hover .x { opacity: 1; }
+/* In the hand: lifted high, following the hand at once, swinging with it. */
+.tcard.held {
+  scale: 1.06; cursor: grabbing;
+  transition: translate .2s var(--ease), scale .18s var(--ease), box-shadow .18s var(--ease), opacity .2s;
+  box-shadow: 0 0 0 .5px var(--stock-edge), 0 14px 18px -6px rgba(60, 45, 20, .18), 0 40px 60px -16px rgba(60, 45, 20, .36);
+}
+.tcard.held.to-box { opacity: .6; scale: .9; }
+.tcard.arriving { opacity: 0; }
+.tcard.leaving {
+  opacity: 0; pointer-events: none;
+  transition: transform .44s cubic-bezier(.55, 0, .8, .2), opacity .44s ease-in;
+}
+
+/* Within reach: the held card's neighbours not yet on the Table, tucked under its right edge. */
+.reach {
+  position: absolute; left: 0; top: 0; width: 248px; z-index: 899;
+  display: flex; flex-direction: column; gap: 5px; transition: opacity .2s;
+}
+.reach[hidden] { display: none; }
+.reach.away { opacity: 0; pointer-events: none; }
+.reach-head {
+  display: flex; align-items: center; justify-content: space-between; padding: 0 2px 2px 10px;
+  font: 700 9.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint);
+}
+.reach-all, .reach-more {
+  border: 0; background: none; padding: 2px 4px; font: 600 11px var(--sans); color: var(--accent); cursor: pointer;
+  letter-spacing: 0; text-transform: none;
+}
+.reach-all:hover, .reach-more:hover { text-decoration: underline; }
+.reach-more { align-self: flex-start; margin-left: 8px; }
+.reach-slip {
+  display: grid; grid-template-columns: 1fr auto; gap: 0 8px; align-items: baseline; text-align: left;
+  padding: 5px 10px 6px 12px; border: 1px solid var(--stock-edge); border-radius: 3px;
+  background-color: color-mix(in srgb, var(--stock) 86%, var(--desk));
+  box-shadow: 0 1px 0 var(--stock-edge), 0 3px 6px -4px rgba(60, 45, 20, .3);
+  color: var(--ink-soft); cursor: pointer;
+  animation: tuck-out .34s var(--ease) both; animation-delay: calc(var(--i) * 34ms);
+  transition: translate .18s var(--ease), background-color .18s, box-shadow .18s;
+}
+.reach-slip:nth-of-type(odd) { rotate: -.6deg; }
+.reach-slip:nth-of-type(even) { rotate: .5deg; }
+.reach-slip:hover { translate: 6px 0; background-color: var(--stock); box-shadow: var(--card-shadow); color: var(--ink); }
+.reach-slip .k { grid-column: 1 / -1; font: 600 9.5px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
+.reach-slip.way-out .k, .reach-slip.way-in .k { color: var(--link); }
+.reach-slip .t { font: 500 12.5px/1.3 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.reach-slip .addr { font: 10px var(--mono); color: var(--ink-faint); }
+@keyframes tuck-out { from { opacity: 0; transform: translateX(-46px); } }
+
+/* The card being read but not yet laid down rides in the hand at the bottom edge. */
+.table-hand {
+  position: absolute; left: 50%; bottom: -62px; width: 320px; height: 128px; z-index: 6;
+  display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 2px 10px; text-align: left;
+  padding: 10px 16px; border: 1px solid var(--stock-edge); border-radius: 3px; background-color: var(--stock);
+  background-image: linear-gradient(transparent 32px, var(--paper-margin) 32px 33.5px, transparent 33.5px);
+  box-shadow: var(--card-shadow-lift); color: var(--ink); cursor: pointer;
+  translate: -50% 0; rotate: -1.4deg; transition: bottom .32s cubic-bezier(.22, 1.28, .46, 1), rotate .32s var(--ease);
+  animation: rise .5s cubic-bezier(.22, 1.28, .46, 1);
+}
+.table-hand[hidden] { display: none; }
+.table-hand:hover { bottom: -34px; rotate: 0deg; }
+.table-hand .lbl { font: 700 9.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--pointer); align-self: center; }
+.table-hand .addr { font: 11px var(--mono); color: var(--ink-faint); align-self: center; }
+.table-hand .t { grid-column: 1 / -1; margin-top: 8px; font: 600 14px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-hand .act { grid-column: 1 / -1; font: 12px var(--sans); color: var(--accent); display: flex; gap: 6px; align-items: center; }
+@keyframes rise { from { bottom: -140px; } }
+
+/* The box a card goes back into: a drawer front that slides up while a card is carried. */
+.table-box {
+  position: absolute; left: 24px; bottom: 16px; width: 220px; height: 66px; z-index: 6; pointer-events: none;
+  display: grid; place-items: center; border-radius: 7px 7px 5px 5px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--human) 70%, var(--desk)), color-mix(in srgb, var(--human) 88%, #000));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 10px 24px -8px rgba(40, 25, 10, .5);
+  translate: 0 120px; transition: translate .3s var(--ease), scale .2s var(--ease), box-shadow .2s;
+}
+.table-box span {
+  padding: 4px 12px; border-radius: 3px; background: linear-gradient(180deg, #f3e3c0, #d8bf8c);
+  box-shadow: inset 0 0 0 1px rgba(90, 60, 20, .45); font: 600 11px var(--sans); letter-spacing: .06em; color: #4a3414;
+}
+.table-box.open { translate: 0 0; }
+.table-box.over { scale: 1.07; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent), 0 14px 30px -8px rgba(40, 25, 10, .6); }
+
+.table-empty {
+  position: absolute; left: 50%; top: 52%; translate: -50% -50%; width: min(460px, calc(100% - 32px));
+  padding: 22px 26px 18px; border: 1px solid var(--stock-edge); border-radius: 3px; background-color: var(--stock);
+  background-image: linear-gradient(transparent 58px, var(--paper-margin) 58px 59.5px, transparent 59.5px);
+  box-shadow: var(--card-shadow); rotate: -.6deg; cursor: default;
+}
+.table-empty[hidden] { display: none; }
+.table-empty h2 { margin: 0 0 22px; font: 600 20px/1.3 var(--serif); }
+.table-empty p { margin: 0 0 12px; color: var(--ink-soft); font: 14px/1.55 var(--serif); }
+.table-empty dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
+.table-empty dt { font: 12px var(--mono); color: var(--ink); white-space: nowrap; }
+.table-empty dd { margin: 0; font-size: 12.5px; color: var(--ink-soft); }
+
+.table-tools { display: inline-flex; align-items: center; gap: 8px; }
+.table-tools[hidden] { display: none; }
+.spread-pick {
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 10px; border-radius: 11px; max-width: 220px;
+  background: var(--glass); backdrop-filter: blur(12px) saturate(1.3);
+  border: 1px solid var(--hairline); box-shadow: var(--shadow); color: var(--ink); font: 600 12.5px var(--sans);
+}
+.spread-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spread-pick svg { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--ink-soft); stroke-width: 1.6; }
+.spread-pick i { font-style: normal; color: var(--ink-faint); font-size: 10px; }
+.spread-pick:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.seg .seg-count {
+  margin-left: 6px; padding: 0 6px; border-radius: 99px; font: 600 10px/16px var(--mono);
+  background: var(--accent); color: var(--on-accent); display: inline-block; vertical-align: 1px;
+}
+.seg .seg-count[hidden] { display: none; }
+
+/* A card lying on the Table leaves an out-card flag where it is filed. */
+.node.on-table::before {
+  content: ""; position: absolute; top: -6px; left: 14px; width: 16px; height: 7px;
+  border-radius: 2px 2px 0 0; background: var(--accent); box-shadow: 0 -1px 2px rgba(60, 45, 20, .2);
+}
+.search-results .hit .pull {
+  margin-left: auto; flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  border: 1px solid var(--line); color: var(--ink-soft); font: 600 13px/1 var(--sans); opacity: .5; transition: opacity .15s, color .15s, border-color .15s;
+}
+.search-results .hit:hover .pull { opacity: 1; }
+.search-results .hit .pull:hover { color: var(--accent); border-color: var(--accent); }
+.search-results .hit .pull.on { opacity: 1; background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-size: 11px; }
+
+.spread-list { display: flex; flex-direction: column; gap: 6px; }
+.spread-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; }
+.spread-open {
+  display: flex; justify-content: space-between; gap: 12px; text-align: left; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--paper);
+}
+.spread-open:hover { box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.spread-row.on .spread-open { border-color: var(--accent); }
+.spread-open .t { font: 600 14px var(--serif); }
+.spread-open .n { font: 11px var(--mono); color: var(--ink-faint); }
+.mini-btn.danger:hover { border-color: var(--broken); color: var(--broken); background: var(--broken-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tcard, .tcard.leaving, .reach-slip, .table-hand, .table-box { transition: none; animation: none; }
+}
+
+/* At the Table the cabinet recedes to a drawer you reach into (the menu button, / or search). */
+@media (min-width: 761px) {
+  .app.at-table { grid-template-columns: 0 minmax(0, 1fr) minmax(340px, 32vw); }
+  .app.at-table .rail {
+    position: fixed; left: 0; top: 58px; bottom: 0; width: 280px; z-index: 30;
+    transform: translateX(-100%); transition: transform .28s var(--ease); box-shadow: var(--shadow-lift);
+  }
+  .app.at-table.rail-open .rail { transform: none; }
+  .app.at-table .rail-toggle { display: inline-grid; }
+}

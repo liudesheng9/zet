@@ -454,6 +454,8 @@ impl App {
             (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
             (Method::Post, "/api/scholar/preview") => self.scholar_preview(body),
             (Method::Post, "/api/scholar/artifact") => self.scholar_keep(body),
+            (Method::Get, "/api/spreads") => self.spreads(),
+            (Method::Post, "/api/spreads") => self.save_spreads(body),
             (Method::Post, "/api/quit") => Ok(json!({ "ok": true })),
             _ => Err(ApiError(format!("unknown endpoint {path}"))),
         }
@@ -787,6 +789,18 @@ impl App {
             confirm_field(body),
         )?
         .into_value())
+    }
+
+    /// The Spreads kept for the Table.
+    fn spreads(&self) -> ApiResult {
+        let conn = crate::open_db(&self.root)?;
+        Ok(crate::spread::load(&conn)?)
+    }
+
+    /// Replace the Spreads kept for the Table; they change no Card.
+    fn save_spreads(&self, body: &Value) -> ApiResult {
+        let conn = crate::open_db(&self.root)?;
+        Ok(crate::spread::save(&conn, body)?)
     }
 
     fn move_card(&self, body: &Value) -> ApiResult {

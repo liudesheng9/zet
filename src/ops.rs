@@ -431,6 +431,15 @@ impl Snapshot {
             .filter(|link| link["broken"] == false)
             .filter_map(|link| link["address"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
+        // What each Link says, where its words announce a kind; a plain reference is left out.
+        let mut kinds = serde_json::Map::new();
+        for read in crate::model::read_links(&self.parsed[&card.address].body, str::to_string) {
+            if read.kind != crate::model::RelationKind::Refers && links.contains(&read.target) {
+                kinds
+                    .entry(read.target)
+                    .or_insert_with(|| Value::String(read.kind.id().to_string()));
+            }
+        }
         json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
@@ -445,6 +454,7 @@ impl Snapshot {
             "parent": parent,
             "excerpt": excerpt(&self.parsed[&card.address].body),
             "links": links,
+            "kinds": kinds,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
         })
     }
@@ -1343,5 +1353,81 @@ The model"
         .unwrap();
         assert_eq!(type_of(root, "Lit2021/1"), CardType::Event);
         assert_eq!(type_of(root, "Lit2021"), CardType::Idea);
+    }
+
+    #[test]
+    fn spreads_follow_their_cards_through_moves_deletes_and_citation_renames() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap();
+        for (at, title) in [("0/0", "# Base\n"), ("0/1", "# Next\n")] {
+            create_successor(
+                root,
+                owner,
+                Successor::Direct,
+                at,
+                CardType::Idea,
+                None,
+                title,
+            )
+            .unwrap();
+        }
+        for title in ["# Side a\n", "# Side b\n"] {
+            create_successor(
+                root,
+                owner,
+                Successor::Side,
+                "0/1",
+                CardType::Idea,
+                None,
+                title,
+            )
+            .unwrap();
+        }
+        create_literature(
+            root,
+            owner,
+            Workspace::Human,
+            "@book{Lit2020, title={Lit}}",
+            "",
+        )
+        .unwrap();
+        let spread = |cards: &[&str]| {
+            json!({ "current": "s", "spreads": [{ "id": "s", "name": "Set", "cards": cards
+                .iter()
+                .map(|at| json!({ "at": at, "x": 0, "y": 0 }))
+                .collect::<Vec<_>>() }] })
+        };
+        let lying = || -> Vec<String> {
+            let conn = crate::open_db(root).unwrap();
+            crate::spread::load(&conn).unwrap()["spreads"][0]["cards"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|card| card["at"].as_str().unwrap().to_string())
+                .collect()
+        };
+        crate::spread::save(
+            &crate::open_db(root).unwrap(),
+            &spread(&["0/2", "0/1|a", "0/1|b", "Lit2020"]),
+        )
+        .unwrap();
+
+        // Deleting 0/1|a takes it off the Table and compacts 0/1|b to 0/1|a.
+        delete(root, owner, "0/1|a", Some("delete")).unwrap();
+        assert_eq!(lying(), ["0/2", "0/1|a", "Lit2020"]);
+        move_card(root, owner, "0/1|a", "0/3", Some("move")).unwrap();
+        assert_eq!(lying(), ["0/2", "0/3", "Lit2020"]);
+        edit_metadata(
+            root,
+            owner,
+            "Lit2020",
+            "@book{Lit2021, title={Lit}}",
+            None,
+            Some("move"),
+        )
+        .unwrap();
+        assert_eq!(lying(), ["0/2", "0/3", "Lit2021"]);
     }
 }

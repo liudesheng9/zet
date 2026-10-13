@@ -7,7 +7,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 ## Features
 
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
-- Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Constellation of all Cards, and a live Markdown writing desk.
+- Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Table to lay related Cards from anywhere side by side, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
 - Mark a Regular Card as an Event Card (one real-world event) or a Model Card (one whole model); the other Cards that cite it link to it.
 - Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
@@ -123,6 +123,16 @@ zt gui --port 4717     # choose the port
   forward; its path, children, and neighbours stand up as cards; the rest lie as one-line slips,
   and branches away from the Pointer fold into "+N" stacks. Only the Pointer's Links are drawn.
   Press `x` to unfold the whole tree.
+- **Table**: a free working surface for a set of related Cards, wherever each is filed. Press
+  `p` to lay the Card you are reading on it (or put it back), `P` to lay it down with every Card it
+  relates to, Shift-click a card in the Map, or `+` on a search hit. Click a card on the Table to
+  hold it: it is squared up and lifted, the cards it relates to keep their ink and their threads
+  (each named by its kind: rests on, contrasts with, …), the rest recede, and its neighbours not
+  yet on the Table wait within reach beside it, one click away. Drag cards anywhere; drop one on
+  the box to put it back. **Gather** sets the cards around the one you hold, **Line up** lays them
+  in reading order along their Links, **By tree** stands them in one column per tree. Each set is
+  a **Spread**: kept in the archive, it follows its Cards when they move or are renamed, and
+  changes no Card; **File as card** writes it into the slip-box as a card that lists them.
 - **Constellation**: every tree as a radial outline set around one ring, with the Links between
   two trees bundled into one arc weighted by their count. The Pointer's tree stands out.
 - **Reader** (right): the Card as a ruled index card, with its address stamp and title above the
@@ -134,7 +144,7 @@ zt gui --port 4717     # choose the port
 The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
 `ws agent`, `del`, `mv 1/3`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
 same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m`,
-`Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `v` to switch views,
+`Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `p` / `P` to lay a card on the Table, `v` to switch views,
 `w` to switch Workspaces, `f` to fit.
 
 The GUI listens on `127.0.0.1` only, requires a per-launch token, and counts as a Session,

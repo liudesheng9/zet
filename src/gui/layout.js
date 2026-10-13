@@ -315,5 +315,186 @@
     };
   }
 
-  return { sideRank, outline, pathTo, focusLens, edgePath, elbow, linkArc, constellation, LOD, GUTTER };
+  // ------------------------------------------------------------ the Table
+  // The Table is a free working surface: a reader lays Cards from anywhere in the slip-box on
+  // it, side by side. Positions are the top-left corners of cards of one size; a reader moves
+  // cards by hand, and these helpers only suggest places (all at most quadratic in the few
+  // dozen cards a Table holds).
+  const TABLE = { w: 236, h: 150, gap: 30 };
+
+  /** Folgezettel order: by tree (Topic numbers first, by value), then segment by segment. */
+  function addressOrder(a, b) {
+    const split = (address) => {
+      const at = address.indexOf('/');
+      return at < 0 ? [address, []] : [address.slice(0, at), address.slice(at + 1).split('|')];
+    };
+    const [ta, sa] = split(a);
+    const [tb, sb] = split(b);
+    if (ta !== tb) {
+      const na = /^\d+$/.test(ta); const nb = /^\d+$/.test(tb);
+      if (na && nb) return Number(ta) - Number(tb);
+      if (na !== nb) return na ? -1 : 1;
+      return ta < tb ? -1 : 1;
+    }
+    for (let i = 0; i < Math.max(sa.length, sb.length); i += 1) {
+      if (i >= sa.length) return -1;
+      if (i >= sb.length) return 1;
+      const x = sa[i]; const y = sb[i];
+      if (x === y) continue;
+      const nx = /^\d+$/.test(x); const ny = /^\d+$/.test(y);
+      if (nx && ny) return Number(x) - Number(y);
+      if (nx !== ny) return nx ? -1 : 1;
+      return sideRank('|' + x) - sideRank('|' + y);
+    }
+    return 0;
+  }
+
+  const overlaps = (a, b, pad) =>
+    a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad;
+
+  /**
+   * The nearest free place to `want` (a top-left corner) for one more card, searched ring by
+   * ring on a half-card grid; `rects` are the cards already lying there. Places on the same
+   * row come first, as a hand lays a card beside the last.
+   */
+  function freeSpot(rects, want, size = TABLE) {
+    const sx = (size.w + size.gap) / 2;
+    const sy = (size.h + size.gap) / 2;
+    const fits = (x, y) => !rects.some((r) => overlaps({ x, y, w: size.w, h: size.h }, r, size.gap * 0.6));
+    for (let ring = 0; ring < 40; ring += 1) {
+      const spots = [];
+      for (let i = -ring; i <= ring; i += 1) {
+        for (let j = -ring; j <= ring; j += 1) {
+          if (Math.max(Math.abs(i), Math.abs(j)) === ring) spots.push({ x: want.x + i * sx, y: want.y + j * sy });
+        }
+      }
+      // Right and below before left and above, as a hand lays out cards.
+      const cost = (p) => Math.hypot(p.x - want.x, (p.y - want.y) * 1.6) * (p.x < want.x ? 1.3 : 1) * (p.y < want.y ? 1.15 : 1);
+      spots.sort((p, q) => cost(p) - cost(q));
+      for (const p of spots) if (fits(p.x, p.y)) return p;
+    }
+    return { x: want.x, y: want.y };
+  }
+
+  /**
+   * An order to read a set of Cards in: each Card that no other Card on the set links starts a
+   * chain, and a chain follows Links depth first; Folgezettel order breaks ties.
+   */
+  function readingOrder(addresses, linksOf) {
+    const on = new Set(addresses);
+    const sorted = [...on].sort(addressOrder);
+    const into = new Map(sorted.map((address) => [address, 0]));
+    for (const address of sorted) {
+      for (const target of linksOf(address)) if (on.has(target) && target !== address) into.set(target, into.get(target) + 1);
+    }
+    const order = [];
+    const seen = new Set();
+    const walk = (address) => {
+      if (seen.has(address)) return;
+      seen.add(address);
+      order.push(address);
+      for (const target of linksOf(address)) if (on.has(target)) walk(target);
+    };
+    for (const address of sorted) if (!into.get(address)) walk(address);
+    for (const address of sorted) walk(address);
+    return order;
+  }
+
+  /** Cards in rows, left to right, in the order given: an argument laid out to write from. */
+  function lineUp(order, size = TABLE) {
+    const perRow = Math.max(3, Math.min(6, Math.ceil(Math.sqrt(order.length * 1.5))));
+    return new Map(order.map((address, i) => [address, {
+      x: (i % perRow) * (size.w + size.gap),
+      y: Math.floor(i / perRow) * (size.h + size.gap),
+    }]));
+  }
+
+  /**
+   * The card held in the middle and the others in the cells of a grid around it, nearest cells
+   * first: the cards it relates to take the cells beside it, the rest lie further out. Beside
+   * comes before above and below, and the cells go round clockwise from the right, so a set
+   * stays compact enough to read at full size.
+   */
+  function gather(addresses, focus, isNear, size = TABLE) {
+    const pos = new Map();
+    const cw = size.w + size.gap;
+    const ch = size.h + size.gap;
+    const held = addresses.includes(focus);
+    const others = addresses.filter((address) => address !== focus);
+    const ordered = [...others.filter((address) => isNear(address)), ...others.filter((address) => !isNear(address))];
+    if (held) pos.set(focus, { x: -size.w / 2, y: -size.h / 2 });
+    const reach = Math.ceil(Math.sqrt(ordered.length + 1)) + 1;
+    const cells = [];
+    for (let i = -reach; i <= reach; i += 1) {
+      for (let j = -reach; j <= reach; j += 1) {
+        if (held && i === 0 && j === 0) continue;
+        const turn = (Math.atan2(j, i) + Math.PI * 2) % (Math.PI * 2);
+        cells.push({ i, j, d: Math.round(Math.hypot(i * cw, j * ch * 1.6)), turn });
+      }
+    }
+    cells.sort((a, b) => a.d - b.d || a.turn - b.turn);
+    ordered.forEach((address, k) => {
+      const cell = cells[k];
+      pos.set(address, { x: cell.i * cw - size.w / 2, y: cell.j * ch - size.h / 2 });
+    });
+    return pos;
+  }
+
+  /**
+   * Cards by tree, one column per tree, each column shingled in Folgezettel order the way
+   * cards stand in a drawer: each card covers the one before it below its title.
+   */
+  function byTree(addresses, size = TABLE) {
+    const trees = new Map();
+    for (const address of [...addresses].sort(addressOrder)) {
+      const tree = address.includes('/') ? address.slice(0, address.indexOf('/')) : address;
+      if (!trees.has(tree)) trees.set(tree, []);
+      trees.get(tree).push(address);
+    }
+    const pos = new Map();
+    let column = 0;
+    for (const list of trees.values()) {
+      list.forEach((address, i) => pos.set(address, { x: column * (size.w + size.gap * 1.4), y: i * 78 }));
+      column += 1;
+    }
+    return pos;
+  }
+
+  /** Where the line from the centre of `r` toward `p` leaves `r`. */
+  function edgePoint(r, p) {
+    const cx = r.x + r.w / 2; const cy = r.y + r.h / 2;
+    const dx = p.x - cx; const dy = p.y - cy;
+    const s = Math.min(dx ? (r.w / 2) / Math.abs(dx) : Infinity, dy ? (r.h / 2) / Math.abs(dy) : Infinity, 1);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+
+  /**
+   * A thread from card `a` to card `b`: from edge to edge, sagging a little as a string does
+   * under its own weight; a thread back from `b` to `a` sags the other way. Returns its path,
+   * its middle (for a label), and its end and direction (for a tip).
+   */
+  function thread(a, b, back = false) {
+    const ca = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+    const cb = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    const pa = edgePoint(a, cb);
+    const pb = edgePoint(b, ca);
+    const dx = pb.x - pa.x; const dy = pb.y - pa.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const sag = Math.min(46, 10 + len * 0.1) * (back ? -1 : 1);
+    // Gravity pulls down; a nearly vertical thread bows sideways instead.
+    const nx = Math.abs(dx) / len; const ny = 1 - nx;
+    const cx = (pa.x + pb.x) / 2 + sag * ny * 0.6;
+    const cy = (pa.y + pb.y) / 2 + sag * nx;
+    return {
+      d: `M ${pa.x} ${pa.y} Q ${cx} ${cy} ${pb.x} ${pb.y}`,
+      mid: { x: (pa.x + 2 * cx + pb.x) / 4, y: (pa.y + 2 * cy + pb.y) / 4 },
+      end: pb,
+      angle: Math.atan2(pb.y - cy, pb.x - cx),
+    };
+  }
+
+  return {
+    sideRank, outline, pathTo, focusLens, edgePath, elbow, linkArc, constellation, LOD, GUTTER,
+    TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
+  };
 });

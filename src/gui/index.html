@@ -69,6 +69,7 @@
     <div class="stage-bar">
       <div class="seg" role="tablist">
         <button role="tab" data-mode="map" class="on">Map</button>
+        <button role="tab" data-mode="table" title="The Table: lay related cards side by side (v)">Table<b class="seg-count" id="table-count" hidden></b></button>
         <button role="tab" data-mode="constellation">Constellation</button>
       </div>
       <div class="stage-title" id="stage-title"></div>
@@ -76,6 +77,18 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="11" height="5" rx="1"/><rect x="9" y="14" width="11" height="5" rx="1"/><path d="M7 10v6.5h2"/></svg>
         <span>Focus</span><kbd>x</kbd>
       </button>
+      <div class="table-tools" id="table-tools" hidden>
+        <button class="spread-pick" id="spread-pick" title="Spreads: the sets of cards kept for the Table">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="7" width="11" height="8" rx="1"/><rect x="9.5" y="10" width="11" height="8" rx="1"/></svg>
+          <span id="spread-name">Spread</span><i aria-hidden="true">▾</i>
+        </button>
+        <div class="seg arrange" role="group" aria-label="Arrange the cards">
+          <button data-arrange="gather" title="Gather the cards around the one you hold">Gather</button>
+          <button data-arrange="line" title="Line the cards up in reading order, following their Links">Line up</button>
+          <button data-arrange="tree" title="Stand the cards in one column per tree, in Folgezettel order">By tree</button>
+        </div>
+        <button class="lens-toggle" id="file-spread" title="Write a card that lists these cards, filed after the card you hold">File as card</button>
+      </div>
       <div class="zoom">
         <button class="icon-btn" data-zoom="out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
         <button class="icon-btn" data-zoom="fit" title="Fit" aria-label="Fit to view"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -88,6 +101,14 @@
         <svg class="edges" id="edges"></svg>
         <div class="nodes" id="nodes"></div>
       </div>
+      <div class="table-plane" id="table-plane" hidden>
+        <svg class="threads" id="threads" aria-hidden="true"></svg>
+        <div class="tcards" id="tcards"></div>
+        <div class="reach" id="reach" hidden></div>
+      </div>
+      <div class="table-empty" id="table-empty" hidden></div>
+      <button class="table-hand" id="table-hand" hidden></button>
+      <div class="table-box" id="table-box" aria-hidden="true"><span>Back in the box</span></div>
       <canvas class="sky" id="sky" hidden></canvas>
       <div class="sky-label" id="sky-label" hidden></div>
     </div>

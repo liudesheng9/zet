@@ -23,6 +23,7 @@ mod ops;
 mod scholar;
 mod session;
 mod shutdown;
+mod spread;
 mod workspace;
 
 pub(crate) use card::{
@@ -1953,6 +1954,7 @@ fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Resul
             [address],
         )?;
     }
+    spread::follow(&tx, &BTreeMap::new(), &plan.delete_set)?;
     apply_location_mapping_tx(&tx, &compaction)?;
     regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
@@ -2055,7 +2057,7 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
             params![text, card.row_id],
         )?;
     }
-    Ok(())
+    spread::follow(conn, mapping, &BTreeSet::new())
 }
 
 fn shell_move(at: &str, new_location: &str) -> Result<()> {
