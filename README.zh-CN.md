@@ -130,9 +130,9 @@ zt gui --port 4717     # 指定端口
 - **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
   `Ctrl+S` 保存，`Esc` 取消。
 
-命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`mv 1/3`、
-`ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
-`:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m`、`Delete`、`u` 或方向键在地图中移动、
+命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`ins`、`mv 1/3`、
+`mv alone before 1/2`、`ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
+`:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m` `i`（插入）、`Delete`、`u` 或方向键在地图中移动、
 `x` 展开或折叠整棵树、`p` / `P` 把卡片放上桌面、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
 GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
@@ -204,8 +204,8 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
 
 - **Session**：part 显示为 `[model · <facet>]`（以及它的 emphasis）；`ty model <facet>` 把当前 Card 设为 part
   （facet 取该行余下的全部文字），`ty model` 则恢复为 Model Card。
-- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签，按 Model Card 列出 part 的顺序以 facet 命名（核心标签着墨，
-  aside 标签浅淡）；卡片下方是**模型板**：part 按依赖关系排布，每条 `rests-on` 关系一根细线，其他类型的关系画成
+- **GUI**：Model Card 和 part 的上沿有分隔卡式的标签，按构建顺序以 facet 命名（核心标签着墨，
+  aside 标签浅淡，共享 part 为虚线并标 ⧉，推导 part 细窄，构建之外的 part 隔开放在最后）；卡片下方是**模型板**：part 按依赖关系排布，每条 `rests-on` 关系一根细线，其他类型的关系画成
   标出类型的虚线弧，松散的 part 放在一旁的托盘里。模型板随读者的注意力而变：打开的 part 被抬起并显示完整标题，
   与它相关的 part 保持着墨并列出类型和理由，核心 part 保持可读，其余退为标签。模型板下方列出打开的卡在模型之外
   的邻居，上方列出共享 part 所服务的其他模型。写作台在 Model 类型旁填写 facet（提示常见的几种）并选择 emphasis。
@@ -213,6 +213,24 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
   `emphasis` 和 `model`；`get_model` 返回整个模型及每张卡的正文、该卡所属的各个模型、带类型的关系、松散的 part
   和模型邻居。
 - **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet，在 `emphasis` 中列出每个 core 或 aside part。
+
+### 自足的模型
+
+读者只按**构建顺序**读一个模型自己的卡片，就应能从零重建整个模型（zt 0.12.0，见
+`doc/self-sufficient-models-proposal.md`）：
+
+- **构建顺序**：Model Card 的第一个侧后继是设定（参与者、时序、信息、符号表和 `术语表`）；它的直接后继是**主线**，
+  即逐步的推导；例子放在它所例示的那一步旁边（该步的侧后继）；Model Card 后面的侧后继位于构建之外；共享 part
+  放在第一个依赖它的步骤之前。
+- **推导 part**（facet 以 `推导` 开头）补出原书略去的步骤，使推导没有跳步；模型板把它画成它所连接的那根线上的细窄纸条。
+- `get_model` 返回 `build`：按构建顺序列出的成员及其 `line`，以及妨碍模型**自足**的问题：`closure`（模型范围内的
+  卡以 rests-on 链接了不属于模型的卡，并给出修正办法）、`forward`（某一步依赖后面的步骤）、`unanchored`（某一步没有
+  沿 rests-on 回到设定的路径）。共享 part 留在其所属模型中的前提列为 `tolerated`，不算问题。ZT 只报告，不强制。
+- **插入与移到两卡之间**：`insert_card`（MCP）、`ins`（Session）和 GUI 的 Insert 操作把新卡放到一张现有卡的位置上；
+  那张卡及其子树下移一位，成为新卡的直接后继。`move_card` / `mv` 也接受 `before`（占用另一张卡的位置）和 `alone`
+  （只移动这张卡，它的直接后继上移补位）。所有改名的地址先列出确认，所有 Link 随之改写。
+- **卡片语言**：卡片文字遵守按中文改写的 ASD-STE100（一句一事、短句、不用 `；`、主动语态、一个术语一个意思）；
+  `scripts/book-digest/card-style-check.ps1` 负责检查。
 
 ### 数学公式与 HTML 图表
 
@@ -226,7 +244,7 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 ### 消化一本书
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由 Sonnet 把其中写出的每张 Model Card 对照原文重建为带图表的结构化模型，随后连接全书各部分，最后由 Opus 整理结构。
+每一批完成后，由 Sonnet 经理让其中写出的每个模型自足（先规划，再按构建顺序写骨架，由八个以上 DeepSeek 运行填写卡片，最后逐步核对），随后连接全书各部分，最后由 Opus 整理结构。
 详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
 
 ## MCP 服务器
@@ -242,15 +260,16 @@ Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
-| `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part 和模型外的邻居 |
+| `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part、模型外的邻居，以及 `build` 报告（构建顺序与自足性问题） |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
 | `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`、`emphasis`） |
 | `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis 或 BibTeX |
-| `delete_card`、`move_card` | 删除或移动 agent Card |
+| `delete_card`、`move_card` | 删除或移动 agent Card（`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
+| `insert_card` | 把新的 agent Card 插到另一张卡的位置上；那张卡及其子树下移 |
 
-删除、移动和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址或
-`move`）再次调用才会真正执行。使用前需要先启动服务。
+删除、移动、插入和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址、
+`move` 或 `insert`）再次调用才会真正执行。使用前需要先启动服务。
 
 zt 附带两个 agent skill：`zt`（`skills/zt/SKILL.md`）说明 Workspace、工具和规则；`zettelkasten`
 （`skills/zettelkasten/SKILL.md`）依据卢曼（Niklas Luhmann）的做法和后来实践者的经验，说明如何撰写一张 Card

@@ -12,6 +12,10 @@ use std::path::Path;
 
 use crate::link::{LinkBody, LinkLifecycle};
 use crate::model::{Emphasis, Facet, Part};
+pub(crate) use crate::place::Target;
+
+/// How long a change waits for another client's short write to finish.
+const EDIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
@@ -46,7 +50,7 @@ pub(crate) fn create_topic(
     text: &str,
 ) -> Result<String> {
     access.ensure_writable(workspace)?;
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     crate::create_topic(&mut conn, workspace, text)
 }
@@ -60,7 +64,7 @@ pub(crate) fn create_successor(
     part: Option<Part>,
     text: &str,
 ) -> Result<String> {
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let parent = crate::load_card(&conn, at)?;
     access.ensure_writable(parent.workspace)?;
@@ -99,7 +103,7 @@ pub(crate) fn create_literature(
     text: &str,
 ) -> Result<String> {
     access.ensure_writable(workspace)?;
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let metadata = crate::literature::parse_metadata(bibtex)?;
     let parsed = crate::parse_literature_edit_text(text)?;
@@ -156,7 +160,7 @@ pub(crate) fn edit(
     change: TypeChange,
     base: Option<&str>,
 ) -> Result<String> {
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
@@ -187,7 +191,7 @@ pub(crate) fn edit_metadata(
     base: Option<&str>,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
@@ -235,7 +239,7 @@ pub(crate) fn delete(
     at: &str,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, at)?;
     access.ensure_writable(card.workspace)?;
@@ -260,19 +264,22 @@ pub(crate) fn delete(
     })))
 }
 
-/// Move a Regular Card and its successors inside its Workspace.
+/// Move a Regular Card inside its Workspace: with its successors, or `alone`
+/// (its Direct successor chain closes the gap), to a free Location or into
+/// the place of another Card, which moves down.
 pub(crate) fn move_card(
     root: &Path,
     access: Access,
     at: &str,
-    to: &str,
+    target: &Target,
+    alone: bool,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock(root)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, at)?;
     access.ensure_writable(card.workspace)?;
-    let plan = crate::move_plan(&conn, at, to)?;
+    let plan = crate::place::move_plan(&conn, at, target, alone)?;
     access.ensure_link_rewrites_allowed(&conn, &plan.mapping)?;
     if confirm != Some("move") {
         return Ok(Outcome::Confirm {
@@ -281,8 +288,47 @@ pub(crate) fn move_card(
         });
     }
     crate::apply_move_plan(&mut conn, &plan)?;
+    let address = plan.mapping.get(at).cloned().unwrap_or_else(|| at.to_string());
     Ok(Outcome::Done(
-        json!({ "address": to, "moved": plan.mapping }),
+        json!({ "address": address, "moved": plan.mapping }),
+    ))
+}
+
+/// Insert a new Card at the place of the Regular Card `before`, which moves
+/// down with its subtree and becomes the new Card's Direct successor. Links in
+/// `text` name today's addresses.
+pub(crate) fn insert_card(
+    root: &Path,
+    access: Access,
+    before: &str,
+    card_type: CardType,
+    part: Option<Part>,
+    text: &str,
+    confirm: Option<&str>,
+) -> Result<Outcome> {
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let mut conn = crate::open_db(root)?;
+    let card = crate::load_card(&conn, before)?;
+    access.ensure_writable(card.workspace)?;
+    let plan = crate::place::insert_plan(&conn, before)?;
+    access.ensure_link_rewrites_allowed(&conn, &plan.mapping)?;
+    crate::model::ensure_allowed(
+        &conn,
+        None,
+        card_type,
+        part.as_ref().map(|part| &part.facet),
+        part.as_ref().and_then(|part| part.emphasis),
+    )?;
+    crate::validate_card_text(&conn, &plan.location, text, None)?;
+    if confirm != Some("insert") {
+        return Ok(Outcome::Confirm {
+            confirm: "insert".to_string(),
+            lines: crate::place::insert_verification_lines(&plan),
+        });
+    }
+    crate::place::apply_insert_plan(&mut conn, &plan, card_type, part.as_ref(), text)?;
+    Ok(Outcome::Done(
+        json!({ "address": plan.location, "moved": plan.mapping }),
     ))
 }
 
@@ -1319,7 +1365,7 @@ The model"
         assert_eq!(type_of(root, "0/1|a"), CardType::Model);
         assert_eq!(type_of(root, "0/1|b"), CardType::Event);
 
-        move_card(root, owner, "0/1|a", "0/2", Some("move")).unwrap();
+        move_card(root, owner, "0/1|a", &Target::To("0/2".into()), false, Some("move")).unwrap();
         assert!(text_of(root, "0/2").starts_with("# Side model\n"));
         assert_eq!(type_of(root, "0/2"), CardType::Model);
         assert_eq!(type_of(root, "0/1|b"), CardType::Event);
@@ -1353,6 +1399,22 @@ The model"
         .unwrap();
         assert_eq!(type_of(root, "Lit2021/1"), CardType::Event);
         assert_eq!(type_of(root, "Lit2021"), CardType::Idea);
+    }
+
+    #[test]
+    fn a_change_waits_for_another_short_write_to_finish() {
+        let temp = archive();
+        let root = temp.path().to_path_buf();
+        let lock = crate::acquire_edit_lock(&root).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(lock);
+        });
+        assert_eq!(
+            create_topic(&root, Access::Owner, Workspace::Agent, "# Waits\n").unwrap(),
+            "0/0"
+        );
+        release.join().unwrap();
     }
 
     #[test]
@@ -1417,7 +1479,7 @@ The model"
         // Deleting 0/1|a takes it off the Table and compacts 0/1|b to 0/1|a.
         delete(root, owner, "0/1|a", Some("delete")).unwrap();
         assert_eq!(lying(), ["0/2", "0/1|a", "Lit2020"]);
-        move_card(root, owner, "0/1|a", "0/3", Some("move")).unwrap();
+        move_card(root, owner, "0/1|a", &Target::To("0/3".into()), false, Some("move")).unwrap();
         assert_eq!(lying(), ["0/2", "0/3", "Lit2020"]);
         edit_metadata(
             root,

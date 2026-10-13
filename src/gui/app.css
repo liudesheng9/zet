@@ -905,8 +905,10 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
 .card-meta .type-stamp.part { font-size: 10px; }
 .node.model-part { border-left: 2px solid color-mix(in srgb, var(--model) 55%, var(--stock-edge)); }
 /* The Cards of one model are a set of dividers: tabs along the top edge name the Model Card and
-   each part by its own facet, in filing order. The open Card's tab stands up in model ink; a
-   core part's tab is inked with a dot, an aside's is narrow and pale. */
+   each part by its own facet, in build order. The open Card's tab stands up in model ink; a
+   core part's tab is inked with a dot, an aside's is narrow and pale. A shared part's tab is
+   dashed and marked ⧉, a Derivation part's is a slim slip, an example beside its step is low,
+   and the parts outside the build stand apart after a gap. */
 .model-tabs {
   display: flex; gap: 3px; margin: -24px -6px 0; padding: 0 6px; height: 24px; align-items: flex-end;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
@@ -928,6 +930,11 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
 .model-tab.here { height: 24px; line-height: 24px; max-width: 200px; opacity: 1; color: var(--model); background: var(--stock); box-shadow: 0 -1px 0 .5px var(--stock-edge); }
 .model-tab.head { color: var(--model); }
 .model-tab.head.missing { color: var(--broken); }
+.model-tab.shared { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--model) 40%, transparent); outline: 1px dashed color-mix(in srgb, var(--model) 45%, transparent); outline-offset: -1px; }
+.model-tab.derivation { max-width: 46px; padding: 0 6px; letter-spacing: .02em; opacity: .55; }
+.model-tab.side { height: 15px; line-height: 15px; }
+.model-tab.apart { margin-left: 12px; }
+.model-tab.off { opacity: .55; }
 .card.in-model { margin-top: 22px; border-top-left-radius: 0; }
 
 /* The model board: the model laid out on the desk below its card. The Model Card heads it;
@@ -1009,6 +1016,21 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* A part its Model Card took in by a Link, filed elsewhere; a part shared with another model. */
 .mb-slip.joined { outline: 1px dashed color-mix(in srgb, var(--model) 55%, transparent); outline-offset: 2px; }
 .mb-slip.shared .mb-facet::after { content: " ⧉"; color: var(--ink-faint); font-style: normal; }
+/* A Derivation part carries one step between two parts: a slim slip lying on that thread. */
+.mb-slip.derivation:not(.here) {
+  flex: 0 1 auto; width: auto; min-width: 0; max-width: 110px; padding: 0 8px; opacity: .7;
+  border-radius: 9px; box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .08);
+  background: color-mix(in srgb, var(--stock) 70%, var(--desk));
+}
+.mb-slip.derivation:not(.here) .mb-facet { border-bottom: 0; padding: 3px 8px; margin: 0 -8px; font-size: 8px; letter-spacing: .06em; color: var(--ink-soft); }
+.mb-slip.derivation:not(.here) .mb-title { display: none; }
+/* What keeps a reader from building the model from its own Cards, each fault with its fix. */
+.mb-build { margin: 10px 0 0; font: 600 9.5px var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--pointer); }
+.mb-build.ok { color: var(--ink-faint); }
+.mb-build summary { cursor: pointer; padding: 2px 8px; }
+.mb-build .mb-reason { grid-template-columns: minmax(64px, auto) minmax(0, 1fr); text-transform: none; letter-spacing: 0; }
+.mb-build .mb-reason .mb-kind { color: var(--pointer); }
+.mb-build .mb-reason .note { font-size: 12px; font-style: normal; font-family: var(--sans); font-weight: 400; }
 /* The model's place in the rest of the slip-box: other models, and Cards outside it. */
 .mb-also { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
 .mb-beyond { margin-top: 14px; padding-top: 8px; border-top: 1px dashed color-mix(in srgb, var(--ink-faint) 45%, transparent); }

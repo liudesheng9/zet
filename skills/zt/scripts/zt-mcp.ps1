@@ -22,7 +22,10 @@
   -Log <file> appends the address of every Card a create call makes, one per line, so a
   coordinator knows which Cards each agent owns. -Allow <file> (one address per line) limits the
   run to those Cards: edit_card and create_successor must target a listed address or a Card made
-  earlier in the same run, and create_topic, move_card and delete_card are refused.
+  earlier in the same run, and create_topic, move_card, insert_card and delete_card are refused.
+
+  insert_card and move_card renumber Cards: an address read before them may name another Card
+  after them, so read again (or use the `moved` map they return) before the next write.
 #>
 [CmdletBinding(DefaultParameterSetName = 'File')]
 param(
@@ -111,7 +114,7 @@ try {
             Fail $i $_.Exception.Message
         }
         if ($null -ne $allowed) {
-            if ($call.tool -in 'create_topic', 'move_card', 'delete_card', 'create_literature', 'edit_literature_metadata') {
+            if ($call.tool -in 'create_topic', 'move_card', 'insert_card', 'delete_card', 'create_literature', 'edit_literature_metadata') {
                 Fail $i "$($call.tool) is not allowed in this run"
             }
             if ($call.tool -in 'edit_card', 'append_card', 'create_successor' -and -not $allowed.Contains([string]$arguments.at)) {
@@ -143,7 +146,7 @@ try {
             if ($null -ne $allowed) { [void]$allowed.Add($address) }
             if ($Log) { [IO.File]::AppendAllText($Log, "$address`n", [Text.UTF8Encoding]::new($false)) }
         }
-        if ($address -and $call.tool -match '^(create|edit|append|move|delete)') { Write-Output "$i ok $address" }
+        if ($address -and $call.tool -match '^(create|edit|append|move|insert|delete)') { Write-Output "$i ok $address" }
         else {
             try { $text = $text | ConvertFrom-Json -DateKind String | ConvertTo-Json -Depth 50 -Compress } catch { }
             Write-Output "$i $text"

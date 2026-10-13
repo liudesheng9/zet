@@ -449,6 +449,7 @@ impl App {
             (Method::Post, "/api/metadata") => self.edit_metadata(body),
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
+            (Method::Post, "/api/insert") => self.insert_card(body),
             (Method::Get, "/api/artifact") => self.artifact(&param("sha")?),
             (Method::Get, "/api/scholar/works") => self.scholar_works(&param("q")?),
             (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
@@ -803,12 +804,51 @@ impl App {
         Ok(crate::spread::save(&conn, body)?)
     }
 
+    /// Move a Card to a free Location (`to`) or into another Card's place
+    /// (`before`), with its successors or `alone`.
     fn move_card(&self, body: &Value) -> ApiResult {
+        let target = match (
+            body.get("to").and_then(Value::as_str),
+            body.get("before").and_then(Value::as_str),
+        ) {
+            (Some(to), None) => ops::Target::To(to.to_string()),
+            (None, Some(before)) => ops::Target::Before(before.to_string()),
+            _ => return Err(ApiError("give either `to` or `before`".to_string())),
+        };
+        let alone = body.get("alone").and_then(Value::as_bool).unwrap_or(false);
         Ok(ops::move_card(
             &self.root,
             ACCESS,
             &str_field(body, "at")?,
-            &str_field(body, "to")?,
+            &target,
+            alone,
+            confirm_field(body),
+        )?
+        .into_value())
+    }
+
+    /// Insert a new Card at the place of `before`, which moves down.
+    fn insert_card(&self, body: &Value) -> ApiResult {
+        let part = crate::model::Part::from_args(
+            facet_field(body)?.flatten(),
+            emphasis_field(body)?.flatten(),
+        )?;
+        let card_type = match (type_field(body)?, &part) {
+            (Some(card_type), Some(_)) if card_type != CardType::Model => {
+                return Err(ApiError(
+                    "only Model Cards can have a Model facet".to_string(),
+                ));
+            }
+            (_, Some(_)) => CardType::Model,
+            (card_type, None) => card_type.unwrap_or_default(),
+        };
+        Ok(ops::insert_card(
+            &self.root,
+            ACCESS,
+            &str_field(body, "before")?,
+            card_type,
+            part,
+            &str_field(body, "text")?,
             confirm_field(body),
         )?
         .into_value())

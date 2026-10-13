@@ -1,11 +1,11 @@
 export const meta = {
   name: 'zt-book-digest',
-  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, Sonnet studies the source behind every new Model Card and designs its structure (parts it names, core and aside parts, reasoned relations, HTML charts); a link pass ties the parts of the book together, then Opus organizes the structure',
-  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the Sonnet model stage on its Model Cards.',
+  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, Sonnet managers make every new model self-sufficient (a derivation ledger and closure audit, a skeleton in build order with Derivation parts, eight or more DeepSeek runs that fill the Cards, a check of every step and of the Card language); a link pass ties the parts of the book together, then Opus organizes the structure',
+  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the model stage on its Model Cards (with rebuild: true, also on models that already have parts).',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
-    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet agent per new Model Card reads a context pack (the card, its discussion, its group source files, the other models of the book), studies the source, and designs the model: the parts it needs under its own facet labels, core and aside parts, reasoned relations (loose parts allowed), and HTML charts', model: 'sonnet' },
+    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet manager per batch of models plans each model (derivation ledger, closure audit), writes its skeleton in build order (setting with symbol and term tables, Derivation parts, shared parts taken in), drives eight or more DeepSeek runs that fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files', model: 'sonnet' },
     { title: 'Link', detail: 'each DeepSeek run gets only the Cards it owns, searches the book and the Card index on disk, and appends reasoned cross-part Links', model: 'haiku' },
     { title: 'Cleanup', detail: 'Haiku archives conversations, removes the DeepSeek workspace and scratch files', model: 'haiku' },
     { title: 'Organize', detail: 'Opus merges Topics, writes hubs, entry points, the book structure Card, and links', model: 'opus' },
@@ -17,8 +17,9 @@ export const meta = {
 //         groups (modes 'link' and 'models': the existing group count), organize (modes 'link' and 'models': default false),
 //         perManager (5), maxChars (20000), maxUnits (3),
 //         dshModel ('deepseek-official/deepseek-flash'), dshEffort ('low'),
-//         models (true: run the Sonnet model stage), redoModels (false: also redo models that already have parts),
-//         perSonnet (1: Model Cards per Sonnet agent; neighbouring models of the book share one agent) }
+//         models (true: run the Sonnet model stage), rebuild (false: also rebuild models that already have parts;
+//         redoModels is the old name), perSonnet (4: models per Sonnet manager; neighbouring models of the book
+//         share one manager), dshPerSonnet (8: DeepSeek runs one manager keeps going at the same time) }
 //
 // How the stages hand work on:
 //   Prepare ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (Haiku lists, Sonnet ×N) ─┐
@@ -38,7 +39,11 @@ const SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 const MODELS = A.models !== false
 const MODEL_DOC = `${SCRIPTS}\\model-elaboration.md`
 const MODEL_WORK = `${OUT}\\models`
-const PER_SONNET = Math.max(1, A.perSonnet || 1)
+const PER_SONNET = Math.max(1, A.perSonnet || 4)
+const DSH_PER_SONNET = Math.max(1, A.dshPerSonnet || 8)
+const REBUILD = !!(A.rebuild || A.redoModels)
+const FILL_DOC = `${SCRIPTS}\\dsh-fill-instructions.zh.md`
+const CHECK = `${SCRIPTS}\\card-style-check.ps1`
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_archive'
 
@@ -166,7 +171,13 @@ const MODEL_REPORT = {
   type: 'object',
   properties: {
     model: { type: 'string' }, status: { type: 'string', enum: ['done', 'skipped', 'failed'] },
-    parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' }, emphasis: { type: 'string' } }, required: ['address', 'facet'] } },
+    parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' }, emphasis: { type: 'string' }, line: { type: 'string' } }, required: ['address', 'facet'] } },
+    derivations: { type: 'object', properties: { total: { type: 'number' }, by_dsh: { type: 'number' }, fixed: { type: 'number' } } },
+    moved: { type: 'array', items: { type: 'string' } },
+    shared: { type: 'array', items: { type: 'object', properties: { part: { type: 'string' }, home: { type: 'string' } } } },
+    tolerated: { type: 'number' }, style: { type: 'number' },
+    accepted: { type: 'array', items: { type: 'object', properties: { fault: { type: 'string' }, reason: { type: 'string' } } } },
+    dsh: { type: 'object', properties: { started: { type: 'number' }, archived: { type: 'number' }, failed_archive: { type: 'number' } } },
     relations: { type: 'number' }, kinds: { type: 'object', additionalProperties: { type: 'number' } },
     neighbours: { type: 'number' }, loose: { type: 'number' },
     charts: { type: 'number' }, issues: { type: 'array', items: { type: 'string' } },
@@ -180,61 +191,57 @@ pwsh -NoProfile -File ${SCRIPTS}\\list-models.ps1 -Staging "${OUT}" ${selector}
 If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
   { label, phase: 'Models', model: 'haiku', effort: 'low', schema: MODEL_LIST },
 )
-// Sonnet decides the model's structure itself: it starts from a context pack (model-context.ps1)
-// and may read any book file, any Card, and the Scholar Archive.
-const elaborate = (model) => {
-  const work = `${MODEL_WORK}\\${model.address.replace(/[\/|]/g, '_')}`
-  return agent(
-    `Elaborate one Model Card of the ZET digest of 《${A.bookTitle}》: understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly.
-MODEL: ${model.address} (${model.title || ''})
-KEY: ${KEY}
-GROUP: ${model.group ? `${model.group} (anchor [[${KEY}/${model.group}]])` : 'unknown; the context script finds it'}
-BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, manifest.json; the bilingual source is ${A.source || 'in the Scholar Archive'})
-SCRIPTS: ${SCRIPTS}
-CONTEXT: ${work}\\context.md
-HELPER: ${HELPER}
-WORK: ${work} (create it for your calls files)${A.redoModels ? '\nREDO: restructure this model even if it already has parts.' : ''}`,
-    { label: `model ${model.address}`, phase: 'Models', model: 'sonnet', schema: MODEL_REPORT },
-  )
-}
-// With perSonnet > 1, one Sonnet agent elaborates several neighbouring Model Cards in turn, each by
-// the same instructions, so what it learns from the source for one serves the next.
+// One Sonnet manager per batch of neighbouring models: it plans each model, writes its skeleton,
+// drives DSH_PER_SONNET DeepSeek runs that fill the Cards, checks them, and cleans up after itself
+// (model-elaboration.md). Its DeepSeek folder and work files live under MODEL_WORK\<manager>.
 const MODEL_BATCH = {
   type: 'object',
-  properties: { reports: { type: 'array', items: MODEL_REPORT } },
+  properties: {
+    reports: { type: 'array', items: MODEL_REPORT },
+    cleanup: { type: 'object', properties: { archived: { type: 'number' }, not_archived: { type: 'number' }, deleted: { type: 'boolean' } } },
+  },
   required: ['reports'],
 }
+const slug = (address) => String(address).replace(/[\/|]/g, '_')
+const managerFolders = []
 const elaborateBatch = (batch) => {
-  if (batch.length === 1) return elaborate(batch[0]).then(r => [r])
-  const entry = (m, i) => {
-    const work = `${MODEL_WORK}\\${m.address.replace(/[\/|]/g, '_')}`
-    return `## Model ${i + 1}
+  const name = `m-${slug(batch[0].address)}`
+  const dsh = `${MODEL_WORK}\\${name}`
+  managerFolders.push(dsh)
+  const entry = (m, i) => `## Model ${i + 1}
 MODEL: ${m.address} (${m.title || ''})
 GROUP: ${m.group ? `${m.group} (anchor [[${KEY}/${m.group}]])` : 'unknown; the context script finds it'}
-CONTEXT: ${work}\\context.md
-WORK: ${work} (create it for your calls files)`
-  }
+WORK: ${dsh}\\${slug(m.address)}`
   return agent(
-    `Elaborate ${batch.length} Model Cards of the ZET digest of 《${A.bookTitle}》, one after another: for each, understand the model from the book and design its structure yourself. Read your instructions first: ${MODEL_DOC} (Read tool), then follow them exactly for each model in turn, as if it were the only one (its own context pack, WORK folder, filing, and get_model check). Finish one model before you start the next. These models sit near each other in the book: what you learn from the source for one may serve the next. Where the book relates two of them, link the parts concerned with the word that names the relation (对照, 对应, 放宽, 反驳, …); where one part belongs to both models (a correspondence, a shared setting), keep it filed under one and link it from the other Model Card's 结构 list, so it serves both, instead of writing a duplicate.
+    `You are a Sonnet manager in the Models stage of the ZET digest of 《${A.bookTitle}》. Make each model of your batch self-sufficient. Read your instructions first: ${MODEL_DOC} (Read tool). Then follow them exactly, for each model in turn. Finish one model before you start the next. These models are near each other in the book. Where one part belongs to two of them, file it in the first and take it in from the second Model Card's 结构 list.
 KEY: ${KEY}
 BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, manifest.json; the bilingual source is ${A.source || 'in the Scholar Archive'})
 SCRIPTS: ${SCRIPTS}
-HELPER: ${HELPER}${A.redoModels ? '\nREDO: restructure each model even if it already has parts.' : ''}
+HELPER: ${HELPER}
+CHECK: ${CHECK}
+FILL: ${FILL_DOC}
+DSH: ${dsh}
+DSH_PER: ${DSH_PER_SONNET}
+DSH_MODEL: ${DSH_MODEL}
+DSH_EFFORT: ${DSH_EFFORT}${REBUILD ? '\nREBUILD: rebuild each model even if it already has parts.' : ''}
 
 ${batch.map(entry).join('\n\n')}
 
-Return reports: one report per model, in this order, each as the instructions' Report section describes.`,
+Return reports: one report per model, in this order, as the Report section says, and cleanup.`,
     { label: `models ${batch.map(m => m.address).join(', ')}`, phase: 'Models', model: 'sonnet', schema: MODEL_BATCH },
-  ).then(r => batch.map(m => ((r && r.reports) || []).find(x => x.model === m.address) || null))
+  ).then(r => {
+    if (r && r.cleanup) log(`${name}: archived ${r.cleanup.archived ?? '?'} conversations, ${r.cleanup.not_archived ?? 0} not archived, folder deleted: ${r.cleanup.deleted}`)
+    return batch.map(m => ((r && r.reports) || []).find(x => x.model === m.address) || null)
+  })
 }
 const groupNo = (m) => Number(m.group) || Number(String(m.address).split('/')[1].split('|')[0]) || 0
 const elaborateAll = async (models, label) => {
-  const todo = models.filter(m => A.redoModels || !(m.parts > 0 && !m.issues))
+  const todo = models.filter(m => REBUILD || !(m.parts > 0 && !m.issues))
     .sort((a, b) => groupNo(a) - groupNo(b) || String(a.address).localeCompare(String(b.address)))
   if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
   const batches = []
   for (let i = 0; i < todo.length; i += PER_SONNET) batches.push(todo.slice(i, i + PER_SONNET))
-  if (PER_SONNET > 1) log(`${label}: ${todo.length} models in ${batches.length} Sonnet agents, up to ${PER_SONNET} each.`)
+  log(`${label}: ${todo.length} models in ${batches.length} Sonnet managers, up to ${PER_SONNET} models and ${DSH_PER_SONNET} DeepSeek runs each.`)
   const results = (await parallel(batches.map(b => () => elaborateBatch(b)))).flatMap((r, i) => r || batches[i].map(() => null))
   return results.map((r, i) => r || { model: todo[i].address, status: 'failed', parts: [], charts: 0, issues: ['no report from its agent'] })
 }
@@ -289,6 +296,9 @@ const kindTally = (reports) => {
 const logModels = (reports) => {
   const done = reports.filter(r => r.status === 'done')
   const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
+  const deriv = (field) => done.reduce((s, r) => s + ((r.derivations && r.derivations[field]) || 0), 0)
+  const runs = (field) => done.reduce((s, r) => s + ((r.dsh && r.dsh[field]) || 0), 0)
+  log(`Build: ${deriv('total')} Derivation parts (${deriv('by_dsh')} by DeepSeek, ${deriv('fixed')} fixed by Sonnet), ${done.reduce((s, r) => s + ((r.moved || []).length), 0)} Cards moved into ranges, ${done.reduce((s, r) => s + ((r.shared || []).length), 0)} shared parts taken in, ${sum('tolerated')} tolerated premises, ${sum('style')} style faults left, ${done.reduce((s, r) => s + ((r.accepted || []).length), 0)} faults accepted; DeepSeek runs ${runs('started')} started, ${runs('archived')} archived.`)
   log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts),${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
 }
 
@@ -319,8 +329,21 @@ if (MODE === 'models') {
   log(`${listed.models.length} Model Cards in the digest of ${KEY}.`)
   modelReports = await elaborateAll(listed.models, 'whole book')
   logModels(modelReports)
-  if (!A.organize) return { mode: MODE, book: A.bookTitle, citation_key: KEY, models: modelReports }
 }
+// A manager archives its own DeepSeek conversations; this sweep archives any a failed manager left open.
+const modelCleanup = (MODELS || MODE === 'models') && managerFolders.length ? await agent(
+  `Clean up after the Sonnet managers of a ZET model stage. Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_archive,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_remove_workspace".
+For each folder below: deepseek_list with that cwd; close and archive every conversation there that is not archived yet, and count them; then deepseek_remove_workspace with that cwd (it removes only the sidebar entry).
+${managerFolders.join('\n')}
+Then delete what is left of those folders with one PowerShell call: ${managerFolders.map(f => `Remove-Item -LiteralPath "${f}" -Recurse -Force -ErrorAction SilentlyContinue`).join('; ')}
+Return late_archived (the count) and folders (how many folders you handled).`,
+  {
+    label: 'cleanup model managers', phase: 'Models', model: 'haiku', effort: 'low',
+    schema: { type: 'object', properties: { late_archived: { type: 'number' }, folders: { type: 'number' } }, required: ['late_archived'] },
+  },
+) : null
+if (modelCleanup) log(`Model clean-up: ${modelCleanup.late_archived} conversations archived late.`)
+if (MODE === 'models' && !A.organize) return { mode: MODE, book: A.bookTitle, citation_key: KEY, models: modelReports, model_cleanup: modelCleanup }
 
 // --- Link ----------------------------------------------------------------------------------------
 if (MODE !== 'models') phase('Link')
@@ -410,6 +433,7 @@ Work in this order, reading cheaply (list_trees, get_tree excerpts; get_card onl
 3. Rewrite every agent Topic body: 2–3 sentences on the question it pursues, then Links to its 1–3 best entry Cards.
 4. For a Topic or subject with about seven or more Cards, write a hub Card as a Side successor of <n>/1 that lists Links to the core Cards with one line each on what they contribute, and Link to it from the Topic body.
 5. Write the book's structure Card as a Side successor of [[${KEY}/1]]: title = the book's central thesis as one sentence; body = the argument in reading order, one line per part linking its anchor and its 1–2 key Topic Cards, each line saying what it contributes and how it follows from the previous part; then a paragraph listing the book's Model Cards (search_cards with type "model") in order, one line each on what the model shows and which later models build on it, and a paragraph listing its Event Cards (type "event") with the ideas each supports.
+5a. Read each model's build report: run get_model on every Model Card and read \`build\`. A model is self-sufficient when \`build.closure\`, \`build.forward\`, and \`build.unanchored\` are empty; tolerated premises of shared parts are not faults. Re-point each outside Card that a model manager named in its notes (a Card whose content a new part of the model now states): that Card links the new part, with its kind word. Check that each model with shared parts takes them in through its Model Card's 结构 list. Do not insert or move Cards inside a model's range.
 5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (a part that belongs to no model: link it from its Model Card's 结构 list), but keep the structure Sonnet designed (its facets, core and aside parts, kinded relations, and loose parts). A part belongs to the Model Card it is filed under and to every Model Card that links it, so where two models of the book share a part (a correspondence, a common setting), link it from the second Model Card's 结构 list rather than writing a duplicate. Every Card that derives, interprets, applies, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the part that states it), and the word right before the Link names the kind of relation, which ZT reads: 依赖/基于 (rests on), 例示/案例 (illustrates), 对照/区别 (contrasts), 放宽/推广 (relaxes), 对应/类比 (corresponds), 反驳/批评 (objects). Read each model's neighbours in get_model, rewrite those that read "refers" but state a real relation so the kind word stands right before the Link, then search for discussions that miss the model; every Card that uses a real-world event as evidence links to its Event Card.
 6. Rewrite the Literature Card [[${KEY}]] body (edit_card body only) as the book's index: one line per chapter, "第N章 章名 - 讲了什么 → [[anchor]]", then a line linking the structure Card.
 7. Check the cross-part Links the DeepSeek agents added: keep those whose sentence states a real relationship and reason; rewrite vague ones. Add Links still missing between Topics that share a mechanism, and to related human Cards (search_cards with workspace "human"). Remove a "# 标题" line that repeats the title at the top of a body.
@@ -422,7 +446,8 @@ Return a short Chinese report: the final agent Topics (address and name), merges
 return {
   mode: MODE, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
   digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
-  models: modelReports.map(r => ({ model: r.model, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, neighbours: r.neighbours, charts: r.charts, issues: r.issues })),
+  models: modelReports.map(r => ({ model: r.model, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
+  model_cleanup: modelCleanup,
   link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
   deepseek_usage: dshUsage, cleanup, organize,
 }

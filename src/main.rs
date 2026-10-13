@@ -20,6 +20,7 @@ mod literature;
 mod mcp;
 mod model;
 mod ops;
+mod place;
 mod scholar;
 mod session;
 mod shutdown;
@@ -101,8 +102,12 @@ fn run() -> Result<()> {
             shell_delete(&at)
         }
         [cmd, rest @ ..] if cmd == "mv" => {
-            let (at, new_location) = parse_mv_args(rest)?;
-            shell_move(&at, &new_location)
+            let (at, target, alone) = parse_mv_args(rest)?;
+            shell_move(&at, &target, alone)
+        }
+        [cmd, rest @ ..] if cmd == "ins" => {
+            let at = parse_at(rest)?;
+            shell_insert(&at)
         }
         _ => bail!("unknown command"),
     }
@@ -132,11 +137,28 @@ fn parse_target_at(args: &[String]) -> Result<String> {
     }
 }
 
-fn parse_mv_args(args: &[String]) -> Result<(String, String)> {
-    match args {
-        [flag, at, new_location] if flag == "--at" => Ok((at.clone(), new_location.clone())),
-        _ => bail!("expected --at <location> <new-location>"),
+/// `--at <location>`, an optional `--alone`, then `<new-location>` or
+/// `--before <location>`.
+fn parse_mv_args(args: &[String]) -> Result<(String, place::Target, bool)> {
+    let usage = "expected --at <location> [--alone] <new-location> or --at <location> [--alone] --before <location>";
+    let [flag, at, rest @ ..] = args else {
+        bail!(usage);
+    };
+    if flag != "--at" {
+        bail!(usage);
     }
+    let (alone, rest) = match rest {
+        [flag, rest @ ..] if flag == "--alone" => (true, rest),
+        rest => (false, rest),
+    };
+    let target = match rest {
+        [flag, before] if flag == "--before" => place::Target::Before(before.clone()),
+        [new_location] if !new_location.starts_with("--") => {
+            place::Target::To(new_location.clone())
+        }
+        _ => bail!(usage),
+    };
+    Ok((at.clone(), target, alone))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -968,7 +990,9 @@ fn cmd_help() -> Result<()> {
         println!("  zt e --at <citation-key> --part metadata");
         println!("  zt e --at <citation-key> --part text");
         println!("  zt del --at <target>");
-        println!("  zt mv --at <location> <new-location>");
+        println!("  zt mv --at <location> [--alone] <new-location>");
+        println!("  zt mv --at <location> [--alone] --before <location>");
+        println!("  zt ins --at <location>");
         println!("  zt stats");
         println!("  zt ws");
         println!("  zt mcp");
@@ -1546,6 +1570,23 @@ fn acquire_edit_lock(root: &Path) -> Result<EditLock> {
     }
 }
 
+/// The edit lock for clients that make many short writes at once (the MCP server and the GUI):
+/// wait up to `patience` for another short write to finish instead of refusing at once. A
+/// Session holds the lock while its editor is open, so after `patience` the refusal stands.
+fn acquire_edit_lock_within(root: &Path, patience: Duration) -> Result<EditLock> {
+    let start = Instant::now();
+    let mut pause = Duration::from_millis(20);
+    loop {
+        match acquire_edit_lock(root) {
+            Err(err) if err.to_string() == "edit in progress" && start.elapsed() < patience => {
+                thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(400));
+            }
+            other => return other,
+        }
+    }
+}
+
 fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
@@ -2060,42 +2101,47 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
     spread::follow(conn, mapping, &BTreeSet::new())
 }
 
-fn shell_move(at: &str, new_location: &str) -> Result<()> {
+fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root)?;
     let mut conn = open_db(&root)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
-    let mapping = move_card(&mut conn, at, new_location, |expected| {
-        read_confirmation(&mut input, expected)
-    })?;
-    println!("moved: {}", mapping.len());
-    for (old, new) in mapping {
+    let plan = place::move_plan(&conn, at, target, alone)?;
+    print_move_verification(&plan);
+    read_confirmation(&mut input, "move")?;
+    apply_move_plan(&mut conn, &plan)?;
+    println!("moved: {}", plan.mapping.len());
+    for (old, new) in &plan.mapping {
         println!("{old} -> {new}");
     }
     Ok(())
 }
 
+/// Insert a new Card at `at`: confirm the renumbering, then write the Card.
+fn shell_insert(at: &str) -> Result<()> {
+    let root = require_service_up()?;
+    let _lock = acquire_edit_lock(&root)?;
+    let mut conn = open_db(&root)?;
+    let plan = place::insert_plan(&conn, at)?;
+    for line in place::insert_verification_lines(&plan) {
+        println!("{line}");
+    }
+    let stdin = io::stdin();
+    read_confirmation(&mut stdin.lock(), "insert")?;
+    match run_editor(&regular_template())? {
+        EditOutcome::Canceled => Ok(()),
+        EditOutcome::Saved(text) => {
+            place::apply_insert_plan(&mut conn, &plan, CardType::Idea, None, &text)?;
+            println!("{}", plan.location);
+            Ok(())
+        }
+    }
+}
+
 struct MovePlan {
     mapping: BTreeMap<String, String>,
     rewritten_links: usize,
-}
-
-fn move_card<F>(
-    conn: &mut Connection,
-    at: &str,
-    new_location: &str,
-    mut confirm: F,
-) -> Result<BTreeMap<String, String>>
-where
-    F: FnMut(&str) -> Result<()>,
-{
-    let plan = move_plan(conn, at, new_location)?;
-    print_move_verification(&plan);
-    confirm("move")?;
-    let mapping = plan.mapping.clone();
-    apply_move_plan(conn, &plan)?;
-    Ok(mapping)
 }
 
 fn move_plan(conn: &Connection, at: &str, new_location: &str) -> Result<MovePlan> {

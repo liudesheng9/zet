@@ -64,8 +64,18 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnCard,
     ),
     (
-        "mv <new-location>",
-        "move the current card and its successors",
+        "ins",
+        "insert a new card in the current card's place; it and its successors move down",
+        Availability::OnRegular,
+    ),
+    (
+        "mv [alone] <new-location>",
+        "move the current card and its successors (alone: only the card; its chain closes up)",
+        Availability::OnRegular,
+    ),
+    (
+        "mv [alone] before <location>",
+        "move the current card into another card's place; that card moves down",
         Availability::OnRegular,
     ),
     (
@@ -592,14 +602,41 @@ fn execute_command(
                 .unwrap_or(Pointer::Root);
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["mv", new_location] => {
+        ["mv", rest @ ..] if !rest.is_empty() => {
             let at = state.current_card("mv")?;
+            let (alone, rest) = match rest {
+                ["alone", rest @ ..] => (true, rest),
+                rest => (false, rest),
+            };
+            let target = match rest {
+                ["before", before] => crate::place::Target::Before((*before).to_string()),
+                [to] if *to != "before" && *to != "alone" => {
+                    crate::place::Target::To((*to).to_string())
+                }
+                _ => bail!("usage: mv [alone] <new-location> | mv [alone] before <location>"),
+            };
             let _lock = crate::acquire_edit_lock(root)?;
             let mut conn = crate::open_db(root)?;
-            let plan = crate::move_plan(&conn, &at, new_location)?;
+            let plan = crate::place::move_plan(&conn, &at, &target, alone)?;
             interaction.confirm("move", &crate::move_verification_lines(&plan))?;
             crate::apply_move_plan(&mut conn, &plan)?;
-            state.pointer = Pointer::Card((*new_location).to_string());
+            let moved_to = plan.mapping.get(&at).cloned().unwrap_or(at);
+            state.pointer = Pointer::Card(moved_to);
+            Ok(Execution::Continue(CommandResult::Changed))
+        }
+        ["mv"] => bail!("usage: mv [alone] <new-location> | mv [alone] before <location>"),
+        ["ins"] => {
+            let at = state.current_card("ins")?;
+            let _lock = crate::acquire_edit_lock(root)?;
+            let mut conn = crate::open_db(root)?;
+            let plan = crate::place::insert_plan(&conn, &at)?;
+            interaction.confirm("insert", &crate::place::insert_verification_lines(&plan))?;
+            let mut save = |text: &str| {
+                crate::place::apply_insert_plan(&mut conn, &plan, crate::CardType::Idea, None, text)
+            };
+            if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
+                state.pointer = Pointer::Card(plan.location.clone());
+            }
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["ty", name, label @ ..] => {
@@ -1230,7 +1267,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;
@@ -1558,6 +1595,73 @@ mod tests {
                 .expect("link source")
                 .text
                 .contains("[[0/2|a]]")
+        );
+    }
+
+    #[test]
+    fn ins_and_mv_before_put_a_card_between_two_cards() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let conn = crate::open_db(temp.path()).expect("open database");
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
+             ('0/0', NULL, 1, 0, NULL, '# Topic\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/1', NULL, 0, 0, NULL, '# One\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/2', NULL, 0, 0, NULL, '# Two\n\nafter [[0/1]]\n\n<!-- zt:reverse-links -->\n'),\
+             ('0/3', NULL, 0, 0, NULL, '# Three\n\n<!-- zt:reverse-links -->\n')",
+            [],
+        )
+        .expect("insert Cards");
+        drop(conn);
+        let title = |at: &str| {
+            let conn = crate::open_db(temp.path()).expect("open database");
+            crate::parse_card_text(&crate::load_card(&conn, at).expect("card").text)
+                .expect("parse")
+                .title
+        };
+        let mut state = SessionState::at("0/2");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::from([Some(
+                "# Step\n\nfrom [[0/2]]\n\n<!-- zt:reverse-links -->\n".to_string(),
+            )]),
+            choices: VecDeque::new(),
+            confirmations: VecDeque::from(["insert".to_string(), "move".to_string()]),
+        };
+        assert_eq!(
+            execute(temp.path(), &mut state, "ins", &mut interaction).expect("insert"),
+            Execution::Continue(CommandResult::Changed)
+        );
+        assert_eq!(state.pointer(), &Pointer::Card("0/2".to_string()));
+        assert_eq!(
+            [title("0/1"), title("0/2"), title("0/3"), title("0/4")],
+            ["One", "Step", "Two", "Three"]
+        );
+        let conn = crate::open_db(temp.path()).expect("open database");
+        assert!(
+            crate::load_card(&conn, "0/2")
+                .unwrap()
+                .text
+                .contains("from [[0/3]]")
+        );
+        drop(conn);
+
+        // Move the last Card alone before the first: the others move down.
+        let mut state = SessionState::at("0/4");
+        assert_eq!(
+            execute(temp.path(), &mut state, "mv alone before 0/1", &mut interaction)
+                .expect("move before"),
+            Execution::Continue(CommandResult::Changed)
+        );
+        assert_eq!(state.pointer(), &Pointer::Card("0/1".to_string()));
+        assert_eq!(
+            [title("0/1"), title("0/2"), title("0/3"), title("0/4")],
+            ["Three", "One", "Step", "Two"]
+        );
+        assert_eq!(
+            execute(temp.path(), &mut state, "mv before", &mut interaction)
+                .expect_err("usage")
+                .to_string(),
+            "usage: mv [alone] <new-location> | mv [alone] before <location>"
         );
     }
 

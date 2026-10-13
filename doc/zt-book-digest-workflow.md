@@ -4,8 +4,8 @@
 Cards in the agent Workspace: a Literature tree for the book, Topic trees for the ideas that stand
 on their own, Event Cards for the real events it reports, and a **structured model** for every
 model it sets out. Run it from Claude Code ("run the zt-book-digest workflow on …"); it uses
-DeepSeek Harness for the bulk reading and writing, Sonnet for the models, and Opus for the final
-organization.
+DeepSeek Harness for the bulk reading and writing, Sonnet managers (each driving eight or more
+DeepSeek runs) for the models, and Opus for the final organization.
 
 ## What happens
 
@@ -14,8 +14,8 @@ flowchart LR
   P[Prepare<br/>Haiku] --> D1[Digest block 1<br/>Haiku drives DeepSeek ×5]
   P --> D2[Digest block 2<br/>Haiku drives DeepSeek ×5]
   P --> D3[Digest block …]
-  D1 --> M1[Models for block 1<br/>Sonnet × each new Model Card]
-  D2 --> M2[Models for block 2<br/>Sonnet × each new Model Card]
+  D1 --> M1[Models for block 1<br/>Sonnet manager ▸ DeepSeek ×8+]
+  D2 --> M2[Models for block 2<br/>Sonnet manager ▸ DeepSeek ×8+]
   D3 --> M3[Models for block …]
   M1 --> L[Link<br/>Haiku drives DeepSeek]
   M2 --> L
@@ -28,12 +28,43 @@ flowchart LR
 | --- | --- | --- | --- |
 | **Prepare** | Haiku runs a script | Extracts the Chinese text, cuts it into section groups (about 20,000 characters each), and creates the agent Literature Card with one anchor Card per group. | `<out>\groups`, `<out>\sections`, the Literature tree `[[Key]]` → `[[Key/1]]` … |
 | **Digest** | one Haiku manager per block of up to 5 groups; one DeepSeek run per group | Each DeepSeek run gets only its own sections, searches the rest of the book on disk, and writes 6–12 Cards: Idea Cards placed in Topic trees or under its anchor, Event Cards, and **one whole Model Card per model**. Blocks run in parallel. | Cards, and `owned-gNN.txt` (which Cards each group wrote) |
-| **Models** | Haiku lists, then one **Sonnet** agent per Model Card | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. Each Sonnet agent reads the Model Card, studies the book's passages behind it, corrects it, and designs its structure (below). | Model parts with charts; a report per model |
+| **Models** | Haiku lists, then one **Sonnet manager** per batch of `perSonnet` models, each driving `dshPerSonnet` DeepSeek runs at a time | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. Each manager plans each model, writes its skeleton in build order, has DeepSeek fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files (below). | Self-sufficient models; a report per model |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
 | **Organize** | Opus | Merges duplicate Topics, writes hubs, the book's structure Card and index, checks every model with `get_model`, and fixes Links. | A finished, navigable digest |
 
-## A structured model
+## A self-sufficient model (zt 0.12.0)
+
+A reader must be able to build each model from nothing, reading only its own Cards in build order
+(`doc/self-sufficient-models-proposal.md`). The Models stage reaches that in five steps, with
+`scripts/book-digest/model-elaboration.md` as the manager's instructions:
+
+1. **Plan (Sonnet).** The context pack (`model-context.ps1`), the source passages, and
+   `get_model` `build` give a **derivation ledger** (`ledger.json`: one entry per step from the
+   setting to each result, with its inputs, output, place in the book, and whether the book shows
+   or skips it) and a **closure audit** (`closure.json`: each premise outside the model, with the
+   path that brings it in: move, take in, name the parts, restate, or plain reference).
+2. **Skeleton (Sonnet).** The manager acts on the audit, orders the main line with `move_card`
+   (`before`, `alone`), inserts missing steps and Derivation parts with `insert_card`, writes the
+   setting with its symbol table and `术语表` term table itself, writes every other part as a
+   skeleton (facet, emphasis, claim title, kinded Links, body `待写`), rewrites the Model Card
+   with its 结构 list in build order, and writes one job file per one to three parts.
+3. **Fill (DeepSeek, `dshPerSonnet` runs at a time).** Every run starts with the same files
+   (`dsh-fill-instructions.zh.md`, then the model's setting), then its job with the source lines
+   copied in. It writes only its parts (the helper's `-Allow` list), runs
+   `card-style-check.ps1` on them, and answers one JSON line per part.
+4. **Check (Sonnet).** The manager redoes each derivation step, checks the book's numerical
+   examples with a short script, runs the style check on the whole model, sends faults back to
+   the same DeepSeek conversation (two rounds at most, then writes the part itself), and runs
+   `get_model` until `build` has no `closure`, `forward`, or `unanchored` fault.
+5. **Clean up (Sonnet).** It closes and archives each DeepSeek conversation it started, removes its
+   DeepSeek workspace (`<out>\models\<manager>`), and deletes its work files. A Haiku sweep then
+   archives anything a failed manager left open.
+
+The report of each model adds `derivations`, `moved`, `shared`, `tolerated`, `style`,
+`accepted`, and `dsh`.
+
+## A structured model (zt 0.7.0 – 0.11.0)
 
 DeepSeek writes each model as one Card, because it reads only its own sections and must work
 fast. A model rarely fits one Card, and no two models need the same parts, so in the Models stage
@@ -96,10 +127,12 @@ Arguments (`args`):
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `groups` | modes `link` and `models`: the digest's group count |
 | `models` | `false` skips the Models stage in a full run |
-| `redoModels` | `true` restructures models that already have parts (a rerun skips them by default); use it to move models written before 0.7.0 to free facets and emphasis, or those written before 0.10.0 to Relation kinds and without boilerplate first lines |
+| `rebuild` | `true` rebuilds models that already have parts (a rerun skips them by default), keeping the facets, emphasis, and charts that still fit; `redoModels` is its old name |
+| `perSonnet` | models per Sonnet manager (default 4); neighbouring models of the book share one manager |
+| `dshPerSonnet` | DeepSeek runs one manager keeps going at the same time (default 8; may be higher) |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the
 DeepSeek token use, and Opus's report. To structure the models of a book digested before 0.6.0 (or, with `redoModels: true`, restructure those of 0.6.0),
-run it with `mode: "models"`, `citationKey`, `bookTitle`, and `out` (the Sonnet agents read the
+run it with `mode: "models"`, `citationKey`, `bookTitle`, and `out` (add `rebuild: true` to make the models of an earlier digest self-sufficient) (the Sonnet agents read the
 book from the Scholar Archive when the staging folder is gone).

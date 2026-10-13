@@ -254,7 +254,9 @@
     ['b', 'create the next side successor', 'regular'],
     ['e', 'edit the current card', 'card'],
     ['del', 'delete the current card and its successors', 'card'],
-    ['mv <new-location>', 'move the current card and its successors', 'regular'],
+    ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
+    ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
+    ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
     ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
@@ -305,10 +307,15 @@
         return newCard('side');
       case 'e': needCard(); return editCard();
       case 'del': needCard(); return deleteCard();
-      case 'mv':
+      case 'ins': needCard(); return insertCard();
+      case 'mv': {
         needCard();
-        if (rest.length !== 1) throw new Error('usage: mv <new-location>');
-        return moveCard(rest[0]);
+        const alone = rest[0] === 'alone';
+        const args = alone ? rest.slice(1) : rest;
+        if (args.length === 2 && args[0] === 'before') return moveCard({ before: args[1] }, alone);
+        if (args.length === 1 && args[0] !== 'before') return moveCard({ to: args[0] }, alone);
+        throw new Error('usage: mv [alone] <new-location> | mv [alone] before <location>');
+      }
       case 'ty':
         needCard();
         if (rest.length < 1) throw new Error('usage: ty <idea|event|model> [<facet>]');
@@ -1973,7 +1980,8 @@
         actionButton('Edit', 'e', editCard, { primary: true }),
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
         actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),
-        actionButton('Move', 'm', () => moveCard(), { disabled: !regular, title: regular ? 'Move with successors' : 'Tree roots cannot move' }),
+        actionButton('Insert', 'i', insertCard, { disabled: !regular, title: regular ? 'Insert a new card in this place; this card and its successors move down' : 'Nothing goes before a tree root' }),
+        actionButton('Move', 'm', () => moveCard(), { disabled: !regular, title: regular ? 'Move with successors, alone, or into another card’s place' : 'Tree roots cannot move' }),
         actionButton('Delete', 'del', deleteCard, { danger: true }),
       ),
       h('details', { class: 'raw-toggle' }, h('summary', { text: 'Stored Markdown' }), h('pre', { text: card.text })),
@@ -1982,9 +1990,23 @@
   }
 
   /**
+   * The model's members in build order (`build.order`: the main line from the setting, each
+   * example beside its step, a shared part just before the first step that rests on it, then
+   * the parts outside the build), each with its part fields and its `line`. A model read
+   * without a build report keeps the order its Model Card names.
+   */
+  function buildOrder(model) {
+    const order = model.build && model.build.order;
+    if (!order) return model.parts;
+    const byAddress = new Map(model.parts.map((part) => [part.address, part]));
+    return order.map((entry) => ({ ...(byAddress.get(entry.address) || {}), ...entry }));
+  }
+
+  /**
    * The divider tabs along the top of a Model Card or Model part: the Model Card, then one tab
-   * per part in the order its Model Card names them (then filing order), named by its facet. The open Card's
-   * tab stands up; core tabs are inked, aside tabs are narrow and pale.
+   * per part in build order, named by its facet. The open Card's tab stands up; core tabs are
+   * inked, aside tabs are narrow and pale, a shared part's tab is dashed and marked ⧉, a
+   * Derivation part's tab is a slim slip, and the parts outside the build stand apart.
    */
   function modelTabs(card) {
     const model = card.model;
@@ -1997,9 +2019,16 @@
     const tabs = [head
       ? tab('Model', head.address, head.address === card.address, `Model Card ${head.address} — ${head.title}`, 'head')
       : tab('Model', null, false, 'This part belongs to no model: file it under a Model Card, or link it from one', 'head missing')];
-    for (const part of model.parts) {
-      tabs.push(tab(facetLabel(part.facet), part.address, part.address === card.address,
-        `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''} · ${part.address} — ${part.title}`, part.emphasis));
+    let apart = false;
+    for (const part of buildOrder(model)) {
+      const line = part.line || '';
+      const extra = [part.emphasis, line, part.derivation ? 'derivation' : null,
+        line === 'off' && !apart ? 'apart' : null].filter(Boolean).join(' ');
+      if (line === 'off') apart = true;
+      const where = line === 'shared' ? ` · shared from ${part.home || 'another model'}`
+        : line === 'side' ? ` · beside ${part.from}` : line === 'off' ? ' · outside the build' : '';
+      tabs.push(tab((line === 'shared' ? '⧉ ' : '') + facetLabel(part.facet), part.address, part.address === card.address,
+        `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''}${where} · ${part.address} — ${part.title}`, extra));
     }
     return h('nav', { class: 'model-tabs', 'aria-label': 'Model structure' }, tabs);
   }
@@ -2043,6 +2072,8 @@
     const parts = model.parts;
     const here = card.address;
     const onHead = here === model.head.address;
+    // A Derivation part carries one step between two parts: on the board it is that thread, made visible.
+    const derivations = new Set(((model.build && model.build.order) || []).filter((entry) => entry.derivation).map((entry) => entry.address));
     const order = new Map(parts.map((part, at) => [part.address, at]));
     const facetOf = new Map(parts.map((part) => [part.address, part.facet]));
     const loose = new Set(model.loose || []);
@@ -2119,7 +2150,7 @@
       const joined = part.filed === false;
       const also = (part.also || []).map((other) => other.address).join(', ');
       const node = h(part.address === here ? 'div' : 'button', {
-        class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}${joined ? ' joined' : ''}${also ? ' shared' : ''}`,
+        class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}${joined ? ' joined' : ''}${also ? ' shared' : ''}${derivations.has(part.address) ? ' derivation' : ''}`,
         title: `${facetLabel(part.facet)}${part.emphasis ? ` · ${part.emphasis}` : ''} · ${part.address}${joined ? ' (filed elsewhere, joined by Link)' : ''}${also ? `\nalso in ${also}` : ''}\n${part.title}`,
         'aria-current': part.address === here ? 'true' : null,
         onclick: part.address === here ? null : () => go(part.address),
@@ -2269,7 +2300,34 @@
           folded.map(outsideRow)) : null) : null,
       model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'A part that belongs to no model' },
         model.issues.map((issue) => h('p', { text: issue }))) : null,
+      buildFaults(model),
     ];
+  }
+
+  /**
+   * What keeps a reader from building the model from its own Cards, from `build`: premises
+   * outside the model, steps that rest on later steps, and steps with no path back to the
+   * setting. Each fault names its fix and opens the Card it starts from. Tolerated premises of
+   * shared parts are counted, not listed: they stay in their home model.
+   */
+  function buildFaults(model) {
+    const build = model.build;
+    if (!build) return null;
+    const rows = [
+      ...(build.closure || []).map((f) => ({ at: f.from, kind: 'outside', text: f.fix })),
+      ...(build.forward || []).map((f) => ({ at: f.from, kind: 'forward', text: f.fix })),
+      ...(build.unanchored || []).map((f) => ({ at: f.address, kind: 'unanchored', text: f.fix })),
+    ];
+    const tolerated = (build.tolerated || []).length;
+    if (!rows.length) {
+      return h('div', { class: 'mb-build ok', title: 'Every premise is a member, and every step rests on earlier steps' },
+        `Self-sufficient${tolerated ? ` · ${tolerated} premise${tolerated === 1 ? '' : 's'} kept in a shared part’s home model` : ''}`);
+    }
+    return h('details', { class: 'mb-build' },
+      h('summary', { text: `Build · ${rows.length} fault${rows.length === 1 ? '' : 's'}${tolerated ? ` · ${tolerated} tolerated` : ''}` }),
+      rows.map((row) => h('button', { class: 'mb-reason fault ' + row.kind, onclick: () => go(row.at), title: row.at },
+        h('span', { class: 'mb-kind', text: row.kind }),
+        h('span', { class: 'note' }, titleNodes(row.text)))));
   }
 
   function wireMarkdown(root) {
@@ -2425,8 +2483,8 @@
     const rows = COMMANDS.filter(([, , scope]) => available(scope));
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
-      h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(20)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / search · g go · n b e m · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
+      h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(30)} ${desc}`).join('\n') }),
+      h('p', { text: 'Keys: : command · / search · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -2893,19 +2951,62 @@
       `deleted: ${result.deleted}` + (moved.length ? `\ncompacted:\n${moved.map(([a, b]) => `${a} -> ${b}`).join('\n')}` : ''));
   }
 
-  async function moveCard(target) {
+  /**
+   * Move the open Card: to a free Location (`{ to }`) or into another Card's place
+   * (`{ before }`, which moves that Card down), with its successors or `alone` (its Direct
+   * successors close the gap). Without a target, ask: `0/3|a`, `before 0/2`, `alone before 0/2`.
+   */
+  async function moveCard(target, alone = false) {
     const card = state.card;
     if (!card) throw new Error('mv needs a Card; use go <target> first');
     if (card.context !== 'regular') throw new Error(card.kind === 'literature'
       ? 'Literature Card cannot be moved; edit metadata to change its Citation key'
       : 'Topic Cards cannot be moved');
-    const to = target || await promptValue(`Move ${card.address}`, 'New Location (the card keeps its successors):', card.address);
-    if (!to) return;
-    const plan = await api('move', { at: card.address, to });
+    let where = target;
+    if (!where) {
+      const answer = await promptValue(`Move ${card.address}`,
+        'New Location, or "before <location>" to take that card’s place. Start with "alone" to leave the successors behind:', card.address);
+      if (!answer) return;
+      const words = answer.trim().split(/\s+/);
+      alone = words[0] === 'alone';
+      const rest = alone ? words.slice(1) : words;
+      if (rest.length === 2 && rest[0] === 'before') where = { before: rest[1] };
+      else if (rest.length === 1 && rest[0] !== 'before') where = { to: rest[0] };
+      else throw new Error('expected <new-location>, before <location>, or alone before <location>');
+    }
+    const request = { at: card.address, ...where, alone: alone || undefined };
+    const plan = await api('move', request);
     const ok = await confirmPlan(`Move ${card.address}`, plan.lines, plan.confirm);
     if (!ok) return;
-    const result = await api('move', { at: card.address, to, confirm: plan.confirm });
+    const result = await api('move', { ...request, confirm: plan.confirm });
     await afterChange(result.address, `moved: ${Object.keys(result.moved).length}`);
+  }
+
+  /**
+   * Insert a new Card in the open Card's place: confirm the renumbering first (the open Card and
+   * its successors move down one place, and it becomes the new Card's Direct successor), then write
+   * the new Card. Its Links name today's addresses and follow the move.
+   */
+  async function insertCard() {
+    const card = state.card;
+    if (!card) throw new Error('ins needs a Card; use go <target> first');
+    if (card.context !== 'regular') throw new Error('cannot insert before a tree root; insert before its Direct successor instead');
+    const plan = await api('insert', { before: card.address, text: '# (new card)\n' });
+    const ok = await confirmPlan(`Insert before ${card.address}`, plan.lines, plan.confirm);
+    if (!ok) return;
+    const inModel = card.type === 'model';
+    const address = await openEditor({
+      heading: `New card in the place of ${card.address} (it moves down)`,
+      initial: '# \n\n\n<!-- zt:reverse-links -->\n',
+      cardType: inModel ? 'model' : 'idea',
+      facet: inModel && card.facet ? '推导' : '',
+      emphasis: inModel && card.facet ? 'aside' : '',
+      save: (text, _bibtex, type, facet, emphasis) => api('insert', {
+        before: card.address, text, confirm: plan.confirm,
+        type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined,
+      }).then((result) => result.address),
+    });
+    if (address) await afterChange(address, `inserted ${address}`);
   }
 
   async function quit() {
@@ -3036,6 +3137,7 @@
         case 't': return run(() => newCard('topic', ''));
         case 'l': return run(() => newLiterature());
         case 'm': return card ? run(() => moveCard()) : undefined;
+        case 'i': return card && card.context === 'regular' ? run(insertCard) : undefined;
         case 'Delete': return card ? run(deleteCard) : undefined;
         case 'u': case 'ArrowUp': case 'ArrowLeft':
           return card ? run(() => go(card.parent ? card.parent.address : null)) : undefined;

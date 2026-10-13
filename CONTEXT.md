@@ -44,7 +44,7 @@ A Link from one Model part to another part of the same model. The sentence that 
 _Avoid_: Dependency edge, arrow
 
 **Relation kind**:
-What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `rests on`, `uses`), `illustrates` (`例示`, `案例`, `for example`), `contrasts` (`对照`, `区别`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), or `refers` when no such word stands before it. A Link right after another in the same sentence shares its kind. Kinds are computed, never stored; only `rests-on` places a part on the Model board.
+What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `代入`, `推导自`, `rests on`, `uses`), `illustrates` (`例示`, `案例`, `for example`), `contrasts` (`对照`, `区别`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), or `refers` when no such word stands before it. A Link right after another in the same sentence shares its kind. Kinds are computed, never stored; only `rests-on` places a part on the Model board.
 _Avoid_: Link type, edge label
 
 **Loose part**:
@@ -163,3 +163,35 @@ _Avoid_: Collection, selection, set
 **Model board**:
 The GUI view of one model, below a Model Card or Model part: the Model Card as the way in and each part as a small card under the parts it rests on, with a thread for each Model relation (a dashed arc named by its kind when it is not `rests-on`) and Loose parts in a tray. It is laid out by `rests-on` relations, not by address, and inked by attention: the open part, the parts it relates to (with their kinds and reasons), and core parts stay legible; the rest recede to their facet. Below it lie the open Card's Model neighbours and the other models a shared part serves.
 _Avoid_: Model map, model diagram
+
+**Model range**:
+The Model Card and the Model parts filed under it.
+_Avoid_: Model scope, model folder
+
+**Model member**:
+A Card of a model: a Card in its Model range, or a shared part that the Model Card takes in by a Link.
+_Avoid_: Model element
+
+**Build order**:
+The order in which a reader builds a model. The **main line** starts at the Model Card's first Side successor (the setting) and follows its Direct successors in the range: the setting, then each step, then each result. A part below a main-line part through a Side successor holds an example, a case, or a variant of that step. A later Side successor of the Model Card stands outside the build (a correspondence, a limit, a history). A shared part takes its place just before the first main-line step that rests on it. ZT computes the build order (`get_model` `build.order`); the divider tabs follow it.
+_Avoid_: Reading order, sequence
+
+**Derivation part**:
+A Model part whose only job is one step of a derivation: it starts from parts earlier in the build order and ends at an intermediate result that a later part uses. Its facet starts with `推导`, and its emphasis is normally `aside`. The Model board draws it as a slim slip on the thread between the parts it connects.
+_Avoid_: Proof card, helper card, bridge card
+
+**Self-sufficient model**:
+A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, and no main-line part rests on a later part. ZT reports the faults (`closure`, `forward`, `unanchored`) in the build report; it does not enforce them.
+_Avoid_: Closed model, complete model
+
+**Tolerated premise**:
+A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault.
+_Avoid_: Borrowed premise, leak
+
+**Card language**:
+The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Technical English), adapted for Chinese: one statement per sentence, short sentences, no semicolons, active voice, a verb for an action, one term per meaning (a model's term table), and no hedges or praise words. Formulas, Links, charts, and quotations are exempt.
+_Avoid_: Style guide, tone
+
+**Insert**:
+Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.
+_Avoid_: Splice, shift

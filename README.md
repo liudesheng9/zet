@@ -142,8 +142,8 @@ zt gui --port 4717     # choose the port
   `Ctrl+S` to save, and `Esc` to cancel.
 
 The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
-`ws agent`, `del`, `mv 1/3`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
-same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m`,
+`ws agent`, `del`, `ins`, `mv 1/3`, `mv alone before 1/2`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
+same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m` `i` (insert),
 `Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `p` / `P` to lay a card on the Table, `v` to switch views,
 `w` to switch Workspaces, `f` to fit.
 
@@ -232,8 +232,9 @@ are changed, moved, or no longer linked. See `doc/open-models-design.md`.
 - **Session**: a part shows `[model · <facet>]` (and its emphasis); `ty model <facet>` makes the
   current Card a part (the facet is the rest of the line), and `ty model` alone makes it a Model
   Card again.
-- **GUI**: a Model Card or part carries divider tabs along its top edge, named by facet in the
-  order the Model Card names its parts (core tabs inked, asides pale), and below it the **model
+- **GUI**: a Model Card or part carries divider tabs along its top edge, named by facet in
+  build order (core tabs inked, asides pale, shared parts dashed and marked ⧉, Derivation parts
+  slim, parts outside the build apart), and below it the **model
   board**: the parts laid out by what rests on what, a thread for each `rests-on` relation and a
   dashed arc named by its kind for every other relation, loose parts apart in a tray. The board
   follows the reader's attention: the open part is lifted and fully titled, the parts it relates
@@ -246,6 +247,32 @@ are changed, moved, or no longer linked. See `doc/open-models-design.md`.
   every body, the models a Card belongs to, its kinded relations, loose parts, and neighbours.
 - **Dump**: `archive.json` lists every Model part's facet under `facets` and every core or aside
   part under `emphasis`.
+
+### Self-sufficient models
+
+A reader should be able to rebuild a model from nothing, reading only its own Cards in **build
+order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
+
+- **Build order**: the Model Card's first Side successor is the setting (agents, timing,
+  information, a symbol table, and a `术语表` term table); its Direct successors are the **main
+  line**, the derivation step by step; an example sits beside the step it illustrates (a Side
+  successor of that step); a later Side successor of the Model Card stands outside the build; a
+  shared part stands just before the first step that rests on it.
+- **Derivation parts** (facet starting with `推导`) carry a step the source skips, so no step
+  jumps; the board draws them as slim slips on the thread they make visible.
+- `get_model` returns `build`: the members in build order with their `line`, and the faults that
+  keep the model from being **self-sufficient**: `closure` (a rests-on Link from the model's range
+  to a Card that is not a member, with the fix), `forward` (a step rests on a later step), and
+  `unanchored` (a step with no rests-on path to the setting). Premises of shared parts that stay in
+  their home model are `tolerated`, not faults. ZT reports; it enforces nothing.
+- **Insert and move between**: `insert_card` (MCP), `ins` (Session), and the GUI's Insert action
+  put a new Card in an existing Card's place; that Card and its subtree move down one place and it
+  becomes the new Card's Direct successor. `move_card` / `mv` also take `before` (another Card's
+  place) and `alone` (only the Card; its Direct successors close the gap). Every renamed address
+  is shown first, and every Link follows.
+- **Card language**: Card text follows ASD-STE100 adapted for Chinese (one statement per sentence,
+  short sentences, no `；`, active voice, one term per meaning);
+  `scripts/book-digest/card-style-check.ps1` checks it.
 
 ### Math and HTML charts
 
@@ -262,8 +289,9 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 ### Digesting a book
 
 The `zt-book-digest` Claude Code workflow turns a book from the Scholar Archive into agent Cards:
-DeepSeek Harness runs digest it section by section, a Sonnet agent rebuilds every Model Card they
-write into a structured model with charts as soon as their block finishes, a link pass ties the
+DeepSeek Harness runs digest it section by section, Sonnet managers make every model they write
+self-sufficient (a plan, a skeleton in build order, eight or more DeepSeek runs that fill the
+Cards, and a check of every step) as soon as their block finishes, a link pass ties the
 parts of the book together, and Opus organizes the result. See
 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
 
@@ -281,15 +309,16 @@ Reverse links to the human Card.
 | `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
-| `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, and neighbours outside it |
+| `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
 | `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) or a Model part (`facet`, `emphasis`) |
 | `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, or BibTeX |
-| `delete_card`, `move_card` | delete or move agent Cards |
+| `delete_card`, `move_card` | delete or move agent Cards (`move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
+| `insert_card` | insert a new agent Card in another Card's place; that Card and its subtree move down |
 
-Deletes, moves, and Citation key renames first return a plan; call again with the `confirm`
-text it names (`delete`, the tree root's address, or `move`) to apply it. The service must be up.
+Deletes, moves, inserts, and Citation key renames first return a plan; call again with the `confirm`
+text it names (`delete`, the tree root's address, `move`, or `insert`) to apply it. The service must be up.
 
 Two agent skills come with zt: `zt` (`skills/zt/SKILL.md`) teaches the Workspaces, tools, and
 rules, and `zettelkasten` (`skills/zettelkasten/SKILL.md`) teaches how to compose a Card and

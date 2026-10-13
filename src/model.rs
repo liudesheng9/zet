@@ -348,6 +348,10 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
             "承接",
             "用到",
             "借用",
+            "代入",
+            "推导自",
+            "由此推出",
+            "substitut",
             "rests on",
             "builds on",
             "depends on",
@@ -851,6 +855,7 @@ pub(crate) fn structure(
         .flat_map(|member| inbound.get(member).into_iter().flatten())
         .filter(|source| !members.contains(*source))
         .collect::<BTreeSet<_>>();
+    let build = build_report(&head, &parts, by_address, parsed, inbound, &name);
     Some(json!({
         "head": reference(&head),
         "models": models.iter().map(|at| reference(at)).collect::<Vec<_>>(),
@@ -867,7 +872,337 @@ pub(crate) fn structure(
         "neighbours": neighbours,
         "discussion": discussion.len(),
         "issues": [],
+        "build": build,
     }))
+}
+
+/// Whether a facet names a Derivation part: one step of a derivation.
+pub(crate) fn is_derivation(facet: &Facet) -> bool {
+    let id = facet.id();
+    id.starts_with("推导") || id.to_lowercase().starts_with("derivation")
+}
+
+/// How a Card outside a model that the model rests on can come in (rule 5 of
+/// the self-sufficient model): the fix a closure fault names.
+fn closure_fix(
+    target: &Card,
+    head: &str,
+    target_models: &[String],
+) -> String {
+    let at = &target.address;
+    if target.card_type == CardType::Model && target.facet.is_none() {
+        format!(
+            "rests on the Model Card `{at}`, which is not in this model: a model rests on parts, not on a whole model; name the parts the step uses, take them in, and rest on them"
+        )
+    } else if let Some(home) = target_models.first() {
+        format!(
+            "rests on `{at}`, which is not in this model: it is a part of `{home}`; take it in with a Link from this Model Card's 结构 list"
+        )
+    } else if target.workspace == crate::Workspace::Agent
+        && crate::tree_id(at) == crate::tree_id(head)
+    {
+        format!(
+            "rests on `{at}`, which is not in this model: move it into the range at its build position (move_card with `before`) and give it a facet"
+        )
+    } else {
+        format!(
+            "rests on `{at}`, which is not in this model: restate it in a part of this model, and keep `{at}` as a neighbour"
+        )
+    }
+}
+
+/// The build report of the model whose Model Card is `head`: its members in
+/// build order, and the faults that keep a reader from building it from
+/// nothing. ZT computes it from Locations, facets, and Links; it stores
+/// nothing and enforces nothing.
+///
+/// - **Range**: the Model Card and the parts filed under it.
+/// - **Main line**: the first Side successor of the Model Card (the setting)
+///   and its Direct successors in the range. A part below a main-line part
+///   through a Side successor hangs from it (`side`); any other part in the
+///   range stands outside the build (`off`). A shared part (a member filed
+///   outside the range) stands just before the first main-line step that
+///   rests on it.
+/// - **Faults**: `closure` (a rests-on Link from the range to a Card that is
+///   not a member), `forward` (a main-line part rests on a later member), and
+///   `unanchored` (a main-line part with no rests-on path back to the
+///   setting). `tolerated` lists the premises of shared parts that stay in
+///   their home model; they are not faults.
+fn build_report(
+    head: &str,
+    parts: &[&Card],
+    by_address: &BTreeMap<String, Card>,
+    parsed: &BTreeMap<String, crate::ParsedCard>,
+    inbound: &BTreeMap<String, BTreeSet<String>>,
+    name: &impl Fn(&str) -> String,
+) -> Value {
+    let lookup = |at: &str| {
+        by_address
+            .get(at)
+            .map(|card| (card.card_type, card.facet.is_some()))
+    };
+    let title = |at: &str| {
+        parsed
+            .get(at)
+            .map(|parsed| parsed.title.clone())
+            .unwrap_or_default()
+    };
+    let in_range = parts
+        .iter()
+        .filter(|part| find_head(crate::parent_location(&part.address), lookup).as_deref() == Some(head))
+        .map(|part| part.address.clone())
+        .collect::<BTreeSet<_>>();
+    let members = std::iter::once(head.to_string())
+        .chain(parts.iter().map(|part| part.address.clone()))
+        .collect::<BTreeSet<_>>();
+    let rests_on = |at: &str| -> Vec<LinkRead> {
+        let body = parsed.get(at).map_or("", |parsed| parsed.body.as_str());
+        read_links(body, name)
+            .into_iter()
+            .filter(|read| read.kind == RelationKind::RestsOn && read.target != at)
+            .collect()
+    };
+
+    // The main line: the first Side successor of the Model Card, then its Direct successors.
+    let setting = in_range
+        .iter()
+        .filter_map(|at| {
+            crate::immediate_side_label(at, head)
+                .filter(|label| *at == format!("{head}|{label}"))
+                .map(|label| (crate::side_label_to_number(&label), at.clone()))
+        })
+        .min()
+        .map(|(_, at)| at);
+    let mut main = Vec::new();
+    let mut next = setting.clone();
+    while let Some(at) = next.filter(|at| in_range.contains(at)) {
+        next = crate::direct_successor(&at).ok();
+        main.push(at);
+    }
+    let main_set = main.iter().cloned().collect::<BTreeSet<_>>();
+    // Every other part of the range hangs from the main-line part above it, or stands off.
+    let mut sides: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut off = Vec::new();
+    for at in &in_range {
+        if main_set.contains(at) {
+            continue;
+        }
+        let mut up = crate::parent_location(at);
+        let mut hangs = None;
+        while let Some(above) = up {
+            if main_set.contains(&above) {
+                hangs = Some(above);
+                break;
+            }
+            if above == head {
+                break;
+            }
+            up = crate::parent_location(&above);
+        }
+        match hangs {
+            Some(from) => sides.entry(from).or_default().push(at.clone()),
+            None => off.push(at.clone()),
+        }
+    }
+    for list in sides.values_mut() {
+        list.sort_by(|a, b| address_order(a, b));
+    }
+    off.sort_by(|a, b| address_order(a, b));
+
+    // Each shared part stands before the first main-line step that rests on it.
+    let shared = parts
+        .iter()
+        .filter(|part| !in_range.contains(&part.address))
+        .map(|part| part.address.clone())
+        .collect::<Vec<_>>();
+    let premises = members
+        .iter()
+        .map(|at| {
+            (
+                at.clone(),
+                rests_on(at)
+                    .into_iter()
+                    .map(|read| read.target)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut before: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut unplaced = Vec::new();
+    for part in &shared {
+        let step = main.iter().find(|step| {
+            std::iter::once(*step)
+                .chain(sides.get(*step).into_iter().flatten())
+                .any(|at| premises[at].contains(part))
+        });
+        match step {
+            Some(step) => before.entry(step.clone()).or_default().push(part.clone()),
+            None => unplaced.push(part.clone()),
+        }
+    }
+
+    let mut order: Vec<(String, &'static str, Option<String>)> = Vec::new();
+    for step in &main {
+        for part in before.get(step).into_iter().flatten() {
+            order.push((part.clone(), "shared", None));
+        }
+        order.push((step.clone(), "main", None));
+        for part in sides.get(step).into_iter().flatten() {
+            order.push((part.clone(), "side", Some(step.clone())));
+        }
+    }
+    for part in unplaced {
+        order.push((part, "shared", None));
+    }
+    for part in off {
+        order.push((part, "off", None));
+    }
+    let position = order
+        .iter()
+        .enumerate()
+        .map(|(at, (address, _, _))| (address.clone(), at))
+        .collect::<BTreeMap<_, _>>();
+
+    let homes = |at: &str| heads(at, by_address, inbound);
+    let card_ref = |at: &str| {
+        let card = &by_address[at];
+        json!({
+            "address": at,
+            "title": title(at),
+            "type": card.card_type.id(),
+            "facet": card.facet.as_ref().map(Facet::id),
+            "models": homes(at),
+        })
+    };
+    let order_values = order
+        .iter()
+        .map(|(at, line, from)| {
+            let card = &by_address[at];
+            let mut value = json!({
+                "address": at,
+                "title": title(at),
+                "facet": card.facet.as_ref().map(Facet::id),
+                "emphasis": card.emphasis.map(Emphasis::id),
+                "line": line,
+            });
+            if let Some(from) = from {
+                value["from"] = json!(from);
+            }
+            if *line == "shared" {
+                value["home"] = json!(homes(at).into_iter().find(|model| model != head));
+            }
+            if card.facet.as_ref().is_some_and(is_derivation) {
+                value["derivation"] = json!(true);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+
+    // Faults: what keeps a reader from building the model from its own Cards.
+    let outside = |at: &str| {
+        !members.contains(at)
+            && by_address
+                .get(at)
+                .is_some_and(|card| !crate::is_tree_root(card))
+    };
+    let mut closure = Vec::new();
+    let mut range = std::iter::once(head.to_string())
+        .chain(in_range.iter().cloned())
+        .collect::<Vec<_>>();
+    range.sort_by(|a, b| address_order(a, b));
+    for from in &range {
+        let mut seen = BTreeSet::new();
+        for read in rests_on(from) {
+            if outside(&read.target) && seen.insert(read.target.clone()) {
+                let target = &by_address[&read.target];
+                let models = homes(&read.target);
+                closure.push(json!({
+                    "from": from,
+                    "to": read.target,
+                    "note": read.note,
+                    "card": card_ref(&read.target),
+                    "fix": closure_fix(target, head, &models),
+                }));
+            }
+        }
+    }
+    let mut forward = Vec::new();
+    for step in &main {
+        let here = position[step];
+        let mut seen = BTreeSet::new();
+        for read in rests_on(step) {
+            if let Some(&there) = position.get(&read.target)
+                && there > here
+                && seen.insert(read.target.clone())
+            {
+                forward.push(json!({
+                    "from": step,
+                    "to": read.target,
+                    "note": read.note,
+                    "fix": format!(
+                        "`{step}` rests on `{}`, which comes later in the build: move one of them so that every premise comes first",
+                        read.target
+                    ),
+                }));
+            }
+        }
+    }
+    let mut tolerated = Vec::new();
+    for part in &shared {
+        let mut seen = BTreeSet::new();
+        for read in rests_on(part) {
+            if outside(&read.target) && seen.insert(read.target.clone()) {
+                tolerated.push(json!({
+                    "part": part,
+                    "home": homes(part).into_iter().find(|model| model != head),
+                    "premise": card_ref(&read.target),
+                    "note": read.note,
+                }));
+            }
+        }
+    }
+    // A main-line part is anchored when a chain of rests-on Links among members leads to the setting.
+    // A shared part is anchored in its home model.
+    let mut anchored = setting
+        .iter()
+        .chain(&shared)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    loop {
+        let grown = premises
+            .iter()
+            .filter(|(at, targets)| {
+                !anchored.contains(*at) && targets.iter().any(|target| anchored.contains(target))
+            })
+            .map(|(at, _)| at.clone())
+            .collect::<Vec<_>>();
+        if grown.is_empty() {
+            break;
+        }
+        anchored.extend(grown);
+    }
+    let unanchored = main
+        .iter()
+        .filter(|step| !anchored.contains(*step))
+        .map(|step| {
+            json!({
+                "address": step,
+                "title": title(step),
+                "fix": format!(
+                    "`{step}` has no rests-on path back to the setting: say which earlier part it rests on (`依赖 [[…]]`)"
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "setting": setting,
+        "order": order_values,
+        "closure": closure,
+        "forward": forward,
+        "tolerated": tolerated,
+        "unanchored": unanchored,
+        "self_sufficient": closure.is_empty() && forward.is_empty() && unanchored.is_empty(),
+    })
 }
 
 #[cfg(test)]

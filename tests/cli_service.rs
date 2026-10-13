@@ -3250,9 +3250,10 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | mv <new-location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q\n"
     ));
-    assert!(stdout.contains("  mv <new-location>                move the current card"));
+    assert!(stdout.contains("  mv [alone] <new-location>        move the current card"));
+    assert!(stdout.contains("  ins                              insert a new card"));
     assert!(
         stdout.contains(
             "  ty <idea|event|model> [<facet>]  make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part"

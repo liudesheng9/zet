@@ -40,10 +40,17 @@ connects and let one part serve several models. Every Link says what it is by th
 in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`), contrasts (`对照`, `区别`), \
 relaxes (`放宽`, `推广`), corresponds (`对应`, `类比`), objects (`反驳`, `批评`); with none it is a \
 plain reference. get_model shows a model's parts, their kinded relations, its loose parts, and its \
-Links with Cards outside it. Card bodies may hold \
-TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI renders. \
-delete_card, move_card, and Citation key renames return a plan first; repeat the call with the \
-`confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
+Links with Cards outside it, and its `build`: the members in build order (the setting, then the \
+main line of Direct successors, each example beside its step, shared parts before the step that \
+rests on them) and the faults that keep it from being self-sufficient (`closure`: a rests-on Link \
+to a Card outside the model; `forward`: a step rests on a later step; `unanchored`: a step with no \
+rests-on path to the setting). A model rests on parts, never on a whole other Model Card. To put \
+a missing step between two Cards, use insert_card with `before`; move_card also takes `before` \
+(another Card's place) and `alone` (only the Card; its chain closes the gap). Write Card text \
+plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
+bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI \
+renders. delete_card, move_card, insert_card, and Citation key renames return a plan first; \
+repeat the call with the `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
 bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns.";
 
@@ -500,11 +507,52 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             Ok(plan_or_done(outcome))
         }
         "move_card" => {
+            let target = match (optional_string(args, "to")?, optional_string(args, "before")?) {
+                (to, before) if !to.is_empty() && !before.is_empty() => {
+                    bail!("give either `to` or `before`, not both")
+                }
+                (to, _) if !to.is_empty() => ops::Target::To(to),
+                (_, before) if !before.is_empty() => ops::Target::Before(before),
+                _ => bail!("missing string argument `to` or `before`"),
+            };
+            let alone = match args.get("alone") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(alone)) => *alone,
+                Some(_) => bail!("argument `alone` must be true or false"),
+            };
             let outcome = ops::move_card(
                 &root,
                 ACCESS,
                 &string_arg(args, "at")?,
-                &string_arg(args, "to")?,
+                &target,
+                alone,
+                args.get("confirm").and_then(Value::as_str),
+            )?;
+            Ok(plan_or_done(outcome))
+        }
+        "insert_card" => {
+            let before = string_arg(args, "before")?;
+            let part = crate::model::Part::from_args(
+                optional_facet(args)?.flatten(),
+                optional_emphasis(args)?.flatten(),
+            )?;
+            let card_type = match (optional_card_type(args)?, &part) {
+                (Some(card_type), Some(_)) if card_type != CardType::Model => {
+                    bail!("only Model Cards can have a Model facet")
+                }
+                (_, Some(_)) => CardType::Model,
+                (card_type, None) => card_type.unwrap_or_default(),
+            };
+            let title = title_arg(args)?;
+            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+            crate::artifact::require_present(&root, &text)?;
+            let outcome = ops::insert_card(
+                &root,
+                ACCESS,
+                &before,
+                card_type,
+                part,
+                &text,
                 args.get("confirm").and_then(Value::as_str),
             )?;
             Ok(plan_or_done(outcome))
@@ -845,13 +893,32 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "move_card",
             "Move card",
-            "Move an agent Regular Card and its successors to a new Location in the agent Workspace, rewriting Links. Literature tree Cards stay in their tree; nothing moves between Workspaces. Returns a plan first; confirm with `move`.",
+            "Move an agent Regular Card and its successors to a new Location in the agent Workspace, rewriting Links. Give `to` for a free slot, or `before` to move into the place of an existing Card: that Card and its subtree move down and follow the moved Card. With `alone: true` only the Card moves (it must have no Side successors) and its Direct successor chain moves up one place to close the gap; `alone` with `before` reorders one step of a chain in one call. All addresses are today's addresses. Literature tree Cards stay in their tree; nothing moves between Workspaces. Returns a plan of every renamed address first; confirm with `move`.",
             json!({
                 "at": at,
-                "to": { "type": "string", "description": "The new Location: the next direct or side successor slot of an existing Card." },
+                "to": { "type": "string", "description": "A free Location: the next direct or side successor slot of an existing Card." },
+                "before": { "type": "string", "description": "An existing Regular Card whose place the moved Card takes; it moves down one place (or by the length of the moved chain)." },
+                "alone": { "type": "boolean", "description": "Move only this Card, not its successors; its Direct successors move up to close the gap. Default false." },
                 "confirm": confirm,
             }),
-            &["at", "to"],
+            &["at"],
+            false,
+            true,
+        ),
+        tool(
+            "insert_card",
+            "Insert card",
+            "Insert a new Card between two Cards of an agent tree: it takes the place of the Regular Card `before`, which moves down one place with its whole subtree and becomes the new Card's Direct successor (`X/2` -> new Card, old `X/2` -> `X/3`, …; before `P|a` the old `P|a` becomes `P|a|1`). Use it to add a missing step to a chain, such as a Derivation part between two parts of a model. Takes the same fields as create_successor; write Links in today's addresses, and they follow the move. Returns a plan of every renamed address first; confirm with `insert`.",
+            json!({
+                "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
+                "title": { "type": "string", "description": "The Card title (one line)." },
+                "body": body,
+                "type": card_type("The Card type: idea (default), event, or model."),
+                "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model); a Derivation part's facet starts with `推导`."),
+                "emphasis": emphasis("For a Model part: core or aside; omit for a regular part."),
+                "confirm": confirm,
+            }),
+            &["before", "title"],
             false,
             true,
         ),
