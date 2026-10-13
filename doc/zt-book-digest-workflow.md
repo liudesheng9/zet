@@ -33,6 +33,23 @@ flowchart LR
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
 | **Organize** | Opus | Merges duplicate Topics, writes hubs, the book's structure Card and index, checks every model with `get_model`, and fixes Links. | A finished, navigable digest |
 
+## Skills for DeepSeek
+
+The manager of each DeepSeek run sends the skills, through the `skills` field of `deepseek_run`
+and of every `deepseek_prompt` (a follow-up prompt does not keep the skills of the run before it).
+No prompt file carries the text of a skill. Both skills are installed in DeepSeek Harness
+(`deepseek_skills` lists them).
+
+| Run | Sent by | Skills |
+| --- | --- | --- |
+| Digest, Link | Haiku manager | `zettelkasten`, `asd-ste100-zh` |
+| Fill (Models stage), and its fault follow-ups | Sonnet manager | `asd-ste100-zh` |
+
+The Card language sections of the instruction files keep the project's own limits (40 characters
+per description sentence, 30 per derivation step), because `card-style-check.ps1` checks those
+numbers. Where they differ from the skill, the instruction files win. If a skill is not found, the
+manager stops and reports; it does not start the run without the skill.
+
 ## Elaboration levels (zt 0.13.0)
 
 Not every model needs the full build (`doc/model-elaboration-levels-design.md`). Each Model Card
@@ -86,6 +103,44 @@ A reader must be able to build each formal model from nothing, reading only its 
 
 The report of each model adds `derivations`, `moved`, `shared`, `tolerated`, `style`,
 `accepted`, and `dsh`.
+
+## Derivation chains, Card size, and building blocks (zt 0.15.0)
+
+A formal model no longer gets one Derivation part per skipped step. The **Card size** decides how
+many parts a step or a statement takes:
+
+| Limit | Default | Argument | Checked by |
+| --- | --- | --- | --- |
+| Prose sentences in one part | 12 | `maxSentences` | `card-style-check.ps1` R13 |
+| Prose characters in one part | 400 | `maxPartChars` | R13 |
+| Numbered steps in one Derivation part | 6 | `maxSteps` | R14 |
+
+Formulas, Links, tables, charts, and quotations do not count. The Model Card and the parts of a
+concept model have no size limit.
+
+- **Plan.** The ledger writes out every line of each step. A step longer than `maxSteps` lines
+  becomes a **Derivation chain**: entries of at most `maxSteps` lines, each starting from the
+  output of the one before. Any number of Derivation parts may stand between two parts.
+- **Skeleton.** The manager inserts every part of a chain (`insert_card` before the part that uses
+  its result, in chain order) and writes each part's 起点 and 结果, so the fill jobs of one chain
+  run at the same time.
+- **Fill.** A DeepSeek run that cannot fit its part answers `split` with the number of Cards it
+  needs. The manager inserts the new parts, adds them to the job's allow list, and sends them to
+  the same conversation.
+- **Check.** R13 and R14 faults mean a part is too large: the manager splits it ("Split a part" in
+  `model-elaboration.md`) before it sends other faults back. `get_model` `build.chains` shows
+  each chain and the members it connects.
+- **Building blocks.** Before it writes a chain, the manager looks for a model that already
+  derives the same result, and takes in every part of that chain instead of writing a copy. A
+  general step (a lemma, a correspondence, a solution) is filed once, in the first model that
+  needs it. zt 0.15.0 orders a shared chain correctly: each shared part stands after the shared
+  parts it rests on. A tolerated premise that is a Derivation part carries a `fix` to take it in.
+
+The report of each model adds `derivations.chains`, `derivations.longest`, and `split`.
+
+On 2026-10-13, 134 of the 198 parts of the archive's formal models were over the default size, and
+40 of their 49 Derivation parts were over 6 steps (the longest held 16). A run with
+`mode: "models"` and `rebuild: true` splits them.
 
 ## A structured model (zt 0.7.0 – 0.11.0)
 
@@ -156,6 +211,7 @@ Arguments (`args`):
 | `perConcept` | concept models per Sonnet manager (default 8); they need no DeepSeek runs |
 | `dshPerSonnet` | DeepSeek runs one manager keeps going at the same time (default 8; may be higher) |
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
+| `maxSentences`, `maxPartChars`, `maxSteps` | the Card size of a formal model's part (12, 400, 6): a part over a limit splits, and a long step becomes a Derivation chain |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the

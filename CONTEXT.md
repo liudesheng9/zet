@@ -320,12 +320,20 @@ A Card of a model: a Card in its Model range, or a shared part that the Model Ca
 _Avoid_: Model element
 
 **Build order**:
-The order in which a reader builds a model. The **main line** starts at the Model Card's first Side successor (the setting) and follows its Direct successors in the range: the setting, then each step, then each result. A part below a main-line part through a Side successor holds an example, a case, or a variant of that step. A later Side successor of the Model Card stands outside the build (a correspondence, a limit, a history). A shared part takes its place just before the first main-line step that rests on it. ZT computes the build order (`get_model` `build.order`); the divider tabs follow it.
+The order in which a reader builds a model. The **main line** starts at the Model Card's first Side successor (the setting) and follows its Direct successors in the range: the setting, then each step, then each result. A part below a main-line part through a Side successor holds an example, a case, or a variant of that step. A later Side successor of the Model Card stands outside the build (a correspondence, a limit, a history). A shared part takes its place just before the first main-line step that needs it, directly or through another shared part, and after the shared parts it rests on itself. ZT computes the build order (`get_model` `build.order`); the divider tabs follow it.
 _Avoid_: Reading order, sequence
 
 **Derivation part**:
-A Model part whose only job is one step of a derivation: it starts from parts earlier in the build order and ends at an intermediate result that a later part uses. Its facet starts with `推导`, and its emphasis is normally `aside`. The Model board draws it as a slim slip on the thread between the parts it connects.
+A Model part whose only job is one step of a derivation, or one length of a long step: it starts from parts earlier in the build order and ends at an intermediate result that a later part uses. Its facet starts with `推导`, and its emphasis is normally `aside`. The Model board draws it as a slim slip on the thread between the parts it connects.
 _Avoid_: Proof card, helper card, bridge card
+
+**Derivation chain**:
+Two or more Derivation parts next to each other in the build order that together carry one long step: each starts from the result of the one before. The size of a Card, not the length of the step, decides how many Derivation parts a step takes, so any number may stand between two parts. The build report lists each chain (`build.chains`) with the members just before and after it.
+_Avoid_: Derivation sequence, proof chain
+
+**Building block**:
+A shared part, or a shared Derivation chain, that two or more models use. It is filed once, in the first model that needs it; every other Model Card takes in each of its Cards, and the build order keeps them in their own order.
+_Avoid_: Library part, common part, lemma card
 
 **Self-sufficient model**:
 A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, and no main-line part rests on a later part. ZT reports the faults (`closure`, `forward`, `unanchored`) in the build report; it does not enforce them.
@@ -340,11 +348,11 @@ A model of Elaboration level 1. The source states it in words or a diagram: a me
 _Avoid_: Informal model, sketch, light model
 
 **Formal model**:
-A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part for each step the source skips.
+A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part, or a Derivation chain, for each step the source skips. Each of its parts fits one Card (Card size: at most 12 sentences and 400 characters of prose, and at most 6 steps in a Derivation part, by default).
 _Avoid_: Math model, full model, rigorous model
 
 **Tolerated premise**:
-A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault.
+A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault. When it is a Derivation part, the report suggests taking it in too, so the whole derivation reads in the model.
 _Avoid_: Borrowed premise, leak
 
 **Card language**:

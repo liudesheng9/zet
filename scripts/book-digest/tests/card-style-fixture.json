@@ -24,6 +24,23 @@
     "body": "The borrower keeps $f y_2$. The creditor cannot verify the return; it cannot enforce a payment from it either."
   },
   {
+    "address": "K/1|a|a|4",
+    "facet": "机制",
+    "title": "机制：E 与 C 的十三步",
+    "body": "C 出资。E 投资。E 还款。C 收款。E 违约。C 清算。E 挪用。\n\nC 监督。E 付款。C 放贷。E 获利。C 亏损。E 退出。"
+  },
+  {
+    "address": "K/1|a|a|5",
+    "facet": "推导：七步",
+    "title": "推导：七步化简",
+    "body": "**起点**\n- 依赖设定 [[K/1|a|a]]。\n\n**步骤**\n1. 代入 $P=B$。\n2. 两边加 $K$。\n3. 两边减 $w$。\n4. 合并 $y_1$。\n5. 合并 $L$。\n6. 移项。\n7. 化简得 (5.10)。\n\n**结果**\n$$y_1+fy_2>K$$"
+  },
+  {
+    "address": "K/1",
+    "title": "模型卡不受分卡大小限制",
+    "body": "C 出资。E 投资。E 还款。C 收款。E 违约。C 清算。E 挪用。C 监督。E 付款。C 放贷。E 获利。C 亏损。E 退出。"
+  },
+  {
     "address": "Other/1|a|a",
     "line": "shared",
     "facet": "设定",

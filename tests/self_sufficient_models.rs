@@ -564,12 +564,13 @@ fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_
         model["build"]
     );
     let model_b = mcp.ok("get_model", json!({ "at": b }));
+    // 清算比例 rests on 可承诺的还款, which B also takes in: the premise comes first.
     assert_eq!(
         build_order(&model_b),
         pairs(&[
+            (&repay, "shared"),
             (&ratio, "shared"),
             (&b_setting, "main"),
-            (&repay, "shared"),
             (&b_step, "main")
         ])
     );
@@ -592,6 +593,223 @@ fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_
             (repay.as_str(), setting.as_str()),
             (ratio.as_str(), definition.as_str())
         ]
+    );
+}
+
+/// The addresses of each chain in `build.chains`, with the members around it.
+fn chains(model: &Value) -> Vec<(Vec<String>, Value, Value)> {
+    model["build"]["chains"]
+        .as_array()
+        .expect("build chains")
+        .iter()
+        .map(|chain| {
+            assert_eq!(
+                chain["length"].as_u64().unwrap() as usize,
+                chain["parts"].as_array().unwrap().len()
+            );
+            (
+                chain["parts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|at| at.as_str().unwrap().to_string())
+                    .collect(),
+                chain["after"].clone(),
+                chain["before"].clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_step_takes_several_derivation_parts_and_other_models_take_the_chain_in() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_literature",
+        json!({ "bibtex": "@book{K2024, title={Debt}}" }),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({ "at": "K2024", "title": "第一章" }),
+    );
+    let a = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "K2024/1", "kind": "side", "type": "model", "level": "formal", "title": "资金挪用模型", "body": "问题：E 能借到多少？" }),
+    ));
+    let setting = address(mcp.ok(
+        "create_successor",
+        json!({ "at": a, "kind": "side", "facet": "设定", "title": "设定：E 与 C", "body": "E 有项目，C 出资。" }),
+    ));
+    let repay = address(mcp.ok(
+        "create_successor",
+        json!({ "at": setting, "facet": "可承诺的还款", "emphasis": "core", "title": "可承诺的还款", "body": format!("依赖设定 [[{setting}]]。") }),
+    ));
+    let result = address(mcp.ok(
+        "create_successor",
+        json!({ "at": repay, "facet": "融资条件", "emphasis": "core", "title": "融资条件", "body": format!("依赖可承诺的还款 [[{repay}]]。") }),
+    ));
+    assert_eq!(result, "K2024/1|a|a|2");
+
+    // The step from 可承诺的还款 to 融资条件 is too long for one Card: two Derivation parts carry it.
+    let first = address(mcp.ok(
+        "insert_card",
+        json!({ "before": result, "facet": "推导一", "emphasis": "aside", "title": "推导：还款化为现金流", "body": format!("起点：依赖可承诺的还款 [[{repay}]]。\n\n1. 代入 $P=B$。"), "confirm": "insert" }),
+    ));
+    let result = "K2024/1|a|a|3".to_string();
+    let second = address(mcp.ok(
+        "insert_card",
+        json!({ "before": result, "facet": "推导二", "emphasis": "aside", "title": "推导：现金流化为 (5.10)", "body": format!("起点：依赖上一步 [[{first}]] 的结果。\n\n1. 两边加 $K-w$。"), "confirm": "insert" }),
+    ));
+    let result = "K2024/1|a|a|4".to_string();
+    assert_eq!([&first, &second], ["K2024/1|a|a|2", "K2024/1|a|a|3"]);
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": result }))["title"],
+        "融资条件"
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": result, "body": format!("依赖推导 [[{second}]] 与可承诺的还款 [[{repay}]]。") }),
+    );
+    let model = mcp.ok("get_model", json!({ "at": a }));
+    assert_eq!(
+        build_order(&model),
+        pairs(&[
+            (&setting, "main"),
+            (&repay, "main"),
+            (&first, "main"),
+            (&second, "main"),
+            (&result, "main"),
+        ])
+    );
+    assert_eq!(
+        chains(&model),
+        [(
+            vec![first.clone(), second.clone()],
+            json!(repay),
+            json!(result)
+        )]
+    );
+    assert_eq!(
+        model["build"]["self_sufficient"], true,
+        "{}",
+        model["build"]
+    );
+
+    // Model B takes the whole chain in, as a building block. Its step rests on the last part
+    // only, and the first part still comes first.
+    let b = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "K2024/1", "kind": "side", "type": "model", "level": "formal", "title": "多重债务", "body": format!("结构：[[{first}]] [[{second}]]。") }),
+    ));
+    let b_setting = address(mcp.ok(
+        "create_successor",
+        json!({ "at": b, "kind": "side", "facet": "设定", "title": "设定：两位债权人", "body": "E 向两位债权人借款。" }),
+    ));
+    let b_step = address(mcp.ok(
+        "create_successor",
+        json!({ "at": b_setting, "facet": "结论", "title": "两位债权人的融资条件", "body": format!("依赖设定 [[{b_setting}]]。依赖推导 [[{second}]]。") }),
+    ));
+    let model_b = mcp.ok("get_model", json!({ "at": b }));
+    assert_eq!(
+        build_order(&model_b),
+        pairs(&[
+            (&b_setting, "main"),
+            (&first, "shared"),
+            (&second, "shared"),
+            (&b_step, "main"),
+        ])
+    );
+    assert_eq!(
+        chains(&model_b),
+        [(
+            vec![first.clone(), second.clone()],
+            json!(b_setting),
+            json!(b_step)
+        )]
+    );
+    assert_eq!(
+        model_b["build"]["self_sufficient"], true,
+        "{}",
+        model_b["build"]
+    );
+    // The chain's own premise stays in model A: tolerated, and no step of the derivation is missing.
+    let tolerated = model_b["build"]["tolerated"].as_array().unwrap();
+    assert_eq!(tolerated.len(), 1, "{tolerated:?}");
+    assert_eq!(tolerated[0]["part"], json!(first));
+    assert_eq!(tolerated[0]["premise"]["address"], json!(repay));
+    assert!(tolerated[0].get("fix").is_none(), "{}", tolerated[0]);
+    // Both parts now serve two models.
+    let first_card = model_b["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["address"] == json!(first))
+        .unwrap()
+        .clone();
+    assert_eq!(first_card["filed"], false);
+
+    // Model C takes in only the last part: the step before it is tolerated, with a hint.
+    let c = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "K2024/1", "kind": "side", "type": "model", "title": "短期债务", "body": format!("结构：[[{second}]]。") }),
+    ));
+    let c_setting = address(mcp.ok(
+        "create_successor",
+        json!({ "at": c, "kind": "side", "facet": "设定", "title": "设定：短期债", "body": "E 借短期债。" }),
+    ));
+    let c_step = address(mcp.ok(
+        "create_successor",
+        json!({ "at": c_setting, "facet": "结论", "title": "短期债的融资条件", "body": format!("依赖设定 [[{c_setting}]]。依赖推导 [[{second}]]。") }),
+    ));
+    let model_c = mcp.ok("get_model", json!({ "at": c_step }));
+    assert_eq!(
+        build_order(&model_c),
+        pairs(&[(&c_setting, "main"), (&second, "shared"), (&c_step, "main")])
+    );
+    assert_eq!(
+        chains(&model_c),
+        [(vec![second.clone()], json!(c_setting), json!(c_step))]
+    );
+    let tolerated = model_c["build"]["tolerated"].as_array().unwrap();
+    assert_eq!(tolerated.len(), 1, "{tolerated:?}");
+    assert_eq!(tolerated[0]["premise"]["address"], json!(first));
+    assert!(
+        tolerated[0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("take it in too"),
+        "{}",
+        tolerated[0]
+    );
+    assert_eq!(model_c["build"]["self_sufficient"], true);
+
+    // A shared chain that no step rests on yet still reads in its own order, after the main line.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": c, "body": format!("结构：[[{second}]] [[{first}]]。") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": c_step, "body": format!("依赖设定 [[{c_setting}]]。") }),
+    );
+    let model_c = mcp.ok("get_model", json!({ "at": c }));
+    assert_eq!(
+        build_order(&model_c),
+        pairs(&[
+            (&c_setting, "main"),
+            (&c_step, "main"),
+            (&first, "shared"),
+            (&second, "shared"),
+        ])
+    );
+    assert_eq!(
+        chains(&model_c),
+        [(
+            vec![first.clone(), second.clone()],
+            json!(c_step),
+            Value::Null
+        )]
     );
 }
 

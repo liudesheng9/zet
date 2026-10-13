@@ -1,6 +1,6 @@
 # Self-Sufficient Models: Proposal
 
-Status: implemented in zt 0.12.0 and the `zt-book-digest` workflow (2026-10-12). Since zt 0.13.0 (`model-elaboration-levels-design.md`) this build applies to **formal models** (Elaboration level 2) only; a concept model (level 1) takes no ledger, no Derivation parts, and no DeepSeek fill. The tree operations, the build report, the divider tabs in build order, the derivation slips, the Card language check (`scripts/book-digest/card-style-check.ps1`), and the Sonnet-manager Models stage follow this document. Revision 2 (2026-10-12) records the user's decisions on shared parts, divider tabs, and insertion, and adds Sonnet managers, clean-up, and the Card language rules.
+Status: implemented in zt 0.12.0 and the `zt-book-digest` workflow (2026-10-12). Since zt 0.13.0 (`model-elaboration-levels-design.md`) this build applies to **formal models** (Elaboration level 2) only; a concept model (level 1) takes no ledger, no Derivation parts, and no DeepSeek fill. The tree operations, the build report, the divider tabs in build order, the derivation slips, the Card language check (`scripts/book-digest/card-style-check.ps1`), and the Sonnet-manager Models stage follow this document. Revision 2 (2026-10-12) records the user's decisions on shared parts, divider tabs, and insertion, and adds Sonnet managers, clean-up, and the Card language rules. Revision 3 (2026-10-13, zt 0.15.0) lets one step take a **Derivation chain** of any length, makes the Card size decide how many parts a step or a statement takes (rules 13 and 14 of "Card language"), and lets a whole derivation serve several models as a **building block** (rule 4).
 
 This proposal changes how agents build a model from Cards. It adds five things:
 
@@ -92,8 +92,9 @@ _Avoid_: Borrowed premise, leak
 
 ### 3. No step jumps
 
-- A rests-on relation between two main-line parts must show its step. Either the later part holds the algebra, or a Derivation part between them holds it.
+- A rests-on relation between two main-line parts must show its step. Either the later part holds the algebra, or Derivation parts between them hold it.
 - One step is what a reader can check by hand in about one minute: three to six lines of algebra, each with its reason. A longer step gets a Derivation part.
+- A Derivation part holds at most six numbered steps. A step that needs more lines becomes a **Derivation chain**: as many Derivation parts as its lines need, each starting from the result of the part before it. Nothing limits how many Derivation parts stand between two parts. The size of a Card decides the count; a derivation never drops lines to fit fewer Cards. `get_model` lists each chain in `build.chains`, with the members just before and after it.
 - When the book skips the step, the Derivation part supplies it and marks each supplied line `（补：书中略去）`. It adds no claim that the book does not support.
 
 ### 4. Shared parts
@@ -102,6 +103,7 @@ The 0.10.0 rule stays. A part that two models share stays in its first model. Th
 
 - **The second model tolerates the share.** Its build report lists the shared part at its place in the build order. The divider tabs and the board mark it with `⧉` and a dashed outline, as today.
 - **The shared part's own premises stay in its home model.** Some of them are not members of the second model. The build report lists each of these as a tolerated premise. The reader may follow them into the home model.
+- **A shared chain keeps its order** (zt 0.15.0). A shared part stands before the first step that needs it, directly or through another shared part, and after the shared parts that it rests on. So a model can take in a whole Derivation chain of another model as a **building block**: its Model Card links every part of the chain, and the chain reads in its own order. A tolerated premise that is a Derivation part carries a `fix`: take it in too.
 - **A premise must be taken in, not only linked.** A part of model B may rest on a part of model A. Then B's Model Card must take that part in. Without that Link, the premise is a closure fault. `12|b` and `12|c` have this fault today.
 
 ### 5. Premises outside the model come in
@@ -182,8 +184,10 @@ Card text follows ASD-STE100. ASD-STE100 is a standard for English. This section
 | 10 | Lists for three or more steps or conditions | A numbered list. | Three conditions in one sentence. |
 | 11 | Each formula on its own line (`$$…$$`) has a sentence that names it | `C 收支相抵，须` + the formula. | A formula with no sentence. |
 | 12 | A title states one claim in at most 40 characters | `融资条件：$L\ge K-w$ 且净现值为正` | A title with two claims. |
+| 13 | A part of a formal model holds at most 12 sentences and 400 characters of prose. Formulas, Links, tables, charts, and quotations do not count. | Split it into two or more parts. | One part that holds two Cards of text. |
+| 14 | A Derivation part holds at most 6 numbered steps | Split the step into a Derivation chain. | Merge lines or skip them to fit one Card. |
 
-The numbers in rule 2 are first values. The pilot sets the final values.
+The numbers in rule 2 are first values. The pilot sets the final values. Rules 13 and 14 (revision 3) apply to formal models and to models with no level, not to concept models; the workflow arguments `maxSentences`, `maxPartChars`, and `maxSteps` change their numbers.
 
 **Check.** A new script, `scripts/book-digest/card-style-check.ps1`, checks rules 2, 3, 4, 5, 7, and 9 mechanically. It also checks rule 6 against the model's term table. It prints one line per fault: the address, the rule, and the sentence. DeepSeek runs it on its own Cards before it answers. Sonnet runs it again in its check step. The script never changes text.
 

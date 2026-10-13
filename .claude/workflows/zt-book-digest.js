@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
-    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet manager per batch of models decides each model\'s elaboration level; a concept model (level 1) gets its Model Card checked and at most four parts in words; a formal model (level 2) gets the full build: the manager plans it (derivation ledger, closure audit), writes its skeleton in build order (setting with symbol and term tables, Derivation parts, shared parts taken in), drives eight or more DeepSeek runs that fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files', model: 'sonnet' },
+    { title: 'Models', detail: 'as soon as a block of DeepSeek runs finishes, one Sonnet manager per batch of models decides each model\'s elaboration level; a concept model (level 1) gets its Model Card checked and at most four parts in words; a formal model (level 2) gets the full build: the manager plans it (derivation ledger, closure audit), writes its skeleton in build order (setting with symbol and term tables, Derivation parts, a chain of them where one step outgrows a Card, shared parts and building blocks taken in), splits every part over the Card size, drives eight or more DeepSeek runs that fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files', model: 'sonnet' },
     { title: 'Link', detail: 'each DeepSeek run gets only the Cards it owns, searches the book and the Card index on disk, and appends reasoned cross-part Links', model: 'haiku' },
     { title: 'Cleanup', detail: 'Haiku archives conversations, removes the DeepSeek workspace and scratch files', model: 'haiku' },
     { title: 'Organize', detail: 'Opus merges Topics, writes hubs, entry points, the book structure Card, and links', model: 'opus' },
@@ -23,7 +23,9 @@ export const meta = {
 //         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
 //         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
 //         model's own level, which DeepSeek proposes and the Sonnet manager confirms),
-//         perConcept (8: concept models per Sonnet manager; they need no DeepSeek runs) }
+//         perConcept (8: concept models per Sonnet manager; they need no DeepSeek runs),
+//         maxSentences (12), maxPartChars (400), maxSteps (6): the Card size of a formal model's part;
+//         a part over a limit splits, and a long derivation step becomes a chain of Derivation parts }
 //
 // How the stages hand work on:
 //   Prepare ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (Haiku lists, Sonnet ×N) ─┐
@@ -51,9 +53,16 @@ const REBUILD = !!(A.rebuild || A.redoModels)
 const LEVEL = ['concept', 'formal'].includes(A.level) ? A.level : null
 const PER_CONCEPT = Math.max(1, A.perConcept || 8)
 const FILL_DOC = `${SCRIPTS}\\dsh-fill-instructions.zh.md`
+// Card size limits, passed to card-style-check.ps1 (R13, R14): the size of a Card, not the length of
+// a derivation, decides how many Derivation parts carry a step.
+const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6}`
 const CHECK = `${SCRIPTS}\\card-style-check.ps1`
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
-const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_archive'
+// Skills the manager passes to DeepSeek Harness in the `skills` field of deepseek_run and deepseek_prompt.
+// Both skills are installed in DeepSeek Harness (deepseek_skills lists them). No prompt file carries a copy of a skill.
+const DSH_SKILLS = ['zettelkasten', 'asd-ste100-zh']
+const FILL_SKILLS = ['asd-ste100-zh']
+const DSH_TOOLS ='select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_archive'
 
 const USAGE = {
   type: 'object',
@@ -126,14 +135,14 @@ const STAGES = {
     phase: 'Digest',
     steps: g => `Group ${g.n}:
   a. Snapshot the slip-box (one PowerShell call): pwsh -NoProfile -File ${SCRIPTS}\\snapshot-topics.ps1 -Out "${g.snapshot}"
-  b. deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${DIGEST_PREFIX}", "${g.file}"] (the book, its index and the snapshot stay on disk; DSH reads what it needs); prompt "按以上说明完成你的组，只回复一行 JSON。"; skills ["zettelkasten"]; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.`,
+  b. deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${DIGEST_PREFIX}", "${g.file}"] (the book, its index and the snapshot stay on disk; DSH reads what it needs); prompt "按以上说明完成你的组，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.`,
     answer: '{"group","cards","models","events","topics","anchor","errors"}',
     fields: 'cards (Cards written), models (Model Cards), events (Event Cards), topics (as "地址 主题名")',
   },
   link: {
     phase: 'Link',
     steps: g => `Group ${g.n}:
-  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ["zettelkasten"]; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.
+  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.
   When it finished with status "done", mark it (one PowerShell call): Set-Content -LiteralPath "${OUT}\\linked-g${g.nn}.txt" -Value done`,
     answer: '{"group","cards_linked","links_added","errors"}',
     fields: 'cards (= cards_linked), links (= links_added)',
@@ -149,11 +158,11 @@ Load all tools with one ToolSearch call: query "${DSH_TOOLS}".
 For each group below, in order, finish it completely before starting the next:
 ${block.map(S.steps).join('\n')}
 
-Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm.
+Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
 Then follow "status" until the run ends:
   - "running": deepseek_wait (session_id, wait_seconds 900).
   - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
-  - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
+  - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
   Then clean up: deepseek_close and deepseek_archive (session_id); archived=true when archiving succeeds.
   Record tool_calls = the sum of the counts in the last turn report's tools_used, and context_used = context.used.
@@ -180,7 +189,8 @@ const MODEL_REPORT = {
   properties: {
     model: { type: 'string' }, level: { type: 'string', enum: ['concept', 'formal'] }, status: { type: 'string', enum: ['done', 'skipped', 'failed'] },
     parts: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, facet: { type: 'string' }, emphasis: { type: 'string' }, line: { type: 'string' } }, required: ['address', 'facet'] } },
-    derivations: { type: 'object', properties: { total: { type: 'number' }, by_dsh: { type: 'number' }, fixed: { type: 'number' } } },
+    derivations: { type: 'object', properties: { total: { type: 'number' }, by_dsh: { type: 'number' }, fixed: { type: 'number' }, chains: { type: 'number' }, longest: { type: 'number' } } },
+    split: { type: 'number' },
     moved: { type: 'array', items: { type: 'string' } },
     shared: { type: 'array', items: { type: 'object', properties: { part: { type: 'string' }, home: { type: 'string' } } } },
     tolerated: { type: 'number' }, style: { type: 'number' },
@@ -229,7 +239,9 @@ BOOK: ${OUT} (sections\\sNN.md, sections\\index.md, book.zh.md, groups\\gNN.md, 
 SCRIPTS: ${SCRIPTS}
 HELPER: ${HELPER}
 CHECK: ${CHECK}
+LIMITS: ${LIMITS}
 FILL: ${FILL_DOC}
+FILL_SKILLS: ${JSON.stringify(FILL_SKILLS)}
 DSH: ${dsh}
 DSH_PER: ${DSH_PER_SONNET}
 DSH_MODEL: ${DSH_MODEL}
@@ -316,7 +328,7 @@ const logModels = (reports) => {
   const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
   const deriv = (field) => done.reduce((s, r) => s + ((r.derivations && r.derivations[field]) || 0), 0)
   const runs = (field) => done.reduce((s, r) => s + ((r.dsh && r.dsh[field]) || 0), 0)
-  log(`Build: ${deriv('total')} Derivation parts (${deriv('by_dsh')} by DeepSeek, ${deriv('fixed')} fixed by Sonnet), ${done.reduce((s, r) => s + ((r.moved || []).length), 0)} Cards moved into ranges, ${done.reduce((s, r) => s + ((r.shared || []).length), 0)} shared parts taken in, ${sum('tolerated')} tolerated premises, ${sum('style')} style faults left, ${done.reduce((s, r) => s + ((r.accepted || []).length), 0)} faults accepted; DeepSeek runs ${runs('started')} started, ${runs('archived')} archived.`)
+  log(`Build: ${deriv('total')} Derivation parts (${deriv('by_dsh')} by DeepSeek, ${deriv('fixed')} fixed by Sonnet) in ${deriv('chains')} chains of two or more (longest ${done.reduce((m, r) => Math.max(m, (r.derivations && r.derivations.longest) || 0), 0)}), ${sum('split')} parts split for the Card size, ${done.reduce((s, r) => s + ((r.moved || []).length), 0)} Cards moved into ranges, ${done.reduce((s, r) => s + ((r.shared || []).length), 0)} shared parts taken in, ${sum('tolerated')} tolerated premises, ${sum('style')} style faults left, ${done.reduce((s, r) => s + ((r.accepted || []).length), 0)} faults accepted; DeepSeek runs ${runs('started')} started, ${runs('archived')} archived.`)
   log(`Levels: ${done.filter(r => r.level === 'concept').length} concept models (level 1), ${done.filter(r => r.level === 'formal').length} formal models (level 2), ${done.filter(r => !r.level).length} without a level.`)
   log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts),${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
 }
@@ -465,7 +477,7 @@ Return a short Chinese report: the final agent Topics (address and name), merges
 return {
   mode: MODE, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
   digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
-  models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
+  models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
   model_cleanup: modelCleanup,
   link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
   deepseek_usage: dshUsage, cleanup, organize,

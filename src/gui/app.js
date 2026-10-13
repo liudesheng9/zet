@@ -2064,14 +2064,19 @@
     const tabs = [head
       ? tab('Model', head.address, head.address === card.address, `Model Card ${head.address} — ${head.title}`, 'head')
       : tab('Model', null, false, 'This part belongs to no model: file it under a Model Card, or link it from one', 'head missing')];
+    // A long step may take a chain of Derivation parts: each tab names its place in the chain.
+    const stepOf = new Map();
+    for (const chain of (model.build && model.build.chains) || []) {
+      if (chain.parts.length > 1) chain.parts.forEach((address, at) => stepOf.set(address, ` · derivation step ${at + 1} of ${chain.parts.length}`));
+    }
     let apart = false;
     for (const part of buildOrder(model)) {
       const line = part.line || '';
       const extra = [part.emphasis, line, part.derivation ? 'derivation' : null,
         line === 'off' && !apart ? 'apart' : null].filter(Boolean).join(' ');
       if (line === 'off') apart = true;
-      const where = line === 'shared' ? ` · shared from ${part.home || 'another model'}`
-        : line === 'side' ? ` · beside ${part.from}` : line === 'off' ? ' · outside the build' : '';
+      const where = (line === 'shared' ? ` · shared from ${part.home || 'another model'}`
+        : line === 'side' ? ` · beside ${part.from}` : line === 'off' ? ' · outside the build' : '') + (stepOf.get(part.address) || '');
       tabs.push(tab((line === 'shared' ? '⧉ ' : '') + facetLabel(part.facet), part.address, part.address === card.address,
         `${facetLabel(part.facet)}${part.emphasis ? ` (${part.emphasis})` : ''}${where} · ${part.address} — ${part.title}`, extra));
     }
@@ -2117,7 +2122,8 @@
     const parts = model.parts;
     const here = card.address;
     const onHead = here === model.head.address;
-    // A Derivation part carries one step between two parts: on the board it is that thread, made visible.
+    // A Derivation part carries a step between two parts: on the board it is that thread, made
+    // visible; a chain of them is the thread in several short lengths.
     const derivations = new Set(((model.build && model.build.order) || []).filter((entry) => entry.derivation).map((entry) => entry.address));
     const order = new Map(parts.map((part, at) => [part.address, at]));
     const facetOf = new Map(parts.map((part) => [part.address, part.facet]));

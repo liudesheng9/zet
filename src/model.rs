@@ -964,13 +964,28 @@ pub(crate) fn is_derivation(facet: &Facet) -> bool {
     id.starts_with("推导") || id.to_lowercase().starts_with("derivation")
 }
 
+/// Put the shared parts that `at` rests on into `out`, each after the shared
+/// parts it rests on itself (a depth-first walk over rests-on Links among
+/// shared parts, in address order). `placed` holds what is already in the
+/// build order, so each part comes once and a cycle ends the walk.
+fn take_in_shared(
+    at: &str,
+    premises: &BTreeMap<String, BTreeSet<String>>,
+    shared: &BTreeSet<String>,
+    placed: &mut BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    for premise in premises.get(at).into_iter().flatten() {
+        if shared.contains(premise) && placed.insert(premise.clone()) {
+            take_in_shared(premise, premises, shared, placed, out);
+            out.push(premise.clone());
+        }
+    }
+}
+
 /// How a Card outside a model that the model rests on can come in (rule 5 of
 /// the self-sufficient model): the fix a closure fault names.
-fn closure_fix(
-    target: &Card,
-    head: &str,
-    target_models: &[String],
-) -> String {
+fn closure_fix(target: &Card, head: &str, target_models: &[String]) -> String {
     let at = &target.address;
     if target.card_type == CardType::Model && target.facet.is_none() {
         format!(
@@ -1004,7 +1019,11 @@ fn closure_fix(
 ///   through a Side successor hangs from it (`side`); any other part in the
 ///   range stands outside the build (`off`). A shared part (a member filed
 ///   outside the range) stands just before the first main-line step that
-///   rests on it.
+///   rests on it, directly or through another shared part, and after the
+///   shared parts it rests on itself.
+/// - **Chains**: runs of Derivation parts next to each other in the build
+///   order, with the members just before and after each run. One step that is
+///   too long for one Card takes a chain of Derivation parts.
 /// - **Faults**: `closure` (a rests-on Link from the range to a Card that is
 ///   not a member), `forward` (a main-line part rests on a later member), and
 ///   `unanchored` (a main-line part with no rests-on path back to the
@@ -1035,7 +1054,9 @@ fn build_report(
     };
     let in_range = parts
         .iter()
-        .filter(|part| find_head(crate::parent_location(&part.address), lookup).as_deref() == Some(head))
+        .filter(|part| {
+            find_head(crate::parent_location(&part.address), lookup).as_deref() == Some(head)
+        })
         .map(|part| part.address.clone())
         .collect::<BTreeSet<_>>();
     let members = std::iter::once(head.to_string())
@@ -1095,12 +1116,15 @@ fn build_report(
     }
     off.sort_by(|a, b| address_order(a, b));
 
-    // Each shared part stands before the first main-line step that rests on it.
+    // Each shared part stands before the first main-line step that needs it, directly or
+    // through another shared part, and after every shared part it rests on: a shared chain
+    // (a building block taken in from its home model, such as a derivation) keeps its order.
     let shared = parts
         .iter()
         .filter(|part| !in_range.contains(&part.address))
         .map(|part| part.address.clone())
         .collect::<Vec<_>>();
+    let shared_set = shared.iter().cloned().collect::<BTreeSet<_>>();
     let premises = members
         .iter()
         .map(|at| {
@@ -1113,17 +1137,23 @@ fn build_report(
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let mut placed = BTreeSet::new();
     let mut before: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for step in &main {
+        let mut list = Vec::new();
+        for at in std::iter::once(step).chain(sides.get(step).into_iter().flatten()) {
+            take_in_shared(at, &premises, &shared_set, &mut placed, &mut list);
+        }
+        if !list.is_empty() {
+            before.insert(step.clone(), list);
+        }
+    }
+    // Shared parts that no step needs come after the main line, premises first.
     let mut unplaced = Vec::new();
     for part in &shared {
-        let step = main.iter().find(|step| {
-            std::iter::once(*step)
-                .chain(sides.get(*step).into_iter().flatten())
-                .any(|at| premises[at].contains(part))
-        });
-        match step {
-            Some(step) => before.entry(step.clone()).or_default().push(part.clone()),
-            None => unplaced.push(part.clone()),
+        if placed.insert(part.clone()) {
+            take_in_shared(part, &premises, &shared_set, &mut placed, &mut unplaced);
+            unplaced.push(part.clone());
         }
     }
 
@@ -1238,12 +1268,24 @@ fn build_report(
         let mut seen = BTreeSet::new();
         for read in rests_on(part) {
             if outside(&read.target) && seen.insert(read.target.clone()) {
-                tolerated.push(json!({
+                let mut value = json!({
                     "part": part,
                     "home": homes(part).into_iter().find(|model| model != head),
                     "premise": card_ref(&read.target),
                     "note": read.note,
-                }));
+                });
+                // Not a fault, but a reader who follows a shared derivation would leave the model.
+                if by_address[&read.target]
+                    .facet
+                    .as_ref()
+                    .is_some_and(is_derivation)
+                {
+                    value["fix"] = json!(format!(
+                        "`{}` is a step of the derivation that `{part}` continues: take it in too, so the whole derivation reads in this model",
+                        read.target
+                    ));
+                }
+                tolerated.push(value);
             }
         }
     }
@@ -1297,11 +1339,43 @@ fn build_report(
     } else {
         Vec::new()
     };
+    // Derivation chains: runs of Derivation parts that follow each other in the build order
+    // (a part beside a step does not break a run). One long step may take several
+    // Derivation parts; a chain shows which, between which two members.
+    let derivation_at = |at: &str| by_address[at].facet.as_ref().is_some_and(is_derivation);
+    let mut chains = Vec::new();
+    let mut run: Vec<String> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut last: Option<String> = None;
+    let chain = |run: &[String], after: Option<String>, before: Option<String>| json!({ "parts": run, "length": run.len(), "after": after, "before": before });
+    for (at, line, _) in &order {
+        match *line {
+            "side" => continue,
+            "main" | "shared" if derivation_at(at) => {
+                if run.is_empty() {
+                    after = last.clone();
+                }
+                run.push(at.clone());
+            }
+            _ => {
+                if !run.is_empty() {
+                    let before = (*line != "off").then(|| at.clone());
+                    chains.push(chain(&run, after.take(), before));
+                    run.clear();
+                }
+            }
+        }
+        last = Some(at.clone());
+    }
+    if !run.is_empty() {
+        chains.push(chain(&run, after.take(), None));
+    }
     json!({
         "level": level.map(Level::id),
         "level_number": level.map(Level::number),
         "setting": setting,
         "order": order_values,
+        "chains": chains,
         "closure": closure,
         "forward": forward,
         "tolerated": tolerated,

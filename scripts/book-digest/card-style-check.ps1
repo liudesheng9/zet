@@ -18,6 +18,15 @@
     R7  At most two `的` in one noun phrase: three `的` within 16 characters with no punctuation.
     R9  No hedge stacking and no praise words.
     R12 A title states one claim in at most 40 characters (formulas do not count), with no `；`.
+    R13 Card size: a Model part (a Card with a facet) holds at most -MaxSentences sentences (12)
+        and -MaxChars characters (400) of prose. Formulas, Links, tables, charts, and quotations do
+        not count. In a Derivation part, the numbered steps count under R14 instead. A part over
+        the limit splits into two or more parts.
+    R14 A Derivation part holds at most -MaxSteps numbered steps (6). A longer step splits into a
+        chain of Derivation parts: each one starts from the result of the one before.
+    R13 and R14 apply to a formal model (Elaboration level 2) and to a model with no level. A
+    concept model (level 1) states itself in the Model Card and at most four parts, so its parts
+    may be long. The level comes from get_model (-Model, -Addresses) or from -Level (-Json).
 
   The term table is a Markdown table under a line that holds `术语表`, with the term in the
   first column and the words not to use in the second, separated by `、`:
@@ -45,7 +54,11 @@ param(
     [Parameter(ParameterSetName = 'Model', Mandatory)][string]$Model,
     [Parameter(ParameterSetName = 'Addresses', Mandatory)][string]$Addresses,
     [Parameter(ParameterSetName = 'Json', Mandatory)][string]$Json,
-    [string]$Setting = ''
+    [string]$Setting = '',
+    [int]$MaxSentences = 12,
+    [int]$MaxChars = 400,
+    [int]$MaxSteps = 6,
+    [ValidateSet('', 'concept', 'formal')][string]$Level = ''
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -73,6 +86,7 @@ switch ($PSCmdlet.ParameterSetName) {
         $cards = @([pscustomobject]@{ address = $head.address; title = $head.title; body = $head.body; facet = $null }) +
             @($structure.parts | ForEach-Object { [pscustomobject]@{ address = $_.address; title = $_.title; body = $_.body; facet = $_.facet } })
         if (-not $Setting -and $structure.build) { $Setting = [string]$structure.build.setting }
+        if (-not $Level) { $Level = [string]$structure.level }
         # A shared part follows the term table of its home model, not this one.
         $script:otherTerms = @($structure.build.order | Where-Object { $_.line -eq 'shared' } | ForEach-Object { [string]$_.address })
     }
@@ -81,6 +95,7 @@ switch ($PSCmdlet.ParameterSetName) {
         $read = @(Invoke-Zt @($list | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
         $cards = @($read | ForEach-Object { [pscustomobject]@{ address = $_.address; title = $_.title; body = $_.body; facet = $_.facet } })
         if (-not $Setting -and $read.Count -and $read[0].model -and $read[0].model.build) { $Setting = [string]$read[0].model.build.setting }
+        if (-not $Level -and $read.Count -and $read[0].model) { $Level = [string]$read[0].model.level }
     }
 }
 
@@ -202,11 +217,29 @@ foreach ($card in $cards) {
         if ($measure.size -gt $limit) { Add-Fault $address 12 "($($measure.size) $($measure.unit) > $limit) $title" }
         if ((Get-Plain $title) -match '[；;]') { Add-Fault $address 12 "two claims: $title" }
     }
+    $sentences = 0
+    $chars = 0
+    $steps = 0
     foreach ($line in Get-ProseLines ([string]$card.body)) {
+        $isStep = $derivation -and $line.step
+        if ($isStep) { $steps++ }
         foreach ($sentence in Split-Sentences $line.text) {
-            Test-Sentence $address $sentence ($derivation -and $line.step)
+            Test-Sentence $address $sentence $isStep
+            if (-not $isStep) {
+                $sentences++
+                $measure = Measure-Sentence $sentence
+                if ($measure.unit -eq 'characters') { $chars += $measure.size }
+            }
         }
     }
+    # Card size: only a Model part of a formal model; the Model Card is the model's entry point,
+    # and a concept model keeps its few parts whole.
+    if ($Level -eq 'concept') { continue }
+    if ([string]$card.facet) {
+        if ($sentences -gt $MaxSentences) { Add-Fault $address 13 "($sentences sentences > $MaxSentences) split the part into two or more parts" }
+        elseif ($chars -gt $MaxChars) { Add-Fault $address 13 "($chars characters > $MaxChars) split the part into two or more parts" }
+    }
+    if ($steps -gt $MaxSteps) { Add-Fault $address 14 "($steps steps > $MaxSteps) split the derivation into a chain of Derivation parts" }
 }
 $faults | ForEach-Object { Write-Output $_ }
 Write-Output "faults: $($faults.Count)"

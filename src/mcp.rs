@@ -42,7 +42,8 @@ relaxes (`放宽`, `推广`), corresponds (`对应`, `类比`), objects (`反驳
 plain reference. get_model shows a model's parts, their kinded relations, its loose parts, and its \
 Links with Cards outside it, and its `build`: the members in build order (the setting, then the \
 main line of Direct successors, each example beside its step, shared parts before the step that \
-rests on them) and the faults that keep it from being self-sufficient (`closure`: a rests-on Link \
+needs them and after the shared parts they rest on), its `chains` (runs of Derivation parts: one long step may take \
+any number), and the faults that keep it from being self-sufficient (`closure`: a rests-on Link \
 to a Card outside the model; `forward`: a step rests on a later step; `unanchored`: a step with no \
 rests-on path to the setting; and `beyond_level`: a Derivation part in a concept model). A model rests on parts, never on a whole other Model Card. To put \
 a missing step between two Cards, use insert_card with `before`; move_card also takes `before` \
@@ -807,7 +808,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_model",
             "Get model",
-            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model). `level` is the Model Card's elaboration level (concept, formal, or null), and `build` gives the build order and its faults (`closure`, `forward`, `unanchored`, and for a concept model `beyond_level`).",
+            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model). `level` is the Model Card's elaboration level (concept, formal, or null), and `build` gives the build order, the Derivation chains (`chains`: each run of Derivation parts with the members `after` and `before` it), and the faults (`closure`, `forward`, `unanchored`, and for a concept model `beyond_level`); `tolerated` lists premises of shared parts that stay in their home model.",
             json!({ "at": at }),
             &["at"],
             true,

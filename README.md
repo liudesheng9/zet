@@ -281,9 +281,15 @@ order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
   information, a symbol table, and a `术语表` term table); its Direct successors are the **main
   line**, the derivation step by step; an example sits beside the step it illustrates (a Side
   successor of that step); a later Side successor of the Model Card stands outside the build; a
-  shared part stands just before the first step that rests on it.
+  shared part stands just before the first step that needs it, directly or through another shared
+  part, and after the shared parts it rests on (zt 0.15.0), so a model can take in a whole
+  derivation from another model as a **building block** and read it in order.
 - **Derivation parts** (facet starting with `推导`) carry a step the source skips, so no step
-  jumps; the board draws them as slim slips on the thread they make visible.
+  jumps; the board draws them as slim slips on the thread they make visible. A long step takes a
+  **chain** of Derivation parts, as many as its lines need, each starting from the result of the
+  one before; `build.chains` lists each chain with the members before and after it, and each tab
+  of a chain names its place ("derivation step 2 of 3"). A shared part's premise that is a
+  Derivation part carries a hint to take it in too.
 - `get_model` returns `build`: the members in build order with their `line`, and the faults that
   keep the model from being **self-sufficient**: `closure` (a rests-on Link from the model's range
   to a Card that is not a member, with the fix), `forward` (a step rests on a later step), and
