@@ -381,6 +381,10 @@ kbd {
   background-size: 100% 100%, 24px 24px;
 }
 .viewport.dragging { cursor: grabbing; }
+/* The views are worked by hand, not read as text: dragging a card or the view selects no words.
+   While a press that began in them lasts, nothing on the page is selectable. */
+.viewport { -webkit-user-select: none; user-select: none; }
+body.holding, body.holding * { -webkit-user-select: none !important; user-select: none !important; }
 .plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .edges { position: absolute; left: 0; top: 0; overflow: visible; }
 .edges path { fill: none; }

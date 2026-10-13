@@ -901,19 +901,48 @@
     applyCamera();
   }
 
+  // A hand that carries a card or the view selects no words on its way: nothing in the views
+  // is selectable (see app.css), and while a press that began in them lasts, nothing on the
+  // page is.
+  function installSteadyHand() {
+    const viewport = $('#viewport');
+    const release = () => document.body.classList.remove('holding');
+    viewport.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || isTyping(event.target)) return;
+      document.body.classList.add('holding');
+      window.getSelection()?.removeAllRanges();
+    }, { capture: true });
+    window.addEventListener('pointerup', release, { capture: true });
+    window.addEventListener('pointercancel', release, { capture: true });
+    window.addEventListener('blur', release);
+    document.addEventListener('selectstart', (event) => {
+      if (document.body.classList.contains('holding')) event.preventDefault();
+    });
+    // Images and links in the views are never dragged out as files or URLs.
+    viewport.addEventListener('dragstart', (event) => event.preventDefault());
+  }
+
   function installPanZoom() {
     const viewport = $('#viewport');
     let drag = null;
     viewport.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.target.closest('.node, .stack, .desk, .tcard, .reach, .table-hand, .table-empty')) return;
-      drag = { x: event.clientX, y: event.clientY, moved: false };
-      viewport.setPointerCapture(event.pointerId);
-      viewport.classList.add('dragging');
+      if (event.button !== 0 || event.target.closest('.stack, .desk, .tcard, .reach, .table-hand, .table-empty')) return;
+      // A press on a Map card opens it, unless the hand moves: then it pans the view too.
+      drag = { x: event.clientX, y: event.clientY, moved: false, captured: false, pointer: event.pointerId };
     });
     viewport.addEventListener('pointermove', (event) => {
+      // A press released outside the view, before it moved, left no pointerup here.
+      if (drag && !drag.captured && event.buttons === 0) drag = null;
       if (!drag) { if (state.mode === 'constellation') sky.hover(event); return; }
       const dx = event.clientX - drag.x; const dy = event.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) <= 3) return;
+      if (!drag.captured) {
+        // Captured only once it moves, so a click still reaches the card pressed.
+        drag.captured = true;
+        try { viewport.setPointerCapture(drag.pointer); } catch { /* a pointer the browser no longer tracks */ }
+        viewport.classList.add('dragging');
+      }
+      drag.moved = true;
       drag.x = event.clientX; drag.y = event.clientY;
       if (state.mode === 'constellation') sky.pan(dx, dy);
       else { const cam = planeCamera(); cam.x += dx; cam.y += dy; applyCamera(); }
@@ -3253,6 +3282,7 @@
 
   async function boot() {
     installTheme();
+    installSteadyHand();
     installPanZoom();
     installCommandBar();
     installKeys();

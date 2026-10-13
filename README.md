@@ -125,7 +125,8 @@ zt gui --open          # also open an app window (Edge/Chrome) or your browser o
   run down a column and Side successors branch into the next column. The Pointer card is pulled
   forward; its path, children, and neighbours stand up as cards; the rest lie as one-line slips,
   and branches away from the Pointer fold into "+N" stacks. Only the Pointer's Links are drawn.
-  Press `x` to unfold the whole tree.
+  Press `x` to unfold the whole tree. Drag anywhere, a card included, to move the view; a click
+  still opens the card. Dragging in the Map, the Table, or the Constellation never selects text.
 - **Table**: a free working surface for a set of related Cards, wherever each is filed. Press
   `p` to lay the Card you are reading on it (or put it back), `P` to lay it down with every Card it
   relates to, Shift-click a card in the Map, or `+` on a search hit. Click a card on the Table to
