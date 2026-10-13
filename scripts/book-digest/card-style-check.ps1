@@ -62,6 +62,7 @@ function Invoke-Zt($calls) {
 
 # --- the Cards to check ----------------------------------------------------------------------------
 $cards = @()
+$script:otherTerms = @()
 switch ($PSCmdlet.ParameterSetName) {
     'Json' {
         $cards = @(Get-Content -LiteralPath $Json -Raw -Encoding utf8 | ConvertFrom-Json -DateKind String)
@@ -73,6 +74,8 @@ switch ($PSCmdlet.ParameterSetName) {
         $cards = @([pscustomobject]@{ address = $head.address; title = $head.title; body = $head.body; facet = $null }) +
             @($structure.parts | ForEach-Object { [pscustomobject]@{ address = $_.address; title = $_.title; body = $_.body; facet = $_.facet } })
         if (-not $Setting -and $structure.build) { $Setting = [string]$structure.build.setting }
+        # A shared part follows the term table of its home model, not this one.
+        $script:otherTerms = @($structure.build.order | Where-Object { $_.line -eq 'shared' } | ForEach-Object { [string]$_.address })
     }
     'Addresses' {
         $list = @($Addresses -split '[,\s]+' | Where-Object { $_ })
@@ -176,7 +179,7 @@ function Test-Sentence($address, [string]$sentence, [bool]$step) {
     if ($plain -match '[；;]') { Add-Fault $address 3 $sentence }
     if ($plain -match '被(?!告|保险|动|子)') { Add-Fault $address 4 $sentence }
     if ($plain -match "(进行|加以|予以|作出|做出)$cjk") { Add-Fault $address 5 $sentence }
-    foreach ($term in $terms.Keys) {
+    foreach ($term in $(if ($address -in $script:otherTerms) { @() } else { $terms.Keys })) {
         foreach ($word in $terms[$term]) {
             # A rejected word inside the term itself is the term, not the word.
             if ($plain.Replace($term, '').Contains($word)) {
