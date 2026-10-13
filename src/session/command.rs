@@ -83,6 +83,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
+    (
+        "lv <concept|formal|none>",
+        "set the elaboration level of the current Model Card: concept (1) or formal (2)",
+        Availability::OnRegular,
+    ),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),
@@ -659,6 +664,16 @@ fn execute_command(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["ty", ..] => bail!("usage: ty <idea|event|model> [<facet>]"),
+        ["lv", value] => {
+            let at = state.current_card("lv")?;
+            let level = crate::model::parse_optional_level(value)?;
+            let _lock = crate::acquire_edit_lock(root)?;
+            let conn = crate::open_db(root)?;
+            let card = crate::load_card(&conn, &at)?;
+            crate::model::set_level(&conn, &card, level)?;
+            Ok(Execution::Continue(CommandResult::Changed))
+        }
+        ["lv", ..] => bail!("usage: lv <concept|formal|none>"),
         [name, ..] => bail!("unknown session command: {name}"),
     }
 }
@@ -1267,7 +1282,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | lv <concept|formal|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

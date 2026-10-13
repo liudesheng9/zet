@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::link::{LinkBody, LinkLifecycle};
-use crate::model::{Emphasis, Facet, Part};
+use crate::model::{Emphasis, Facet, Level, Part};
 pub(crate) use crate::place::Target;
 
 /// How long a change waits for another client's short write to finish.
@@ -112,18 +112,35 @@ pub(crate) fn create_literature(
     Ok(metadata.citation_key)
 }
 
-/// A change to a Card's type, Model facet, and emphasis. `facet` and
-/// `emphasis` are `None` to leave them alone and `Some(None)` to clear them.
+/// A change to a Card's type, Model facet, emphasis, and elaboration level.
+/// `facet`, `emphasis`, and `level` are `None` to leave them alone and
+/// `Some(None)` to clear them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TypeChange {
     pub(crate) card_type: Option<CardType>,
     pub(crate) facet: Option<Option<Facet>>,
     pub(crate) emphasis: Option<Option<Emphasis>>,
+    pub(crate) level: Option<Option<Level>>,
 }
 
 impl TypeChange {
     pub(crate) fn is_empty(&self) -> bool {
-        self.card_type.is_none() && self.facet.is_none() && self.emphasis.is_none()
+        self.card_type.is_none()
+            && self.facet.is_none()
+            && self.emphasis.is_none()
+            && self.level.is_none()
+    }
+
+    /// The elaboration level the Card has after the change: only a Model Card
+    /// (no facet) has one, and it keeps its level unless the change names one.
+    pub(crate) fn resolve_level(&self, card: &Card) -> Result<Option<Level>> {
+        let (card_type, facet, _) = self.resolve(card);
+        let head = card_type == CardType::Model && facet.is_none();
+        match self.level {
+            Some(Some(_)) if !head => bail!(crate::model::LEVEL_NEEDS_MODEL_CARD),
+            Some(level) => Ok(level),
+            None => Ok(card.level.filter(|_| head)),
+        }
     }
 
     /// The type, facet, and emphasis the Card has after the change. A facet
@@ -150,7 +167,8 @@ impl TypeChange {
     }
 }
 
-/// Replace a Card's text, change its Card type, Model facet, or emphasis, or both. With
+/// Replace a Card's text, change its Card type, Model facet, emphasis, or
+/// elaboration level, or both. With
 /// `base`, refuse if the stored text changed since the caller read it.
 pub(crate) fn edit(
     root: &Path,
@@ -165,6 +183,7 @@ pub(crate) fn edit(
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
     let (card_type, facet, emphasis) = change.resolve(&card);
+    let level = change.resolve_level(&card)?;
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
@@ -177,6 +196,10 @@ pub(crate) fn edit(
     }
     if retyped {
         crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
+    }
+    if level != card.level {
+        let card = crate::load_card(&conn, &card.address)?;
+        crate::model::set_level(&conn, &card, level)?;
     }
     Ok(card.address)
 }
@@ -409,6 +432,8 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.emphasis.map_or("", Emphasis::id).as_bytes());
             hasher.update([0]);
+            hasher.update(card.level.map_or("", Level::id).as_bytes());
+            hasher.update([0]);
         }
         hasher
             .finalize()
@@ -495,6 +520,7 @@ impl Snapshot {
             "type": card.card_type.id(),
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
+            "level": card.level.map(Level::id),
             "head": self.model_head(card),
             "edge": edge,
             "parent": parent,
@@ -623,6 +649,7 @@ impl Snapshot {
                     "type": card.card_type.id(),
                     "facet": card.facet.as_ref().map(Facet::id),
                     "emphasis": card.emphasis.map(Emphasis::id),
+                    "level": card.level.map(Level::id),
                     "workspace": card.workspace.id(),
                     "snippet": snippet,
                 }))
@@ -717,8 +744,7 @@ mod tests {
     fn ty(card_type: CardType) -> TypeChange {
         TypeChange {
             card_type: Some(card_type),
-            facet: None,
-            emphasis: None,
+            ..TypeChange::default()
         }
     }
 

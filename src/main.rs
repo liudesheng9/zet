@@ -580,11 +580,13 @@ fn initialize_database(root: &Path) -> Result<()> {
         let before_card_types = [&before_workspaces[..], &["workspace"]].concat();
         let before_facets = [&before_card_types[..], &["card_type"]].concat();
         let before_emphasis = [&before_facets[..], &["model_facet"]].concat();
-        let current = [&before_emphasis[..], &["model_emphasis"]].concat();
+        let before_level = [&before_emphasis[..], &["model_emphasis"]].concat();
+        let current = [&before_level[..], &["model_level"]].concat();
         if columns != before_workspaces
             && columns != before_card_types
             && columns != before_facets
             && columns != before_emphasis
+            && columns != before_level
             && columns != current
         {
             bail!("unsupported cards schema; database was not modified");
@@ -608,12 +610,14 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_card_type_column(&conn, root)?;
     ensure_model_facet_column(&conn, root)?;
     ensure_open_model_parts(&conn, root)?;
+    ensure_model_level_column(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
 
 /// `CREATE TABLE <name> (…)` for the current cards schema. A Model facet is a
-/// short label of the model's author; only a Model part has an emphasis.
+/// short label of the model's author; only a Model part has an emphasis, and
+/// only a Model Card (no facet) has an elaboration level.
 fn cards_table(name: &str) -> String {
     format!(
         "CREATE TABLE {name} (
@@ -628,12 +632,14 @@ fn cards_table(name: &str) -> String {
             card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
+            model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
                 (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
             ),
-            CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL)
+            CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
+            CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL))
         );",
         model::Facet::MAX_CHARS
     )
@@ -749,6 +755,32 @@ fn ensure_open_model_parts(conn: &Connection, root: &Path) -> Result<()> {
     log_event(
         root,
         "model facets are free labels and model parts may carry an emphasis",
+    )
+    .ok();
+    Ok(())
+}
+
+/// Archives written before models had elaboration levels: add the
+/// `model_level` column with no level on any Model Card. A column added by
+/// ALTER TABLE takes only column constraints, so the rule that only a Model
+/// Card has a level is kept by `model::set_level` and `model::set`.
+fn ensure_model_level_column(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'model_level')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE cards ADD COLUMN model_level TEXT
+             CHECK(model_level IS NULL OR model_level IN ('concept', 'formal'));",
+    )
+    .context("failed to add elaboration levels to the archive")?;
+    log_event(
+        root,
+        "added model elaboration levels; no model has a level yet",
     )
     .ok();
     Ok(())
@@ -918,7 +950,8 @@ fn cmd_dump() -> Result<()> {
             } else {
                 Ok(
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
-                        .with_part(card.facet, card.emphasis),
+                        .with_part(card.facet, card.emphasis)
+                        .with_level(card.level),
                 )
             }
         })
@@ -1057,6 +1090,8 @@ struct Card {
     facet: Option<model::Facet>,
     /// Set only on a Model part: how much of a reader's attention it asks for.
     emphasis: Option<model::Emphasis>,
+    /// Set only on a Model Card: how fully its model is elaborated.
+    level: Option<model::Level>,
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -1216,7 +1251,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -1234,6 +1269,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 emphasis: model::Emphasis::from_stored(
                     row.get::<_, Option<String>>(10)?.as_deref(),
                 ),
+                level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
             })
         },
     )
@@ -1243,7 +1279,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1259,6 +1295,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             card_type: CardType::from_stored(&row.get::<_, String>(8)?),
             facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
             emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
+            level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

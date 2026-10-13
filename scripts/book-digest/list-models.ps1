@@ -10,7 +10,9 @@
   helper's -Log during the digest). With -All, every Model Card in the agent Literature tree of
   -CitationKey counts, plus every Model Card any group wrote. Model parts are never listed; a
   Model Card whose model already has parts is listed with its part count, so a rerun can skip it.
-  Prints one compact JSON line: {"models":[{"address","title","group","parts","issues"}]}.
+  Each model also names its elaboration level (concept, formal, or null when not yet decided) and its
+  build faults (`faults`: closure, forward, unanchored, and beyond_level entries together).
+  Prints one compact JSON line: {"models":[{"address","title","group","level","parts","issues","faults"}]}.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Groups')]
 param(
@@ -62,8 +64,11 @@ if ($heads.Count) {
             address = $heads[$i].address
             title = $heads[$i].title
             group = $owner[$heads[$i].address]
+            level = $structures[$i].level
             parts = @($structures[$i].parts).Count
             issues = @($structures[$i].issues).Count
+            faults = @($structures[$i].build.closure).Count + @($structures[$i].build.forward).Count +
+                @($structures[$i].build.unanchored).Count + @($structures[$i].build.beyond_level).Count
         }
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
-use crate::model::{Emphasis, Facet};
+use crate::model::{Emphasis, Facet, Level};
 use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
 
@@ -551,6 +551,7 @@ impl App {
             "type": card.card_type.id(),
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
+            "level": card.level.map(Level::id),
             "model": snapshot.model(&card.address),
             "context": context,
             "title": parsed.title,
@@ -694,6 +695,10 @@ impl App {
             (_, Some(_)) => CardType::Model,
             (card_type, None) => card_type.unwrap_or_default(),
         };
+        let level = level_field(body)?.flatten();
+        if level.is_some() && (card_type != CardType::Model || part.is_some()) {
+            return Err(ApiError(crate::model::LEVEL_NEEDS_MODEL_CARD.to_string()));
+        }
         let location = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError(
@@ -721,6 +726,13 @@ impl App {
             )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
         };
+        if level.is_some() {
+            let change = TypeChange {
+                level: Some(level),
+                ..TypeChange::default()
+            };
+            ops::edit(&self.root, ACCESS, &location, None, change, None)?;
+        }
         Ok(json!({ "address": location }))
     }
 
@@ -747,12 +759,13 @@ impl App {
         Ok(json!({ "address": address }))
     }
 
-    /// Save a Card's text, its type, facet, and emphasis, or both.
+    /// Save a Card's text, its type, facet, emphasis, and level, or both.
     fn edit(&self, body: &Value) -> ApiResult {
         let change = TypeChange {
             card_type: type_field(body)?,
             facet: facet_field(body)?,
             emphasis: emphasis_field(body)?,
+            level: level_field(body)?,
         };
         let text = if change.is_empty() {
             Some(str_field(body, "text")?)
@@ -1369,6 +1382,16 @@ fn emphasis_field(body: &Value) -> Result<Option<Option<Emphasis>>> {
         Some(Value::Null) => Ok(Some(None)),
         Some(Value::String(value)) => crate::model::parse_optional_emphasis(value).map(Some),
         Some(_) => bail!("`emphasis` must be a string"),
+    }
+}
+
+/// An optional elaboration level: absent leaves it alone, `""` or null clears it.
+fn level_field(body: &Value) -> Result<Option<Option<Level>>> {
+    match body.get("level") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::model::parse_optional_level(value).map(Some),
+        Some(_) => bail!("`level` must be a string"),
     }
 }
 

@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::model::{Emphasis, Facet};
+use crate::model::{Emphasis, Facet, Level};
 use crate::ops::{self, Outcome, Snapshot, Successor};
 use crate::{Access, CardType, Workspace};
 
@@ -34,7 +34,7 @@ model), set with `type` on create_successor or edit_card and listed with search_
 A model is presented by its Model Card (its entry point: the question and what the model shows) and \
 by Model parts: Model Cards with a `facet`, a short label you choose for what the part presents in \
 this model (`设定`, `均衡`, `数值例子`), and optionally an `emphasis` (`core` for what a reader must \
-see, `aside` for detail). Where a part is filed does not decide its model: a part belongs to the \
+see, `aside` for detail). A Model Card also carries its model's elaboration `level`: `concept` (level 1: a concept model, stated in words in the Model Card and a few parts, with no Derivation parts) or `formal` (level 2: a formal model, built self-sufficient with a derivation and Derivation parts for the steps the source skips); set it with create_successor or edit_card. Where a part is filed does not decide its model: a part belongs to the \
 Model Card it is filed under and to every Model Card that links it, so file it where it first \
 connects and let one part serve several models. Every Link says what it is by the words before it \
 in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`), contrasts (`对照`, `区别`), \
@@ -44,7 +44,7 @@ Links with Cards outside it, and its `build`: the members in build order (the se
 main line of Direct successors, each example beside its step, shared parts before the step that \
 rests on them) and the faults that keep it from being self-sufficient (`closure`: a rests-on Link \
 to a Card outside the model; `forward`: a step rests on a later step; `unanchored`: a step with no \
-rests-on path to the setting). A model rests on parts, never on a whole other Model Card. To put \
+rests-on path to the setting; and `beyond_level`: a Derivation part in a concept model). A model rests on parts, never on a whole other Model Card. To put \
 a missing step between two Cards, use insert_card with `before`; move_card also takes `before` \
 (another Card's place) and `alone` (only the Card; its chain closes the gap). Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
@@ -307,6 +307,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "type": card.card_type.id(),
                 "facet": card.facet.as_ref().map(Facet::id),
                 "emphasis": card.emphasis.map(Emphasis::id),
+                "level": card.level.map(Level::id),
                 "model": snapshot.model(&card.address),
                 "title": parsed.title,
                 "body": parsed.body,
@@ -431,16 +432,28 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 (_, Some(_)) => CardType::Model,
                 (card_type, None) => card_type.unwrap_or_default(),
             };
+            let level = optional_level(args)?.flatten();
+            if level.is_some() && (card_type != CardType::Model || part.is_some()) {
+                bail!(crate::model::LEVEL_NEEDS_MODEL_CARD);
+            }
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
             crate::artifact::require_present(&root, &text)?;
             let address =
                 ops::create_successor(&root, ACCESS, kind, &at, card_type, part.clone(), &text)?;
+            if level.is_some() {
+                let change = ops::TypeChange {
+                    level: Some(level),
+                    ..ops::TypeChange::default()
+                };
+                ops::edit(&root, ACCESS, &address, None, change, None)?;
+            }
             Ok(json!({
                 "address": address,
                 "type": card_type.id(),
                 "facet": part.as_ref().map(|part| part.facet.id()),
                 "emphasis": part.and_then(|part| part.emphasis).map(Emphasis::id),
+                "level": level.map(Level::id),
             }))
         }
         "edit_card" => {
@@ -453,6 +466,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 card_type: optional_card_type(args)?,
                 facet: optional_facet(args)?,
                 emphasis: optional_emphasis(args)?,
+                level: optional_level(args)?,
             };
             let parsed = crate::parse_card_text(&card.text)?;
             let text_given = ["text", "title", "body"]
@@ -647,6 +661,20 @@ fn optional_emphasis(args: &Value) -> Result<Option<Option<Emphasis>>> {
     }
 }
 
+/// `None` when absent; `Some(None)` for an empty string or `none`, which
+/// clears a Model Card's elaboration level.
+fn optional_level(args: &Value) -> Result<Option<Option<Level>>> {
+    match args.get("level") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::model::parse_optional_level(value).map(Some),
+        Some(Value::Number(number)) => {
+            crate::model::parse_optional_level(&number.to_string()).map(Some)
+        }
+        Some(_) => bail!("argument `level` must be concept, formal, 1, 2, or empty"),
+    }
+}
+
 fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
     match args.get("zone").and_then(Value::as_str) {
         None | Some("all") => Ok(None),
@@ -720,6 +748,13 @@ fn tool_definitions() -> Vec<Value> {
             "description": description,
         })
     };
+    let level = |description: &str| {
+        json!({
+            "type": "string",
+            "enum": ["concept", "formal", ""],
+            "description": description,
+        })
+    };
     let card_type = |description: &str| {
         json!({
             "type": "string",
@@ -770,7 +805,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_model",
             "Get model",
-            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model).",
+            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model). `level` is the Model Card's elaboration level (concept, formal, or null), and `build` gives the build order and its faults (`closure`, `forward`, `unanchored`, and for a concept model `beyond_level`).",
             json!({ "at": at }),
             &["at"],
             true,
@@ -840,7 +875,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`.",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
@@ -849,6 +884,7 @@ fn tool_definitions() -> Vec<Value> {
                 "type": card_type("The Card type: idea (default), event, or model."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
+                "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided."),
             }),
             &["at", "title"],
             false,
@@ -857,7 +893,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), and `emphasis` to mark a part core or aside (empty for regular); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), and `level` to set a Model Card's elaboration level (concept or formal; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
@@ -865,6 +901,7 @@ fn tool_definitions() -> Vec<Value> {
                 "type": card_type("New Card type: idea, event, or model (event and model only for Regular Cards)."),
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
+                "level": level("New elaboration level of a Model Card: concept (level 1), formal (level 2), or empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
             }),

@@ -158,18 +158,25 @@
     core: { label: 'Core', note: 'the heart of the model: read it first' },
     aside: { label: 'Aside', note: 'detail a reader may skip' },
   };
+  // A Model Card carries its model's elaboration level (mirrors `Level` in src/model.rs): a concept
+  // model is stated in words with no Derivation parts; a formal model is built self-sufficient.
+  const LEVELS = {
+    concept: { label: 'L1 concept', note: 'level 1, a concept model: the question, mechanism, and result in words; no Derivation parts' },
+    formal: { label: 'L2 formal', note: 'level 2, a formal model: self-sufficient, built in order with Derivation parts for skipped steps' },
+  };
   /** How a facet reads: a common facet by its English name, any other label as written. */
   const facetLabel = (facet) => FACETS[facet]?.label || facet || '';
   /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. A Model part's
-   *  stamp names its facet; a core part's stamp carries a dot. */
-  const typeStamp = (type, title, facet, emphasis) => {
+   *  stamp names its facet; a core part's stamp carries a dot; a Model Card's names its level. */
+  const typeStamp = (type, title, facet, emphasis, level) => {
     if (!CARD_TYPES[type] || type === 'idea') return null;
     const part = type === 'model' && facet;
+    const lvl = type === 'model' && !part && LEVELS[level];
     const note = part && [FACETS[facet]?.note, EMPHASIS[emphasis] && `${EMPHASIS[emphasis].label}: ${EMPHASIS[emphasis].note}`].filter(Boolean).join(' · ');
     return h('span', {
-      class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : ''),
-      title: title || (part ? `Model part · ${facetLabel(facet)}${note ? ' — ' + note : ''}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}`),
-      text: part ? `${type} · ${facet}` : type,
+      class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : '') + (lvl ? ' level-' + level : ''),
+      title: title || (part ? `Model part · ${facetLabel(facet)}${note ? ' — ' + note : ''}` : `${CARD_TYPES[type].label} Card — ${CARD_TYPES[type].note}${lvl ? ` · ${lvl.note}` : ''}`),
+      text: part ? `${type} · ${facet}` : lvl ? `${type} · ${lvl.label}` : type,
     });
   };
 
@@ -258,6 +265,7 @@
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
     ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
+    ['lv <concept|formal|none>', 'set the elaboration level of the current Model Card: concept (1) or formal (2)', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -321,6 +329,13 @@
         if (rest.length < 1) throw new Error('usage: ty <idea|event|model> [<facet>]');
         // A facet is the rest of the line, so it may hold spaces.
         return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
+      case 'lv': {
+        needCard();
+        if (rest.length !== 1) throw new Error('usage: lv <concept|formal|none>');
+        const none = rest[0] === 'none';
+        const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
+        return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} model`);
+      }
       case 'stats': {
         const s = state.overview.stats;
         return toast(`total: ${s.total}\ntopics: ${s.topics}\nregular: ${s.regular}\nliterature: ${s.literature}`);
@@ -454,7 +469,7 @@
         ...(results.length ? results.map((hit) => h('button', {
           class: 'hit', onclick: () => { go(hit.address); openRail(false); },
         },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null,
+          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null,
             h('span', {
               class: 'pull' + (spreads.has(hit.address) ? ' on' : ''), role: 'button',
               title: spreads.has(hit.address) ? 'On the Table — click to put it back' : 'Lay it on the Table',
@@ -638,7 +653,7 @@
 
     function content(el, card, n, outline) {
       const external = card.links.filter((target) => !outline.card.has(target)).length;
-      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.inbound, external, card.excerpt].join('\u0001');
+      const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt].join('\u0001');
       el.className = ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type : '',
@@ -660,14 +675,14 @@
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet, card.emphasis), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet, card.emphasis, card.level), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
           h('span', { class: 'badges' },
-            typeStamp(card.type, null, card.facet, card.emphasis),
+            typeStamp(card.type, null, card.facet, card.emphasis, card.level),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
             fold,
@@ -1153,7 +1168,7 @@
 
     function content(el, address) {
       const node = state.byAddress.get(address);
-      const signature = [node.title, node.type, node.facet, node.emphasis, node.excerpt, node.links.length, node.inbound, node.workspace].join('\u0001');
+      const signature = [node.title, node.type, node.facet, node.emphasis, node.level, node.excerpt, node.links.length, node.inbound, node.workspace].join('\u0001');
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
       el.title = node.title + (node.excerpt ? '\n\n' + node.excerpt : '');
@@ -1161,7 +1176,7 @@
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: address }),
           h('span', { class: 'badges' },
-            typeStamp(node.type, null, node.facet, node.emphasis),
+            typeStamp(node.type, null, node.facet, node.emphasis, node.level),
             node.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null)),
         h('span', { class: 't' + (node.title ? '' : ' untitled') }, node.title ? titleNodes(node.title) : 'untitled'),
         node.excerpt ? h('span', { class: 'x' }, titleNodes(node.excerpt)) : null,
@@ -1956,7 +1971,7 @@
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
-          typeStamp(card.type, null, card.facet, card.emphasis),
+          typeStamp(card.type, null, card.facet, card.emphasis, card.level),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
@@ -2268,7 +2283,7 @@
         h('span', { class: 'way', text: glyph[n.way] }),
         h('span', { class: 'mb-kind', text: n.way === 'out' ? KINDS[kind].fwd : KINDS[kind].back }),
         h('span', { class: 'note' }, titleNodes(n.card.title || n.card.address),
-          n.card.type !== 'idea' ? typeStamp(n.card.type, null, n.card.facet, null) : null),
+          n.card.type !== 'idea' ? typeStamp(n.card.type, null, n.card.facet, null, n.card.level) : null),
       );
     };
     const shown = beyond.slice(0, 6);
@@ -2595,7 +2610,7 @@
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
       // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
@@ -2603,11 +2618,12 @@
       let chosenType = cardType;
       let chosenFacet = facet || '';
       let chosenEmphasis = emphasis || '';
+      let chosenLevel = level || '';
       const facetInput = cardType ? h('input', {
         class: 'facet-input', 'aria-label': 'Model facet', list: 'zt-facets', maxlength: 32, spellcheck: 'false',
         placeholder: 'whole model', value: chosenFacet,
         title: 'Empty: the Model Card of a whole model. A label (设定, 均衡, a worked example…): a Model part, which belongs to the Model Card it is filed under and to every Model Card that links it',
-        oninput: (event) => { chosenFacet = event.target.value.trim(); dirty = true; emphasisPick.hidden = !chosenFacet; update(); },
+        oninput: (event) => { chosenFacet = event.target.value.trim(); dirty = true; emphasisPick.hidden = !chosenFacet; levelPick.hidden = !!chosenFacet; update(); },
       }) : null;
       const emphasisPick = cardType ? h('select', {
         class: 'emphasis-pick', 'aria-label': 'Emphasis', hidden: !chosenFacet,
@@ -2618,8 +2634,18 @@
         Object.entries(EMPHASIS).map(([id, info]) => h('option', { value: id, text: id, title: info.note })),
       ) : null;
       if (emphasisPick) emphasisPick.value = chosenEmphasis;
+      // A whole model (no facet) carries its elaboration level instead of an emphasis.
+      const levelPick = cardType ? h('select', {
+        class: 'emphasis-pick level-pick', 'aria-label': 'Elaboration level', hidden: !!chosenFacet,
+        title: 'How fully the model is elaborated: L1 concept (in words, no Derivation parts) or L2 formal (self-sufficient, with Derivation parts)',
+        onchange: (event) => { chosenLevel = event.target.value; dirty = true; update(); },
+      },
+        h('option', { value: '', text: 'no level' }),
+        Object.entries(LEVELS).map(([id, info]) => h('option', { value: id, text: info.label, title: info.note })),
+      ) : null;
+      if (levelPick) levelPick.value = chosenLevel;
       const facetPick = cardType ? h('span', { class: 'facet-pick', hidden: cardType !== 'model' },
-        h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick,
+        h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick, levelPick,
         h('datalist', { id: 'zt-facets' }, Object.entries(FACETS).map(([id, info]) => h('option', { value: id, label: info.note }))),
       ) : null;
       const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },
@@ -2673,7 +2699,7 @@
           const title = literature ? (bibTitle ?? literature.title ?? '') : rendered.title;
           preview.innerHTML = rendered.html;
           preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled') }, title ? titleNodes(title) : 'Untitled — start with “# Title”'));
-          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null, chosenFacet ? chosenEmphasis : null);
+          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null, chosenFacet ? chosenEmphasis : null, chosenFacet ? null : chosenLevel);
           if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
           wireMarkdown(preview);
           if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
@@ -2711,7 +2737,7 @@
       const doSave = async () => {
         saveBtn.disabled = true;
         try {
-          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '');
+          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           setMsg(error.message, 'err');
@@ -2825,7 +2851,7 @@
       initial,
       // Every successor is a Regular Card, so it may be an Event or Model Card.
       cardType: kind === 'topic' ? null : 'idea',
-      save: (text, _bibtex, type, facet, emphasis) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined }).then((result) => result.address),
+      save: (text, _bibtex, type, facet, emphasis, level) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined, level: level || undefined }).then((result) => result.address),
     });
     if (!address) return;
     await afterChange(address, `created ${address}`);
@@ -2863,9 +2889,11 @@
       cardType: card.context === 'regular' ? card.type || 'idea' : null,
       facet: card.facet,
       emphasis: card.emphasis,
-      save: (text, _bibtex, type, facet, emphasis) => api('edit', {
+      level: card.level,
+      save: (text, _bibtex, type, facet, emphasis, level) => api('edit', {
         at: card.address, text, base: card.text, type: type || undefined,
         facet: type === 'model' ? facet || '' : undefined, emphasis: type === 'model' ? emphasis || '' : undefined,
+        level: type === 'model' && !facet ? level || '' : undefined,
       }).then((result) => result.address),
     });
     if (address) await afterChange(address, `saved ${address}`);

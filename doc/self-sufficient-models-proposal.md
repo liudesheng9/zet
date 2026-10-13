@@ -1,6 +1,6 @@
 # Self-Sufficient Models: Proposal
 
-Status: implemented in zt 0.12.0 and the `zt-book-digest` workflow (2026-10-12). The tree operations, the build report, the divider tabs in build order, the derivation slips, the Card language check (`scripts/book-digest/card-style-check.ps1`), and the Sonnet-manager Models stage follow this document. Revision 2 (2026-10-12) records the user's decisions on shared parts, divider tabs, and insertion, and adds Sonnet managers, clean-up, and the Card language rules.
+Status: implemented in zt 0.12.0 and the `zt-book-digest` workflow (2026-10-12). Since zt 0.13.0 (`model-elaboration-levels-design.md`) this build applies to **formal models** (Elaboration level 2) only; a concept model (level 1) takes no ledger, no Derivation parts, and no DeepSeek fill. The tree operations, the build report, the divider tabs in build order, the derivation slips, the Card language check (`scripts/book-digest/card-style-check.ps1`), and the Sonnet-manager Models stage follow this document. Revision 2 (2026-10-12) records the user's decisions on shared parts, divider tabs, and insertion, and adds Sonnet managers, clean-up, and the Card language rules.
 
 This proposal changes how agents build a model from Cards. It adds five things:
 

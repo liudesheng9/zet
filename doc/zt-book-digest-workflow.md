@@ -28,14 +28,37 @@ flowchart LR
 | --- | --- | --- | --- |
 | **Prepare** | Haiku runs a script | Extracts the Chinese text, cuts it into section groups (about 20,000 characters each), and creates the agent Literature Card with one anchor Card per group. | `<out>\groups`, `<out>\sections`, the Literature tree `[[Key]]` → `[[Key/1]]` … |
 | **Digest** | one Haiku manager per block of up to 5 groups; one DeepSeek run per group | Each DeepSeek run gets only its own sections, searches the rest of the book on disk, and writes 6–12 Cards: Idea Cards placed in Topic trees or under its anchor, Event Cards, and **one whole Model Card per model**. Blocks run in parallel. | Cards, and `owned-gNN.txt` (which Cards each group wrote) |
-| **Models** | Haiku lists, then one **Sonnet manager** per batch of `perSonnet` models, each driving `dshPerSonnet` DeepSeek runs at a time | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. Each manager plans each model, writes its skeleton in build order, has DeepSeek fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files (below). | Self-sufficient models; a report per model |
+| **Models** | Haiku lists, then one **Sonnet manager** per batch: `perConcept` concept models, or `perSonnet` formal models with `dshPerSonnet` DeepSeek runs at a time | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. Each manager confirms each model's **elaboration level**. A concept model (level 1) gets its Model Card checked and at most four parts in words. A formal model (level 2) gets the full build: the manager plans it, writes its skeleton in build order, has DeepSeek fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files (below). | Concept models and self-sufficient formal models; a report per model |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
 | **Organize** | Opus | Merges duplicate Topics, writes hubs, the book's structure Card and index, checks every model with `get_model`, and fixes Links. | A finished, navigable digest |
 
-## A self-sufficient model (zt 0.12.0)
+## Elaboration levels (zt 0.13.0)
 
-A reader must be able to build each model from nothing, reading only its own Cards in build order
+Not every model needs the full build (`doc/model-elaboration-levels-design.md`). Each Model Card
+carries an **elaboration level**:
+
+| Level | When | What the Models stage builds |
+| --- | --- | --- |
+| 1 `concept` | The book states the model in words or a diagram: a mechanism, a typology, a framework, a verbal argument, or a formal model it only cites. | The Model Card (问题 · 概要 · 结构 · 关联 · 来源) and at most four parts in words (`设定`, `机制`, `结论`, `例子`). No derivation ledger, no Derivation parts, no DeepSeek fill runs: the Sonnet manager writes the Cards itself. |
+| 2 `formal` | The book states the model in mathematics: symbols, equations, a derivation, a proposition with a proof. | A self-sufficient model, by the five steps below. |
+
+- **Digest.** DeepSeek sets `level` on each Model Card it writes (`formal` when unsure).
+- **Listing.** `list-models.ps1` reports each model's `level`. Concept models go in batches of
+  `perConcept` (default 8) per Sonnet manager; formal and undecided models in batches of `perSonnet`.
+- **Step 0.** The manager reads the source and confirms or corrects the level (`edit_card`
+  `level`). A concept model then follows the concept path of `model-elaboration.md`; a formal model
+  follows steps 1 to 5.
+- **Check.** A concept model must show no `closure`, `forward`, `unanchored`, or `beyond_level`
+  fault in `get_model` `build`; `beyond_level` lists a Derivation part in a concept model.
+- **Forcing a level.** `level: "concept"` or `level: "formal"` builds every model of the run to that
+  level, and a model whose level differs is never skipped.
+- **Organize.** Opus lists each model's level in the book's structure Card and reports a level that
+  looks wrong; it does not change levels.
+
+## A self-sufficient formal model (zt 0.12.0)
+
+A reader must be able to build each formal model from nothing, reading only its own Cards in build order
 (`doc/self-sufficient-models-proposal.md`). The Models stage reaches that in five steps, with
 `scripts/book-digest/model-elaboration.md` as the manager's instructions:
 
@@ -128,7 +151,9 @@ Arguments (`args`):
 | `groups` | modes `link` and `models`: the digest's group count |
 | `models` | `false` skips the Models stage in a full run |
 | `rebuild` | `true` rebuilds models that already have parts (a rerun skips them by default), keeping the facets, emphasis, and charts that still fit; `redoModels` is its old name |
-| `perSonnet` | models per Sonnet manager (default 4); neighbouring models of the book share one manager |
+| `level` | `concept` or `formal`: build every model of the run to this elaboration level; default each model's own level |
+| `perSonnet` | formal (or undecided) models per Sonnet manager (default 4); neighbouring models of the book share one manager |
+| `perConcept` | concept models per Sonnet manager (default 8); they need no DeepSeek runs |
 | `dshPerSonnet` | DeepSeek runs one manager keeps going at the same time (default 8; may be higher) |
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |

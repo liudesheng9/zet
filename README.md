@@ -245,12 +245,29 @@ are changed, moved, or no longer linked. See `doc/open-models-design.md`.
 - **MCP**: `create_successor` and `edit_card` take `facet` and `emphasis` (empty clears either);
   `get_card` reports `facet`, `emphasis`, and `model`; `get_model` returns the whole model with
   every body, the models a Card belongs to, its kinded relations, loose parts, and neighbours.
-- **Dump**: `archive.json` lists every Model part's facet under `facets` and every core or aside
-  part under `emphasis`.
+- **Dump**: `archive.json` lists every Model part's facet under `facets`, every core or aside
+  part under `emphasis`, and every Model Card's elaboration level under `levels`.
+
+### Elaboration levels
+
+Each Model Card carries its model's **elaboration level** (zt 0.13.0,
+`doc/model-elaboration-levels-design.md`):
+
+- **Level 1, `concept`**: a **concept model**, stated in words or a diagram (a mechanism, a
+  typology, a framework). Its Model Card and at most a few parts state the question, the mechanism,
+  and the result; it has no Derivation parts, and `get_model` lists any in `build.beyond_level`.
+- **Level 2, `formal`**: a **formal model**, stated in mathematics. It is built as a
+  self-sufficient model (below), with a Derivation part for each step the source skips.
+- A Model Card with no level is not classified yet; its build report applies the formal rules.
+- **Session**: the Card view shows `[model · concept]`; `lv <concept|formal|none>` sets the level.
+  **GUI**: the stamp reads `model · L1 concept` or `model · L2 formal`; the writing desk offers
+  a level picker for a whole model, and the command bar takes `lv`. **MCP**: `create_successor`
+  and `edit_card` take `level` (`concept`, `formal`, `1`, `2`, or empty to clear);
+  `get_card`, `get_tree`, `search_cards`, and `get_model` report it.
 
 ### Self-sufficient models
 
-A reader should be able to rebuild a model from nothing, reading only its own Cards in **build
+A reader should be able to rebuild a formal model from nothing, reading only its own Cards in **build
 order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
 
 - **Build order**: the Model Card's first Side successor is the setting (agents, timing,
@@ -289,9 +306,10 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 ### Digesting a book
 
 The `zt-book-digest` Claude Code workflow turns a book from the Scholar Archive into agent Cards:
-DeepSeek Harness runs digest it section by section, Sonnet managers make every model they write
-self-sufficient (a plan, a skeleton in build order, eight or more DeepSeek runs that fill the
-Cards, and a check of every step) as soon as their block finishes, a link pass ties the
+DeepSeek Harness runs digest it section by section, Sonnet managers build every model they write
+to its elaboration level as soon as their block finishes (a concept model: the Model Card and a
+few parts in words; a formal model: self-sufficient, with a plan, a skeleton in build order, eight
+or more DeepSeek runs that fill the Cards, and a check of every step), a link pass ties the
 parts of the book together, and Opus organizes the result. See
 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
 
@@ -312,8 +330,8 @@ Reverse links to the human Card.
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
-| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`) or a Model part (`facet`, `emphasis`) |
-| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, or BibTeX |
+| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`, a Model Card's `level`) or a Model part (`facet`, `emphasis`) |
+| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, level, or BibTeX |
 | `delete_card`, `move_card` | delete or move agent Cards (`move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
 | `insert_card` | insert a new agent Card in another Card's place; that Card and its subtree move down |
 
@@ -396,8 +414,9 @@ system:
   YAML front matter holding its BibTeX, and `<citation-key>.bib` holds the exact BibTeX bytes.
 - `archive.json`: the Workspace of every Card address, the next Topic number (so deleted
   Topic numbers are not reused), the type of every Event and Model Card, the facet of every
-  Model part, and the emphasis of every core or aside part, for example
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"}}`.
+  Model part, the emphasis of every core or aside part, and the elaboration level of every Model
+  Card that has one, for example
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}`.
 
 `zt dp` offers each format (`zip`, `tar.gz`, `tar.zst`, `7z`) that a tool on the host can
 really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first whose probe

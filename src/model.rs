@@ -135,6 +135,82 @@ impl std::fmt::Display for Emphasis {
     }
 }
 
+/// How fully a model is elaborated. Only a Model Card (a model's entry point,
+/// without a facet) has a level; a Model Card without one has not been
+/// classified, and its build report applies the formal rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) enum Level {
+    /// Level 1: a concept model. The Model Card and a few parts state the
+    /// question, the mechanism, and the result in words; the model has no
+    /// Derivation parts.
+    Concept,
+    /// Level 2: a formal model. A self-sufficient model built by the full
+    /// model build: a derivation ledger, the main line in build order, and
+    /// Derivation parts for every step the book skips.
+    Formal,
+}
+
+impl Level {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Level::Concept => "concept",
+            Level::Formal => "formal",
+        }
+    }
+
+    /// The level's number: 1 for a concept model, 2 for a formal model.
+    pub(crate) fn number(self) -> u8 {
+        match self {
+            Level::Concept => 1,
+            Level::Formal => 2,
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "concept" | "1" | "l1" | "概念" | "概念模型" => Ok(Level::Concept),
+            "formal" | "2" | "l2" | "形式" | "形式模型" | "形式化" => Ok(Level::Formal),
+            other => bail!(
+                "unknown elaboration level `{other}`; expected concept (1), formal (2), or empty for none"
+            ),
+        }
+    }
+
+    pub(crate) fn from_stored(value: Option<&str>) -> Option<Self> {
+        value.and_then(|value| Level::parse(value).ok())
+    }
+}
+
+impl std::fmt::Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+/// Parse an optional level argument: empty or `none` clears it.
+pub(crate) fn parse_optional_level(value: &str) -> Result<Option<Level>> {
+    if clears(value) {
+        Ok(None)
+    } else {
+        Level::parse(value).map(Some)
+    }
+}
+
+pub(crate) const LEVEL_NEEDS_MODEL_CARD: &str =
+    "only a Model Card (a whole model, without a facet) has an elaboration level";
+
+/// Store a Model Card's elaboration level; `None` clears it.
+pub(crate) fn set_level(conn: &Connection, card: &Card, level: Option<Level>) -> Result<()> {
+    if level.is_some() && (card.card_type != CardType::Model || card.facet.is_some()) {
+        bail!(LEVEL_NEEDS_MODEL_CARD);
+    }
+    conn.execute(
+        "UPDATE cards SET model_level = ?1 WHERE row_id = ?2",
+        params![level.map(Level::id), card.row_id],
+    )?;
+    Ok(())
+}
+
 /// What makes a new Card a Model part: its facet and, if any, its emphasis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Part {
@@ -272,7 +348,8 @@ fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Store a Card's type, facet, and emphasis.
+/// Store a Card's type, facet, and emphasis. A Card that stops being a Model
+/// Card (it changes type or becomes a part) loses its elaboration level.
 pub(crate) fn set(
     conn: &Connection,
     card: &Card,
@@ -283,7 +360,9 @@ pub(crate) fn set(
     crate::card_type::ensure_allowed(card, card_type)?;
     ensure_allowed(conn, Some(card), card_type, facet, emphasis)?;
     conn.execute(
-        "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3 WHERE row_id = ?4",
+        "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3,
+             model_level = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN model_level END
+         WHERE row_id = ?4",
         params![
             card_type.id(),
             facet.map(Facet::id),
@@ -708,6 +787,7 @@ pub(crate) fn structure(
     let Some(head) = models.first().cloned() else {
         return Some(json!({
             "head": null,
+            "level": null,
             "models": [],
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
@@ -855,9 +935,11 @@ pub(crate) fn structure(
         .flat_map(|member| inbound.get(member).into_iter().flatten())
         .filter(|source| !members.contains(*source))
         .collect::<BTreeSet<_>>();
-    let build = build_report(&head, &parts, by_address, parsed, inbound, &name);
+    let level = by_address[&head].level;
+    let build = build_report(&head, level, &parts, by_address, parsed, inbound, &name);
     Some(json!({
         "head": reference(&head),
+        "level": level.map(Level::id),
         "models": models.iter().map(|at| reference(at)).collect::<Vec<_>>(),
         "facet": card.facet.as_ref().map(Facet::id),
         "emphasis": card.emphasis.map(Emphasis::id),
@@ -928,8 +1010,12 @@ fn closure_fix(
 ///   `unanchored` (a main-line part with no rests-on path back to the
 ///   setting). `tolerated` lists the premises of shared parts that stay in
 ///   their home model; they are not faults.
+/// - **Level**: a concept model (level 1) needs no Derivation parts; each one
+///   in its range is listed in `beyond_level`. A formal model (level 2) and a
+///   model with no level take the rules above and nothing more.
 fn build_report(
     head: &str,
+    level: Option<Level>,
     parts: &[&Card],
     by_address: &BTreeMap<String, Card>,
     parsed: &BTreeMap<String, crate::ParsedCard>,
@@ -1194,7 +1280,26 @@ fn build_report(
             })
         })
         .collect::<Vec<_>>();
+    let beyond_level = if level == Some(Level::Concept) {
+        in_range
+            .iter()
+            .filter(|at| by_address[*at].facet.as_ref().is_some_and(is_derivation))
+            .map(|at| {
+                json!({
+                    "address": at,
+                    "title": title(at),
+                    "fix": format!(
+                        "`{at}` is a Derivation part, but `{head}` is a concept model (level 1): fold the step into the part that uses it, or raise the model to formal (level 2)"
+                    ),
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     json!({
+        "level": level.map(Level::id),
+        "level_number": level.map(Level::number),
         "setting": setting,
         "order": order_values,
         "closure": closure,
@@ -1202,6 +1307,7 @@ fn build_report(
         "tolerated": tolerated,
         "unanchored": unanchored,
         "self_sufficient": closure.is_empty() && forward.is_empty() && unanchored.is_empty(),
+        "beyond_level": beyond_level,
     })
 }
 

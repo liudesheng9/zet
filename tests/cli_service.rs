@@ -440,6 +440,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "card_type",
             "model_facet",
             "model_emphasis",
+            "model_level",
         ]
     );
     assert!(
@@ -2138,7 +2139,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
     assert_eq!(
         body,
-        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{}}"#
+        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{}}"#
     );
 }
 
@@ -3250,7 +3251,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | lv <concept|formal|none> | stats | status | lsbk | help | q\n"
     ));
     assert!(stdout.contains("  mv [alone] <new-location>        move the current card"));
     assert!(stdout.contains("  ins                              insert a new card"));

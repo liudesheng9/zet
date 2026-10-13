@@ -405,7 +405,10 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                         Some(emphasis) => format!(" [{other} · {facet} · {emphasis}]"),
                         None => format!(" [{other} · {facet}]"),
                     },
-                    (other, None) => format!(" [{other}]"),
+                    (other, None) => match card.level {
+                        Some(level) => format!(" [{other} · {level}]"),
+                        None => format!(" [{other}]"),
+                    },
                 };
                 lines.push(ViewLine::Plain(format!(
                     "location: {}{card_type}",

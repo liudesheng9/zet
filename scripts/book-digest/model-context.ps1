@@ -59,6 +59,9 @@ $md = [Text.StringBuilder]::new()
 $line = { param($text) [void]$md.AppendLine($text) }
 & $line "# 模型上下文：[[$Model]]"
 & $line ''
+$levelName = switch ($structure.level) { 'concept' { '第 1 层，概念模型（concept）' } 'formal' { '第 2 层，形式模型（formal）' } default { '未定（按模型说明第 0 步决定）' } }
+& $line "细化层级：$levelName"
+& $line ''
 & $line "## 模型卡（DeepSeek 写的原稿，需要对照原文核实）"
 & $line ''
 & $line "**$($card.title)**"
@@ -156,7 +159,7 @@ $others = @($found.cards | Where-Object { $_.type -eq 'model' -and -not $_.facet
 if ($others.Count) {
     & $line "## 本书的其他模型（可链接；不要重复它们的内容）"
     & $line ''
-    foreach ($other in $others) { & $line "- [[$($other.address)]] $($other.title)" }
+    foreach ($other in $others) { & $line "- [[$($other.address)]] $($other.title)$(if ($other.level) { " ($($other.level))" })" }
     & $line ''
 }
 

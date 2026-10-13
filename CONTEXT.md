@@ -184,6 +184,18 @@ _Avoid_: Proof card, helper card, bridge card
 A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, and no main-line part rests on a later part. ZT reports the faults (`closure`, `forward`, `unanchored`) in the build report; it does not enforce them.
 _Avoid_: Closed model, complete model
 
+**Elaboration level**:
+How fully a model is built out, stored on its Model Card (never on a part): level 1, `concept`, or level 2, `formal`. A Model Card without a level has not been classified, and its build report applies the formal rules. The book digest decides the level from how the source states the model, and builds each model only as far as its level asks.
+_Avoid_: Depth, detail level, maturity, tier
+
+**Concept model**:
+A model of Elaboration level 1. The source states it in words or a diagram: a mechanism, a typology, a framework, or a verbal argument, or a formal model the source only cites. Its Model Card and at most a few parts state the question, the mechanism, and the result in words; it has no derivation ledger and no Derivation parts, and the build report lists any Derivation part in it (`beyond_level`).
+_Avoid_: Informal model, sketch, light model
+
+**Formal model**:
+A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part for each step the source skips.
+_Avoid_: Math model, full model, rigorous model
+
 **Tolerated premise**:
 A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault.
 _Avoid_: Borrowed premise, leak

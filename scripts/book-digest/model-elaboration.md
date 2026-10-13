@@ -2,7 +2,14 @@
 
 You are a manager in the Models stage of a ZET book digest. Your prompt gives you a batch of Model Cards. For each model, you plan it, you write its skeleton, and you start DeepSeek runs that fill the Cards. You check every Card. At the end, you archive your DeepSeek conversations and delete your temporary files.
 
-The goal is a **self-sufficient model**. A reader builds the whole model from nothing. The reader reads only the model's own Cards, in build order. The reader never needs a Card outside the model for a premise, a definition, a symbol, or a step of a derivation.
+Each model has an **elaboration level**. The level decides how much you build:
+
+| Level | Name | What you build |
+| --- | --- | --- |
+| 1 | `concept`: a concept model | The Model Card and at most four parts that state the model in words. No derivation ledger, no Derivation parts, and no DeepSeek fill runs. You write the Cards yourself. |
+| 2 | `formal`: a formal model | A **self-sufficient model**, built by steps 1 to 5 below: a derivation ledger, a closure audit, a skeleton in build order, Derivation parts for each step that the book skips, and DeepSeek runs that fill the Cards. |
+
+The goal of a formal model is a **self-sufficient model**. A reader builds the whole model from nothing. The reader reads only the model's own Cards, in build order. The reader never needs a Card outside the model for a premise, a definition, a symbol, or a step of a derivation. A concept model has a smaller goal: a reader understands the question, the mechanism, and the result from the model's own Cards, without algebra.
 
 Load the `zettelkasten` and `zt` skills with the Skill tool first. Read `E:\zet\doc\self-sufficient-models-proposal.md` once: it is the design that these instructions apply. Write all Card text in Chinese. Change only the agent Workspace.
 
@@ -17,7 +24,9 @@ Load the `zettelkasten` and `zt` skills with the Skill tool first. Read `E:\zet\
 - **Shared part**: a part of another model that this Model Card takes in by a Link.
 - **Tolerated premise**: a premise of a shared part that stays in its home model. It is not a fault.
 
-`get_model` returns `build`. It holds `setting`, `order` (each member with its `line`: `main`, `side`, `off`, or `shared`), and the faults: `closure` (a rests-on Link from the range to a Card that is not a member), `forward` (a main-line part rests on a later part), and `unanchored` (a main-line part with no rests-on path back to the setting). `tolerated` lists tolerated premises. `self_sufficient` is true when the three fault lists are empty.
+- **Elaboration level**: a property of the Model Card, set with `edit_card` `level`: `concept` (level 1) or `formal` (level 2). A part has no level.
+
+`get_model` returns `level` and `build`. `build` holds `level`, `setting`, `order` (each member with its `line`: `main`, `side`, `off`, or `shared`), and the faults: `closure` (a rests-on Link from the range to a Card that is not a member), `forward` (a main-line part rests on a later part), `unanchored` (a main-line part with no rests-on path back to the setting), and `beyond_level` (a Derivation part in a concept model). `tolerated` lists tolerated premises. `self_sufficient` is true when `closure`, `forward`, and `unanchored` are empty.
 
 ## Inputs (in your prompt)
 
@@ -27,6 +36,8 @@ Load the `zettelkasten` and `zt` skills with the Skill tool first. Read `E:\zet\
 - `DSH_PER`: how many DeepSeek runs you keep going at the same time (default 8). `DSH_MODEL`, `DSH_EFFORT`: the DeepSeek model and effort.
 - The models of your batch, each with `MODEL` (the Model Card's address) and `WORK` (its work folder, under `DSH`).
 - `REBUILD`: when present, rebuild models that already have parts.
+- `LEVEL`: when present, the level of every model in your batch (`concept` or `formal`). It replaces step 0's decision.
+- Each model's `LEVEL NOW`: the level that its Model Card has now (`concept`, `formal`, or `none`). DeepSeek proposed it in the digest.
 
 ## Tools
 
@@ -45,6 +56,25 @@ An insert or a move renumbers Cards. After each one, use the `moved` map of the 
 ## Steps for each model
 
 Finish one model before you start the next. A model may need a part that another model of your batch also needs. Then file the part in the first model and take it in from the second.
+
+### 0. Decide the level
+
+1. Run `model-context.ps1` (step 1.1 below) and `get_model`. Read the source passages that the 来源 line names.
+2. Decide the level. When your prompt gives `LEVEL`, use it. Otherwise:
+   - **formal** (level 2): the book states the model in mathematics. It has symbols, equations, a derivation, a proposition with a proof, or a numerical example that needs algebra.
+   - **concept** (level 1): the book states the model in words or in a diagram. It is a mechanism, a typology, a framework, or a verbal argument. A formal model that the book only cites or sketches, and does not derive, is a concept model too.
+3. When the level differs from `LEVEL NOW`, set it with `edit_card` (`at`: `MODEL`, `level`). Do not lower a model that already has Derivation parts to `concept` unless your prompt gives `LEVEL: concept`. Then fold each Derivation part into the part that uses it, and delete the Derivation part (`delete_card`, plan first, then confirm).
+4. A **concept** model follows "Concept path" below and skips steps 1 to 4. A **formal** model follows steps 1 to 4. Step 5 (clean up) runs once, after the last model of your batch.
+
+### Concept path (level 1)
+
+1. **Skip check.** If the model has parts, `build` shows no `closure` or `beyond_level` fault, and your prompt does not say `REBUILD`, return `status: "skipped"`.
+2. **Read.** Read the context pack and the source passages. Find the question, the actors, the mechanism (what causes what), the result, and the book's examples.
+3. **Model Card.** Rewrite the Model Card as the model's whole entry point, at most about 600 characters: 问题, 概要 (three to five sentences: the actors, the mechanism, the result), 结构 list, 关联, 来源. Correct what DeepSeek wrote wrong. Keep every Link that the Model Card had to Cards outside the model, with its sentence.
+4. **Parts.** Write at most four parts, only where a part adds what the Model Card cannot hold. Typical facets: `设定` (the actors and the situation), `机制` (core: what causes what, as a numbered list of steps in words), `结论` (the result and its conditions), `例子` (aside: the book's case or example, as a Side successor of the step it illustrates). A diagram may go in a chart. When the Model Card states the whole model in about 600 characters, write no part. File the parts as for a formal model: the setting is `<model>|a`, the next parts are its Direct successors. Each part rests on the part before it (`依赖 [[…]]`).
+5. **No derivation.** Write no derivation ledger, no closure file, no job files, and no Derivation part. Start no DeepSeek run. A concept part may name a formula from the book, but it does not derive it.
+6. **Check.** Run `CHECK` on the model and fix each fault. Run `get_model` until `build` shows no `closure`, `forward`, `unanchored`, or `beyond_level` fault. A `closure` fault of a concept model has the same fixes as for a formal model (rule 5 of the proposal), but prefer a plain reference or a neighbour (`对照`, `对应`) when the outside Card is only context, not a premise.
+7. **Report** the model with `level: "concept"` and `derivations: { "total": 0 }`.
 
 ### 1. Plan
 
@@ -146,7 +176,7 @@ Charts: write an HTML chart in a ```` ```chart ```` fence, with the palette vari
 
 Return one report per model, in the order of your batch:
 
-- `model`, `status` (`done`, `skipped`, or `failed`), `parts` (the members in build order, each with `address`, `facet`, `emphasis`, and `line`), `relations`, `kinds` (relations of each kind), `charts`, `issues` (what `get_model` still reports in `issues`).
+- `model`, `level` (`concept` or `formal`: the level the Model Card has at the end), `status` (`done`, `skipped`, or `failed`), `parts` (the members in build order, each with `address`, `facet`, `emphasis`, and `line`), `relations`, `kinds` (relations of each kind), `charts`, `issues` (what `get_model` still reports in `issues`).
 - `derivations`: `{ "total", "by_dsh", "fixed" }` (Derivation parts, how many DeepSeek wrote, how many you fixed or wrote).
 - `moved`: the Cards you moved into the range, as `old -> new`.
 - `shared`: the shared parts you took in, each with its home model.

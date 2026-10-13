@@ -212,11 +212,25 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
 - **MCP**：`create_successor` 和 `edit_card` 接受 `facet` 和 `emphasis`（空字符串清除）；`get_card` 返回 `facet`、
   `emphasis` 和 `model`；`get_model` 返回整个模型及每张卡的正文、该卡所属的各个模型、带类型的关系、松散的 part
   和模型邻居。
-- **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet，在 `emphasis` 中列出每个 core 或 aside part。
+- **导出**：`archive.json` 在 `facets` 中列出每个 Model part 的 facet，在 `emphasis` 中列出每个 core 或 aside part，
+  在 `levels` 中列出每张 Model Card 的细化层级。
+
+### 细化层级
+
+每张 Model Card 带有其模型的**细化层级**（zt 0.13.0，见 `doc/model-elaboration-levels-design.md`）：
+
+- **第 1 层 `concept`**：**概念模型**，原书用文字或示意图给出（一个机制、一个分类、一个框架）。Model Card 和至多几张
+  part 用文字写明问题、机制和结论；它没有推导 part，`get_model` 把其中的推导 part 列在 `build.beyond_level` 中。
+- **第 2 层 `formal`**：**形式模型**，原书用数学给出。它按下文建成自足模型，原书略去的每一步都由一张推导 part 补出。
+- 没有层级的 Model Card 尚未分类，其构建报告按形式模型的规则检查。
+- **Session**：卡片视图显示 `[model · concept]`；`lv <concept|formal|none>` 设置层级。**GUI**：印章显示
+  `model · L1 concept` 或 `model · L2 formal`；写作台为整个模型提供层级选择，命令栏接受 `lv`。**MCP**：
+  `create_successor` 和 `edit_card` 接受 `level`（`concept`、`formal`、`1`、`2`，空字符串清除）；
+  `get_card`、`get_tree`、`search_cards` 和 `get_model` 返回它。
 
 ### 自足的模型
 
-读者只按**构建顺序**读一个模型自己的卡片，就应能从零重建整个模型（zt 0.12.0，见
+读者只按**构建顺序**读一个形式模型自己的卡片，就应能从零重建整个模型（zt 0.12.0，见
 `doc/self-sufficient-models-proposal.md`）：
 
 - **构建顺序**：Model Card 的第一个侧后继是设定（参与者、时序、信息、符号表和 `术语表`）；它的直接后继是**主线**，
@@ -244,7 +258,7 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 ### 消化一本书
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由 Sonnet 经理让其中写出的每个模型自足（先规划，再按构建顺序写骨架，由八个以上 DeepSeek 运行填写卡片，最后逐步核对），随后连接全书各部分，最后由 Opus 整理结构。
+每一批完成后，由 Sonnet 经理把其中写出的每个模型建到它的细化层级（概念模型：Model Card 和几张文字 part；形式模型：自足，先规划，再按构建顺序写骨架，由八个以上 DeepSeek 运行填写卡片，最后逐步核对），随后连接全书各部分，最后由 Opus 整理结构。
 详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
 
 ## MCP 服务器
@@ -263,8 +277,8 @@ Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成
 | `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part、模型外的邻居，以及 `build` 报告（构建顺序与自足性问题） |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
-| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`），或 Model part（`facet`、`emphasis`） |
-| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis 或 BibTeX |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`，Model Card 可带 `level`），或 Model part（`facet`、`emphasis`） |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis、层级或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card（`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
 | `insert_card` | 把新的 agent Card 插到另一张卡的位置上；那张卡及其子树下移 |
 
