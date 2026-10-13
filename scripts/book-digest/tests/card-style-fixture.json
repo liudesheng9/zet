@@ -22,5 +22,12 @@
     "facet": "results",
     "title": "The borrower diverts the second-period return",
     "body": "The borrower keeps $f y_2$. The creditor cannot verify the return; it cannot enforce a payment from it either."
+  },
+  {
+    "address": "Other/1|a|a",
+    "line": "shared",
+    "facet": "设定",
+    "title": "共享的设定：C 可以卖资产",
+    "body": "这张卡属于另一个模型。C 卖资产。它的术语表允许这个词。"
   }
 ]

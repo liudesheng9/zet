@@ -279,7 +279,7 @@ Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
 | `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`，Model Card 可带 `level`），或 Model part（`facet`、`emphasis`） |
 | `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis、层级或 BibTeX |
-| `delete_card`、`move_card` | 删除或移动 agent Card（`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
+| `delete_card`、`move_card` | 删除或移动 agent Card（删除计划列出会断开的 Link，`into` 把它们改指一张保留的卡；`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
 | `insert_card` | 把新的 agent Card 插到另一张卡的位置上；那张卡及其子树下移 |
 
 删除、移动、插入和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址、

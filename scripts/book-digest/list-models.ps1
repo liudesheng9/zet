@@ -24,16 +24,9 @@ param(
     [Parameter(ParameterSetName = 'All')][string]$CitationKey = ''
 )
 $ErrorActionPreference = 'Stop'
-# The helper writes UTF-8; read its output as UTF-8, not the console's code page.
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $groupNumbers = @(($Groups -split '[,\s]+') | Where-Object { $_ } | ForEach-Object { [int]$_ })
-$helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 
-function Invoke-Zt($calls) {
-    $lines = ($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $helper -
-    if ($LASTEXITCODE -ne 0) { throw "zt-mcp failed: $($lines -join ' | ')" }
-    foreach ($line in $lines) { if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String } }
-}
+. (Join-Path $PSScriptRoot 'zt-calls.ps1')
 
 # Which group wrote each address.
 $owner = @{}

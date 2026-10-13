@@ -332,7 +332,7 @@ Reverse links to the human Card.
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
 | `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`, a Model Card's `level`) or a Model part (`facet`, `emphasis`) |
 | `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, level, or BibTeX |
-| `delete_card`, `move_card` | delete or move agent Cards (`move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
+| `delete_card`, `move_card` | delete or move agent Cards (the delete plan lists the Links it would break, and `into` re-points them to a Card that stays; `move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
 | `insert_card` | insert a new agent Card in another Card's place; that Card and its subtree move down |
 
 Deletes, moves, inserts, and Citation key renames first return a plan; call again with the `confirm`

@@ -32,8 +32,11 @@
                           read from the model's setting (get_model build.setting).
     -Addresses <a,b,...>  those Cards; the term table comes from -Setting, or from the setting of
                           the model the first Card belongs to.
-    -Json <file>          offline: a JSON array of {"address","title","body","facet"}; the term
-                          table comes from the entry whose address is -Setting.
+    -Json <file>          offline: a JSON array of {"address","title","body","facet","line"}; the
+                          term table comes from the entry whose address is -Setting.
+
+  A shared part (`line` "shared" in the build order) follows the term table of its home model, so
+  R6 skips it here; its home model checks it.
 
   Output: one line per fault, `<address> R<n> <sentence>`, then `faults: <count>`.
 #>
@@ -53,12 +56,7 @@ $hedges = @(
     '毋庸置疑', '众所周知', '可以说', '精妙', '巧妙', '深刻', '精彩', '极其重要', '非常重要', '十分重要', '优雅'
 )
 
-function Invoke-Zt($calls) {
-    $helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
-    $lines = ($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $helper -
-    if ($LASTEXITCODE -ne 0) { throw "zt-mcp failed: $($lines -join ' | ')" }
-    foreach ($line in $lines) { if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String } }
-}
+. (Join-Path $PSScriptRoot 'zt-calls.ps1')
 
 # --- the Cards to check ----------------------------------------------------------------------------
 $cards = @()
@@ -66,6 +64,7 @@ $script:otherTerms = @()
 switch ($PSCmdlet.ParameterSetName) {
     'Json' {
         $cards = @(Get-Content -LiteralPath $Json -Raw -Encoding utf8 | ConvertFrom-Json -DateKind String)
+        $script:otherTerms = @($cards | Where-Object { $_.line -eq 'shared' } | ForEach-Object { [string]$_.address })
     }
     'Model' {
         $structure = @(Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $Model } }))[0]

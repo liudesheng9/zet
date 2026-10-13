@@ -260,13 +260,18 @@ pub(crate) fn delete(
     root: &Path,
     access: Access,
     at: &str,
+    into: Option<&str>,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, at)?;
     access.ensure_writable(card.workspace)?;
-    let plan = crate::delete_plan(&conn, at)?;
+    let mut plan = crate::delete_plan(&conn, at)?;
+    if let Some(into) = into {
+        plan = plan.into(&conn, into)?;
+        access.ensure_link_rewrites_allowed(&conn, &plan.repoint_mapping())?;
+    }
     if !plan.is_tree_root {
         let compaction = crate::side_compaction_mapping(&conn, at, &plan.delete_set)?;
         access.ensure_link_rewrites_allowed(&conn, &compaction)?;
@@ -1386,7 +1391,7 @@ The model"
         );
 
         // Deleting 0/1|a compacts 0/1|b and 0/1|c one label down.
-        delete(root, owner, "0/1|a", Some("delete")).unwrap();
+        delete(root, owner, "0/1|a", None, Some("delete")).unwrap();
         assert!(text_of(root, "0/1|a").starts_with("# Side model\n"));
         assert_eq!(type_of(root, "0/1|a"), CardType::Model);
         assert_eq!(type_of(root, "0/1|b"), CardType::Event);
@@ -1503,7 +1508,7 @@ The model"
         .unwrap();
 
         // Deleting 0/1|a takes it off the Table and compacts 0/1|b to 0/1|a.
-        delete(root, owner, "0/1|a", Some("delete")).unwrap();
+        delete(root, owner, "0/1|a", None, Some("delete")).unwrap();
         assert_eq!(lying(), ["0/2", "0/1|a", "Lit2020"]);
         move_card(root, owner, "0/1|a", &Target::To("0/3".into()), false, Some("move")).unwrap();
         assert_eq!(lying(), ["0/2", "0/3", "Lit2020"]);

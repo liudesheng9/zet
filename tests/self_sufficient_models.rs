@@ -722,3 +722,93 @@ fn the_gui_inserts_a_card_and_moves_one_between_two_cards() {
     assert_eq!(card["title"], "second");
     gui.api("POST", "/api/quit", json!({}));
 }
+
+#[test]
+fn a_delete_names_the_links_it_breaks_and_into_re_points_them() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({ "title": "Model" }));
+    // 0/1 is a Model Card with three parts; two outside Cards link the parts.
+    mcp.ok(
+        "create_successor",
+        json!({ "at": "0/0", "title": "模型", "type": "model" }),
+    );
+    for title in ["设定", "机制三", "机制四"] {
+        mcp.ok(
+            "create_successor",
+            json!({ "at": "0/1", "kind": "side", "title": title, "facet": title }),
+        );
+    }
+    mcp.ok(
+        "create_successor",
+        json!({ "at": "0/1", "title": "讨论", "body": "依赖机制三 [[0/1|b]]。对照机制四 [[0/1|c]]。" }),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({ "at": "0/2", "title": "另一张", "body": "见 [[0/1|b]]。" }),
+    );
+
+    // Without `into`, the plan says which Links the delete would break.
+    let plan = mcp.ok("delete_card", json!({ "at": "0/1|b" }));
+    assert_eq!(
+        plan["plan"],
+        json!([
+            "delete verification:",
+            "delete 0/1|b",
+            "successors: 0",
+            "links that will break: 2",
+            "0/2 -> 0/1|b",
+            "0/3 -> 0/1|b"
+        ])
+    );
+    // `into` must stay.
+    assert!(
+        mcp.err("delete_card", json!({ "at": "0/1", "into": "0/1|a" }))
+            .contains("is deleted too")
+    );
+
+    // With `into`, the Links follow the content to the part that now holds it. Deleting 0/1|b
+    // compacts 0/1|c to 0/1|b, so a Link re-pointed to 0/1|c follows it there too.
+    let plan = mcp.ok("delete_card", json!({ "at": "0/1|b", "into": "0/1|c" }));
+    assert_eq!(
+        plan["plan"],
+        json!([
+            "delete verification:",
+            "delete 0/1|b",
+            "successors: 0",
+            "links re-pointed to 0/1|c: 2",
+            "0/2: [[0/1|b]] -> [[0/1|c]]",
+            "0/3: [[0/1|b]] -> [[0/1|c]]"
+        ])
+    );
+    let done = mcp.ok(
+        "delete_card",
+        json!({ "at": "0/1|b", "into": "0/1|c", "confirm": "delete" }),
+    );
+    assert_eq!(done["moved"], json!({ "0/1|c": "0/1|b" }));
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": "0/2" }))["body"],
+        "依赖机制三 [[0/1|b]]。对照机制四 [[0/1|b]]。"
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": "0/3" }))["body"],
+        "见 [[0/1|b]]。"
+    );
+    assert_eq!(mcp.ok("get_card", json!({ "at": "0/1|b" }))["title"], "机制四");
+    assert_eq!(mcp.ok("list_broken_links", json!({}))["broken"], json!([]));
+    assert_eq!(mcp.ok("get_model", json!({ "at": "0/1" }))["issues"], json!([]));
+
+    // The re-point rewrites the linking Cards, so a human Card's Link stops it for an agent.
+    let gui = Gui::start(&home);
+    gui.api(
+        "POST",
+        "/api/create",
+        json!({ "kind": "topic", "workspace": "human", "text": "# Mine\n\n见 [[0/1|a]]。\n" }),
+    );
+    gui.api("POST", "/api/quit", json!({}));
+    drop(gui);
+    assert!(
+        mcp.err("delete_card", json!({ "at": "0/1|a", "into": "0/1|b" }))
+            .contains("human")
+    );
+}

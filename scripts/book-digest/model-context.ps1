@@ -22,16 +22,8 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $utf8 = [Text.UTF8Encoding]::new($false)
-$helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 
-function Invoke-Zt($calls) {
-    $lines = ($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $helper -
-    if ($LASTEXITCODE -ne 0) { throw "zt-mcp failed: $($lines -join ' | ')" }
-    foreach ($line in $lines) {
-        if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String }
-        elseif ($line -match '^\d+ error (.*)$') { throw "zt: $($Matches[1])" }
-    }
-}
+. (Join-Path $PSScriptRoot 'zt-calls.ps1')
 
 $key = ($Model -split '/', 2)[0]
 $card, $structure, $found = Invoke-Zt @(

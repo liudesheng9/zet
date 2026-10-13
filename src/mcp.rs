@@ -512,10 +512,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             Ok(plan_or_done(outcome))
         }
         "delete_card" => {
+            let into = optional_string(args, "into")?;
             let outcome = ops::delete(
                 &root,
                 ACCESS,
                 &string_arg(args, "at")?,
+                (!into.is_empty()).then_some(into.as_str()),
                 args.get("confirm").and_then(Value::as_str),
             )?;
             Ok(plan_or_done(outcome))
@@ -921,8 +923,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "delete_card",
             "Delete card",
-            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. Returns a plan first; confirm with the text it names (`delete`, or the root's address).",
-            json!({ "at": at, "confirm": confirm }),
+            "Delete an agent Card and all its successors; deleting a tree root deletes the whole tree. The plan lists every Link from a Card that stays to a Card that goes (`links that will break`). When you delete a Card whose content now lives in another Card (a merged Model part), pass `into` with that Card: each of those Links is re-pointed to it, so none breaks. Returns a plan first; confirm with the text it names (`delete`, or the root's address).",
+            json!({
+                "at": at,
+                "into": { "type": "string", "description": "A Card that stays and now holds the deleted Card's content: every Link to a deleted Card is re-pointed to it." },
+                "confirm": confirm,
+            }),
             &["at"],
             false,
             true,

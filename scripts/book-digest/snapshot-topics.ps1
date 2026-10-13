@@ -15,18 +15,9 @@ param(
     [int]$TitleChars = 40
 )
 $ErrorActionPreference = 'Stop'
-# The helper writes UTF-8; read its output as UTF-8, not the console's code page.
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $utf8 = [Text.UTF8Encoding]::new($false)
-$helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 
-function Invoke-Zt($calls) {
-    $lines = ($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $helper -
-    if ($LASTEXITCODE -ne 0) { throw "zt-mcp failed: $($lines -join ' | ')" }
-    foreach ($line in $lines) {
-        if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String }
-    }
-}
+. (Join-Path $PSScriptRoot 'zt-calls.ps1')
 function Cut($text) { if ($text.Length -le $TitleChars) { $text } else { $text.Substring(0, $TitleChars) + '…' } }
 # Common facets read in Chinese; any other facet is the label its author wrote.
 $facetNames = @{ setting = '设定'; assumptions = '假设'; timing = '时序'; dynamics = '动态'; solution = '求解'; results = '结论'; intuition = '直觉'; limits = '局限' }

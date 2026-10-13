@@ -1972,6 +1972,53 @@ struct DeletePlan {
     delete_set: BTreeSet<String>,
     confirmation: String,
     is_tree_root: bool,
+    /// Links from Cards that stay to Cards that go, as (source, target): each breaks unless the
+    /// plan re-points it with `into`.
+    inbound: Vec<(String, String)>,
+    /// The Card that takes over those Links: a deleted part's content now lives there.
+    into: Option<String>,
+}
+
+impl DeletePlan {
+    /// Re-point every Link into the deleted Cards to `into`, which must exist and stay.
+    fn into(mut self, conn: &Connection, into: &str) -> Result<Self> {
+        let target = load_card(conn, into)?;
+        if self.delete_set.contains(&target.address) {
+            bail!("`{into}` is deleted too; re-point the Links to a Card that stays");
+        }
+        self.into = Some(target.address);
+        Ok(self)
+    }
+
+    /// Each deleted Card that a staying Card links, mapped to `into`.
+    fn repoint_mapping(&self) -> BTreeMap<String, String> {
+        self.into
+            .as_ref()
+            .map(|into| {
+                self.inbound
+                    .iter()
+                    .map(|(_, target)| (target.clone(), into.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Links from Cards outside `delete_set` to Cards in it, once per (source, target).
+fn links_into(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<(String, String)>> {
+    let mut found = BTreeSet::new();
+    for card in load_cards(conn)? {
+        if delete_set.contains(&card.address) {
+            continue;
+        }
+        let parsed = parse_card_text(&card.text)?;
+        for occurrence in link::LinkBody::parse(&parsed.body)?.occurrences() {
+            if delete_set.contains(occurrence.target) {
+                found.insert((card.address.clone(), occurrence.target.to_string()));
+            }
+        }
+    }
+    Ok(found.into_iter().collect())
 }
 
 /// Deleting a Tree root removes its whole tree and must be confirmed by
@@ -1994,10 +2041,13 @@ fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
     } else {
         "delete".to_string()
     };
+    let inbound = links_into(conn, &delete_set)?;
     Ok(DeletePlan {
         delete_set,
         confirmation,
         is_tree_root,
+        inbound,
+        into: None,
     })
 }
 
@@ -2010,6 +2060,22 @@ fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
         "successors: {}",
         plan.delete_set.len().saturating_sub(1)
     ));
+    if !plan.inbound.is_empty() {
+        match &plan.into {
+            Some(into) => {
+                lines.push(format!("links re-pointed to {into}: {}", plan.inbound.len()));
+                for (source, target) in &plan.inbound {
+                    lines.push(format!("{source}: [[{target}]] -> [[{into}]]"));
+                }
+            }
+            None => {
+                lines.push(format!("links that will break: {}", plan.inbound.len()));
+                for (source, target) in &plan.inbound {
+                    lines.push(format!("{source} -> {target}"));
+                }
+            }
+        }
+    }
     lines
 }
 
@@ -2025,7 +2091,23 @@ fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Resul
     } else {
         side_compaction_mapping(conn, at, &plan.delete_set)?
     };
+    let repoint = plan.repoint_mapping();
     let tx = conn.transaction()?;
+    // Re-point first, so a side compaction that renames `into` carries the new Links along.
+    if !repoint.is_empty() {
+        for card in load_cards(&tx)? {
+            if plan.delete_set.contains(&card.address) {
+                continue;
+            }
+            let text = replace_link_locations(&card.text, &repoint)?;
+            if text != card.text {
+                tx.execute(
+                    "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+                    params![text, card.row_id],
+                )?;
+            }
+        }
+    }
     for address in &plan.delete_set {
         tx.execute(
             "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",

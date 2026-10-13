@@ -800,6 +800,7 @@ impl App {
             &self.root,
             ACCESS,
             &str_field(body, "at")?,
+            body.get("into").and_then(Value::as_str),
             confirm_field(body),
         )?
         .into_value())

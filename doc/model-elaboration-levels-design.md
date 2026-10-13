@@ -96,6 +96,12 @@ flowchart LR
 
 Each model report adds `level`. The run log adds a line with the count of concept and formal models.
 
+## Models built before levels
+
+A model that a Models run built before zt 0.13.0 has no level, and may hold Derivation parts and skeleton parts (body `待写`) that the 0.12.0 build gave every model. Those parts do not decide its level. Step 0 decides it from the source. A concept model then folds the Derivation parts into the parts that use them and merges its other parts into at most four. Only a model whose level is already `formal` keeps its Derivation parts unless the run forces `concept`.
+
+A merged part is deleted with `delete_card` and `into` (zt 0.13.1): its plan lists every Link from a Card that stays to a Card that goes, and `into` re-points each of them to the part that now holds the content. Without `into`, the plan names those Links under `links that will break`.
+
 ## What this design does not do
 
 - It does not convert the models already in the archive. Models built by 0.12.0 have no level; the next Models run (`mode: "models"`) gives them one. Their build reports apply the formal rules until then.

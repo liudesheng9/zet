@@ -33,9 +33,10 @@ for ($i = 0; $i -lt [Math]::Min($lines.Count, $expected.Count); $i++) {
         $failed++
     }
 }
-# The setting's own tables and the quotation, chart, and formulas raise nothing.
+# The setting's own tables, the quotation, chart, and formulas, and a shared part's words under
+# another model's term table raise nothing.
 foreach ($line in $lines) {
-    if ($line -match '引文|图里|清算价值；') { Write-Output "checked text it must skip: $line"; $failed++ }
+    if ($line -match '引文|图里|清算价值；|^Other/') { Write-Output "checked text it must skip: $line"; $failed++ }
 }
 if ($failed) { Write-Output "FAILED: $failed"; exit 1 }
 Write-Output 'card-style-check: all checks passed'
