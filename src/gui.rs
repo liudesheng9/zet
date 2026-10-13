@@ -1,14 +1,20 @@
-//! `zt gui`: a local, browser-based view of the card space.
+//! The GUI: a local, browser-based view of the card space.
 //!
-//! The server binds to the loopback interface only, answers API calls that
-//! carry the per-launch token embedded in its page, and performs every change
-//! through the same Card operations as the shell commands and the Session.
+//! The service daemon runs the GUI server for its whole life, so the GUI is up exactly while
+//! the service is; `zt gui` only tells where it listens. The server binds to the loopback
+//! interface only, answers API calls that carry the per-service token embedded in its page,
+//! and performs every change through the same Card operations as the shell commands and the
+//! Session.
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::fs;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
@@ -59,72 +65,124 @@ const KATEX_FONTS: &[(&str, &[u8])] = katex_fonts![
 /// How many rendered charts the server keeps for `/chart/<id>`.
 const CHART_CAPACITY: usize = 512;
 const DEFAULT_PORT: u16 = 4717;
+/// Overrides the port the service's GUI listens on; `0` lets the system choose one.
+const PORT_ENV: &str = "ZT_GUI_PORT";
 const TOKEN_HEADER: &str = "X-ZT-Token";
 
-struct GuiOptions {
-    port: Option<u16>,
-    open: bool,
-}
-
-fn parse_options(args: &[String]) -> Result<GuiOptions> {
-    let mut options = GuiOptions {
-        port: None,
-        open: true,
-    };
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--no-open" => options.open = false,
-            "--port" if index + 1 < args.len() => {
-                index += 1;
-                options.port = Some(
-                    args[index]
-                        .parse()
-                        .with_context(|| format!("invalid port `{}`", args[index]))?,
-                );
-            }
-            value => {
-                bail!("unexpected gui argument `{value}`; expected [--port <port>] [--no-open]")
-            }
-        }
-        index += 1;
-    }
-    Ok(options)
-}
-
+/// `zt gui [--open]`: tell where the service's GUI listens. The GUI runs inside the service,
+/// so it is up while the service is up; this command starts nothing but, with `--open`, a
+/// window onto it.
 pub(crate) fn run(args: &[String]) -> Result<()> {
-    let options = parse_options(args)?;
+    let open = match args {
+        [] => false,
+        [flag] if flag == "--open" => true,
+        _ => bail!(
+            "usage: zt gui [--open]; the GUI runs with the service, so `--port` and `--no-open` are gone (set {PORT_ENV} before `zt up` to choose the port)"
+        ),
+    };
     let root = crate::require_service_up()?;
-    let server = bind(options.port)?;
+    let Some(url) = recorded_url(&root) else {
+        bail!(
+            "the service has no GUI; it may predate zt 0.14 (restart it with `zt down` and `zt up`) or its GUI could not start (see {})",
+            crate::log_path(&root).display()
+        );
+    };
+    println!("zt gui: {url}");
+    if let Some(port) = url_port(&url) {
+        println!("port: {port}");
+    }
+    if open {
+        open_window(&url);
+    }
+    Ok(())
+}
+
+/// The URL of the running service's GUI, as its daemon recorded it.
+pub(crate) fn recorded_url(root: &Path) -> Option<String> {
+    let url = fs::read_to_string(record_path(root)).ok()?;
+    let url = url.trim();
+    (!url.is_empty()).then(|| url.to_string())
+}
+
+fn url_port(url: &str) -> Option<u16> {
+    url.strip_prefix("http://127.0.0.1:")?
+        .trim_end_matches('/')
+        .parse()
+        .ok()
+}
+
+fn record_path(root: &Path) -> PathBuf {
+    root.join("zt.gui")
+}
+
+/// Forget the GUI's address; the daemon that recorded it is gone or going.
+pub(crate) fn clear_record(root: &Path) {
+    let _ = fs::remove_file(record_path(root));
+}
+
+/// The GUI server a service daemon runs for its whole life.
+pub(crate) struct Running {
+    server: Arc<Server>,
+    worker: JoinHandle<()>,
+    root: PathBuf,
+}
+
+/// Start the GUI server inside the service daemon and record its URL in the archive.
+pub(crate) fn start(root: &Path) -> Result<Running> {
+    let server = Arc::new(bind(configured_port()?)?);
     let port = server
         .server_addr()
         .to_ip()
         .context("GUI server is not bound to an IP address")?
         .port();
-    let token = random_token()?;
     let url = format!("http://127.0.0.1:{port}/");
-    crate::session::register_session(&root)?;
-    let _guard = crate::session::SessionGuard { root: root.clone() };
-    crate::log_event(&root, &format!("gui started on {url}")).ok();
-    println!("zt gui: {url}");
-    println!("press Ctrl+C or use the power button in the window to stop");
-    if options.open {
-        open_window(&url);
-    }
     let app = App {
-        root,
-        token,
+        root: root.to_path_buf(),
+        token: random_token()?,
         port,
         charts: Charts::default(),
     };
-    for request in server.incoming_requests() {
-        if app.handle(request) == Flow::Quit {
-            break;
-        }
+    fs::write(record_path(root), format!("{url}\n"))
+        .with_context(|| format!("failed to write {}", record_path(root).display()))?;
+    let worker = thread::Builder::new()
+        .name("zt-gui".to_string())
+        .spawn({
+            let server = Arc::clone(&server);
+            move || {
+                for request in server.incoming_requests() {
+                    // A fault in one request must not take the GUI down with it.
+                    let _ = panic::catch_unwind(AssertUnwindSafe(|| app.handle(request)));
+                }
+            }
+        })
+        .context("failed to start the GUI thread")?;
+    crate::log_event(root, &format!("gui started on {url}")).ok();
+    Ok(Running {
+        server,
+        worker,
+        root: root.to_path_buf(),
+    })
+}
+
+impl Running {
+    /// Stop taking requests, let the one in hand finish, and forget the URL.
+    pub(crate) fn stop(self) {
+        clear_record(&self.root);
+        self.server.unblock();
+        let _ = self.worker.join();
+        crate::log_event(&self.root, "gui stopped").ok();
     }
-    crate::log_event(&app.root, "gui stopped").ok();
-    println!("zt gui stopped");
-    Ok(())
+}
+
+fn configured_port() -> Result<Option<u16>> {
+    match std::env::var(PORT_ENV) {
+        Ok(value) if !value.trim().is_empty() => value
+            .trim()
+            .parse()
+            .map(Some)
+            .with_context(|| format!("invalid {PORT_ENV} `{value}`")),
+        _ => Ok(None),
+    }
 }
 
 fn bind(port: Option<u16>) -> Result<Server> {
@@ -132,9 +190,17 @@ fn bind(port: Option<u16>) -> Result<Server> {
     match port {
         Some(port) => attempt(port)
             .map_err(|error| anyhow::anyhow!("cannot listen on 127.0.0.1:{port}: {error}")),
-        None => attempt(DEFAULT_PORT)
-            .or_else(|_| attempt(0))
-            .map_err(|error| anyhow::anyhow!("cannot start the GUI server: {error}")),
+        None => {
+            // A service that just stopped may hold the default port a moment longer; wait for
+            // it, so a restarted GUI keeps its address.
+            for _ in 0..10 {
+                if let Ok(server) = attempt(DEFAULT_PORT) {
+                    return Ok(server);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            attempt(0).map_err(|error| anyhow::anyhow!("cannot start the GUI server: {error}"))
+        }
     }
 }
 
@@ -184,12 +250,6 @@ fn open_window(url: &str) {
     {
         quiet(Command::new("xdg-open").arg(url));
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Flow {
-    Continue,
-    Quit,
 }
 
 struct App {
@@ -255,7 +315,7 @@ fn header(name: &str, value: &str) -> Header {
 }
 
 impl App {
-    fn handle(&self, mut request: Request) -> Flow {
+    fn handle(&self, mut request: Request) {
         let url = request.url().to_string();
         let (path, query) = url.split_once('?').unwrap_or((&url, ""));
         let path = path.to_string();
@@ -267,18 +327,18 @@ impl App {
                 "text/plain",
                 "misdirected request".to_string(),
             );
-            return Flow::Continue;
+            return;
         }
         let method = request.method().clone();
         match (&method, path.as_str()) {
             (Method::Get, "/") | (Method::Get, "/index.html") => {
                 let page = INDEX_HTML.replace("__ZT_TOKEN__", &self.token);
                 respond_text(request, 200, "text/html; charset=utf-8", page);
-                return Flow::Continue;
+                return;
             }
             (Method::Get, "/app.css") => {
                 respond_text(request, 200, "text/css; charset=utf-8", APP_CSS.to_string());
-                return Flow::Continue;
+                return;
             }
             (Method::Get, "/app.js") => {
                 respond_text(
@@ -287,7 +347,7 @@ impl App {
                     "text/javascript; charset=utf-8",
                     APP_JS.to_string(),
                 );
-                return Flow::Continue;
+                return;
             }
             (Method::Get, "/layout.js") => {
                 respond_text(
@@ -296,7 +356,7 @@ impl App {
                     "text/javascript; charset=utf-8",
                     LAYOUT_JS.to_string(),
                 );
-                return Flow::Continue;
+                return;
             }
             (Method::Get, "/vendor/katex/katex.min.js") => {
                 respond_asset(
@@ -304,11 +364,11 @@ impl App {
                     "text/javascript; charset=utf-8",
                     KATEX_JS.as_bytes(),
                 );
-                return Flow::Continue;
+                return;
             }
             (Method::Get, "/vendor/katex/katex.min.css") => {
                 respond_asset(request, "text/css; charset=utf-8", KATEX_CSS.as_bytes());
-                return Flow::Continue;
+                return;
             }
             (Method::Get, path) if path.starts_with("/vendor/katex/fonts/") => {
                 let name = &path["/vendor/katex/fonts/".len()..];
@@ -316,7 +376,7 @@ impl App {
                     Some((_, bytes)) => respond_asset(request, "font/woff2", bytes),
                     None => respond_text(request, 404, "text/plain", "not found".to_string()),
                 }
-                return Flow::Continue;
+                return;
             }
             (Method::Get, path) if path.starts_with("/artifact/") => {
                 match crate::artifact::read(&self.root, &path["/artifact/".len()..]) {
@@ -328,7 +388,7 @@ impl App {
                         "artifact not in this archive".to_string(),
                     ),
                 }
-                return Flow::Continue;
+                return;
             }
             (Method::Get, path) if path.starts_with("/chart/") => {
                 let id = &path["/chart/".len()..];
@@ -347,13 +407,13 @@ impl App {
                         "chart expired; reopen the Card".to_string(),
                     ),
                 }
-                return Flow::Continue;
+                return;
             }
             _ => {}
         }
         if !path.starts_with("/api/") {
             respond_text(request, 404, "text/plain", "not found".to_string());
-            return Flow::Continue;
+            return;
         }
         let authorized = request
             .headers()
@@ -365,7 +425,7 @@ impl App {
                 403,
                 &json!({ "error": "missing or invalid GUI token" }),
             );
-            return Flow::Continue;
+            return;
         }
         let body = if method == Method::Post {
             let mut raw = String::new();
@@ -375,7 +435,7 @@ impl App {
                     400,
                     &json!({ "error": "request body must be UTF-8" }),
                 );
-                return Flow::Continue;
+                return;
             }
             match serde_json::from_str::<Value>(if raw.is_empty() { "{}" } else { &raw }) {
                 Ok(value) => value,
@@ -385,23 +445,17 @@ impl App {
                         400,
                         &json!({ "error": format!("invalid JSON: {error}") }),
                     );
-                    return Flow::Continue;
+                    return;
                 }
             }
         } else {
             Value::Null
-        };
-        let flow = if (&method, path.as_str()) == (&Method::Post, "/api/quit") {
-            Flow::Quit
-        } else {
-            Flow::Continue
         };
         let result = self.route(&method, &path, &query, &body);
         match result {
             Ok(value) => respond_json(request, 200, &value),
             Err(ApiError(message)) => respond_json(request, 400, &json!({ "error": message })),
         }
-        flow
     }
 
     /// Reject DNS-rebinding requests whose Host is not this loopback server.
@@ -435,6 +489,8 @@ impl App {
                 .ok_or_else(|| ApiError(format!("missing `{name}` parameter")))
         };
         match (method, path) {
+            // The page's heartbeat: this service is still up and its token still holds.
+            (Method::Get, "/api/ping") => Ok(json!({ "ok": true })),
             (Method::Get, "/api/overview") => self.overview(),
             (Method::Get, "/api/tree") => self.tree(&param("id")?),
             (Method::Get, "/api/card") => self.card(&param("at")?),
@@ -457,7 +513,6 @@ impl App {
             (Method::Post, "/api/scholar/artifact") => self.scholar_keep(body),
             (Method::Get, "/api/spreads") => self.spreads(),
             (Method::Post, "/api/spreads") => self.save_spreads(body),
-            (Method::Post, "/api/quit") => Ok(json!({ "ok": true })),
             _ => Err(ApiError(format!("unknown endpoint {path}"))),
         }
     }
@@ -1534,10 +1589,19 @@ mod tests {
     }
 
     #[test]
-    fn options_accept_port_and_no_open() {
-        let options = parse_options(&["--port".into(), "9000".into(), "--no-open".into()]).unwrap();
-        assert_eq!((options.port, options.open), (Some(9000), false));
-        assert!(parse_options(&["--bogus".into()]).is_err());
+    fn the_recorded_url_names_its_port() {
+        assert_eq!(url_port("http://127.0.0.1:4717/"), Some(4717));
+        assert_eq!(url_port("http://example.com:4717/"), None);
+        let temp = tempfile::tempdir().expect("temp dir");
+        assert_eq!(recorded_url(temp.path()), None);
+        fs::write(record_path(temp.path()), "http://127.0.0.1:5000/
+").unwrap();
+        assert_eq!(
+            recorded_url(temp.path()).as_deref(),
+            Some("http://127.0.0.1:5000/")
+        );
+        clear_record(temp.path());
+        assert_eq!(recorded_url(temp.path()), None);
     }
 }
 

@@ -120,6 +120,8 @@ impl PtySession {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.env("ZT_CONFIG_DIR", config_dir);
+        // A test service must not take the GUI port of the user's own service.
+        cmd.env("ZT_GUI_PORT", "0");
         if let Some((text, output)) = test_clipboard {
             cmd.env("ZT_TEST_CLIPBOARD_TEXT", text);
             if let Some(path) = output {

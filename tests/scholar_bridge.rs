@@ -192,6 +192,7 @@ impl Home {
         let mut command = Command::cargo_bin("zt").unwrap();
         command
             .env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0")
             .env("ZT_SCHOLAR_ARCHIVE", &self.fake_command)
             .env("ZT_SCHOLAR_NO_START", "1");
         command
@@ -288,6 +289,7 @@ fn zt_mcp_offers_the_bridge_as_read_only_tools() {
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .arg("mcp")
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .env("ZT_SCHOLAR_ARCHIVE", &home.fake_command)
         .env("ZT_SCHOLAR_NO_START", "1")
         .stdin(Stdio::piped())
@@ -370,6 +372,7 @@ fn a_card_shows_a_figure_only_after_zet_keeps_it_from_the_archive() {
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .arg("mcp")
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .env("ZT_SCHOLAR_ARCHIVE", &home.fake_command)
         .env("ZT_SCHOLAR_NO_START", "1")
         .stdin(Stdio::piped())

@@ -773,6 +773,7 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .stopped { position: fixed; inset: 0; display: grid; place-items: center; background: var(--desk); z-index: 99; text-align: center; }
 .stopped h2 { font: 600 28px var(--serif); margin: 0 0 6px; }
 .stopped p { color: var(--ink-soft); }
+.service-down { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 120; max-width: min(640px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 8px; background: var(--paper); color: var(--ink); border: 1px solid var(--paper-margin); box-shadow: var(--shadow-lift); font-size: 14px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

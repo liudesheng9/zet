@@ -340,6 +340,7 @@ fn clear_stale_service(root: &Path) {
     let Ok(pid) = fs::read_to_string(service_path(root)) else {
         return;
     };
+    gui::clear_record(root);
     if fs::remove_file(service_path(root)).is_ok() {
         log_event(
             root,
@@ -396,6 +397,17 @@ fn cmd_config_set_archive_root(value: &str) -> Result<()> {
 
 fn cmd_up() -> Result<()> {
     println!("{}", start_service()?);
+    print_gui_line()?;
+    Ok(())
+}
+
+/// Where the service's GUI listens, or why it has none.
+fn print_gui_line() -> Result<()> {
+    let root = require_archive_root()?;
+    match gui::recorded_url(&root) {
+        Some(url) => println!("gui: {url}"),
+        None => println!("gui: not running (see {})", log_path(&root).display()),
+    }
     Ok(())
 }
 
@@ -508,6 +520,14 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
     lock.lock()
         .with_context(|| format!("failed to lock {}", daemon_lock_path(&root).display()))?;
     log_event(&root, "daemon started")?;
+    // The GUI lives as long as the daemon. It is up before the service record, so a service
+    // that reads as up already shows where its GUI listens.
+    let gui = gui::start(&root)
+        .inspect_err(|error| {
+            gui::clear_record(&root);
+            log_event(&root, &format!("gui did not start: {error:#}")).ok();
+        })
+        .ok();
     let pid = std::process::id().to_string();
     fs::write(service_path(&root), &pid)
         .with_context(|| format!("failed to write {}", service_path(&root).display()))?;
@@ -524,6 +544,9 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
             move |end| stop_for_system(&root, &pid, end)
         },
     );
+    if let Some(gui) = gui {
+        gui.stop();
+    }
     if ended.is_none() {
         log_event(&root, "daemon stopped")?;
     }
@@ -539,6 +562,7 @@ fn owns_service(root: &Path, pid: &str) -> bool {
 /// waiting for open Sessions, which the system is ending too.
 fn stop_for_system(root: &Path, pid: &str, end: shutdown::SystemEnd) {
     if owns_service(root, pid) {
+        gui::clear_record(root);
         let _ = fs::remove_file(service_path(root));
     }
     let _ = log_event(root, &format!("service stopped: {}", end.describe()));
@@ -885,6 +909,9 @@ fn cmd_status() -> Result<()> {
     if up {
         let pid = fs::read_to_string(service_path(&root)).unwrap_or_else(|_| "unknown".to_string());
         println!("pid: {}", pid.trim());
+        if let Some(url) = gui::recorded_url(&root) {
+            println!("gui: {url}");
+        }
     }
     println!("archive_root: {}", root.display());
     println!("sqlite: {}", db_path(&root).display());
@@ -1014,7 +1041,7 @@ fn cmd_help() -> Result<()> {
     );
     if up {
         println!("  zt");
-        println!("  zt gui [--port <port>] [--no-open]");
+        println!("  zt gui [--open]");
         println!("  zt t [--ws <workspace>] <title>");
         println!("  zt l [--ws <workspace>]");
         println!("  zt n --at <target>");

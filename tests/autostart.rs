@@ -56,6 +56,7 @@ impl Machine {
     fn zt(&self) -> Command {
         let mut cmd = Command::cargo_bin("zt").expect("zt binary");
         cmd.env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0")
             .env("ZT_AUTOSTART_KEY", &self.run_key)
             // Keeps the template a new Card opens with.
             .env("EDITOR", "cmd /C rem");
@@ -132,6 +133,7 @@ impl Machine {
         StdCommand::new(program)
             .raw_arg(args.trim_start())
             .env_remove("ZT_CONFIG_DIR")
+            .env("ZT_GUI_PORT", "0")
             .status()
             .expect("run the login command")
     }
@@ -382,6 +384,7 @@ fn shutting_down_the_machine_takes_the_service_down() {
     // An open Session does not hold the machine up: the system is ending it too.
     let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &machine.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

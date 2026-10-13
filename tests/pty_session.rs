@@ -26,7 +26,9 @@ impl TestHome {
 
     fn zt_command(&self) -> Command {
         let mut command = Command::new(cargo_bin("zt"));
-        command.env("ZT_CONFIG_DIR", &self.config_dir);
+        command
+            .env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0");
         command
     }
 

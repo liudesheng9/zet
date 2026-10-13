@@ -2,7 +2,8 @@
 (() => {
   'use strict';
 
-  const TOKEN = document.querySelector('meta[name="zt-token"]').content;
+  // The service's token; a restarted service brings a new one (see heartbeat).
+  let TOKEN = document.querySelector('meta[name="zt-token"]').content;
 
   // ---------------------------------------------------------------- helpers
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -45,7 +46,7 @@
     try {
       response = await fetch('/api/' + path, options);
     } catch {
-      throw new Error('the zt gui server is not responding');
+      throw new Error('the zt service is not responding');
     }
     let data = {};
     try { data = await response.json(); } catch { /* empty body */ }
@@ -270,7 +271,7 @@
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
     ['help', 'show the commands available here', 'always'],
-    ['q', 'stop zt gui', 'always'],
+    ['q', 'close this window (the GUI keeps running with the service)', 'always'],
   ];
   const context = () => (!state.card ? 'root' : state.card.context === 'tree-root' ? 'tree-root' : 'regular');
   const available = (scope) =>
@@ -3037,12 +3038,12 @@
     if (address) await afterChange(address, `inserted ${address}`);
   }
 
+  // The GUI runs inside the zt service, so closing a window stops nothing; `zt down` does.
   async function quit() {
-    if (!window.confirm('Stop zt gui? The service keeps running; reopen with `zt gui`.')) return;
-    try { await api('quit', {}); } catch { /* already gone */ }
-    document.body.append(h('div', { class: 'stopped' }, h('div', {},
-      h('h2', { text: 'zt gui stopped' }),
-      h('p', { text: 'You can close this window. Run `zt gui` to open it again.' }))));
+    await spreads.flush();
+    window.close();
+    // A browser tab the page did not open may refuse to close.
+    toast('Close this tab to leave; the GUI keeps running until `zt down`.');
   }
 
   // ----------------------------------------------------------- command bar
@@ -3200,6 +3201,47 @@
     });
   }
 
+  // ------------------------------------------------------------- service
+  // The GUI lives inside the zt service. When the service goes down this window goes too,
+  // unless the writing desk holds text: then it says so and keeps the text. When a service
+  // is up again it answers with a new token, which the page takes up.
+  const service = { down: false, notice: null };
+
+  async function heartbeat() {
+    let response;
+    try {
+      response = await fetch('/api/ping', { headers: { 'X-ZT-Token': TOKEN }, cache: 'no-store' });
+    } catch {
+      serviceDown();
+      return;
+    }
+    if (response.status !== 403 && !service.down) return;
+    if (!state.editing) { location.reload(); return; }
+    try {
+      const page = await (await fetch('/', { cache: 'no-store' })).text();
+      const token = new DOMParser().parseFromString(page, 'text/html')
+        .querySelector('meta[name="zt-token"]');
+      if (token) TOKEN = token.content;
+    } catch { return; }
+    service.down = false;
+    if (service.notice) service.notice.remove();
+    service.notice = null;
+    toast('The zt service is up again; you can save.');
+  }
+
+  function serviceDown() {
+    if (service.down) return;
+    service.down = true;
+    if (!state.editing) window.close();
+    service.notice = state.editing
+      ? h('div', { class: 'service-down', role: 'alert',
+        text: 'The zt service stopped. Your text is kept here: copy it, or save once `zt up` brings the service back.' })
+      : h('div', { class: 'stopped' }, h('div', {},
+        h('h2', { text: 'zt service stopped' }),
+        h('p', { text: 'The GUI goes down with the service. This page comes back when `zt up` starts it again.' })));
+    document.body.append(service.notice);
+  }
+
   // ------------------------------------------------------------------ boot
   async function watchForChanges() {
     if (document.hidden || state.editing) return;
@@ -3235,6 +3277,7 @@
     window.addEventListener('resize', debounce(() => renderStage(), 120));
     window.addEventListener('focus', () => watchForChanges());
     setInterval(watchForChanges, 4000);
+    setInterval(heartbeat, 2000);
     try {
       const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
       state.overview = overview;

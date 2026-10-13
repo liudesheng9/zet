@@ -36,7 +36,8 @@ impl TestHome {
 
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("zt").expect("zt binary");
-        cmd.env("ZT_CONFIG_DIR", &self.config_dir);
+        cmd.env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0");
         cmd
     }
 
@@ -130,6 +131,7 @@ impl TestHome {
         let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
             .arg("mcp")
             .env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -831,8 +833,9 @@ fn gui_creates_trees_in_either_workspace_and_reports_workspaces() {
     let home = TestHome::new();
     home.configure_and_up();
     let mut gui = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
-        .args(["gui", "--no-open", "--port", "0"])
+        .arg("gui")
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -957,7 +960,6 @@ fn gui_creates_trees_in_either_workspace_and_reports_workspaces() {
             .contains("Cards cannot move between workspaces")
     );
 
-    api("POST", "/api/quit", Some("{}"));
     assert!(gui.wait().expect("gui exits").success());
 }
 

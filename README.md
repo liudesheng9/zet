@@ -107,13 +107,16 @@ is first copied to `zt.sqlite3.pre-markdown-<time>.bak` in the archive root.
 
 ## The GUI
 
-With the service up, run:
+The GUI runs inside the service: `zt up` starts it and `zt down` stops it, so it is up exactly
+while the service is. `zt gui` starts nothing; it tells you where the GUI listens:
 
 ```sh
-zt gui                 # opens an app window (Edge/Chrome) or your browser
-zt gui --no-open       # just print the local URL
-zt gui --port 4717     # choose the port
+zt gui                 # print the GUI's URL and port
+zt gui --open          # also open an app window (Edge/Chrome) or your browser on it
 ```
+
+`zt up` and `zt status` print the URL too. The GUI listens on port 4717, or on a free port when
+4717 is taken; set `ZT_GUI_PORT` before `zt up` to choose another (`0` lets the system pick).
 
 - **Cabinet** (left): tabs for the human and agent Workspaces, the Topic and Literature zones of
   the open one, and full-text search.
@@ -147,8 +150,11 @@ same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b`
 `Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `p` / `P` to lay a card on the Table, `v` to switch views,
 `w` to switch Workspaces, `f` to fit.
 
-The GUI listens on `127.0.0.1` only, requires a per-launch token, and counts as a Session,
-so `zt down` waits until you close it with the power button or `Ctrl+C`.
+The GUI listens on `127.0.0.1` only and requires a token that changes each time the service
+starts. An open GUI window is not a Session, so `zt down` never waits for one: the window's
+power button (or `q`) just closes the window, and when the service stops, an open window closes
+itself, or, if you were writing, keeps your text and says the service is down. When the service is
+up again, the page takes up the new token by itself.
 
 ## Workspaces
 

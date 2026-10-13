@@ -53,12 +53,14 @@ Status: implemented in zt 0.2.0.
 
 ## GUI
 
-`zt gui [--port <port>] [--no-open]` requires the service to be up, registers as a Session (so `zt down` waits for it), and serves a single-page app on `127.0.0.1` (default port 4717, falling back to a free port). It opens a chromeless Edge or Chrome app window when available, otherwise the default browser. It stops on Ctrl+C or with the window's power button.
+The service daemon serves the GUI, a single-page app on `127.0.0.1` (default port 4717, falling back to a free port; `ZT_GUI_PORT` overrides it), from a thread it starts before it writes the service record and stops when the service stops. Its URL is recorded in `<archive_root>/zt.gui` while it runs; `zt up` and `zt status` print it. `zt gui [--open]` requires the service to be up, prints the URL and port, and with `--open` opens a chromeless Edge or Chrome app window onto it (otherwise the default browser); it starts no server. An open window is not a Session, so `zt down` does not wait for it. The page pings `/api/ping` every two seconds: when the service is gone it closes itself (or, with a dialog open, keeps it and says the service stopped), and when a new service answers with `403` it takes up the new token. The window's power button only closes the window.
+
+(Before zt 0.14, `zt gui [--port <port>] [--no-open]` ran its own server process that counted as a Session.)
 
 ### Security
 
 - Loopback only. Requests whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` are rejected (DNS rebinding).
-- Every `/api/` request must carry the per-launch random token embedded in the page (`X-ZT-Token`).
+- Every `/api/` request must carry the per-service random token embedded in the page (`X-ZT-Token`).
 - Markdown is rendered with raw HTML shown as text, and the page is served with a strict Content Security Policy.
 
 ### Same rules as the CLI

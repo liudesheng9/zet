@@ -34,7 +34,8 @@ impl TestHome {
 
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("zt").expect("zt binary");
-        cmd.env("ZT_CONFIG_DIR", &self.config_dir);
+        cmd.env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0");
         cmd
     }
 
@@ -1997,6 +1998,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
 
     let mut editing = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2029,6 +2031,7 @@ fn service_down_availability_help_and_edit_lock_rules_are_enforced() {
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2686,6 +2689,7 @@ fn dump_refuses_edit_lock_but_runs_with_an_open_session() {
 
     let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2932,6 +2936,7 @@ fn clear_refuses_open_sessions_without_changing_storage() {
     home.create_topic_and_base();
     let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3021,6 +3026,7 @@ fn session_exits_when_service_disconnects() {
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3050,6 +3056,7 @@ fn killed_session_is_dropped_from_open_session_count() {
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3441,29 +3448,203 @@ fn http_request(
     (status, response[body_start..].to_string())
 }
 
-#[test]
-fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
-    use std::io::{BufRead, BufReader};
-    let home = TestHome::new();
-    home.configure_and_up();
-    let mut gui = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
-        .args(["gui", "--no-open", "--port", "0"])
-        .env("ZT_CONFIG_DIR", &home.config_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("start zt gui");
-    let mut stdout = BufReader::new(gui.stdout.take().expect("gui stdout"));
-    let mut first_line = String::new();
-    stdout.read_line(&mut first_line).expect("gui url line");
-    let port: u16 = first_line
-        .trim()
-        .strip_prefix("zt gui: http://127.0.0.1:")
+/// The port of the running service's GUI, as `zt gui` reports it.
+fn gui_port(home: &TestHome) -> u16 {
+    let output = home
+        .cmd()
+        .arg("gui")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).expect("UTF-8 output");
+    let mut lines = output.lines();
+    let port: u16 = lines
+        .next()
+        .and_then(|line| line.strip_prefix("zt gui: http://127.0.0.1:"))
         .and_then(|rest| rest.strip_suffix('/'))
         .expect("gui prints its URL")
         .parse()
         .expect("port");
+    assert_eq!(lines.next(), Some(format!("port: {port}").as_str()));
+    port
+}
+
+fn gui_token(port: u16) -> String {
+    let (status, page) = http_request(port, "GET", "/", &[], None);
+    assert_eq!(status, 200);
+    page.split("name=\"zt-token\" content=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("page embeds the token")
+        .to_string()
+}
+
+/// End a process at once, as power loss would, with no chance to clean up.
+fn kill_process(pid: &str) {
+    let status = if cfg!(windows) {
+        StdCommand::new("taskkill")
+            .args(["/F", "/PID", pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    } else {
+        StdCommand::new("kill").args(["-9", pid]).status()
+    };
+    assert!(status.expect("kill").success());
+}
+
+fn gui_listening(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+#[test]
+fn gui_runs_with_the_service_and_zt_gui_only_reports_where() {
+    let home = TestHome::new();
+    home.cmd()
+        .arg("gui")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("archive_root is not configured"));
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    home.cmd()
+        .arg("gui")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("service is not up"));
+
+    let up = home
+        .cmd()
+        .arg("up")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let up = String::from_utf8(up).expect("UTF-8 output");
+    assert!(up.contains("service started pid:"), "{up}");
+    let port = gui_port(&home);
+    assert!(
+        up.contains(&format!("gui: http://127.0.0.1:{port}/")),
+        "{up}"
+    );
+    assert!(gui_listening(port));
+    assert_eq!(
+        fs::read_to_string(home.archive_root.join("zt.gui")).expect("gui record"),
+        format!(
+            "http://127.0.0.1:{port}/
+"
+        )
+    );
+    home.cmd()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "gui: http://127.0.0.1:{port}/"
+        )))
+        .stdout(predicate::str::contains("sessions: 0"));
+
+    // `zt gui` starts nothing: asking again names the same server and token.
+    let token = gui_token(port);
+    assert_eq!(gui_port(&home), port);
+    assert_eq!(gui_token(port), token);
+    home.cmd()
+        .args(["up"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("service already running"))
+        .stdout(predicate::str::contains(format!(
+            "gui: http://127.0.0.1:{port}/"
+        )));
+    for args in [
+        &["gui", "--port", "4717"][..],
+        &["gui", "--no-open"],
+        &["gui", "x"],
+    ] {
+        home.cmd()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("usage: zt gui [--open]"));
+    }
+    let auth = [("X-ZT-Token", token.as_str())];
+    assert_eq!(http_request(port, "GET", "/api/ping", &auth, None).0, 200);
+    assert_eq!(http_request(port, "GET", "/api/ping", &[], None).0, 403);
+    // The window can no longer stop the server.
+    assert_eq!(
+        http_request(port, "POST", "/api/quit", &auth, Some("{}")).0,
+        400
+    );
+    assert!(gui_listening(port));
+
+    // An open GUI is no Session: `zt down` stops the service and its GUI together.
+    home.cmd()
+        .arg("down")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("service stopped"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while gui_listening(port) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!gui_listening(port), "the GUI stops with the service");
+    assert!(!home.archive_root.join("zt.gui").exists());
+    home.cmd()
+        .arg("gui")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("service is not up"));
+    let log = fs::read_to_string(home.archive_root.join("zt.log")).expect("log");
+    assert!(
+        log.contains(&format!("gui started on http://127.0.0.1:{port}/")),
+        "{log}"
+    );
+    assert!(log.contains("gui stopped"), "{log}");
+
+    // A new service brings a new GUI with a new token.
+    home.cmd().arg("up").assert().success();
+    let port = gui_port(&home);
+    assert!(gui_listening(port));
+    assert_ne!(gui_token(port), token);
+    assert_eq!(http_request(port, "GET", "/api/ping", &auth, None).0, 403);
+    home.cmd().arg("down").assert().success();
+}
+
+#[test]
+fn a_dead_daemon_leaves_no_gui_behind() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let port = gui_port(&home);
+    let pid = fs::read_to_string(home.archive_root.join("zt.pid")).expect("pid");
+    kill_process(pid.trim());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while gui_listening(port) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!gui_listening(port));
+    home.cmd()
+        .arg("gui")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("service is not up"));
+    assert!(!home.archive_root.join("zt.gui").exists());
+}
+
+#[test]
+fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let port = gui_port(&home);
 
     let (status, page) = http_request(port, "GET", "/", &[], None);
     assert_eq!(status, 200);
@@ -3493,12 +3674,6 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
         .0,
         421
     );
-    home.cmd()
-        .arg("down")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("session(s) are open"));
-
     let (status, created) = api(
         "POST",
         "/api/create",
@@ -3573,8 +3748,5 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
     assert_eq!(overview["stats"]["total"], 1);
     assert_eq!(overview["trees"][0]["excerpt"], "A bold start.");
 
-    let (status, _) = api("POST", "/api/quit", Some("{}"));
-    assert_eq!(status, 200);
-    assert!(gui.wait().expect("gui exits").success());
     home.cmd().arg("down").assert().success();
 }

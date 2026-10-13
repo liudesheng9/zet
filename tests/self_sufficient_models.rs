@@ -45,7 +45,8 @@ impl TestHome {
 
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("zt").expect("zt binary");
-        cmd.env("ZT_CONFIG_DIR", &self.config_dir);
+        cmd.env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0");
         cmd
     }
 
@@ -64,6 +65,7 @@ impl TestHome {
         let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
             .arg("mcp")
             .env("ZT_CONFIG_DIR", &self.config_dir)
+            .env("ZT_GUI_PORT", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -147,7 +149,6 @@ impl Drop for Mcp {
     }
 }
 
-
 struct Gui {
     child: Child,
     port: u16,
@@ -157,8 +158,9 @@ struct Gui {
 impl Gui {
     fn start(home: &TestHome) -> Self {
         let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
-            .args(["gui", "--no-open", "--port", "0"])
+            .arg("gui")
             .env("ZT_CONFIG_DIR", &home.config_dir)
+            .env("ZT_GUI_PORT", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -227,7 +229,6 @@ impl Drop for Gui {
     }
 }
 
-
 /// Addresses of a model's `build.order`, with their lines.
 fn build_order(model: &Value) -> Vec<(String, String)> {
     model["build"]["order"]
@@ -269,8 +270,7 @@ fn address(value: Value) -> String {
 }
 
 #[test]
-fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_self_sufficient()
-{
+fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_self_sufficient() {
     let home = TestHome::new();
     let mut mcp = home.mcp();
     mcp.ok("create_topic", json!({ "title": "Corporate finance" }));
@@ -369,9 +369,22 @@ fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_
         faults(&model, "closure"),
         pairs(&[(&ratio, "Hart1995/2"), (&ratio, "0/1")])
     );
-    let fix = |model: &Value, at: usize| model["build"]["closure"][at]["fix"].as_str().unwrap().to_string();
-    assert!(fix(&model, 0).contains("move it into the range"), "{}", fix(&model, 0));
-    assert!(fix(&model, 1).contains("restate it in a part"), "{}", fix(&model, 1));
+    let fix = |model: &Value, at: usize| {
+        model["build"]["closure"][at]["fix"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        fix(&model, 0).contains("move it into the range"),
+        "{}",
+        fix(&model, 0)
+    );
+    assert!(
+        fix(&model, 1).contains("restate it in a part"),
+        "{}",
+        fix(&model, 1)
+    );
     assert_eq!(build["closure"][0]["card"]["type"], "idea");
     assert_eq!(faults(&model, "forward"), pairs(&[(&finance, &example)]));
     // The example rests on nothing: no rests-on path leads back to the setting.
@@ -405,7 +418,11 @@ fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_
         "{}",
         fix(&model_b, 0)
     );
-    assert!(fix(&model_b, 1).contains(&format!("a part of `{a}`")), "{}", fix(&model_b, 1));
+    assert!(
+        fix(&model_b, 1).contains(&format!("a part of `{a}`")),
+        "{}",
+        fix(&model_b, 1)
+    );
     // The shared part's own premise stays in its home model: tolerated, not a fault.
     assert_eq!(model_b["build"]["tolerated"][0]["part"], json!(repay));
     assert_eq!(
@@ -669,9 +686,15 @@ fn insert_and_move_between_refuse_what_they_cannot_do_and_reorder_one_step() {
             .cloned()
             .unwrap_or_else(|| panic!("tool {name}"))
     };
-    assert_eq!(tool("insert_card")["inputSchema"]["required"], json!(["before", "title"]));
+    assert_eq!(
+        tool("insert_card")["inputSchema"]["required"],
+        json!(["before", "title"])
+    );
     assert_eq!(tool("move_card")["inputSchema"]["required"], json!(["at"]));
-    assert_eq!(tool("move_card")["inputSchema"]["properties"]["alone"]["type"], "boolean");
+    assert_eq!(
+        tool("move_card")["inputSchema"]["properties"]["alone"]["type"],
+        "boolean"
+    );
 }
 
 #[test]
@@ -720,7 +743,6 @@ fn the_gui_inserts_a_card_and_moves_one_between_two_cards() {
     assert_eq!(done["address"], "0/1");
     let card = gui.api("GET", "/api/card?at=0%2F1", json!(null));
     assert_eq!(card["title"], "second");
-    gui.api("POST", "/api/quit", json!({}));
 }
 
 #[test]
@@ -794,9 +816,15 @@ fn a_delete_names_the_links_it_breaks_and_into_re_points_them() {
         mcp.ok("get_card", json!({ "at": "0/3" }))["body"],
         "见 [[0/1|b]]。"
     );
-    assert_eq!(mcp.ok("get_card", json!({ "at": "0/1|b" }))["title"], "机制四");
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": "0/1|b" }))["title"],
+        "机制四"
+    );
     assert_eq!(mcp.ok("list_broken_links", json!({}))["broken"], json!([]));
-    assert_eq!(mcp.ok("get_model", json!({ "at": "0/1" }))["issues"], json!([]));
+    assert_eq!(
+        mcp.ok("get_model", json!({ "at": "0/1" }))["issues"],
+        json!([])
+    );
 
     // The re-point rewrites the linking Cards, so a human Card's Link stops it for an agent.
     let gui = Gui::start(&home);
@@ -805,7 +833,6 @@ fn a_delete_names_the_links_it_breaks_and_into_re_points_them() {
         "/api/create",
         json!({ "kind": "topic", "workspace": "human", "text": "# Mine\n\n见 [[0/1|a]]。\n" }),
     );
-    gui.api("POST", "/api/quit", json!({}));
     drop(gui);
     assert!(
         mcp.err("delete_card", json!({ "at": "0/1|a", "into": "0/1|b" }))

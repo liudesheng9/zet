@@ -103,13 +103,16 @@ Topic 和 Regular Card 必须以 `# 标题` 开头。`<!-- zt:reverse-links -->`
 
 ## GUI
 
-服务启动后运行：
+GUI 运行在服务内部：`zt up` 启动它，`zt down` 停止它，所以服务启动时 GUI 就在运行。
+`zt gui` 不启动任何进程，只告诉你 GUI 的地址：
 
 ```sh
-zt gui                 # 打开应用窗口（Edge/Chrome）或默认浏览器
-zt gui --no-open       # 只打印本地地址
-zt gui --port 4717     # 指定端口
+zt gui                 # 打印 GUI 的地址和端口
+zt gui --open          # 同时打开应用窗口（Edge/Chrome）或默认浏览器
 ```
+
+`zt up` 和 `zt status` 也会打印这个地址。GUI 默认监听 4717 端口，被占用时改用空闲端口；
+在 `zt up` 之前设置 `ZT_GUI_PORT` 可以指定端口（`0` 表示由系统选择）。
 
 - **卡片柜**（左侧）：human 与 agent 两个 Workspace 的标签页、当前 Workspace 的 Topic zone 与 Literature zone，以及全文搜索。
 - **书桌**（ROOT）：当前 Workspace 的每棵树显示为一叠索引卡片，按 Zone 分组。
@@ -135,8 +138,9 @@ zt gui --port 4717     # 指定端口
 `:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m` `i`（插入）、`Delete`、`u` 或方向键在地图中移动、
 `x` 展开或折叠整棵树、`p` / `P` 把卡片放上桌面、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
-GUI 只监听 `127.0.0.1`，每次启动都会使用新的访问令牌，并且会被计为一个 Session，
-因此需要先用电源按钮或 `Ctrl+C` 关闭 GUI，`zt down` 才能停止服务。
+GUI 只监听 `127.0.0.1`，服务每次启动都会使用新的访问令牌。打开的 GUI 窗口不算 Session，
+`zt down` 不会等待它：窗口的电源按钮（或 `q`）只关闭窗口；服务停止时，打开的窗口会自行关闭，
+若正在写作则保留文本并提示服务已停止。服务重新启动后，页面会自动换用新的令牌。
 
 ## Workspace
 
