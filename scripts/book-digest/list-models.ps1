@@ -24,6 +24,8 @@ param(
     [Parameter(ParameterSetName = 'All')][string]$CitationKey = ''
 )
 $ErrorActionPreference = 'Stop'
+# The helper writes UTF-8; read its output as UTF-8, not the console's code page.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $groupNumbers = @(($Groups -split '[,\s]+') | Where-Object { $_ } | ForEach-Object { [int]$_ })
 $helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 

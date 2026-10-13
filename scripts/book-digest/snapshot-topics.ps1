@@ -15,6 +15,8 @@ param(
     [int]$TitleChars = 40
 )
 $ErrorActionPreference = 'Stop'
+# The helper writes UTF-8; read its output as UTF-8, not the console's code page.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $utf8 = [Text.UTF8Encoding]::new($false)
 $helper = Join-Path $PSScriptRoot '..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 
