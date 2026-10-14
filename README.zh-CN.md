@@ -266,7 +266,7 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 ### 消化一本书
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由 Sonnet 经理把其中写出的每个模型建到它的细化层级（概念模型：Model Card 和几张文字 part；形式模型：自足，先规划，再按构建顺序写骨架，由八个以上 DeepSeek 运行填写卡片，最后逐步核对），随后连接全书各部分，最后由 Opus 整理结构。
+每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，最后由 Opus 整理结构。
 详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
 
 ## MCP 服务器

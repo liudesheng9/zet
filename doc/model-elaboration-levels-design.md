@@ -2,6 +2,8 @@
 
 Status: implemented in zt 0.13.0 and the `zt-book-digest` workflow (2026-10-13). It adds one property to the Model Card and splits the book digest's Models stage in two. Everything `self-sufficient-models-proposal.md` (zt 0.12.0) decides still holds, but from now on it applies to **formal models** only.
 
+Since 2026-10-14 the **model compiler** (`model-compiler-design.md`) does the work this document gives to the Sonnet manager: a Sonnet architect only writes `plan.json`, `model-compiler.ps1` builds the skeleton and applies splits, and DeepSeek writes, derives, and reviews. The rules for the models themselves still hold.
+
 ## Source Authority
 
 - `CONTEXT.md` defines **Elaboration level**, **Concept model**, and **Formal model**, beside **Model Card**, **Model part**, **Derivation part**, and **Self-sufficient model**.

@@ -26,6 +26,8 @@
 
   insert_card and move_card renumber Cards: an address read before them may name another Card
   after them, so read again (or use the `moved` map they return) before the next write.
+  -Moves <file> appends that map: one compact JSON line {"i":N,"moved":{"old":"new",...}} per
+  insert_card, move_card, or delete_card that renumbered Cards.
 #>
 [CmdletBinding(DefaultParameterSetName = 'File')]
 param(
@@ -34,6 +36,7 @@ param(
     [Parameter(ParameterSetName = 'File')][string]$Addresses = '',
     [Parameter(ParameterSetName = 'File')][string]$Log = '',
     [Parameter(ParameterSetName = 'File')][string]$Allow = '',
+    [Parameter(ParameterSetName = 'File')][string]$Moves = '',
     [Parameter(ParameterSetName = 'Inline', Mandatory)][string]$Tool,
     [Parameter(ParameterSetName = 'Inline')][string]$Json = '{}'
 )
@@ -145,6 +148,11 @@ try {
         if ($address -and $call.tool -match '^create') {
             if ($null -ne $allowed) { [void]$allowed.Add($address) }
             if ($Log) { [IO.File]::AppendAllText($Log, "$address`n", [Text.UTF8Encoding]::new($false)) }
+        }
+        $moved = if ($structured -is [System.Collections.IDictionary]) { $structured['moved'] } else { $null }
+        if ($Moves -and $moved -is [System.Collections.IDictionary] -and $moved.Count) {
+            $entry = [ordered]@{ i = $i; moved = $moved } | ConvertTo-Json -Depth 5 -Compress
+            [IO.File]::AppendAllText($Moves, "$entry`n", [Text.UTF8Encoding]::new($false))
         }
         if ($address -and $call.tool -match '^(create|edit|append|move|insert|delete)') { Write-Output "$i ok $address" }
         else {

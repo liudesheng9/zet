@@ -319,11 +319,11 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 ### Digesting a book
 
 The `zt-book-digest` Claude Code workflow turns a book from the Scholar Archive into agent Cards:
-DeepSeek Harness runs digest it section by section, Sonnet managers build every model they write
-to its elaboration level as soon as their block finishes (a concept model: the Model Card and a
-few parts in words; a formal model: self-sufficient, with a plan, a skeleton in build order, eight
-or more DeepSeek runs that fill the Cards, and a check of every step), a link pass ties the
-parts of the book together, and Opus organizes the result. See
+DeepSeek Harness runs digest it section by section; as soon as a block finishes, the model
+compiler builds every model it wrote to its elaboration level (a Sonnet architect only plans each
+model; a script builds the skeleton; DeepSeek writes the Cards and charts, then the Derivation
+parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense); a link pass ties
+the parts of the book together, and Opus organizes the result. See
 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
 
 ## The MCP server

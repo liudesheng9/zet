@@ -4,8 +4,9 @@
 Cards in the agent Workspace: a Literature tree for the book, Topic trees for the ideas that stand
 on their own, Event Cards for the real events it reports, and a **structured model** for every
 model it sets out. Run it from Claude Code ("run the zt-book-digest workflow on …"); it uses
-DeepSeek Harness for the bulk reading and writing, Sonnet managers (each driving eight or more
-DeepSeek runs) for the models, and Opus for the final organization.
+DeepSeek Harness for the bulk reading and writing, the **model compiler** for the models (a Sonnet
+architect plans each model, a script builds it, DeepSeek writes and reviews it), and Opus for the
+final organization.
 
 ## What happens
 
@@ -14,8 +15,8 @@ flowchart LR
   P[Prepare<br/>Haiku] --> D1[Digest block 1<br/>Haiku drives DeepSeek ×5]
   P --> D2[Digest block 2<br/>Haiku drives DeepSeek ×5]
   P --> D3[Digest block …]
-  D1 --> M1[Models for block 1<br/>Sonnet manager ▸ DeepSeek ×8+]
-  D2 --> M2[Models for block 2<br/>Sonnet manager ▸ DeepSeek ×8+]
+  D1 --> M1[Models for block 1<br/>model compiler: Sonnet plans ▸ DeepSeek writes, derives, reviews]
+  D2 --> M2[Models for block 2<br/>model compiler]
   D3 --> M3[Models for block …]
   M1 --> L[Link<br/>Haiku drives DeepSeek]
   M2 --> L
@@ -28,7 +29,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | **Prepare** | Haiku runs a script | Extracts the Chinese text, cuts it into section groups (about 20,000 characters each), and creates the agent Literature Card with one anchor Card per group. | `<out>\groups`, `<out>\sections`, the Literature tree `[[Key]]` → `[[Key/1]]` … |
 | **Digest** | one Haiku manager per block of up to 5 groups; one DeepSeek run per group | Each DeepSeek run gets only its own sections, searches the rest of the book on disk, and writes 6–12 Cards: Idea Cards placed in Topic trees or under its anchor, Event Cards, and **one whole Model Card per model**. Blocks run in parallel. | Cards, and `owned-gNN.txt` (which Cards each group wrote) |
-| **Models** | Haiku lists, then one **Sonnet manager** per batch: `perConcept` concept models, or `perSonnet` formal models with `dshPerSonnet` DeepSeek runs at a time | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. Each manager confirms each model's **elaboration level**. A concept model (level 1) gets its Model Card checked and at most four parts in words. A formal model (level 2) gets the full build: the manager plans it, writes its skeleton in build order, has DeepSeek fill the Cards, checks every step and the Card language, then archives its conversations and deletes its files (below). | Concept models and self-sufficient formal models; a report per model |
+| **Models** | Haiku lists, then the **model compiler** per batch (`perConcept` concept models or `perSonnet` formal models): DeepSeek briefs, one Sonnet architect plans, `model-compiler.ps1` builds, Haiku drivers relay DeepSeek rounds | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. DeepSeek writes a brief of each model's source; the Sonnet architect writes only `plan.json` (level, parts in build order, premises, where Derivation parts go and how many); the script builds the skeleton; DeepSeek writes the Model Card, setting, parts and charts, then the Derivation parts; a DeepSeek reviewer splits any derivation that jumps or is too dense, and the script inserts the new parts. See `doc/model-compiler-design.md`. | Concept models and self-sufficient formal models; a report per model |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
 | **Organize** | Opus | Merges duplicate Topics, writes hubs, the book's structure Card and index, checks every model with `get_model`, and fixes Links. | A finished, navigable digest |
@@ -43,7 +44,8 @@ No prompt file carries the text of a skill. Both skills are installed in DeepSee
 | Run | Sent by | Skills |
 | --- | --- | --- |
 | Digest, Link | Haiku manager | `zettelkasten`, `asd-ste100-zh` |
-| Fill (Models stage), and its fault follow-ups | Sonnet manager | `asd-ste100-zh` |
+| Fill and Derive (Models stage), and their split and fix follow-ups | Haiku driver (model compiler) | `asd-ste100-zh` |
+| Brief and Review (Models stage) | Haiku driver (model compiler) | none |
 
 The Card language sections of the instruction files keep the project's own limits (40 characters
 per description sentence, 30 per derivation step), because `card-style-check.ps1` checks those
@@ -57,15 +59,14 @@ carries an **elaboration level**:
 
 | Level | When | What the Models stage builds |
 | --- | --- | --- |
-| 1 `concept` | The book states the model in words or a diagram: a mechanism, a typology, a framework, a verbal argument, or a formal model it only cites. | The Model Card (问题 · 概要 · 结构 · 关联 · 来源) and at most four parts in words (`设定`, `机制`, `结论`, `例子`). No derivation ledger, no Derivation parts, no DeepSeek fill runs: the Sonnet manager writes the Cards itself. |
-| 2 `formal` | The book states the model in mathematics: symbols, equations, a derivation, a proposition with a proof. | A self-sufficient model, by the five steps below. |
+| 1 `concept` | The book states the model in words or a diagram: a mechanism, a typology, a framework, a verbal argument, or a formal model it only cites. | The Model Card (问题 · 概要 · 结构 · 关联 · 来源) and at most four parts in words (`设定`, `机制`, `结论`, `例子`). No Derivation parts, no derive or review round. |
+| 2 `formal` | The book states the model in mathematics: symbols, equations, a derivation, a proposition with a proof. | A self-sufficient model, by the model compiler below. |
 
 - **Digest.** DeepSeek sets `level` on each Model Card it writes (`formal` when unsure).
 - **Listing.** `list-models.ps1` reports each model's `level`. Concept models go in batches of
-  `perConcept` (default 8) per Sonnet manager; formal and undecided models in batches of `perSonnet`.
-- **Step 0.** The manager reads the source and confirms or corrects the level (`edit_card`
-  `level`). A concept model then follows the concept path of `model-elaboration.md`; a formal model
-  follows steps 1 to 5.
+  `perConcept` (default 10); formal and undecided models in batches of `perSonnet` (default 6).
+- **Brief and plan.** The DeepSeek brief proposes a level; the Sonnet architect decides it in
+  `plan.json`, and the compiler sets it.
 - **Check.** A concept model must show no `closure`, `forward`, `unanchored`, or `beyond_level`
   fault in `get_model` `build`; `beyond_level` lists a Derivation part in a concept model.
 - **Forcing a level.** `level: "concept"` or `level: "formal"` builds every model of the run to that
@@ -73,36 +74,37 @@ carries an **elaboration level**:
 - **Organize.** Opus lists each model's level in the book's structure Card and reports a level that
   looks wrong; it does not change levels.
 
-## A self-sufficient formal model (zt 0.12.0)
+## The model compiler (2026-10-14)
 
-A reader must be able to build each formal model from nothing, reading only its own Cards in build order
-(`doc/self-sufficient-models-proposal.md`). The Models stage reaches that in five steps, with
-`scripts/book-digest/model-elaboration.md` as the manager's instructions:
+A reader must be able to build each formal model from nothing, reading only its own Cards in build
+order (`doc/self-sufficient-models-proposal.md`). Since 2026-10-14 the **model compiler** builds it
+(`doc/model-compiler-design.md`); it replaced the Sonnet manager of zt 0.12.0–0.15.0, which planned,
+wrote, supervised, and checked everything itself. Per batch of models:
 
-1. **Plan (Sonnet).** The context pack (`model-context.ps1`), the source passages, and
-   `get_model` `build` give a **derivation ledger** (`ledger.json`: one entry per step from the
-   setting to each result, with its inputs, output, place in the book, and whether the book shows
-   or skips it) and a **closure audit** (`closure.json`: each premise outside the model, with the
-   path that brings it in: move, take in, name the parts, restate, or plain reference).
-2. **Skeleton (Sonnet).** The manager acts on the audit, orders the main line with `move_card`
-   (`before`, `alone`), inserts missing steps and Derivation parts with `insert_card`, writes the
-   setting with its symbol table and `术语表` term table itself, writes every other part as a
-   skeleton (facet, emphasis, claim title, kinded Links, body `待写`), rewrites the Model Card
-   with its 结构 list in build order, and writes one job file per one to three parts.
-3. **Fill (DeepSeek, `dshPerSonnet` runs at a time).** Every run starts with the same files
-   (`dsh-fill-instructions.zh.md`, then the model's setting), then its job with the source lines
-   copied in. It writes only its parts (the helper's `-Allow` list), runs
-   `card-style-check.ps1` on them, and answers one JSON line per part.
-4. **Check (Sonnet).** The manager redoes each derivation step, checks the book's numerical
-   examples with a short script, runs the style check on the whole model, sends faults back to
-   the same DeepSeek conversation (two rounds at most, then writes the part itself), and runs
-   `get_model` until `build` has no `closure`, `forward`, or `unanchored` fault.
-5. **Clean up (Sonnet).** It closes and archives each DeepSeek conversation it started, removes its
-   DeepSeek workspace (`<out>\models\<manager>`), and deletes its work files. A Haiku sweep then
-   archives anything a failed manager left open.
+1. **Brief (DeepSeek).** `model-compiler.ps1 -Step brief` writes each context pack; a DeepSeek run
+   reads the source passages and writes `brief.md`: the equations in book order with numbers and
+   lines, which steps the book skips and how many lines of algebra each needs, the examples, the
+   diagrams, the outside premises, and reusable building blocks.
+2. **Plan (Sonnet).** One Sonnet architect (`model-architect.md`) writes `plan.json` per model: the
+   level, the parts in build order (main line, side, off, shared), each part's premises, and where
+   the Derivation parts go and how many (a chain where a step outgrows `maxSteps`). It runs
+   `-Step validate` until it prints `faults: 0`. It writes no Card and starts no run.
+3. **Fill (script, then DeepSeek).** `-Step apply` builds the skeleton (tree operations, kinded
+   Links, the setting's 符号表 and 术语表, the Model Card's 结构 list) and the job files, with the
+   source lines copied in. DeepSeek writes the Model Card prose, the setting, each part, and each
+   chart (`dsh-fill-instructions.zh.md`).
+4. **Derive (DeepSeek).** `-Step derive` gives each chain's parts, with their premises' filled
+   bodies copied in, to DeepSeek at `deriveEffort` (high).
+5. **Review (DeepSeek, then script).** `-Step review` gives each chain to a DeepSeek reviewer
+   (`dsh-review-instructions.zh.md`, `reviewEffort` high). It judges each Derivation part `ok`,
+   `fix`, or `split` into N parts with the cut results. `-Step split` inserts the new parts,
+   re-points the next member, updates the 结构 list, and sends the work back to the same writer
+   conversation. The changed chains are reviewed again, up to `reviewRounds` (2).
+6. **Report and clean up.** `-Step report` reads `get_model` and the style check per model; the
+   last Haiku driver archives the batch's conversations and deletes its folder. A Haiku sweep
+   archives anything a failed batch left open.
 
-The report of each model adds `derivations`, `moved`, `shared`, `tolerated`, `style`,
-`accepted`, and `dsh`.
+Haiku drivers only relay DeepSeek jobs: each runs one compiler step and the jobs it prints.
 
 ## Derivation chains, Card size, and building blocks (zt 0.15.0)
 
@@ -118,23 +120,21 @@ many parts a step or a statement takes:
 Formulas, Links, tables, charts, and quotations do not count. The Model Card and the parts of a
 concept model have no size limit.
 
-- **Plan.** The ledger writes out every line of each step. A step longer than `maxSteps` lines
-  becomes a **Derivation chain**: entries of at most `maxSteps` lines, each starting from the
-  output of the one before. Any number of Derivation parts may stand between two parts.
-- **Skeleton.** The manager inserts every part of a chain (`insert_card` before the part that uses
-  its result, in chain order) and writes each part's 起点 and 结果, so the fill jobs of one chain
-  run at the same time.
-- **Fill.** A DeepSeek run that cannot fit its part answers `split` with the number of Cards it
-  needs. The manager inserts the new parts, adds them to the job's allow list, and sends them to
-  the same conversation.
-- **Check.** R13 and R14 faults mean a part is too large: the manager splits it ("Split a part" in
-  `model-elaboration.md`) before it sends other faults back. `get_model` `build.chains` shows
-  each chain and the members it connects.
-- **Building blocks.** Before it writes a chain, the manager looks for a model that already
-  derives the same result, and takes in every part of that chain instead of writing a copy. A
-  general step (a lemma, a correspondence, a solution) is filed once, in the first model that
-  needs it. zt 0.15.0 orders a shared chain correctly: each shared part stands after the shared
-  parts it rests on. A tolerated premise that is a Derivation part carries a `fix` to take it in.
+- **Plan.** The architect counts the lines of each step from the brief. A step longer than
+  `maxSteps` lines becomes a **Derivation chain**: consecutive Derivation parts, each starting from
+  the `to` of the one before. Any number of Derivation parts may stand between two parts.
+- **Skeleton.** The compiler creates every part of a chain in build order and writes each part's
+  起点 and 结果, so the derive jobs of one chain run at the same time.
+- **Fill and derive.** A DeepSeek writer that cannot fit its part answers `split` with the number
+  of Cards it needs. The compiler inserts the new parts, adds them to the job's allow list, and the
+  driver sends them to the same conversation.
+- **Review.** The DeepSeek reviewer splits a part that jumps, is too dense, or would pass
+  `maxSteps` once its gaps are filled, at cut results it names. `get_model` `build.chains` shows
+  each chain and the members it connects; the report counts R13 and R14 faults left.
+- **Building blocks.** The brief names models that already derive the same result; the architect
+  takes in every part of that chain (`take`) instead of planning a copy. A general step (a lemma, a
+  correspondence, a solution) is filed once, in the first model that needs it. zt 0.15.0 orders a
+  shared chain correctly: each shared part stands after the shared parts it rests on.
 
 The report of each model adds `derivations.chains`, `derivations.longest`, and `split`.
 
@@ -207,9 +207,12 @@ Arguments (`args`):
 | `models` | `false` skips the Models stage in a full run |
 | `rebuild` | `true` rebuilds models that already have parts (a rerun skips them by default), keeping the facets, emphasis, and charts that still fit; `redoModels` is its old name |
 | `level` | `concept` or `formal`: build every model of the run to this elaboration level; default each model's own level |
-| `perSonnet` | formal (or undecided) models per Sonnet manager (default 4); neighbouring models of the book share one manager |
-| `perConcept` | concept models per Sonnet manager (default 8); they need no DeepSeek runs |
-| `dshPerSonnet` | DeepSeek runs one manager keeps going at the same time (default 8; may be higher) |
+| `perSonnet` | formal (or undecided) models per batch, one Sonnet architect each (default 6); neighbouring models of the book share a batch |
+| `perConcept` | concept models per batch (default 10); they skip the derive and review rounds |
+| `dshPerBatch` | DeepSeek runs one batch keeps going at the same time (default 8; `dshPerSonnet` is the old name) |
+| `briefEffort`, `deriveEffort`, `reviewEffort` | DeepSeek effort of the brief (medium), the Derivation parts and follow-ups (high), and the review (high); `dshEffort` is the fill's (low) |
+| `reviewRounds` | review, split, review again (default 2); 0 skips the review |
+| `architectEffort` | the Sonnet architect's effort (default: the model's own) |
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `maxSentences`, `maxPartChars`, `maxSteps` | the Card size of a formal model's part (12, 400, 6): a part over a limit splits, and a long step becomes a Derivation chain |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
