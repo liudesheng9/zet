@@ -32,8 +32,12 @@ try {
     Write-Calls @(
         @{ tool = 'create_literature'; arguments = @{ bibtex = '@book{Test2020, title={Firms}}' } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020'; title = '第一章：融资' } },
-        @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; type = 'model'; level = 'formal'; title = '融资模型：清算价值决定能否融资'; body = "问题：企业能否融到 $K-w$？`n`n来源：第一章，(5.5)–(5.10)。" } }
+        @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; type = 'model'; level = 'formal'; title = '融资模型：清算价值决定能否融资'; body = "问题：企业能否融到 $K-w$？`n`n来源：第一章，(5.5)–(5.10)。" } },
+        # another, finished model whose Derivation part the plan takes in: the batch never splits it
+        @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; type = 'model'; level = 'formal'; title = '还款模型：还款不超过清算价值'; body = '问题：企业能还多少？' } },
+        @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1|b'; kind = 'side'; type = 'model'; facet = '推导：别的模型的还款上限'; emphasis = 'aside'; title = '推导：还款上限'; body = "**起点**`n- 从 (5.5) 出发。`n`n**步骤**`n1. a`n`n**结果**`n`$`$P\le L`$`$" } }
     )
+    $shared = 'Test2020/1|b|a'
     [IO.File]::WriteAllLines((Join-Path $staging 'sections\s01.md'), [string[]]@('# 第一章', '企业家有财富 $w$，项目需要 $K$。', '清算价值为 $L$。', '式 (5.5)：$P\le L$。', '于是得到 (5.10)。'), $utf8)
 
     # brief
@@ -53,10 +57,16 @@ try {
             [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5 },
             [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D2', '用到 (5.10)')) },
             [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; chart = '画出 L 与 K-w 的比较' },
-            [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史' }
+            [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史' },
+            [ordered]@{ id = 'T'; take = $shared; use = '还款上限的另一种推导' }
         )
     }
     $planFile = Join-Path $dir 'plan.json'
+    $plan.Remove('card')
+    [IO.File]::WriteAllText($planFile, ($plan | ConvertTo-Json -Depth 8), $utf8)
+    $v = Run 'validate' @('-Plan', $planFile)
+    Assert ($v -match '^card is missing') 'validate: a plan without card is a fault'
+    $plan.card = '问题、机制、结论'
     [IO.File]::WriteAllText($planFile, ($plan | ConvertTo-Json -Depth 8), $utf8)
     $v = Run 'validate' @('-Plan', $planFile)
     Assert ($v -match '^forward: A rests on P') 'validate: a forward premise is a fault'
@@ -79,6 +89,8 @@ try {
     Assert ($setting.body -match '术语表' -and $setting.body -match '符号表') 'apply: setting skeleton has both tables'
     $jobText = Get-Content -LiteralPath $apply.jobs[1].files[2] -Raw -Encoding utf8
     Assert ($jobText -match '清算价值为' -and $jobText -match 'ALLOW:') 'apply: job file carries the source lines and its allow file'
+    $cardJob = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
+    Assert ($cardJob -match '模型卡现在的正文' -and $cardJob -match '企业能否融到' -and $cardJob -match '内容：问题、机制、结论') 'apply: the Model Card job carries the plan''s card and the current body'
 
     # stand-in for the fill round
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
@@ -88,7 +100,9 @@ try {
     # derive: one job with the chain's two parts and the filled premises
     $derive = Last (Run 'derive')
     Assert ($derive.jobs.Count -eq 1) "derive: one job for the chain, got $($derive.jobs.Count)"
-    Assert ((Get-Content -LiteralPath $derive.jobs[0].files[2] -Raw -Encoding utf8) -match '前提卡的正文') 'derive: the job copies the premises in'
+    $deriveText = Get-Content -LiteralPath $derive.jobs[0].files[2] -Raw -Encoding utf8
+    Assert ($deriveText -match '前提卡的正文') 'derive: the job copies the premises in'
+    Assert ($deriveText -match '起点：上一步 \[\[[^\]]+\]\] 的结果 \$\$P\\le L\$\$') 'derive: a chain member''s block names the result it starts from'
     $d1 = $ids['D1']; $d2 = $ids['D2']
     Write-Calls @(
         @{ tool = 'edit_card'; arguments = @{ at = $d1; body = "**起点**`n- 依赖 [[$($s.build.setting)]]：用到 L。`n`n**步骤**`n1. a`n2. b`n`n**结果**`n`$`$P\le L`$`$" } },
@@ -97,11 +111,18 @@ try {
 
     # review, then a verdict that splits D1 into three
     $review = Last (Run 'review')
-    Assert ($review.jobs.Count -eq 1) "review: one job per chain, got $($review.jobs.Count)"
+    Assert ($review.jobs.Count -eq 1) "review: one job per chain of the model's own parts (not the shared one), got $($review.jobs.Count)"
+    Assert (-not ((Get-Content -LiteralPath $review.jobs[0].files[2] -Raw -Encoding utf8).Contains("[[$shared]]"))) 'review: the shared Derivation part is not reviewed'
     $out = ([string]$review.jobs[0].prompt) -replace '^.*写进 (\S+?)，.*$', '$1'
-    $verdict = @([ordered]@{ address = $d1; verdict = 'split'; parts = 3; cuts = @('$$P=B$$', '$$B\le L$$'); reason = '第 2 步跳了两步' })
+    $verdict = @(
+        [ordered]@{ address = $d1; verdict = 'split'; parts = 3; cuts = @('$$P=B$$', '$$B\le L$$'); reason = '第 2 步跳了两步' },
+        [ordered]@{ address = $shared; verdict = 'split'; parts = 2; cuts = @('$$P=B$$'); reason = '别的模型的卡' }
+    )
     [IO.File]::WriteAllText($out, (ConvertTo-Json -InputObject $verdict -Depth 5), $utf8)
     $split = Last (Run 'split' @('-Need', "$($ids['A'])=2"))
+    Assert ($shared -in @($split.orphans)) "split: a shared part of another model is never split (orphans: $($split.orphans -join ', '))"
+    $other = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = 'Test2020/1|b' } })
+    Assert (@($other.parts).Count -eq 1) 'split: the other model keeps its one part'
     $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
     $main = @($s.build.order | Where-Object { $_.line -eq 'main' })
     Assert ($main.Count -eq 8) "split: main line grows to 8 parts, got $($main.Count)"
@@ -123,6 +144,8 @@ try {
     # re-review only the changed chain; report
     $again = Last (Run 'review' @('-Changed'))
     Assert ($again.jobs.Count -eq 1) "review -Changed: the changed chain only, got $($again.jobs.Count)"
+    $none = Last (Run 'review' @('-Changed'))
+    Assert (@($none.jobs).Count -eq 0) "review -Changed: nothing changed since the last review, no jobs (got $(@($none.jobs).Count))"
     $report = Last (Run 'report')
     $r = $report.models[0]
     Assert ($r.status -eq 'done' -and $r.derivations.total -eq 4 -and $r.derivations.longest -eq 4 -and $r.split -eq 2) "report: 4 Derivation parts, longest chain 4, 2 splits ($($r | ConvertTo-Json -Compress -Depth 3))"

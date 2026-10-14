@@ -250,9 +250,22 @@ ${o.cleanup ? `3. Clean up: deepseek_list with cwd "${o.dsh}"; deepseek_close an
     { label, phase: 'Models', model: 'haiku', effort: 'low', schema: DRIVE },
   )
 }
-const lastJson = (text) => { try { return JSON.parse(String(text || '').trim().split('\n').pop()) } catch { return null } }
+// The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"):
+// DeepSeek does not always put its JSON on a line of its own.
+const jsonIn = (line) => {
+  for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
+    try { const v = JSON.parse(line.slice(i).trim()); if (v && typeof v === 'object') return v } catch {}
+  }
+  return null
+}
+// The compiler's JSON line: the last line holding a JSON object. A driver may wrap it in prose
+// ("Report JSON: {…}") although it is told to pass the line unchanged.
+const lastJson = (text) => {
+  for (const line of String(text || '').trim().split('\n').reverse()) { const v = jsonIn(line); if (v) return v }
+  return null
+}
 // The JSON lines of every answer, e.g. {"address","status":"split","need":3} or {"ok":2,"split":1}.
-const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(l => { try { return JSON.parse(l.trim()) } catch { return null } }).filter(Boolean))
+const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(jsonIn).filter(Boolean))
 
 const PLANS = {
   type: 'object',

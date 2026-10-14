@@ -25,8 +25,10 @@
                                 setting, every part that is not a Derivation part, with charts).
     derive                      prints the Derivation jobs (round 2), with the filled premises
                                 copied in.
-    review [-Changed]           prints one review job per Derivation chain (with -Changed, only
-                                chains that the last split touched).
+    review [-Changed]           prints one review job per Derivation chain of the model's own parts
+                                (with -Changed, only chains that the last split touched). A shared
+                                part (`take`) is never reviewed, split, or fixed: it belongs to
+                                its home model, which may be finished.
     split [-Need a=N;b=M]       applies review-*.json verdicts (split, fix) and composer requests
                                 (`need` Cards for one part): inserts the new parts, re-points the
                                 next member, updates the 结构 list, and prints follow-up jobs.
@@ -159,6 +161,8 @@ function Test-Plan($plan, $structure, $model) {
     if ($plan.model -ne $model) { & $add "plan.model is '$($plan.model)', expected '$model'" }
     if ($plan.status -eq 'skip') { return , $faults }
     if ($plan.level -notin 'concept', 'formal') { & $add 'level must be concept or formal' }
+    # The Model Card job and a concept model's setting.md carry nothing else about the model.
+    if (-not "$($plan.card)".Trim()) { & $add 'card is missing: what the Model Card must say (the question, the summary, the outside links to keep)' }
     $parts = @($plan.parts | Where-Object { $null -ne $_ })
     $ids = @{}
     $index = 0
@@ -358,11 +362,22 @@ function Get-PartBlock($n, $part, $model, [switch]$Bodies) {
     if ($part.spec) { [void]$b.AppendLine("- 要陈述的内容：$($part.spec)") }
     if (Test-Derive $part) {
         [void]$b.AppendLine("- 推导：从起点写到结果 $($part.to)$(if ($part.steps) { "，约 $($part.steps) 步" })。骨架里已写好起点和结果。")
+        # A chain member starts from the result of the part before it, which may sit in another job.
+        $main = @($State.models[$model].main | Where-Object { $null -ne $_ })
+        $k = [array]::IndexOf($main, [string]$part.id)
+        $before = if ($k -gt 0) { Get-PlanPart $model $main[$k - 1] } else { $null }
+        if ($before -and (Test-Derive $before) -and $before.to) { [void]$b.AppendLine("- 起点：上一步 [[$(Resolve-Ref $before.id $model)]] 的结果 $($before.to)") }
+        if ($part.from) { [void]$b.AppendLine("- 从 $($part.from) 出发。") }
     }
     $premises = Get-Premises $part $model -Bodies:$Bodies
     if ($premises) { [void]$b.AppendLine("- 前提：").AppendLine($premises) }
     if ($part.of) { [void]$b.AppendLine("- 它站在 [[$(Resolve-Ref $part.of $model)]] 旁边（$(if ($part.kind) { $part.kind } else { 'illustrates' })）。") }
     if ($part.chart) { [void]$b.AppendLine("- 图表：$($part.chart)") }
+    $was = if ($State.models[$model].old) { $State.models[$model].old[[string]$part.id] }
+    if ($was) {
+        if ($was.Length -gt 6000) { $was = $was.Substring(0, 6000) + '……' }
+        [void]$b.AppendLine().AppendLine('### 本卡原来的正文（按新骨架和要陈述的内容改写，可用的式子、例子和图表留用）').AppendLine($was)
+    }
     if ($part.old) { [void]$b.AppendLine().AppendLine('### 已有内容（并入本卡，按新骨架改写）').AppendLine($part.old) }
     $src = Get-SourceLines @($part.src | Where-Object { $null -ne $_ })
     if ($src) { [void]$b.AppendLine().AppendLine('### 原文').AppendLine($src) }
@@ -481,6 +496,13 @@ function Build-Model($model) {
         if (Test-HasSuccessors $mg.from $set) { $m.notes = @($m.notes | Where-Object { $null -ne $_ }) + "not merged: $($mg.from) has successors"; continue }
         $null = Invoke-Write @(@{ tool = 'delete_card'; arguments = @{ at = $mg.from; into = (Resolve-Ref $mg.into $model); confirm = 'delete' } })
     }
+    # A refilled part loses its body to the skeleton: keep the old body for the job that rewrites it.
+    $m.old = [ordered]@{}
+    $refill = @($parts | Where-Object { $_.existing -and $_.refill })
+    if ($refill.Count) {
+        $cards = @(Invoke-Zt @($refill | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = (Resolve-Ref $_.id $model) } } }))
+        for ($k = 0; $k -lt $refill.Count; $k++) { if ("$($cards[$k].body)".Trim() -and $cards[$k].body -notmatch '^\s*待写\s*$') { $m.old[$refill[$k].id] = [string]$cards[$k].body } }
+    }
     # Skeleton bodies, now that every address is final.
     $edits = @()
     $prev = $null
@@ -515,6 +537,12 @@ function Build-Model($model) {
     $jobs = @()
     $outside = @($card.outbound | Where-Object { -not $_.broken -and $_.address -notin @($m.ids.Values) } | ForEach-Object { "- [[$($_.address)]] $($_.title)" })
     $cardText = "## 模型卡：[[$model]]`n`n- 要写：问题、概要（三到五句）、结构、关联、来源。保留 **结构** 一节原样。`n- 内容：$($plan.card)`n$(if ($outside) { "- 保留这些模型外的链接，每个放进一句说明关系的话：`n$($outside -join "`n")`n" })$(if ($plan.level -eq 'concept') { "- 概念模型：用文字说清问题、机制和结论，不写推导。`n" })"
+    # The writer rewrites the Model Card from its current body; the 结构 section is the script's.
+    $current = (Set-Section ([string]$card.body) '结构' '').Trim()
+    if ($current) {
+        if ($current.Length -gt 4000) { $current = $current.Substring(0, 4000) + '……' }
+        $cardText += "`n### 模型卡现在的正文（结构一节除外）`n$current`n"
+    }
     $jobs += New-Job $model 'f' @() $cardText '按以上说明完成你的任务，最后每张卡回复一行 JSON。'
     $State.jobs[$jobs[-1].id].addresses = @($model)
     Save-Text $State.jobs[$jobs[-1].id].allow "$model`n"
@@ -547,7 +575,8 @@ function Get-PlanPart($model, $id) {
     $part = @($plan.parts | Where-Object { $null -ne $_ }) | Where-Object { $_.id -eq $id } | Select-Object -First 1
     if ($part) { return $part }
     # a part a split added: it continues its origin
-    $State.models[$model].added[$id]
+    $added = $State.models[$model].added
+    if ($added) { $added[$id] }
 }
 
 function Step-Derive {
@@ -586,10 +615,14 @@ function Step-Review {
         $structure = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
         $bodies = @{}
         foreach ($p in @($structure.parts | Where-Object { $null -ne $_ })) { $bodies[$p.address] = $p }
-        $changed = @($State.rereview | ForEach-Object { Resolve-Ref $_ $model })
+        # Not $changed: PowerShell names are case-insensitive, and it would overwrite the -Changed switch.
+        $touched = @($State.rereview | Where-Object { $null -ne $_ } | ForEach-Object { Resolve-Ref $_ $model })
+        # Only the model's own Derivation parts: a shared part's chain belongs to its home model.
+        $own = @($m.ids.Keys | Where-Object { $p = Get-PlanPart $model $_; -not ($p -and $p.take) } | ForEach-Object { [string]$m.ids[$_] })
         foreach ($c in @($structure.build.chains | Where-Object { $null -ne $_ })) {
-            $parts = @($c.parts)
-            if ($Changed -and -not @($parts | Where-Object { $_ -in $changed }).Count) { continue }
+            $parts = @($c.parts | Where-Object { $_ -in $own })
+            if (-not $parts.Count) { continue }
+            if ($Changed -and -not @($parts | Where-Object { $_ -in $touched }).Count) { continue }
             for ($i = 0; $i -lt $parts.Count; $i += 6) {
                 $group = @($parts | Select-Object -Skip $i -First 6)
                 $State.seq++
@@ -613,10 +646,17 @@ function Step-Review {
     Out-Last ([ordered]@{ jobs = $jobs })
 }
 
+# The model and plan id of a part this batch built. A shared part (`take`) belongs to another
+# model, which may be finished: the batch never splits or fixes it.
 function Find-Owner($address) {
     foreach ($model in @($State.order | Where-Object { $null -ne $_ })) {
         $m = $State.models[$model]
-        foreach ($id in @($m.ids.Keys)) { if ($m.ids[$id] -eq $address) { return @{ model = $model; id = $id } } }
+        foreach ($id in @($m.ids.Keys)) {
+            if ($m.ids[$id] -ne $address) { continue }
+            $p = Get-PlanPart $model $id
+            if ($p -and $p.take) { continue }
+            return @{ model = $model; id = $id }
+        }
     }
     $null
 }
@@ -767,7 +807,8 @@ function Step-Report {
         $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
         $style = 0
         if (@($s.parts | Where-Object { $null -ne $_ }).Count) {
-            $lines = @(pwsh -NoProfile -File $Check -Model $model -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps 2>&1)
+            # Shared parts belong to their home models, which this batch does not change.
+            $lines = @(pwsh -NoProfile -File $Check -Model $model -SkipShared -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps 2>&1)
             $last = [string]($lines | Where-Object { [string]$_ -match '^faults: \d+' } | Select-Object -Last 1)
             $style = if ($last) { [int]($last -replace '^faults: ', '') } else { -1 }
         }
@@ -784,7 +825,7 @@ function Step-Report {
             neighbours = @($s.neighbours | Where-Object { $null -ne $_ }).Count; loose = @($s.loose | Where-Object { $null -ne $_ }).Count
             charts = @($s.parts | Where-Object { $_.body -match '```chart' }).Count
             todo = @($s.parts | Where-Object { $_.body -match '(^|\n)\s*待写\s*($|\n)' } | ForEach-Object { $_.address })
-            derivations = [ordered]@{ total = @($order | Where-Object { $_.derivation }).Count; chains = @($chains | Where-Object { $_.length -ge 2 }).Count; longest = [int](@($chains | ForEach-Object { [int]$_.length }) + @(0) | Measure-Object -Maximum).Maximum }
+            derivations = [ordered]@{ total = @($order | Where-Object { $_.derivation -and $_.line -ne 'shared' }).Count; chains = @($chains | Where-Object { $_.length -ge 2 }).Count; longest = [int](@($chains | ForEach-Object { [int]$_.length }) + @(0) | Measure-Object -Maximum).Maximum }
             split = [int]$m.split; moved = @($m.moved | Where-Object { $null -ne $_ }); shared = @($order | Where-Object { $_.line -eq 'shared' }).Count
             tolerated = @($s.build.tolerated | Where-Object { $null -ne $_ }).Count; style = $style
             faults = [ordered]@{ closure = @($s.build.closure | Where-Object { $null -ne $_ }).Count; forward = @($s.build.forward | Where-Object { $null -ne $_ }).Count; unanchored = @($s.build.unanchored | Where-Object { $null -ne $_ }).Count; beyond_level = @($s.build.beyond_level | Where-Object { $null -ne $_ }).Count }

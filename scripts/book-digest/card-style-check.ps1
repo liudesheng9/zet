@@ -45,7 +45,8 @@
                           term table comes from the entry whose address is -Setting.
 
   A shared part (`line` "shared" in the build order) follows the term table of its home model, so
-  R6 skips it here; its home model checks it.
+  R6 skips it here; its home model checks it. With -SkipShared (-Model only), shared parts are not
+  checked at all: a build report counts only the Cards its own model owns.
 
   Output: one line per fault, `<address> R<n> <sentence>`, then `faults: <count>`.
 #>
@@ -58,7 +59,8 @@ param(
     [int]$MaxSentences = 12,
     [int]$MaxChars = 400,
     [int]$MaxSteps = 6,
-    [ValidateSet('', 'concept', 'formal')][string]$Level = ''
+    [ValidateSet('', 'concept', 'formal')][string]$Level = '',
+    [switch]$SkipShared
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -89,6 +91,7 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not $Level) { $Level = [string]$structure.level }
         # A shared part follows the term table of its home model, not this one.
         $script:otherTerms = @($structure.build.order | Where-Object { $_.line -eq 'shared' } | ForEach-Object { [string]$_.address })
+        if ($SkipShared) { $cards = @($cards | Where-Object { $_.address -notin $script:otherTerms }) }
     }
     'Addresses' {
         $list = @($Addresses -split '[,\s]+' | Where-Object { $_ })
@@ -191,7 +194,8 @@ function Test-Sentence($address, [string]$sentence, [bool]$step) {
     $limit = if ($measure.unit -eq 'characters') { if ($step) { 30 } else { 40 } } else { if ($step) { 20 } else { 25 } }
     if ($measure.size -gt $limit) { Add-Fault $address 2 "($($measure.size) $($measure.unit) > $limit) $sentence" }
     if ($plain -match '[；;]') { Add-Fault $address 3 $sentence }
-    if ($plain -match '被(?!告|保险|动|子)') { Add-Fault $address 4 $sentence }
+    # `被收购方`, `被投资方`: a party, not a passive (and a 被 that names the party has its actor).
+    if ($plain -match "被(?!告|保险|动|子|$cjk{1,2}方)") { Add-Fault $address 4 $sentence }
     if ($plain -match "(进行|加以|予以|作出|做出)$cjk") { Add-Fault $address 5 $sentence }
     foreach ($term in $(if ($address -in $script:otherTerms) { @() } else { $terms.Keys })) {
         foreach ($word in $terms[$term]) {

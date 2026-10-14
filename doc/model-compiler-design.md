@@ -114,7 +114,32 @@ Writers address Cards by today's addresses, which only change between rounds.
 - A kept main-line part keeps its place: a plan may put new parts between kept parts, but not
   reorder them. Only a part without successors can merge.
 - A model whose filed parts are not all in its plan fails validation; the architect lists each one.
+- A shared part (`take`) belongs to its home model: the review skips its chain, a verdict or a
+  writer's `need` on it is an orphan, and the report's style faults and Derivation count leave it
+  out (`card-style-check.ps1 -SkipShared`).
+- A rebuild keeps what an earlier build wrote: the Model Card job carries the card's current body,
+  and a refilled part's job carries the body the skeleton replaced.
 - The compiler is tested on a scratch archive (`scripts/book-digest/tests/model-compiler.tests.ps1`:
   brief, validate, apply, derive, review, split by a verdict and by a writer's `need`, re-review,
-  report). The DeepSeek rounds and the Haiku drivers are not yet run on a real book: run a pilot
-  with `mode: "models"` and `only` before a full digest.
+  report, and a shared Derivation part of another model).
+
+## Pilot (2026-10-14)
+
+`mode: "models"`, `rebuild: true`, `only` hart1995firms/7|a (formal, 8 parts) and 4|a (concept,
+4 parts). Both models built clean: no closure, forward, or unanchored faults, nothing 待写, 0 style
+faults on their own Cards; the reviewer passed the new two-part chain. 10.4 minutes.
+
+| | Pilot (2 models) | Old Sonnet manager |
+| --- | --- | --- |
+| Sonnet | 2 architect calls, 19 turns: 1.52 M cache read, 0.15 M cache write, 0.9 k output | per formal model (MWG, 412 models): 20 turns, 5.5 M cache read, 98 k cache write; per concept model: 10 turns, 1.2 M read |
+| Haiku | 12 drivers, 48 turns: 2.73 M cache read, 0.43 M cache write | none |
+| DeepSeek | 94 calls, 0.37 M miss, 5.65 M cached, 0.13 M output, $0.99 (day-ledger difference) | not measured per model |
+
+The fixed cost of a Haiku driver (about 25 k cache write and 60 k per turn) dominates a small
+batch; a full digest's batches of 6 or 10 models spread it.
+
+Bugs the pilot found, all fixed and tested: the review split a shared part of a finished model;
+`review -Changed` re-reviewed unchanged chains (the local `$changed` overwrote the `-Changed`
+switch, PowerShell names being case-insensitive); a plan without `card` gave the Model Card job and
+a concept model's setting no content; drivers wrapped the compiler's JSON line, and DeepSeek its
+answer line, in prose, which the workflow could not parse; R4 read `被收购方` as a passive.

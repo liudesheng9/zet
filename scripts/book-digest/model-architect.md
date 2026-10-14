@@ -75,7 +75,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | Field | Meaning |
 | --- | --- |
 | `title` | optional new title for the Model Card |
-| `card` | what the Model Card must say: the question, the summary, the outside links to keep |
+| `card` | required: what the Model Card must say: the question, the summary, the outside links to keep. The Model Card job and a concept model's setting carry nothing else |
 | `symbols` | formal: every symbol, `[symbol, meaning]` or `[symbol, meaning, first part]` |
 | `terms` | formal: each term, then the words the Cards must not use for it |
 | `id` | your id for the part, unique in the plan |
