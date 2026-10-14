@@ -50,17 +50,42 @@ function New-Relatedness($documents, [int]$keep = 150) {
     [pscustomobject]@{ Vectors = $vectors; Postings = $postings }
 }
 
+# The scoring loop is compiled: in script it takes hours on a textbook's thousands of Cards.
+if (-not ('BookDigestRelatedness' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+public static class BookDigestRelatedness {
+    // Every other id that shares a term with id, most similar first.
+    public static string[] Rank(Hashtable vectors, Hashtable postings, string id) {
+        var vector = vectors[id] as Hashtable;
+        if (vector == null) return new string[0];
+        var scores = new Dictionary<string, double>();
+        foreach (DictionaryEntry entry in vector) {
+            var list = postings[entry.Key] as IEnumerable;
+            if (list == null) continue;
+            double weight = (double)entry.Value;
+            foreach (string other in list) {
+                if (other == id) continue;
+                double score;
+                scores.TryGetValue(other, out score);
+                scores[other] = score + weight * (double)((Hashtable)vectors[other])[entry.Key];
+            }
+        }
+        return scores.OrderByDescending(kv => kv.Value).Select(kv => kv.Key).ToArray();
+    }
+}
+'@
+}
+
 # Ids most similar to $id, excluding ids for which $exclude returns $true.
 function Find-Related($model, [string]$id, [int]$top = 5, [scriptblock]$exclude = { $false }) {
-    $scores = @{}
-    $vector = $model.Vectors[$id]
-    if (-not $vector) { return @() }
-    foreach ($term in $vector.Keys) {
-        foreach ($other in $model.Postings[$term]) {
-            if ($other -eq $id) { continue }
-            $scores[$other] = [double]$scores[$other] + $vector[$term] * $model.Vectors[$other][$term]
-        }
+    $found = [Collections.Generic.List[string]]::new()
+    foreach ($other in [BookDigestRelatedness]::Rank($model.Vectors, $model.Postings, $id)) {
+        if (& $exclude $other) { continue }
+        $found.Add($other)
+        if ($found.Count -ge $top) { break }
     }
-    @($scores.GetEnumerator() | Where-Object { -not (& $exclude $_.Key) } |
-        Sort-Object Value -Descending | Select-Object -First $top | ForEach-Object { $_.Key })
+    @($found)
 }

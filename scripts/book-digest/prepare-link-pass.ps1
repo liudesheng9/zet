@@ -73,9 +73,17 @@ function Group-OfSection($id) {
 # --- ownership -----------------------------------------------------------------------------------
 $agentCards = @($details | Where-Object { $_.workspace -eq 'agent' } | ForEach-Object { $_.cards } | Where-Object { $_.kind -ne 'topic' })
 $bodies = @{}
-foreach ($card in @(Invoke-Zt @($agentCards | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_.address } } }))) {
-    $bodies[$card.address] = $card
+# A Model part's get_card also builds its whole model, so a textbook's thousands of Cards are read
+# by several zt helpers at once.
+$workers = [Math]::Max(1, [Math]::Min(12, [Environment]::ProcessorCount))
+$chunks = for ($w = 0; $w -lt $workers; $w++) { , @(for ($i = $w; $i -lt $agentCards.Count; $i += $workers) { $agentCards[$i].address }) }
+$calls = Join-Path $PSScriptRoot 'zt-calls.ps1'
+$read = $chunks | Where-Object { $_.Count } | ForEach-Object -ThrottleLimit $workers -Parallel {
+    . $using:calls
+    @(Invoke-Zt @($_ | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
 }
+foreach ($card in @($read)) { $bodies[$card.address] = $card }
+if ($bodies.Count -ne $agentCards.Count) { throw "read $($bodies.Count) of $($agentCards.Count) agent Cards" }
 $owner = @{}
 $logged = @{}
 foreach ($group in $manifest.groups) {

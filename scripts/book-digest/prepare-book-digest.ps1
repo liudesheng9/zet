@@ -10,7 +10,9 @@
     block is its translation. Formulas, tables, and unpaired blocks are kept; images are dropped.
   - Splits at `#` and `##` headings from -StartHeading up to -EndHeading, merges tiny units into
     the next one, and groups one or two consecutive units of the same chapter per DeepSeek run
-    (at most -MaxChars characters per group unless a single unit is larger).
+    (at most -MaxChars characters per group unless a single unit is larger). Units under a heading
+    in -SkipHeadings (comma-separated, e.g. a chapter's '参考文献,习题') are left out up to the next
+    other heading.
   - Writes to -Out: book.zh.md, groups/gNN.md, shared-prefix.md (identical for every run, so the
     DeepSeek prompt cache can reuse it), and manifest.json.
   - -Apply creates, through `zt mcp` with agent Access, the Literature Card -CitationKey from
@@ -26,6 +28,7 @@ param(
     [string]$BookTitle = '',
     [string]$StartHeading = '导论',
     [string]$EndHeading = '参考',
+    [string]$SkipHeadings = '',
     [int]$MaxChars = 20000,
     [int]$MaxUnits = 3,
     [int]$MinUnitChars = 1000,
@@ -57,6 +60,7 @@ for ($i = 0; $i -lt $blocks.Count; $i++) {
 
 # --- units at # and ## headings ------------------------------------------------------------------
 $units = [Collections.Generic.List[object]]::new()
+$skip = @($SkipHeadings -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $chapter = ''
 $current = $null
 $inside = $false
@@ -66,6 +70,7 @@ foreach ($block in $kept) {
         if (-not $inside -and $heading -eq $StartHeading) { $inside = $true }
         if ($inside -and $heading -eq $EndHeading) { break }
         if (-not $inside) { continue }
+        if ($heading -in $skip) { $current = $null; continue }
         if ($level -eq 1) { $chapter = $heading }
         $current = [ordered]@{ chapter = $chapter; heading = $heading; text = [Text.StringBuilder]::new() }
         $units.Add($current)
