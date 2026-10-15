@@ -526,6 +526,10 @@ it later. The rerun took about 100 minutes, with the same limits as the pilot.
 Every topic hub is listed by a field hub. A field hub links a small Topic (fewer than `topic_min`
 Cards) by its root. The run marked such a root `（枢纽）`. The compiler now marks only real hubs.
 
+A second full run on 2026-10-15 rebuilt every hub (`hubRebuild: true`) on DeepSeek V4.1 Flash from the
+OpenCode Go source (`dshSource: "opencode"`), at high effort, in about 31 minutes. It gave the same 153
+hubs with 0 faults, 0 broken Links, 76 register terms, and 8 Cards that no hub reaches.
+
 
 - It does not compute hubs. A cluster only proposes a field. A planner names it and a writer gives
   each member its reason.

@@ -267,7 +267,7 @@ function Step-Plan {
         $jobs += [ordered]@{ id = $id; files = @($Doc, $file); prompt = '按以上说明读主题清单，写出领域与索引的 JSON 文件。最后只回复一行 JSON。' }
     }
     Save-State
-    Out-Last ([ordered]@{ jobs = $jobs; trees = @($picked | ForEach-Object { [string]$_.tree }); limits = $limits })
+    Out-Last ([ordered]@{ tree_count = $picked.Count; jobs = $jobs; trees = @($picked | ForEach-Object { [string]$_.tree }); limits = $limits })
 }
 
 # --- apply -------------------------------------------------------------------------------------------

@@ -618,7 +618,7 @@ ${hstep('survey')}
   const plan = lastJson(written && written.output)
   if (!plan) return { status: 'failed', limits, error: `plan failed: ${(written && written.error) || 'no output'}` }
   const failedJobs = ((written && written.results) || []).filter(x => x.status !== 'done').map(x => x.id)
-  log(`Hubs: ${plan.trees.length} Topic trees to write in ${plan.jobs.length} DeepSeek jobs (one is the field planner)${failedJobs.length ? `; failed jobs ${failedJobs.join(', ')}` : ''}.`)
+  log(`Hubs: ${plan.tree_count ?? (plan.trees || []).length} Topic trees to write in ${plan.jobs.length} DeepSeek jobs (one is the field planner)${failedJobs.length ? `; failed jobs ${failedJobs.join(', ')}` : ''}.`)
   let applied = lastJson(((await hrun('apply 1', hstep('apply'))) || {}).output)
   let checked = null
   for (let round = 1; round <= HUB_FIX_ROUNDS; round++) {
@@ -629,7 +629,7 @@ ${hstep('survey')}
   }
   const reported = lastJson(((await hrun('report', hstep('report'), { cleanup: true })) || {}).output)
   log(`Hubs: ${JSON.stringify((reported && reported.counts) || {})}; faults ${JSON.stringify((reported && reported.faults) || {})}; ${reported ? reported.mirror : '?'} mirror hubs; ${reported ? reported.missing_count : '?'} required hubs still missing; ${jobs} DeepSeek jobs.`)
-  return { status: reported ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.trees.length, applied, report: reported }
+  return { status: reported ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported }
 }
 let hubReport = null
 if (MODE === 'hubs') {
