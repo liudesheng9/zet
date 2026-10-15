@@ -43,6 +43,7 @@ The pilot changed or added these decisions:
 | D15 | Is the old Organize kept? | **Yes, as `organize: "legacy"`.** | A fallback costs nothing. The new Organize ran on one book only. |
 | D16 | Where do the card cycles of a full run go? | **Beside the model stage of each block** (no orphans), then **one Link check with an orphan pass** after the link pass. | The link pass adds the Links that most orphans need. An orphan pass before it would do that work twice. |
 | D17 | How do the DeepSeek jobs of one step run? | **One Haiku manager per 8 jobs, at most 8** (`dshManagers`). Each manager keeps 8 jobs running. 1 to 8 jobs get one manager, 9 to 16 get two, and 57 or more get 8. One Haiku agent runs the step's script, one cleans up. The link pass starts 8 groups at once per manager (`linkPerManager`). | The user set this rule. One manager with every job of a step was the slow part of each stage. A manager costs Haiku tokens, and a manager with fewer than 8 jobs adds no speed. The digest runs of a block stay in book order, because each run reads the Cards its predecessor wrote. |
+| D18 | How does a big book apply its rewrites? | **In shares of 30 jobs** (`applyShare`, `card-compiler.ps1 -MaxJobs`), repeated until none is pending. Apply saves its state after every job. A rerun makes a missing split Card, never a second one, and appends no orphan Link twice. | On `mascolell1995microeconomic` one apply call of 226 jobs ran past the step agent's 10-minute command limit. The agent's end stopped it after 427 of 1,689 rewrites, before it saved its state. |
 
 ## Principles
 
@@ -136,7 +137,7 @@ The table also names the Topic candidates. The Topic gate (proposal 5) uses it.
 
 ### 3. Idea Card layer: check, review, fix
 
-**Source lines.** Each `create_successor` call of a digest run gets an optional `src` field, for example `"src": "sections/s05.md:120-160"`. The helper removes the field before it calls zt. It writes the address and the source lines to the `-Log` file. A reviewer then knows which lines to compare.
+**Source lines.** Each `create_successor` call of a digest run gets an optional `src` field, for example `"src": "sections/s05.md:120-160"`. The helper drops the field before it calls zt. It writes the address and the source lines to the `-Log` file. A reviewer then knows which lines to compare.
 
 **Check.** After each digest block, `card-style-check.ps1 -Book <key> -Types idea` checks every Idea Card that the block wrote. It applies R2 to R12, R6 with the book term table, and the I rules below.
 
@@ -290,7 +291,7 @@ The scripts are in `scripts/book-digest/`. The workflow is `.claude/workflows/zt
 | 3. Idea and Event cycle | `card-compiler.ps1` (plan, apply, check, report), `dsh-card-instructions.zh.md`, the Cards stage after each digest block | The reviewer writes the fix itself (D11). A split makes a Side successor, joins its group's `owned-gNN.txt`, and is checked in the next round. |
 | 4. Event Cards | Event candidates in each group file and in `events.json` (Prepare). The fixed template and the search for an existing Event Card in `dsh-instructions.zh.md`. Rules E1, E2, E4, and E5. | The reviewer checks E3. E5 is advisory: it compares the year and the title. |
 | 5. Topic gate | `-TopicGate <file>` in `skills/zt/scripts/zt-mcp.ps1` | The gate file is only a lock. The helper reads the live agent Topics, so a reservation list is not needed. |
-| 6. Link layer | The same cycle on the whole book after the link pass: every hard rule in mode `full` (the link pass can add R2, R4, and I2 faults), rules L1 and L2 in mode `link`, and orphan jobs (`dsh-orphan-instructions.zh.md`) | The fixes are fresh jobs, not the link run's conversation (archived by then). A Card that takes an orphan Link is checked again. L4 is not built: the link pass already gives candidates from other groups only. |
+| 6. Link layer | The same cycle on the whole book after the link pass, with orphan jobs (`dsh-orphan-instructions.zh.md`). Mode `full` checks every hard rule, because the link pass can add R2, R4, and I2 faults. Mode `link` checks L1 and L2. | The fixes are fresh jobs, not the link run's conversation (archived by then). A Card that takes an orphan Link is checked again. L4 is not built: the link pass already gives candidates from other groups only. |
 | 7. Skeleton | `book-skeleton.ps1` (plan, apply), `dsh-skeleton-instructions.zh.md` | It also writes the Topic bodies and keeps their hub lines, and links the term table from the Literature Card. The anchor check (step 5) is rule I1 on anchor titles. The `在全书中的位置：` paragraph is not checked. |
 | 8. Organize | `organize-survey.ps1`, Opus `decisions.json`, `organize-apply.ps1`, a notes cycle (rule N1, and every hard rule in mode `full`), and the skeleton. `organize: "legacy"` keeps the old job. | Opus also writes `notes`: Card-level work that a card cycle carries out. A note may replace a Link (D14). `organize-apply.ps1` translates the notes through the renames of its moves. |
 | `src` log | `src` field and `-SrcLog <file>` in the zt helper | The reviewer reads the logged lines. For an older digest it searches the section the source line names. |
@@ -360,7 +361,7 @@ I checked 30 random hard faults in the three other books by hand. All 18 L1 faul
 
 ### Phase 4 digest of `acemoglu2000franchise`
 
-On 2026-10-15 the workflow (mode `full`, with hubs) digested Acemoglu and Robinson (2000), *Why Did the West Extend the Franchise?* It used Scholar Archive file 32 and ran from 一、简介 up to 参考文献. DeepSeek V4.1 Flash ran from the official source at effort high. The database was copied to `D:\zt\backups\` before each run (`VACUUM INTO`, integrity checked).
+On 2026-10-15 the workflow digested Acemoglu and Robinson (2000) in mode `full`, with hubs. The paper is *Why Did the West Extend the Franchise?* The run used Scholar Archive file 32 and ran from 一、简介 up to 参考文献. DeepSeek V4.1 Flash ran from the official source at effort high. The database was copied to `D:\zt\backups\` before each run (`VACUUM INTO`, integrity checked).
 
 The first run (`wf_3b60d3cd-f30`) wrote no Cards, and it was stopped. A zt deploy of another session took `zt` off PATH for a short time, and DeepSeek Harness still started pwsh 7.6.6 after an update to 7.6.7. Every digest group failed, but the workflow went on to the link pass with an empty book. Its frame (10 Cards) and its conversations were deleted. The second run (`wf_21e470a7-647`, 88 minutes, 171 agents) gave these results:
 
@@ -376,15 +377,15 @@ The first run (`wf_3b60d3cd-f30`) wrote no Cards, and it was stopped. A zt deplo
 | Link pass and Link check | 8 groups, 242 Links. The Link check found 67 faults (L1 52, L2 15) → 0 on 60 Cards. The orphan pass gave 9 orphans a Link, and 0 orphans are left. |
 | Organize | Opus decided 0 merges, 5 moves, and 20 notes, and listed 5 points for the user (a cross-book Link to check among them). `organize-apply.ps1` moved 5 Cards and refused none. The notes cycle carried out all 20. The skeleton wrote the structure Card `1\|f`, titled with the thesis (选举权扩大是精英在革命威胁下对未来再分配的承诺), and 8 Topic bodies. |
 | Figures | The paper has no kept figures. The Literature Card links the PDF and the Markdown. |
-| Hubs | Not written in the run. `hub-compiler.ps1 -Step apply` stopped at the first new Topic (197), after it had made an empty topic hub there. The workflow still reported the stage as done. After the fix, the apply step ran again on the kept DeepSeek files (17 trees). It made 12 hubs and rewrote 49. The empty hub was deleted, so the topic hub of 197 is now `197/1\|g`. Check: 166 hubs (104 topic, 40 line, 21 field, 1 register). 2 faults are left: `60/1\|f` and `61/1\|e` list the topic hub `49/1\|i` (upward), and their fix job (`t59-fix`) is not run. 1 required hub is missing, in a tree outside this run (135, 甄别均衡). |
+| Hubs | Not written in the run. `hub-compiler.ps1 -Step apply` stopped at the first new Topic (197), after it made an empty topic hub there. The workflow still reported the stage as done. After the fix, the apply step ran again on the kept DeepSeek files (17 trees). It made 12 hubs and rewrote 49. The run deleted the empty hub, so the topic hub of 197 is now `197/1\|g`. Check: 166 hubs (104 topic, 40 line, 21 field, 1 register). 2 faults are left: `60/1\|f` and `61/1\|e` list the topic hub `49/1\|i` (upward), and their fix job (`t59-fix`) is not run. 1 required hub is missing, in a tree outside this run (135, 甄别均衡). |
 | Audit | 177 Cards. 0 orphans, 0 Idea or Event Cards with no source line, 0 with no kinded Link, 0 broken Links. 12 hard layer faults (I2 9, L2 3) and 9 Card language faults other than R6 (R2 5, R4 4) were left. R6 has 27 faults against the term table, which is not fixed by default (D13). |
 | Cost | DeepSeek: 1,294 calls, cache hit rate 0.92, 41.4 in the usage ledger. Claude agents: 12.0 million tokens. |
 
 The run found these faults in the scripts. Each one is fixed, and a test covers it:
 
 1. **The workflow went on after every digest group failed.** It now stops after the digest when no group is done (harness test).
-2. **The hub apply stopped at a new Topic with no line hubs.** `$script:Cards` was still empty, because only `Get-Exists` loaded it, and nothing had called it before the topic hub was recorded. `Add-Known` loads the cache first (`tests/hub-compiler.tests.ps1`: a new Topic gets its topic hub).
-3. **A failed apply step was reported as done.** The hub stage and a card cycle are now `failed`, with the error, when an apply step gives no output (harness test).
+2. **The hub apply stopped at a new Topic with no line hubs.** `$script:Cards` was still empty. Only `Get-Exists` loaded it, and no step called it before the script recorded the topic hub. `Add-Known` loads the cache first (`tests/hub-compiler.tests.ps1`: a new Topic gets its topic hub).
+3. **The workflow reported a failed apply step as done.** Now the hub stage and a card cycle are `failed` when an apply step gives no output. They report the error (harness test).
 4. **The Link check and the notes cycle left faults that they caused.** The audit traced the 21 faults to 19 Cards. 14 of them were rewritten by the Link check or the notes cycle. Two (`198/1|b|b`, `6|d`) were extended by the link pass itself. The rest are the Literature Card index and Model Cards, which the cycle does not write. In mode `full`, both cycles now check every hard rule. N1 is still added for the notes. In mode `link` on an older book they keep to L1 and L2, or N1 (harness test).
 
 Notes for the user:
@@ -394,7 +395,7 @@ Notes for the user:
 
 ### Not verified yet
 
-- The three fixes of the `acemoglu2000franchise` digest in a real run: the hub apply for a new Topic, the failed status, and the wider rules of the Link check and the notes cycle. The tests cover each one.
+- The three fixes from the `acemoglu2000franchise` digest have not run in a real digest yet. They are the hub apply for a new Topic, the failed status, and the wider rules of the Link check and the notes cycle. The tests cover each one.
 - The hub apply fix ran by hand on the kept files, not in a workflow run. The 2 upward faults of the hub check are not fixed.
 
 ## New arguments

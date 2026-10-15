@@ -37,6 +37,7 @@ export const meta = {
 //         dshManagers (8: the most Haiku managers that run the DeepSeek jobs of one compiler step in parallel;
 //         a step gets one manager per dshPerBatch jobs),
 //         linkPerManager (8: the link runs one Haiku manager starts at once),
+//         applyShare (30: the jobs one apply call of a card cycle writes; apply repeats until none is pending),
 //         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
 //         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
 //         model's own level, which DeepSeek proposes and the Sonnet architect confirms),
