@@ -37,9 +37,9 @@ this model (`设定`, `均衡`, `数值例子`), and optionally an `emphasis` (`
 see, `aside` for detail). A Model Card also carries its model's elaboration `level`: `concept` (level 1: a concept model, stated in words in the Model Card and a few parts, with no Derivation parts) or `formal` (level 2: a formal model, built self-sufficient with a derivation and Derivation parts for the steps the source skips); set it with create_successor or edit_card. Where a part is filed does not decide its model: a part belongs to the \
 Model Card it is filed under and to every Model Card that links it, so file it where it first \
 connects and let one part serve several models. Every Link says what it is by the words before it \
-in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`), contrasts (`对照`, `区别`), \
-relaxes (`放宽`, `推广`), corresponds (`对应`, `类比`), objects (`反驳`, `批评`); with none it is a \
-plain reference. get_model shows a model's parts, their kinded relations, its loose parts, and its \
+in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`, `印证`), contrasts \
+(`对照`, `区别`), relaxes (`放宽`, `推广`), corresponds (`对应`, `类比`, `参照`), objects (`反驳`, \
+`批评`); with none, or after `引出` (the linked Card builds on this one), it is a plain reference. get_model shows a model's parts, their kinded relations, its loose parts, and its \
 Links with Cards outside it, and its `build`: the members in build order (the setting, then the \
 main line of Direct successors, each example beside its step, shared parts before the step that \
 needs them and after the shared parts they rest on), its `chains` (runs of Derivation parts: one long step may take \

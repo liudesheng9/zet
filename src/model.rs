@@ -414,7 +414,9 @@ pub(crate) enum RelationKind {
 
 /// Each announced kind with what it means and the words that announce it.
 /// English words match at the start of a word, so `relax` covers `relaxes`.
-pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
+/// The last row names words that announce a plain reference, so a Link after
+/// them does not share the kind of a Link before them in the sentence.
+pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
     (
         RelationKind::RestsOn,
         "rests on the linked Card: a premise or a derivation step",
@@ -453,6 +455,7 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
             "例证",
             "实例",
             "案例",
+            "印证",
             "illustrat",
             "example of",
             "instance of",
@@ -502,6 +505,7 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
             "同构",
             "相当于",
             "等价",
+            "参照",
             "correspond",
             "maps onto",
             "analog",
@@ -526,6 +530,11 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 6] = [
             "counterexample",
             "challeng",
         ],
+    ),
+    (
+        RelationKind::Refers,
+        "a plain reference: 引出 points the other way (the linked Card builds on this one), and that Card's 承接 carries the relation",
+        &["引出"],
     ),
 ];
 
@@ -1539,5 +1548,32 @@ mod tests {
         );
         // 比较静态 is no contrast.
         assert_eq!(kinds("均衡与比较静态见 [[e]]。"), [pair("e", "refers")]);
+    }
+
+    #[test]
+    fn digest_words_for_corroboration_and_reference_have_kinds() {
+        let kinds = |body: &str| {
+            read_links(body, |at| at.to_string())
+                .into_iter()
+                .map(|read| (read.target, read.kind.id()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |target: &str, kind: &'static str| (target.to_string(), kind);
+        // 印证 states a case that bears a claim out and 参照 a parallel point. 来自 is
+        // an ordinary verb inside a clause (`只来自观察`), so it announces nothing.
+        assert_eq!(
+            kinds("结论直接来自 [[a]] 的导数公式。这印证 [[b]] 的判断。参照 [[c]]：均衡路径可能不唯一。"),
+            [
+                pair("a", "refers"),
+                pair("b", "illustrates"),
+                pair("c", "corresponds")
+            ]
+        );
+        // 引出 points the other way (the linked Card builds on this one), so it
+        // stays a plain reference; the later Card's 承接 carries the relation.
+        assert_eq!(
+            kinds("本部分承接 [[p]]，引出 [[n]] 的融资问题。"),
+            [pair("p", "rests-on"), pair("n", "refers")]
+        );
     }
 }

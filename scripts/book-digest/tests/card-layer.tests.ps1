@@ -1,7 +1,7 @@
 #Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\card-layer.tests.ps1
 # Checks the Card layer rules of card-style-check.ps1 (I, E, and L rules) against a fixture: a
-# good Idea Card, a short one with every Idea fault, a long one, a bare Event Card, a good one, a
+# good Idea Card (its Link after 引出 is no L1 fault), a short one with every Idea fault, a long one, a bare Event Card, a good one, a
 # second report of the same event, an anchor, and a Model part that names no category (it gets the
 # R rules only).
 $ErrorActionPreference = 'Stop'

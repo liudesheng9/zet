@@ -49,13 +49,13 @@ The 0.7 model followed the first two for filing and then rebuilt a hierarchy on 
 
   | Kind | Means | Words |
   | --- | --- | --- |
-  | `rests-on` | a premise or derivation step | 依赖 依据 基于 建立在 取自 沿用 承接 用到 借用 · rests on, builds on, depends on, relies on, derived from, follows from, uses |
-  | `illustrates` | an example, case, or numerical illustration | 例示 举例 例子 示例 演示 例证 实例 案例 · illustrat…, example of, instance of, for example, e.g. |
+  | `rests-on` | a premise or derivation step | 依赖 依据 基于 建立在 取自 沿用 承接 用到 借用 代入 推导自 由此推出 · substitut…, rests on, builds on, depends on, relies on, derived from, follows from, uses |
+  | `illustrates` | an example, case, or numerical illustration | 例示 举例 例子 示例 演示 例证 实例 案例 印证 · illustrat…, example of, instance of, for example, e.g. |
   | `contrasts` | a comparison or difference | 对照 对比 相比 不同于 区别 相反 · contrast…, unlike, compare(d with), versus, differs from |
   | `relaxes` | relaxes, extends, or generalizes | 放宽 放松 推广 扩展 拓展 一般化 · relax…, extend…, generaliz… |
-  | `corresponds` | a correspondence, analogy, or equivalence | 对应 类比 同构 相当于 等价 · correspond…, maps onto, analog…, equivalent, mirrors |
+  | `corresponds` | a correspondence, analogy, or equivalence | 对应 类比 同构 相当于 等价 参照 · correspond…, maps onto, analog…, equivalent, mirrors |
   | `objects` | an objection, critique, or counterexample | 反驳 批评 质疑 反例 否定 挑战 · objection, objects to, critici…, refut…, counterexample, challeng… |
-  | `refers` | a plain reference | (no announcing word) |
+  | `refers` | a plain reference | (no announcing word) · 引出 (points the other way; stops a shared kind) |
 
 - English words match only at the start of a word (`causes` is not `uses`); the latest-ending word wins, the longer on a tie (`counterexample` over `example`). `比较` is deliberately absent, so `比较静态` is not a contrast.
 - Each relation and neighbour carries `kind`. Kinds are computed, never stored; changing the sentence changes the kind.

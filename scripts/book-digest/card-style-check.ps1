@@ -70,8 +70,9 @@
     E4  (event) At least one Idea Card links to it with a kind word.
     E5  (event; advisory) No other Event Card has the same year and a similar title.
     L1  (idea, anchor, event) ZT reads a Relation kind for every Link, except a source line or a
-        place in the book (a Literature Card or an anchor). One line per Card names the Links
-        read as "refers".
+        place in the book (a Literature Card or an anchor) and a Link after 引出 in its sentence
+        (it points the other way: the linked Card's 承接 carries the relation). One line per Card
+        names the Links read as "refers".
     L2  (idea, anchor, event) The sentence of a Link holds at least -MinReason characters (8)
         besides its Links and formulas. A source line (`来源：…`) is exempt.
     L3  (idea, anchor, event; advisory) A Card links the same target in two or more paragraphs.
@@ -302,6 +303,15 @@ function Get-Similarity($a, $b) {
 # A source line or a place in the book: a Literature Card (`hart1995firms`) or an anchor
 # (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
 function Test-BookPlace([string]$target) { $target -match '^[^\d/|][^/|]*$' -or $target -match '^[^\d/|][^/|]*/\d+$' }
+# A Link that 引出 announces in its sentence: it points the other way, so the linked Card's
+# 承接 carries the relation.
+function Test-LeadsTo([string]$body, [string]$target) {
+    foreach ($m in [regex]::Matches($body, '\[\[' + [regex]::Escape($target) + '\]\]')) {
+        $start = $body.LastIndexOfAny([char[]]"。！？!?；;`n", [Math]::Max(0, $m.Index - 1)) + 1
+        if ($body.Substring($start, $m.Index - $start).Contains('引出')) { return $true }
+    }
+    $false
+}
 $claimVerb = '是|会|能|让|使|要|不|没|把|被|决定|导致|取决|依赖|提高|降低|减少|增加|等于|大于|小于|高于|低于|来自|需要|带来|引起|产生|改变|保证|排除|允许|阻止|证明|说明|表明'
 $layer = @($cards | Where-Object { $_.PSObject.Properties['category'] -and $_.category })
 foreach ($card in $layer) {
@@ -341,7 +351,7 @@ foreach ($card in $layer) {
         if ((& $has 'inbound_kinded') -and [int]$card.inbound_kinded -eq 0) { Add-Layer $address 'E4' 'no Idea Card links it with a kind word' }
     }
     if (& $has 'links') {
-        $refers = @($links | Where-Object { $_ -notin $kinds -and -not (Test-BookPlace $_) } | Select-Object -Unique)
+        $refers = @($links | Where-Object { $_ -notin $kinds -and -not (Test-BookPlace $_) -and -not (Test-LeadsTo $body $_) } | Select-Object -Unique)
         if ($refers.Count) {
             $shown = @($refers | Select-Object -First 5 | ForEach-Object { "[[$_]]" }) -join ' '
             Add-Layer $address 'L1' "($($refers.Count) Links read as refers) $shown"
