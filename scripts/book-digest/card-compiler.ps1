@@ -580,7 +580,7 @@ function Step-Report {
         verdicts = $verdicts; splits = @($State.splits).Count; merges = @($State.merges).Count
         refused = @($State.refused.Keys | ForEach-Object { [ordered]@{ address = $_; job = $State.refused[$_].job; reason = $State.refused[$_].reason } })
         orphan_links = @($State.orphan_links).Count; orphan_none = @($State.orphan_none).Count; orphans_after = $orphansAfter.Count
-        jobs = @($State.jobs.Keys).Count
+        job_count = @($State.jobs.Keys).Count
     }
     Save-Text (Join-Path $Work 'report.json') ($report | ConvertTo-Json -Depth 10)
     Save-Text (Join-Path $Work 'decisions.json') ([ordered]@{ merges = @($State.merges); orphan_none = @($State.orphan_none); splits = @($State.splits) } | ConvertTo-Json -Depth 10)

@@ -33,7 +33,9 @@ export const meta = {
 //         models (true: run the model stage), rebuild (false: also rebuild models that already have parts;
 //         redoModels is the old name), perSonnet (6: formal models per batch, one Sonnet architect each;
 //         neighbouring models of the book share a batch), perConcept (10: concept models per batch),
-//         dshPerBatch (8: DeepSeek runs a batch keeps going at the same time; dshPerSonnet is the old name),
+//         dshPerBatch (8: DeepSeek runs one Haiku manager keeps going at the same time; dshPerSonnet is the old name),
+//         dshManagers (8: the Haiku managers that run the DeepSeek jobs of one compiler step in parallel),
+//         linkPerManager (8: the link runs one Haiku manager starts at once),
 //         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
 //         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
 //         model's own level, which DeepSeek proposes and the Sonnet architect confirms),
@@ -237,9 +239,9 @@ const groups = Array.from({ length: groupCount }, (_, i) => {
 })
 // Contiguous blocks in book order: managers run in parallel on different chapters (few duplicate
 // Topics), and inside a block each run starts after its predecessor and sees its new Cards.
-const toBlocks = list => {
+const toBlocks = (list, size = PER_MANAGER) => {
   const out = []
-  for (let i = 0; i < list.length; i += PER_MANAGER) out.push(list.slice(i, i + PER_MANAGER))
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
   return out
 }
 const blocks = toBlocks(groups)
@@ -267,8 +269,9 @@ const STAGES = {
   },
   link: {
     phase: 'Link',
+    parallel: true,
     steps: g => `Group ${g.n}:
-  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.
+  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 0.
   When it finished with status "done", mark it (one PowerShell call): Set-Content -LiteralPath "${OUT}\\linked-g${g.nn}.txt" -Value done`,
     answer: '{"group","cards_linked","links_added","errors"}',
     fields: 'cards (= cards_linked), links (= links_added)',
@@ -278,10 +281,10 @@ const STAGES = {
 const manage = (block, b, stage) => {
   const S = STAGES[stage]
   return agent(
-    `You manage ${block.length} DeepSeek Harness (DSH) runs of a ZET book digest (${stage} pass), one after another. DSH reads the book and changes the Cards; you only start, supervise, and clean up each run. Keep your messages short.
+    `You manage ${block.length} DeepSeek Harness (DSH) runs of a ZET book digest (${stage} pass), ${S.parallel ? 'all at the same time' : 'one after another'}. DSH reads the book and changes the Cards; you only start, supervise, and clean up each run. Keep your messages short.
 Load all tools with one ToolSearch call: query "${DSH_TOOLS}".
 
-For each group below, in order, finish it completely before starting the next:
+${S.parallel ? 'Run the groups below at the same time: start every run in one message (all deepseek_run calls together), then follow each one until it ends. The runs do not depend on each other.' : 'For each group below, in order, finish it completely before starting the next:'}
 ${block.map(S.steps).join('\n')}
 
 Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
@@ -334,34 +337,84 @@ const DRIVE = {
 // round: end the conversations, remove the workspace), phase ('Models'), writes (a folder whose files
 // a job may write; default: the one file its prompt names), remove ('archive' | 'delete': what cleanup
 // does with the conversations), keep (true: cleanup keeps the folder, e.g. the hub stage's state).
-const drive = (label, o) => {
+//
+// A step runs in up to three kinds of Haiku agent: one runs the script command; up to DSH_MANAGERS
+// managers run its DeepSeek jobs in parallel, each with its share of the jobs and up to
+// DSH_PER_BATCH (or more) of them at a time; one cleans up. The user wants the jobs of a step spread
+// over many managers: one manager with all jobs was the slow part of every stage.
+const DSH_MANAGERS = Math.max(1, A.dshManagers || 8)
+const driveAgent = (label, o, part) => {
   const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
   const removal = o.remove === 'delete'
     ? `deepseek_list with cwd "${o.dsh}"; deepseek_delete every conversation listed there, and count them in archived; then deepseek_remove_workspace with cwd "${o.dsh}" and delete_conversations true`
     : `deepseek_list with cwd "${o.dsh}"; deepseek_close and deepseek_archive every conversation there that is not archived yet, and count them in archived; deepseek_remove_workspace with cwd "${o.dsh}"`
-  return agent(
-    `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
+  const head = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
 Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
-
-1. Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
+`
+  if (part === 'command') {
+    return agent(`${head}
+Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
 ${o.command}
-   Its last output line is compact JSON. Put that line, unchanged, in output. If the command fails, return ok=false with the error text and results=[]; do not retry it with other options. If the JSON has no "jobs" or they are empty, ${o.cleanup ? 'go to step 3' : 'return ok=true and results=[] now'}.
-2. Run every job in "jobs". A job has id, files, prompt, and sometimes continue and fallback.
-   - No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, model "${DSH_MODEL}", reasoning_effort "${o.effort}", wait_seconds 0.
-   - continue: find the session of the job id named by continue in this table (job id, then session_id):
+Its last output line is compact JSON. Put that line, unchanged, in output. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
+      { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+  }
+  if (part === 'cleanup') {
+    return agent(`${head}
+Clean up: ${removal}${o.keep ? '. Keep the folder and its files.' : `; then one PowerShell call: Remove-Item -LiteralPath "${o.dsh}" -Recurse -Force -ErrorAction SilentlyContinue`}
+Return ok=true, results=[], and archived.`,
+      { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+  }
+  const jobs = o.jobs || []
+  return agent(`${head}
+Run every job below. A job has id, files, prompt, and sometimes continue and fallback. Other managers run the other jobs of this step at the same time; run only these.
+${JSON.stringify(jobs)}
+- No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, model "${DSH_MODEL}", reasoning_effort "${o.effort}", wait_seconds 0.
+- continue: find the session of the job id named by continue in this table (job id, then session_id):
 ${table || '(empty)'}
-     With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback.
-   Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Make independent calls in one message.
-   Follow "status" until each job ends:
-   - "running": deepseek_wait (session_id, wait_seconds 600).
-   - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
-   - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
-   - "finished": answer = its final answer text, unchanged (the JSON lines).
-   ${o.cleanup ? 'Do not close conversations before step 3.' : 'Do not close or archive conversations: later rounds continue them.'}
-${o.cleanup ? `3. Clean up: ${removal}${o.keep ? '. Keep the folder and its files.' : `; then one PowerShell call: Remove-Item -LiteralPath "${o.dsh}" -Recurse -Force -ErrorAction SilentlyContinue`}
-` : ''}Return ok, output, and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
-    { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE },
-  )
+  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback.
+Keep at most ${Math.max(DSH_PER_BATCH, jobs.length <= 2 * DSH_PER_BATCH ? jobs.length : DSH_PER_BATCH)} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
+Follow "status" until each job ends:
+- "running": deepseek_wait (session_id, wait_seconds 600).
+- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
+- "finished": answer = its final answer text, unchanged (the JSON lines).
+Do not close or archive conversations: later rounds continue them, and a cleanup agent ends them.
+Return ok=true, output="", and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
+    { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+}
+// Runs one compiler step: the command, its jobs spread over up to DSH_MANAGERS managers, then the
+// cleanup when o.cleanup. Returns { ok, error, output, results, archived } like one driver did.
+const drive = async (label, o) => {
+  const step = await driveAgent(label, o, 'command')
+  if (!step || !step.ok) {
+    if (o.cleanup) await driveAgent(`${label}: clean up`, o, 'cleanup')
+    return { ok: false, error: (step && step.error) || 'no report from the step', output: (step && step.output) || '', results: [] }
+  }
+  const parsed = lastJson(step.output)
+  const jobs = (parsed && Array.isArray(parsed.jobs)) ? parsed.jobs : []
+  let results = []
+  if (jobs.length) {
+    const managers = Math.min(DSH_MANAGERS, jobs.length)
+    const shares = Array.from({ length: managers }, () => [])
+    jobs.forEach((job, i) => shares[i % managers].push(job))
+    const done = await parallel(shares.map((share, i) => () =>
+      driveAgent(managers > 1 ? `${label} [${i + 1}/${managers}]` : label, { ...o, jobs: share }, 'jobs')
+        .catch(error => ({ ok: false, error: String(error), results: [] }))))
+    results = done.flatMap((d, i) => {
+      const got = (d && d.results) || []
+      // A job a manager did not report is a failed job, so a later round can retry it.
+      const missing = shares[i].filter(j => !got.some(r => r.id === j.id)).map(j => ({ id: j.id, status: 'failed', answer: '' }))
+      return [...got, ...missing]
+    })
+    const failedManagers = done.filter(d => !d || !d.ok).length
+    if (failedManagers) log(`${label}: ${failedManagers} of ${managers} managers reported a failure.`)
+  }
+  let archived = 0
+  if (o.cleanup) {
+    const c = await driveAgent(`${label}: clean up`, o, 'cleanup')
+    archived = (c && c.archived) || 0
+  }
+  return { ok: true, output: step.output, results, archived }
 }
 // The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"):
 // DeepSeek does not always put its JSON on a line of its own.
@@ -630,6 +683,13 @@ if (MODE === 'full') {
   } : null
   digestReports = await runStage('digest', blocks, afterBlock)
   modelReports = digestReports.extras
+  // No group done means a host fault (zt not on PATH, DeepSeek Harness unable to start pwsh), not a
+  // book fault: linking, organizing, and hubs on an empty book only spend tokens.
+  if (!digestReports.some(r => r.status === 'done')) {
+    const why = [...new Set(digestReports.map(r => r.errors).filter(Boolean))].slice(0, 3).join(' | ')
+    log(`Digest: every group failed; the run stops before the link pass. ${why}`)
+    return { mode: MODE, stage: 'digest', error: `every digest group failed: ${why}`, citation_key: KEY, digest: digestReports, terms: termReport, cards: { blocks: cardReports } }
+  }
   // Sweep the whole book before linking: a block whose listing failed or missed a Model Card
   // would otherwise leave it unelaborated without any error.
   if (MODELS) {
@@ -794,7 +854,9 @@ if (MODE === 'link') usageBefore = linkPrep.usage_before
 // Groups whose anchor already states its place in the book are skipped, so a rerun links only the rest.
 const pending = groups.filter(g => linkPrep.pending.includes(g.n))
 if (!NO_LINK) log(`Link pass: ${pending.length} of ${groupCount} groups pending; ${linkPrep.owned_total} owned Cards; ${linkPrep.unowned} unowned (hubs, structure Cards, Model parts).`)
-const linkReports = pending.length ? await runStage('link', toBlocks(pending)) : []
+// A link run depends on no other: each Haiku manager starts LINK_PER_MANAGER runs at once.
+const LINK_PER_MANAGER = Math.max(PER_MANAGER, A.linkPerManager || 8)
+const linkReports = pending.length ? await runStage('link', toBlocks(pending, LINK_PER_MANAGER)) : []
 // The Link check and the orphan pass on the whole book (proposal 6).
 const linkCards = !NO_LINK && CARD_CHECKS ? await runCards('link check', `${OUT}\\cards-link`, '', A.cardRules || 'L1,L2') : null
 

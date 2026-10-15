@@ -274,6 +274,8 @@ Arguments (`args`):
 | `cardFixRounds` | check, fix, apply again (1) |
 | `cardMax` | a pilot: at most this many Cards with faults and this many orphans |
 | `organize` | `"legacy"`: the old single Opus job instead of survey, decisions, apply, notes, and skeleton |
+| `dshManagers` | the Haiku managers that run the DeepSeek jobs of one compiler step in parallel (8); each runs at least `dshPerBatch` (8) jobs at a time, and one more Haiku agent runs the step's script and one cleans up |
+| `linkPerManager` | the link runs one Haiku manager starts at once (8) |
 
 **Effort.** The user wants every DeepSeek run at medium effort or more. DeepSeek V4.1 Flash offers `off`, `low`, `high`, and `max` at both sources, with no `medium`, so every DeepSeek effort is `high` or `max`: the workflow raises a lower value to `high` and logs it.
 
