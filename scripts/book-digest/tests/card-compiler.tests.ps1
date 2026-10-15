@@ -202,6 +202,46 @@ try {
     Assert ($rPlan.review -ge 1 -and $rText -match '这是抽查' -and $rText -match '原文：') "plan -Sample: a sampled Card gets the review instruction and its source ($($rPlan.review) sampled)"
     Assert ($rText -notmatch "问题：`r?`n`r?`n") 'plan -Sample: no empty fault list'
 
+    # --- a stopped apply: the rerun makes a missing split Card once, and -MaxJobs leaves the rest ---
+    $sWork = Join-Path $scratch 'stopped'
+    $sNotes = Join-Path $scratch 'notes-stopped.json'
+    Save-Json $sNotes @(@{ address = $a; note = '拆成两张卡。' }, @{ address = $c; note = '补一句。' })
+    $sPlan = [string]@(pwsh -NoProfile -File $compiler -Step plan -Work $sWork -Book $key -Notes $sNotes -Rules 'N1' -NoOrphans -PerJob 1 2>&1)[-1] | ConvertFrom-Json -AsHashtable
+    $sState = Get-Content (Join-Path $sWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Assert (@($sPlan.jobs).Count -eq 2) "stopped: two jobs, one Card each ($(@($sPlan.jobs).Count))"
+    $aNow = Get-Card $a
+    $aJob = @($sState.jobs.Keys | Where-Object { $a -in @($sState.jobs[$_].cards) })[0]
+    $cJob = @($sState.jobs.Keys | Where-Object { $c -in @($sState.jobs[$_].cards) })[0]
+    $newBody = $aNow.body.TrimEnd() + "`n`n所有者因此掌握谈判地位。"
+    Save-Json $sState.jobs[$aJob].out @{ cards = @(@{ address = $a; verdict = 'split'; title = $aNow.title; body = $newBody; split = @(@{ title = '空白处的决定权带来谈判地位'; body = "依赖 [[$a]]：所有者能拒绝合作，所以他有谈判地位。`n`n来源：[[$key]] §1.1" }) }) }
+    $cNow = Get-Card $c
+    Save-Json $sState.jobs[$cJob].out @{ cards = @(@{ address = $c; verdict = 'fix'; title = $cNow.title; body = ($cNow.body.TrimEnd() + "`n`n这一点决定事前投资。") }) }
+    # The stopped run wrote the edit of $a but not its split Card.
+    $null = Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $a; body = $newBody } })
+    $first = [string]@(pwsh -NoProfile -File $compiler -Step apply -Work $sWork -MaxJobs 1 2>&1)[-1] | ConvertFrom-Json -AsHashtable
+    Assert ($first.applied_jobs -eq 1 -and $first.pending_jobs -eq 1) "apply -MaxJobs 1: one job written, one pending ($($first.applied_jobs), $($first.pending_jobs))"
+    $second = [string]@(pwsh -NoProfile -File $compiler -Step apply -Work $sWork -MaxJobs 1 2>&1)[-1] | ConvertFrom-Json -AsHashtable
+    Assert ($second.pending_jobs -eq 0) 'apply -MaxJobs 1: the second call writes the rest'
+    $sides = @((Get-Card $a).sides | Where-Object { $_.title -eq '空白处的决定权带来谈判地位' })
+    Assert ($sides.Count -eq 1) "apply after a stop: the missing split Card is made ($($sides.Count))"
+    # A second rerun of the same job makes no second split Card.
+    $sState = Get-Content (Join-Path $sWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $sState.jobs[$aJob].applied = $false
+    $sState.splits = @()
+    [IO.File]::WriteAllText((Join-Path $sWork 'state.json'), ($sState | ConvertTo-Json -Depth 20), $utf8)
+    $null = @(pwsh -NoProfile -File $compiler -Step apply -Work $sWork 2>&1)
+    Assert (@((Get-Card $a).sides | Where-Object { $_.title -eq '空白处的决定权带来谈判地位' }).Count -eq 1) 'apply after a stop: a split Card that exists is not made again'
+
+    # A rerun of an orphan job appends no Link twice.
+    if (@($cands[$c]).Count) {
+        $mState = Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+        $mState.jobs[$orph[0].id].applied = $false
+        [IO.File]::WriteAllText((Join-Path $work 'state.json'), ($mState | ConvertTo-Json -Depth 20), $utf8)
+        $null = @(pwsh -NoProfile -File $compiler -Step apply -Work $work 2>&1)
+        $body = (Get-Card @($cands[$c])[0]).body
+        Assert ([regex]::Matches($body, [regex]::Escape("对照 [[$c]]")).Count -eq 1) 'apply after a stop: an orphan Link is not appended twice'
+    }
+
     # --- -Compact: each job as {id, kind, file}; the folder, instruction files, and prompts once ---
     $kWork = Join-Path $scratch 'compact'
     $kPlan = [string]@(pwsh -NoProfile -File $compiler -Step plan -Work $kWork -Book $key -Compact 2>&1)[-1] | ConvertFrom-Json -AsHashtable

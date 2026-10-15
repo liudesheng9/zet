@@ -47,7 +47,9 @@ param(
     [string]$Notes = '',
     # Compact job lists: {id, kind, file, continue?} plus "lead" and "prompts" once, for a book with
     # hundreds of jobs (the workflow expands them). Without it the output is as before.
-    [switch]$Compact
+    [switch]$Compact,
+    # apply: at most this many jobs per call (0: all); the output's pending_jobs counts the rest.
+    [int]$MaxJobs = 0
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
@@ -391,7 +393,11 @@ function Step-Apply {
         }
     }
     $toApply = @(@($pending) + @($retry.Keys | Where-Object { $_ -notin $pending }))
-    $addresses = @($toApply | ForEach-Object { @($State.jobs[$_].cards) + @($(if ($State.jobs[$_].candidates) { $State.jobs[$_].candidates.Values | ForEach-Object { $_ } })) } | Select-Object -Unique)
+    # -MaxJobs: a share of the jobs per call, so one call stays inside a caller's time limit; the
+    # caller repeats apply until pending_jobs is 0.
+    $later = @()
+    if ($MaxJobs -gt 0 -and $toApply.Count -gt $MaxJobs) { $later = @($toApply[$MaxJobs..($toApply.Count - 1)]); $toApply = @($toApply[0..($MaxJobs - 1)]) }
+    $addresses =@($toApply | ForEach-Object { @($State.jobs[$_].cards) + @($(if ($State.jobs[$_].candidates) { $State.jobs[$_].candidates.Values | ForEach-Object { $_ } })) } | Select-Object -Unique)
     $current = @{}
     if ($addresses.Count) {
         $read = @(Invoke-Zt @($addresses | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
@@ -405,6 +411,7 @@ function Step-Apply {
         if ($job.kind -eq 'fix') {
             $edits = @()
             $entries = @{}
+            $lateSplits = @()
             foreach ($entry in @($result.cards)) {
                 $a = [string]$entry.address
                 if ($a -notin @($job.cards)) { continue }
@@ -429,9 +436,14 @@ function Step-Apply {
                 # The title and the body decide a change. The stored text also holds the generated
                 # Reverse links, which every write to a linking Card changes.
                 $now = $current[$a]
-                # Already written (a retry after a partial run): nothing to do.
+                # Already written (a run stopped part way): record it. A split Card that run did not
+                # make yet is made now; one it made (a Side successor with that title) is not made again.
                 if ($now -and [string]$now.title -eq ([string]$entry.title).Trim() -and ([string]$now.body).TrimEnd() -eq ([string]$entry.body).TrimEnd()) {
                     $State.applied[$a] = [ordered]@{ job = $id; verdict = $verdict; note = [string]$entry.note }
+                    if ($verdict -eq 'split' -and -not @($State.splits | Where-Object { $_.from -eq $a -and $_.job -eq $id }).Count) {
+                        $sideTitles = @($now.sides | ForEach-Object { ([string]$_.title).Trim() })
+                        foreach ($p in @($entry.split)) { if (([string]$p.title).Trim() -notin $sideTitles) { $lateSplits += @{ at = $a; part = $p } } }
+                    }
                     continue
                 }
                 if (-not $now -or [string]$now.title -ne $old.title -or ([string]$now.body).TrimEnd() -ne ([string]$old.body).TrimEnd()) { & $refuse 'the Card changed since the plan'; continue }
@@ -458,6 +470,10 @@ function Step-Apply {
                     }
                 }
             }
+            foreach ($s in $lateSplits) {
+                $creates += @{ tool = 'create_successor'; arguments = @{ at = $s.at; kind = 'side'; title = ([string]$s.part.title).Trim(); body = ([string]$s.part.body).TrimEnd() } }
+                $from += $s.at
+            }
             $made = Invoke-Writes $creates
             for ($k = 0; $k -lt $creates.Count; $k++) {
                 if ($made[$k].ok) { $State.splits += [ordered]@{ from = $from[$k]; address = $made[$k].address; job = $id }; $counts.split++; Add-Owned $from[$k] $made[$k].address }
@@ -478,6 +494,8 @@ function Step-Apply {
                 elseif ($text -match '[；;]') { $reason = 'a semicolon' }
                 elseif (@([regex]::Matches($text, '\[\[([^\]]+)\]\]') | Where-Object { -not (Get-Known).Contains($_.Groups[1].Value) -and $_.Groups[1].Value -ne $to }).Count) { $reason = 'a Link to a Card that does not exist' }
                 if ($reason) { $State.refused["$to<-$from"] = [ordered]@{ job = $id; reason = $reason }; $counts.refused++; continue }
+                # Already appended by a run that stopped part way: record it, do not append it twice.
+                if ($current[$from] -and ([string]$current[$from].body).Contains($text)) { $State.orphan_links += [ordered]@{ to = $to; from = $from }; $counts.orphan_links++; continue }
                 $calls += @{ tool = 'append_card'; arguments = @{ at = $from; text = $text } }
                 $what += @{ to = $to; from = $from }
             }
@@ -490,9 +508,11 @@ function Step-Apply {
             }
         }
         $job.applied = $true
+        # After every job: a run stopped part way loses at most the job it was writing.
+        Save-State
     }
     Save-State
-    Out-Last ([ordered]@{ applied_jobs = $pending.Count; retried_jobs = @($retry.Keys).Count; waiting_jobs = $missing; counts = $counts })
+    Out-Last ([ordered]@{ applied_jobs = $toApply.Count; pending_jobs = $later.Count; retried_jobs = @($retry.Keys).Count; waiting_jobs = $missing; counts = $counts })
 }
 
 # --- check ---------------------------------------------------------------------------------------

@@ -146,6 +146,8 @@ const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
 const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
 const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? (MODE === 'full' ? 0.1 : 0)))
 const CARD_SKILLS = ['asd-ste100-zh']
+// The jobs one apply call writes (A.applyShare): about 8 Cards each.
+const APPLY_SHARE = Math.max(1, A.applyShare || 30)
 
 // --- Audit: a read-only report on the book's Cards (phase 1 of doc/digest-card-layers-proposal.md) --
 // A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
@@ -652,12 +654,23 @@ const runCards = async (label, work, extra = '', only = '') => {
     const reported = lastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
     return { status: 'done', label, plan, report: reported }
   }
-  let applied = lastJson(((await crun('apply 1', cstep('apply'))) || {}).output)
+  // Apply in shares of APPLY_SHARE jobs until none is pending: one call writes a few hundred Cards
+  // at most, so it ends inside the step agent's 10-minute command limit (mascolell1995microeconomic:
+  // 226 jobs in one call ran past it, and the agent's end stopped the write part way).
+  const applyAll = async (what) => {
+    let r = null
+    for (let i = 0; i < 100; i++) {
+      r = lastJson(((await crun(i ? `${what}.${i + 1}` : what, cstep('apply', ` -MaxJobs ${APPLY_SHARE}`))) || {}).output)
+      if (!r || !r.pending_jobs) return r
+    }
+    return r
+  }
+  let applied = await applyAll('apply 1')
   for (let round = 1; round <= CARD_FIX_ROUNDS; round++) {
     const checked = lastJson(((await crun(`check ${round}`, cstep('check'), { continues: true })) || {}).output)
     log(`Cards ${label} check ${round}: ${checked ? `${checked.faults} faults left, ${checked.jobs.length} follow-up jobs` : 'no output'}.`)
     if (!checked || !checked.jobs.length) break
-    applied = lastJson(((await crun(`apply ${round + 1}`, cstep('apply'))) || {}).output)
+    applied = await applyAll(`apply ${round + 1}`)
   }
   const reported = lastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
   if (!applied) log(`Cards ${label}: an apply step failed; the cycle is marked failed.`)

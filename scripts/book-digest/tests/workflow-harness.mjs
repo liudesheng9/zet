@@ -12,6 +12,7 @@ const source = fs.readFileSync(path.join(here, '..', '..', '..', '.claude', 'wor
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 let planJobs = 21
+let applyPending = 0
 function runtime(opts0 = {}) {
   const calls = []
   const managed = []
@@ -56,7 +57,7 @@ function runtime(opts0 = {}) {
       if (compact && /card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 1, ...head, jobs: [...Array.from({ length: planJobs - 1 }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, kind: 'fix', file: `fix-${String(i + 1).padStart(2, '0')}.md` })), { id: 'orphans-99', kind: 'orphans', file: 'orphans-99.md' }] })
       else if (compact && /card-compiler\.ps1" -Step check/.test(cmd)) output = json({ faults: 1, orphans: 0, ...head, jobs: [{ id: 'fix-01-r2', kind: 'follow', file: 'fix-01-r2.md', continue: 'fix-01' }] })
       else if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 0, jobs: Array.from({ length: planJobs }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, files: ['a', 'b'], prompt: 'p' })) })
-      else if (/card-compiler\.ps1" -Step apply/.test(cmd)) output = json({ applied_jobs: 1, counts: { fix: 2 } })
+      else if (/card-compiler\.ps1" -Step apply/.test(cmd)) { output = json({ applied_jobs: 1, pending_jobs: applyPending, counts: { fix: 2 } }); if (applyPending > 0) applyPending-- }
       else if (/card-compiler\.ps1" -Step check/.test(cmd)) output = json({ jobs: [], faults: 0, orphans: 0 })
       else if (/card-compiler\.ps1" -Step report/.test(cmd)) output = json({ cards: 2, faults_before: 3, faults_after: 0, verdicts: { fix: 2 }, splits: 0, merges: 0, refused: 0, orphan_links: 0, orphans_after: 0 })
       else if (/book-terms\.ps1" -Step plan/.test(cmd)) output = json({ bold: 2, definitions: 1, jobs: [{ id: 'terms', files: ['a', 'b'], prompt: 'p' }] })
@@ -155,6 +156,14 @@ for (const [n, want] of [[5, 1], [16, 2], [17, 3], [70, 8]]) {
   check(plan.length === want && all.length === n && new Set(all).size === n, `managers: ${n} jobs go to ${want} managers (${plan.length}), each job once`)
 }
 planJobs = 21
+// apply: repeated in shares until no job is pending
+{
+  applyPending = 2
+  const { calls } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
+  const applies = calls.filter(c => /card-compiler\.ps1" -Step apply/.test(c.cmd))
+  check(applies.filter(c => /: apply 1/.test(c.label)).length === 3 && applies.every(c => / -MaxJobs 30/.test(c.cmd)), `apply: 2 pending jobs take 3 calls of -MaxJobs 30 (${applies.map(c => c.label).join(', ')})`)
+  applyPending = 0
+}
 // audit: one script, no DeepSeek source probe
 {
   const { result, calls } = await run({ out: 'D:\\x\\audit', mode: 'audit' })
