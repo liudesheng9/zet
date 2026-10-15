@@ -61,7 +61,7 @@ bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fen
 renders. delete_card, move_card, insert_card, and Citation key renames return a plan first; \
 repeat the call with the `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
-bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns.";
+bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns. To point a reader at the source document itself (a PDF or Markdown the archive manages), write a Document link `[label](scholar:<file_id>)` (add `#page=12` for a PDF page); scholar_archive_file returns one as `link`.";
 
 pub(crate) fn run() -> Result<()> {
     let stdin = io::stdin();
@@ -1053,7 +1053,7 @@ fn tool_definitions() -> Vec<Value> {
         scholar_tool(
             "scholar_archive_file",
             "Read Scholar Archive document",
-            "Fetch the bytes of a PDF or Markdown document that Scholar Archive manages (a `file_id` from list_work_files or get_work), verify its SHA-256, and keep a copy in ZET's cache. Markdown and text come back as `text`; for a PDF, open the returned `path`.",
+            "Fetch the bytes of a PDF or Markdown document that Scholar Archive manages (a `file_id` from list_work_files or get_work), verify its SHA-256, and keep a copy in ZET's cache. Markdown and text come back as `text`; for a PDF, open the returned `path`. `link` is the Document link `[name](scholar:<file_id>)` that lets a Card's reader open the document in the GUI.",
             json!({
                 "file_id": { "type": "integer", "minimum": 1, "description": "The document's file_id." },
                 "max_text_bytes": { "type": "integer", "minimum": 0, "description": "Largest text document to return inline; default 1000000." },
@@ -1149,6 +1149,7 @@ fn call_scholar_tool(name: &str, args: &Value) -> Result<Value> {
                 .unwrap_or(1_000_000) as usize;
             let copy = bridge.file(file_id, None)?;
             let mut value = copy.summary();
+            value["link"] = json!(crate::scholar::document_markdown(&copy.name, file_id));
             if let Some(text) = copy.text(limit) {
                 value["text"] = json!(text);
             }

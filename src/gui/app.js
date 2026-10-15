@@ -3040,7 +3040,12 @@
     document.addEventListener('keydown', onKey, true);
     api('artifact?sha=' + enc(sha)).then((info) => {
       const from = info.source || {};
-      if (from.work_id) source.textContent = `From Scholar Archive · Work ${from.work_id} · ${from.path || ''}`;
+      if (!from.work_id) return;
+      source.append(`From Scholar Archive · Work ${from.work_id} · `);
+      // The figure's own place in the book it came from: the print goes back to its source.
+      source.append(info.in_document
+        ? h('a', { href: info.in_document, target: '_blank', rel: 'noopener noreferrer', text: 'open it in the book' })
+        : (from.path || ''));
     }).catch(() => {});
   }
 
@@ -3055,12 +3060,12 @@
       const rootNode = state.nodes.find((node) => node.address === tree && node.kind === 'literature');
       const query = h('input', { type: 'search', placeholder: 'Search Works by title or author', autocomplete: 'off', spellcheck: 'false', value: rootNode ? rootNode.title || '' : '' });
       const works = h('div', { class: 'figure-works' });
-      const figures = h('div', { class: 'figure-grid' }, h('p', { class: 'figure-hint', text: 'Choose a Work to see its figures.' }));
+      const figures = h('div', { class: 'figure-grid' }, h('p', { class: 'figure-hint', text: 'Choose a Work to see its documents and figures.' }));
       const msg = h('span', { class: 'msg' });
       let done = false;
       const finish = (markdown) => { if (done) return; done = true; close(); resolve(markdown); };
       const close = openOverlay(h('div', { class: 'sheet-dlg figure-pick', role: 'dialog' },
-        h('div', { class: 'dlg-head' }, h('h3', { text: 'Figure from Scholar Archive' })),
+        h('div', { class: 'dlg-head' }, h('h3', { text: 'From Scholar Archive' })),
         h('div', { class: 'figure-pick-body' }, h('div', { class: 'figure-side' }, query, works), figures),
         h('div', { class: 'dlg-foot' }, msg, h('button', { class: 'btn', text: 'Cancel', onclick: () => finish(null) })),
       ));
@@ -3087,14 +3092,23 @@
       let workTicket = 0;
       async function openWork(work) {
         const ticket = ++workTicket;
-        figures.replaceChildren(h('p', { class: 'figure-hint', text: 'Reading figures…' }));
+        figures.replaceChildren(h('p', { class: 'figure-hint', text: 'Reading documents and figures…' }));
         try {
-          const listing = await api('scholar/artifacts?work_id=' + work.work_id);
+          const [listing, documents] = await Promise.all([
+            api('scholar/artifacts?work_id=' + work.work_id),
+            api('scholar/files?work_id=' + work.work_id).catch(() => ({ files: [] })),
+          ]);
           if (ticket !== workTicket) return;
           const shown = listing.artifacts.filter((item) => item.shown && item.availability === 'present');
           const items = shown.length ? shown : listing.artifacts.filter((item) => item.availability === 'present');
-          if (!items.length) { figures.replaceChildren(h('p', { class: 'figure-hint', text: 'This Work\'s Markdown shows no figures.' })); return; }
-          figures.replaceChildren(...items.map((item) => {
+          // The Work's documents sit above its figures: a Card links a whole document, or shows one figure.
+          const shelf = documents.files.length ? h('div', { class: 'figure-docs' },
+            h('span', { class: 'figure-docs-label', text: 'Link a document' }),
+            documents.files.map((file) => h('button', {
+              class: 'figure-doc', title: file.path, onclick: () => finish(file.markdown),
+            }, h('span', { class: 'kind', text: file.kind === 'pdf' ? 'PDF' : file.bilingual ? 'MD 中英' : 'MD' }), h('span', { class: 'n', text: file.name })))) : null;
+          if (!items.length) { figures.replaceChildren(...[shelf, h('p', { class: 'figure-hint', text: 'This Work\'s Markdown shows no figures.' })].filter(Boolean)); return; }
+          figures.replaceChildren(...[shelf].filter(Boolean), ...items.map((item) => {
             const frame = h('span', { class: 'figure-thumb' });
             const cell = h('button', { class: 'figure-cell', title: item.path, onclick: async () => {
               cell.disabled = true;
@@ -3106,7 +3120,7 @@
             preview(item, frame, ticket);
             return cell;
           }));
-          msg.textContent = `${items.length} figure${items.length === 1 ? '' : 's'} · choose one to show it in the Card`;
+          msg.textContent = `${items.length} figure${items.length === 1 ? '' : 's'} · choose one to show it in the Card, or link a document`;
           msg.className = 'msg';
         } catch (error) { figures.replaceChildren(h('p', { class: 'figure-hint err', text: error.message })); }
       }
@@ -3236,7 +3250,7 @@
             bib ? h('div', { class: 'pane-label' }, h('span', { text: 'BibTeX metadata' })) : null,
             bib,
             h('div', { class: 'pane-label' }, h('span', { text: 'Markdown' }), h('span', {},
-              h('button', { class: 'figure-btn', type: 'button', title: 'Show a figure of a Scholar Archive Work in this Card', onclick: async () => {
+              h('button', { class: 'figure-btn', type: 'button', title: 'Show a figure of a Scholar Archive Work in this Card, or link one of its documents', onclick: async () => {
                 const markdown = await pickFigure();
                 if (!markdown) { text.focus(); return; }
                 const at = text.selectionStart;
@@ -3246,7 +3260,7 @@
                 text.focus();
                 dirty = true;
                 update();
-              } }, '＋ Figure'),
+              } }, '＋ Figure or document'),
               ' · [[ links · text below the reverse-links marker is generated')),
             text,
           ),

@@ -87,6 +87,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `derive`, `from`, `to`, `steps` | a Derivation part: its start, its result equation (with the book's number), and its estimated lines |
 | `src` | source lines, `file:from-to`, relative to the staging folder; the script copies them into the job |
 | `chart` | the chart the part needs, in a few words; DeepSeek draws it |
+| `figure` | the book's own figure the part shows, by its label, e.g. `2.F.1` or `IV` (the brief's `## 图` lists them, and `figures.json` in the staging folder holds every one); the script hands DeepSeek the figure's Markdown to paste. Prefer a book figure to a `chart` that redraws it; add a `chart` only for what the book does not draw |
 | `existing`, `refill` | keep an existing part (and rewrite its body) |
 | `move` | move an outside agent Card into the range at this place |
 | `take`, `use` | take in a shared part, with one line on what this model uses from it |

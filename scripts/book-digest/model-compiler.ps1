@@ -173,6 +173,9 @@ function Test-Plan($plan, $structure, $model) {
         if (-not $p.id) { & $add "part $index has no id"; continue }
         if ($ids.ContainsKey($p.id)) { & $add "id $($p.id) is used twice" }
         $ids[$p.id] = $index
+        foreach ($label in @($p.figure | Where-Object { $_ })) {
+            if (-not (Get-FigureLine $label)) { & $add "part $($p.id): figure '$label' is not a book figure ZET holds (figures.json lists them); draw it with a chart instead" }
+        }
         $kinds = @(@('existing', 'take', 'move') | Where-Object { $p[$_] })
         if ($kinds.Count -gt 1) { & $add "$($p.id): give only one of existing, take, move" }
         $line = Get-Line $p
@@ -353,6 +356,24 @@ function Get-Premises($part, $model, [switch]$Bodies) {
     }
     $text
 }
+# The Markdown of a book figure by its label (`2.F.1`, `IV`), from the figures.json that
+# prepare-book-digest.ps1 writes; $null when the staging folder has no such figure.
+$script:FigureLines = $null
+function Get-FigureLine([string]$label) {
+    if ($null -eq $script:FigureLines) {
+        $script:FigureLines = @{}
+        # The Work folder is <staging>\models when the step is given no -Staging (validate).
+        $folder = if ($Staging) { $Staging } else { Split-Path -Parent $Work }
+        $file = Join-Path $folder 'figures.json'
+        if (Test-Path -LiteralPath $file) {
+            foreach ($figure in (Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json).figures) {
+                foreach ($l in @($figure.labels)) { if (-not $script:FigureLines.ContainsKey($l)) { $script:FigureLines[$l] = $figure.line } }
+            }
+        }
+    }
+    $key = ($label -replace '^\s*(图|Figure|Fig\.)\s*', '').Trim()
+    return $script:FigureLines[$key]
+}
 function Get-PartBlock($n, $part, $model, [switch]$Bodies) {
     $address = Resolve-Ref $part.id $model
     $b = [Text.StringBuilder]::new()
@@ -373,6 +394,11 @@ function Get-PartBlock($n, $part, $model, [switch]$Bodies) {
     if ($premises) { [void]$b.AppendLine("- 前提：").AppendLine($premises) }
     if ($part.of) { [void]$b.AppendLine("- 它站在 [[$(Resolve-Ref $part.of $model)]] 旁边（$(if ($part.kind) { $part.kind } else { 'illustrates' })）。") }
     if ($part.chart) { [void]$b.AppendLine("- 图表：$($part.chart)") }
+    foreach ($label in @($part.figure | Where-Object { $_ })) {
+        $line = Get-FigureLine $label
+        if ($line) { [void]$b.AppendLine("- 书中的原图（把这一行原样放进正文，单独成段）：``$line``") }
+        else { [void]$b.AppendLine("- 书中的图 $label：ZET 没有它的原图，按原文用图表画出。") }
+    }
     $was = if ($State.models[$model].old) { $State.models[$model].old[[string]$part.id] }
     if ($was) {
         if ($was.Length -gt 6000) { $was = $was.Substring(0, 6000) + '……' }

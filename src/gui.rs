@@ -22,6 +22,8 @@ use crate::model::{Emphasis, Facet};
 use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
 
+mod document;
+
 /// The GUI is the human's own tool and may change both Workspaces.
 const ACCESS: Access = Access::Owner;
 
@@ -469,6 +471,21 @@ impl App {
                 }
                 return;
             }
+            (Method::Get, "/doc.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    document::DOC_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, path)
+                if path.starts_with("/scholar/file/") || path.starts_with("/scholar/figure/") =>
+            {
+                document::serve(request, path.to_string(), query);
+                return;
+            }
             (Method::Get, path) if path.starts_with("/chart/") => {
                 let id = &path["/chart/".len()..];
                 match self.charts.get(id) {
@@ -592,6 +609,7 @@ impl App {
             (Method::Get, "/api/artifact") => self.artifact(&param("sha")?),
             (Method::Get, "/api/scholar/works") => self.scholar_works(&param("q")?),
             (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
+            (Method::Get, "/api/scholar/files") => self.scholar_files(&param("work_id")?),
             (Method::Post, "/api/scholar/preview") => self.scholar_preview(body),
             (Method::Post, "/api/scholar/artifact") => self.scholar_keep(body),
             (Method::Get, "/api/spreads") => self.spreads(),
@@ -725,9 +743,17 @@ impl App {
     /// Where a kept artifact came from.
     fn artifact(&self, digest: &str) -> ApiResult {
         let held = crate::artifact::path(&self.root, digest).is_some();
-        Ok(
-            json!({ "sha256": digest, "held": held, "source": crate::artifact::source(&self.root, digest) }),
-        )
+        let source = crate::artifact::source(&self.root, digest);
+        // Its place in the document it came from, which the reading page marks by file stem.
+        let in_document = source.as_ref().and_then(|source| {
+            let file_id = source["file_id"].as_u64()?;
+            let path = source["path"].as_str()?;
+            Some(format!(
+                "/scholar/file/{file_id}#{}",
+                document::figure_anchor(path)
+            ))
+        });
+        Ok(json!({ "sha256": digest, "held": held, "source": source, "in_document": in_document }))
     }
 
     /// Works in the Scholar Archive with Markdown documents, whose figures a Card can show.
@@ -757,6 +783,45 @@ impl App {
             .map_err(|_| ApiError("work_id must be a number".into()))?;
         let mut bridge = crate::scholar::Bridge::connect()?;
         Ok(bridge.call("list_work_artifacts", &json!({ "work_id": work_id }))?)
+    }
+
+    /// A Work's PDF and Markdown documents, each with the Document link that opens it from a
+    /// Card. Like its figures, only the documents the Work shows are listed when it shows any:
+    /// raw OCR copies beside them would read as duplicates.
+    fn scholar_files(&self, work_id: &str) -> ApiResult {
+        let work_id = work_id
+            .parse::<u64>()
+            .map_err(|_| ApiError("work_id must be a number".into()))?;
+        let mut bridge = crate::scholar::Bridge::connect()?;
+        let rows = bridge.sql(
+            "SELECT id, relative_path, kind, size_bytes, shown, chinese_bilingual FROM work_files \
+             WHERE work_id = ?1 AND availability = 'present' AND kind IN ('pdf', 'markdown') \
+             ORDER BY shown DESC, kind DESC, chinese_bilingual DESC, id",
+            &json!([work_id]),
+            50,
+            "archive",
+        )?;
+        let files = rows["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                let path = row[1].as_str().unwrap_or_default();
+                let name = path.rsplit('/').next().unwrap_or(path);
+                let file_id = row[0].as_u64().unwrap_or(0);
+                json!({
+                    "file_id": file_id, "name": name, "path": path, "kind": row[2], "bytes": row[3],
+                    "shown": row[4] == 1, "bilingual": row[5] == 1,
+                    "markdown": crate::scholar::document_markdown(name, file_id),
+                })
+            })
+            .collect::<Vec<_>>();
+        let shows_any = files.iter().any(|file| file["shown"] == true);
+        let files = files
+            .into_iter()
+            .filter(|file| !shows_any || file["shown"] == true)
+            .collect::<Vec<_>>();
+        Ok(json!({ "files": files }))
     }
 
     fn artifact_target(body: &Value) -> std::result::Result<(u64, String), ApiError> {
@@ -1048,6 +1113,7 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
     let mut in_code_block = false;
     let mut chart: Option<String> = None;
     let mut figure: Option<(String, String)> = None;
+    let mut in_document = false;
     let flush = |pending: &mut String, events: &mut Vec<Event>, in_code_block: bool| {
         if pending.is_empty() {
             return;
@@ -1106,6 +1172,18 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
                     String::new(),
                 ));
             }
+            Event::Start(Tag::Link { dest_url, .. })
+                if dest_url.starts_with(crate::scholar::DOCUMENT_SCHEME) =>
+            {
+                flush(&mut pending, &mut events, in_code_block);
+                in_document = true;
+                events.push(Event::InlineHtml(document_link_open(&dest_url).into()));
+            }
+            Event::End(TagEnd::Link) if in_document => {
+                flush(&mut pending, &mut events, in_code_block);
+                in_document = false;
+                events.push(Event::InlineHtml("</a>".into()));
+            }
             Event::Text(text) => pending.push_str(&text),
             Event::InlineHtml(raw) if is_plain_inline_tag(&raw) => {
                 flush(&mut pending, &mut events, in_code_block);
@@ -1153,6 +1231,21 @@ fn figure_html(digest: &str, caption: &str) -> String {
             )
         },
     )
+}
+
+/// The opening tag of a Document link: a source document of the Scholar Archive, opened beside
+/// the GUI. An address that names no document stays visible but leads nowhere.
+fn document_link_open(dest: &str) -> String {
+    match crate::scholar::document_target(dest) {
+        Some((file_id, fragment)) => format!(
+            "<a class=\"zt-doc\" href=\"/scholar/file/{file_id}{}\" data-doc=\"{file_id}\" title=\"Open the Scholar Archive document {file_id}\">",
+            fragment
+                .map(|fragment| format!("#{fragment}"))
+                .unwrap_or_default()
+        ),
+        None => "<a class=\"zt-doc broken\" title=\"Not a Scholar Archive document address\">"
+            .to_string(),
+    }
 }
 
 /// A fence opens a chart when its info string is `chart` or `html chart`.
@@ -1883,6 +1976,28 @@ mod render_tests {
         );
         let forged = render_markdown("![x](artifact:../../secret)", &snapshot, &Charts::default());
         assert!(forged.contains("data-artifact=\"\""), "{forged}");
+    }
+
+    #[test]
+    fn a_document_link_opens_the_scholar_archive_document() {
+        let (_temp, snapshot) = snapshot();
+        let html = render_markdown(
+            "原书：[MWG 中英对照](scholar:83)，第 41 页见 [PDF](scholar:85#page=41)；[坏](scholar:x)。",
+            &snapshot,
+            &Charts::default(),
+        );
+        assert!(
+            html.contains("<a class=\"zt-doc\" href=\"/scholar/file/83\" data-doc=\"83\" title=\"Open the Scholar Archive document 83\">MWG 中英对照</a>"),
+            "{html}"
+        );
+        assert!(html.contains("href=\"/scholar/file/85#page=41\""), "{html}");
+        assert!(html.contains("<a class=\"zt-doc broken\""), "{html}");
+        // An ordinary link is untouched.
+        let plain = render_markdown("[web](https://example.org)", &snapshot, &Charts::default());
+        assert!(
+            plain.contains("<a href=\"https://example.org\">web</a>"),
+            "{plain}"
+        );
     }
 
     #[test]

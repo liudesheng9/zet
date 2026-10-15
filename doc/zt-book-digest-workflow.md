@@ -197,14 +197,24 @@ Key/5|b|a|2    对应 GHM (shared)            对应：剩余控制权即资产�
 - Discussion Cards elsewhere link the part they concern, so the part's Reverse links list exactly
   the Cards that discuss it. Sonnet does not edit them; it reports the ones that should, and Opus
   acts on that in Organize.
+## The book's figures and documents (zt 0.18.0)
+
+A book's own figures reach its Cards in three places, and every one is the same `artifact:` line:
+
+1. **Prepare.** `prepare-book-digest.ps1` keeps every image of the book's Markdown of at least 3 KB in ZET's artifact store (`zt scholar keep-figures`, through the bridge) and reads each figure's label from the caption next to it (`Figure 2.C.1 (left)`, `FIGURE IV`, `图四`; `figures.ps1`). In the section text an image line becomes `![图 2.C.1](artifact:<sha256>)`, its caption lines stay, and the bilingual copy of the same image is written once. `figures.json` in the staging folder lists every figure with its labels and line. The Literature Card's body links the Work's PDF and Markdown with Document links (`原书文档：[原书 PDF](scholar:85) · …`).
+2. **Writers.** The digest runs, the brief, and the fill and derive rounds read those lines in the source and paste the line of a figure where a Card discusses it, instead of redrawing it as a chart. The Sonnet architect may name a book figure for a part (`"figure": "2.F.1"`); the compiler hands DeepSeek that figure's line, and `validate` refuses a label ZET does not hold.
+3. **Figures stage.** After Organize, `attach-figures.ps1` finds every agent Card of the book (in its Literature tree, or linking its Literature Card) that names a figure (`图 2.C.1`, `图2.C.1`, `图 IV`/`图四`, never `图 2.C.10`) and does not show it yet, and puts the figure in right after the paragraph that first names it (after a table, list, or chart fence that holds the mention; at the top when only the title names it). Hub Cards, the Literature Card, and the anchor line are left alone: they list other Cards' titles. It passes each Card's stored text as `base`, so it never overwrites a Card that changed meanwhile, and a second run changes nothing. It also adds the documents line to the Literature Card when it has none. Mode `figures` runs only this stage, for a book digested before 0.18.0.
+
 ## Running it
 
 Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). |
+| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
+| `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
+| `figures` | `false` skips the Figures stage in a full run |
 | `groups` | modes `link` and `models`: the digest's group count |
 | `models` | `false` skips the Models stage in a full run |
 | `rebuild` | `true` rebuilds models that already have parts (a rerun skips them by default), keeping the facets, emphasis, and charts that still fit; `redoModels` is its old name |

@@ -271,7 +271,7 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 ### 消化一本书
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
+每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。书中的图随书进入卡片：准备阶段把书的 Markdown 中的每张图收进 ZET（见“来自 archive 的图”），并把每张图写成一行 `![图 2.C.1](artifact:…)` 交给写卡的 DeepSeek，卡片讨论这张图时原样粘贴；整理之后，`scripts/book-digest/attach-figures.ps1` 把图放进本书每一张提到它但还没显示它的卡片，并在文献卡上链接原书的 PDF 与 Markdown（模式 `figures` 只对已有的消化结果做这一步）。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
 详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
 
 ### 枢纽卡
@@ -337,6 +337,7 @@ zt scholar call get_work '{"work_id":42}'
 zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10"
 zt scholar figures 42              # 一个 Work 的图：编号、图题、file id 与路径
 zt scholar figure 22 nber/w1_mineru/images/a1.jpg   # 收下一张图，并打印显示它的 Markdown
+zt scholar keep-figures 83 --min-bytes 3000 --out figs.json   # 收下一份 Markdown 的全部图
 zt scholar file 22                 # 获取文档（校验 SHA-256）并存入 ZET 缓存
 zt scholar export --format bibtex --out works.bib
 zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断开连接
@@ -354,7 +355,14 @@ Scholar Archive 会列出每个 Work 的 **artifact**：其 Markdown 显示的�
 Card 用 `![图题](artifact:<sha256>)` 显示一张图。ZET 把图片本身只存一次，放在 `<archive_root>/artifacts/<sha256>.<ext>`，
 旁边的 `.json` 记录来源，因此 archive 整理文件夹不会让 Card 失效，`zt dp` 的转储也会带上 Card 显示的图。
 Agent 用 `scholar_archive_artifact` 工具取图，它返回可直接粘贴的 Markdown；MCP 服务器拒绝显示 ZET 未保存的图的 Card。
-在 GUI 中，编辑器里的 **＋ Figure** 打开选图面板，从当前 Literature 树对应的 Work 开始。Card 中的图像一张夹在卡片上的照片，点击即可放大。
+在 GUI 中，编辑器里的 **＋ Figure** 打开选图面板，从当前 Literature 树对应的 Work 开始。Card 中的图像一张夹在卡片上的照片，点击即可放大，放大后的链接可在原书中打开这张图所在的位置。
+
+### 来自 archive 的文档
+
+**文档链接** `[文字](scholar:<file_id>)` 指向 archive 管理的一整份 PDF 或 Markdown 文档（在 id 后加 `#page=12` 可打开 PDF 的指定页）。
+GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 用浏览器自带的阅读器，Markdown 显示为带原图和排版公式的阅读页。
+服务通过 bridge 取得文档，并在 archive 中的副本大小不变时使用 ZET 缓存。编辑器的 **＋ Figure or document** 面板在图的上方列出 Work 的文档，
+`scholar_archive_file` 也以 `link` 返回这条链接。
 
 ## 导出
 

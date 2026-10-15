@@ -599,15 +599,10 @@ pub(crate) fn keep_artifact(
         .map(str::to_string)
         .or_else(|| listed["caption"].as_str().map(str::to_string))
         .unwrap_or_default();
-    let alt = caption
-        .replace(['\r', '\n'], " ")
-        .replace('[', "(")
-        .replace(']', ")");
-    let alt = alt.trim();
     Ok(json!({
         "sha256": digest,
         "address": format!("{}{digest}", crate::artifact::SCHEME),
-        "markdown": format!("![{alt}]({}{digest})", crate::artifact::SCHEME),
+        "markdown": figure_markdown(&caption, &digest),
         "caption": caption,
         "work_id": listing["work_id"],
         "file_id": file_id,
@@ -615,6 +610,154 @@ pub(crate) fn keep_artifact(
         "media_type": crate::artifact::sniff(&bytes).map(|(_, media_type)| media_type),
         "bytes": bytes.len(),
     }))
+}
+
+/// The Markdown that shows a kept artifact in a Card.
+fn figure_markdown(caption: &str, digest: &str) -> String {
+    let alt = caption
+        .replace(['\r', '\n'], " ")
+        .replace('[', "(")
+        .replace(']', ")");
+    format!("![{}]({}{digest})", alt.trim(), crate::artifact::SCHEME)
+}
+
+/// Take every figure a Markdown document shows into this archive's artifact store, in reading
+/// order, so a book digest can hand its writers the `artifact:` Markdown of each one. Images
+/// smaller than `min_bytes` (rules, marks, OCR crumbs) and images the archive lacks are skipped.
+pub(crate) fn keep_figures(
+    bridge: &mut Bridge,
+    root: &Path,
+    file_id: u64,
+    min_bytes: u64,
+) -> Result<Value> {
+    let listing = bridge.call("list_work_artifacts", &json!({ "file_id": file_id }))?;
+    let mut figures = Vec::new();
+    let mut skipped = 0;
+    for item in listing["artifacts"].as_array().into_iter().flatten() {
+        let path = item["path"].as_str().unwrap_or_default();
+        let present = item["availability"] == "present";
+        if path.is_empty() || !present || item["size_bytes"].as_u64().unwrap_or(0) < min_bytes {
+            skipped += 1;
+            continue;
+        }
+        let (bytes, digest) = bridge.artifact(file_id, path)?;
+        let source = json!({
+            "scholar_archive": bridge.url(),
+            "work_id": listing["work_id"],
+            "file_id": file_id,
+            "path": path,
+            "caption": item["caption"],
+        });
+        crate::artifact::store(root, &bytes, &source)?;
+        let caption = item["caption"].as_str().unwrap_or_default();
+        figures.push(json!({
+            "number": item["number"],
+            "name": item["name"],
+            "path": path,
+            "caption": item["caption"],
+            "captions": item["captions"],
+            "sha256": digest,
+            "markdown": figure_markdown(caption, &digest),
+            "bytes": bytes.len(),
+        }));
+    }
+    Ok(json!({
+        "work_id": listing["work_id"],
+        "file_id": file_id,
+        "figures": figures,
+        "skipped": skipped,
+    }))
+}
+
+/// The address scheme of a Document link in a Card body: `[label](scholar:<file_id>)`, with an
+/// optional fragment such as `#page=12` for a PDF page.
+pub(crate) const DOCUMENT_SCHEME: &str = "scholar:";
+
+/// A Document link's file id and fragment, or None when the address is not one.
+pub(crate) fn document_target(dest: &str) -> Option<(u64, Option<&str>)> {
+    let rest = dest.strip_prefix(DOCUMENT_SCHEME)?;
+    let (id, fragment) = match rest.split_once('#') {
+        Some((id, fragment)) => (id, Some(fragment)),
+        None => (rest, None),
+    };
+    if id.is_empty() || id.len() > 18 || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let file_id = id.parse::<u64>().ok().filter(|id| *id > 0)?;
+    let fragment = fragment.filter(|fragment| {
+        !fragment.is_empty()
+            && fragment.len() <= 64
+            && fragment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"=._-&".contains(&byte))
+    });
+    Some((file_id, fragment))
+}
+
+/// The Markdown of a Document link to a Scholar Archive document.
+pub(crate) fn document_markdown(label: &str, file_id: u64) -> String {
+    let label = label
+        .replace(['\r', '\n'], " ")
+        .replace('[', "(")
+        .replace(']', ")");
+    format!("[{}]({DOCUMENT_SCHEME}{file_id})", label.trim())
+}
+
+/// A Scholar Archive document as ZET holds it: a verified copy in ZET's cache.
+pub(crate) struct Document {
+    pub file_id: u64,
+    pub kind: String,
+    pub name: String,
+    /// The document's path below the archive's `files/` folder.
+    pub relative_path: String,
+    pub path: PathBuf,
+}
+
+impl Bridge {
+    /// A document the archive manages, read from ZET's cache while the cached copy still has the
+    /// size the archive records, and fetched (and verified) again otherwise.
+    pub(crate) fn document(&mut self, file_id: u64) -> Result<Document> {
+        let answer = self.sql(
+            "SELECT relative_path, kind, size_bytes, availability FROM work_files WHERE id = ?1",
+            &json!([file_id]),
+            1,
+            "archive",
+        )?;
+        let Some(row) = answer["rows"].as_array().and_then(|rows| rows.first()) else {
+            bail!("Scholar Archive has no document {file_id}");
+        };
+        let relative_path = row[0].as_str().unwrap_or_default().to_string();
+        let kind = row[1].as_str().unwrap_or_default().to_string();
+        if row[3].as_str() != Some("present") {
+            bail!("Scholar Archive's document {file_id} ({relative_path}) is not present");
+        }
+        let name = relative_path
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty() && *name != ".." && *name != ".")
+            .unwrap_or_default()
+            .to_string();
+        let cached = cache_dir()?
+            .join("files")
+            .join(file_id.to_string())
+            .join(&name);
+        let fresh = !name.is_empty()
+            && fs::metadata(&cached)
+                .map(|meta| meta.is_file() && Some(meta.len()) == row[2].as_u64())
+                .unwrap_or(false);
+        let path = if fresh {
+            cached
+        } else {
+            self.file(file_id, None)?.path
+        };
+        Ok(Document {
+            file_id,
+            kind,
+            name,
+            relative_path,
+            path,
+        })
+    }
 }
 
 /// Where an export is kept in ZET's cache.
@@ -782,6 +925,37 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             )?);
             Ok(())
         }
+        [sub, id, rest @ ..] if sub == "keep-figures" => {
+            let file_id: u64 = id.parse().context("file id must be a number")?;
+            let (mut min_bytes, mut out) = (0u64, None);
+            for pair in rest.chunks(2) {
+                match pair {
+                    [flag, value] if flag == "--min-bytes" => {
+                        min_bytes = value.parse().context("--min-bytes takes a number")?
+                    }
+                    [flag, value] if flag == "--out" => out = Some(PathBuf::from(value)),
+                    _ => bail!(
+                        "expected `zt scholar keep-figures <markdown-file-id> [--min-bytes <n>] [--out <path>]`"
+                    ),
+                }
+            }
+            let root = crate::require_archive_root()?;
+            let kept = keep_figures(&mut Bridge::connect()?, &root, file_id, min_bytes)?;
+            match out {
+                Some(path) => {
+                    fs::write(&path, serde_json::to_string_pretty(&kept)?)
+                        .with_context(|| format!("failed to write {}", path.display()))?;
+                    println!(
+                        "{} figures kept ({} skipped) -> {}",
+                        kept["figures"].as_array().map_or(0, Vec::len),
+                        kept["skipped"],
+                        path.display()
+                    );
+                }
+                None => print(&kept),
+            }
+            Ok(())
+        }
         [sub, id, rest @ ..] if sub == "file" => {
             let file_id: u64 = id.parse().context("file id must be a number")?;
             let out = match rest {
@@ -822,7 +996,7 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|figures <work-id>|figure <file-id> <path>|export ...]`"
+            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|figures <work-id>|figure <file-id> <path>|keep-figures <file-id>|export ...]`"
         ),
     }
 }
@@ -895,6 +1069,31 @@ mod tests {
         assert!(Credential::from_json(&remote).is_err());
         let other = json!({ "client": "other", "key_id": "ab", "secret": "11".repeat(32) });
         assert!(Credential::from_json(&other).is_err());
+    }
+
+    #[test]
+    fn a_document_link_names_a_file_and_maybe_a_page() {
+        assert_eq!(document_target("scholar:83"), Some((83, None)));
+        assert_eq!(
+            document_target("scholar:85#page=12"),
+            Some((85, Some("page=12")))
+        );
+        // A fragment that could break out of an attribute is dropped, not passed on.
+        assert_eq!(document_target("scholar:85#\"><x"), Some((85, None)));
+        for bad in [
+            "scholar:",
+            "scholar:0",
+            "scholar:-1",
+            "scholar:8a",
+            "scholar:../x",
+            "artifact:83",
+        ] {
+            assert_eq!(document_target(bad), None, "{bad}");
+        }
+        assert_eq!(
+            document_markdown("Book [draft].pdf\n", 85),
+            "[Book (draft).pdf](scholar:85)"
+        );
     }
 
     #[test]

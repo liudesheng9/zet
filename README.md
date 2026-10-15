@@ -331,8 +331,13 @@ DeepSeek Harness runs digest it section by section; as soon as a block finishes,
 compiler builds every model it wrote to its elaboration level (a Sonnet architect only plans each
 model; a script builds the skeleton; DeepSeek writes the Cards and charts, then the Derivation
 parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense); a link pass ties
-the parts of the book together, and Opus organizes the result. Last, the hub stage builds the
-Hub Cards of the whole agent Workspace (see *Hub Cards*). See
+the parts of the book together, and Opus organizes the result. The book's figures come along:
+the prepare step keeps every figure of the book's Markdown in ZET (see *Figures from the archive*)
+and hands the writers each one as an `![图 2.C.1](artifact:…)` line to paste where a Card discusses
+it; after Organize, `scripts/book-digest/attach-figures.ps1` puts each figure into every Card of the
+book that names it but does not show it yet, and links the book's PDF and Markdown from its
+Literature Card (mode `figures` runs only this step on an earlier digest). Last, the hub stage
+builds the Hub Cards of the whole agent Workspace (see *Hub Cards*). See
 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
 
 ### Hub Cards
@@ -419,6 +424,7 @@ zt scholar sql "SELECT id, title, year FROM works WHERE doi IS NOT NULL LIMIT 10
 zt scholar file 22                 # fetch a document, SHA-256 checked, into ZET's cache
 zt scholar figures 42              # a Work's figures: number, caption, file id and path
 zt scholar figure 22 nber/w1_mineru/images/a1.jpg   # keep one; prints the Markdown that shows it
+zt scholar keep-figures 83 --min-bytes 3000 --out figs.json   # keep every figure of one Markdown
 zt scholar export --format bibtex --out works.bib
 zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` disconnects
 ```
@@ -439,7 +445,18 @@ never breaks when the archive reorganises its folders, and `zt dp` dumps carry t
 Cards show. Agents take a figure with the `scholar_archive_artifact` tool, which returns the
 Markdown to paste; the MCP server refuses a Card that shows a figure ZET does not hold. In the GUI,
 **＋ Figure** in the editor opens a picker that starts at the Work of the Literature tree you are
-writing in. In a Card, a figure sits like a print clipped to the card; clicking it opens it large.
+writing in. In a Card, a figure sits like a print clipped to the card; clicking it opens it large,
+with a link that opens the figure in its place in the book.
+
+### Documents from the archive
+
+A **Document link** `[label](scholar:<file_id>)` points a reader at a whole PDF or Markdown
+document the archive manages (`#page=12` after the id opens a PDF at that page). In the GUI it reads
+as a small page glyph and opens beside the slip-box: a PDF in the browser's own viewer, a Markdown
+document as a reading page with its figures and typeset TeX. The service fetches the document
+through the bridge and keeps it in ZET's cache while the archive's copy keeps its size. The editor's
+**＋ Figure or document** picker lists a Work's documents above its figures, and
+`scholar_archive_file` returns the link as `link`.
 
 ## Dumps
 

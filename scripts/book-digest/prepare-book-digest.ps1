@@ -7,7 +7,14 @@
 .DESCRIPTION
   - Reads a Chinese bilingual Markdown book (each English block followed by its Chinese
     translation) and keeps the Chinese: a block without CJK characters is dropped when the next
-    block is its translation. Formulas, tables, and unpaired blocks are kept; images are dropped.
+    block is its translation. Formulas, tables, and unpaired blocks are kept.
+  - Keeps the book's figures: every image of the Markdown (-FileId, its Scholar Archive file id,
+    read from a ZET cache path such as ...\scholar-archive\files\83\... when not given) of at
+    least -MinFigureBytes is taken into ZET's artifact store through the bridge (figures.ps1), and
+    its image line becomes `![图 2.C.1](artifact:<sha256>)`, which a Card can paste to show the
+    figure. The caption lines under it stay; the same figure repeated in the next blocks (the
+    bilingual copy) is written once. figures.json lists every figure with its labels. Images
+    below the size, and every image under -NoFigures, are dropped.
   - Splits at `#` and `##` headings from -StartHeading up to -EndHeading, merges tiny units into
     the next one, and groups one or two consecutive units of the same chapter per DeepSeek run
     (at most -MaxChars characters per group unless a single unit is larger). Units under a heading
@@ -17,6 +24,8 @@
     DeepSeek prompt cache can reuse it), and manifest.json.
   - -Apply creates, through `zt mcp` with agent Access, the Literature Card -CitationKey from
     -BibTeX and the anchor line <key>/1 .. <key>/N, one per group. It refuses if the tree exists.
+    The Literature Card's body links the Work's PDF and Markdown documents with Document links
+    (`[原书 PDF](scholar:<file_id>)`), which the GUI opens.
   Prints the manifest as compact JSON.
 #>
 [CmdletBinding()]
@@ -32,6 +41,9 @@ param(
     [int]$MaxChars = 20000,
     [int]$MaxUnits = 3,
     [int]$MinUnitChars = 1000,
+    [int]$FileId = 0,
+    [int]$MinFigureBytes = 3000,
+    [switch]$NoFigures,
     [switch]$Apply
 )
 $ErrorActionPreference = 'Stop'
@@ -43,14 +55,32 @@ $cjk = '[㐀-鿿豈-﫿]'
 
 # --- Chinese-only blocks -----------------------------------------------------------------------
 $raw = (Get-Content -LiteralPath $Source -Raw -Encoding utf8) -replace "`r`n", "`n"
+. (Join-Path $PSScriptRoot 'figures.ps1')
+if (-not $FileId -and $Source -match '[\\/]scholar-archive[\\/]files[\\/](\d+)[\\/]') { $FileId = [int]$Matches[1] }
+$figures = @{}
+if ($FileId -and -not $NoFigures) { $figures = Get-BookFigures -Text $raw -FileId $FileId -MinBytes $MinFigureBytes }
 $blocks = [regex]::Split($raw, '\n\s*\n') |
     ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $kept = [Collections.Generic.List[string]]::new()
+# Where each figure was last written: the bilingual copy right after it is not written again.
+$figureAt = @{}
 for ($i = 0; $i -lt $blocks.Count; $i++) {
     $block = $blocks[$i]
-    if ($block -match '^!\[') { continue }
-    $block = ($block -split "`n" | Where-Object { $_ -notmatch '^\s*!\[.*\]\(.*\)\s*$' }) -join "`n"
-    if (-not $block.Trim()) { continue }
+    $lines = [Collections.Generic.List[string]]::new()
+    $shown = $false
+    foreach ($line in $block -split "`n") {
+        $name = Get-FigureImageName $line
+        if (-not $name) { $lines.Add($line); continue }
+        $figure = $figures[$name]
+        if (-not $figure) { continue }
+        if ($figureAt.ContainsKey($name) -and $kept.Count - $figureAt[$name] -le 3) { continue }
+        $figureAt[$name] = $kept.Count
+        $lines.Add($figure.line)
+        $shown = $true
+    }
+    $block = ($lines -join "`n").Trim()
+    if (-not $block) { continue }
+    if ($shown) { $kept.Add($block); continue }
     if ($block -match $cjk) { $kept.Add($block); continue }
     if ($block -match '^(\$\$|\||<|```)') { $kept.Add($block); continue }
     $next = if ($i + 1 -lt $blocks.Count) { $blocks[$i + 1] } else { '' }
@@ -139,7 +169,13 @@ $manifest = [ordered]@{
     citation_key = $CitationKey; book_title = $BookTitle; staging = $staging
     shared_prefix = (Join-Path $staging 'shared-prefix.md'); link_prefix = (Join-Path $staging 'link-prefix.md')
     book = (Join-Path $staging 'book.zh.md'); index = (Join-Path $staging 'sections\index.md'); source = $Source; groups = @()
+    file_id = $FileId; figures = $figures.Count; figures_file = (Join-Path $staging 'figures.json')
+    documents = if ($FileId) { Get-BookDocumentLine -FileId $FileId } else { '' }
 }
+# Every kept figure with its labels: the model compiler hands a part the figure its plan names.
+$figureList = @($figures.GetEnumerator() | Sort-Object { $_.Value.path } | ForEach-Object {
+        [ordered]@{ name = $_.Key; labels = @($_.Value.labels); alt = $_.Value.alt; line = $_.Value.line; sha256 = $_.Value.sha256; path = $_.Value.path } })
+[IO.File]::WriteAllText($manifest.figures_file, ([ordered]@{ file_id = $FileId; figures = $figureList } | ConvertTo-Json -Depth 6), $utf8)
 $outline = [Text.StringBuilder]::new()
 $index = [Text.StringBuilder]::new()
 [void]$index.AppendLine("# 全书索引：《$BookTitle》").AppendLine()
@@ -194,7 +230,8 @@ foreach ($pair in @(@('dsh-instructions.zh.md', $manifest.shared_prefix), @('dsh
 if ($Apply) {
     $probe = & pwsh -NoProfile -File $helper -Tool get_card -Json (@{ at = $CitationKey } | ConvertTo-Json -Compress)
     if (($probe -join ' ') -notmatch '^0 error') { throw "Literature tree $CitationKey already exists; delete it or choose another key." }
-    $calls = @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = $BibTeX; body = '（全书索引待整理。）' } })
+    $body = '（全书索引待整理。）' + $(if ($manifest.documents) { "`n`n$($manifest.documents)" })
+    $calls = @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = $BibTeX; body = $body } })
     foreach ($group in $manifest.groups) {
         $at = if ($group.n -eq 1) { $CitationKey } else { "$CitationKey/$($group.n - 1)" }
         $calls += @{ tool = 'create_successor'; arguments = @{ at = $at; kind = 'direct'
