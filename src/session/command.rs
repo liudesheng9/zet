@@ -79,13 +79,13 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
-        "ty <idea|event|model> [<facet>]",
-        "make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part",
+        "ty <idea|event|model|hub> [<facet>]",
+        "make the current card an Idea, Event, Model, or Hub Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
     (
-        "lv <concept|formal|none>",
-        "set the elaboration level of the current Model Card: concept (1) or formal (2)",
+        "lv <level|none>",
+        "set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)",
         Availability::OnRegular,
     ),
     ("stats", "count cards by kind", Availability::Always),
@@ -663,17 +663,26 @@ fn execute_command(
             crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", ..] => bail!("usage: ty <idea|event|model> [<facet>]"),
+        ["ty", ..] => bail!("usage: ty <idea|event|model|hub> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
-            let level = crate::model::parse_optional_level(value)?;
             let _lock = crate::acquire_edit_lock(root)?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            crate::model::set_level(&conn, &card, level)?;
+            if card.card_type == crate::CardType::Hub {
+                let level = if value.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    Some(crate::hub::HubLevel::parse(value)?)
+                };
+                crate::hub::set_level(&conn, &card, level)?;
+            } else {
+                let level = crate::model::parse_optional_level(value)?;
+                crate::model::set_level(&conn, &card, level)?;
+            }
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["lv", ..] => bail!("usage: lv <concept|formal|none>"),
+        ["lv", ..] => bail!("usage: lv <level|none>"),
         [name, ..] => bail!("unknown session command: {name}"),
     }
 }
@@ -1145,9 +1154,9 @@ mod tests {
         for (line, expected) in [
             (
                 "ty fact",
-                "unknown card type `fact`; expected idea, event, or model",
+                "unknown card type `fact`; expected idea, event, model, or hub",
             ),
-            ("ty", "usage: ty <idea|event|model> [<facet>]"),
+            ("ty", "usage: ty <idea|event|model|hub> [<facet>]"),
             (
                 "ty event model x",
                 "only Model Cards can have a Model facet",
@@ -1167,7 +1176,7 @@ mod tests {
             .expect_err("tree roots stay Idea Cards");
         assert_eq!(
             error.to_string(),
-            "only Regular Cards can be Event or Model Cards"
+            "only Regular Cards can be Event, Model, or Hub Cards"
         );
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }
@@ -1282,7 +1291,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | lv <concept|formal|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

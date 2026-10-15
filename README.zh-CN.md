@@ -266,8 +266,12 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 ### 消化一本书
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，最后由 Opus 整理结构。
+每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
 详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
+
+### 枢纽卡
+
+**枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。书的消化流程的枢纽阶段写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [doc/hub-cards-design.md](doc/hub-cards-design.md)。
 
 ## MCP 服务器
 

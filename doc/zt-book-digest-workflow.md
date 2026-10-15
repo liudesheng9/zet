@@ -23,6 +23,7 @@ flowchart LR
   M3 --> L
   L --> C[Cleanup<br/>Haiku]
   C --> O[Organize<br/>Opus]
+  O --> H[Hubs<br/>Haiku hub manager, DeepSeek writes,<br/>hub-compiler.ps1 builds]
 ```
 
 | Stage | Who | What it does | What you get |
@@ -32,7 +33,8 @@ flowchart LR
 | **Models** | Haiku lists, then the **model compiler** per batch (`perConcept` concept models or `perSonnet` formal models): DeepSeek briefs, one Sonnet architect plans, `model-compiler.ps1` builds, Haiku drivers relay DeepSeek rounds | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. DeepSeek writes a brief of each model's source; the Sonnet architect writes only `plan.json` (level, parts in build order, premises, where Derivation parts go and how many); the script builds the skeleton; DeepSeek writes the Model Card, setting, parts and charts, then the Derivation parts; a DeepSeek reviewer splits any derivation that jumps or is too dense, and the script inserts the new parts. See `doc/model-compiler-design.md`. | Concept models and self-sufficient formal models; a report per model |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
-| **Organize** | Opus | Merges duplicate Topics, writes hubs, the book's structure Card and index, checks every model with `get_model`, and fixes Links. | A finished, navigable digest |
+| **Organize** | Opus | Merges duplicate Topics, rewrites Topic bodies, writes the book's structure Card and index, checks every model with `get_model`, and fixes Links. It writes no hubs. | A finished digest |
+| **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
 
 ## Skills for DeepSeek
 
@@ -201,7 +203,7 @@ Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. |
+| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `groups` | modes `link` and `models`: the digest's group count |
 | `models` | `false` skips the Models stage in a full run |
@@ -216,6 +218,11 @@ Arguments (`args`):
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `maxSentences`, `maxPartChars`, `maxSteps` | the Card size of a formal model's part (12, 400, 6): a part over a limit splits, and a long step becomes a Derivation chain |
 | `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
+| `hubs` | run the hub stage (default `true` in mode `full`, `false` in mode `link`) |
+| `hubWork` | the hub stage's folder and DeepSeek workspace (default `D:\zt-digest\hubs`); its `state.json` lets a later run rewrite only the trees that changed |
+| `hubLimits` | an object that overrides the limits the Haiku hub manager chooses, e.g. `{ "topic_min": 8 }` |
+| `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
+| `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers (low); check, fix, and apply again (1) |
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the
 DeepSeek token use, and Opus's report. To structure the models of a book digested before 0.6.0 (or, with `redoModels: true`, restructure those of 0.6.0),

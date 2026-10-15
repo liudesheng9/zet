@@ -141,7 +141,16 @@
     idea: { label: 'Idea', note: 'one idea or claim' },
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
     model: { label: 'Model', note: 'one whole model: its question and what it shows, or one part of it' },
+    hub: { label: 'Hub', note: 'a way into one subject: its Cards in named groups, each with what it adds' },
   };
+  // A Hub Card is drawn as a guide card; its tab stands further left the wider its subject is.
+  const HUB_LEVELS = {
+    register: { label: 'register', note: 'the Workspace: key terms, each with one to three ways in' },
+    field: { label: 'field', note: 'several Topic trees that share one subject' },
+    topic: { label: 'topic', note: 'one Topic tree' },
+    line: { label: 'line', note: 'one line of thought inside one tree' },
+  };
+  const hubClass = (card) => (card.type === 'hub' && HUB_LEVELS[card.level] ? ' hub-' + card.level : '');
   // A model is presented by its Model Card and by Model parts: filed under it or linked from it. A
   // part's facet is a short label its author chose; these common facets are only suggestions (mirrors
   // `COMMON_FACETS` in src/model.rs). An emphasis marks a part `core` or `aside`.
@@ -172,7 +181,7 @@
   const typeStamp = (type, title, facet, emphasis, level) => {
     if (!CARD_TYPES[type] || type === 'idea') return null;
     const part = type === 'model' && facet;
-    const lvl = type === 'model' && !part && LEVELS[level];
+    const lvl = type === 'model' ? !part && LEVELS[level] : type === 'hub' && HUB_LEVELS[level];
     const note = part && [FACETS[facet]?.note, EMPHASIS[emphasis] && `${EMPHASIS[emphasis].label}: ${EMPHASIS[emphasis].note}`].filter(Boolean).join(' · ');
     return h('span', {
       class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : '') + (lvl ? ' level-' + level : ''),
@@ -265,8 +274,8 @@
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
-    ['ty <idea|event|model> [<facet>]', 'make the current card an Idea, Event, or Model Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
-    ['lv <concept|formal|none>', 'set the elaboration level of the current Model Card: concept (1) or formal (2)', 'regular'],
+    ['ty <idea|event|model|hub> [<facet>]', 'make the current card an Idea, Event, Model, or Hub Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
+    ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -327,15 +336,15 @@
       }
       case 'ty':
         needCard();
-        if (rest.length < 1) throw new Error('usage: ty <idea|event|model> [<facet>]');
+        if (rest.length < 1) throw new Error('usage: ty <idea|event|model|hub> [<facet>]');
         // A facet is the rest of the line, so it may hold spaces.
         return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
       case 'lv': {
         needCard();
-        if (rest.length !== 1) throw new Error('usage: lv <concept|formal|none>');
+        if (rest.length !== 1) throw new Error('usage: lv <level|none>');
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
-        return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} model`);
+        return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`);
       }
       case 'stats': {
         const s = state.overview.stats;
@@ -657,7 +666,7 @@
       const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt].join('\u0001');
       el.className = ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
-        card.type && card.type !== 'idea' ? 'type-' + card.type : '',
+        card.type && card.type !== 'idea' ? 'type-' + card.type + hubClass(card) : '',
         card.facet ? 'model-part' : '',
         n.folded ? 'folded' : '',
         state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
@@ -1224,7 +1233,7 @@
     function make(address) {
       const node = state.byAddress.get(address);
       const el = h('div', {
-        class: 'tcard' + (node.edge === 'root' ? ' root ' + node.kind : '') + (node.type && node.type !== 'idea' ? ' type-' + node.type : ''),
+        class: 'tcard' + (node.edge === 'root' ? ' root ' + node.kind : '') + (node.type && node.type !== 'idea' ? ' type-' + node.type + hubClass(node) : ''),
         dataset: { address }, role: 'button', tabindex: '0',
       });
       el.addEventListener('pointerdown', (event) => grab(event, address, el));
@@ -1995,8 +2004,9 @@
     wireMarkdown(md);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
-    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type : '') + (card.model ? ' in-model' : '') },
+    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : '') + (card.model ? ' in-model' : '') },
       card.model ? modelTabs(card) : null,
+      card.type === 'hub' ? h('div', { class: 'guide-tab' + hubClass(card), title: `${(HUB_LEVELS[card.level] || {}).label || 'hub'} hub — ${(HUB_LEVELS[card.level] || {}).note || 'set its level with lv'}`, text: (HUB_LEVELS[card.level] || {}).label || 'hub' }) : null,
       h('header', { class: 'card-head' },
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
@@ -2007,6 +2017,11 @@
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
           }),
         ),
+        card.hubs && card.hubs.length ? h('nav', { class: 'hub-climb', 'aria-label': 'Hubs that list this card' }, card.hubs.map((hub) => h('button', {
+          class: 'hub-chip' + (HUB_LEVELS[hub.level] ? ' hub-' + hub.level : ''),
+          title: `${hub.level || ''} hub ${hub.address} — ${hub.title}`,
+          onclick: () => go(hub.address),
+        }, h('span', { class: 'lvl', text: hub.level || 'hub' }), h('span', { class: 't' }, titleNodes(hub.title || hub.address))))) : null,
         h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),
       ),
       md,
@@ -2935,16 +2950,16 @@
     if (address) await afterChange(address, `saved ${address}`);
   }
 
-  /** `ty <idea|event|model> [<facet>]`: change only the current Regular Card's type and facet. */
+  /** `ty <idea|event|model|hub> [<facet>]`: change only the current Regular Card's type and facet. */
   async function setCardType(type, facet) {
     const card = state.card;
-    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, or model`);
-    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event or Model Cards');
+    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, model, or hub`);
+    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Model, or Hub Cards');
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
     const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
     await afterChange(result.address, facet
       ? `${result.address} is the ${facetLabel(facet)} part of its model`
-      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : 'a Model'} Card`);
+      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'hub' ? 'a Hub' : 'a Model'} Card`);
   }
 
   function choosePart() {

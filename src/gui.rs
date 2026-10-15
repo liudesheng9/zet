@@ -18,7 +18,7 @@ use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
-use crate::model::{Emphasis, Facet, Level};
+use crate::model::{Emphasis, Facet};
 use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
 
@@ -606,8 +606,9 @@ impl App {
             "type": card.card_type.id(),
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
-            "level": card.level.map(Level::id),
+            "level": card.level_id(),
             "model": snapshot.model(&card.address),
+            "hubs": crate::hub::Graph::new(&snapshot).hubs_of(&card.address),
             "context": context,
             "title": parsed.title,
             "text": card.text,
@@ -750,14 +751,18 @@ impl App {
             (_, Some(_)) => CardType::Model,
             (card_type, None) => card_type.unwrap_or_default(),
         };
-        let level = level_field(body)?.flatten();
+        let (level, hub_level) = ops::parse_level_arg(body.get("level"))?;
+        let (level, hub_level) = (level.flatten(), hub_level.flatten());
         if level.is_some() && (card_type != CardType::Model || part.is_some()) {
             return Err(ApiError(crate::model::LEVEL_NEEDS_MODEL_CARD.to_string()));
+        }
+        if hub_level.is_some() && card_type != CardType::Hub {
+            return Err(ApiError(crate::hub::LEVEL_NEEDS_HUB_CARD.to_string()));
         }
         let location = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError(
-                    "only Regular Cards can be Event or Model Cards".to_string(),
+                    "only Regular Cards can be Event, Model, or Hub Cards".to_string(),
                 ));
             }
             "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
@@ -781,9 +786,10 @@ impl App {
             )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
         };
-        if level.is_some() {
+        if level.is_some() || hub_level.is_some() {
             let change = TypeChange {
-                level: Some(level),
+                level: level.map(Some),
+                hub_level: hub_level.map(Some),
                 ..TypeChange::default()
             };
             ops::edit(&self.root, ACCESS, &location, None, change, None)?;
@@ -816,11 +822,13 @@ impl App {
 
     /// Save a Card's text, its type, facet, emphasis, and level, or both.
     fn edit(&self, body: &Value) -> ApiResult {
+        let (level, hub_level) = ops::parse_level_arg(body.get("level"))?;
         let change = TypeChange {
             card_type: type_field(body)?,
             facet: facet_field(body)?,
             emphasis: emphasis_field(body)?,
-            level: level_field(body)?,
+            level,
+            hub_level,
         };
         let text = if change.is_empty() {
             Some(str_field(body, "text")?)
@@ -1441,15 +1449,6 @@ fn emphasis_field(body: &Value) -> Result<Option<Option<Emphasis>>> {
     }
 }
 
-/// An optional elaboration level: absent leaves it alone, `""` or null clears it.
-fn level_field(body: &Value) -> Result<Option<Option<Level>>> {
-    match body.get("level") {
-        None => Ok(None),
-        Some(Value::Null) => Ok(Some(None)),
-        Some(Value::String(value)) => crate::model::parse_optional_level(value).map(Some),
-        Some(_) => bail!("`level` must be a string"),
-    }
-}
 
 fn confirm_field(body: &Value) -> Option<&str> {
     body.get("confirm").and_then(Value::as_str)

@@ -46,7 +46,15 @@ needs them and after the shared parts they rest on), its `chains` (runs of Deriv
 any number), and the faults that keep it from being self-sufficient (`closure`: a rests-on Link \
 to a Card outside the model; `forward`: a step rests on a later step; `unanchored`: a step with no \
 rests-on path to the setting; and `beyond_level`: a Derivation part in a concept model). A model rests on parts, never on a whole other Model Card. To put \
-a missing step between two Cards, use insert_card with `before`; move_card also takes `before` \
+a missing step between two Cards, use insert_card with `before`; \
+A Hub Card (`hub`) is a way into one subject: its body lists, under `##` group headings, one list \
+item per member, `- [[address]]：what this Card adds`, and states no claim of its own. Its `level` \
+says how wide the subject is: `line` (one line of thought, filed as a Side successor of the Card \
+where the line starts), `topic` (one Topic tree, a Side successor of `<n>/1`, linked from the Topic \
+body), `field` (several Topic trees, filed under the register), or `register` (the Workspace: one \
+key term per item with 1 to 3 Links). A hub lists only hubs of a lower level and reaches into other \
+trees in a `邻近` group. get_hub reports a hub's lines, upper and lower hubs, and faults; list_hubs \
+shows the hub graph and the hubs the policy requires but the Workspace lacks; move_card also takes `before` \
 (another Card's place) and `alone` (only the Card; its chain closes the gap). Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
 bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI \
@@ -308,8 +316,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "type": card.card_type.id(),
                 "facet": card.facet.as_ref().map(Facet::id),
                 "emphasis": card.emphasis.map(Emphasis::id),
-                "level": card.level.map(Level::id),
+                "level": card.level_id(),
                 "model": snapshot.model(&card.address),
+                "hubs": crate::hub::Graph::new(&snapshot).hubs_of(&card.address),
                 "title": parsed.title,
                 "body": parsed.body,
                 "text": card.text,
@@ -350,6 +359,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 }
             }
             Ok(model)
+        }
+        "get_hub" => {
+            let snapshot = Snapshot::read(&root)?;
+            let at = string_arg(args, "at")?;
+            let limits = crate::hub::Limits::from_args(args)?;
+            crate::hub::Graph::new(&snapshot).report(&at, &limits)
+        }
+        "list_hubs" => {
+            let snapshot = Snapshot::read(&root)?;
+            let limits = crate::hub::Limits::from_args(args)?;
+            Ok(crate::hub::Graph::new(&snapshot).list(optional_workspace(args)?, &limits))
         }
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
@@ -433,18 +453,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 (_, Some(_)) => CardType::Model,
                 (card_type, None) => card_type.unwrap_or_default(),
             };
-            let level = optional_level(args)?.flatten();
+            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
+            let (level, hub_level) = (level.flatten(), hub_level.flatten());
             if level.is_some() && (card_type != CardType::Model || part.is_some()) {
                 bail!(crate::model::LEVEL_NEEDS_MODEL_CARD);
+            }
+            if hub_level.is_some() && card_type != CardType::Hub {
+                bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
             }
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
             crate::artifact::require_present(&root, &text)?;
             let address =
                 ops::create_successor(&root, ACCESS, kind, &at, card_type, part.clone(), &text)?;
-            if level.is_some() {
+            if level.is_some() || hub_level.is_some() {
                 let change = ops::TypeChange {
-                    level: Some(level),
+                    level: level.map(Some),
+                    hub_level: hub_level.map(Some),
                     ..ops::TypeChange::default()
                 };
                 ops::edit(&root, ACCESS, &address, None, change, None)?;
@@ -454,7 +479,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "type": card_type.id(),
                 "facet": part.as_ref().map(|part| part.facet.id()),
                 "emphasis": part.and_then(|part| part.emphasis).map(Emphasis::id),
-                "level": level.map(Level::id),
+                "level": level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),
             }))
         }
         "edit_card" => {
@@ -463,11 +488,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let card = crate::load_card(&conn, &at)?;
             drop(conn);
             ACCESS.ensure_writable(card.workspace)?;
+            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
             let change = ops::TypeChange {
                 card_type: optional_card_type(args)?,
                 facet: optional_facet(args)?,
                 emphasis: optional_emphasis(args)?,
-                level: optional_level(args)?,
+                level,
+                hub_level,
             };
             let parsed = crate::parse_card_text(&card.text)?;
             let text_given = ["text", "title", "body"]
@@ -664,20 +691,6 @@ fn optional_emphasis(args: &Value) -> Result<Option<Option<Emphasis>>> {
     }
 }
 
-/// `None` when absent; `Some(None)` for an empty string or `none`, which
-/// clears a Model Card's elaboration level.
-fn optional_level(args: &Value) -> Result<Option<Option<Level>>> {
-    match args.get("level") {
-        None => Ok(None),
-        Some(Value::Null) => Ok(Some(None)),
-        Some(Value::String(value)) => crate::model::parse_optional_level(value).map(Some),
-        Some(Value::Number(number)) => {
-            crate::model::parse_optional_level(&number.to_string()).map(Some)
-        }
-        Some(_) => bail!("argument `level` must be concept, formal, 1, 2, or empty"),
-    }
-}
-
 fn optional_zone(args: &Value) -> Result<Option<&'static str>> {
     match args.get("zone").and_then(Value::as_str) {
         None | Some("all") => Ok(None),
@@ -754,17 +767,28 @@ fn tool_definitions() -> Vec<Value> {
     let level = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["concept", "formal", ""],
+            "enum": ["concept", "formal", "line", "topic", "field", "register", ""],
             "description": description,
         })
     };
     let card_type = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["idea", "event", "model"],
+            "enum": ["idea", "event", "model", "hub"],
             "description": description,
         })
     };
+    let limit = |description: &str| {
+        json!({ "type": "integer", "minimum": 1, "description": description })
+    };
+    let hub_limits = json!({
+        "max_groups": limit("Most groups a hub may hold (default 7)."),
+        "max_lines": limit("Most member lines a hub may hold (default 25)."),
+        "min_reason": limit("Fewest characters of a line's reason (default 8)."),
+        "topic_min": limit("Cards in a Topic tree that require a topic hub (default 7)."),
+        "line_min": limit("Cards in a branch that require a line hub (default 12)."),
+        "neighbour_links": limit("Links between two trees that make them neighbours (default 3)."),
+    });
     vec![
         tool(
             "list_workspaces",
@@ -815,12 +839,38 @@ fn tool_definitions() -> Vec<Value> {
             false,
         ),
         tool(
+            "get_hub",
+            "Get hub",
+            "Read one Hub Card as a hub: its `level` (line, topic, field, register), `anchor` (the Card it is filed under), `groups`, and `lines` (each member with its group, title, type, tree, Relation kind, and reason); its `lower` and `upper` hubs; how many Cards its range holds; its `faults` (level, oversize, flat, bare, broken, upward, cycle, unanchored, duplicate, unlisted, isolated); and the advice: `mirror` (it only repeats its own tree in address order), `candidates` (Cards of its range that link two or more members but are in no line), and `unreached` (Cards of its range that no hub reaches, directly or through a Card above them). The limits may be set per call.",
+            {
+                let mut properties = hub_limits.clone();
+                properties["at"] = at.clone();
+                properties
+            },
+            &["at"],
+            true,
+            false,
+        ),
+        tool(
+            "list_hubs",
+            "List hubs",
+            "The hub graph of a Workspace: every Hub Card with its level, tree, line count, upper and lower hubs, fault names, `mirror`, and unreached count; `counts` per level; and `missing`: the hubs the policy requires but the Workspace lacks (a topic hub for a Topic tree of `topic_min` or more Cards, a line hub at the first Card of a branch of `line_min` or more Cards or with 2 or more Model Cards, and one register per Workspace that holds hubs). Pass the limits a run chose to check against them.",
+            {
+                let mut properties = hub_limits.clone();
+                properties["workspace"] = workspace_filter.clone();
+                properties
+            },
+            &[],
+            true,
+            false,
+        ),
+        tool(
             "search_cards",
             "Search cards",
             "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type`, only Cards of that type match, and `query` may be empty or left out to list every Card of that type.",
             json!({
                 "query": { "type": "string", "description": "Text to find; required unless `type` is given." },
-                "type": card_type("Only Cards of this type: idea, event (Event Cards), or model (Model Cards)."),
+                "type": card_type("Only Cards of this type: idea, event (Event Cards), model (Model Cards), or hub (Hub Cards)."),
                 "workspace": workspace_filter,
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
             }),
@@ -884,10 +934,10 @@ fn tool_definitions() -> Vec<Value> {
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, or model."),
+                "type": card_type("The Card type: idea (default), event, model, or hub."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
-                "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided."),
+                "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
             }),
             &["at", "title"],
             false,
@@ -901,10 +951,10 @@ fn tool_definitions() -> Vec<Value> {
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
-                "type": card_type("New Card type: idea, event, or model (event and model only for Regular Cards)."),
+                "type": card_type("New Card type: idea, event, model, or hub (event, model, and hub only for Regular Cards)."),
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
-                "level": level("New elaboration level of a Model Card: concept (level 1), formal (level 2), or empty for none."),
+                "level": level("New elaboration level of a Model Card (concept or formal), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
             }),
@@ -957,7 +1007,7 @@ fn tool_definitions() -> Vec<Value> {
                 "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, or model."),
+                "type": card_type("The Card type: idea (default), event, model, or hub."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model); a Derivation part's facet starts with `推导`."),
                 "emphasis": emphasis("For a Model part: core or aside; omit for a regular part."),
                 "confirm": confirm,

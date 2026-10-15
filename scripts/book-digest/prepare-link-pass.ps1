@@ -9,7 +9,7 @@
   owned-gNN.txt (written by the helper's -Log during the digest) or, when that file is missing,
   the Cards inferred from the text: Literature-tree Cards under its anchor that cite a section,
   and agent Topic-tree Cards whose first `§` reference names one of its sections. Topic roots,
-  hubs, and the book's structure Card (no section reference) stay unowned.
+  Hub Cards (and other Cards with 8 or more Links), and the book's structure Card (no section reference) stay unowned.
   Writes cards-all.md (identical for every group, so DeepSeek caches it), link-gNN.md, and
   allow-gNN.txt, and prints a compact JSON summary.
 #>
@@ -100,8 +100,9 @@ foreach ($card in $agentCards) {
     if ($owner.ContainsKey($address)) { continue }
     $body = [string]$bodies[$address].body
     $n = $null
-    # Hub and structure Cards (long lists of Links) belong to the coordinator, not to a group.
-    if (@($bodies[$address].outbound).Count -ge 8) { continue }
+    # Hub Cards belong to the hub stage, and structure Cards (long lists of Links) to the
+    # coordinator, not to a group.
+    if ($bodies[$address].type -eq 'hub' -or @($bodies[$address].outbound).Count -ge 8) { continue }
     $section = '(Intro\.\d+|A\d+|\d+(?:\.\d+)*|导论)'
     if ($address -match "^$([regex]::Escape($key))/(\d+)\|") {
         $anchorGroup = [int]$Matches[1]

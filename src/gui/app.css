@@ -42,6 +42,7 @@
   --agent-soft: #e9e6f8;
   --event: #b3262f;
   --model: #26457d;
+  --hub: #2f6b4f;
   --radius: 12px;
   --ease: cubic-bezier(.2, .8, .25, 1);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
@@ -93,6 +94,7 @@
   --agent-soft: #262242;
   --event: #f08c86;
   --model: #94b0ee;
+  --hub: #8fd1ae;
   --grain-opacity: .035;
   color-scheme: dark;
 }
@@ -941,6 +943,44 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
 .model-tab.apart { margin-left: 12px; }
 .model-tab.off { opacity: .55; }
 .card.in-model { margin-top: 22px; border-top-left-radius: 0; }
+
+/* A Hub Card is a guide card: the same paper, a tab rising above its top edge. The tab's place
+   shows the hub's level, as staggered guide tabs do in a card file: the register stands left,
+   then field, topic, and line to the right. A tab marks a way in, never a Card's weight. */
+.card.type-hub { margin-top: 26px; border-top: 3px solid color-mix(in srgb, var(--hub) 70%, var(--paper)); }
+.guide-tab {
+  position: absolute; top: -24px; left: 50%; min-width: 92px; height: 24px; padding: 0 14px;
+  font: 700 10px/24px var(--sans); letter-spacing: .18em; text-transform: uppercase; text-align: center;
+  color: var(--hub); background: var(--paper); border: 1px solid color-mix(in srgb, var(--hub) 45%, var(--stock-edge));
+  border-bottom: none; border-radius: 8px 8px 0 0; box-shadow: 0 -1px 3px rgba(0, 0, 0, .06);
+}
+.guide-tab.hub-register { left: 4%; }
+.guide-tab.hub-field { left: 25%; }
+.guide-tab.hub-topic { left: 46%; }
+.guide-tab.hub-line { left: 67%; }
+.type-stamp.hub { color: var(--hub); transform: rotate(-1deg); }
+.type-pick button.on.hub { color: var(--hub); }
+.node.type-hub, .tcard.type-hub { border-color: color-mix(in srgb, var(--hub) 45%, var(--stock-edge)); border-top-width: 3px; }
+.node.type-hub::before, .tcard.type-hub::before {
+  content: ''; position: absolute; top: -7px; width: 26%; height: 6px; left: 37%;
+  background: color-mix(in srgb, var(--hub) 55%, var(--paper)); border-radius: 4px 4px 0 0;
+}
+.node.type-hub.hub-register::before, .tcard.type-hub.hub-register::before { left: 4%; }
+.node.type-hub.hub-field::before, .tcard.type-hub.hub-field::before { left: 22%; }
+.node.type-hub.hub-line::before, .tcard.type-hub.hub-line::before { left: 66%; }
+/* Above a Card's title: the hubs that list it. One click climbs to a way out. */
+.hub-climb { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.hub-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 1px 9px 1px 0;
+  border: 1px solid color-mix(in srgb, var(--hub) 35%, var(--hairline)); border-radius: 6px 6px 2px 2px;
+  background: none; color: var(--ink-soft); font: 500 11.5px var(--sans); cursor: pointer;
+}
+.hub-chip:hover { color: var(--ink); border-color: var(--hub); }
+.hub-chip .lvl {
+  padding: 1px 7px; border-radius: 5px 0 0 1px; background: color-mix(in srgb, var(--hub) 16%, transparent);
+  color: var(--hub); font: 700 9px var(--sans); letter-spacing: .14em; text-transform: uppercase;
+}
+.hub-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
 
 /* The model board: the model laid out on the desk below its card. The Model Card heads it;
    each part is a small index card under the parts it rests on, joined to them by a thread.

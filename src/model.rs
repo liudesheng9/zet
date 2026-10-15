@@ -361,7 +361,8 @@ pub(crate) fn set(
     ensure_allowed(conn, Some(card), card_type, facet, emphasis)?;
     conn.execute(
         "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3,
-             model_level = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN model_level END
+             model_level = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN model_level END,
+             hub_level = CASE WHEN ?1 = 'hub' THEN hub_level END
          WHERE row_id = ?4",
         params![
             card_type.id(),

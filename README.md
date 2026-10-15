@@ -323,8 +323,24 @@ DeepSeek Harness runs digest it section by section; as soon as a block finishes,
 compiler builds every model it wrote to its elaboration level (a Sonnet architect only plans each
 model; a script builds the skeleton; DeepSeek writes the Cards and charts, then the Derivation
 parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense); a link pass ties
-the parts of the book together, and Opus organizes the result. See
+the parts of the book together, and Opus organizes the result. Last, the hub stage builds the
+Hub Cards of the whole agent Workspace (see *Hub Cards*). See
 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
+
+### Hub Cards
+
+A **Hub Card** (type `hub`, zt 0.16.0) is a way into one subject: under `##` group headings it
+lists one line per member, `- [[address]]：what this Card adds`, and reaches into other trees in a
+`## 邻近` group. Its **hub level** says how wide the subject is: `line` (one line of thought),
+`topic` (one Topic tree, linked from the Topic body), `field` (several Topics), or `register` (the
+Workspace's key terms, in the Topic `索引`). A hub lists only lower hubs. `get_hub` reports a
+hub's lines, upper and lower hubs, and faults (too large, no reasons, no Links out of its tree, a
+copy of the tree in address order, …); `list_hubs` shows the hub graph and the hubs a Workspace
+still needs; `get_card` names the hubs that list a Card. The GUI draws a hub as a guide card whose
+tab stands further left the wider its subject is, and shows above every Card the hubs it can climb
+to. The book digest's hub stage writes them: a Haiku hub manager chooses the limits from a survey,
+DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1` builds
+and checks the Cards. See [doc/hub-cards-design.md](doc/hub-cards-design.md).
 
 ## The MCP server
 

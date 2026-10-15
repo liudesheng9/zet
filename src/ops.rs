@@ -121,6 +121,7 @@ pub(crate) struct TypeChange {
     pub(crate) facet: Option<Option<Facet>>,
     pub(crate) emphasis: Option<Option<Emphasis>>,
     pub(crate) level: Option<Option<Level>>,
+    pub(crate) hub_level: Option<Option<crate::hub::HubLevel>>,
 }
 
 impl TypeChange {
@@ -129,6 +130,19 @@ impl TypeChange {
             && self.facet.is_none()
             && self.emphasis.is_none()
             && self.level.is_none()
+            && self.hub_level.is_none()
+    }
+
+    /// The hub level the Card has after the change: only a Hub Card has one,
+    /// and it keeps its level unless the change names one.
+    pub(crate) fn resolve_hub_level(&self, card: &Card) -> Result<Option<crate::hub::HubLevel>> {
+        let (card_type, _, _) = self.resolve(card);
+        let hub = card_type == CardType::Hub;
+        match self.hub_level {
+            Some(Some(_)) if !hub => bail!(crate::hub::LEVEL_NEEDS_HUB_CARD),
+            Some(level) => Ok(level),
+            None => Ok(card.hub_level.filter(|_| hub)),
+        }
     }
 
     /// The elaboration level the Card has after the change: only a Model Card
@@ -167,6 +181,29 @@ impl TypeChange {
     }
 }
 
+/// A `level` argument: a hub level (line, topic, field, register) for a Hub
+/// Card, or an elaboration level (concept, formal) for a Model Card. Absent
+/// leaves both alone; null, an empty string, or `none` clears both.
+#[allow(clippy::type_complexity)]
+pub(crate) fn parse_level_arg(
+    value: Option<&Value>,
+) -> Result<(Option<Option<Level>>, Option<Option<crate::hub::HubLevel>>)> {
+    let text = match value {
+        None => return Ok((None, None)),
+        Some(Value::Null) => return Ok((Some(None), Some(None))),
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Number(number)) => number.to_string(),
+        Some(_) => bail!("argument `level` must be concept, formal, line, topic, field, register, or empty"),
+    };
+    if crate::hub::names_hub_level(&text) {
+        return Ok((None, Some(Some(crate::hub::HubLevel::parse(&text)?))));
+    }
+    match crate::model::parse_optional_level(&text)? {
+        Some(level) => Ok((Some(Some(level)), None)),
+        None => Ok((Some(None), Some(None))),
+    }
+}
+
 /// Replace a Card's text, change its Card type, Model facet, emphasis, or
 /// elaboration level, or both. With
 /// `base`, refuse if the stored text changed since the caller read it.
@@ -184,6 +221,7 @@ pub(crate) fn edit(
     access.ensure_writable(card.workspace)?;
     let (card_type, facet, emphasis) = change.resolve(&card);
     let level = change.resolve_level(&card)?;
+    let hub_level = change.resolve_hub_level(&card)?;
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
@@ -200,6 +238,10 @@ pub(crate) fn edit(
     if level != card.level {
         let card = crate::load_card(&conn, &card.address)?;
         crate::model::set_level(&conn, &card, level)?;
+    }
+    if hub_level != card.hub_level {
+        let card = crate::load_card(&conn, &card.address)?;
+        crate::hub::set_level(&conn, &card, hub_level)?;
     }
     Ok(card.address)
 }
@@ -437,7 +479,7 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.emphasis.map_or("", Emphasis::id).as_bytes());
             hasher.update([0]);
-            hasher.update(card.level.map_or("", Level::id).as_bytes());
+            hasher.update(card.level_id().unwrap_or_default().as_bytes());
             hasher.update([0]);
         }
         hasher
@@ -525,7 +567,7 @@ impl Snapshot {
             "type": card.card_type.id(),
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
-            "level": card.level.map(Level::id),
+            "level": card.level_id(),
             "head": self.model_head(card),
             "edge": edge,
             "parent": parent,
@@ -654,7 +696,7 @@ impl Snapshot {
                     "type": card.card_type.id(),
                     "facet": card.facet.as_ref().map(Facet::id),
                     "emphasis": card.emphasis.map(Emphasis::id),
-                    "level": card.level.map(Level::id),
+                    "level": card.level_id(),
                     "workspace": card.workspace.id(),
                     "snippet": snippet,
                 }))
@@ -780,7 +822,7 @@ The model"
         );
     }
 
-    const ROOT_REFUSAL: &str = "only Regular Cards can be Event or Model Cards";
+    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Model, or Hub Cards";
 
     fn archive() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temp dir");

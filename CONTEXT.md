@@ -13,7 +13,7 @@ A non-root Card in a Topic tree or Literature tree.
 _Avoid_: Normal Card
 
 **Card type**:
-What a Card holds: `idea` (the default), `event`, or `model`. Only Regular Cards can be Event or Model Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
+What a Card holds: `idea` (the default), `event`, `model`, or `hub`. Only Regular Cards can be Event, Model, or Hub Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
 _Avoid_: Card kind (kind means Topic, Literature, or Regular), tag, category
 
 **Idea Card**:
@@ -358,6 +358,22 @@ _Avoid_: Borrowed premise, leak
 **Card language**:
 The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Technical English), adapted for Chinese: one statement per sentence, short sentences, no semicolons, active voice, a verb for an action, one term per meaning (a model's term table), and no hedges or praise words. Formulas, Links, charts, and quotations are exempt.
 _Avoid_: Style guide, tone
+
+**Hub Card**:
+A Regular Card of type `hub`: a way into one subject. Its body lists, under `##` group headings, one list item per member: a Link to a Card or a lower Hub Card, then what that Card adds. It states no claim of its own, and a Link from it never takes a Model part into a model. ZT reports each hub's members, upper and lower hubs, and faults (`get_hub`), and the hubs the policy requires but a Workspace lacks (`list_hubs`); it never enforces them.
+_Avoid_: Index card, overview card, map of content, structure Card (a structure Card orders an argument for one text)
+
+**Hub level**:
+How wide a hub's subject is, stored on the Hub Card (never on another Card): `line` (one line of thought: filed as a Side successor of the Card where the line starts), `topic` (one Topic tree: a Side successor of `<n>/1`, linked from the Topic body), `field` (several Topic trees: filed under the Register), or `register` (the Workspace). A hub lists only hubs of a lower level.
+_Avoid_: Hub depth, tier, rank
+
+**Hub range**:
+The Cards a hub is responsible for: the subtree of a line hub's anchor, the tree of a topic hub, the trees of a field hub's Topics, or the Workspace for the Register. A Card of the range that no hub reaches, directly or through a Card above it, is reported as unreached.
+_Avoid_: Hub scope, hub folder
+
+**Register**:
+The one hub of level `register` in a Workspace, the first Card of the Topic `索引`. Each of its list items is one key term with Links to one to three field or topic hubs; it also lists every field hub, which is filed under it, and every topic hub in no field.
+_Avoid_: Index, keyword list, home note
 
 **Insert**:
 Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.

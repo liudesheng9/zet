@@ -442,6 +442,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "model_facet",
             "model_emphasis",
             "model_level",
+            "hub_level",
         ]
     );
     assert!(
@@ -3258,13 +3259,13 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model> [<facet>] | lv <concept|formal|none> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q\n"
     ));
-    assert!(stdout.contains("  mv [alone] <new-location>        move the current card"));
-    assert!(stdout.contains("  ins                              insert a new card"));
+    assert!(stdout.contains("  mv [alone] <new-location>            move the current card"));
+    assert!(stdout.contains("  ins                                  insert a new card"));
     assert!(
         stdout.contains(
-            "  ty <idea|event|model> [<facet>]  make the current card an Idea, Event, or Model Card; a facet (any short label) makes it a Model part"
+            "  ty <idea|event|model|hub> [<facet>]  make the current card an Idea, Event, Model, or Hub Card; a facet (any short label) makes it a Model part"
         )
     );
     assert!(stdout.contains(

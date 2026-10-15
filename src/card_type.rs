@@ -1,9 +1,10 @@
 //! Card types: what a Card holds.
 //!
 //! Most Cards are Idea Cards. A Regular Card may instead be an Event Card,
-//! which records one real-world event, or a Model Card, which presents one
-//! whole model. The type is stored on the Card row, so it stays with the Card
-//! when it moves; Topic and Literature Cards are always Idea Cards.
+//! which records one real-world event, a Model Card, which presents one
+//! whole model, or a Hub Card, which opens one subject. The type is stored on
+//! the Card row, so it stays with the Card when it moves; Topic and Literature
+//! Cards are always Idea Cards.
 
 use anyhow::{Result, bail};
 
@@ -15,6 +16,7 @@ pub(crate) enum CardType {
     Idea,
     Event,
     Model,
+    Hub,
 }
 
 impl CardType {
@@ -24,6 +26,7 @@ impl CardType {
             CardType::Idea => "idea",
             CardType::Event => "event",
             CardType::Model => "model",
+            CardType::Hub => "hub",
         }
     }
 
@@ -32,7 +35,8 @@ impl CardType {
             "idea" => Ok(CardType::Idea),
             "event" => Ok(CardType::Event),
             "model" => Ok(CardType::Model),
-            other => bail!("unknown card type `{other}`; expected idea, event, or model"),
+            "hub" => Ok(CardType::Hub),
+            other => bail!("unknown card type `{other}`; expected idea, event, model, or hub"),
         }
     }
 
@@ -48,10 +52,10 @@ impl std::fmt::Display for CardType {
     }
 }
 
-/// Only Regular Cards may be Event or Model Cards.
+/// Only Regular Cards may be Event, Model, or Hub Cards.
 pub(crate) fn ensure_allowed(card: &Card, card_type: CardType) -> Result<()> {
     if card_type != CardType::Idea && crate::is_tree_root(card) {
-        bail!("only Regular Cards can be Event or Model Cards");
+        bail!("only Regular Cards can be Event, Model, or Hub Cards");
     }
     Ok(())
 }
@@ -62,13 +66,18 @@ mod tests {
 
     #[test]
     fn card_type_names_parse_and_round_trip() {
-        for card_type in [CardType::Idea, CardType::Event, CardType::Model] {
+        for card_type in [
+            CardType::Idea,
+            CardType::Event,
+            CardType::Model,
+            CardType::Hub,
+        ] {
             assert_eq!(CardType::parse(card_type.id()).unwrap(), card_type);
         }
         assert_eq!(CardType::parse(" Event ").unwrap(), CardType::Event);
         assert_eq!(
             CardType::parse("fact").unwrap_err().to_string(),
-            "unknown card type `fact`; expected idea, event, or model"
+            "unknown card type `fact`; expected idea, event, model, or hub"
         );
         assert_eq!(CardType::from_stored("bogus"), CardType::Idea);
         assert_eq!(CardType::default(), CardType::Idea);

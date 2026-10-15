@@ -15,6 +15,7 @@ mod card;
 mod card_type;
 mod dump;
 mod gui;
+mod hub;
 mod link;
 mod literature;
 mod mcp;
@@ -605,12 +606,14 @@ fn initialize_database(root: &Path) -> Result<()> {
         let before_facets = [&before_card_types[..], &["card_type"]].concat();
         let before_emphasis = [&before_facets[..], &["model_facet"]].concat();
         let before_level = [&before_emphasis[..], &["model_emphasis"]].concat();
-        let current = [&before_level[..], &["model_level"]].concat();
+        let before_hubs = [&before_level[..], &["model_level"]].concat();
+        let current = [&before_hubs[..], &["hub_level"]].concat();
         if columns != before_workspaces
             && columns != before_card_types
             && columns != before_facets
             && columns != before_emphasis
             && columns != before_level
+            && columns != before_hubs
             && columns != current
         {
             bail!("unsupported cards schema; database was not modified");
@@ -635,13 +638,15 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_model_facet_column(&conn, root)?;
     ensure_open_model_parts(&conn, root)?;
     ensure_model_level_column(&conn, root)?;
+    ensure_hub_cards(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
 
 /// `CREATE TABLE <name> (…)` for the current cards schema. A Model facet is a
-/// short label of the model's author; only a Model part has an emphasis, and
-/// only a Model Card (no facet) has an elaboration level.
+/// short label of the model's author; only a Model part has an emphasis, only
+/// a Model Card (no facet) has an elaboration level, and only a Hub Card has a
+/// hub level.
 fn cards_table(name: &str) -> String {
     format!(
         "CREATE TABLE {name} (
@@ -653,17 +658,19 @@ fn cards_table(name: &str) -> String {
             bibtex TEXT,
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
-            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model')),
+            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model', 'hub')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
+            hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
                 (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
             ),
             CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
-            CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL))
+            CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
+            CHECK(hub_level IS NULL OR card_type = 'hub')
         );",
         model::Facet::MAX_CHARS
     )
@@ -706,7 +713,7 @@ fn ensure_card_type_column(conn: &Connection, root: &Path) -> Result<()> {
     }
     conn.execute_batch(
         "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'idea'
-             CHECK(card_type IN ('idea', 'event', 'model'));",
+             CHECK(card_type IN ('idea', 'event', 'model', 'hub'));",
     )
     .context("failed to add Card types to the archive")?;
     log_event(root, "added card types; existing cards are idea cards").ok();
@@ -810,6 +817,54 @@ fn ensure_model_level_column(conn: &Connection, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Archives written before Hub Cards existed allow only the Idea, Event, and
+/// Model types and have no hub level. SQLite cannot change a CHECK, so the
+/// cards table is rebuilt in one transaction after a backup copy; every Card
+/// keeps its row id, type, facet, emphasis, level, and text, and no Card is a
+/// Hub Card.
+fn ensure_hub_cards(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'hub_level')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    ensure_model_level_column(conn, root)?;
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-hub-cards-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {}
+         INSERT INTO cards_hubs ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_hubs RENAME TO cards;
+         CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+             ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;",
+        cards_table("cards_hubs")
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
+    .context("failed to add Hub Cards to the archive")?;
+    log_event(root, "added hub cards; no card is a hub card yet").ok();
+    Ok(())
+}
+
 const CARD_FORMAT: &str = "markdown";
 
 /// Convert an archive written before Cards were Markdown documents. The
@@ -821,6 +876,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
     ensure_card_type_column(&conn, root)?;
     ensure_model_facet_column(&conn, root)?;
     ensure_open_model_parts(&conn, root)?;
+    ensure_hub_cards(&conn, root)?;
     let format: Option<String> = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'card_format'",
@@ -1119,6 +1175,18 @@ struct Card {
     emphasis: Option<model::Emphasis>,
     /// Set only on a Model Card: how fully its model is elaborated.
     level: Option<model::Level>,
+    /// Set only on a Hub Card: how wide its subject is.
+    hub_level: Option<hub::HubLevel>,
+}
+
+impl Card {
+    /// The Card's level as clients see it: a Model Card's elaboration level
+    /// or a Hub Card's hub level.
+    fn level_id(&self) -> Option<&'static str> {
+        self.level
+            .map(model::Level::id)
+            .or(self.hub_level.map(hub::HubLevel::id))
+    }
 }
 
 fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
@@ -1278,7 +1346,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -1297,6 +1365,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                     row.get::<_, Option<String>>(10)?.as_deref(),
                 ),
                 level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
+                hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
             })
         },
     )
@@ -1306,7 +1375,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1323,6 +1392,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
             emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
             level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
+            hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1890,7 +1960,7 @@ fn insert_card(
         bail!("invalid location `{location}`");
     }
     if is_topic && card_type != CardType::Idea {
-        bail!("only Regular Cards can be Event or Model Cards");
+        bail!("only Regular Cards can be Event, Model, or Hub Cards");
     }
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
