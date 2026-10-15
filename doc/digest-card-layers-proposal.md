@@ -1,6 +1,6 @@
 # Digest Card Layers: Proposal
 
-Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 also ran on a real book (`grossman2002integration`). The digest-time parts of phase 4 passed their offline tests: the `src` log, the Topic gate, the event template, and the term table at Prepare. No new book was digested with them yet. See "As built" and "Verification" below.
+Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 ran on an existing book (`grossman2002integration`). Phase 4 ran end to end in a full digest of a new paper (`acemoglu2000franchise`). That digest found four faults in the scripts, which are fixed and tested, and its hubs are not written yet. See "As built" and "Verification" below.
 
 The `zt-book-digest` workflow builds models and hubs with care. A compiler plans each model or hub, a script builds and checks it, DeepSeek writes it, and a fix round fixes the faults. The other Cards of a digest do not get this care. One DeepSeek run writes the Idea Cards, Event Cards, new Topics, and the anchor Card of a group in four commands. No step checks them, reviews them, or reports their faults. Opus then fixes the structure in one long free-text job.
 
@@ -290,9 +290,9 @@ The scripts are in `scripts/book-digest/`. The workflow is `.claude/workflows/zt
 | 3. Idea and Event cycle | `card-compiler.ps1` (plan, apply, check, report), `dsh-card-instructions.zh.md`, the Cards stage after each digest block | The reviewer writes the fix itself (D11). A split makes a Side successor, joins its group's `owned-gNN.txt`, and is checked in the next round. |
 | 4. Event Cards | Event candidates in each group file and in `events.json` (Prepare). The fixed template and the search for an existing Event Card in `dsh-instructions.zh.md`. Rules E1, E2, E4, and E5. | The reviewer checks E3. E5 is advisory: it compares the year and the title. |
 | 5. Topic gate | `-TopicGate <file>` in `skills/zt/scripts/zt-mcp.ps1` | The gate file is only a lock. The helper reads the live agent Topics, so a reservation list is not needed. |
-| 6. Link layer | The same cycle with rules L1 and L2 on the whole book after the link pass, and orphan jobs (`dsh-orphan-instructions.zh.md`) | The fixes are fresh jobs, not the link run's conversation (archived by then). A Card that takes an orphan Link is checked again. L4 is not built: the link pass already gives candidates from other groups only. |
+| 6. Link layer | The same cycle on the whole book after the link pass: every hard rule in mode `full` (the link pass can add R2, R4, and I2 faults), rules L1 and L2 in mode `link`, and orphan jobs (`dsh-orphan-instructions.zh.md`) | The fixes are fresh jobs, not the link run's conversation (archived by then). A Card that takes an orphan Link is checked again. L4 is not built: the link pass already gives candidates from other groups only. |
 | 7. Skeleton | `book-skeleton.ps1` (plan, apply), `dsh-skeleton-instructions.zh.md` | It also writes the Topic bodies and keeps their hub lines, and links the term table from the Literature Card. The anchor check (step 5) is rule I1 on anchor titles. The `在全书中的位置：` paragraph is not checked. |
-| 8. Organize | `organize-survey.ps1`, Opus `decisions.json`, `organize-apply.ps1`, a notes cycle (rule N1), and the skeleton. `organize: "legacy"` keeps the old job. | Opus also writes `notes`: Card-level work that a card cycle carries out. A note may replace a Link (D14). `organize-apply.ps1` translates the notes through the renames of its moves. |
+| 8. Organize | `organize-survey.ps1`, Opus `decisions.json`, `organize-apply.ps1`, a notes cycle (rule N1, and every hard rule in mode `full`), and the skeleton. `organize: "legacy"` keeps the old job. | Opus also writes `notes`: Card-level work that a card cycle carries out. A note may replace a Link (D14). `organize-apply.ps1` translates the notes through the renames of its moves. |
 | `src` log | `src` field and `-SrcLog <file>` in the zt helper | The reviewer reads the logged lines. For an older digest it searches the section the source line names. |
 
 ### New rules as built
@@ -358,10 +358,44 @@ The pilot found these faults in the scripts. Each one is fixed and a test covers
 
 I checked 30 random hard faults in the three other books by hand. All 18 L1 faults are true by the rule. Of the 6 L2 faults, 4 are true, 1 is borderline, and 1 was false: a formula is a reason (fixed). The 6 I2, I4, and I5 faults are true. Four L1 faults show words that state a relation but that ZT does not read as a kind: 引出, 来自, 印证, 参照.
 
+### Phase 4 digest of `acemoglu2000franchise`
+
+On 2026-10-15 the workflow (mode `full`, with hubs) digested Acemoglu and Robinson (2000), *Why Did the West Extend the Franchise?* It used Scholar Archive file 32 and ran from 一、简介 up to 参考文献. DeepSeek V4.1 Flash ran from the official source at effort high. The database was copied to `D:\zt\backups\` before each run (`VACUUM INTO`, integrity checked).
+
+The first run (`wf_3b60d3cd-f30`) wrote no Cards, and it was stopped. A zt deploy of another session took `zt` off PATH for a short time, and DeepSeek Harness still started pwsh 7.6.6 after an update to 7.6.7. Every digest group failed, but the workflow went on to the link pass with an empty book. Its frame (10 Cards) and its conversations were deleted. The second run (`wf_21e470a7-647`, 88 minutes, 171 agents) gave these results:
+
+| Part | Result |
+| --- | --- |
+| Prepare | 8 groups and 24 event candidates. The term step wrote 60 terms, 54 of them with words not to use (`acemoglu2000franchise/1\|a`). |
+| Digest | 8 of 8 groups done, 82 Cards. The `src` log has a file for each group (`src-g01.txt` … `src-g08.txt`) with 80 entries. |
+| Topic gate | 8 new Topics (197 to 204). None repeats the title or the question of an existing Topic. The Organize survey found 3 candidate pairs, and Opus merged none: each pair asks a different question. Five Topics are small (3 or 4 Cards), one for each alternative theory in §四.B and §四.C. |
+| Event Cards | 10 of the 24 candidates. All 10 have the six labels of the template in order (时间, 地点, 参与者, 经过, 来源, 证据作用), and none needed `原书未写明`. One Card (`1\|e`) holds the three Reform Acts of 1832, 1867, and 1884, so that Card holds three events. |
+| Models | 6 (2 concept, 4 formal), 85 parts. `7\|a` is not self-sufficient (a closure fault). `3\|a\|a\|10` is still 待写. |
+| Card cycle after each block | Groups 1 to 5: 39 faults → 0 on 30 Cards (26 fixes, 1 split). Groups 6 to 8: 26 faults → 0 on 17 Cards (16 fixes). |
+| Sample review against the source | 4 sampled Cards got their logged lines (`原文：sections\s04.md:19-21`). 3 agree with the source, each with its section named. 1 was unfaithful: the title of `8\|a\|4` called the other equilibria "非马尔可夫", which the source does not say. The reviewer fixed it. By design, a Card gets its source lines only when it is sampled or has an I3, E1, or E2 fault. |
+| Link pass and Link check | 8 groups, 242 Links. The Link check found 67 faults (L1 52, L2 15) → 0 on 60 Cards. The orphan pass gave 9 orphans a Link, and 0 orphans are left. |
+| Organize | Opus decided 0 merges, 5 moves, and 20 notes, and listed 5 points for the user (a cross-book Link to check among them). `organize-apply.ps1` moved 5 Cards and refused none. The notes cycle carried out all 20. The skeleton wrote the structure Card `1\|f`, titled with the thesis (选举权扩大是精英在革命威胁下对未来再分配的承诺), and 8 Topic bodies. |
+| Figures | The paper has no kept figures. The Literature Card links the PDF and the Markdown. |
+| Hubs | Not written. `hub-compiler.ps1 -Step apply` stopped at the first new Topic (197). The workflow still reported the stage as done. |
+| Audit | 177 Cards. 0 orphans, 0 Idea or Event Cards with no source line, 0 with no kinded Link, 0 broken Links. 12 hard layer faults (I2 9, L2 3) and 9 Card language faults other than R6 (R2 5, R4 4) were left. R6 has 27 faults against the term table, which is not fixed by default (D13). |
+| Cost | DeepSeek: 1,294 calls, cache hit rate 0.92, 41.4 in the usage ledger. Claude agents: 12.0 million tokens. |
+
+The run found these faults in the scripts. Each one is fixed, and a test covers it:
+
+1. **The workflow went on after every digest group failed.** It now stops after the digest when no group is done (harness test).
+2. **The hub apply stopped at a new Topic with no line hubs.** `$script:Cards` was still empty, because only `Get-Exists` loaded it, and nothing had called it before the topic hub was recorded. `Add-Known` loads the cache first (`tests/hub-compiler.tests.ps1`: a new Topic gets its topic hub).
+3. **A failed apply step was reported as done.** The hub stage and a card cycle are now `failed`, with the error, when an apply step gives no output (harness test).
+4. **The Link check and the notes cycle left faults that they caused.** The audit traced the 21 faults to 19 Cards. 14 of them were rewritten by the Link check or the notes cycle. Two (`198/1|b|b`, `6|d`) were extended by the link pass itself. The rest are the Literature Card index and Model Cards, which the cycle does not write. In mode `full`, both cycles now check every hard rule. N1 is still added for the notes. In mode `link` on an older book they keep to L1 and L2, or N1 (harness test).
+
+Notes for the user:
+
+- The term table marks 54 of 60 terms with words not to use. Check `terms.md` before R6 is fixed (D13).
+- 8 Topics for a 30-page paper is many. The 5 small ones each hold one alternative theory.
+
 ### Not verified yet
 
-- A full digest of a new book with the new Prepare (event candidates, term step), the `src` log, and the Topic gate. The tests cover each part. The pilot used an existing book.
-- The workflow itself through the Workflow tool. The harness runs its script with stand-ins.
+- The three fixes of the `acemoglu2000franchise` digest in a real run: the hub apply for a new Topic, the failed status, and the wider rules of the Link check and the notes cycle. The tests cover each one.
+- The hubs of `acemoglu2000franchise` and of the 15 older trees in that run. The DeepSeek hub files are kept in `D:\zt-digest\hubs\out`, and the apply step can run again on them.
 
 ## New arguments
 
@@ -397,7 +431,7 @@ Measured in the pilot:
 | 1 | `digest-audit.ps1` and mode `audit` | The audit runs on the four books and the Workspace and agrees with a manual check of one tree. | Done. |
 | 2 | I, E, and L rules | A manual check of 30 flagged faults finds few false faults. | Done: 1 false, 1 borderline in 30. |
 | 3 | Mode `cards` on one existing book | Faults and orphans go down. No model changes. | Done on `grossman2002integration`. |
-| 4 | `src` log, review, Topic gate, term table | A pilot digest of a short book. | Built and tested offline. The review and the term table ran on the pilot book. A new digest is the next step. |
+| 4 | `src` log, review, Topic gate, term table | A pilot digest of a short book. | Done on `acemoglu2000franchise`: every part ran, and the faults it found are fixed. |
 | 5 | Skeleton and the new Organize | Opus tokens go down. The structure Card keeps its quality. | Done on the pilot book. The user judges the structure Card. |
 
 ## Open questions for the user

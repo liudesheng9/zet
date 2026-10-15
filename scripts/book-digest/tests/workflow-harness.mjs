@@ -48,7 +48,8 @@ function runtime(opts0 = {}) {
         return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
       }
       if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], archived: 3 } }
-      // A compiler step: the JSON line the script prints.
+      // A compiler step: the JSON line the script prints, or a crash the test asks for.
+      if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
       let output = json({ jobs: [] })
       const compact = / -Compact/.test(cmd)
       const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
@@ -102,12 +103,12 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(result && result.mode === 'full', 'full: runs to its end')
   check(labels.indexOf('terms: plan') > labels.indexOf('prepare book') && labels.indexOf('terms: plan') < labels.findIndex(l => /^digest manager/.test(l)), 'full: the term table runs after Prepare and before the digest')
   check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -Book Key -Staging "D:\\x\\Key".* -Groups "1,2" -Sample 0\.1 -NoOrphans/.test(c)), 'full: a card cycle per digest block, with -Groups, the sample, and no orphans')
-  check(cmds.some(c => /cards-link" -Book Key/.test(c) || /cards-link"/.test(c)) && cmds.some(c => /-Rules "L1,L2"/.test(c)), 'full: the link check runs with rules L1 and L2')
+  check(cmds.some(c => /-Step plan -Work "[^"]*cards-link"/.test(c)) && !cmds.some(c => /cards-link".*-Rules/.test(c)), 'full: the link check runs with the default hard rules (the link pass may add R2, R4, I2 faults)')
   check(cmds.filter(c => /-Rules/.test(c)).every(c => (c.match(/-Rules/g) || []).length === 1), 'full: no command passes -Rules twice')
   check(labels.filter(l => /^link manager/.test(l)).length === 1 && labels.includes('link manager 1: groups 1-2'), 'full: one link manager runs both groups')
   check(labels.includes('organize: survey') && labels.includes('organize: decisions') && labels.includes('organize: apply'), 'full: Organize runs the survey, the decisions, and the apply')
   check(calls.find(c => c.label === 'organize: decisions').model === 'opus', 'full: Opus makes the decisions')
-  check(cmds.some(c => /cards-notes"/.test(c)) && cmds.some(c => /-Notes "D:\\x\\Key\\organize\\decisions\.json" -NoOrphans/.test(c)) && cmds.some(c => /-Rules "N1"/.test(c)), 'full: the notes go to a card cycle with rule N1')
+  check(cmds.some(c => /cards-notes"/.test(c)) && cmds.some(c => /-Notes "D:\\x\\Key\\organize\\decisions\.json" -NoOrphans/.test(c)) && !cmds.some(c => /cards-notes".*-Rules/.test(c)), 'full: the notes go to a card cycle with the default hard rules (the script adds N1)')
   check(cmds.some(c => /book-skeleton\.ps1" -Step apply .* -Decisions "D:\\x\\Key\\organize\\decisions\.json" -Apply/.test(c)), 'full: the skeleton applies with the decisions')
   check(labels[labels.length - 1] === 'audit cards', 'full: the audit runs last')
   check(result.terms && result.terms.ok && result.cards && result.cards.blocks.length === 1 && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'full: the result holds terms, cards, organize, and audit')
@@ -164,6 +165,7 @@ planJobs = 21
 {
   const { calls } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'link', groups: 2, hubs: false })
   check(calls.some(c => /cards-link"/.test(c.cmd)), 'link: the link check runs after the link pass')
+  check(calls.some(c => /cards-link".*-Rules "L1,L2"/.test(c.cmd)), 'link: on a book without card cycles the link check keeps rules L1 and L2')
 }
 // full: when every digest group fails (zt or DeepSeek Harness down), the run stops before the link pass
 {
@@ -171,6 +173,12 @@ planJobs = 21
   const labels = calls.map(c => c.label)
   check(result && result.stage === 'digest' && /every digest group failed/.test(result.error || ''), `full: a digest with no group done stops with an error (${JSON.stringify(result && { stage: result.stage, error: result.error })})`)
   check(!labels.some(l => /^link manager|^organize|^hub|audit cards/.test(l)), 'full: no link, Organize, hub, or audit stage runs after it')
+}
+// full: a crashed apply step makes its stage "failed", not "done"
+{
+  const { result } = await run({ ...base, mode: 'full', figures: false, hubs: true }, { failStep: /(hub|card)-compiler\.ps1" -Step apply/ })
+  check(result && result.hubs && result.hubs.status === 'failed' && /apply/.test(result.hubs.error || ''), `full: a hub apply crash fails the hub stage (${JSON.stringify(result && result.hubs && { status: result.hubs.status, error: result.hubs.error })})`)
+  check(result && result.cards && result.cards.blocks.every(b => b.status === 'failed'), 'full: a card apply crash fails its card cycle')
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)

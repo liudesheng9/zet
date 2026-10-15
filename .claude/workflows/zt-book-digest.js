@@ -660,8 +660,9 @@ const runCards = async (label, work, extra = '', only = '') => {
     applied = lastJson(((await crun(`apply ${round + 1}`, cstep('apply'))) || {}).output)
   }
   const reported = lastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
+  if (!applied) log(`Cards ${label}: an apply step failed; the cycle is marked failed.`)
   if (reported) log(`Cards ${label}: faults ${reported.faults_before} → ${reported.faults_after} on ${reported.cards} Cards; verdicts ${JSON.stringify(reported.verdicts)}; ${reported.splits} splits, ${reported.merges} merge proposals, ${reported.refused} refused; ${reported.orphan_links} orphan Links (${reported.orphans_after} orphans left); ${jobs} DeepSeek jobs.`)
-  return { status: reported ? 'done' : 'failed', label, plan, applied, report: reported }
+  return { status: reported && applied ? 'done' : 'failed', label, plan, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from card-compiler.ps1 -Step apply' }) }
 }
 // After a digest block: its Idea Cards, Event Cards, and anchors (orphans wait for the link pass).
 const cardBlock = async (block) => {
@@ -814,7 +815,9 @@ ${hstep('survey')}
   }
   const reported = lastJson(((await hrun('report', hstep('report'), { cleanup: true })) || {}).output)
   log(`Hubs: ${JSON.stringify((reported && reported.counts) || {})}; faults ${JSON.stringify((reported && reported.faults) || {})}; ${reported ? reported.mirror : '?'} mirror hubs; ${reported ? reported.missing_count : '?'} required hubs still missing; ${jobs} DeepSeek jobs.`)
-  return { status: reported ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported }
+  // A crashed apply writes no hub of this run (acemoglu2000franchise: Topics 197 and 199 got none).
+  if (!applied) log('Hubs: an apply step failed; the stage is marked failed.')
+  return { status: reported && applied ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from hub-compiler.ps1 -Step apply' }) }
 }
 // --- Figures -------------------------------------------------------------------------------------
 // The book's figures in its Cards: a script, relayed by Haiku. The digest and model writers paste the
@@ -874,8 +877,10 @@ if (!NO_LINK) log(`Link pass: ${pending.length} of ${groupCount} groups pending;
 // A link run depends on no other: each Haiku manager starts LINK_PER_MANAGER runs at once.
 const LINK_PER_MANAGER = Math.max(PER_MANAGER, A.linkPerManager || 8)
 const linkReports = pending.length ? await runStage('link', toBlocks(pending, LINK_PER_MANAGER)) : []
-// The Link check and the orphan pass on the whole book (proposal 6).
-const linkCards = !NO_LINK && CARD_CHECKS ? await runCards('link check', `${OUT}\\cards-link`, '', A.cardRules || 'L1,L2') : null
+// The Link check and the orphan pass on the whole book (proposal 6). In mode "full" the block cycles
+// have already fixed the book, so the check runs every hard rule: the link pass can add R2, R4, and
+// I2 faults to the Cards it extends. On an older book (mode "link") it keeps to L1 and L2.
+const linkCards = !NO_LINK && CARD_CHECKS ? await runCards('link check', `${OUT}\\cards-link`, '', MODE === 'full' ? '' : (A.cardRules || 'L1,L2')) : null
 
 // --- Cleanup -------------------------------------------------------------------------------------
 if (!NO_LINK) phase('Cleanup')
@@ -985,8 +990,10 @@ Return ok and output = its last output line exactly, or the error text. Do not r
     ) : null
     const moved = applied && applied.ok ? lastJson(applied.output) : null
     if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused` : `apply failed (${applied && applied.output})`}; ${decided.notes || 0} notes.`)
-    // 4. The notes go to DeepSeek as a card cycle (rule N1 only).
-    const notes = decided && decided.notes ? await runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, 'N1') : null
+    // 4. The notes go to DeepSeek as a card cycle. In mode "full" it checks every hard rule (the script
+    // adds N1), so a note that makes a Card too long or adds a bare Link is fixed in the same cycle;
+    // on an older book it keeps to N1.
+    const notes = decided && decided.notes ? await runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
     // 5. The skeleton: the Literature Card index, the structure Card, the Topic bodies.
     const SK = `${OUT}\\skeleton`
     const kstep = (s, more = '') => `pwsh -NoProfile -File "${SCRIPTS}\\book-skeleton.ps1" -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`

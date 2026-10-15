@@ -138,6 +138,27 @@ try {
     # report
     $report = Last (Run 'report')
     Assert ($report.counts.topic -eq 1 -and $report.counts.line -eq 1 -and $report.counts.field -eq 1 -and $report.counts.register -eq 1) 'report: one hub of each level'
+
+    # a new Topic with no hub and no line hubs: apply creates its topic hub under <n>/1. Here no
+    # line anchor loads the Card cache before the topic hub is made (the acemoglu digest, Topic 197).
+    $c = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '选举权扩大'; body = '本主题追问：精英为什么让出权力。' } }))[0] -replace '/0$', ''
+    $cCards = Write-Calls @(
+        @{ tool = 'create_successor'; arguments = @{ at = "$c/0"; title = '革命威胁迫使精英让步' } },
+        @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '承诺不可信时只能让权' } }
+    )
+    $null = Run 'survey'
+    Move-Item -LiteralPath (Join-Path $out "hub-$a.json") -Destination (Join-Path $work "hub-$a.json.aside")
+    Remove-Item -LiteralPath (Join-Path $out 'fields.json')
+    Save-Json (Join-Path $out "hub-$c.json") ([ordered]@{
+            tree = $c
+            topic = [ordered]@{ title = '选举权扩大是精英对革命威胁的让步'; scope = "主题 $c 的入口。"
+                groups = @([ordered]@{ name = '机制'; items = @([ordered]@{ ref = $cCards[0]; reason = '革命威胁让精英不得不让步。' }, [ordered]@{ ref = $cCards[1]; reason = '许诺不可信，所以让出的是权力。' }) })
+                neighbours = @() }
+            lines = @()
+        })
+    $newTree = Last (Run 'apply')
+    $state = Get-Content -Raw (Join-Path $work 'state.json') | ConvertFrom-Json -AsHashtable
+    Assert ($newTree.created -ge 1 -and $state.trees[$c].topic -eq "$c/1|a") "apply: a new Topic gets its topic hub under $c/1 ($($state.trees[$c].topic))"
 }
 finally {
     zt down 2>&1 | Out-Null

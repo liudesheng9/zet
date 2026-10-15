@@ -282,6 +282,12 @@ function Get-Exists($address) {
     }
     $script:Cards.ContainsKey($address)
 }
+# Records a Card the script just made. The cache loads first: a new Topic without line hubs reaches
+# its topic hub before any Get-Exists call has loaded it.
+function Add-Known($address) {
+    $null = Get-Exists $address
+    $script:Cards[$address] = @{ address = $address }
+}
 function Format-Item($ref, $reason, $resolve, [string]$kind = '') {
     $address = & $resolve $ref
     if (-not $address) { return $null }
@@ -334,12 +340,12 @@ function Step-Apply {
             }
         }
         $made = Invoke-Write $creates
-        for ($i = 0; $i -lt $pending.Count; $i++) { $entry.lines[$pending[$i]] = $made[$i]; $script:Cards[$made[$i]] = @{ address = $made[$i] }; $created++ }
+        for ($i = 0; $i -lt $pending.Count; $i++) { $entry.lines[$pending[$i]] = $made[$i]; Add-Known $made[$i]; $created++ }
         # 2. The topic hub: rewrite the existing or legacy one, or create it under <n>/1.
         $topic = if ($entry.topic -and (Get-Exists $entry.topic)) { $entry.topic } elseif ($topicHub[$tree]) { $topicHub[$tree] } elseif (@($s.legacy).Count) { @($s.legacy)[0] } else { $null }
         if (-not $topic) {
             $topic = (Invoke-Write @(@{ tool = 'create_successor'; arguments = @{ at = "$tree/1"; kind = 'side'; type = 'hub'; level = 'topic'; title = [string]$plan.topic.title; body = '范围：待写。' } }))[0]
-            $script:Cards[$topic] = @{ address = $topic }
+            Add-Known $topic
             $created++
         }
         $entry.topic = $topic
@@ -387,7 +393,7 @@ function Step-Apply {
     if (-not $register -and ($files.Count -or (Test-Path -LiteralPath $fieldsFile))) {
         $index = (Invoke-Write @(@{ tool = 'create_topic'; arguments = @{ title = '索引'; body = '本主题收放代理工作区的入口：索引卡与领域枢纽。' } }))[0]
         $register = (Invoke-Write @(@{ tool = 'create_successor'; arguments = @{ at = $index; type = 'hub'; level = 'register'; title = '索引：代理工作区的入口'; body = '范围：待写。' } }))[0]
-        $script:Cards[$register] = @{ address = $register }
+        Add-Known $register
         $created += 2
     }
     $State.register = $register
@@ -399,7 +405,7 @@ function Step-Apply {
         if ($members.Count -lt 2) { $dropped += "field:$name (fewer than 2 Topics)"; continue }
         if (-not ($State.fields.Contains($name) -and (Get-Exists $State.fields[$name]))) {
             $State.fields[$name] = (Invoke-Write @(@{ tool = 'create_successor'; arguments = @{ at = $register; kind = 'side'; type = 'hub'; level = 'field'; title = [string]$field.title; body = '范围：待写。' } }))[0]
-            $script:Cards[$State.fields[$name]] = @{ address = $State.fields[$name] }
+            Add-Known $State.fields[$name]
             $created++
         }
         foreach ($m in $members) { $inField[[string]$m.tree] = $true }
