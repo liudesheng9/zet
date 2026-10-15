@@ -285,7 +285,8 @@ function Get-Exists($address) {
 function Format-Item($ref, $reason, $resolve, [string]$kind = '') {
     $address = & $resolve $ref
     if (-not $address) { return $null }
-    $isHub = $ref -match '^(line|tree|field):'
+    # A small Topic has no topic hub, so `tree:<n>` may resolve to its root, which is not a hub.
+    $isHub = $ref -match '^(line|field):' -or ($ref -match '^tree:' -and $address -notmatch '/0$')
     $words = if ($kind -and $Kinds.ContainsKey($kind)) { "$kind " } else { '' }
     "- $words[[$address]]$(if ($isHub) { '（枢纽）' } else { '' })：$([string]$reason)"
 }

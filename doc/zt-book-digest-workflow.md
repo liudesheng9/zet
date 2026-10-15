@@ -222,7 +222,7 @@ Arguments (`args`):
 | `hubWork` | the hub stage's folder and DeepSeek workspace (default `D:\zt-digest\hubs`); its `state.json` lets a later run rewrite only the trees that changed |
 | `hubLimits` | an object that overrides the limits the Haiku hub manager chooses, e.g. `{ "topic_min": 8 }` |
 | `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
-| `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers (low); check, fix, and apply again (1) |
+| `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers (high; at least medium); check, fix, and apply again (1) |
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the
 DeepSeek token use, and Opus's report. To structure the models of a book digested before 0.6.0 (or, with `redoModels: true`, restructure those of 0.6.0),

@@ -37,7 +37,7 @@ export const meta = {
 //         remembers each tree's hubs, so a later run rewrites only trees that changed),
 //         hubLimits (an object that overrides the limits the Haiku hub manager chooses, e.g. { topic_min: 8 }),
 //         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
-//         hubEffort ('low': DeepSeek effort of the hub writers), hubFixRounds (1: check, fix, apply again) }
+//         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again) }
 //
 // How the stages hand work on:
 //   Prepare ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (model compiler, per batch) ─┐
@@ -100,7 +100,7 @@ const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__de
 const HUBS = MODE === 'hubs' || (MODE === 'full' && A.hubs !== false) || (MODE === 'link' && A.hubs === true)
 const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
 const HUB_COMPILER = `${SCRIPTS}\\hub-compiler.ps1`
-const HUB_EFFORT = A.hubEffort || 'low'
+const HUB_EFFORT = A.hubEffort || 'high'
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
 

@@ -372,7 +372,7 @@ faulty, mirrors, or legacy Idea Cards, or whose Cards changed since the last run
 | Hub manager | Haiku, one call | Runs `survey`. Reads the distributions of tree sizes, branch sizes, and Links between trees. Chooses the limits by the rules below and gives a reason for each. | read Cards, write Cards |
 | Compiler | `hub-compiler.ps1` (no model) | `survey`: reads every tree and the hub graph, finds legacy hubs, writes `survey.json` and `survey.md`. `plan`: clamps the limits, picks the trees, writes the job files. `apply`: builds or rewrites the Hub Cards, links each topic hub from its Topic body, writes the field hubs and the register. `check`: `get_hub` on every hub, one fix job per writer. `report`: `list_hubs`. | write prose, except fixed lines |
 | Driver | Haiku, one call per step | Runs one compiler step, starts the DeepSeek jobs it prints, waits, approves, retries once. The last driver deletes the conversations and the workspace entry in the DeepSeek sidebar. | read the book or a Card, decide anything |
-| Topic writer | DeepSeek (`hubEffort`, low), one run per `per_job` trees | Reads its trees from the job file, and a Card when it needs one (read-only helper). Writes `out\hub-<tree>.json`: the topic hub, the required line hubs, and the `邻近` group. | create, move, or delete Cards |
+| Topic writer | DeepSeek (`hubEffort`, high), one run per `per_job` trees | Reads its trees from the job file, and a Card when it needs one (read-only helper). Writes `out\hub-<tree>.json`: the topic hub, the required line hubs, and the `邻近` group. | create, move, or delete Cards |
 | Field planner | DeepSeek, one run | Reads `survey.md`, one line per Topic. Writes `out\fields.json`: the fields with their Topics in groups, and 30 to 80 register terms. | create, move, or delete Cards |
 | Fixer | the writer's own conversation | Receives the faults that `get_hub` reports and fixes its JSON file. | change Cards |
 
@@ -432,7 +432,7 @@ old answer.
 | `hubLimits` | none | an object that overrides limits the hub manager chose |
 | `hubTrees` | all | only these Topic trees, for example a pilot (`"130,122"`) |
 | `hubRebuild` | false | rewrite every hub, not only the changed ones |
-| `hubEffort` | low | DeepSeek effort of the writers |
+| `hubEffort` | high | DeepSeek effort of the writers and the field planner (at least medium, by the user's decision) |
 | `hubFixRounds` | 1 | check, fix, and apply again |
 
 ## A worked example: Topic `130`
@@ -508,7 +508,24 @@ conversations. The pilot found two faults in the rules, which 0.16.1 fixes:
 2. The `邻近` group counted toward the size limits, so both topic hubs were `oversize` although their
    subject groups fit. Now `邻近` does not count.
 
-## What this design does not do
+## Full run (2026-10-14)
+
+`mode: "hubs"` on the whole agent Workspace, `hubEffort: "high"` (the user asked for at least medium
+effort). A first attempt stopped when the DeepSeek platform failed. The user paused it and resumed
+it later. The rerun took about 100 minutes, with the same limits as the pilot.
+
+| Result | Count |
+| --- | --- |
+| Topic hubs | 100 (98 rewritten from legacy Idea-Card hubs, in place) |
+| Line hubs | 32 |
+| Field hubs | 20, each listed by the register |
+| Register terms | 85, each with one to three ways in |
+| Faults, `mirror`, required hubs missing | 0, 0, 0 |
+| Broken Links in the agent Workspace | 0 |
+
+Every topic hub is listed by a field hub. A field hub links a small Topic (fewer than `topic_min`
+Cards) by its root. The run marked such a root `（枢纽）`. The compiler now marks only real hubs.
+
 
 - It does not compute hubs. A cluster only proposes a field. A planner names it and a writer gives
   each member its reason.
