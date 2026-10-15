@@ -358,9 +358,15 @@ function Step-Apply {
             $edits += @{ tool = 'edit_card'; arguments = @{ at = $entry.lines[$anchor]; title = [string]$line.title; body = $body; type = 'hub'; level = 'line' } }
         }
         $d = @(); $body = Format-Body ([string]$plan.topic.scope) $plan.topic.groups $plan.topic.neighbours $resolve ([ref]$d); $dropped += $d
-        # Every line hub of the tree is in the topic hub (H9); the script adds one the writer left out.
-        foreach ($anchor in @($entry.lines.Keys)) {
-            if ($body -notmatch [regex]::Escape("[[$($entry.lines[$anchor])]]")) { $body += "`n`n## 线索`n- [[$($entry.lines[$anchor])]]（枢纽）：从 [[$anchor]] 起的一支。" }
+        # Every line hub of the tree is reached from the topic hub (H9), directly or through the line hub
+        # of an outer branch; the script adds one group for those the writer left out.
+        $lineBodies = (@($edits | ForEach-Object { $_.arguments.body }) -join "`n")
+        $left = @($entry.lines.Keys | Where-Object {
+                $hub = $entry.lines[$_]
+                $body -notmatch [regex]::Escape("[[$hub]]") -and $lineBodies -notmatch [regex]::Escape("[[$hub]]")
+            })
+        if ($left.Count) {
+            $body += "`n`n## 线索`n" + ((@($left | ForEach-Object { "- [[$($entry.lines[$_])]]（枢纽）：从 [[$_]] 起的一支。" })) -join "`n")
         }
         $edits += @{ tool = 'edit_card'; arguments = @{ at = $topic; title = [string]$plan.topic.title; body = $body; type = 'hub'; level = 'topic' } }
         $updated += $edits.Count
@@ -386,7 +392,7 @@ function Step-Apply {
     $State.register = $register
     $fields = if (Test-Path -LiteralPath $fieldsFile) { try { Read-Json $fieldsFile } catch { $dropped += 'fields.json: not JSON'; @{} } } else { @{} }
     $inField = @{}
-    foreach ($field in @($fields.fields)) {
+    foreach ($field in @($fields.fields | Where-Object { $_ })) {
         $name = [string]$field.name
         $members = @($field.groups | ForEach-Object { @($_.items) } | Where-Object { $topicHub[[string]$_.tree] -or (Get-Exists "$([string]$_.tree)/0") })
         if ($members.Count -lt 2) { $dropped += "field:$name (fewer than 2 Topics)"; continue }
@@ -405,7 +411,7 @@ function Step-Apply {
         $null
     }.GetNewClosure()
     $edits = @()
-    foreach ($field in @($fields.fields)) {
+    foreach ($field in @($fields.fields | Where-Object { $_ })) {
         $name = [string]$field.name
         if (-not $State.fields.Contains($name)) { continue }
         $groups = @($field.groups | ForEach-Object { @{ name = $_.name; items = @($_.items | ForEach-Object { @{ ref = "tree:$($_.tree)"; reason = $_.reason } }) } })
@@ -421,7 +427,7 @@ function Step-Apply {
             [void]$out.AppendLine()
         }
         $terms = @()
-        foreach ($t in @($fields.register)) {
+        foreach ($t in @($fields.register | Where-Object { $_ })) {
             $targets = @($t.refs | ForEach-Object { & $resolveField ([string]$_) } | Where-Object { $_ } | Select-Object -Unique -First 3)
             if ($targets.Count) { $terms += "- $($t.term)：$((@($targets | ForEach-Object { "[[$_]]" }) -join '、'))" }
         }

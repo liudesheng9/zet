@@ -283,8 +283,8 @@ compiler*), and `get_hub` and `list_hubs` take them as arguments. The defaults a
 | H2 Required line hub | A branch with `line_min` (12) or more Cards, or with 2 or more Model Cards, has a line hub filed under the branch's first Card. | `missing` (in `list_hubs`) |
 | H3 Required field hub | A field hub or the register lists every topic hub. | `unanchored` |
 | H4 One register | A Workspace with hubs has one register. It lists every field hub. | `missing` (in `list_hubs`), `unanchored` |
-| H5 Size | A hub holds at most `max_groups` (7) groups and `max_lines` (25) lines. A hub of more than 8 lines has 2 or more groups. A register term names 1 to 3 hubs or Cards. | `oversize`, `flat` |
-| H6 Downward | A hub lists only hubs of a lower level. Levels may be skipped. The hub graph has no cycle. | `upward`, `cycle` |
+| H5 Size | A hub holds at most `max_groups` (7) groups and `max_lines` (25) lines. The `邻近` group does not count, because it points out of the subject. A hub of more than 8 lines has 2 or more groups. A register term names 1 to 3 hubs or Cards. | `oversize`, `flat` |
+| H6 Downward | A hub lists only hubs of a lower level. Levels may be skipped. One exception: a line hub lists the line hub of a branch inside its own branch. The hub graph has no cycle. | `upward`, `cycle` |
 | H7 Anchored | A hub of a higher level lists every hub except the register. The Topic body also links its topic hub. | `unanchored` |
 | H8 Reasons | Every line has a reason of at least `min_reason` (8) characters after its Link. A register line has its term. | `bare` |
 | H9 Coverage | The hub, directly or through its lower hubs, lists every Model Card and every line hub in its range. | `unlisted` |
@@ -298,7 +298,7 @@ exist). H11, H12, and H13 are advice. The other rules are faults. ZT reports fau
 enforce them, as it does for models (`closure`, `forward`, `unanchored`). The hub compiler sends
 `mirror` back to the writer as if it were a fault.
 
-## ZT changes (0.16.0)
+## ZT changes (0.16.0, 0.16.1)
 
 ### Storage
 
@@ -494,6 +494,19 @@ Still open:
 3. **The human Workspace.** ZT reports hub faults in the human Workspace too. The agent never writes
    a hub there. `list_hubs` with `workspace: "human"` shows the human's missing hubs. The GUI shows no
    fault list yet.
+
+## Pilot (2026-10-14)
+
+`mode: "hubs"`, `hubTrees: "130,122,135"`. The Haiku hub manager chose `topic_min` 7, `line_min` 7,
+`max_lines` 15, `max_groups` 5, and `neighbour_links` 2. Topic `135` (6 Cards) needs no hub. The stage
+rewrote the two legacy hubs in place, wrote three line hubs and the register, and deleted its DeepSeek
+conversations. The pilot found two faults in the rules, which 0.16.1 fixes:
+
+1. H6 and H9 contradicted each other for nested branches. H9 asked the line hub of `130/2|f` to
+   list the line hub of `130/2|f|a`, inside its branch. H6 refused a line hub that lists another line
+   hub. Now a line hub may list the line hub of a sub-branch.
+2. The `邻近` group counted toward the size limits, so both topic hubs were `oversize` although their
+   subject groups fit. Now `邻近` does not count.
 
 ## What this design does not do
 

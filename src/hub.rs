@@ -550,36 +550,43 @@ impl<'a> Graph<'a> {
                 );
             }
         } else {
-            if body.lines.len() > limits.max_lines {
+            // The 邻近 group points out of the subject; it is not part of the hub's size.
+            let lines = body
+                .lines
+                .iter()
+                .filter(|line| !is_neighbour_group(line.group.as_deref()))
+                .count();
+            let groups = body
+                .groups
+                .iter()
+                .filter(|group| !is_neighbour_group(Some(group.as_str())))
+                .count();
+            if lines > limits.max_lines {
                 fault(
                     &mut faults,
                     "oversize",
                     format!(
-                        "{} lines; at most {} (split a group into a lower hub)",
-                        body.lines.len(),
+                        "{lines} lines outside 邻近; at most {} (split a group into a lower hub)",
                         limits.max_lines
                     ),
                 );
             }
-            if body.groups.len() > limits.max_groups {
+            if groups > limits.max_groups {
                 fault(
                     &mut faults,
                     "oversize",
                     format!(
-                        "{} groups; at most {}",
-                        body.groups.len(),
+                        "{groups} groups outside 邻近; at most {}",
                         limits.max_groups
                     ),
                 );
             }
-            if body.groups.len() < 2 && body.lines.len() > 8 {
+            if groups < 2 && lines > 8 {
                 fault(
                     &mut faults,
                     "flat",
                     format!(
-                        "{} lines in {} group; sort them into 2 or more named groups",
-                        body.lines.len(),
-                        body.groups.len()
+                        "{lines} lines in {groups} group; sort them into 2 or more named groups"
                     ),
                 );
             }
@@ -611,11 +618,15 @@ impl<'a> Graph<'a> {
                 );
             }
         }
-        // H6: a hub lists only hubs of a lower level, and no cycle.
+        // H6: a hub lists only hubs of a lower level, and no cycle. A line hub may also list the
+        // line hub of a branch inside its own branch.
         let own = level.map_or(0, HubLevel::number);
         for lower in self.lower(address) {
             let lower_level = self.level(&lower).map_or(0, HubLevel::number);
-            if level.is_some() && lower_level >= own {
+            let nested = level == Some(HubLevel::Line)
+                && self.level(&lower) == Some(HubLevel::Line)
+                && nested_line(address, &lower);
+            if level.is_some() && lower_level >= own && !nested {
                 fault(
                     &mut faults,
                     "upward",
@@ -985,6 +996,23 @@ fn reached(address: &str, listed: &BTreeSet<String>) -> bool {
     false
 }
 
+/// True for the group that points out of the subject (`邻近`, `neighbours`).
+fn is_neighbour_group(group: Option<&str>) -> bool {
+    group.is_some_and(|group| {
+        let group = group.trim();
+        group.starts_with("邻近") || group.eq_ignore_ascii_case("neighbours")
+    })
+}
+
+/// True when `inner`'s anchor lies strictly inside `outer`'s branch: the line hub of a
+/// sub-branch of the outer hub's line.
+fn nested_line(outer: &str, inner: &str) -> bool {
+    match (crate::parent_location(outer), crate::parent_location(inner)) {
+        (Some(outer), Some(inner)) => inner.starts_with(&format!("{outer}|")),
+        _ => false,
+    }
+}
+
 /// True when a line hub's anchor lies in the range.
 fn range_contains_anchor(range: &[&Card], hub: &str) -> bool {
     crate::parent_location(hub)
@@ -1039,6 +1067,16 @@ mod tests {
         assert!(reached("130/2|f", &listed));
         assert!(!reached("130/2|g", &listed));
         assert!(!reached("130/3", &listed));
+    }
+
+    #[test]
+    fn a_sub_branch_line_hub_nests_in_its_outer_line_hub() {
+        assert!(nested_line("130/2|f|b", "130/2|f|a|a"));
+        assert!(!nested_line("130/2|f|a|a", "130/2|f|b"));
+        assert!(!nested_line("130/2|f|b", "130/2|g|b"));
+        assert!(is_neighbour_group(Some("邻近")));
+        assert!(!is_neighbour_group(Some("均衡")));
+        assert!(!is_neighbour_group(None));
     }
 
     #[test]

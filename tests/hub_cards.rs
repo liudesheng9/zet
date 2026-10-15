@@ -314,3 +314,43 @@ fn get_hub_reports_faults_and_list_hubs_finds_the_missing_hubs() {
     assert_eq!(graph["counts"]["topic"], 1);
     assert_eq!(graph["counts"]["register"], 1);
 }
+
+#[test]
+fn a_line_hub_lists_the_line_hub_of_its_sub_branch_and_neighbours_do_not_count_toward_size() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 2);
+    let branch = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/2"), "kind": "side", "title": "多重均衡" }),
+    ));
+    let sub = address(mcp.ok(
+        "create_successor",
+        json!({ "at": branch, "kind": "side", "title": "约束最优" }),
+    ));
+    let inner = address(mcp.ok(
+        "create_successor",
+        json!({ "at": sub, "kind": "side", "type": "hub", "level": "line", "title": "约束最优这一支", "body": format!("## 判据\n- [[{sub}]]：权威看不到类型时的改进标准。\n") }),
+    ));
+    let outer = address(mcp.ok(
+        "create_successor",
+        json!({ "at": branch, "kind": "side", "type": "hub", "level": "line", "title": "多重均衡这一支",
+                "body": format!("## 均衡\n- [[{branch}]]：逆向选择市场可以有多个均衡。\n- [[{inner}]]（枢纽）：约束最优这一支的入口。\n\n## 邻近\n- 对照 [[{a}/1]]：主线讲市场后果。\n- 对照 [[{a}/2]]：主线讲知情者的决定。\n") }),
+    ));
+    // Two lines outside 邻近 and one group: within max_lines 2 and max_groups 1.
+    let report = mcp.ok(
+        "get_hub",
+        json!({ "at": outer, "max_lines": 2, "max_groups": 1 }),
+    );
+    let found = faults(&report);
+    assert!(!found.contains(&"upward".to_string()), "{found:?}");
+    assert!(!found.contains(&"oversize".to_string()), "{found:?}");
+    assert!(!found.contains(&"unlisted".to_string()), "{found:?}");
+    // The inner hub may not list the outer one.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": inner, "body": format!("## 判据\n- [[{sub}]]：权威看不到类型时的改进标准。\n- [[{outer}]]：外面那一支的入口。\n") }),
+    );
+    let found = faults(&mcp.ok("get_hub", json!({ "at": inner })));
+    assert!(found.contains(&"upward".to_string()), "{found:?}");
+}
