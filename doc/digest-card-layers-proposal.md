@@ -1,6 +1,6 @@
 # Digest Card Layers: Proposal
 
-Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 ran on an existing book (`grossman2002integration`). Phase 4 ran end to end in a full digest of a new paper (`acemoglu2000franchise`). That digest found four faults in the scripts, which are fixed and tested, and its hubs are not written yet. See "As built" and "Verification" below.
+Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 ran on an existing book (`grossman2002integration`). Phase 4 ran end to end in a full digest of a new paper (`acemoglu2000franchise`). That digest found four faults in the scripts, which are fixed and tested. Its hubs were written afterwards by the fixed apply step. See "As built" and "Verification" below.
 
 The `zt-book-digest` workflow builds models and hubs with care. A compiler plans each model or hub, a script builds and checks it, DeepSeek writes it, and a fix round fixes the faults. The other Cards of a digest do not get this care. One DeepSeek run writes the Idea Cards, Event Cards, new Topics, and the anchor Card of a group in four commands. No step checks them, reviews them, or reports their faults. Opus then fixes the structure in one long free-text job.
 
@@ -376,7 +376,7 @@ The first run (`wf_3b60d3cd-f30`) wrote no Cards, and it was stopped. A zt deplo
 | Link pass and Link check | 8 groups, 242 Links. The Link check found 67 faults (L1 52, L2 15) → 0 on 60 Cards. The orphan pass gave 9 orphans a Link, and 0 orphans are left. |
 | Organize | Opus decided 0 merges, 5 moves, and 20 notes, and listed 5 points for the user (a cross-book Link to check among them). `organize-apply.ps1` moved 5 Cards and refused none. The notes cycle carried out all 20. The skeleton wrote the structure Card `1\|f`, titled with the thesis (选举权扩大是精英在革命威胁下对未来再分配的承诺), and 8 Topic bodies. |
 | Figures | The paper has no kept figures. The Literature Card links the PDF and the Markdown. |
-| Hubs | Not written. `hub-compiler.ps1 -Step apply` stopped at the first new Topic (197). The workflow still reported the stage as done. |
+| Hubs | Not written in the run. `hub-compiler.ps1 -Step apply` stopped at the first new Topic (197), after it had made an empty topic hub there. The workflow still reported the stage as done. After the fix, the apply step ran again on the kept DeepSeek files (17 trees). It made 12 hubs and rewrote 49. The empty hub was deleted, so the topic hub of 197 is now `197/1\|g`. Check: 166 hubs (104 topic, 40 line, 21 field, 1 register). 2 faults are left: `60/1\|f` and `61/1\|e` list the topic hub `49/1\|i` (upward), and their fix job (`t59-fix`) is not run. 1 required hub is missing, in a tree outside this run (135, 甄别均衡). |
 | Audit | 177 Cards. 0 orphans, 0 Idea or Event Cards with no source line, 0 with no kinded Link, 0 broken Links. 12 hard layer faults (I2 9, L2 3) and 9 Card language faults other than R6 (R2 5, R4 4) were left. R6 has 27 faults against the term table, which is not fixed by default (D13). |
 | Cost | DeepSeek: 1,294 calls, cache hit rate 0.92, 41.4 in the usage ledger. Claude agents: 12.0 million tokens. |
 
@@ -395,7 +395,7 @@ Notes for the user:
 ### Not verified yet
 
 - The three fixes of the `acemoglu2000franchise` digest in a real run: the hub apply for a new Topic, the failed status, and the wider rules of the Link check and the notes cycle. The tests cover each one.
-- The hubs of `acemoglu2000franchise` and of the 15 older trees in that run. The DeepSeek hub files are kept in `D:\zt-digest\hubs\out`, and the apply step can run again on them.
+- The hub apply fix ran by hand on the kept files, not in a workflow run. The 2 upward faults of the hub check are not fixed.
 
 ## New arguments
 
