@@ -11,6 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const source = fs.readFileSync(path.join(here, '..', '..', '..', '.claude', 'workflows', 'zt-book-digest.js'), 'utf8').replace(/^export /m, '')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
+let planJobs = 21
 function runtime(opts0 = {}) {
   const calls = []
   const managed = []
@@ -49,7 +50,7 @@ function runtime(opts0 = {}) {
       if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], archived: 3 } }
       // A compiler step: the JSON line the script prints.
       let output = json({ jobs: [] })
-      if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 0, jobs: Array.from({ length: 21 }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, files: ['a', 'b'], prompt: 'p' })) })
+      if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 0, jobs: Array.from({ length: planJobs }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, files: ['a', 'b'], prompt: 'p' })) })
       else if (/card-compiler\.ps1" -Step apply/.test(cmd)) output = json({ applied_jobs: 1, counts: { fix: 2 } })
       else if (/card-compiler\.ps1" -Step check/.test(cmd)) output = json({ jobs: [], faults: 0, orphans: 0 })
       else if (/card-compiler\.ps1" -Step report/.test(cmd)) output = json({ cards: 2, faults_before: 3, faults_after: 0, verdicts: { fix: 2 }, splits: 0, merges: 0, refused: 0, orphan_links: 0, orphans_after: 0 })
@@ -125,12 +126,22 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(!calls.some(c => /^(digest|link) manager|prepare book|organize/.test(c.label)), 'cards: runs no other stage')
   const planManagers = managed.filter(m => /cards whole book: plan/.test(m.label))
   const planJobs = planManagers.flatMap(m => m.jobs)
-  check(planManagers.length === 8, `cards: 21 jobs go to 8 Haiku managers in parallel (${planManagers.length})`)
+  check(planManagers.length === 3, `cards: 21 jobs go to 3 Haiku managers, one per 8 jobs (${planManagers.length})`)
+  check(Math.max(...planManagers.map(m => m.jobs.length)) <= 8, 'cards: no manager holds more than 8 jobs when 64 or fewer')
   check(planJobs.length === 21 && new Set(planJobs).size === 21, 'cards: every job goes to exactly one manager')
   check(calls.filter(c => /cards whole book: plan/.test(c.label)).every(c => c.model === 'haiku'), 'cards: the step agent and the managers are Haiku')
   check(cleanups.some(l => /cards whole book: report: clean up/.test(l)), 'cards: one cleanup agent ends the conversations after the report')
   check(result.cards.plan && result.cards.plan.jobs.length === 21, 'cards: the plan reaches the stage intact')
 }
+// the managers: one per 8 jobs, at most 8
+for (const [n, want] of [[5, 1], [16, 2], [17, 3], [70, 8]]) {
+  planJobs = n
+  const { managed } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
+  const plan = managed.filter(m => /cards whole book: plan/.test(m.label))
+  const all = plan.flatMap(m => m.jobs)
+  check(plan.length === want && all.length === n && new Set(all).size === n, `managers: ${n} jobs go to ${want} managers (${plan.length}), each job once`)
+}
+planJobs = 21
 // audit: one script, no DeepSeek source probe
 {
   const { result, calls } = await run({ out: 'D:\\x\\audit', mode: 'audit' })

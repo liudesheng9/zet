@@ -42,7 +42,7 @@ The pilot changed or added these decisions:
 | D14 | Can an Organize note make a rewrite drop a Link? | **Yes, one for one**: the rewrite may drop as many Links as it adds of the Links the note names. | Opus's notes said "cite part X instead of part Y". The rule that keeps every Link refused all five such rewrites. |
 | D15 | Is the old Organize kept? | **Yes, as `organize: "legacy"`.** | A fallback costs nothing. The new Organize ran on one book only. |
 | D16 | Where do the card cycles of a full run go? | **Beside the model stage of each block** (no orphans), then **one Link check with an orphan pass** after the link pass. | The link pass adds the Links that most orphans need. An orphan pass before it would do that work twice. |
-| D17 | How do the DeepSeek jobs of one step run? | **Spread over up to 8 Haiku managers** (`dshManagers`), each with 8 or more jobs at a time. One Haiku agent runs the step's script, one cleans up. The link pass starts 8 groups at once per manager (`linkPerManager`). | The user asked for it: one manager with every job of a step was the slow part of each stage. The digest runs of a block stay in book order, because each run reads the Cards its predecessor wrote. |
+| D17 | How do the DeepSeek jobs of one step run? | **One Haiku manager per 8 jobs, at most 8** (`dshManagers`). Each manager keeps 8 jobs running. 1 to 8 jobs get one manager, 9 to 16 get two, and 57 or more get 8. One Haiku agent runs the step's script, one cleans up. The link pass starts 8 groups at once per manager (`linkPerManager`). | The user set this rule. One manager with every job of a step was the slow part of each stage. A manager costs Haiku tokens, and a manager with fewer than 8 jobs adds no speed. The digest runs of a block stay in book order, because each run reads the Cards its predecessor wrote. |
 
 ## Principles
 
@@ -376,7 +376,7 @@ I checked 30 random hard faults in the three other books by hand. All 18 L1 faul
 | `cardMax` | A pilot: at most this many Cards with faults and this many orphans. |
 | `terms` | `false` skips the term table in mode `full`. |
 | `organize: "legacy"` | The old single Opus job instead of the survey, decisions, apply, notes, and skeleton. |
-| `dshManagers` | The Haiku managers that run the DeepSeek jobs of one step in parallel (default 8). Each runs at least `dshPerBatch` (8) jobs at a time. |
+| `dshManagers` | The most Haiku managers that run the DeepSeek jobs of one step in parallel (default 8). The step gets one manager per `dshPerBatch` (8) jobs, and each manager keeps that many jobs running. |
 | `linkPerManager` | The link runs one Haiku manager starts at once (default 8). |
 
 The helper takes `-SrcLog`, `-TopicGate`, and `-TopicSimilarity` (default 0.8). `ideaFaultRate` of the proposal is not built: the pilot found 1 error in 17 sampled Cards, too few to set a rate.

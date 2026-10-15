@@ -34,7 +34,8 @@ export const meta = {
 //         redoModels is the old name), perSonnet (6: formal models per batch, one Sonnet architect each;
 //         neighbouring models of the book share a batch), perConcept (10: concept models per batch),
 //         dshPerBatch (8: DeepSeek runs one Haiku manager keeps going at the same time; dshPerSonnet is the old name),
-//         dshManagers (8: the Haiku managers that run the DeepSeek jobs of one compiler step in parallel),
+//         dshManagers (8: the most Haiku managers that run the DeepSeek jobs of one compiler step in parallel;
+//         a step gets one manager per dshPerBatch jobs),
 //         linkPerManager (8: the link runs one Haiku manager starts at once),
 //         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
 //         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
@@ -338,10 +339,11 @@ const DRIVE = {
 // a job may write; default: the one file its prompt names), remove ('archive' | 'delete': what cleanup
 // does with the conversations), keep (true: cleanup keeps the folder, e.g. the hub stage's state).
 //
-// A step runs in up to three kinds of Haiku agent: one runs the script command; up to DSH_MANAGERS
-// managers run its DeepSeek jobs in parallel, each with its share of the jobs and up to
-// DSH_PER_BATCH (or more) of them at a time; one cleans up. The user wants the jobs of a step spread
-// over many managers: one manager with all jobs was the slow part of every stage.
+// A step runs in up to three kinds of Haiku agent: one runs the script command; its DeepSeek jobs go
+// to one manager per DSH_PER_BATCH (8) jobs, at most DSH_MANAGERS (8), and each manager keeps
+// DSH_PER_BATCH jobs running at a time; one agent cleans up. The user set this rule: 1-8 jobs need one
+// manager, 9-16 two, and so on; from 57 jobs on, 8 managers. A manager costs Haiku tokens, and one
+// more manager does not make a DeepSeek job faster once each manager is full.
 const DSH_MANAGERS = Math.max(1, A.dshManagers || 8)
 const driveAgent = (label, o, part) => {
   const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
@@ -372,7 +374,7 @@ ${JSON.stringify(jobs)}
 - continue: find the session of the job id named by continue in this table (job id, then session_id):
 ${table || '(empty)'}
   With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback.
-Keep at most ${Math.max(DSH_PER_BATCH, jobs.length <= 2 * DSH_PER_BATCH ? jobs.length : DSH_PER_BATCH)} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
+Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
 - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
@@ -394,7 +396,7 @@ const drive = async (label, o) => {
   const jobs = (parsed && Array.isArray(parsed.jobs)) ? parsed.jobs : []
   let results = []
   if (jobs.length) {
-    const managers = Math.min(DSH_MANAGERS, jobs.length)
+    const managers = Math.min(DSH_MANAGERS, Math.ceil(jobs.length / DSH_PER_BATCH))
     const shares = Array.from({ length: managers }, () => [])
     jobs.forEach((job, i) => shares[i % managers].push(job))
     const done = await parallel(shares.map((share, i) => () =>
