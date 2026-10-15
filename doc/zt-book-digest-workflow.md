@@ -24,6 +24,7 @@ flowchart LR
   L --> C[Cleanup<br/>Haiku]
   C --> O[Organize<br/>Opus]
   O --> H[Hubs<br/>Haiku hub manager, DeepSeek writes,<br/>hub-compiler.ps1 builds]
+  H --> A[Audit<br/>digest-audit.ps1, read-only]
 ```
 
 | Stage | Who | What it does | What you get |
@@ -35,6 +36,7 @@ flowchart LR
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
 | **Organize** | Opus | Merges duplicate Topics, rewrites Topic bodies, writes the book's structure Card and index, checks every model with `get_model`, and fixes Links. It writes no hubs. | A finished digest |
 | **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
+| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`card-style-check.ps1`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
 
 ## Skills for DeepSeek
 
@@ -205,13 +207,23 @@ A book's own figures reach its Cards in three places, and every one is the same 
 2. **Writers.** The digest runs, the brief, and the fill and derive rounds read those lines in the source and paste the line of a figure where a Card discusses it, instead of redrawing it as a chart. The Sonnet architect may name a book figure for a part (`"figure": "2.F.1"`); the compiler hands DeepSeek that figure's line, and `validate` refuses a label ZET does not hold.
 3. **Figures stage.** After Organize, `attach-figures.ps1` finds every agent Card of the book (in its Literature tree, or linking its Literature Card) that names a figure (`图 2.C.1`, `图2.C.1`, `图 IV`/`图四`, never `图 2.C.10`) and does not show it yet, and puts the figure in right after the paragraph that first names it (after a table, list, or chart fence that holds the mention; at the top when only the title names it). Hub Cards, the Literature Card, and the anchor line are left alone: they list other Cards' titles. It passes each Card's stored text as `base`, so it never overwrites a Card that changed meanwhile, and a second run changes nothing. It also adds the documents line to the Literature Card when it has none. Mode `figures` runs only this stage, for a book digested before 0.18.0.
 
+## The audit (phase 1 of the card layers proposal, 2026-10-15)
+
+`scripts/book-digest/digest-audit.ps1` measures the Cards that the model and hub stages do not check: Idea Cards, Event Cards, anchors, Topics, and Links. It makes only zt read calls (a guard refuses any other tool), so it is safe on any digest at any time. It reads every agent tree, attributes each Topic-tree Card to the book it cites (a source line or an anchor counts 10, a Link to another Card of the book counts 1), reads the bodies in parallel helper processes (`-Throttle`, default 6), and runs `card-style-check.ps1 -Json` in its own process: each model with its own term table and level, the other Cards without a term table. A run on the whole agent Workspace takes a few minutes.
+
+```bash
+pwsh -NoProfile -File scripts/book-digest/digest-audit.ps1 -Out D:zt-digestaudit
+```
+
+Add `-CitationKey <key>` for one book. The workflow runs it last in mode `full`, or alone in mode `audit`. Run it before and after a change to a digest stage: the difference measures the change.
+
 ## Running it
 
 Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). |
+| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
 | `figures` | `false` skips the Figures stage in a full run |
@@ -235,6 +247,7 @@ Arguments (`args`):
 | `hubLimits` | an object that overrides the limits the Haiku hub manager chooses, e.g. `{ "topic_min": 8 }` |
 | `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
 | `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers and the field planner (high); check, fix, and apply again (1) |
+| `audit` | `false` skips the Audit stage in a full run (default `true`) |
 
 **Effort.** The user wants every DeepSeek run at medium effort or more. DeepSeek V4.1 Flash offers `off`, `low`, `high`, and `max` at both sources, with no `medium`, so every DeepSeek effort is `high` or `max`: the workflow raises a lower value to `high` and logs it.
 

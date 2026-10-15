@@ -1,7 +1,7 @@
 export const meta = {
   name: 'zt-book-digest',
-  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, the model compiler builds every new model to its elaboration level: DeepSeek briefs the source, a Sonnet architect only plans each model (level, parts in build order, where Derivation parts go and how many), a script builds the skeleton, DeepSeek writes the Cards and charts, then the Derivation parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense; a link pass ties the parts of the book together, Opus organizes the structure, attach-figures.ps1 shows the book's own figures (kept from the Scholar Archive) in every Card that names one and links the book's PDF and Markdown from its Literature Card, and last the hub stage builds the Hub Cards of the whole agent Workspace (a Haiku hub manager chooses the limits from a survey, DeepSeek plans the fields and writes every hub, hub-compiler.ps1 builds and checks them)',
-  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the model stage on its Model Cards (with rebuild: true, also on models that already have parts); mode "hubs" runs only the hub stage on the whole agent Workspace (needs only out); mode "figures" only shows the book's figures in the Cards that name them and links its documents (needs citationKey and out, the digest\'s staging folder).',
+  description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, the model compiler builds every new model to its elaboration level: DeepSeek briefs the source, a Sonnet architect only plans each model (level, parts in build order, where Derivation parts go and how many), a script builds the skeleton, DeepSeek writes the Cards and charts, then the Derivation parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense; a link pass ties the parts of the book together, Opus organizes the structure, attach-figures.ps1 shows the book\'s own figures (kept from the Scholar Archive) in every Card that names one and links the book\'s PDF and Markdown from its Literature Card, the hub stage builds the Hub Cards of the whole agent Workspace (a Haiku hub manager chooses the limits from a survey, DeepSeek plans the fields and writes every hub, hub-compiler.ps1 builds and checks them), and last digest-audit.ps1 writes a read-only audit of the book\'s Cards',
+  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the model stage on its Model Cards (with rebuild: true, also on models that already have parts); mode "hubs" runs only the hub stage on the whole agent Workspace (needs only out); mode "figures" only shows the book\'s figures in the Cards that name them and links its documents (needs citationKey and out, the digest\'s staging folder); mode "audit" only writes the read-only audit (audit.json, audit.md) of one book (citationKey) or of every book in the agent Workspace (no citationKey) into out.',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
@@ -11,10 +11,11 @@ export const meta = {
     { title: 'Organize', detail: 'Opus merges Topics, rewrites entry points, writes the book structure Card, and fixes links; it writes no hubs', model: 'opus' },
     { title: 'Figures', detail: 'attach-figures.ps1 puts each book figure ZET keeps (![图 2.C.1](artifact:…)) into every Card of the book that names it but does not show it yet, and links the book\'s PDF and Markdown (scholar:<file_id>) from the Literature Card', model: 'haiku' },
     { title: 'Hubs', detail: 'the hub compiler on the whole agent Workspace: hub-compiler.ps1 surveys every Topic tree; a Haiku hub manager chooses the limits (when a tree or branch needs a hub, how large a hub may be) from the survey; Haiku drivers start DeepSeek jobs in the hub workspace: one field planner (fields and register terms) and topic writers (topic and line hubs as JSON); the script builds the Hub Cards, links them from Topic bodies and the register, checks every hub with get_hub, and sends faults back to the writer once; the last driver deletes the DeepSeek conversations', model: 'haiku' },
+    { title: 'Audit', detail: 'digest-audit.ps1, read-only: per book, the Cards by category, the Topic trees, the Card language faults per rule (card-style-check.ps1), orphans, Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown; for the Workspace, missing hubs and broken Links. It writes audit.json, audit.md, and audit-faults.txt in out', model: 'haiku' },
   ],
 }
 
-// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures'), source, out, citationKey, bibtex, bookTitle,
+// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit'), source, out, citationKey, bibtex, bookTitle,
 //         fileId (the book Markdown's Scholar Archive file id; read from a source path such as
 //         ...\scholar-archive\files\83\... when not given): its figures are kept in ZET and shown in the Cards,
 //         figures (mode "full": true; false skips the Figures stage),
@@ -44,7 +45,8 @@ export const meta = {
 //         remembers each tree's hubs, so a later run rewrites only trees that changed),
 //         hubLimits (an object that overrides the limits the Haiku hub manager chooses, e.g. { topic_min: 8 }),
 //         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
-//         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again) }
+//         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again),
+//         audit (mode "full": true; false skips the Audit stage; read-only, see doc/digest-card-layers-proposal.md) }
 //
 // How the stages hand work on:
 //   Prepare (figures kept) ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (model compiler, per batch) ─┐
@@ -67,7 +69,7 @@ export const meta = {
 const A =args && typeof args === 'object' ? args : {}
 const MODE = A.mode || 'full'
 // The args are an object, never free text: without these fields the stages would run on "undefined".
-const missing = ['out', ...(MODE !== 'hubs' ? ['citationKey'] : []), ...(MODE === 'full' ? ['source', 'bibtex', 'bookTitle'] : [])].filter(k => !A[k])
+const missing = ['out', ...(MODE !== 'hubs' && MODE !== 'audit' ? ['citationKey'] : []), ...(MODE === 'full' ? ['source', 'bibtex', 'bookTitle'] : [])].filter(k => !A[k])
 if (missing.length) return { stage: 'args', error: `args must be an object with ${missing.join(', ')}; got ${typeof args === 'string' ? 'a string' : JSON.stringify(args)}` }
 const KEY = A.citationKey
 const OUT = A.out
@@ -126,6 +128,24 @@ const HUB_COMPILER = `${SCRIPTS}\\hub-compiler.ps1`
 const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
+const AUDIT = MODE === 'audit' || (MODE === 'full' && A.audit !== false)
+
+// --- Audit: a read-only report on the book's Cards (phase 1 of doc/digest-card-layers-proposal.md) --
+// A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
+async function runAudit() {
+  phase('Audit')
+  const run = await agent(
+    `Run this PowerShell command once in the foreground with timeout 600000 and wait for it (it may take several minutes); do nothing else:
+pwsh -NoProfile -File ${SCRIPTS}\\digest-audit.ps1${KEY ? ` -CitationKey ${KEY}` : ''} -Out "${OUT}"
+Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
+    { label: 'audit cards', phase: 'Audit', model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+  )
+  const summary = run && run.ok ? lastJson(run.output) : null
+  if (!summary) { log(`Audit failed: ${run && run.output}`); return { status: 'failed', error: run && run.output } }
+  for (const b of summary.books || []) log(`Audit ${b.key}: ${b.cards} Cards in ${b.topic_trees} Topic trees; ${b.style_faults} Card language faults; ${b.orphans} orphans; ${b.no_source} with no source; ${b.unkinded} with no kinded Link; ${b.not_self_sufficient} of ${b.models} models not self-sufficient; ${b.figures_missing} figures named but not shown.`)
+  log(`Audit: ${summary.hubs_missing} missing hubs, ${summary.broken_links} broken Links in the Workspace. Report: ${OUT}\\audit.md`)
+  return { status: 'done', ...summary }
+}
 
 const USAGE = {
   type: 'object',
@@ -142,7 +162,7 @@ phase('Prepare')
 if (raised.length) log(`DeepSeek efforts raised to high (the user wants at least medium; V4.1 Flash has no medium): ${raised.join(', ')}.`)
 // The DeepSeek source: with dshSource 'auto', a Haiku probe asks each source for one short answer and
 // the run uses the first that gives it, the official source before OpenCode Go.
-if (DSH_SOURCE === 'auto' && MODE !== 'figures') {
+if (DSH_SOURCE === 'auto' && MODE !== 'figures' && MODE !== 'audit') {
   const probeDir = `${OUT}\\dsh-probe`
   const probe = await agent(
     `You check which DeepSeek Harness source of DeepSeek V4.1 Flash answers now. Do exactly these steps; keep your messages short.
@@ -194,7 +214,7 @@ Return groups = the number of entries in manifest.groups and usage_before = the 
   groupCount = prep.groups
   usageBefore = prep.usage_before
 }
-if (!groupCount && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
+if (!groupCount && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
 
 const groups = Array.from({ length: groupCount }, (_, i) => {
   const n = i + 1
@@ -653,6 +673,7 @@ Return ok (true when it exits without an error) and output = its last output lin
   return summary ? { status: 'done', ...summary } : { status: 'failed', error: run && run.output }
 }
 if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: await runFigures() }
+if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: await runAudit() }
 
 let hubReport = null
 if (MODE === 'hubs') {
@@ -752,7 +773,7 @@ Work in this order, reading cheaply (list_trees, get_tree excerpts; get_card onl
 5a. Read each model's build report: run get_model on every Model Card and read \`level\` and \`build\`. Each Model Card has an elaboration level: \`concept\` (level 1: the Model Card and at most four parts in words, no Derivation parts) or \`formal\` (level 2: a self-sufficient model). A formal model is self-sufficient when \`build.closure\`, \`build.forward\`, and \`build.unanchored\` are empty; a concept model also needs an empty \`build.beyond_level\`; tolerated premises of shared parts are not faults. Do not change a model's level; report a level that looks wrong. Re-point each outside Card that a model manager named in its notes (a Card whose content a new part of the model now states): that Card links the new part, with its kind word. Check that each model with shared parts takes them in through its Model Card's 结构 list. Do not insert or move Cards inside a model's range.
 5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (a part that belongs to no model: link it from its Model Card's 结构 list), but keep the structure the architect planned (its facets, core and aside parts, kinded relations, and loose parts). A part belongs to the Model Card it is filed under and to every Model Card that links it, so where two models of the book share a part (a correspondence, a common setting), link it from the second Model Card's 结构 list rather than writing a duplicate. Every Card that derives, interprets, applies, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the part that states it), and the word right before the Link names the kind of relation, which ZT reads: 依赖/基于 (rests on), 例示/案例 (illustrates), 对照/区别 (contrasts), 放宽/推广 (relaxes), 对应/类比 (corresponds), 反驳/批评 (objects). Read each model's neighbours in get_model, rewrite those that read "refers" but state a real relation so the kind word stands right before the Link, then search for discussions that miss the model; every Card that uses a real-world event as evidence links to its Event Card.
 6. Rewrite the Literature Card [[${KEY}]] body (edit_card body only) as the book's index: one line per chapter, "第N章 章名 - 讲了什么 → [[anchor]]", then a line linking the structure Card. Keep its last line "原书文档：…" (Document links such as [原书 PDF](scholar:85) that open the book's PDF and Markdown) exactly as it is.
-6a. A line `![图 2.C.1](artifact:<sha256>)` in a Card shows the book's own figure; when you rewrite or merge a Card, keep each such line exactly, next to the text that discusses the figure.
+6a. A line \`![图 2.C.1](artifact:<sha256>)\` in a Card shows the book's own figure; when you rewrite or merge a Card, keep each such line exactly, next to the text that discusses the figure.
 7. Check the cross-part Links the DeepSeek agents added: keep those whose sentence states a real relationship and reason; rewrite vague ones. Add Links still missing between Topics that share a mechanism, and to related human Cards (search_cards with workspace "human"). Remove a "# 标题" line that repeats the title at the top of a body.
 8. Check list_broken_links and fix any in the agent Workspace.
 Return a short Chinese report: the final agent Topics (address and name), merges and moves done, the structure Card address, link counts added or rewritten, and anything left for the user.`,
@@ -762,6 +783,8 @@ Return a short Chinese report: the final agent Topics (address and name), merges
 const figures = FIGURES && MODE !== 'figures' ? await runFigures() : null
 // The hub stage runs last, on the trees as Organize left them.
 if (HUBS && MODE !== 'hubs') hubReport = await runHubs()
+// The audit runs last, on the Cards as every other stage left them.
+const audit = AUDIT ? await runAudit() : null
 
 return {
   mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
@@ -769,5 +792,5 @@ return {
   models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
   model_cleanup: modelCleanup,
   link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
-  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport,
+  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport, audit,
 }
