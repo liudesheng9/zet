@@ -1,6 +1,6 @@
 # Digest Card Layers: Proposal
 
-Status: proposal (2026-10-15). Phase 1 (the audit report) is built: `scripts/book-digest/digest-audit.ps1`, the workflow mode `audit`, and the Audit stage at the end of a full run. The other phases are not built.
+Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 also ran on a real book (`grossman2002integration`). The digest-time parts of phase 4 passed their offline tests: the `src` log, the Topic gate, the event template, and the term table at Prepare. No new book was digested with them yet. See "As built" and "Verification" below.
 
 The `zt-book-digest` workflow builds models and hubs with care. A compiler plans each model or hub, a script builds and checks it, DeepSeek writes it, and a fix round fixes the faults. The other Cards of a digest do not get this care. One DeepSeek run writes the Idea Cards, Event Cards, new Topics, and the anchor Card of a group in four commands. No step checks them, reviews them, or reports their faults. Opus then fixes the structure in one long free-text job.
 
@@ -31,6 +31,17 @@ I made these decisions in this proposal. Each one is open for the user to change
 | D8 | Where does the Topic gate go? | **In the zt helper**, as an option. It is not a new stage. | Digest blocks run in parallel. A new serial stage stops the pipeline. |
 | D9 | A new Card type for empirical findings? | **Not now.** See open question Q1. | A new type changes ZT itself. The audit report must show the need first. |
 | D10 | Which part comes first? | **The audit report.** Its numbers decide the order of the other parts. | It is read-only and safe on the four books in the slip-box today. |
+
+The pilot changed or added these decisions:
+
+| No. | Question | Decision | Reason |
+| --- | --- | --- | --- |
+| D11 | Who fixes what the review finds? | **The reviewer itself.** Its JSON holds the verdict and the fixed text. | The conversation of a digest run is archived when its block ends. A second conversation costs more than one reviewer that writes the fix. |
+| D12 | How does `apply` know that a Card did not change? | **It compares the title and the body**, and sends no `base`. | The stored text holds the generated Reverse links. Every write to a linking Card changes it, so `base` refused 40 good edits in the first pilot run. |
+| D13 | Does the cycle fix rule R6 against the book's term table? | **Not by default.** The audit reports R6. `cardRules` switches the fix on. | The first term table named different concepts as synonyms (专用化程度 for 专业化程度). A fix by such a table changes the meaning. A person or Opus must check the table first. |
+| D14 | Can an Organize note make a rewrite drop a Link? | **Yes, one for one**: the rewrite may drop as many Links as it adds of the Links the note names. | Opus's notes said "cite part X instead of part Y". The rule that keeps every Link refused all five such rewrites. |
+| D15 | Is the old Organize kept? | **Yes, as `organize: "legacy"`.** | A fallback costs nothing. The new Organize ran on one book only. |
+| D16 | Where do the card cycles of a full run go? | **Beside the model stage of each block** (no orphans), then **one Link check with an orphan pass** after the link pass. | The link pass adds the Links that most orphans need. An orphan pass before it would do that work twice. |
 
 ## Principles
 
@@ -267,48 +278,137 @@ Prepare (terms.json, events.json, figures)
 
 The Idea and Event cycle of one block runs while later blocks still digest. It runs beside the model stage of the same block. It never touches a model, so the two do not collide.
 
+## As built
+
+The scripts are in `scripts/book-digest/`. The workflow is `.claude/workflows/zt-book-digest.js`. This table names each part and how it differs from the proposal above.
+
+| Proposal | Built as | Difference from the proposal |
+| --- | --- | --- |
+| 1. Audit | `digest-audit.ps1`, mode `audit`, the Audit stage at the end of a full run | It also writes `audit-cards.json` and `audit-addresses.txt` for the fix cycle, and gives the term table and the structure Card categories of their own. `-SkipModels` skips the models. |
+| 2. Term table | `book-terms.ps1` (plan, apply), `dsh-terms-instructions.zh.md`, the term step after Prepare | Candidates: section headings, bold terms, definitions (称为, 是指), terms with their English original in brackets, and frequent word groups. The table is a Side successor of `<key>/1`. R6 against it is reported, not fixed by default (D13). |
+| 3. Idea and Event cycle | `card-compiler.ps1` (plan, apply, check, report), `dsh-card-instructions.zh.md`, the Cards stage after each digest block | The reviewer writes the fix itself (D11). A split makes a Side successor, joins its group's `owned-gNN.txt`, and is checked in the next round. |
+| 4. Event Cards | Event candidates in each group file and in `events.json` (Prepare). The fixed template and the search for an existing Event Card in `dsh-instructions.zh.md`. Rules E1, E2, E4, and E5. | The reviewer checks E3. E5 is advisory: it compares the year and the title. |
+| 5. Topic gate | `-TopicGate <file>` in `skills/zt/scripts/zt-mcp.ps1` | The gate file is only a lock. The helper reads the live agent Topics, so a reservation list is not needed. |
+| 6. Link layer | The same cycle with rules L1 and L2 on the whole book after the link pass, and orphan jobs (`dsh-orphan-instructions.zh.md`) | The fixes are fresh jobs, not the link run's conversation (archived by then). A Card that takes an orphan Link is checked again. L4 is not built: the link pass already gives candidates from other groups only. |
+| 7. Skeleton | `book-skeleton.ps1` (plan, apply), `dsh-skeleton-instructions.zh.md` | It also writes the Topic bodies and keeps their hub lines, and links the term table from the Literature Card. The anchor check (step 5) is rule I1 on anchor titles. The `在全书中的位置：` paragraph is not checked. |
+| 8. Organize | `organize-survey.ps1`, Opus `decisions.json`, `organize-apply.ps1`, a notes cycle (rule N1), and the skeleton. `organize: "legacy"` keeps the old job. | Opus also writes `notes`: Card-level work that a card cycle carries out. A note may replace a Link (D14). `organize-apply.ps1` translates the notes through the renames of its moves. |
+| `src` log | `src` field and `-SrcLog <file>` in the zt helper | The reviewer reads the logged lines. For an older digest it searches the section the source line names. |
+
+### New rules as built
+
+| Rule | As built |
+| --- | --- |
+| I1 | Advisory. A title of 6 characters or fewer with none of a short list of verbs (是, 会, 能, 决定, 导致, …). |
+| I2 | 40 to 300 characters of prose (`-MinIdeaChars`, `-MaxIdeaChars`). Over: split candidate. Under: merge candidate. |
+| I3 | A Link to the Literature Card or to one of its anchors. |
+| I4 | A kinded Link to a Card other than the parent. |
+| I5 | A Card other than the parent links to the Card. |
+| I6 | Advisory. Character bigram similarity of 0.8 or more between two titles of one tree. |
+| E1, E2, E4 | As proposed. E4 counts the Idea Cards that link the Event Card with a kind word. |
+| E5 | Advisory. The same year and a title similarity of 0.5 or more. |
+| L1 | One fault per Card, naming the Links that ZT reads as "refers". A Link to a Literature Card or an anchor is a source line or a place in the book, and is exempt. |
+| L2 | The sentence of a Link holds 8 characters (`-MinReason`) besides its Links, or a formula. A source line is exempt. |
+| L3 | Advisory. One target linked in two or more paragraphs. |
+| N1 | An Organize note: the fault text is the note. |
+
+The new rules apply only to entries that name their category, so the model compiler's checks do not change.
+
+## Verification
+
+### Tests
+
+All tests run offline. A test that needs zt starts its own service on a scratch archive (`ZT_CONFIG_DIR`). The live archive is not touched.
+
+| Test | What it checks |
+| --- | --- |
+| `tests/card-layer.tests.ps1` | Every I, E, and L rule on a fixture. Entries without a category get the R rules only. A `|` belongs to the address. A formula is a reason. |
+| `tests/card-compiler.tests.ps1` (35 checks) | Plan, apply, check, apply, and report on a scratch book. It covers rewrites, a split, the follow-up round, and the orphan pass. It covers three refusals: a Card changed since the plan, a lost Link, and a non-candidate orphan Link. It also covers the fresh fix job after an orphan Link, `-Groups`, `-Notes`, the note rule, and the review instruction of a sampled Card. |
+| `tests/zt-helper-gate.tests.ps1` | `src` never reaches zt, and the log holds it. The gate refuses the same title and a very similar title, with a resume line. Two helpers that race make the Topic one time. |
+| `tests/book-terms.tests.ps1` | Plan and apply of the term table. The script drops invalid entries. A second run rewrites the same Card. The audit applies R6 against the table. |
+| `tests/organize.tests.ps1` | The survey finds the duplicate pair. The apply step makes a merge and a move, and refuses a Model Card, a Literature tree Card, and a Topic root. A note follows its Card's rename. The skeleton writes the structure Card, the index with the document line, and a Topic body that keeps its hub line. A second run rewrites the same structure Card. |
+| `tests/workflow-harness.mjs` | The workflow script with stand-ins for the runtime, in modes `full`, `cards`, `audit`, and `link`, and with `organize: "legacy"`. It checks for script errors, the order of the stages, the commands they build, and arguments given twice. |
+
+The earlier tests (`card-style-check`, `attach-figures`, `hub-compiler`, `model-compiler`, `zt-calls`) still pass.
+
+### Pilot on `grossman2002integration`
+
+The pilot ran on 2026-10-15 with DeepSeek V4.1 Flash (official source, effort high). The database was copied to `D:\zt\backups\` before each run that wrote Cards.
+
+| Step | Result |
+| --- | --- |
+| Fix cycle 1 (72 Idea Cards and anchors) | 592 faults → 0 on those Cards. 39 rewrites and 33 splits (49 new Cards). 0 Links lost (checked again with full addresses). The 3 models did not change. |
+| Fix cycle 2 (the new Cards) | 49 orphans got a Link from a related Card. 5 faults → 0. |
+| Term table | 59 terms, 42 with words not to use (the first try, before the rule in D13, rejected different concepts). |
+| Review of a sample against the source | 17 sampled Cards. 12 agree with the source, each with the section named. 1 fixed: `4|f` stated the condition $A_I>A_O$ backwards. The others rewritten for style. |
+| Organize | The survey found 3 Topics and 2 candidate pairs. Opus (one job, about 97,000 tokens, 100 seconds) merged none and gave its reasons, moved 1 Card, and wrote 18 notes. The notes cycle carried out all 18. The skeleton wrote the Literature Card index, a new structure Card titled with the thesis, and 2 Topic bodies. |
+| The book after | Hard Card layer faults 111 → 0. Card language faults of Idea Cards and anchors 479 → 0, apart from 96 R6 faults against the new table (not fixed, D13). Orphans 0, apart from the term table, which the Literature Card now links. Models 3, all self-sufficient. |
+
+The pilot found these faults in the scripts. Each one is fixed and a test covers it:
+
+1. `base` refused good edits (D12).
+2. A split was made although its edit failed.
+3. The Link pattern stopped at `|`.
+4. The job of a sampled Card showed an empty fault list.
+5. The orphan jobs came out nested.
+6. A note could not replace a Link (D14).
+7. The old structure Card was split as an Idea Card. It now has its own category.
+
+### Phase 2 exit test
+
+I checked 30 random hard faults in the three other books by hand. All 18 L1 faults are true by the rule. Of the 6 L2 faults, 4 are true, 1 is borderline, and 1 was false: a formula is a reason (fixed). The 6 I2, I4, and I5 faults are true. Four L1 faults show words that state a relation but that ZT does not read as a kind: 引出, 来自, 印证, 参照.
+
+### Not verified yet
+
+- A full digest of a new book with the new Prepare (event candidates, term step), the `src` log, and the Topic gate. The tests cover each part. The pilot used an existing book.
+- The workflow itself through the Workflow tool. The harness runs its script with stand-ins.
+
 ## New arguments
 
 | Argument | Meaning |
 | --- | --- |
-| `mode: "audit"` | Run only the audit report. Read-only. Needs `out`, and `citationKey` for one book. |
-| `mode: "cards"` | Run the Idea, Event, and Link checks and one fix round on an existing digest. It never touches a model. |
-| `cardChecks` | `false` skips the new checks in a full run. |
-| `ideaSample` | The share of unflagged Idea Cards that the reviewer reads (default 0.1). |
-| `ideaFaultRate` | When more of a group's sample fails, the reviewer reads the whole group (default 0.2). |
-| `topicSimilarity` | The similarity at which the Topic gate refuses a new Topic (default 0.8). |
-| `cardFixRounds` | Fix rounds of the Idea, Event, and Link layers (default 1). |
-| `reviewEffort` | It applies to the Idea review too. Every DeepSeek effort stays `high` or `max`. |
+| `mode: "audit"` | Only the audit report. Read-only. Needs `out`, and `citationKey` for one book. |
+| `mode: "cards"` | The whole card cycle (all hard rules but R6, and the orphan pass) on an existing digest. It never touches a model. |
+| `cardChecks` | `false` skips the card cycles in modes `full` and `link`. |
+| `ideaSample` | The share of a block's Idea Cards without faults that the reviewer checks against the source (default 0.1 in mode `full`, 0 in mode `cards`). |
+| `cardRules` | The rules the cycle fixes. Default: R2, R3, R4, R5, R7, R9, R12, I1 to I4, L1, L2, E1, E2. Add R6 when the term table is checked. |
+| `cardFixRounds` | Check, fix, and apply again (default 1). |
+| `cardMax` | A pilot: at most this many Cards with faults and this many orphans. |
+| `terms` | `false` skips the term table in mode `full`. |
+| `organize: "legacy"` | The old single Opus job instead of the survey, decisions, apply, notes, and skeleton. |
+
+The helper takes `-SrcLog`, `-TopicGate`, and `-TopicSimilarity` (default 0.8). `ideaFaultRate` of the proposal is not built: the pilot found 1 error in 17 sampled Cards, too few to set a rate.
 
 ## Cost
 
-- The audit, the checks, the Topic gate, the skeleton, and the survey are scripts. They cost no model tokens.
-- The fix rounds continue the conversation that wrote the Cards. They read the cached prefix.
-- The Idea review costs one DeepSeek job per group. It reads only flagged Cards and the sample.
-- Organize can cost less than today. Opus reads a short survey and writes a decision file. It does not read every tree.
-- The audit report measures the real cost of each layer. Compare it with the DeepSeek usage of a run before the change.
+Measured in the pilot:
+
+- A fix job of 8 Cards used 40,000 to 90,000 tokens of context and took 30 to 190 seconds. Before the instructions said to read only the job file, it used 130,000 to 230,000.
+- An orphan job of 16 orphans used 60,000 to 85,000 tokens and took 60 to 160 seconds.
+- The Opus decisions used about 97,000 tokens. The old Organize read every tree of the book.
+- The audit, the checks, the gate, the survey, the apply steps, and the skeleton frame are scripts. A whole-Workspace audit takes about 7 minutes. One book takes 30 to 40 seconds.
 
 ## Rollout
 
-Each phase ends when its exit test passes. The user decides when the next phase starts.
-
-| Phase | Work | Exit test |
-| --- | --- | --- |
-| 1 | `digest-audit.ps1` and mode `audit` | The audit runs on the four books and the whole agent Workspace. The numbers agree with a manual check of one Topic tree. |
-| 2 | I, E, and L rules in `card-style-check.ps1` | The rules run on the four books in mode `audit`. A manual check of 30 flagged Cards finds few false faults. |
-| 3 | Mode `cards`: the Idea, Event, and Link fix rounds and the orphan pass on one existing book | The faults and orphans of that book go down. No Model Card or Model part changes. |
-| 4 | `src` log, Idea review, Topic gate, book term table | A pilot digest of a short book or two chapters. The audit shows fewer duplicate Topics and gives a faithfulness rate. |
-| 5 | Skeleton and the new Organize | Opus input and output tokens go down. The structure Card keeps its quality in the user's opinion. |
+| Phase | Work | Exit test | Status |
+| --- | --- | --- | --- |
+| 1 | `digest-audit.ps1` and mode `audit` | The audit runs on the four books and the Workspace and agrees with a manual check of one tree. | Done. |
+| 2 | I, E, and L rules | A manual check of 30 flagged faults finds few false faults. | Done: 1 false, 1 borderline in 30. |
+| 3 | Mode `cards` on one existing book | Faults and orphans go down. No model changes. | Done on `grossman2002integration`. |
+| 4 | `src` log, review, Topic gate, term table | A pilot digest of a short book. | Built and tested offline. The review and the term table ran on the pilot book. A new digest is the next step. |
+| 5 | Skeleton and the new Organize | Opus tokens go down. The structure Card keeps its quality. | Done on the pilot book. The user judges the structure Card. |
 
 ## Open questions for the user
 
 | No. | Question | Recommendation |
 | --- | --- | --- |
-| Q1 | Empirical findings (such as the 48 firm interviews) fit no Card type. Do they need a new Card type `finding`, or an Idea Card with a fixed evidence template (`样本`, `方法`, `发现`, `来源`)? | The template first. Decide on a new type after the audit of one more empirical paper. |
-| Q2 | Does the Idea layer need a plan step (a claim brief before the write), like the model brief? | Not now. Add it only if phase 4 shows a high `split` or `unfaithful` rate. |
-| Q3 | Opus or Sonnet for the Organize decisions? | Opus for the first pilot. Compare with Sonnet on the same survey after it. |
-| Q4 | What sample rate for the Idea review? | 10% first. Change it from the faithfulness rate of phase 4. |
-| Q5 | Does phase 3 run on the existing four books, or only on new digests? | On one book first. It changes only flagged Idea Cards, Event Cards, and Links. |
+| Q1 | Empirical findings fit no Card type. A new type `finding`, or an Idea Card with a fixed evidence template? | The template first. |
+| Q2 | Does the Idea layer need a plan step before the write? | Not now. The review found 1 error in 17 Cards. |
+| Q3 | Opus or Sonnet for the Organize decisions? | Compare Sonnet on the same `survey.md` once. |
+| Q4 | The sample rate of the review? | 10%. |
+| Q5 | Does mode `cards` run on `hart1995firms`, `mascolell1995microeconomic`, and `missingmarkets2026interviews`? | Yes, one book at a time. They hold 500, 2,705, and 92 hard layer faults. |
+| Q6 | Who checks a book's term table before R6 is fixed by it? | Read `terms.md` yourself, or let the Opus decision step check it. |
+| Q7 | Run a full digest of a new short book to check phase 4 end to end? | Yes, a short paper. |
+| Q8 | Add 引出, 来自, 印证, and 参照 to ZT's kind words (a Rust change)? | Yes, after checking which kind each one names. |
 
 ## What this proposal does not do
 

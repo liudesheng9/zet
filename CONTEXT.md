@@ -216,6 +216,22 @@ _Avoid_: Borrowed premise, leak
 The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Technical English), adapted for Chinese: one statement per sentence, short sentences, no semicolons, active voice, a verb for an action, one term per meaning (a model's term table), and no hedges or praise words. Formulas, Links, charts, and quotations are exempt.
 _Avoid_: Style guide, tone
 
+**Card layer rules**:
+The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `card-style-check.ps1` checks them; `digest-audit.ps1` reports them.
+_Avoid_: Lint, quality score
+
+**Book term table**:
+The terms of one digested book, with the words not to use for each: a Card titled `术语表…`, a Side successor of the book's first anchor. Rule R6 checks the book's Cards against it, as a model's term table checks its parts. A word not to use is another name for the same concept, never a different concept.
+_Avoid_: Glossary, vocabulary
+
+**Structure Card**:
+The Card that orders one book's argument: a Side successor of its first anchor whose title is the book's thesis and whose body starts with `本卡是《…》的结构卡`. It lists the parts in reading order, the book's models, and its Event Cards.
+_Avoid_: Hub Card (a hub is a way into a subject, not the argument of one text), outline
+
+**Topic gate**:
+The lock the zt helper takes before it creates a Topic (`-TopicGate`): it refuses a title that an agent Topic has or nearly has, so parallel digest runs do not make the same Topic twice.
+_Avoid_: Dedup, Topic lock
+
 **Hub Card**:
 A Regular Card of type `hub`: a way into one subject. Its body lists, under `##` group headings, one list item per member: a Link to a Card or a lower Hub Card, then what that Card adds. It states no claim of its own, and a Link from it never takes a Model part into a model. ZT reports each hub's members, upper and lower hubs, and faults (`get_hub`), and the hubs the policy requires but a Workspace lacks (`list_hubs`); it never enforces them.
 _Avoid_: Index card, overview card, map of content, structure Card (a structure Card orders an argument for one text)

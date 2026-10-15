@@ -43,6 +43,7 @@ param(
     [int]$MinUnitChars = 1000,
     [int]$FileId = 0,
     [int]$MinFigureBytes = 3000,
+    [int]$MaxEventCandidates = 12,
     [switch]$NoFigures,
     [switch]$Apply
 )
@@ -177,6 +178,7 @@ $figureList = @($figures.GetEnumerator() | Sort-Object { $_.Value.path } | ForEa
         [ordered]@{ name = $_.Key; labels = @($_.Value.labels); alt = $_.Value.alt; line = $_.Value.line; sha256 = $_.Value.sha256; path = $_.Value.path } })
 [IO.File]::WriteAllText($manifest.figures_file, ([ordered]@{ file_id = $FileId; figures = $figureList } | ConvertTo-Json -Depth 6), $utf8)
 $outline = [Text.StringBuilder]::new()
+$eventCandidates = @()
 $index = [Text.StringBuilder]::new()
 [void]$index.AppendLine("# 全书索引：《$BookTitle》").AppendLine()
 [void]$index.AppendLine("每个小节文件位于 ``$staging\sections\``；全书合并文本为 ``$staging\book.zh.md``；双语原文（只读）为 ``$Source``。").AppendLine()
@@ -198,15 +200,40 @@ for ($g = 0; $g -lt $groups.Count; $g++) {
             $u = $unitByFile[$_]
             "``$_``（第 $($unitGroup[$_]) 组，锚点 ``$CitationKey/$($unitGroup[$_])``）$($u.headings -join '；')"
         })
+    # Event candidates (proposal 4): the lines of this group's sections that name a year. The run
+    # decides which are real events; a hypothetical example in a model is none.
+    $candidates = @()
+    foreach ($unit in $groups[$g]) {
+        $lineNo = 0
+        foreach ($line in ($unit.text.ToString() -split "`n")) {
+            $lineNo++
+            if ($candidates.Count -ge $MaxEventCandidates) { break }
+            if ($line -notmatch '[㐀-鿿]' -or $line -match '^\s*(!\[|\||#|\d+\))') { continue }
+            # A citation's year (`Helper [1991]`, `Holmstrom (1979)`) names a paper, not an event.
+            $plain = [regex]::Replace($line, '\\?\[[^\]]*\d{4}[^\]]*\\?\]|[（(]\s*\d{4}[a-z]?\s*[)）]', '')
+            if ($plain -match '(1[5-9]\d\d|20[0-2]\d)\s*年(?!代)') {
+                $clip = ($line -replace '\s+', ' ').Trim()
+                if ($clip.Length -gt 120) { $clip = $clip.Substring(0, 120) + '…' }
+                $candidates += [ordered]@{ group = $n; src = "sections/$($unitFile[$unit]):$lineNo"; text = $clip }
+            }
+        }
+    }
+    $eventCandidates += $candidates
+    $eventLines = if ($candidates.Count) { ($candidates | ForEach-Object { "  - ``$($_.src)`` $($_.text)" }) -join "`n" } else { '  - （没有）' }
+    $srcLog = Join-Path $staging "src-$id.txt"
+    $gate = Join-Path $staging 'topic-gate.lock'
     $head = @"
 # 你的组：第 $n 组
 
 - 锚点卡片：``$anchor``
 - 章节：$($groups[$g][0].chapter)；小节：$($headings -join '；')（文件 $($sections -join '、')，原文附在下面）
 - 用词最接近的其他小节（先看这些）：$($related -join '；')
-- 写入命令：``... | pwsh -NoProfile -File "$installedHelper" - -Log "$owned"``
+- 写入命令：``... | pwsh -NoProfile -File "$installedHelper" - -Log "$owned" -SrcLog "$srcLog" -TopicGate "$gate"``
 - 现有主题卡片快照：``$staging\snapshot-$id.md``（本组启动时生成）
 - 全书索引：``$($manifest.index)``
+- 本书术语表：``$staging\terms.md``（存在时先读它，按它用词）
+- 事件候选（本组小节中写出年份的句子；由你判断哪些是真实事件）：
+$eventLines
 
 ## 你的小节原文
 
@@ -216,6 +243,8 @@ for ($g = 0; $g -lt $groups.Count; $g++) {
     $manifest.groups += [ordered]@{ n = $n; id = $id; anchor = $anchor; chapter = $groups[$g][0].chapter; headings = $headings; sections = $sections; chars = $text.Length; file = $file }
 }
 [IO.File]::WriteAllText($manifest.index, $index.ToString(), $utf8)
+[IO.File]::WriteAllText((Join-Path $staging 'events.json'), (ConvertTo-Json -InputObject @($eventCandidates) -Depth 4), $utf8)
+$manifest.event_candidates = $eventCandidates.Count
 
 foreach ($pair in @(@('dsh-instructions.zh.md', $manifest.shared_prefix), @('dsh-link-instructions.zh.md', $manifest.link_prefix))) {
     $template = Get-Content -LiteralPath (Join-Path $PSScriptRoot $pair[0]) -Raw -Encoding utf8

@@ -18,11 +18,16 @@ flowchart LR
   D1 --> M1[Models for block 1<br/>model compiler: Sonnet plans ▸ DeepSeek writes, derives, reviews]
   D2 --> M2[Models for block 2<br/>model compiler]
   D3 --> M3[Models for block …]
+  D1 --> K1[Cards for block 1<br/>card-compiler.ps1 ▸ DeepSeek fixes]
+  D2 --> K2[Cards for block 2]
   M1 --> L[Link<br/>Haiku drives DeepSeek]
   M2 --> L
   M3 --> L
-  L --> C[Cleanup<br/>Haiku]
-  C --> O[Organize<br/>Opus]
+  K1 --> L
+  K2 --> L
+  L --> LK[Link check and orphan pass<br/>card-compiler.ps1 ▸ DeepSeek]
+  LK --> C[Cleanup<br/>Haiku]
+  C --> O[Organize<br/>script survey, Opus decides,<br/>scripts and DeepSeek apply]
   O --> H[Hubs<br/>Haiku hub manager, DeepSeek writes,<br/>hub-compiler.ps1 builds]
   H --> A[Audit<br/>digest-audit.ps1, read-only]
 ```
@@ -30,11 +35,14 @@ flowchart LR
 | Stage | Who | What it does | What you get |
 | --- | --- | --- | --- |
 | **Prepare** | Haiku runs a script | Extracts the Chinese text, cuts it into section groups (about 20,000 characters each), and creates the agent Literature Card with one anchor Card per group. | `<out>\groups`, `<out>\sections`, the Literature tree `[[Key]]` → `[[Key/1]]` … |
+| **Terms** (end of Prepare) | Haiku relays one DeepSeek job | `book-terms.ps1` lists candidate terms (headings, bold terms, definitions, terms with their English original, frequent word groups); DeepSeek chooses the terms and the words not to use; the script writes `terms.md` and the Card 术语表 (a Side successor of `<key>/1`). Each group file names the table, and the audit checks rule R6 against it. | `terms.md`, the term table Card |
 | **Digest** | one Haiku manager per block of up to 5 groups; one DeepSeek run per group | Each DeepSeek run gets only its own sections, searches the rest of the book on disk, and writes 6–12 Cards: Idea Cards placed in Topic trees or under its anchor, Event Cards, and **one whole Model Card per model**. Blocks run in parallel. | Cards, and `owned-gNN.txt` (which Cards each group wrote) |
 | **Models** | Haiku lists, then the **model compiler** per batch (`perConcept` concept models or `perSonnet` formal models): DeepSeek briefs, one Sonnet architect plans, `model-compiler.ps1` builds, Haiku drivers relay DeepSeek rounds | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. DeepSeek writes a brief of each model's source; the Sonnet architect writes only `plan.json` (level, parts in build order, premises, where Derivation parts go and how many); the script builds the skeleton; DeepSeek writes the Model Card, setting, parts and charts, then the Derivation parts; a DeepSeek reviewer splits any derivation that jumps or is too dense, and the script inserts the new parts. See `doc/model-compiler-design.md`. | Concept models and self-sufficient formal models; a report per model |
+| **Cards** (beside Models) | Haiku relays DeepSeek jobs of `card-compiler.ps1` | After each digest block: the script checks the block's Idea Cards, Event Cards, and anchor (Card language and the I, E, L rules); DeepSeek rewrites the Cards with faults, and reviews a sample (`ideaSample`) against the source, as JSON files; the script checks each rewrite (every Link, figure, and formula kept) and writes it, checks again, and sends what is left back once. It never writes a Model Card or part. | Cleaner Cards, `cards-gNN\report.json` |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
+| **Link check** | the same cycle on the whole book | Rules L1 and L2 on the Links of the link pass, and the orphan pass: each Card that no other Card links gets a reasoned Link from a related Card. | `cards-link\report.json` |
 | **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
-| **Organize** | Opus | Merges duplicate Topics, rewrites Topic bodies, writes the book's structure Card and index, checks every model with `get_model`, and fixes Links. It writes no hubs. | A finished digest |
+| **Organize** | a script, Opus, scripts, DeepSeek | `organize-survey.ps1` lists what to decide: duplicate Topics, small Topics, merge proposals, model faults. Opus writes only `decisions.json`: the thesis, Topic merges, moves, and notes for single Cards. `organize-apply.ps1` carries out the merges and moves; a card cycle carries out the notes (rule N1); `book-skeleton.ps1` and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies. `organize: "legacy"` runs the old single Opus job. | A finished digest |
 | **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
 | **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`card-style-check.ps1`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
 
@@ -217,13 +225,24 @@ pwsh -NoProfile -File scripts/book-digest/digest-audit.ps1 -Out D:zt-digestaudit
 
 Add `-CitationKey <key>` for one book. The workflow runs it last in mode `full`, or alone in mode `audit`. Run it before and after a change to a digest stage: the difference measures the change.
 
+## The card layers (2026-10-15)
+
+`doc/digest-card-layers-proposal.md` gives the Idea Cards, Event Cards, anchors, Topics, and Links the same shape as the models and hubs: a script checks, DeepSeek writes JSON, a script checks that and writes the Cards, and a report counts the faults before and after. The parts:
+
+- `card-style-check.ps1` checks the I, E, and L rules for entries that name their category. The model compiler's checks do not change.
+- `card-compiler.ps1` (plan, apply, check, report) is the fix cycle. `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md` are DeepSeek's instructions. A rewrite must keep every Link (an Organize note may replace one), every figure line, and every formula, and the Card must be unchanged since the plan. A split becomes a Side successor and joins its group's `owned-gNN.txt`.
+- The zt helper takes `src` on a create call (logged with `-SrcLog`, never sent to zt) and `-TopicGate <file>`, which refuses a Topic whose title another agent Topic has or nearly has. Prepare puts both into each group's write command, with the event candidates and the term table.
+- `organize-survey.ps1`, `organize-apply.ps1`, and `book-skeleton.ps1` are the new Organize. The structure Card starts with `本卡是《…》的结构卡`; the audit gives it, and the term table, a category of their own.
+
+To clean an existing digest, run mode `cards` (one book at a time, `cardMax` for a pilot). The first pilot (`grossman2002integration`) took its hard Card layer faults from 111 to 0 and changed no model.
+
 ## Running it
 
 Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. |
+| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
 | `figures` | `false` skips the Figures stage in a full run |
@@ -248,6 +267,13 @@ Arguments (`args`):
 | `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
 | `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers and the field planner (high); check, fix, and apply again (1) |
 | `audit` | `false` skips the Audit stage in a full run (default `true`) |
+| `terms` | `false` skips the term table in a full run |
+| `cardChecks` | `false` skips the card cycles in modes `full` and `link` |
+| `ideaSample` | the share of a block's Idea Cards without faults that DeepSeek reviews against the source (0.1 in mode `full`, 0 in mode `cards`) |
+| `cardRules` | the rules the card cycle fixes (default all hard rules but R6; add R6 once the book's term table is checked) |
+| `cardFixRounds` | check, fix, apply again (1) |
+| `cardMax` | a pilot: at most this many Cards with faults and this many orphans |
+| `organize` | `"legacy"`: the old single Opus job instead of survey, decisions, apply, notes, and skeleton |
 
 **Effort.** The user wants every DeepSeek run at medium effort or more. DeepSeek V4.1 Flash offers `off`, `low`, `high`, and `max` at both sources, with no `medium`, so every DeepSeek effort is `high` or `max`: the workflow raises a lower value to `high` and logs it.
 

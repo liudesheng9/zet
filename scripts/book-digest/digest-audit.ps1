@@ -15,7 +15,12 @@
     topics       the Topic trees that hold Cards of the book, and the trees where the book holds
                  most of the Cards.
     style        the Card language faults (card-style-check.ps1, rules R2 to R14) per rule and per
-                 category. A model is checked with its own term table and level.
+                 category. A model is checked with its own term table and level, the other Cards of
+                 a book with the book's term table (a Literature-tree Card titled 术语表…) when it
+                 has one.
+    layer        the Card layer faults (rules I1 to L3 of card-style-check.ps1) per rule, with the
+                 advisory rules (I1, I6, E5, L3) counted apart. The script gives the checker each
+                 Card's category, Links, kinded Links, parent, and inbound Links.
     orphans      Regular Cards that no Card links to (inbound 0).
     no_source    idea and event Cards with no source line: no Link to the book's Literature Card or
                  to one of its anchors.
@@ -29,7 +34,8 @@
                  "known" means another Card of the book shows that figure, so ZET holds it.
                  "unknown" means no Card of the book shows it.
   For the Workspace it adds the hub counts, the missing hubs (list_hubs), and the broken Links.
-  Writes audit.json, audit.md, and audit-faults.txt (every Card language fault) in -Out, and
+  Writes audit.json, audit.md, audit-faults.txt (every Card language and Card layer fault), and
+  audit-cards.json (every Card checked outside a model, with its body and Links) in -Out, and
   prints one compact JSON summary line last.
 #>
 [CmdletBinding()]
@@ -43,7 +49,9 @@ param(
     [int]$Throttle = 6,
     [int]$Chunk = 40,
     # Addresses listed per finding in audit.md (audit.json lists all).
-    [int]$Sample = 15
+    [int]$Sample = 15,
+    # Skip the models: no get_model, no model checks, no bodies of Model Cards and parts (card-compiler.ps1).
+    [switch]$SkipModels
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -126,10 +134,23 @@ function Get-Category($c) {
         'model' { if ($c.facet) { return 'part' } else { return 'model' } }
     }
     if ([string]$c.tree -in $allBooks -and [string]$c.address -match '^[^/]+/\d+$') { return 'anchor' }
+    # The book's term table (book-terms.ps1): a table, not an idea.
+    if ([string]$c.tree -in $allBooks -and [string]$c.title -match '^术语表') { return 'terms' }
+    # The book's structure Card (book-skeleton.ps1): it lists the argument; its Links are an index.
+    if ([string]$c.tree -in $allBooks -and [string]$c.excerpt -match '^本卡是《.*》的结构卡') { return 'structure' }
+    # An older structure Card has no marker: a Side successor of <key>/1 that links at least half
+    # of the book's anchors.
+    if ([string]$c.tree -in $allBooks -and [string]$c.parent -eq "$($c.tree)/1" -and [string]$c.edge -eq 'side' -and [string]$c.type -eq 'idea') {
+        $anchorLinks = @(@($c.links) | Where-Object { [string]$_ -match ('^' + [regex]::Escape([string]$c.tree) + '/\d+$') } | Select-Object -Unique).Count
+        if ($anchorLinks -ge 3 -and $anchorLinks * 2 -ge [int]$anchorCount[[string]$c.tree]) { return 'structure' }
+    }
     'idea'
 }
 
 # Which book each Card belongs to.
+# Anchors per book: an older structure Card links at least half of them.
+$anchorCount = @{}
+foreach ($c in $cards) { if ([string]$c.tree -in $allBooks -and [string]$c.address -match '^[^/]+/\d+$') { $anchorCount[[string]$c.tree] = 1 + [int]$anchorCount[[string]$c.tree] } }
 $bookOf = @{}
 foreach ($c in $cards) {
     $address = [string]$c.address
@@ -147,7 +168,7 @@ $unattributed = @($cards | Where-Object { -not $bookOf.ContainsKey([string]$_.ad
 if (-not $CitationKey) { $scope += $unattributed }
 
 # --- bodies: get_model for each Model Card, get_card for the rest ---------------------------------
-$heads = @($scope | Where-Object { $_.category -eq 'model' })
+$heads = if ($SkipModels) { @() } else { @($scope | Where-Object { $_.category -eq 'model' }) }
 $structures = Read-Many @($heads | ForEach-Object { @{ tool = 'get_model'; arguments = @{ at = [string]$_.address } } })
 $bodies = @{}
 $facets = @{}
@@ -157,7 +178,7 @@ for ($i = 0; $i -lt $heads.Count; $i++) {
     if ($m.head) { $bodies[[string]$m.head.address] = @{ title = [string]$m.head.title; body = [string]$m.head.body } }
     foreach ($p in @($m.parts)) { $bodies[[string]$p.address] = @{ title = [string]$p.title; body = [string]$p.body }; $facets[[string]$p.address] = [string]$p.facet }
 }
-$missing = @($scope | Where-Object { -not $bodies.ContainsKey([string]$_.address) })
+$missing = @($scope | Where-Object { -not $bodies.ContainsKey([string]$_.address) -and -not ($SkipModels -and $_.category -in @('model', 'part')) })
 $got = Read-Many @($missing | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = [string]$_.address } } })
 $unread = @()
 for ($i = 0; $i -lt $missing.Count; $i++) {
@@ -178,7 +199,7 @@ function Invoke-Check($entries, [string]$setting, [string]$level) {
     $splat = @{ Json = $file } + $limits
     if ($setting) { $splat.Setting = $setting }
     if ($level) { $splat.Level = $level }
-    foreach ($line in @(& $Check @splat)) { if ($line -match '^\S+ R\d+ ') { [void]$faultLines.Add([string]$line) } }
+    foreach ($line in @(& $Check @splat)) { if ($line -match '^\S+ [RIEL]\d+ ') { [void]$faultLines.Add([string]$line) } }
 }
 $inModel = @{}
 for ($i = 0; $i -lt $heads.Count; $i++) {
@@ -194,11 +215,37 @@ for ($i = 0; $i -lt $heads.Count; $i++) {
     $inModel[[string]$m.head.address] = $true
     Invoke-Check $entries ([string]$m.build.setting) ([string]$m.level)
 }
+# The link graph of the whole Workspace: who links each Card, and how many Idea Cards link it with a
+# kind word. The Card layer rules (I5, E4) read it.
+$inboundFrom = @{}
+$kindedFrom = @{}
+foreach ($c in $cards) {
+    $kinded = @(@($c.kinds.PSObject.Properties) | ForEach-Object Name)
+    foreach ($l in @($c.links | Select-Object -Unique)) {
+        $t = [string]$l
+        if (-not $inboundFrom.ContainsKey($t)) { $inboundFrom[$t] = [Collections.Generic.List[string]]::new() }
+        $inboundFrom[$t].Add([string]$c.address)
+        if ($c.category -eq 'idea' -and $t -in $kinded) { $kindedFrom[$t] = 1 + [int]$kindedFrom[$t] }
+    }
+}
+# A book's term table: a Card of its Literature tree whose title starts with 术语表 (proposal 2).
+$termCard = @{}
+foreach ($c in $cards) { if ([string]$c.tree -in $allBooks -and [string]$c.title -match '^术语表' -and -not $termCard.ContainsKey([string]$c.tree)) { $termCard[[string]$c.tree] = [string]$c.address } }
 $rest = @($scope | Where-Object { -not $inModel.ContainsKey([string]$_.address) -and $bodies.ContainsKey([string]$_.address) } | ForEach-Object {
     $b = $bodies[[string]$_.address]
-    [ordered]@{ address = [string]$_.address; title = $b.title; body = $b.body; facet = $facets[[string]$_.address]; line = $null }
+    $a = [string]$_.address
+    [ordered]@{
+        address = $a; title = $b.title; body = $b.body; facet = $facets[$a]; line = $null
+        category = $_.category; tree = [string]$_.tree; book = $bookOf[$a]; parent = [string]$_.parent
+        links = @($_.links | ForEach-Object { [string]$_ }); kinds = @(@($_.kinds.PSObject.Properties) | ForEach-Object Name)
+        inbound = @($(if ($inboundFrom.ContainsKey($a)) { $inboundFrom[$a] } else { @() })); inbound_kinded = [int]$kindedFrom[$a]
+    }
 })
-for ($i = 0; $i -lt $rest.Count; $i += 500) { Invoke-Check $rest[$i..([Math]::Min($i + 499, $rest.Count - 1))] '' '' }
+# The Cards the layer rules read, with their bodies: card-compiler.ps1 builds its jobs from them.
+[IO.File]::WriteAllLines((Join-Path $Out 'audit-addresses.txt'), [string[]]@($cards | ForEach-Object { [string]$_.address }), $utf8)
+[IO.File]::WriteAllText((Join-Path $Out 'audit-cards.json'), (ConvertTo-Json -InputObject @($rest) -Depth 5), $utf8)
+# One call per book, with the book's term table (R6) when it has one; I6 and E5 compare within it.
+foreach ($g in @($rest | Group-Object { [string]$_.book })) { Invoke-Check $g.Group $(if ($g.Name -and $termCard.ContainsKey($g.Name)) { $termCard[$g.Name] } else { '' }) '' }
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 $faults = @($faultLines | ForEach-Object { $p = $_ -split ' ', 3; [pscustomobject]@{ address = $p[0]; rule = $p[1]; text = $p[2]; line = $_ } })
 Write-Host "Card language: $($faults.Count) faults ($([int]$sw.Elapsed.TotalSeconds) s)"
@@ -250,7 +297,9 @@ foreach ($key in $books) {
     $majority = @($treeRows | Where-Object { $_.cards * 2 -gt $_.size })
 
     # Card language.
-    $myFaults = @($faults | Where-Object { $mineSet.ContainsKey($_.address) })
+    $myFaults = @($faults | Where-Object { $mineSet.ContainsKey($_.address) -and $_.rule -like 'R*' })
+    $myLayer = @($faults | Where-Object { $mineSet.ContainsKey($_.address) -and $_.rule -notlike 'R*' })
+    $advisory = @('I1', 'I6', 'E5', 'L3')
     $ruleByCategory = [ordered]@{}
     foreach ($g in @($myFaults | Group-Object { $mineSet[$_.address].category })) { $ruleByCategory[$g.Name] = Get-Tally @($g.Group | ForEach-Object rule) }
 
@@ -314,6 +363,13 @@ foreach ($key in $books) {
             faults = $myFaults.Count; cards_with_faults = @($myFaults | ForEach-Object address | Sort-Object -Unique).Count
             by_rule = Get-Tally @($myFaults | ForEach-Object rule); by_category = $ruleByCategory
         }
+        layer = [ordered]@{
+            faults = @($myLayer | Where-Object { $_.rule -notin $advisory }).Count
+            advisory = @($myLayer | Where-Object { $_.rule -in $advisory }).Count
+            cards_with_faults = @($myLayer | Where-Object { $_.rule -notin $advisory } | ForEach-Object address | Sort-Object -Unique).Count
+            by_rule = Get-Tally @($myLayer | ForEach-Object rule)
+            term_table = $termCard[$key]
+        }
         orphans = [ordered]@{ count = $orphans.Count; by_category = Get-Tally @($orphans | ForEach-Object category); list = @($orphans | ForEach-Object address) }
         no_source = [ordered]@{ count = $noSource.Count; of = $writing.Count; by_category = Get-Tally @($noSource | ForEach-Object category); list = @($noSource | ForEach-Object address) }
         unkinded = [ordered]@{ count = $unkinded.Count; of = $writing.Count; refers_links = $refers; list = @($unkinded | ForEach-Object address) }
@@ -362,10 +418,10 @@ if ($w.unattributed.style) {
 }
 [void]$md.AppendLine()
 [void]$md.AppendLine('## Books').AppendLine()
-[void]$md.AppendLine('| Book | Cards | Topic trees (most Cards) | Card language faults (Cards) | Orphans | Idea and Event Cards with no source | with no kinded Link | Models not self-sufficient | Figures named, not shown (known) |')
-[void]$md.AppendLine('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+[void]$md.AppendLine('| Book | Cards | Topic trees (most Cards) | Card language faults (Cards) | Card layer faults (Cards), advisory | Orphans | Idea and Event Cards with no source | with no kinded Link | Models not self-sufficient | Figures named, not shown (known) |')
+[void]$md.AppendLine('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
 foreach ($b in $report.books) {
-    [void]$md.AppendLine("| ``$($b.key)`` | $($b.cards) | $($b.topics.trees) ($($b.topics.majority)) | $($b.style.faults) ($($b.style.cards_with_faults)) | $($b.orphans.count) | $($b.no_source.count) of $($b.no_source.of) | $($b.unkinded.count) of $($b.unkinded.of) | $($b.models.not_self_sufficient) of $($b.models.count) | $($b.figures.missing_known + $b.figures.missing_unknown) ($($b.figures.missing_known)) |")
+    [void]$md.AppendLine("| ``$($b.key)`` | $($b.cards) | $($b.topics.trees) ($($b.topics.majority)) | $($b.style.faults) ($($b.style.cards_with_faults)) | $($b.layer.faults) ($($b.layer.cards_with_faults)), $($b.layer.advisory) | $($b.orphans.count) | $($b.no_source.count) of $($b.no_source.of) | $($b.unkinded.count) of $($b.unkinded.of) | $($b.models.not_self_sufficient) of $($b.models.count) | $($b.figures.missing_known + $b.figures.missing_unknown) ($($b.figures.missing_known)) |")
 }
 [void]$md.AppendLine()
 foreach ($b in $report.books) {
@@ -373,6 +429,8 @@ foreach ($b in $report.books) {
     [void]$md.AppendLine("- **Cards**: $($b.cards) ($(& $tally $b.cards_by_category)). $($b.cards_in_topic_trees) are in Topic trees.$(if ($b.unread.Count) { " $($b.unread.Count) Cards could not be read." })")
     [void]$md.AppendLine("- **Topic trees**: $($b.topics.trees). The book holds most Cards of $($b.topics.majority). Size median $($b.topics.sizes.median), max $($b.topics.sizes.max).")
     [void]$md.AppendLine("- **Card language**: $($b.style.faults) faults in $($b.style.cards_with_faults) of $($b.style.cards_checked) Cards. By rule: $(& $tally $b.style.by_rule).")
+    $termText = if ($b.layer.term_table) { '`' + $b.layer.term_table + '`' } else { 'none' }
+    [void]$md.AppendLine("- **Card layer rules** (I, E, L): $($b.layer.faults) faults in $($b.layer.cards_with_faults) Cards, $($b.layer.advisory) advisory (I1, I6, E5, L3). By rule: $(& $tally $b.layer.by_rule). Term table: $termText.")
     foreach ($cat in @($b.style.by_category.Keys)) { [void]$md.AppendLine("  - $($cat): $(& $tally $b.style.by_category[$cat])") }
     [void]$md.AppendLine("- **Orphans** (no inbound Link): $($b.orphans.count) ($(& $tally $b.orphans.by_category)): $(& $cut $b.orphans.list)")
     [void]$md.AppendLine("- **No source line** (Idea and Event Cards with no Link to the Literature Card or an anchor): $($b.no_source.count) of $($b.no_source.of): $(& $cut $b.no_source.list)")
@@ -390,6 +448,7 @@ foreach ($b in $report.books) {
     books = @($report.books | ForEach-Object {
         [ordered]@{
             key = $_.key; cards = $_.cards; topic_trees = $_.topics.trees; style_faults = $_.style.faults
+            layer_faults = $_.layer.faults; layer_advisory = $_.layer.advisory
             orphans = $_.orphans.count; no_source = $_.no_source.count; unkinded = $_.unkinded.count
             models = $_.models.count; not_self_sufficient = $_.models.not_self_sufficient
             figures_missing = $_.figures.missing_known + $_.figures.missing_unknown

@@ -48,7 +48,36 @@
   R6 skips it here; its home model checks it. With -SkipShared (-Model only), shared parts are not
   checked at all: a build report counts only the Cards its own model owns.
 
-  Output: one line per fault, `<address> R<n> <sentence>`, then `faults: <count>`.
+  Card layer rules (doc/digest-card-layers-proposal.md). They apply only to -Json entries that
+  name their `category` (idea, anchor, event; other categories get the R rules only), so the
+  model compiler's checks do not change. An entry may also carry `links` (every Link target),
+  `kinds` (the targets ZT reads a Relation kind for), `parent`, `inbound` (the addresses that
+  link to it), `inbound_kinded` (how many Idea Cards link to it with a kind word), `book` (its
+  Citation key), and `tree`. A rule whose data an entry lacks is skipped. Rules marked
+  (advisory) are heuristics: they name a candidate for a review, not a sure fault.
+    I1  (idea, anchor; advisory) The title states a claim: a title of 6 characters or fewer with
+        no verb is a fault.
+    I2  (idea) The body holds -MinIdeaChars to -MaxIdeaChars characters of prose (40 to 300).
+        Over is a split candidate, under is a merge candidate.
+    I3  (idea, event) A Card of a book has a source line: a Link to its Literature Card or to
+        one of its anchors (`<key>/<n>`).
+    I4  (idea) The Card has a kinded Link to a Card other than its parent.
+    I5  (idea, event) A Card other than its parent links to the Card.
+    I6  (idea; advisory) No other Card of the same tree has a very similar title (character
+        bigram similarity 0.8 or more).
+    E1  (event) The title holds a date: a year at least.
+    E2  (event) The body holds the labels 时间, 地点, 参与者, 经过, and 来源 (`时间：…`).
+    E4  (event) At least one Idea Card links to it with a kind word.
+    E5  (event; advisory) No other Event Card has the same year and a similar title.
+    L1  (idea, anchor, event) ZT reads a Relation kind for every Link, except a source line or a
+        place in the book (a Literature Card or an anchor). One line per Card names the Links
+        read as "refers".
+    L2  (idea, anchor, event) The sentence of a Link holds at least -MinReason characters (8)
+        besides its Links and formulas. A source line (`来源：…`) is exempt.
+    L3  (idea, anchor, event; advisory) A Card links the same target in two or more paragraphs.
+
+  Output: one line per fault, `<address> <rule> <sentence>` (R2 … R14, I1 … L3), then
+  `faults: <count>`.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Model')]
 param(
@@ -60,7 +89,10 @@ param(
     [int]$MaxChars = 400,
     [int]$MaxSteps = 6,
     [ValidateSet('', 'concept', 'formal')][string]$Level = '',
-    [switch]$SkipShared
+    [switch]$SkipShared,
+    [int]$MinIdeaChars = 40,
+    [int]$MaxIdeaChars = 300,
+    [int]$MinReason = 8
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -211,6 +243,7 @@ function Test-Sentence($address, [string]$sentence, [bool]$step) {
     }
 }
 
+$proseChars = @{}
 foreach ($card in $cards) {
     $address = [string]$card.address
     $title = [string]$card.title
@@ -236,6 +269,7 @@ foreach ($card in $cards) {
             }
         }
     }
+    $proseChars[$address] = $chars
     # Card size: only a Model part of a formal model; the Model Card is the model's entry point,
     # and a concept model keeps its few parts whole.
     if ($Level -eq 'concept') { continue }
@@ -244,6 +278,121 @@ foreach ($card in $cards) {
         elseif ($chars -gt $MaxChars) { Add-Fault $address 13 "($chars characters > $MaxChars) split the part into two or more parts" }
     }
     if ($steps -gt $MaxSteps) { Add-Fault $address 14 "($steps steps > $MaxSteps) split the derivation into a chain of Derivation parts" }
+}
+
+# --- Card layer rules (I, E, L): only for entries that name their category -------------------------
+function Add-Layer($address, [string]$rule, [string]$text) {
+    $clip = ($text -replace '\s+', ' ').Trim()
+    if ($clip.Length -gt 90) { $clip = $clip.Substring(0, 89) + '…' }
+    $faults.Add("$address $rule $clip")
+}
+# Character bigrams of a title without formulas and Links: the base of a title similarity.
+function Get-Bigrams([string]$text) {
+    $plain = ((Get-Plain $text) -replace 'F|C', '') -replace '[^\p{L}\p{N}]', ''
+    $set = [Collections.Generic.HashSet[string]]::new()
+    for ($i = 0; $i + 1 -lt $plain.Length; $i++) { [void]$set.Add($plain.Substring($i, 2)) }
+    , $set
+}
+function Get-Similarity($a, $b) {
+    if (-not $a.Count -or -not $b.Count) { return 0 }
+    $common = 0
+    foreach ($x in $a) { if ($b.Contains($x)) { $common++ } }
+    2.0 * $common / ($a.Count + $b.Count)
+}
+# A source line or a place in the book: a Literature Card (`hart1995firms`) or an anchor
+# (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
+function Test-BookPlace([string]$target) { $target -match '^[^\d/|][^/|]*$' -or $target -match '^[^\d/|][^/|]*/\d+$' }
+$claimVerb = '是|会|能|让|使|要|不|没|把|被|决定|导致|取决|依赖|提高|降低|减少|增加|等于|大于|小于|高于|低于|来自|需要|带来|引起|产生|改变|保证|排除|允许|阻止|证明|说明|表明'
+$layer = @($cards | Where-Object { $_.PSObject.Properties['category'] -and $_.category })
+foreach ($card in $layer) {
+    $address = [string]$card.address
+    $category = [string]$card.category
+    if ($category -notin @('idea', 'anchor', 'event')) { continue }
+    $title = [string]$card.title
+    $body = [string]$card.body
+    $has = { param($name) [bool]$card.PSObject.Properties[$name] }
+    $parent = [string]$card.parent
+    $links = @($card.links | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    $kinds = @($card.kinds | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    $titlePlain = ((Get-Plain $title) -replace 'F|C', '') -replace '\s', ''
+    if ($category -in @('idea', 'anchor') -and $titlePlain.Length -le 6 -and $titlePlain -notmatch $claimVerb) {
+        Add-Layer $address 'I1' "(advisory) the title states no claim: $title"
+    }
+    if ($category -eq 'idea') {
+        $size = [int]$proseChars[$address]
+        if ($size -gt $MaxIdeaChars) { Add-Layer $address 'I2' "($size characters > $MaxIdeaChars) split candidate" }
+        elseif ($size -lt $MinIdeaChars) { Add-Layer $address 'I2' "($size characters < $MinIdeaChars) merge candidate" }
+    }
+    if ($category -in @('idea', 'event') -and (& $has 'book') -and $card.book -and (& $has 'links')) {
+        $book = [string]$card.book
+        $source = @($links | Where-Object { $_ -eq $book -or $_ -match ('^' + [regex]::Escape($book) + '/\d+$') })
+        if (-not $source.Count) { Add-Layer $address 'I3' "no source line: no Link to [[$book]] or one of its anchors" }
+    }
+    if ($category -eq 'idea' -and (& $has 'kinds')) {
+        if (-not @($kinds | Where-Object { $_ -ne $parent }).Count) { Add-Layer $address 'I4' 'no kinded Link to a Card other than the parent' }
+    }
+    if ($category -in @('idea', 'event') -and (& $has 'inbound')) {
+        if (-not @($card.inbound | Where-Object { $_ -and [string]$_ -ne $parent }).Count) { Add-Layer $address 'I5' 'no Card other than the parent links here' }
+    }
+    if ($category -eq 'event') {
+        if ($titlePlain -notmatch '(1[0-9]{3}|20[0-9]{2})|[0-9一二三四五六七八九十]+\s*(年|世纪)') { Add-Layer $address 'E1' "no date in the title: $title" }
+        $labels = @('时间', '地点', '参与者', '经过', '来源') | Where-Object { $body -notmatch ('(?m)^\s*[-*]?\s*(\*\*)?' + $_ + '(\*\*)?\s*[：:]') }
+        if ($labels.Count) { Add-Layer $address 'E2' "missing labels: $($labels -join '、')" }
+        if ((& $has 'inbound_kinded') -and [int]$card.inbound_kinded -eq 0) { Add-Layer $address 'E4' 'no Idea Card links it with a kind word' }
+    }
+    if (& $has 'links') {
+        $refers = @($links | Where-Object { $_ -notin $kinds -and -not (Test-BookPlace $_) } | Select-Object -Unique)
+        if ($refers.Count) {
+            $shown = @($refers | Select-Object -First 5 | ForEach-Object { "[[$_]]" }) -join ' '
+            Add-Layer $address 'L1' "($($refers.Count) Links read as refers) $shown"
+        }
+    }
+    # L2 and L3 read the body: the sentence of each Link, and the paragraphs it appears in.
+    $paragraphs = @{}
+    $p = 0
+    foreach ($raw in ($body -split "`n")) {
+        $trim = $raw.Trim()
+        if (-not $trim) { $p++; continue }
+        foreach ($m in [regex]::Matches($trim, '\[\[([^\]]+)\]\]')) {
+            $target = $m.Groups[1].Value.Trim()
+            if (-not $paragraphs.ContainsKey($target)) { $paragraphs[$target] = [Collections.Generic.HashSet[int]]::new() }
+            [void]$paragraphs[$target].Add($p)
+        }
+    }
+    foreach ($line in Get-ProseLines $body) {
+        foreach ($sentence in Split-Sentences $line.text) {
+            if ($sentence -notmatch '\[\[') { continue }
+            if ($sentence -match '^\s*(来源|出处|Source)\s*[：:]') { continue }
+            $reason = ((Get-Plain $sentence) -replace 'F|C', '') -replace '[\s\p{P}\p{S}]', ''
+            # A formula states the reason too (`代入 [[…]] 的定义得 $MRTS=…$`).
+            if ($reason.Length -lt $MinReason -and $sentence -notmatch '\$[^$\n]+\$') { Add-Layer $address 'L2' "($($reason.Length) characters < $MinReason) a Link with no reason: $sentence" }
+        }
+    }
+    foreach ($target in @($paragraphs.Keys | Sort-Object)) {
+        if ($paragraphs[$target].Count -ge 2) { Add-Layer $address 'L3' "(advisory) [[$target]] is linked in $($paragraphs[$target].Count) paragraphs" }
+    }
+}
+# I6 and E5 compare Cards with each other.
+foreach ($group in @($layer | Where-Object { $_.category -eq 'idea' -and $_.PSObject.Properties['tree'] -and $_.tree } | Group-Object { [string]$_.tree })) {
+    $items = @($group.Group | ForEach-Object { [pscustomobject]@{ address = [string]$_.address; bigrams = (Get-Bigrams ([string]$_.title)) } })
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        for ($j = $i + 1; $j -lt $items.Count; $j++) {
+            if ((Get-Similarity $items[$i].bigrams $items[$j].bigrams) -ge 0.8) {
+                Add-Layer $items[$j].address 'I6' "(advisory) a title very similar to [[$($items[$i].address)]]"
+            }
+        }
+    }
+}
+$events = @($layer | Where-Object { $_.category -eq 'event' } | ForEach-Object {
+    $year = if ([string]$_.title -match '(1[0-9]{3}|20[0-9]{2})') { $Matches[1] } else { '' }
+    [pscustomobject]@{ address = [string]$_.address; year = $year; bigrams = (Get-Bigrams ([string]$_.title)) }
+})
+for ($i = 0; $i -lt $events.Count; $i++) {
+    for ($j = $i + 1; $j -lt $events.Count; $j++) {
+        if ($events[$i].year -and $events[$i].year -eq $events[$j].year -and (Get-Similarity $events[$i].bigrams $events[$j].bigrams) -ge 0.5) {
+            Add-Layer $events[$j].address 'E5' "(advisory) the same event as [[$($events[$i].address)]]?"
+        }
+    }
 }
 $faults | ForEach-Object { Write-Output $_ }
 Write-Output "faults: $($faults.Count)"

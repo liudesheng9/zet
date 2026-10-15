@@ -28,6 +28,16 @@
   after them, so read again (or use the `moved` map they return) before the next write.
   -Moves <file> appends that map: one compact JSON line {"i":N,"moved":{"old":"new",...}} per
   insert_card, move_card, or delete_card that renumbered Cards.
+
+  A create call may carry `src`: the source lines it digests, e.g. "sections/s05.md:120-160". The
+  helper removes it before the call reaches zt. -SrcLog <file> appends `<address><TAB><src>`, one
+  line per Card made, so a reviewer can compare the Card with its source.
+
+  -TopicGate <file> keeps parallel runs from making the same Topic twice. Before a create_topic
+  call the helper takes an exclusive lock on <file> and reads the agent Topics. It refuses the call
+  when a Topic has the same title (spaces and punctuation removed) or a very similar one (character
+  bigram similarity of -TopicSimilarity, 0.8, or more). The refusal names that Topic, so the run
+  can file its Card there instead. The lock lasts until the new Topic exists.
 #>
 [CmdletBinding(DefaultParameterSetName = 'File')]
 param(
@@ -37,6 +47,9 @@ param(
     [Parameter(ParameterSetName = 'File')][string]$Log = '',
     [Parameter(ParameterSetName = 'File')][string]$Allow = '',
     [Parameter(ParameterSetName = 'File')][string]$Moves = '',
+    [Parameter(ParameterSetName = 'File')][string]$SrcLog = '',
+    [Parameter(ParameterSetName = 'File')][string]$TopicGate = '',
+    [Parameter(ParameterSetName = 'File')][double]$TopicSimilarity = 0.8,
     [Parameter(ParameterSetName = 'Inline', Mandatory)][string]$Tool,
     [Parameter(ParameterSetName = 'Inline')][string]$Json = '{}'
 )
@@ -95,6 +108,28 @@ function Resolve-Refs($value, $addresses) {
     if ($value -is [System.Collections.IList]) { return @($value | ForEach-Object { Resolve-Refs $_ $addresses }) }
     return $value
 }
+# A title without spaces and punctuation, and its character bigrams: the Topic gate compares them.
+function Get-TitleKey([string]$title) { ($title -replace '[\s\p{P}\p{S}]', '').ToLowerInvariant() }
+function Get-Similarity([string]$a, [string]$b) {
+    $grams = { param($t) $set = [Collections.Generic.HashSet[string]]::new(); for ($k = 0; $k + 1 -lt $t.Length; $k++) { [void]$set.Add($t.Substring($k, 2)) }; , $set }
+    $x = & $grams $a
+    $y = & $grams $b
+    if (-not $x.Count -or -not $y.Count) { return [double]($a -eq $b) }
+    $common = 0
+    foreach ($g in $x) { if ($y.Contains($g)) { $common++ } }
+    2.0 * $common / ($x.Count + $y.Count)
+}
+function Lock-Gate([string]$path) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent ([IO.Path]::GetFullPath($path))) | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ($true) {
+        try { return [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -gt $deadline) { throw "the Topic gate ``$path`` stayed locked for 120 seconds" }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
 
 try {
     Send @{ jsonrpc = '2.0'; id = 0; method = 'initialize'; params = @{ protocolVersion = '2025-06-18' } }
@@ -134,8 +169,30 @@ try {
             $arguments = @{ at = $arguments.at; body = "$body`n`n$(([string]$arguments.text).Trim())" }
             $tool = 'edit_card'
         }
+        # `src` is for the source log only; zt never sees it.
+        $src = ''
+        if ($arguments -is [System.Collections.IDictionary] -and $arguments.Contains('src')) {
+            $src = [string]$arguments['src']
+            $arguments.Remove('src')
+        }
+        $gate = $null
+        if ($TopicGate -and $tool -eq 'create_topic') {
+            $gate = Lock-Gate $TopicGate
+            Send @{ jsonrpc = '2.0'; id = "gate$i"; method = 'tools/call'; params = @{ name = 'list_trees'; arguments = @{ workspace = 'agent' } } }
+            $listed = Receive "gate$i"
+            $key = Get-TitleKey ([string]$arguments.title)
+            $same = @($listed.result.structuredContent['trees'] | Where-Object { $_.kind -eq 'topic' } | Where-Object {
+                    $other = Get-TitleKey ([string]$_.title)
+                    $other -eq $key -or (Get-Similarity $other $key) -ge $TopicSimilarity
+                } | Select-Object -First 1)
+            if ($same.Count) {
+                $gate.Dispose()
+                Fail $i "topic exists: ``$($same[0].root)`` $($same[0].title). File the Card under that Topic instead of creating one."
+            }
+        }
         Send @{ jsonrpc = '2.0'; id = $i + 1; method = 'tools/call'; params = @{ name = $tool; arguments = $arguments } }
         $reply = Receive ($i + 1)
+        if ($gate) { $gate.Dispose() }
         $text = ($reply.result.content | ForEach-Object { $_.text }) -join "`n"
         if ($reply.error -or $reply.result.isError) {
             $message = $reply.error.message ?? $text
@@ -148,6 +205,7 @@ try {
         if ($address -and $call.tool -match '^create') {
             if ($null -ne $allowed) { [void]$allowed.Add($address) }
             if ($Log) { [IO.File]::AppendAllText($Log, "$address`n", [Text.UTF8Encoding]::new($false)) }
+            if ($SrcLog -and $src) { [IO.File]::AppendAllText($SrcLog, "$address`t$src`n", [Text.UTF8Encoding]::new($false)) }
         }
         $moved = if ($structured -is [System.Collections.IDictionary]) { $structured['moved'] } else { $null }
         if ($Moves -and $moved -is [System.Collections.IDictionary] -and $moved.Count) {
