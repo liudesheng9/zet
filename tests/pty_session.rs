@@ -646,7 +646,7 @@ fn terminal_session_grows_and_navigates_a_literature_tree_with_panels_and_scroll
     session.send_text("help");
     session.send_enter();
     session.wait_for_text(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e",
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e",
     );
     session.wait_for_text("go to the parent card; a tree root goes to ROOT");
     session.send_text("up");

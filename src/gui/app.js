@@ -109,6 +109,7 @@
     // The Workspace shown at ROOT and given new trees; it follows the Pointer.
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
     editing: false,
+    landing: false,       // a card carried from the search tray is landing in the reader
   };
 
   const WORKSPACES = {
@@ -264,6 +265,8 @@
     ['root', 'return to ROOT', 'always'],
     ['ws [<workspace>]', 'list workspaces, or switch to the human or agent workspace ROOT', 'always'],
     ['up', 'go to the parent card; a tree root goes to ROOT', 'card'],
+    ['back', 'go back to the card you were at before', 'always'],
+    ['fwd', 'go forward again to the card you went back from', 'always'],
     ['ls', 'list Topics and Literature at ROOT, or the current tree', 'always'],
     ['t <title>', 'create a Topic in the current workspace', 'always'],
     ['l', 'create a Literature Card in the current workspace from one BibTeX entry', 'always'],
@@ -296,6 +299,12 @@
     switch (name) {
       case 'q': return quit();
       case 'root': return go(null);
+      case 'back':
+        if (rest.length) throw new Error('usage: back');
+        return nav.back();
+      case 'fwd':
+        if (rest.length) throw new Error('usage: fwd');
+        return nav.forward();
       case 'ws':
         if (rest.length > 1) throw new Error('usage: ws [<workspace>]');
         if (!rest.length) return showWorkspaces();
@@ -369,7 +378,10 @@
   function route() {
     const match = location.hash.match(/^#\/card\/(.+)$/);
     const pointer = match ? decodeURIComponent(match[1]) : null;
+    const moved = pointer !== state.pointer;
     state.pointer = pointer;
+    nav.arrive(pointer);
+    if (moved) finder.close();
     loadPointer().catch(fail);
   }
 
@@ -387,7 +399,7 @@
       let ancestor = parentOf(state.pointer);
       while (ancestor && !known.has(ancestor)) ancestor = parentOf(ancestor);
       toast(`card \`${state.pointer}\` no longer exists`, 'err');
-      go(ancestor);
+      if (!nav.skipMissing()) go(ancestor);
       return;
     }
     if (state.card.workspace && state.card.workspace !== state.workspace) setWorkspace(state.card.workspace);
@@ -414,6 +426,495 @@
     renderTopbar();
     await loadPointer();
   }
+
+  // --------------------------------------------------------------- history
+  /**
+   * Back and forward through the places the Pointer has been, as a file browser does
+   * (mirrors the session's `back` / `fwd`). Every move of the Pointer is one browser history
+   * entry, so the mouse's back button and Alt+← step through the same list. Each entry
+   * carries its index; this tab remembers the address at each index, so the buttons can
+   * name their step and the search tray can show the cards visited last.
+   */
+  const nav = (() => {
+    let index = 0;
+    let trail = [];
+    let booted = false;
+    let step = 0; // -1 or +1 while the Pointer arrives by back or forward, else 0
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('zt-nav') || 'null');
+      if (saved && Array.isArray(saved.trail)) trail = saved.trail;
+    } catch { /* no session storage */ }
+    const save = () => {
+      try { sessionStorage.setItem('zt-nav', JSON.stringify({ trail })); } catch { /* private mode */ }
+    };
+    const label = (address) => {
+      if (!address) return 'ROOT';
+      const title = state.byAddress.get(address)?.title;
+      return title ? `${address} · ${title}` : address;
+    };
+    const canBack = () => index > 0;
+    const canFwd = () => index < trail.length - 1;
+
+    /** Called by route() for every Pointer change. */
+    function arrive(pointer) {
+      const entry = Number.isInteger(history.state?.ztNav) ? history.state.ztNav : null;
+      if (entry !== null) {
+        step = booted ? Math.sign(entry - index) : 0;
+        index = entry;
+      } else if (!booted) {
+        index = 0;
+        trail = [];
+        step = 0;
+      } else {
+        // A new move forgets the places back came from.
+        index += 1;
+        trail.length = index;
+        step = 0;
+      }
+      booted = true;
+      trail[index] = pointer;
+      if (entry === null) history.replaceState({ ...(history.state || {}), ztNav: index }, '');
+      save();
+      render();
+    }
+
+    function render() {
+      const back = $('#nav-back');
+      const fwd = $('#nav-fwd');
+      back.disabled = !canBack();
+      fwd.disabled = !canFwd();
+      back.title = canBack() ? `Back to ${label(trail[index - 1])} (Alt+←) · right-click for more` : 'Back (Alt+←)';
+      fwd.title = canFwd() ? `Forward to ${label(trail[index + 1])} (Alt+→) · right-click for more` : 'Forward (Alt+→)';
+    }
+
+    const back = () => { if (canBack()) history.back(); };
+    const forward = () => { if (canFwd()) history.forward(); };
+    const jump = (to) => { if (to !== index && to >= 0 && to < trail.length) history.go(to - index); };
+
+    /** A card that was deleted since: keep stepping the same way, if there is further to go. */
+    function skipMissing() {
+      if (step < 0 && canBack()) { history.back(); return true; }
+      if (step > 0 && canFwd()) { history.forward(); return true; }
+      return false;
+    }
+
+    /** The cards visited before the current one, latest first, each once. */
+    function recent(limit) {
+      const seen = new Set([trail[index]]);
+      const list = [];
+      for (let at = index - 1; at >= 0 && list.length < limit; at -= 1) {
+        const address = trail[at];
+        if (!address || seen.has(address) || !state.byAddress.has(address)) continue;
+        seen.add(address);
+        list.push(address);
+      }
+      return list;
+    }
+
+    /** Right-click (or hold) a button: the places in its direction, as a browser lists them. */
+    let menu = null;
+    function closeMenu() {
+      if (menu) menu.remove();
+      menu = null;
+    }
+    function showMenu(button, direction) {
+      closeMenu();
+      const rows = [];
+      for (let at = index + direction, n = 0; at >= 0 && at < trail.length && n < 12; at += direction, n += 1) {
+        const address = trail[at];
+        const summary = address && state.byAddress.get(address);
+        rows.push(h('button', { class: 'nav-row', role: 'menuitem', onclick: () => { closeMenu(); jump(at); } },
+          h('span', { class: 'addr', text: address || 'ROOT' }),
+          h('span', { class: 't' }, address ? titleNodes(summary?.title || '(deleted)') : 'all trees')));
+      }
+      if (!rows.length) return;
+      const box = button.getBoundingClientRect();
+      menu = h('div', { class: 'nav-menu', role: 'menu', style: `left:${Math.round(box.left)}px;top:${Math.round(box.bottom + 6)}px` },
+        h('div', { class: 'nav-menu-head', text: direction < 0 ? 'Back to' : 'Forward to' }), rows);
+      document.body.append(menu);
+    }
+
+    function install() {
+      const wire = (button, direction, act) => {
+        let held = null;
+        button.addEventListener('click', act);
+        button.addEventListener('contextmenu', (event) => { event.preventDefault(); showMenu(button, direction); });
+        button.addEventListener('pointerdown', () => { held = setTimeout(() => showMenu(button, direction), 500); });
+        for (const name of ['pointerup', 'pointerleave']) button.addEventListener(name, () => clearTimeout(held));
+      };
+      wire($('#nav-back'), -1, back);
+      wire($('#nav-fwd'), 1, forward);
+      document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) closeMenu(); }, true);
+      document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
+      window.addEventListener('blur', closeMenu);
+    }
+
+    return { arrive, back, forward, skipMissing, recent, install, get step() { return step; } };
+  })();
+
+  // ---------------------------------------------------------------- search
+  /**
+   * The search tray: a card-catalogue drawer pulled out over the desk. The hits stand in it
+   * as slips behind one guide card per tree, the trees in the order of their best hit, a few
+   * slips each with the rest folded. The slip you reach for lifts, and its whole card lies
+   * beside the drawer; opening it carries that card to the reader. With no words in the
+   * field, the drawer holds the cards you visited last.
+   */
+  const finder = (() => {
+    const PER_TREE = 3;
+    const TREES = 6;
+    const filters = { ws: 'all', type: 'all' };
+    const previews = new Map();
+    let built = false;
+    let isOpen = false;
+    let data = null;
+    let unfolded = new Set();
+    let items = [];
+    let selected = 0;
+    let ticket = 0;
+    let closing = null;
+    let root, input, count, chips, hits, preview;
+
+    const terms = () => input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const rootOf = (tree) => (/^\d+$/.test(tree) ? tree + '/0' : tree);
+
+    /** Text with every occurrence of the query's words marked. */
+    function marked(text, words) {
+      if (!text) return [];
+      const lower = text.toLowerCase();
+      const ranges = [];
+      for (const word of words) {
+        for (let at = lower.indexOf(word); at >= 0; at = lower.indexOf(word, at + word.length)) ranges.push([at, at + word.length]);
+      }
+      if (!ranges.length) return [text];
+      ranges.sort((a, b) => a[0] - b[0]);
+      const nodes = [];
+      let from = 0;
+      for (const [start, end] of ranges) {
+        if (end <= from) continue;
+        const begin = Math.max(start, from);
+        if (begin > from) nodes.push(text.slice(from, begin));
+        nodes.push(h('mark', { text: text.slice(begin, end) }));
+        from = end;
+      }
+      nodes.push(text.slice(from));
+      return nodes;
+    }
+
+    function build() {
+      root = $('#finder');
+      input = h('input', { type: 'search', placeholder: 'Search every card: titles, addresses, and text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search cards' });
+      count = h('span', { class: 'finder-count' });
+      chips = h('div', { class: 'finder-filters' });
+      hits = h('div', { class: 'finder-hits', role: 'listbox', 'aria-label': 'Matching cards' });
+      preview = h('div', { class: 'finder-preview', 'aria-live': 'polite' });
+      root.append(
+        h('div', { class: 'finder-scrim', onclick: close }),
+        h('section', { class: 'finder-tray', role: 'dialog', 'aria-label': 'Search cards' },
+          h('header', { class: 'finder-head' },
+            h('span', { class: 'finder-lens', html: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>' }),
+            input, count,
+            h('button', { class: 'finder-close', title: 'Close (Esc)', onclick: close }, h('kbd', { text: 'Esc' }))),
+          chips,
+          h('div', { class: 'finder-body' }, hits, preview),
+          h('footer', { class: 'finder-keys' },
+            h('span', {}, h('kbd', { text: '↑' }), h('kbd', { text: '↓' }), ' choose'),
+            h('span', {}, h('kbd', { text: '↵' }), ' open'),
+            h('span', {}, h('kbd', { text: '⇧' }), h('kbd', { text: '↵' }), ' to the Table'),
+            h('span', {}, h('kbd', { text: 'Esc' }), ' clear · close'))));
+      input.addEventListener('input', () => { unfolded = new Set(); search(); });
+      input.addEventListener('keydown', onKey);
+      root.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && event.target !== input) { event.preventDefault(); close(); }
+      });
+      built = true;
+    }
+
+    function open(text) {
+      if (!built) build();
+      clearTimeout(closing);
+      previews.clear();
+      if (typeof text === 'string') input.value = text;
+      isOpen = true;
+      root.hidden = false;
+      root.classList.remove('closing');
+      openRail(false);
+      unfolded = new Set();
+      search.now();
+      input.focus();
+      input.select();
+    }
+
+    function close() {
+      if (!isOpen) return;
+      isOpen = false;
+      root.classList.add('closing');
+      closing = setTimeout(() => { root.hidden = true; root.classList.remove('closing'); }, reduceMotion() ? 0 : 170);
+      if (document.activeElement && root.contains(document.activeElement)) document.activeElement.blur();
+    }
+
+    const search = (() => {
+      const run = async () => {
+        const mine = ++ticket;
+        const words = input.value.trim();
+        if (!words) { data = null; render(); return; }
+        try {
+          const answer = await api(`search?q=${enc(words)}&ws=${filters.ws}&type=${filters.type}`);
+          if (mine !== ticket || !isOpen) return;
+          data = answer;
+          selected = 0;
+          render();
+        } catch (error) { fail(error); }
+      };
+      const later = debounce(run, 110);
+      later.now = run;
+      return later;
+    })();
+
+    function chip(group, value, label, n) {
+      const on = filters[group] === value;
+      return h('button', {
+        class: 'fchip' + (on ? ' on' : '') + (value !== 'all' ? ' ' + value : ''),
+        disabled: !on && n === 0,
+        'aria-pressed': on ? 'true' : 'false',
+        onclick: () => { filters[group] = value; unfolded = new Set(); search.now(); input.focus(); },
+      }, h('span', { text: label }), n == null ? null : h('b', { text: String(n) }));
+    }
+
+    function renderChips() {
+      if (!data) { chips.hidden = true; return; }
+      chips.hidden = false;
+      const ws = data.workspaces || {};
+      const types = data.types || {};
+      const sum = (counts) => Object.values(counts).reduce((total, n) => total + n, 0);
+      chips.replaceChildren(
+        h('div', { class: 'fgroup', role: 'group', 'aria-label': 'Workspace' },
+          chip('ws', 'all', 'All', sum(ws)),
+          chip('ws', 'human', wsLabel('human'), ws.human || 0),
+          chip('ws', 'agent', wsLabel('agent'), ws.agent || 0)),
+        h('div', { class: 'fgroup', role: 'group', 'aria-label': 'Card type' },
+          chip('type', 'all', 'Any type', sum(types)),
+          ...Object.keys(CARD_TYPES).map((type) => chip('type', type, CARD_TYPES[type].label, types[type] || 0))),
+      );
+    }
+
+    /** A slip: the top of one index card, standing in the drawer. */
+    function slip(hit, words) {
+      const onTable = spreads.has(hit.address);
+      const title = hit.title || '(untitled)';
+      return h('div', {
+        class: 'slip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : ''),
+        role: 'option', dataset: { address: hit.address },
+        onclick: () => choose(hit.address),
+        onmousemove: (event) => pointAt(event.currentTarget),
+      },
+        h('span', { class: 'slip-head' },
+          h('span', { class: 'slip-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
+          typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level),
+          h('span', { class: 'addr', text: hit.address })),
+        hit.snippet ? h('span', { class: 'slip-text' }, marked(hit.snippet, words)) : null,
+        h('button', {
+          class: 'slip-pull' + (onTable ? ' on' : ''), tabindex: '-1',
+          title: onTable ? 'On the Table: click to put it back (⇧↵)' : 'Lay it on the Table (⇧↵)',
+          onclick: (event) => { event.stopPropagation(); pullHit(hit.address); },
+        }, onTable ? '✓' : '+'),
+      );
+    }
+
+    /** A guide card: the tree the slips behind it belong to. */
+    function guide(tree, title, n, kind) {
+      return h('header', { class: 'guide-card ' + kind },
+        h('span', { class: 'addr', text: rootOf(tree) }),
+        h('span', { class: 't' }, titleNodes(title || '(untitled)')),
+        n == null ? null : h('span', { class: 'n', text: String(n) }));
+    }
+
+    function render() {
+      renderChips();
+      const words = terms();
+      const nodes = [];
+      if (!data) {
+        count.textContent = '';
+        const recent = nav.recent(8).map((address) => {
+          const node = state.byAddress.get(address);
+          return { ...node, snippet: node.excerpt };
+        });
+        if (recent.length) {
+          nodes.push(h('section', { class: 'drawer-run recent' },
+            h('header', { class: 'guide-card recent' }, h('span', { class: 't', text: 'Visited last' }), h('span', { class: 'n', text: 'Alt+← steps back' })),
+            recent.map((hit) => slip(hit, []))));
+        } else {
+          nodes.push(h('div', { class: 'finder-empty' },
+            h('p', { class: 'big', text: 'Look for a card by any words in it.' }),
+            h('p', { text: 'Every word must appear in the title, the address, or the text. Titles count most.' })));
+        }
+      } else if (!data.results.length) {
+        count.textContent = 'no cards';
+        nodes.push(h('div', { class: 'finder-empty' },
+          h('p', { class: 'big' }, 'No card holds ', h('q', { text: input.value.trim() }), '.'),
+          h('p', { text: words.length > 1 ? 'Every word must appear; try fewer words.' : (filters.ws !== 'all' || filters.type !== 'all' ? 'A filter is on; try All.' : 'Try another spelling or a shorter word.') })));
+      } else {
+        const shown = data.results.length;
+        count.textContent = data.total > shown ? `best ${shown} of ${data.total} cards` : `${data.total} card${data.total === 1 ? '' : 's'}`;
+        const groups = new Map();
+        for (const hit of data.results) {
+          if (!groups.has(hit.tree)) groups.set(hit.tree, []);
+          groups.get(hit.tree).push(hit);
+        }
+        const trees = [...groups.entries()];
+        const allTrees = unfolded.has('*');
+        trees.slice(0, allTrees ? trees.length : TREES).forEach(([tree, list]) => {
+          const open = unfolded.has(tree);
+          const kept = open ? list : list.slice(0, PER_TREE);
+          nodes.push(h('section', { class: 'drawer-run' },
+            guide(tree, list[0].tree_title, list.length, /^\d+$/.test(tree) ? 'topic' : 'literature'),
+            kept.map((hit) => slip(hit, words)),
+            list.length > kept.length ? h('button', {
+              class: 'fold', tabindex: '-1', dataset: { fold: tree },
+              onclick: () => unfold(tree), onmousemove: (event) => pointAt(event.currentTarget),
+            }, `+${list.length - kept.length} more in this tree`) : null));
+        });
+        if (!allTrees && trees.length > TREES) {
+          const rest = trees.slice(TREES);
+          nodes.push(h('button', {
+            class: 'fold trees', tabindex: '-1', dataset: { fold: '*' },
+            onclick: () => unfold('*'), onmousemove: (event) => pointAt(event.currentTarget),
+          }, `+${rest.length} more trees · ${rest.reduce((total, [, list]) => total + list.length, 0)} cards`));
+        }
+        if (data.total > shown) nodes.push(h('p', { class: 'finder-more', text: `${data.total - shown} weaker matches are not shown; add a word to narrow the search.` }));
+      }
+      hits.replaceChildren(...nodes);
+      items = [...hits.querySelectorAll('.slip, .fold')];
+      select(Math.min(selected, items.length - 1), { scroll: false });
+      if (!items.length) preview.replaceChildren();
+    }
+
+    function unfold(tree) {
+      const at = selected;
+      unfolded.add(tree);
+      render();
+      select(at);
+      input.focus();
+    }
+
+    function pointAt(item) {
+      const at = items.indexOf(item);
+      if (at >= 0 && at !== selected) select(at, { scroll: false });
+    }
+
+    function select(at, { scroll = true } = {}) {
+      selected = Math.max(0, at);
+      items.forEach((item, index) => {
+        item.classList.toggle('on', index === selected);
+        item.setAttribute('aria-selected', index === selected ? 'true' : 'false');
+      });
+      const item = items[selected];
+      if (!item) return;
+      if (scroll) item.scrollIntoView({ block: 'nearest' });
+      if (item.dataset.address) showPreview(item.dataset.address);
+    }
+
+    const showPreview = (() => {
+      /** The card's face; until its body arrives, the hit's own words stand in for it. */
+      const draw = (card, partial, filled) => {
+        const md = h('div', { class: 'md' });
+        if (partial) md.append(h('p', { class: 'pending', text: card.snippet || card.excerpt || '' }));
+        else if (card.body.trim()) md.innerHTML = card.html;
+        else md.append(h('p', { class: 'empty', text: 'No body yet.' }));
+        const kindLabel = { topic: 'Topic', literature: 'Literature', regular: 'Card' }[card.kind] || 'Card';
+        const face = h('article', { class: 'card preview ' + card.kind + (partial ? ' partial' : '') + (filled ? ' filled' : '') + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : ''), dataset: { address: card.address } },
+          h('header', { class: 'card-head' },
+            h('div', { class: 'card-meta' },
+              h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
+              h('span', { class: 'ws-tag ' + card.workspace, text: wsLabel(card.workspace) }),
+              typeStamp(card.type, null, card.facet, card.emphasis, card.level),
+              h('span', { class: 'stamp', text: card.address })),
+            h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)'))),
+          md);
+        if (!partial) wireMarkdown(md);
+        const onTable = spreads.has(card.address);
+        preview.replaceChildren(face, h('div', { class: 'preview-actions' },
+          h('button', { class: 'btn primary', onclick: () => choose(card.address) }, 'Open', h('kbd', { text: '↵' })),
+          h('button', { class: 'btn', onclick: () => pullHit(card.address) }, onTable ? 'On the Table ✓' : 'To the Table', h('kbd', { text: '⇧↵' })),
+          card.tree !== card.address && rootOf(card.tree) !== card.address
+            ? h('span', { class: 'in-tree' }, 'in ', h('span', { class: 'addr', text: rootOf(card.tree) }), ' ', titleNodes(state.byAddress.get(rootOf(card.tree))?.title || '')) : null));
+      };
+      const load = debounce(async (address) => {
+        try {
+          const card = await api('card?at=' + enc(address));
+          previews.set(address, card);
+          if (preview.dataset.address === address && isOpen) draw(card, false, true);
+        } catch { /* the card may be gone; its slip stays */ }
+      }, 70);
+      return (address, { redraw } = {}) => {
+        if (preview.dataset.address === address && preview.firstChild && !redraw) return;
+        preview.dataset.address = address;
+        const card = previews.get(address);
+        if (card) { draw(card); return; }
+        const hit = data?.results.find((item) => item.address === address) || state.byAddress.get(address);
+        if (hit) draw(hit, true);
+        load(address);
+      };
+    })();
+
+    function pullHit(address) {
+      toggleTable(address);
+      const on = spreads.has(address);
+      for (const pull of hits.querySelectorAll(`.slip[data-address="${CSS.escape(address)}"] .slip-pull`)) {
+        pull.classList.toggle('on', on);
+        pull.textContent = on ? '✓' : '+';
+      }
+      if (preview.dataset.address === address) showPreview(address, { redraw: true });
+    }
+
+    /**
+     * Open a card: the drawer slides away and the card in the hand travels to the reader,
+     * where the same card lands, so the eye follows one object.
+     */
+    function choose(address) {
+      const face = preview.querySelector(`.card[data-address="${CSS.escape(address)}"]`);
+      const from = face?.getBoundingClientRect();
+      const reader = $('#reader').getBoundingClientRect();
+      const fly = from && from.width && reader.width > 200 && !reduceMotion();
+      close();
+      if (fly) {
+        const ghost = face.cloneNode(true);
+        ghost.classList.add('in-flight');
+        Object.assign(ghost.style, { left: from.left + 'px', top: from.top + 'px', width: from.width + 'px', height: from.height + 'px' });
+        document.body.append(ghost);
+        const scale = Math.min(1.25, (reader.width - 52) / from.width);
+        const dx = reader.left + 26 - from.left;
+        const dy = reader.top + 28 - from.top;
+        state.landing = true;
+        ghost.animate([
+          { transform: 'translate(0, 0) scale(1) rotate(0deg)', opacity: 1 },
+          { transform: `translate(${dx * 0.55}px, ${dy * 0.55 - 18}px) scale(${(1 + scale) / 2}) rotate(-.6deg)`, opacity: 1, offset: 0.55 },
+          { transform: `translate(${dx}px, ${dy}px) scale(${scale}) rotate(0deg)`, opacity: 1, offset: 0.86 },
+          { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: 0 },
+        ], { duration: 460, easing: 'cubic-bezier(.3, .7, .3, 1)' }).finished.finally(() => ghost.remove());
+      }
+      go(address);
+    }
+
+    function onKey(event) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (items.length) select((selected + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const item = items[selected];
+        if (!item) return;
+        if (item.dataset.fold) unfold(item.dataset.fold);
+        else if (event.shiftKey) pullHit(item.dataset.address);
+        else choose(item.dataset.address);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (input.value) { input.value = ''; unfolded = new Set(); search.now(); } else close();
+      }
+    }
+
+    return { open, close, get isOpen() { return isOpen; } };
+  })();
 
   // ------------------------------------------------------------------- rail
   function renderWorkspaceSwitch() {
@@ -462,40 +963,6 @@
   function openRail(open) {
     $('#app').classList.toggle('rail-open', open ?? !$('#app').classList.contains('rail-open'));
   }
-
-  const runSearch = debounce(async (query) => {
-    const box = $('#search-results');
-    if (!query.trim()) { box.hidden = true; return; }
-    try {
-      const { results } = await api('search?q=' + enc(query));
-      box.hidden = false;
-      const lower = query.trim().toLowerCase();
-      const marked = (text) => {
-        const at = text.toLowerCase().indexOf(lower);
-        if (at < 0) return [text];
-        return [text.slice(0, at), h('mark', { text: text.slice(at, at + lower.length) }), text.slice(at + lower.length)];
-      };
-      box.replaceChildren(
-        ...(results.length ? results.map((hit) => h('button', {
-          class: 'hit', onclick: () => { go(hit.address); openRail(false); },
-        },
-          h('span', { class: 'top' }, h('span', { class: 'addr', text: hit.address }), h('span', { class: 't' }, marked(hit.title || '(untitled)')), typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level), hit.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null,
-            h('span', {
-              class: 'pull' + (spreads.has(hit.address) ? ' on' : ''), role: 'button',
-              title: spreads.has(hit.address) ? 'On the Table — click to put it back' : 'Lay it on the Table',
-              onclick: (event) => {
-                event.stopPropagation();
-                const mark = event.currentTarget;
-                toggleTable(hit.address);
-                mark.classList.toggle('on', spreads.has(hit.address));
-                mark.textContent = spreads.has(hit.address) ? '✓' : '+';
-              },
-            }, spreads.has(hit.address) ? '✓' : '+')),
-          h('span', { class: 's' }, marked(hit.snippet)),
-        )) : [h('div', { class: 'empty-hint', text: 'No matching cards.' })]),
-      );
-    } catch (error) { fail(error); }
-  }, 140);
 
   // ----------------------------------------------------------------- topbar
   function renderTopbar() {
@@ -1982,7 +2449,8 @@
           ['go <target>', 'open a Location or Citation key'],
           ['t <title>', 'start a Topic'],
           ['l', 'add a Literature Card from BibTeX'],
-          [': or /', 'command bar · search'],
+          [': · / or Ctrl+K', 'command bar · search every card'],
+          ['Alt+← →', 'back · forward through the cards you visited'],
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
           ['x', 'unfold the whole tree, or fold it back around the pointer'],
           ['p · P', 'lay the card on the Table · with every card it relates to'],
@@ -2004,7 +2472,11 @@
     wireMarkdown(md);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
-    reader.replaceChildren(h('article', { class: 'card ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : '') + (card.model ? ' in-model' : '') },
+    // Back brings the card in from the left, forward from the right; one carried from the
+    // search tray is already in the hand and just lands.
+    const arrival = state.landing ? ' landed' : nav.step < 0 ? ' from-back' : nav.step > 0 ? ' from-fwd' : '';
+    state.landing = false;
+    reader.replaceChildren(h('article', { class: 'card' + arrival + ' ' + card.kind + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : '') + (card.model ? ' in-model' : '') },
       card.model ? modelTabs(card) : null,
       card.type === 'hub' ? h('div', { class: 'guide-tab' + hubClass(card), title: `${(HUB_LEVELS[card.level] || {}).label || 'hub'} hub — ${(HUB_LEVELS[card.level] || {}).note || 'set its level with lv'}`, text: (HUB_LEVELS[card.level] || {}).label || 'hub' }) : null,
       h('header', { class: 'card-head' },
@@ -2550,7 +3022,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(30)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / search · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -3162,9 +3634,8 @@
       if (item.search !== undefined) {
         input.value = '';
         menu.hidden = true;
-        openRail(true);
-        $('#search').value = item.search;
-        runSearch(item.search);
+        input.blur();
+        finder.open(item.search);
         return;
       }
       if (item.fill) { input.value = item.fill; selected = 0; render(); return; }
@@ -3203,12 +3674,27 @@
   // ------------------------------------------------------------- keyboard
   function installKeys() {
     document.addEventListener('keydown', (event) => {
-      if (state.editing || isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (state.editing || finder.isOpen) return;
+      // Ctrl+K searches from anywhere, as in most desktop apps.
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        finder.open();
+        return;
+      }
+      // Alt+← / Alt+→ step back and forward, as in a file browser.
+      if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        if (isTyping(event.target)) return;
+        event.preventDefault();
+        if (event.key === 'ArrowLeft') nav.back(); else nav.forward();
+        return;
+      }
+      if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
       const card = state.card;
       const run = (fn) => { event.preventDefault(); Promise.resolve().then(fn).catch(fail); };
       switch (event.key) {
         case ':': return run(() => $('#command-input').focus());
-        case '/': return run(() => { openRail(true); $('#search').focus(); });
+        case '/': return run(() => finder.open());
+        case 'Backspace': return run(() => nav.back());
         case 'g': return run(() => { const input = $('#command-input'); input.value = 'go '; input.focus(); input.dispatchEvent(new Event('input')); });
         case 'n': return run(() => runCommand('n'));
         case 'b': return run(() => runCommand('b'));
@@ -3320,7 +3806,8 @@
     }
     $('#quit').addEventListener('click', () => quit().catch(fail));
     $('#broken-pill').addEventListener('click', () => showBroken().catch(fail));
-    $('#search').addEventListener('input', (event) => runSearch(event.target.value));
+    $('#search-open').addEventListener('click', () => finder.open());
+    nav.install();
     for (const button of document.querySelectorAll('[data-action]')) {
       button.addEventListener('click', () => (button.dataset.action === 'new-topic' ? newCard('topic', '') : newLiterature()).catch(fail));
     }

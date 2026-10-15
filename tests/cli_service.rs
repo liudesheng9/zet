@@ -3251,7 +3251,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     let stdout = String::from_utf8(output).expect("session output is UTF-8");
 
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains(
@@ -3259,7 +3259,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q\n"
     ));
     assert!(stdout.contains("  mv [alone] <new-location>            move the current card"));
     assert!(stdout.contains("  ins                                  insert a new card"));

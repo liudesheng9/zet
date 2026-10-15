@@ -22,6 +22,10 @@
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="brand-name">zt</span>
     </a>
+    <div class="nav-arrows" role="group" aria-label="History">
+      <button class="icon-btn nav-btn" id="nav-back" disabled aria-label="Back"><svg viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6"/></svg></button>
+      <button class="icon-btn nav-btn" id="nav-fwd" disabled aria-label="Forward"><svg viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></svg></button>
+    </div>
     <nav class="trail" id="trail" aria-label="Pointer"></nav>
     <div class="command" id="command">
       <span class="command-prompt" aria-hidden="true">›</span>
@@ -46,11 +50,12 @@
     <div class="ws-switch" id="workspace-switch" role="tablist" aria-label="Workspace"></div>
     <p class="ws-note" id="workspace-note"></p>
     <div class="rail-search">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-      <input id="search" type="search" placeholder="Search cards" autocomplete="off">
+      <button class="search-field" id="search-open" title="Search every card (/)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <span>Search cards</span><kbd>/</kbd>
+      </button>
     </div>
     <div class="rail-scroll">
-      <div id="search-results" class="search-results" hidden></div>
       <section class="drawer-group">
         <header><h2>Topic zone</h2><button class="mini-btn" data-action="new-topic" title="New Topic (t)">+ t</button></header>
         <div id="topic-drawers" class="drawers"></div>
@@ -123,6 +128,7 @@
   <aside class="reader" id="reader" aria-live="polite"></aside>
 </div>
 
+<div class="finder" id="finder" hidden></div>
 <div class="overlay" id="overlay" hidden></div>
 <div class="toasts" id="toasts" aria-live="assertive"></div>
 </body>

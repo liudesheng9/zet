@@ -114,7 +114,12 @@ zt gui --open          # 同时打开应用窗口（Edge/Chrome）或默认浏�
 `zt up` 和 `zt status` 也会打印这个地址。GUI 默认监听 4717 端口，被占用时改用空闲端口；
 在 `zt up` 之前设置 `ZT_GUI_PORT` 可以指定端口（`0` 表示由系统选择）。
 
-- **卡片柜**（左侧）：human 与 agent 两个 Workspace 的标签页、当前 Workspace 的 Topic zone 与 Literature zone，以及全文搜索。
+- **卡片柜**（左侧）：human 与 agent 两个 Workspace 的标签页、当前 Workspace 的 Topic zone 与 Literature zone，以及搜索框。
+- **搜索抽屉**（`/` 或 `Ctrl+K`）：在书桌上拉出的卡片目录抽屉。卡片必须包含查询中的每个词，标题命中排在最前。
+  命中结果按树分组，每棵树一张导卡，后面立着几张卡片条（其余折叠）；选中的卡片条抬起，整张卡片显示在抽屉旁，
+  `Enter` 把它带到阅读器（`Shift+Enter` 放上桌面）。可按 Workspace 或 Card 类型筛选；输入框为空时显示最近访问的卡片。
+- **后退与前进**：路径旁的箭头像文件浏览器一样在访问过的卡片间后退、前进：`Alt+←` / `Alt+→`、`Backspace`、
+  鼠标的后退与前进键，或命令栏（以及 Session）中的 `back` / `fwd`。右键点击箭头可列出可去的位置。
 - **书桌**（ROOT）：当前 Workspace 的每棵树显示为一叠索引卡片，按 Zone 分组。
 - **地图（Map）**：用聚焦透镜呈现当前树的 Folgezettel 地图。Direct successor 沿同一列向下延伸，
   Side successor 进入右边一列。Pointer 所在的卡片被拉到前面；它的路径、后继和相邻卡片以小卡片立起；
@@ -133,9 +138,9 @@ zt gui --open          # 同时打开应用窗口（Edge/Chrome）或默认浏�
 - **写作台**：左侧是 Markdown 原文，右侧是实时预览；输入 `[[` 可补全 Link，
   `Ctrl+S` 保存，`Esc` 取消。
 
-命令栏使用与 Session 相同的命令（`go 1/2`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`ins`、`mv 1/3`、
+命令栏使用与 Session 相同的命令（`go 1/2`、`back`、`fwd`、`n`、`b`、`e`、`t 标题`、`l`、`ws agent`、`del`、`ins`、`mv 1/3`、
 `mv alone before 1/2`、`ty event`、`lsbk`、`help`）。删除、移动和修改 Citation key 时需要输入与 CLI 相同的确认文本。快捷键：
-`:` 命令栏、`/` 搜索、`g` 前往、`n` `b` `e` `m` `i`（插入）、`Delete`、`u` 或方向键在地图中移动、
+`:` 命令栏、`/` 或 `Ctrl+K` 搜索、`Alt+←` / `Alt+→` 后退与前进、`g` 前往、`n` `b` `e` `m` `i`（插入）、`Delete`、`u` 或方向键在地图中移动、
 `x` 展开或折叠整棵树、`p` / `P` 把卡片放上桌面、`v` 切换视图、`w` 切换 Workspace、`f` 适配窗口。
 
 GUI 只监听 `127.0.0.1`，服务每次启动都会使用新的访问令牌。打开的 GUI 窗口不算 Session，

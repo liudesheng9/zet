@@ -660,6 +660,128 @@ impl Snapshot {
             .map(|address| self.reference(&address))
     }
 
+    /// The GUI's ranked search. Every word of the query must occur in the
+    /// address, title, or body; a hit in the title or address outranks a hit
+    /// in the body, and tree roots and Hub Cards (ways in) rank a little
+    /// higher. Each hit names its tree and where it matched, and its snippet
+    /// shows the body around the first word the body holds. Besides the hits,
+    /// it counts the matches by Workspace (under the type filter) and by
+    /// Card type (under the Workspace filter), so a filter shows what it
+    /// would give before it is chosen.
+    pub(crate) fn find(
+        &self,
+        query: &str,
+        workspace: Option<Workspace>,
+        card_type: Option<CardType>,
+        limit: usize,
+    ) -> Value {
+        let needle = query.trim().to_lowercase();
+        let terms = needle.split_whitespace().collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        if !terms.is_empty() {
+            for (order, card) in self.cards.iter().enumerate() {
+                let parsed = &self.parsed[&card.address];
+                let title = parsed.title.to_lowercase();
+                let address = card.address.to_lowercase();
+                let body = parsed.body.to_lowercase();
+                let mut score = 0_i64;
+                let mut field = "body";
+                let mut body_term = None;
+                let mut all = true;
+                for term in &terms {
+                    let in_title = title.contains(term);
+                    let in_address = address.contains(term);
+                    let in_body = body.matches(term).take(5).count() as i64;
+                    if !in_title && !in_address && in_body == 0 {
+                        all = false;
+                        break;
+                    }
+                    if in_title {
+                        score += if title.starts_with(term) { 300 } else { 200 };
+                        field = "title";
+                    }
+                    if in_address {
+                        score += if address == *term {
+                            800
+                        } else if address.starts_with(term) {
+                            120
+                        } else {
+                            40
+                        };
+                        if field == "body" {
+                            field = "address";
+                        }
+                    }
+                    if in_body > 0 {
+                        score += 20 + 2 * in_body;
+                        body_term.get_or_insert(*term);
+                    }
+                }
+                if !all {
+                    continue;
+                }
+                // The whole title, written with or without the spaces between the words.
+                if title == needle || title.split_whitespace().collect::<String>() == terms.concat()
+                {
+                    score += 1000;
+                }
+                if crate::is_tree_root(card) || card.card_type == CardType::Hub {
+                    score += 40;
+                }
+                // A short title that holds the words says more about them than a long one.
+                score -= parsed.title.chars().count() as i64 / 8;
+                matches.push((score, order, card, field, body_term));
+            }
+        }
+        matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut workspaces = serde_json::Map::new();
+        let mut types = serde_json::Map::new();
+        for (_, _, card, _, _) in &matches {
+            if card_type.is_none_or(|card_type| card.card_type == card_type) {
+                let count = workspaces.entry(card.workspace.id()).or_insert(json!(0));
+                *count = json!(count.as_u64().unwrap_or(0) + 1);
+            }
+            if workspace.is_none_or(|workspace| card.workspace == workspace) {
+                let count = types.entry(card.card_type.id()).or_insert(json!(0));
+                *count = json!(count.as_u64().unwrap_or(0) + 1);
+            }
+        }
+        let kept = matches
+            .into_iter()
+            .filter(|(_, _, card, _, _)| {
+                workspace.is_none_or(|workspace| card.workspace == workspace)
+                    && card_type.is_none_or(|card_type| card.card_type == card_type)
+            })
+            .collect::<Vec<_>>();
+        let total = kept.len();
+        let results = kept
+            .into_iter()
+            .take(limit)
+            .map(|(score, _, card, field, body_term)| {
+                let body = &self.parsed[&card.address].body;
+                let tree = crate::tree_id(&card.address);
+                json!({
+                    "address": card.address,
+                    "title": self.title(&card.address),
+                    "kind": kind(card),
+                    "type": card.card_type.id(),
+                    "facet": card.facet.as_ref().map(Facet::id),
+                    "emphasis": card.emphasis.map(Emphasis::id),
+                    "level": card.level_id(),
+                    "workspace": card.workspace.id(),
+                    "tree": tree,
+                    "tree_title": self.title(&crate::tree_root_address(tree)),
+                    "field": field,
+                    "score": score,
+                    "snippet": body_term
+                        .and_then(|term| context_snippet(body, term))
+                        .unwrap_or_else(|| excerpt(body)),
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({ "results": results, "total": total, "workspaces": workspaces, "types": types })
+    }
+
     /// Case-insensitive full-text search over address, title, and body. With
     /// a Card type, only Cards of that type match, and an empty query lists
     /// them all.
@@ -772,6 +894,36 @@ pub(crate) fn excerpt(body: &str) -> String {
         }
     }
     String::new()
+}
+
+/// The body line that holds `term` (already lower case), cleaned of Markdown
+/// marks and cut to a window of about 150 characters around the term.
+fn context_snippet(body: &str, term: &str) -> Option<String> {
+    let lower = body.to_lowercase();
+    let at = lower.find(term)?;
+    let line = body.lines().nth(lower[..at].matches('\n').count())?;
+    let line = line
+        .trim()
+        .trim_start_matches(['#', '>', '-', '*', '+', '|', ' '])
+        .trim();
+    let plain = ["**", "__", "~~", "`", "[[", "]]"]
+        .iter()
+        .fold(line.to_string(), |text, mark| text.replace(mark, ""));
+    let chars = plain.chars().collect::<Vec<_>>();
+    let found = plain
+        .to_lowercase()
+        .find(term)
+        .map_or(0, |at| plain.to_lowercase()[..at].chars().count());
+    let start = found.min(chars.len()).saturating_sub(40);
+    let end = (start + 150).min(chars.len());
+    let mut window = chars[start..end].iter().collect::<String>();
+    if start > 0 {
+        window.insert(0, '…');
+    }
+    if end < chars.len() {
+        window.push('…');
+    }
+    Some(window)
 }
 
 pub(crate) fn clip(text: &str, max_chars: usize) -> String {
@@ -1303,6 +1455,75 @@ The model"
         );
         edit(root, Access::Agent, "1/1", None, ty(CardType::Event), None).unwrap();
         assert_eq!(type_of(root, "1/1"), CardType::Event);
+    }
+
+    #[test]
+    fn find_ranks_titles_first_needs_every_word_and_counts_by_filter() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Human, "# Market failure\n").unwrap();
+        create_topic(root, owner, Workspace::Agent, "# Agent\n").unwrap();
+        let filler = "words before the point ".repeat(4);
+        for (at, card_type, text) in [
+            (
+                "0/0",
+                CardType::Idea,
+                format!("# Prices\n\n{filler}a market failure appears with an externality\n"),
+            ),
+            (
+                "0/1",
+                CardType::Model,
+                "# A market failure model\n\nthe setting\n".to_string(),
+            ),
+            (
+                "1/0",
+                CardType::Event,
+                "# Failure event\n\nthe market crashed\n".to_string(),
+            ),
+            (
+                "1/1",
+                CardType::Idea,
+                "# Market only\n\nno other word\n".to_string(),
+            ),
+        ] {
+            create_successor(root, owner, Successor::Direct, at, card_type, None, &text).unwrap();
+        }
+        let snapshot = Snapshot::read(root).unwrap();
+        let addresses = |found: &Value| {
+            found["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hit| hit["address"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        // The exact title first, then a title holding both words, then body hits.
+        let found = snapshot.find("Market   FAILURE", None, None, 10);
+        assert_eq!(addresses(&found), ["0/0", "0/2", "1/1", "0/1"]);
+        assert_eq!(found["total"], 4);
+        assert_eq!(found["workspaces"], json!({ "human": 3, "agent": 1 }));
+        assert_eq!(found["types"], json!({ "idea": 2, "model": 1, "event": 1 }));
+        let body_hit = &found["results"][3];
+        assert_eq!(body_hit["field"], "body");
+        assert_eq!(body_hit["tree"], "0");
+        assert_eq!(body_hit["tree_title"], "Market failure");
+        let snippet = body_hit["snippet"].as_str().unwrap();
+        assert!(snippet.starts_with('…') && snippet.contains("a market failure appears"));
+
+        // A filter keeps the other filter's counts honest.
+        let agent = snapshot.find("market failure", Some(Workspace::Agent), None, 10);
+        assert_eq!(addresses(&agent), ["1/1"]);
+        assert_eq!(agent["total"], 1);
+        assert_eq!(agent["workspaces"], json!({ "human": 3, "agent": 1 }));
+        assert_eq!(agent["types"], json!({ "event": 1 }));
+        assert_eq!(
+            addresses(&snapshot.find("market failure", None, Some(CardType::Model), 10)),
+            ["0/2"]
+        );
+        assert_eq!(snapshot.find("  ", None, None, 10)["total"], 0);
+        assert_eq!(snapshot.find("market failure", None, None, 2)["total"], 4);
     }
 
     #[test]

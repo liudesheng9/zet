@@ -495,7 +495,11 @@ impl App {
             (Method::Get, "/api/tree") => self.tree(&param("id")?),
             (Method::Get, "/api/card") => self.card(&param("at")?),
             (Method::Get, "/api/graph") => self.graph(),
-            (Method::Get, "/api/search") => self.search(&param("q")?),
+            (Method::Get, "/api/search") => self.search(
+                &param("q")?,
+                query.get("ws").map(String::as_str),
+                query.get("type").map(String::as_str),
+            ),
             (Method::Get, "/api/broken") => self.broken(),
             (Method::Post, "/api/render") => self.render(body),
             (Method::Post, "/api/create") => self.create(body),
@@ -624,9 +628,18 @@ impl App {
         }))
     }
 
-    fn search(&self, query: &str) -> ApiResult {
+    /// Ranked hits for the search tray, optionally in one Workspace and of one Card type.
+    fn search(&self, query: &str, workspace: Option<&str>, card_type: Option<&str>) -> ApiResult {
+        let workspace = workspace
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(crate::Workspace::parse)
+            .transpose()?;
+        let card_type = card_type
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(crate::CardType::parse)
+            .transpose()?;
         let snapshot = self.snapshot()?;
-        Ok(json!({ "results": snapshot.search(query, None, None, 60) }))
+        Ok(snapshot.find(query, workspace, card_type, 80))
     }
 
     /// Where a kept artifact came from.

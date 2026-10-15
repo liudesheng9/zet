@@ -37,6 +37,16 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnCard,
     ),
     (
+        "back",
+        "go back to the card you were at before",
+        Availability::Always,
+    ),
+    (
+        "fwd",
+        "go forward again to the card you went back from",
+        Availability::Always,
+    ),
+    (
         "ls",
         "list Topics and Literature at ROOT, or the current tree",
         Availability::Always,
@@ -163,13 +173,25 @@ pub(super) struct SessionState {
     /// The Workspace shown at ROOT and given new Topics and Literature. It
     /// follows the Pointer into whichever Workspace holds its Card.
     workspace: crate::Workspace,
+    /// Where the Pointer was before each move, newest last, for `back`.
+    back: Vec<Visit>,
+    /// Where `back` came from, newest last, for `fwd`; a new move clears it.
+    forward: Vec<Visit>,
 }
+
+/// One place the Pointer has been: the Card (or ROOT) and the Workspace shown.
+type Visit = (Pointer, crate::Workspace);
+
+/// How many earlier places `back` remembers.
+const HISTORY_LIMIT: usize = 100;
 
 impl SessionState {
     pub(super) fn root() -> Self {
         Self {
             pointer: Pointer::Root,
             workspace: crate::Workspace::Human,
+            back: Vec::new(),
+            forward: Vec::new(),
         }
     }
 
@@ -182,8 +204,64 @@ impl SessionState {
     }
 
     pub(super) fn follow_link(&mut self, root: &Path, target: String) {
+        let before = self.visit();
         self.pointer = Pointer::Card(target);
         self.sync_workspace(root);
+        self.remember(before);
+    }
+
+    fn visit(&self) -> Visit {
+        (self.pointer.clone(), self.workspace)
+    }
+
+    /// Record the place the Pointer just left, as a file browser does: a new
+    /// move forgets the places `back` came from.
+    fn remember(&mut self, before: Visit) {
+        if before.0 == self.pointer {
+            return;
+        }
+        self.back.push(before);
+        if self.back.len() > HISTORY_LIMIT {
+            self.back.remove(0);
+        }
+        self.forward.clear();
+    }
+
+    /// Step `back` (or with `forward`, `fwd`) to the nearest remembered place
+    /// that still exists; places whose Card was deleted are skipped.
+    fn step(&mut self, root: &Path, forward: bool) -> Result<()> {
+        let conn = crate::open_db(root)?;
+        loop {
+            let next = if forward {
+                self.forward.pop()
+            } else {
+                self.back.pop()
+            };
+            let Some((pointer, workspace)) = next else {
+                bail!(
+                    "{}",
+                    if forward {
+                        "nothing to go forward to; fwd follows back"
+                    } else {
+                        "no earlier card to go back to"
+                    }
+                );
+            };
+            if let Pointer::Card(target) = &pointer
+                && !crate::target_exists(&conn, target)?
+            {
+                continue;
+            }
+            let here = self.visit();
+            if forward {
+                self.back.push(here);
+            } else {
+                self.forward.push(here);
+            }
+            self.pointer = pointer;
+            self.workspace = workspace;
+            return Ok(());
+        }
     }
 
     /// Adopt the Workspace of the Card under the Pointer, if there is one.
@@ -208,6 +286,8 @@ impl SessionState {
         Self {
             pointer: Pointer::Card(target.to_string()),
             workspace: crate::Workspace::Human,
+            back: Vec::new(),
+            forward: Vec::new(),
         }
     }
 }
@@ -322,8 +402,13 @@ pub(super) fn execute(
     line: &str,
     interaction: &mut dyn Interaction,
 ) -> Result<Execution> {
+    let before = state.visit();
     let execution = execute_command(root, state, line, interaction);
     state.sync_workspace(root);
+    // Every move of the Pointer is remembered, except the steps through that memory.
+    if !matches!(line.split_whitespace().next(), Some("back" | "fwd")) {
+        state.remember(before);
+    }
     execution
 }
 
@@ -379,6 +464,16 @@ fn execute_command(
             Ok(Execution::Continue(CommandResult::Navigated))
         }
         ["up", ..] => bail!("usage: up"),
+        ["back"] => {
+            state.step(root, false)?;
+            Ok(Execution::Continue(CommandResult::Navigated))
+        }
+        ["back", ..] => bail!("usage: back"),
+        ["fwd"] => {
+            state.step(root, true)?;
+            Ok(Execution::Continue(CommandResult::Navigated))
+        }
+        ["fwd", ..] => bail!("usage: fwd"),
         ["ls"] => {
             let conn = crate::open_db(root)?;
             let (heading, cards) = super::cards_for_list(&conn, state.pointer(), state.workspace)?;
@@ -926,6 +1021,45 @@ mod tests {
     }
 
     #[test]
+    fn back_and_fwd_retrace_the_pointer_like_a_file_browser() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA/1|a");
+        let run = |state: &mut SessionState, line: &str| {
+            execute_without_interaction(temp.path(), state, line).map(|_| state.pointer().clone())
+        };
+        let card = |address: &str| Pointer::Card(address.to_string());
+
+        run(&mut state, "go LitA").expect("go");
+        run(&mut state, "up").expect("up");
+        assert_eq!(run(&mut state, "back").expect("back"), card("LitA"));
+        assert_eq!(run(&mut state, "back").expect("back"), card("LitA/1|a"));
+        let error = run(&mut state, "back").expect_err("nothing earlier");
+        assert_eq!(error.to_string(), "no earlier card to go back to");
+        assert_eq!(state.pointer(), &card("LitA/1|a"));
+        assert_eq!(run(&mut state, "fwd").expect("fwd"), card("LitA"));
+        assert_eq!(run(&mut state, "fwd").expect("fwd"), Pointer::Root);
+        run(&mut state, "fwd").expect_err("nothing later");
+
+        // A new move forgets the places back came from.
+        run(&mut state, "back").expect("back");
+        run(&mut state, "go LitA/1").expect("go");
+        run(&mut state, "fwd").expect_err("a new move clears fwd");
+        assert_eq!(run(&mut state, "back").expect("back"), card("LitA"));
+
+        // A place whose Card is gone is skipped.
+        run(&mut state, "go LitA/1|a").expect("go");
+        run(&mut state, "go LitA/1").expect("go");
+        crate::open_db(temp.path())
+            .expect("open database")
+            .execute("DELETE FROM cards WHERE location = 'LitA/1|a'", [])
+            .expect("delete card");
+        assert_eq!(run(&mut state, "back").expect("back"), card("LitA"));
+        run(&mut state, "back 2").expect_err("back takes no arguments");
+    }
+
+    #[test]
     fn literature_card_direct_successor_starts_its_own_tree() {
         let temp = tempfile::tempdir().expect("temp dir");
         crate::initialize_database(temp.path()).expect("initialize database");
@@ -1279,19 +1413,19 @@ mod tests {
         for (pointer, expected) in [
             (
                 SessionState::root(),
-                "go [<target>] | root | ws [<workspace>] | ls | t <title> | l | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | back | fwd | ls | t <title> | l | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

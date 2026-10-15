@@ -119,7 +119,15 @@ zt gui --open          # also open an app window (Edge/Chrome) or your browser o
 4717 is taken; set `ZT_GUI_PORT` before `zt up` to choose another (`0` lets the system pick).
 
 - **Cabinet** (left): tabs for the human and agent Workspaces, the Topic and Literature zones of
-  the open one, and full-text search.
+  the open one, and the search field.
+- **Search tray** (`/` or `Ctrl+K`): a card-catalogue drawer over the desk. Every word must occur
+  in a card; title hits rank first. Hits stand as slips behind one guide card per tree (a few per
+  tree, the rest folded), the chosen slip's whole card lies beside the drawer, and `Enter` carries
+  it to the reader (`Shift+Enter` lays it on the Table). Filter by Workspace or Card type; an empty
+  field shows the cards you visited last.
+- **Back and forward**: the arrows beside the trail step through the cards you visited, as in a
+  file browser: `Alt+←` / `Alt+→`, `Backspace`, the mouse's back and forward buttons, or `back` /
+  `fwd` in the command bar (and in a Session). Right-click an arrow to list its steps.
 - **Desk** (ROOT): each tree of the open Workspace as a stack of index cards, grouped by Zone.
 - **Map**: the current tree as a Folgezettel map seen through a focus lens. Direct successors
   run down a column and Side successors branch into the next column. The Pointer card is pulled
@@ -145,9 +153,9 @@ zt gui --open          # also open an app window (Edge/Chrome) or your browser o
 - **Writing desk**: raw Markdown next to a live preview, `[[` Link completion,
   `Ctrl+S` to save, and `Esc` to cancel.
 
-The command bar speaks the Session's language (`go 1/2`, `n`, `b`, `e`, `t Title`, `l`,
+The command bar speaks the Session's language (`go 1/2`, `back`, `fwd`, `n`, `b`, `e`, `t Title`, `l`,
 `ws agent`, `del`, `ins`, `mv 1/3`, `mv alone before 1/2`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
-same confirmation as the CLI. Keys: `:` command bar, `/` search, `g` go, `n` `b` `e` `m` `i` (insert),
+same confirmation as the CLI. Keys: `:` command bar, `/` or `Ctrl+K` search, `Alt+←` / `Alt+→` back and forward, `g` go, `n` `b` `e` `m` `i` (insert),
 `Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `p` / `P` to lay a card on the Table, `v` to switch views,
 `w` to switch Workspaces, `f` to fit.
 
