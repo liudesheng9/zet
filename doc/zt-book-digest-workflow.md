@@ -212,17 +212,21 @@ Arguments (`args`):
 | `perSonnet` | formal (or undecided) models per batch, one Sonnet architect each (default 6); neighbouring models of the book share a batch |
 | `perConcept` | concept models per batch (default 10); they skip the derive and review rounds |
 | `dshPerBatch` | DeepSeek runs one batch keeps going at the same time (default 8; `dshPerSonnet` is the old name) |
-| `briefEffort`, `deriveEffort`, `reviewEffort` | DeepSeek effort of the brief (medium), the Derivation parts and follow-ups (high), and the review (high); `dshEffort` is the fill's (low) |
+| `briefEffort`, `deriveEffort`, `reviewEffort` | DeepSeek effort of the brief, the Derivation parts and follow-ups, and the review; `dshEffort` is the digest, link, and fill runs' effort. All default to `high`. |
 | `reviewRounds` | review, split, review again (default 2); 0 skips the review |
 | `architectEffort` | the Sonnet architect's effort (default: the model's own) |
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `maxSentences`, `maxPartChars`, `maxSteps` | the Card size of a formal model's part (12, 400, 6): a part over a limit splits, and a long step becomes a Derivation chain |
-| `perManager`, `maxChars`, `maxUnits`, `dshModel`, `dshEffort` | sizing and the DeepSeek model |
+| `dshSource` | where DeepSeek V4.1 Flash runs: `official` (`deepseek-official/deepseek-flash`, the DeepSeek platform), `opencode` (`opencode-go/deepseek-v4.1-flash`), or `auto` (default): a Haiku probe asks the official source for one short answer, takes OpenCode Go when the official source does not answer, and stops the run when neither does. The result names the model in `dsh_model`. |
+| `dshModel` | any DeepSeek Harness model (`deepseek_models` lists them); it overrides `dshSource` |
+| `perManager`, `maxChars`, `maxUnits` | sizing |
 | `hubs` | run the hub stage (default `true` in mode `full`, `false` in mode `link`) |
 | `hubWork` | the hub stage's folder and DeepSeek workspace (default `D:\zt-digest\hubs`); its `state.json` lets a later run rewrite only the trees that changed |
 | `hubLimits` | an object that overrides the limits the Haiku hub manager chooses, e.g. `{ "topic_min": 8 }` |
 | `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
-| `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers (high; at least medium); check, fix, and apply again (1) |
+| `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers and the field planner (high); check, fix, and apply again (1) |
+
+**Effort.** The user wants every DeepSeek run at medium effort or more. DeepSeek V4.1 Flash offers `off`, `low`, `high`, and `max` at both sources, with no `medium`, so every DeepSeek effort is `high` or `max`: the workflow raises a lower value to `high` and logs it.
 
 The run's result lists every group's status, every model's parts, relations by kind, neighbours, charts, and open issues, the
 DeepSeek token use, and Opus's report. To structure the models of a book digested before 0.6.0 (or, with `redoModels: true`, restructure those of 0.6.0),

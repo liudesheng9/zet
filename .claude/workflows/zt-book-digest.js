@@ -19,7 +19,10 @@ export const meta = {
 //         and exercises; default none),
 //         groups (modes 'link' and 'models': the existing group count), organize (modes 'link' and 'models': default false),
 //         perManager (5), maxChars (20000), maxUnits (3),
-//         dshModel ('deepseek-official/deepseek-flash'), dshEffort ('low'),
+//         dshSource ('auto' | 'official' | 'opencode': where DeepSeek V4.1 Flash runs; 'auto' checks the DeepSeek
+//         official source first and takes the OpenCode Go source when the official one does not answer),
+//         dshModel (a DeepSeek Harness model that overrides dshSource), dshEffort ('high': the digest, link,
+//         and fill runs; every DeepSeek effort is high or max, see atLeastHigh),
 //         models (true: run the model stage), rebuild (false: also rebuild models that already have parts;
 //         redoModels is the old name), perSonnet (6: formal models per batch, one Sonnet architect each;
 //         neighbouring models of the book share a batch), perConcept (10: concept models per batch),
@@ -27,7 +30,7 @@ export const meta = {
 //         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
 //         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
 //         model's own level, which DeepSeek proposes and the Sonnet architect confirms),
-//         briefEffort ('medium'), deriveEffort ('high'), reviewEffort ('high'): DeepSeek effort of the brief,
+//         briefEffort ('high'), deriveEffort ('high'), reviewEffort ('high'): DeepSeek effort of the brief,
 //         the Derivation parts and their follow-ups, and the review (dshEffort is the fill's),
 //         reviewRounds (2: review, split, review again; 0 skips the review), architectEffort (Sonnet's effort),
 //         maxSentences (12), maxPartChars (400), maxSteps (6): the Card size of a formal model's part;
@@ -67,8 +70,24 @@ const OUT = A.out
 const DIGEST_PREFIX = `${OUT}\\shared-prefix.md`
 const LINK_PREFIX = `${OUT}\\link-prefix.md`
 const PER_MANAGER = A.perManager || 5
-const DSH_MODEL = A.dshModel || 'deepseek-official/deepseek-flash'
-const DSH_EFFORT = A.dshEffort || 'low'
+// DeepSeek V4.1 Flash at the two sources DeepSeek Harness offers (deepseek_models lists them). The
+// official source is the DeepSeek platform ("DeepSeek-V41-Flash"); OpenCode Go serves the same model.
+const DSH_SOURCES = {
+  official: 'deepseek-official/deepseek-flash',
+  opencode: 'opencode-go/deepseek-v4.1-flash',
+}
+const DSH_SOURCE = A.dshModel ? 'model' : (['official', 'opencode'].includes(A.dshSource) ? A.dshSource : 'auto')
+// Set before the first DeepSeek run: the given model, the given source, or the source the probe found.
+let DSH_MODEL = A.dshModel || DSH_SOURCES[DSH_SOURCE] || DSH_SOURCES.official
+// The user wants every DeepSeek run at medium effort or more. V4.1 Flash offers off, low, high, and max at
+// both sources, with no medium, so every effort is high or max: a lower value is raised to high.
+const raised = []
+const atLeastHigh = (value, name) => {
+  if (value === 'high' || value === 'max') return value
+  if (value) raised.push(`${name} ${value} → high`)
+  return 'high'
+}
+const DSH_EFFORT = atLeastHigh(A.dshEffort, 'dshEffort')
 const SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 const MODELS = A.models !== false
 const ARCH_DOC = `${SCRIPTS}\\model-architect.md`
@@ -81,9 +100,9 @@ const REBUILD = !!(A.rebuild || A.redoModels)
 // formal model (level 2) is built self-sufficient. Unset: each model's own level.
 const LEVEL = ['concept', 'formal'].includes(A.level) ? A.level : null
 const PER_CONCEPT = Math.max(1, A.perConcept || 10)
-const BRIEF_EFFORT = A.briefEffort || 'medium'
-const DERIVE_EFFORT = A.deriveEffort || 'high'
-const REVIEW_EFFORT = A.reviewEffort || 'high'
+const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
+const DERIVE_EFFORT = atLeastHigh(A.deriveEffort, 'deriveEffort')
+const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
 const REVIEW_ROUNDS = Math.max(0, A.reviewRounds ?? 2)
 // Card size limits, passed to card-style-check.ps1 (R13, R14): the size of a Card, not the length of
 // a derivation, decides how many Derivation parts carry a step.
@@ -100,7 +119,7 @@ const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__de
 const HUBS = MODE === 'hubs' || (MODE === 'full' && A.hubs !== false) || (MODE === 'link' && A.hubs === true)
 const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
 const HUB_COMPILER = `${SCRIPTS}\\hub-compiler.ps1`
-const HUB_EFFORT = A.hubEffort || 'high'
+const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
 
@@ -116,6 +135,35 @@ const usageStep = 'Load the DeepSeek tools with ToolSearch query "select:mcp__de
 
 // --- Prepare ---------------------------------------------------------------------------------
 phase('Prepare')
+if (raised.length) log(`DeepSeek efforts raised to high (the user wants at least medium; V4.1 Flash has no medium): ${raised.join(', ')}.`)
+// The DeepSeek source: with dshSource 'auto', a Haiku probe asks each source for one short answer and
+// the run uses the first that gives it, the official source before OpenCode Go.
+if (DSH_SOURCE === 'auto') {
+  const probeDir = `${OUT}\\dsh-probe`
+  const probe = await agent(
+    `You check which DeepSeek Harness source of DeepSeek V4.1 Flash answers now. Do exactly these steps; keep your messages short.
+Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
+1. One PowerShell call: New-Item -ItemType Directory -Force -Path "${probeDir}" | Out-Null
+2. Try the sources in this order and stop at the first that answers:
+   a. official: model "${DSH_SOURCES.official}"
+   b. opencode: model "${DSH_SOURCES.opencode}"
+   For each: deepseek_run with cwd "${probeDir}", model as given, reasoning_effort "high", prompt "只回复 ok", wait_seconds 180. If the status is "running", deepseek_wait once (wait_seconds 180). The source answers when the status is "finished" and the answer contains "ok". An error, a "running" status after the wait, or any other answer means it does not: record the error or status text for it. Then deepseek_delete that session_id.
+3. deepseek_remove_workspace with cwd "${probeDir}" and delete_conversations true. Then one PowerShell call: Remove-Item -LiteralPath "${probeDir}" -Recurse -Force -ErrorAction SilentlyContinue
+Return source ("official", "opencode", or "none") and errors (one short line per source that failed, else "").`,
+    {
+      label: 'choose DeepSeek source', phase: 'Prepare', model: 'haiku', effort: 'low',
+      schema: { type: 'object', properties: { source: { type: 'string', enum: ['official', 'opencode', 'none'] }, errors: { type: 'string' } }, required: ['source'] },
+    },
+  )
+  if (!probe || !DSH_SOURCES[probe.source]) {
+    log(`No DeepSeek source answered: ${(probe && probe.errors) || 'no report from the probe'}`)
+    return { stage: 'source', error: 'neither the DeepSeek official source nor OpenCode Go answered', probe }
+  }
+  DSH_MODEL = DSH_SOURCES[probe.source]
+  log(`DeepSeek source: ${probe.source} (${DSH_MODEL})${probe.errors ? `; ${probe.errors}` : ''}.`)
+} else {
+  log(`DeepSeek source: ${DSH_SOURCE} (${DSH_MODEL}).`)
+}
 let groupCount = A.groups || 0
 let usageBefore = null
 if (MODE === 'full') {
@@ -508,7 +556,7 @@ Return late_archived (the count) and folders (how many folders you handled).`,
   },
 ) : null
 if (modelCleanup) log(`Model clean-up: ${modelCleanup.late_archived} conversations archived late.`)
-if (MODE === 'models' && !A.organize) return { mode: MODE, book: A.bookTitle, citation_key: KEY, models: modelReports, model_cleanup: modelCleanup }
+if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, models: modelReports, model_cleanup: modelCleanup }
 
 // --- Hubs: the hub compiler builds the Hub Cards of the whole agent Workspace ------------------------
 // A Haiku hub manager reads the survey and chooses the limits; hub-compiler.ps1 does every structural
@@ -586,7 +634,7 @@ ${hstep('survey')}
 let hubReport = null
 if (MODE === 'hubs') {
   hubReport = await runHubs()
-  if (!A.organize) return { mode: MODE, hubs: hubReport }
+  if (!A.organize) return { mode: MODE, dsh_model: DSH_MODEL, hubs: hubReport }
 }
 
 const NO_LINK = MODE === 'models' || MODE === 'hubs'
@@ -691,7 +739,7 @@ Return a short Chinese report: the final agent Topics (address and name), merges
 if (HUBS && MODE !== 'hubs') hubReport = await runHubs()
 
 return {
-  mode: MODE, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
+  mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
   digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
   models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
   model_cleanup: modelCleanup,

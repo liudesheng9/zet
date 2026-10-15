@@ -29,8 +29,8 @@ The user decided (2026-10-14):
 | Architect | Sonnet, one call per batch | reads `brief.md` and `context.md`; writes `plan.json` per model; runs `validate` until it prints `faults: 0` | write Cards, make zt writes, start DeepSeek runs, load skills, read whole source files |
 | Compiler | `model-compiler.ps1` (no model) | context packs; plan checks; skeletons and tree operations; setting tables and 结构 lists; job files with source lines and premise bodies copied in; applying splits; reports | write prose |
 | Driver | Haiku, one call per round | runs one compiler step, starts the DeepSeek jobs it prints, waits, approves, retries once, returns the answers; the last driver archives and deletes | read the book or a Card, decide anything |
-| Briefer | DeepSeek (`briefEffort`, medium) | reads the context pack and the source passages; writes `brief.md`: equations in book order with numbers and lines, which steps the book skips and how many lines each needs, examples, diagrams, outside premises, reusable building blocks | write Cards |
-| Writer | DeepSeek (`dshEffort`, low; `deriveEffort`, high for derivations) | writes the Model Card prose, the setting, each part, each chart, then each Derivation part; runs `card-style-check.ps1` on its own Cards; answers `split` when a part will not fit | create, move, or delete Cards |
+| Briefer | DeepSeek (`briefEffort`, high) | reads the context pack and the source passages; writes `brief.md`: equations in book order with numbers and lines, which steps the book skips and how many lines each needs, examples, diagrams, outside premises, reusable building blocks | write Cards |
+| Writer | DeepSeek (`dshEffort`, high; `deriveEffort`, high for derivations) | writes the Model Card prose, the setting, each part, each chart, then each Derivation part; runs `card-style-check.ps1` on its own Cards; answers `split` when a part will not fit | create, move, or delete Cards |
 | Reviewer | DeepSeek (`reviewEffort`, high) | redoes every step of a chain; judges each Derivation part `ok`, `fix`, or `split` into N parts with the cut results; writes `review-NN.json` | change Cards |
 
 ## The flow of one batch
@@ -104,7 +104,7 @@ Writers address Cards by today's addresses, which only change between rounds.
 | `perSonnet` | 6 | formal or undecided models per batch (one architect call) |
 | `perConcept` | 10 | concept models per batch |
 | `dshPerBatch` | 8 | DeepSeek runs one batch keeps going (`dshPerSonnet` is the old name) |
-| `briefEffort`, `dshEffort`, `deriveEffort`, `reviewEffort` | medium, low, high, high | DeepSeek effort per round |
+| `briefEffort`, `dshEffort`, `deriveEffort`, `reviewEffort` | high, high, high, high | DeepSeek effort per round; since 2026-10-15 no DeepSeek effort is below high (V4.1 Flash has no medium), and the model is DeepSeek V4.1 Flash from the source `dshSource` picks |
 | `reviewRounds` | 2 | review → split → review again; 0 skips the review |
 | `architectEffort` | — | Sonnet's effort |
 | `level`, `rebuild`, `only`, `maxSentences`, `maxPartChars`, `maxSteps` | as before | |
