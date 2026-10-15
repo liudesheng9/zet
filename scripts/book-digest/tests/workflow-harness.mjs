@@ -44,13 +44,17 @@ function runtime(opts0 = {}) {
       // A manager of jobs: it reports every job it was given.
       if (/Run every job below/.test(prompt)) {
         const given = JSON.parse(String(prompt).split('\n').find(l => l.startsWith('[{')) || '[]')
-        managed.push({ label, jobs: given.map(j => j.id) })
+        managed.push({ label, jobs: given.map(j => j.id), given })
         return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
       }
       if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], archived: 3 } }
       // A compiler step: the JSON line the script prints.
       let output = json({ jobs: [] })
-      if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 0, jobs: Array.from({ length: planJobs }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, files: ['a', 'b'], prompt: 'p' })) })
+      const compact = / -Compact/.test(cmd)
+      const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
+      if (compact && /card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 1, ...head, jobs: [...Array.from({ length: planJobs - 1 }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, kind: 'fix', file: `fix-${String(i + 1).padStart(2, '0')}.md` })), { id: 'orphans-99', kind: 'orphans', file: 'orphans-99.md' }] })
+      else if (compact && /card-compiler\.ps1" -Step check/.test(cmd)) output = json({ faults: 1, orphans: 0, ...head, jobs: [{ id: 'fix-01-r2', kind: 'follow', file: 'fix-01-r2.md', continue: 'fix-01' }] })
+      else if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 0, jobs: Array.from({ length: planJobs }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, files: ['a', 'b'], prompt: 'p' })) })
       else if (/card-compiler\.ps1" -Step apply/.test(cmd)) output = json({ applied_jobs: 1, counts: { fix: 2 } })
       else if (/card-compiler\.ps1" -Step check/.test(cmd)) output = json({ jobs: [], faults: 0, orphans: 0 })
       else if (/card-compiler\.ps1" -Step report/.test(cmd)) output = json({ cards: 2, faults_before: 3, faults_after: 0, verdicts: { fix: 2 }, splits: 0, merges: 0, refused: 0, orphan_links: 0, orphans_after: 0 })
@@ -122,7 +126,7 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   const { result, calls, managed, cleanups } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
   const cmds = calls.map(c => c.cmd).filter(Boolean)
   check(result && result.mode === 'cards' && result.cards.status === 'done', 'cards: runs to its end')
-  check(cmds.some(c => /card-compiler\.ps1" -Step plan -Work "D:\\x\\Key\\cards" -Book Key -Staging "D:\\x\\Key" -MaxCards 5/.test(c)) && !cmds.some(c => /-NoOrphans/.test(c)), 'cards: plans the whole book with orphans and the pilot cap')
+  check(cmds.some(c => /card-compiler\.ps1" -Step plan -Work "D:\\x\\Key\\cards" -Compact -Book Key -Staging "D:\\x\\Key" -MaxCards 5/.test(c)) && !cmds.some(c => /-NoOrphans/.test(c)), 'cards: plans the whole book with orphans and the pilot cap')
   check(!calls.some(c => /^(digest|link) manager|prepare book|organize/.test(c.label)), 'cards: runs no other stage')
   const planManagers = managed.filter(m => /cards whole book: plan/.test(m.label))
   const planJobs = planManagers.flatMap(m => m.jobs)
@@ -131,7 +135,15 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(planJobs.length === 21 && new Set(planJobs).size === 21, 'cards: every job goes to exactly one manager')
   check(calls.filter(c => /cards whole book: plan/.test(c.label)).every(c => c.model === 'haiku'), 'cards: the step agent and the managers are Haiku')
   check(cleanups.some(l => /cards whole book: report: clean up/.test(l)), 'cards: one cleanup agent ends the conversations after the report')
-  check(result.cards.plan && result.cards.plan.jobs.length === 21, 'cards: the plan reaches the stage intact')
+  check(result.cards.plan && result.cards.plan.jobs.length === 21 && result.cards.plan.jobs.every(j => Array.isArray(j.files)), 'cards: the plan reaches the stage intact, its jobs expanded')
+  const given = planManagers.flatMap(m => m.given)
+  const fix = given.find(j => j.id === 'fix-01')
+  const orphan = given.find(j => j.id === 'orphans-99')
+  check(fix && fix.files[0] === 'D:\\x\\Key\\cards\\card.md' && fix.files[1] === 'D:\\x\\Key\\cards\\fix-01.md' && fix.prompt === 'pf', `cards: a compact fix job expands to its instruction file, job file, and prompt (${JSON.stringify(fix)})`)
+  check(orphan && orphan.files[0] === 'D:\\x\\Key\\cards\\orphan.md' && orphan.prompt === 'po', 'cards: a compact orphan job takes the orphan instructions')
+  const follow = managed.filter(m => /check 1/.test(m.label)).flatMap(m => m.given).find(j => j.id === 'fix-01-r2')
+  check(follow && follow.continue === 'fix-01' && follow.files.length === 1 && follow.fallback[0] === 'D:\\x\\Key\\cards\\card.md' && follow.prompt === 'pw', `cards: a compact follow-up continues its job, with the instructions as fallback (${JSON.stringify(follow)})`)
+  check(calls.filter(c => /card-compiler\.ps1/.test(c.cmd)).every(c => / -Compact/.test(c.cmd)), 'cards: every card-compiler step gets -Compact')
 }
 // the managers: one per 8 jobs, at most 8
 for (const [n, want] of [[5, 1], [16, 2], [17, 3], [70, 8]]) {

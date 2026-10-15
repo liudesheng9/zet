@@ -202,6 +202,15 @@ try {
     Assert ($rPlan.review -ge 1 -and $rText -match '这是抽查' -and $rText -match '原文：') "plan -Sample: a sampled Card gets the review instruction and its source ($($rPlan.review) sampled)"
     Assert ($rText -notmatch "问题：`r?`n`r?`n") 'plan -Sample: no empty fault list'
 
+    # --- -Compact: each job as {id, kind, file}; the folder, instruction files, and prompts once ---
+    $kWork = Join-Path $scratch 'compact'
+    $kPlan = [string]@(pwsh -NoProfile -File $compiler -Step plan -Work $kWork -Book $key -Compact 2>&1)[-1] | ConvertFrom-Json -AsHashtable
+    $kJobs = @($kPlan.jobs)
+    Assert ($kJobs.Count -ge 1 -and -not $kJobs[0].Contains('files') -and $kJobs[0].kind -in @('fix', 'orphans') -and $kJobs[0].file -like '*.md') "plan -Compact: jobs carry id, kind, and file ($(($kJobs[0] | ConvertTo-Json -Compress)))"
+    Assert ($kPlan.dir -eq $kWork -and (Test-Path (Join-Path $kWork $kJobs[0].file)) -and (Test-Path $kPlan.lead.fix) -and $kPlan.prompts.Contains($kJobs[0].kind)) 'plan -Compact: dir, lead, and prompts name what a job needs'
+    $fullPlan = [string]@(pwsh -NoProfile -File $compiler -Step plan -Work (Join-Path $scratch 'full') -Book $key 2>&1)[-1] | ConvertFrom-Json -AsHashtable
+    Assert (@($fullPlan.jobs)[0].Contains('files') -and -not $fullPlan.Contains('lead')) 'plan without -Compact: the output is as before'
+
     # --- -Groups: only the Cards group 1 owns, and the anchor ---
     $gWork = Join-Path $scratch 'groups'
     $null = @(pwsh -NoProfile -File $compiler -Step plan -Work $gWork -Book $key -Groups '1' -Staging (Join-Path $scratch 'staging') -NoOrphans 2>&1)

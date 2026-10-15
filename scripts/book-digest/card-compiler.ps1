@@ -44,7 +44,10 @@ param(
     [switch]$NoOrphans,
     # Organize notes: a JSON array of {"address","note"}, or decisions.json with a "notes" field.
     # Each note is a fault N1 of its Card.
-    [string]$Notes = ''
+    [string]$Notes = '',
+    # Compact job lists: {id, kind, file, continue?} plus "lead" and "prompts" once, for a book with
+    # hundreds of jobs (the workflow expands them). Without it the output is as before.
+    [switch]$Compact
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
@@ -69,6 +72,20 @@ function Save-Text($path, $text) {
     [IO.File]::WriteAllText($path, $text, $utf8)
 }
 function Out-Last($object) { $object | ConvertTo-Json -Depth 20 -Compress }
+# The jobs of a step in compact form: the instruction file and the prompt of each kind are given once.
+function Get-CompactJobs($jobs) {
+    $fixDoc = Join-Path $Work (Split-Path -Leaf $FixDoc)
+    $orphanDoc = Join-Path $Work (Split-Path -Leaf $OrphanDoc)
+    $prompts = [ordered]@{}
+    $list = foreach ($j in @($jobs)) {
+        $kind = if ($j.continue) { 'follow' } elseif ($j.id -like 'orphans-*') { 'orphans' } else { 'fix' }
+        if (-not $prompts.Contains($kind)) { $prompts[$kind] = $j.prompt }
+        $c = [ordered]@{ id = $j.id; kind = $kind; file = Split-Path -Leaf @($j.files)[-1] }
+        if ($j.continue) { $c.continue = $j.continue }
+        $c
+    }
+    [ordered]@{ dir = $Work; lead = [ordered]@{ fix = $fixDoc; orphans = $orphanDoc }; prompts = $prompts; jobs = @($list) }
+}
 $State = if (Test-Path -LiteralPath $StateFile) { Read-Json $StateFile } else { $null }
 function Save-State { Save-Text $StateFile ($State | ConvertTo-Json -Depth 20) }
 
@@ -350,11 +367,13 @@ function Step-Plan {
     }
     foreach ($j in $jobs) { $j.files[0] = Join-Path $Work (Split-Path -Leaf $j.files[0]) }
     Save-State
-    Out-Last ([ordered]@{
+    $planOut = [ordered]@{
             book = $Book; picked = $picked.Count; with_faults = $withFaults.Count; review = $review.Count; orphans = $orphans.Count
             faults = [int](@($withFaults | ForEach-Object { @(Get-HardFaults $audit ([string]$_.address)).Count }) | Measure-Object -Sum).Sum
             jobs = $jobs
-        })
+        }
+    if ($Compact) { $c = Get-CompactJobs $jobs; foreach ($k in @('dir', 'lead', 'prompts', 'jobs')) { $planOut[$k] = $c[$k] } }
+    Out-Last $planOut
 }
 
 # --- apply ---------------------------------------------------------------------------------------
@@ -555,7 +574,9 @@ function Step-Check {
         $jobs += @(New-OrphanJobs $audit $orphans)
     }
     Save-State
-    Out-Last ([ordered]@{ jobs = $jobs; faults = $total; orphans = $orphans.Count })
+    $checkOut = [ordered]@{ jobs = $jobs; faults = $total; orphans = $orphans.Count }
+    if ($Compact) { $c = Get-CompactJobs $jobs; foreach ($k in @('dir', 'lead', 'prompts', 'jobs')) { $checkOut[$k] = $c[$k] } }
+    Out-Last $checkOut
 }
 
 # --- report --------------------------------------------------------------------------------------

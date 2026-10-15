@@ -357,7 +357,7 @@ Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
     return agent(`${head}
 Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
 ${o.command}
-Its last output line is compact JSON. Put that line, unchanged, in output. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
+Its last output line is compact JSON; it may be long (tens of kilobytes). Put that line, unchanged and whole, in output: never shorten it, summarize it, or save it to a file instead. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
       { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
   }
   if (part === 'cleanup') {
@@ -384,6 +384,20 @@ Do not close or archive conversations: later rounds continue them, and a cleanup
 Return ok=true, output="", and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
     { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
 }
+// A step's jobs. A compact list (card-compiler.ps1 -Compact) names each job's file and kind and gives
+// the folder, the instruction files, and the prompts once; it expands to { id, files, prompt,
+// continue?, fallback? } here, so the step agent echoes a short line even for hundreds of jobs.
+const expandJobs = (parsed) => {
+  const list = (parsed && Array.isArray(parsed.jobs)) ? parsed.jobs : []
+  if (!parsed || !parsed.lead || !parsed.prompts) return list
+  const at = (name) => `${parsed.dir}\\${name}`
+  return list.map(j => {
+    if (j.files) return j
+    if (j.kind === 'follow') return { id: j.id, continue: j.continue, files: [at(j.file)], fallback: [parsed.lead.fix, at(j.file)], prompt: parsed.prompts.follow }
+    const lead = j.kind === 'orphans' ? parsed.lead.orphans : parsed.lead.fix
+    return { id: j.id, files: [lead, at(j.file)], prompt: parsed.prompts[j.kind] }
+  })
+}
 // Runs one compiler step: the command, its jobs spread over up to DSH_MANAGERS managers, then the
 // cleanup when o.cleanup. Returns { ok, error, output, results, archived } like one driver did.
 const drive = async (label, o) => {
@@ -393,7 +407,7 @@ const drive = async (label, o) => {
     return { ok: false, error: (step && step.error) || 'no report from the step', output: (step && step.output) || '', results: [] }
   }
   const parsed = lastJson(step.output)
-  const jobs = (parsed && Array.isArray(parsed.jobs)) ? parsed.jobs : []
+  const jobs = expandJobs(parsed)
   let results = []
   if (jobs.length) {
     const managers = Math.min(DSH_MANAGERS, Math.ceil(jobs.length / DSH_PER_BATCH))
@@ -612,7 +626,7 @@ const logModels = (reports) => {
 // card-compiler.ps1 does every structural step; DeepSeek writes JSON files; Haiku drivers relay the
 // jobs. work is the cycle's folder and DeepSeek workspace; it keeps state.json and report.json.
 const runCards = async (label, work, extra = '', only = '') => {
-  const cstep = (s, more = '') => `pwsh -NoProfile -File "${CARD_COMPILER}" -Step ${s} -Work "${work}"${more}`
+  const cstep = (s, more = '') => `pwsh -NoProfile -File "${CARD_COMPILER}" -Step ${s} -Work "${work}" -Compact${more}`
   const sessions = {}
   let jobs = 0
   const crun = async (what, command, opts = {}) => {
@@ -631,6 +645,7 @@ const runCards = async (label, work, extra = '', only = '') => {
   const max = A.cardMax ? ` -MaxCards ${A.cardMax}` : ''
   const planned = await crun('plan', cstep('plan', ` -Book ${KEY} -Staging "${OUT}"${rules}${max}${extra}`))
   const plan = lastJson(planned && planned.output)
+  if (plan) plan.jobs = expandJobs(plan)
   if (!plan) return { status: 'failed', label, error: `plan failed: ${(planned && planned.error) || 'no output'}` }
   log(`Cards ${label}: ${plan.picked} Cards of the book; ${plan.with_faults} with ${plan.faults} faults, ${plan.review} for review, ${plan.orphans} orphans; ${plan.jobs.length} DeepSeek jobs.`)
   if (!plan.jobs.length) {
