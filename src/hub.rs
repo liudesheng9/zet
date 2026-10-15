@@ -283,6 +283,37 @@ fn reason_chars(reason: &str) -> usize {
         .count()
 }
 
+/// The hubs that list a Card directly, highest level last. Only hubs whose
+/// body holds a Link to the Card are parsed.
+pub(crate) fn hubs_of(snapshot: &Snapshot, address: &str) -> Vec<Value> {
+    let link = format!("[[{address}]]");
+    let mut hubs = snapshot
+        .cards
+        .iter()
+        .filter(|card| card.card_type == CardType::Hub && card.address != address)
+        .filter(|card| {
+            snapshot.parsed.get(&card.address).is_some_and(|parsed| {
+                parsed.body.contains(&link)
+                    && parse_body(&parsed.body)
+                        .lines
+                        .iter()
+                        .any(|line| line.target == address)
+            })
+        })
+        .map(|card| (card.hub_level.map_or(0, HubLevel::number), card))
+        .collect::<Vec<_>>();
+    hubs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.address.cmp(&b.1.address)));
+    hubs.into_iter()
+        .map(|(_, hub)| {
+            json!({
+                "address": hub.address,
+                "title": snapshot.title(&hub.address),
+                "level": hub.hub_level.map(HubLevel::id),
+            })
+        })
+        .collect()
+}
+
 /// Every hub of the archive with its parsed body, read once per request.
 pub(crate) struct Graph<'a> {
     snapshot: &'a Snapshot,
@@ -379,28 +410,6 @@ impl<'a> Graph<'a> {
             }
         }
         false
-    }
-
-    /// The hubs that list a Card directly, highest level last.
-    pub(crate) fn hubs_of(&self, address: &str) -> Vec<Value> {
-        let mut hubs = self
-            .hubs
-            .iter()
-            .filter(|(hub, (_, body))| {
-                *hub != address && body.lines.iter().any(|line| line.target == address)
-            })
-            .map(|(hub, (level, _))| (level.map_or(0, HubLevel::number), hub.clone()))
-            .collect::<Vec<_>>();
-        hubs.sort();
-        hubs.into_iter()
-            .map(|(_, hub)| {
-                json!({
-                    "address": hub,
-                    "title": self.snapshot.title(&hub),
-                    "level": self.level(&hub).map(HubLevel::id),
-                })
-            })
-            .collect()
     }
 
     /// The Cards a hub is responsible for (its Hub range), without tree roots

@@ -141,6 +141,7 @@ pub(crate) fn start(root: &Path) -> Result<Running> {
         token: random_token()?,
         port,
         charts: Charts::default(),
+        snapshots: Snapshots::new(root),
     };
     fs::write(record_path(root), format!("{url}\n"))
         .with_context(|| format!("failed to write {}", record_path(root).display()))?;
@@ -257,6 +258,84 @@ struct App {
     token: String,
     port: u16,
     charts: Charts,
+    snapshots: Snapshots,
+}
+
+/// The last Snapshot read, kept until the Cards change. Reading and parsing every Card takes
+/// a few hundred milliseconds, too slow to repeat for each Card the page shows. A connection
+/// held open for the purpose asks SQLite's `data_version`, which moves whenever any other
+/// connection commits, so writes from the CLI, a Session, or the MCP server show up on the
+/// next request just as the GUI's own do.
+struct Snapshots {
+    root: PathBuf,
+    cached: Mutex<Option<Cached>>,
+}
+
+struct Cached {
+    conn: rusqlite::Connection,
+    version: i64,
+    snapshot: Arc<Snapshot>,
+    /// The overview of this Snapshot, which the page asks for every few seconds to notice
+    /// changes; made on the first ask.
+    overview: Option<Value>,
+}
+
+impl Snapshots {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            cached: Mutex::new(None),
+        }
+    }
+
+    fn get(&self) -> Result<Arc<Snapshot>> {
+        let mut cached = self.lock();
+        Ok(Arc::clone(&self.current(&mut cached)?.snapshot))
+    }
+
+    /// The overview `build` makes of the current Snapshot, built once per Snapshot.
+    fn overview(&self, build: impl FnOnce(&Snapshot) -> Result<Value>) -> Result<Value> {
+        let mut cached = self.lock();
+        let current = self.current(&mut cached)?;
+        if let Some(overview) = &current.overview {
+            return Ok(overview.clone());
+        }
+        let overview = build(&current.snapshot)?;
+        current.overview = Some(overview.clone());
+        Ok(overview)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Cached>> {
+        self.cached
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn current<'a>(&self, cached: &'a mut Option<Cached>) -> Result<&'a mut Cached> {
+        let conn = match cached.take() {
+            Some(held) => match data_version(&held.conn) {
+                Ok(version) if version == held.version => return Ok(cached.insert(held)),
+                Ok(_) => held.conn,
+                // A connection that cannot answer is replaced, not trusted.
+                Err(_) => crate::open_db(&self.root)?,
+            },
+            None => crate::open_db(&self.root)?,
+        };
+        // Ask before reading: a commit in between makes the next request read again rather
+        // than keep a stale Snapshot.
+        let version = data_version(&conn)?;
+        let snapshot = Arc::new(Snapshot::read(&self.root)?);
+        Ok(cached.insert(Cached {
+            conn,
+            version,
+            snapshot,
+            overview: None,
+        }))
+    }
+}
+
+fn data_version(conn: &rusqlite::Connection) -> rusqlite::Result<i64> {
+    conn.query_row("PRAGMA data_version", [], |row| row.get(0))
 }
 
 /// Chart pages this server rendered, by content id. A Card's HTML chart runs
@@ -521,41 +600,42 @@ impl App {
         }
     }
 
-    fn snapshot(&self) -> Result<Snapshot> {
-        Snapshot::read(&self.root)
+    fn snapshot(&self) -> Result<Arc<Snapshot>> {
+        self.snapshots.get()
     }
 
     fn overview(&self) -> ApiResult {
-        let snapshot = self.snapshot()?;
-        let counts = crate::card_counts(&self.root)?;
-        let workspaces = Workspace::ALL
-            .into_iter()
-            .map(|workspace| {
-                let counts = crate::workspace::counts(&snapshot.cards, workspace);
-                json!({
-                    "id": workspace.id(),
-                    "label": workspace.label(),
-                    "topic_trees": counts.topic_trees,
-                    "literature_trees": counts.literature_trees,
-                    "cards": counts.cards,
-                    "agent_writable": Access::Agent.can_write(workspace),
+        Ok(self.snapshots.overview(|snapshot| {
+            let counts = crate::card_counts(&self.root)?;
+            let workspaces = Workspace::ALL
+                .into_iter()
+                .map(|workspace| {
+                    let counts = crate::workspace::counts(&snapshot.cards, workspace);
+                    json!({
+                        "id": workspace.id(),
+                        "label": workspace.label(),
+                        "topic_trees": counts.topic_trees,
+                        "literature_trees": counts.literature_trees,
+                        "cards": counts.cards,
+                        "agent_writable": Access::Agent.can_write(workspace),
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        let broken = snapshot.lifecycle.broken_links()?.len();
-        Ok(json!({
-            "fingerprint": snapshot.fingerprint(),
-            "archive_root": self.root.display().to_string(),
-            "stats": {
-                "total": counts.total,
-                "topics": counts.topics,
-                "regular": counts.regular,
-                "literature": counts.literature,
-            },
-            "broken": broken,
-            "workspaces": workspaces,
-            "trees": snapshot.trees(),
-        }))
+                .collect::<Vec<_>>();
+            let broken = snapshot.lifecycle.broken_links()?.len();
+            Ok(json!({
+                "fingerprint": snapshot.fingerprint(),
+                "archive_root": self.root.display().to_string(),
+                "stats": {
+                    "total": counts.total,
+                    "topics": counts.topics,
+                    "regular": counts.regular,
+                    "literature": counts.literature,
+                },
+                "broken": broken,
+                "workspaces": workspaces,
+                "trees": snapshot.trees(),
+            }))
+        })?)
     }
 
     fn tree(&self, tree: &str) -> ApiResult {
@@ -612,7 +692,7 @@ impl App {
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
             "model": snapshot.model(&card.address),
-            "hubs": crate::hub::Graph::new(&snapshot).hubs_of(&card.address),
+            "hubs": crate::hub::hubs_of(&snapshot, &card.address),
             "context": context,
             "title": parsed.title,
             "text": card.text,
@@ -1462,7 +1542,6 @@ fn emphasis_field(body: &Value) -> Result<Option<Option<Emphasis>>> {
     }
 }
 
-
 fn confirm_field(body: &Value) -> Option<&str> {
     body.get("confirm").and_then(Value::as_str)
 }
@@ -1606,8 +1685,12 @@ mod tests {
         assert_eq!(url_port("http://example.com:4717/"), None);
         let temp = tempfile::tempdir().expect("temp dir");
         assert_eq!(recorded_url(temp.path()), None);
-        fs::write(record_path(temp.path()), "http://127.0.0.1:5000/
-").unwrap();
+        fs::write(
+            record_path(temp.path()),
+            "http://127.0.0.1:5000/
+",
+        )
+        .unwrap();
         assert_eq!(
             recorded_url(temp.path()).as_deref(),
             Some("http://127.0.0.1:5000/")
@@ -1639,6 +1722,40 @@ mod render_tests {
         .unwrap();
         let snapshot = Snapshot::read(root).expect("snapshot");
         (temp, snapshot)
+    }
+
+    #[test]
+    fn a_snapshot_is_kept_until_another_connection_changes_the_cards() {
+        let (temp, _) = snapshot();
+        let snapshots = Snapshots::new(temp.path());
+        let first = snapshots.get().unwrap();
+        assert!(Arc::ptr_eq(&first, &snapshots.get().unwrap()));
+        let fingerprint = |snapshots: &Snapshots| {
+            snapshots
+                .overview(|snapshot| Ok(json!(snapshot.fingerprint())))
+                .unwrap()
+        };
+        let before = fingerprint(&snapshots);
+        assert_eq!(
+            snapshots
+                .overview(|_| bail!("a kept overview is not built again"))
+                .unwrap(),
+            before
+        );
+        ops::edit(
+            temp.path(),
+            Access::Owner,
+            "0/1",
+            Some("# Ownership decides\n\nbody\n"),
+            TypeChange::default(),
+            None,
+        )
+        .unwrap();
+        let after = snapshots.get().unwrap();
+        assert!(!Arc::ptr_eq(&first, &after));
+        assert_eq!(after.title("0/1"), "Ownership decides");
+        assert!(Arc::ptr_eq(&after, &snapshots.get().unwrap()));
+        assert_ne!(fingerprint(&snapshots), before);
     }
 
     #[test]

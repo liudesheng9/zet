@@ -9,6 +9,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::link::{LinkBody, LinkLifecycle};
 use crate::model::{Emphasis, Facet, Level, Part};
@@ -193,7 +194,9 @@ pub(crate) fn parse_level_arg(
         Some(Value::Null) => return Ok((Some(None), Some(None))),
         Some(Value::String(value)) => value.clone(),
         Some(Value::Number(number)) => number.to_string(),
-        Some(_) => bail!("argument `level` must be concept, formal, line, topic, field, register, or empty"),
+        Some(_) => bail!(
+            "argument `level` must be concept, formal, line, topic, field, register, or empty"
+        ),
     };
     if crate::hub::names_hub_level(&text) {
         return Ok((None, Some(Some(crate::hub::HubLevel::parse(&text)?))));
@@ -358,7 +361,11 @@ pub(crate) fn move_card(
         });
     }
     crate::apply_move_plan(&mut conn, &plan)?;
-    let address = plan.mapping.get(at).cloned().unwrap_or_else(|| at.to_string());
+    let address = plan
+        .mapping
+        .get(at)
+        .cloned()
+        .unwrap_or_else(|| at.to_string());
     Ok(Outcome::Done(
         json!({ "address": address, "moved": plan.mapping }),
     ))
@@ -419,6 +426,15 @@ pub(crate) struct Snapshot {
     pub(crate) parsed: BTreeMap<String, crate::ParsedCard>,
     pub(crate) lifecycle: LinkLifecycle,
     pub(crate) inbound: BTreeMap<String, BTreeSet<String>>,
+    /// Each Card's address, title, and body in lower case, in `cards` order, made on the
+    /// first search; a Snapshot kept across requests then folds case only once.
+    folded: OnceLock<Vec<Folded>>,
+}
+
+struct Folded {
+    address: String,
+    title: String,
+    body: String,
 }
 
 impl Snapshot {
@@ -456,6 +472,7 @@ impl Snapshot {
             parsed,
             lifecycle,
             inbound,
+            folded: OnceLock::new(),
         })
     }
 
@@ -660,6 +677,22 @@ impl Snapshot {
             .map(|address| self.reference(&address))
     }
 
+    fn folded(&self) -> &[Folded] {
+        self.folded.get_or_init(|| {
+            self.cards
+                .iter()
+                .map(|card| {
+                    let parsed = &self.parsed[&card.address];
+                    Folded {
+                        address: card.address.to_lowercase(),
+                        title: parsed.title.to_lowercase(),
+                        body: parsed.body.to_lowercase(),
+                    }
+                })
+                .collect()
+        })
+    }
+
     /// The GUI's ranked search. Every word of the query must occur in the
     /// address, title, or body; a hit in the title or address outranks a hit
     /// in the body, and tree roots and Hub Cards (ways in) rank a little
@@ -679,11 +712,13 @@ impl Snapshot {
         let terms = needle.split_whitespace().collect::<Vec<_>>();
         let mut matches = Vec::new();
         if !terms.is_empty() {
-            for (order, card) in self.cards.iter().enumerate() {
+            for (order, (card, folded)) in self.cards.iter().zip(self.folded()).enumerate() {
                 let parsed = &self.parsed[&card.address];
-                let title = parsed.title.to_lowercase();
-                let address = card.address.to_lowercase();
-                let body = parsed.body.to_lowercase();
+                let Folded {
+                    address,
+                    title,
+                    body,
+                } = folded;
                 let mut score = 0_i64;
                 let mut field = "body";
                 let mut body_term = None;
@@ -721,7 +756,8 @@ impl Snapshot {
                     continue;
                 }
                 // The whole title, written with or without the spaces between the words.
-                if title == needle || title.split_whitespace().collect::<String>() == terms.concat()
+                if *title == needle
+                    || title.split_whitespace().collect::<String>() == terms.concat()
                 {
                     score += 1000;
                 }
@@ -1659,7 +1695,15 @@ The model"
         assert_eq!(type_of(root, "0/1|a"), CardType::Model);
         assert_eq!(type_of(root, "0/1|b"), CardType::Event);
 
-        move_card(root, owner, "0/1|a", &Target::To("0/2".into()), false, Some("move")).unwrap();
+        move_card(
+            root,
+            owner,
+            "0/1|a",
+            &Target::To("0/2".into()),
+            false,
+            Some("move"),
+        )
+        .unwrap();
         assert!(text_of(root, "0/2").starts_with("# Side model\n"));
         assert_eq!(type_of(root, "0/2"), CardType::Model);
         assert_eq!(type_of(root, "0/1|b"), CardType::Event);
@@ -1773,7 +1817,15 @@ The model"
         // Deleting 0/1|a takes it off the Table and compacts 0/1|b to 0/1|a.
         delete(root, owner, "0/1|a", None, Some("delete")).unwrap();
         assert_eq!(lying(), ["0/2", "0/1|a", "Lit2020"]);
-        move_card(root, owner, "0/1|a", &Target::To("0/3".into()), false, Some("move")).unwrap();
+        move_card(
+            root,
+            owner,
+            "0/1|a",
+            &Target::To("0/3".into()),
+            false,
+            Some("move"),
+        )
+        .unwrap();
         assert_eq!(lying(), ["0/2", "0/3", "Lit2020"]);
         edit_metadata(
             root,

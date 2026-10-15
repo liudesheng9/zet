@@ -318,7 +318,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "emphasis": card.emphasis.map(Emphasis::id),
                 "level": card.level_id(),
                 "model": snapshot.model(&card.address),
-                "hubs": crate::hub::Graph::new(&snapshot).hubs_of(&card.address),
+                "hubs": crate::hub::hubs_of(&snapshot, &card.address),
                 "title": parsed.title,
                 "body": parsed.body,
                 "text": card.text,
@@ -551,7 +551,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             Ok(plan_or_done(outcome))
         }
         "move_card" => {
-            let target = match (optional_string(args, "to")?, optional_string(args, "before")?) {
+            let target = match (
+                optional_string(args, "to")?,
+                optional_string(args, "before")?,
+            ) {
                 (to, before) if !to.is_empty() && !before.is_empty() => {
                     bail!("give either `to` or `before`, not both")
                 }
@@ -778,9 +781,8 @@ fn tool_definitions() -> Vec<Value> {
             "description": description,
         })
     };
-    let limit = |description: &str| {
-        json!({ "type": "integer", "minimum": 1, "description": description })
-    };
+    let limit =
+        |description: &str| json!({ "type": "integer", "minimum": 1, "description": description });
     let hub_limits = json!({
         "max_groups": limit("Most groups a hub may hold (default 7)."),
         "max_lines": limit("Most member lines a hub may hold (default 25)."),
