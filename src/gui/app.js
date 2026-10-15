@@ -703,18 +703,18 @@
       const onTable = spreads.has(hit.address);
       const title = hit.title || '(untitled)';
       return h('div', {
-        class: 'slip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : ''),
+        class: 'fslip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : ''),
         role: 'option', dataset: { address: hit.address },
         onclick: () => choose(hit.address),
         onmousemove: (event) => pointAt(event.currentTarget),
       },
-        h('span', { class: 'slip-head' },
-          h('span', { class: 'slip-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
+        h('span', { class: 'fslip-head' },
+          h('span', { class: 'fslip-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
           typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level),
           h('span', { class: 'addr', text: hit.address })),
-        hit.snippet ? h('span', { class: 'slip-text' }, marked(hit.snippet, words)) : null,
+        hit.snippet ? h('span', { class: 'fslip-text' }, marked(hit.snippet, words)) : null,
         h('button', {
-          class: 'slip-pull' + (onTable ? ' on' : ''), tabindex: '-1',
+          class: 'fslip-pull' + (onTable ? ' on' : ''), tabindex: '-1',
           title: onTable ? 'On the Table: click to put it back (⇧↵)' : 'Lay it on the Table (⇧↵)',
           onclick: (event) => { event.stopPropagation(); pullHit(hit.address); },
         }, onTable ? '✓' : '+'),
@@ -770,21 +770,21 @@
             guide(tree, list[0].tree_title, list.length, /^\d+$/.test(tree) ? 'topic' : 'literature'),
             kept.map((hit) => slip(hit, words)),
             list.length > kept.length ? h('button', {
-              class: 'fold', tabindex: '-1', dataset: { fold: tree },
+              class: 'ffold', tabindex: '-1', dataset: { ffold: tree },
               onclick: () => unfold(tree), onmousemove: (event) => pointAt(event.currentTarget),
             }, `+${list.length - kept.length} more in this tree`) : null));
         });
         if (!allTrees && trees.length > TREES) {
           const rest = trees.slice(TREES);
           nodes.push(h('button', {
-            class: 'fold trees', tabindex: '-1', dataset: { fold: '*' },
+            class: 'ffold trees', tabindex: '-1', dataset: { ffold: '*' },
             onclick: () => unfold('*'), onmousemove: (event) => pointAt(event.currentTarget),
           }, `+${rest.length} more trees · ${rest.reduce((total, [, list]) => total + list.length, 0)} cards`));
         }
         if (data.total > shown) nodes.push(h('p', { class: 'finder-more', text: `${data.total - shown} weaker matches are not shown; add a word to narrow the search.` }));
       }
       hits.replaceChildren(...nodes);
-      items = [...hits.querySelectorAll('.slip, .fold')];
+      items = [...hits.querySelectorAll('.fslip, .ffold')];
       select(Math.min(selected, items.length - 1), { scroll: false });
       if (!items.length) preview.replaceChildren();
     }
@@ -822,7 +822,7 @@
         else if (card.body.trim()) md.innerHTML = card.html;
         else md.append(h('p', { class: 'empty', text: 'No body yet.' }));
         const kindLabel = { topic: 'Topic', literature: 'Literature', regular: 'Card' }[card.kind] || 'Card';
-        const face = h('article', { class: 'card preview ' + card.kind + (partial ? ' partial' : '') + (filled ? ' filled' : '') + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : ''), dataset: { address: card.address } },
+        const face = h('article', { class: 'card in-hand ' + card.kind + (partial ? ' partial' : '') + (filled ? ' filled' : '') + (card.workspace === 'agent' ? ' agent-ws' : '') + (card.type && card.type !== 'idea' ? ' type-' + card.type + hubClass(card) : ''), dataset: { address: card.address } },
           h('header', { class: 'card-head' },
             h('div', { class: 'card-meta' },
               h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
@@ -860,7 +860,7 @@
     function pullHit(address) {
       toggleTable(address);
       const on = spreads.has(address);
-      for (const pull of hits.querySelectorAll(`.slip[data-address="${CSS.escape(address)}"] .slip-pull`)) {
+      for (const pull of hits.querySelectorAll(`.fslip[data-address="${CSS.escape(address)}"] .fslip-pull`)) {
         pull.classList.toggle('on', on);
         pull.textContent = on ? '✓' : '+';
       }
@@ -904,7 +904,7 @@
         event.preventDefault();
         const item = items[selected];
         if (!item) return;
-        if (item.dataset.fold) unfold(item.dataset.fold);
+        if (item.dataset.ffold) unfold(item.dataset.ffold);
         else if (event.shiftKey) pullHit(item.dataset.address);
         else choose(item.dataset.address);
       } else if (event.key === 'Escape') {
