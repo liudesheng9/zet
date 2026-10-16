@@ -512,10 +512,15 @@ $script:FigureLines = $null
 function Get-FigureLine([string]$label) {
     if ($null -eq $script:FigureLines) {
         $script:FigureLines = @{}
-        # The Work folder is <staging>\models when the step is given no -Staging (validate).
-        $folder = if ($Staging) { $Staging } else { Split-Path -Parent $Work }
-        $file = Join-Path $folder 'figures.json'
-        if (Test-Path -LiteralPath $file) {
+        # Without -Staging (the architect's validate), the nearest folder above -Work that holds figures.json:
+        # the workflow's work folder is <staging>\models\<batch>.
+        $file = if ($Staging) { Join-Path $Staging 'figures.json' } else { '' }
+        if (-not $Staging) {
+            $dir = Split-Path -Parent $Work
+            while ($dir -and -not (Test-Path -LiteralPath (Join-Path $dir 'figures.json'))) { $dir = Split-Path -Parent $dir }
+            if ($dir) { $file = Join-Path $dir 'figures.json' }
+        }
+        if ($file -and (Test-Path -LiteralPath $file)) {
             foreach ($figure in (Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json).figures) {
                 foreach ($l in @($figure.labels)) { if (-not $script:FigureLines.ContainsKey($l)) { $script:FigureLines[$l] = $figure.line } }
             }

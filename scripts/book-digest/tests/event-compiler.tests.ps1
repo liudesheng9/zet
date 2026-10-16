@@ -104,6 +104,35 @@ try {
     Assert (@($replan.jobs).Count -eq 0) 'plan: a rerun plans no applied job'
     $report = Last @(pwsh -NoProfile -File $compiler -Step report -Staging $staging 2>&1)
     Assert ($report.jobs -eq 1 -and $report.created -eq 1 -and $report.merged -eq 1 -and $report.linked -eq 2 -and $report.refused -eq 2) "report: the counts ($($report | ConvertTo-Json -Compress))"
+
+    # A parallel stage (models, findings) edits an Idea Card between apply's read and its write. The edit carries
+    # base, so zt refuses it; the job stays pending, and a rerun writes the Link and keeps the other stage's line.
+    $copy = Join-Path $scratch 'tree\scripts\book-digest'
+    $helperDir = Join-Path $scratch 'tree\skills\zt\scripts'
+    New-Item -ItemType Directory -Force $copy, $helperDir | Out-Null
+    Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'), (Join-Path $PSScriptRoot '..\*.md') -Destination $copy
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'racing-zt-mcp.ps1') -Destination (Join-Path $helperDir 'zt-mcp.ps1')
+    $env:ZT_REAL_HELPER = $script:ZtHelper
+    $env:ZT_RACE_TARGET = $ideas[0]
+    $env:ZT_RACE_FLAG = Join-Path $scratch 'raced'
+    $env:ZT_RACE_LINE = '模型阶段在这里补了一句。'
+    $racer = Join-Path $copy 'event-compiler.ps1'
+    $late = @{ group = 1; src = 'sections/s01.md:3'; title = '1927 年通用汽车扩建费雪车身工厂'; time = '1927 年'; place = '美国'; actors = '通用汽车、费雪车身公司'
+        course = '通用汽车扩建了费雪车身的工厂。'; section = '§1'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点：一体化后买方敢于投资。"; existing = '' }
+    @{ events = @($late) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $staging 'events\out\ev-02.json') -Encoding utf8
+    $raced = Last @(pwsh -NoProfile -File $racer -Step apply -Staging $staging -Apply 2>&1)
+    $idea = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ideas[0] } }))[0]
+    Assert ($idea.body.Contains($env:ZT_RACE_LINE)) 'apply: an Idea Card edited by a parallel stage keeps that stage''s line'
+    Assert (-not $raced.ok -and $raced.applied_jobs -eq 0 -and $raced.pending_jobs -eq 1 -and $raced.created -eq 1) "apply: a helper run that fails part way leaves the job pending ($($raced | ConvertTo-Json -Compress))"
+    $retry = Last @(pwsh -NoProfile -File $racer -Step apply -Staging $staging -Apply 2>&1)
+    $state = Get-Content (Join-Path $staging 'events\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $lateMade = @($state.applied['ev-02'].created)
+    Assert ($retry.ok -and $retry.applied_jobs -eq 1 -and $retry.created -eq 0 -and $retry.linked -eq 1 -and $lateMade.Count -eq 1) "apply: the rerun applies the job and reuses the Event Card made before the failure ($($retry | ConvertTo-Json -Compress))"
+    $idea = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ideas[0] } }))[0]
+    Assert ($idea.body.Contains($env:ZT_RACE_LINE) -and $idea.body -match "案例 \[\[$([regex]::Escape([string]$lateMade[0]))\]\]：1927 年") "apply: the rerun writes the missing Link ($($idea.body))"
+    $found = @(@(Invoke-Zt @(@{ tool = 'search_cards'; arguments = @{ query = '1927 年通用汽车扩建费雪车身工厂'; type = 'event' } }))[0].results)
+    Assert ($found.Count -eq 1) "apply: no second Event Card ($($found.Count))"
+    $env:ZT_RACE_TARGET = ''
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

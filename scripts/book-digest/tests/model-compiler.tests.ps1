@@ -75,6 +75,22 @@ try {
     $v = Run 'validate' @('-Plan', $planFile)
     Assert (@($v)[-1] -eq 'faults: 0') "validate: the fixed plan has no faults ($($v -join ' / '))"
 
+    # The architect validates without -Staging, from the workflow's <staging>\models\<batch> folder: a book
+    # figure listed in <staging>\figures.json is found there too.
+    [IO.File]::WriteAllText((Join-Path $staging 'figures.json'), (@{ figures = @(@{ labels = @('2.F.1'); line = '![图 2.F.1](scholar:f1)' }) } | ConvertTo-Json -Depth 5), $utf8)
+    $batch = Join-Path $staging 'models\b1'
+    New-Item -ItemType Directory -Force $batch | Out-Null
+    $figurePlan = $plan | ConvertTo-Json -Depth 8 | ConvertFrom-Json -AsHashtable
+    $figurePlan.parts[5].figure = @('2.F.1')
+    $figurePlanFile = Join-Path $batch 'plan.json'
+    [IO.File]::WriteAllText($figurePlanFile, ($figurePlan | ConvertTo-Json -Depth 8), $utf8)
+    $v = @(pwsh -NoProfile -File $compiler -Step validate -Work $batch -Plan $figurePlanFile 2>&1)
+    Assert (@($v)[-1] -eq 'faults: 0') "validate: without -Staging a book figure of <staging>\figures.json is found ($($v -join ' / '))"
+    $figurePlan.parts[5].figure = @('9.F.9')
+    [IO.File]::WriteAllText($figurePlanFile, ($figurePlan | ConvertTo-Json -Depth 8), $utf8)
+    $v = @(pwsh -NoProfile -File $compiler -Step validate -Work $batch -Plan $figurePlanFile 2>&1)
+    Assert ($v -match "figure '9.F.9' is not a book figure") "validate: a figure the book does not hold is a fault ($($v -join ' / '))"
+
     # apply: skeleton in build order, 结构 list, fill jobs
     $apply = Last (Run 'apply')
     Assert ($apply.models[0].status -eq 'built') "apply: model built ($($apply.models[0].error))"

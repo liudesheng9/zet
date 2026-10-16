@@ -21,6 +21,10 @@
               and evidence role to an existing Event Card (existing), or creates the Event Card as a Side
               successor of its first supported Idea Card (type event), then links it from every supported
               Idea Card ("案例 [[event]]：title。"). Without -Apply it only validates.
+              It writes in two helper runs: the Cards first, then the Link edits, which read the Idea Cards again
+              and carry base, so an Idea Card a parallel stage changed in between is refused, not overwritten. A job
+              whose helper run fails part way is not applied: state.json keeps it under partial (the Cards made so
+              far and the error), and the next apply reuses those Cards and writes what is missing.
     report    the counts of state.json.
 #>
 [CmdletBinding()]
@@ -44,9 +48,11 @@ New-Item -ItemType Directory -Force -Path $Work, $out | Out-Null
 $stateFile = Join-Path $Work 'state.json'
 $installedHelper = Join-Path $HOME '.codex\skills\zt\scripts\zt-mcp.ps1'
 function Out-Last($object) { $object | ConvertTo-Json -Depth 10 -Compress }
+# applied: the jobs written in full; partial: the jobs whose helper run failed part way (the Cards made so far, the error).
 function Get-State {
-    if (Test-Path -LiteralPath $stateFile) { return Get-Content -LiteralPath $stateFile -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable }
-    @{ applied = @{}; refused = @() }
+    $s = if (Test-Path -LiteralPath $stateFile) { Get-Content -LiteralPath $stateFile -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable } else { @{ applied = @{}; refused = @() } }
+    if (-not $s.Contains('partial')) { $s.partial = @{} }
+    $s
 }
 function Save-State($s) { [IO.File]::WriteAllText($stateFile, ($s | ConvertTo-Json -Depth 10), $utf8) }
 function Get-Field($e, $name) { if ($e -is [Collections.IDictionary] -and $e.Contains($name)) { [string]$e[$name] } else { '' } }
@@ -183,11 +189,23 @@ if ($Step -eq 'report') {
     $jobs = @($s.applied.Values)
     Out-Last ([ordered]@{ jobs = $jobs.Count; created = (@($jobs | ForEach-Object { @($_.created) }) | Where-Object { $_ }).Count
             merged = (@($jobs | ForEach-Object { @($_.merged) }) | Where-Object { $_ }).Count; linked = [int](@($jobs | ForEach-Object { [int]$_.linked }) | Measure-Object -Sum).Sum
-            refused = @($s.refused).Count; errors = @($jobs | Where-Object { $_.error } | ForEach-Object { "$($_.id): $($_.error)" }) })
+            refused = @($s.refused).Count; pending = $s.partial.Count
+            errors = @(@($jobs | Where-Object { $_.error } | ForEach-Object { "$($_.id): $($_.error)" }) + @($s.partial.Keys | ForEach-Object { "$($_): $($s.partial[$_].error)" })) })
     return
 }
 
 # --- apply -----------------------------------------------------------------------------------------
+# Runs the zt helper on $calls; returns the result lines and sets $entry.error when the run fails part way.
+function Invoke-Helper($calls, $entry) {
+    $log = Join-Path $Work 'created.txt'
+    $result = @(($calls | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Log $log)
+    $exit = $LASTEXITCODE
+    $err = @($result | Where-Object { $_ -match '^\d+ error ' })
+    if ($exit -ne 0 -or $err.Count) { $entry.error = (@($err) + "exit $exit")[0] }
+    , $result
+}
+function Test-Ok($result, [int]$c) { [bool]@($result | Where-Object { $_ -match "^$c ok " }).Count }
+
 $state = Get-State
 $summary = [ordered]@{ ok = $true; applied_jobs = 0; created = 0; merged = 0; linked = 0; refused = @(); pending_jobs = 0 }
 foreach ($file in @(Get-ChildItem -LiteralPath $out -Filter 'ev-*.json' -File | Sort-Object Name)) {
@@ -200,9 +218,18 @@ foreach ($file in @(Get-ChildItem -LiteralPath $out -Filter 'ev-*.json' -File | 
     foreach ($f in $faults) { if ($f -match '^event:(\d+) ' -and -not $bad.ContainsKey([int]$Matches[1])) { $bad[[int]$Matches[1]] = $f } }
     foreach ($b in $bad.Values) { $summary.refused += "${id} $b" }
     if (-not $Apply) { continue }
+    # A run of this job that failed part way left the Event Cards it made (event place -> address): reuse them,
+    # so the rerun makes no Card twice and writes the Links that run missed.
+    $partial = if ($state.partial.Contains($id)) { $state.partial[$id] } else { @{ made = @{}; linked = 0 } }
+    $made = @{}
+    foreach ($p in @($partial.made.Keys)) { $made[[string]$p] = [string]$partial.made[$p] }
+    $entry = [ordered]@{ id = $id; created = @(); merged = @(); linked = [int]$partial.linked; error = '' }
+    $new = 0
+
+    # First run: merge into existing Event Cards and create the new ones.
     $calls = @()
-    $entry = [ordered]@{ id = $id; created = @(); merged = @(); linked = 0; error = '' }
-    $links = [ordered]@{}   # Idea Card -> the lines that link its events
+    $createdBy = @{}   # call index -> event place
+    $refs = [ordered]@{}   # event place -> its Event Card (an address, or the place of a Card still to make)
     $i = 0
     foreach ($e in $events) {
         $i++
@@ -211,49 +238,84 @@ foreach ($file in @(Get-ChildItem -LiteralPath $out -Filter 'ev-*.json' -File | 
         $existing = (Get-Field $e 'existing').Trim()
         if ($existing) {
             $card = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $existing } }))[0]
-            $lines = [Collections.Generic.List[string]]::new([string[]](([string]$card.body) -split "`n"))
-            $at = -1
-            for ($k = 0; $k -lt $lines.Count; $k++) { if ($lines[$k] -match '^来源：') { $at = $k } }
             $source = "来源：[[$key]] $(Get-Field $e 'section')"
-            if ($at -ge 0) { $lines.Insert($at + 1, $source) } else { $lines.Add($source) }
-            $lines.Add("证据作用：$(Get-Field $e 'role')")
-            $calls += @{ tool = 'edit_card'; arguments = @{ at = $existing; body = ($lines -join "`n") } }
-            $ref = $existing
+            $role = "证据作用：$(Get-Field $e 'role')"
+            # A failed run may have merged it already.
+            if (-not (([string]$card.body).Contains($source) -and ([string]$card.body).Contains($role))) {
+                $lines = [Collections.Generic.List[string]]::new([string[]](([string]$card.body) -split "`n"))
+                $at = -1
+                for ($k = 0; $k -lt $lines.Count; $k++) { if ($lines[$k] -match '^来源：') { $at = $k } }
+                if ($at -ge 0) { $lines.Insert($at + 1, $source) } else { $lines.Add($source) }
+                $lines.Add($role)
+                $calls += @{ tool = 'edit_card'; arguments = @{ at = $existing; body = ($lines -join "`n"); base = [string]$card.text } }
+            }
+            $refs["$i"] = $existing
             $entry.merged += $existing
-        } else {
+        } elseif (-not $made.ContainsKey("$i")) {
             $calls += @{ tool = 'create_successor'; arguments = @{ at = $supports[0]; kind = 'side'; type = 'event'; title = (Get-Field $e 'title').Trim(); body = (Get-EventBody $e); src = (Get-Field $e 'src') } }
-            $ref = "@@$($calls.Count - 1)"
-        }
-        $title = (Get-Field $e 'title').Trim().TrimEnd('。')
-        foreach ($s in $supports) { if (-not $links.Contains($s)) { $links[$s] = @() }; $links[$s] += "案例 [[$ref]]：$title。" }
-    }
-    # Each supported Idea Card links its events once, in one edit.
-    if ($links.Count) {
-        $ideas = @(Invoke-Zt @($links.Keys | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
-        $k = 0
-        foreach ($s in @($links.Keys)) {
-            $body = [string]$ideas[$k].body
-            $k++
-            $add = @($links[$s] | Where-Object { -not $body.Contains(($_ -replace '^案例 (\[\[[^\]]+\]\]).*$', '$1')) })
-            if (-not $add.Count) { continue }
-            $calls += @{ tool = 'edit_card'; arguments = @{ at = $s; body = ($body.TrimEnd() + "`n`n" + ($add -join "`n")) } }
-            $entry.linked += $add.Count
+            $createdBy[$calls.Count - 1] = $i
         }
     }
     if ($calls.Count) {
-        $log = Join-Path $Work 'created.txt'
-        $result = @(($calls | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Log $log)
-        $made = @($result | Where-Object { $_ -match '^(\d+) ok ' } | ForEach-Object { [int]($_ -split ' ', 2)[0] })
-        for ($c = 0; $c -lt $calls.Count; $c++) { if ($calls[$c].tool -eq 'create_successor' -and $made -contains $c) { $entry.created += (@($result | Where-Object { $_ -match "^$c ok " })[0] -split ' ok ', 2)[1].Trim() } }
-        $err = @($result | Where-Object { $_ -match '^\d+ error ' })
-        if ($LASTEXITCODE -ne 0 -or $err.Count) { $entry.error = (@($err) + "exit $LASTEXITCODE")[0]; $summary.ok = $false }
+        $result = Invoke-Helper $calls $entry
+        foreach ($c in @($createdBy.Keys)) {
+            $line = @($result | Where-Object { $_ -match "^$c ok " })
+            if ($line.Count) { $made["$($createdBy[$c])"] = ($line[0] -split ' ok ', 2)[1].Trim(); $new++ }
+        }
     }
-    $state.applied[$id] = $entry
-    $state.refused = @(@($state.refused) + @($bad.Values | ForEach-Object { "$id $_" }))
+
+    # Second run: each supported Idea Card links its events once, in one edit. It reads the Cards after the first
+    # run (a new Event Card changes their Reverse links), and each edit carries the text it was built on (base),
+    # so a Card another stage changed in between is refused, not overwritten; the rerun reads it again.
+    if (-not $entry.error) {
+        $links = [ordered]@{}   # Idea Card -> the lines that link its events
+        $i = 0
+        foreach ($e in $events) {
+            $i++
+            if ($bad.ContainsKey($i)) { continue }
+            $ref = if ($refs.Contains("$i")) { $refs["$i"] } else { $made["$i"] }
+            $title = (Get-Field $e 'title').Trim().TrimEnd('。')
+            foreach ($s in @($e['supports'] | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })) {
+                if (-not $links.Contains($s)) { $links[$s] = @() }
+                $links[$s] += "案例 [[$ref]]：$title。"
+            }
+        }
+        $calls = @()
+        $linkCount = @{}   # call index -> Links that edit adds
+        if ($links.Count) {
+            $ideas = @(Invoke-Zt @($links.Keys | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
+            $k = 0
+            foreach ($s in @($links.Keys)) {
+                $body = [string]$ideas[$k].body
+                $text = [string]$ideas[$k].text
+                $k++
+                $add = @($links[$s] | Where-Object { -not $body.Contains(($_ -replace '^案例 (\[\[[^\]]+\]\]).*$', '$1')) })
+                if (-not $add.Count) { continue }
+                $calls += @{ tool = 'edit_card'; arguments = @{ at = $s; body = ($body.TrimEnd() + "`n`n" + ($add -join "`n")); base = $text } }
+                $linkCount[$calls.Count - 1] = $add.Count
+            }
+        }
+        if ($calls.Count) {
+            $result = Invoke-Helper $calls $entry
+            foreach ($c in @($linkCount.Keys)) { if (Test-Ok $result $c) { $entry.linked += $linkCount[$c] } }
+        }
+    }
+
+    $entry.created = @($made.Keys | Sort-Object { [int]$_ } | ForEach-Object { $made[$_] })
+    $summary.created += $new
+    if ($entry.error) {
+        # Not applied: the rerun tries the job again with the Cards made so far.
+        $state.partial[$id] = [ordered]@{ made = $made; linked = $entry.linked; error = $entry.error }
+        $summary.ok = $false
+        $summary.pending_jobs++
+    } else {
+        $state.applied[$id] = $entry
+        $state.partial.Remove($id)
+        $state.refused = @(@($state.refused) + @($bad.Values | ForEach-Object { "$id $_" }))
+        $summary.applied_jobs++
+        $summary.merged += $entry.merged.Count
+        $summary.linked += $entry.linked
+    }
     Save-State $state
-    $summary.applied_jobs++
-    $summary.created += $entry.created.Count
-    $summary.merged += $entry.merged.Count
-    $summary.linked += $entry.linked
 }
 Out-Last $summary
