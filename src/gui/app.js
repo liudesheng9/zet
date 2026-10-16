@@ -2623,6 +2623,7 @@
     relaxes: { fwd: 'relaxes', back: 'relaxed by' },
     corresponds: { fwd: 'corresponds to', back: 'mirrored by' },
     objects: { fwd: 'objects to', back: 'objected to by' },
+    specializes: { fwd: 'specializes', back: 'specialized by' },
     refers: { fwd: 'refers to', back: 'referred to by' },
   };
   const kindOf = (relation) => (KINDS[relation.kind] ? relation.kind : 'rests-on');

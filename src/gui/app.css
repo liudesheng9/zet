@@ -1198,6 +1198,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .thread.kind-contrasts .line { stroke-dasharray: 9 5; }
 .thread.kind-relaxes .line { stroke-dasharray: 12 4 2 4; }
 .thread.kind-corresponds .line { stroke-dasharray: 2 3; }
+.thread.kind-specializes .line { stroke-dasharray: 14 3; }
 .thread.faint .line, .thread.faint .tip { opacity: .14; }
 .thread.warm .line, .thread.warm .tip { stroke: var(--ink-soft); opacity: .75; }
 .thread.hot .line, .thread.hot .tip { stroke: var(--link); stroke-width: 2; opacity: .92; }
@@ -1325,7 +1326,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   background-image: linear-gradient(transparent 32px, var(--paper-margin) 32px 33.5px, transparent 33.5px);
   box-shadow: var(--card-shadow-lift); color: var(--ink); cursor: pointer;
   translate: -50% 0; rotate: -1.4deg; transition: bottom .32s cubic-bezier(.22, 1.28, .46, 1), rotate .32s var(--ease);
-  animation: rise .5s cubic-bezier(.22, 1.28, .46, 1);
+  animation: hand-rise .5s cubic-bezier(.22, 1.28, .46, 1);
 }
 .table-hand[hidden] { display: none; }
 .table-hand:hover { bottom: -34px; rotate: 0deg; }
@@ -1333,7 +1334,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .table-hand .addr { font: 11px var(--mono); color: var(--ink-faint); align-self: center; }
 .table-hand .t { grid-column: 1 / -1; margin-top: 8px; font: 600 14px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-hand .act { grid-column: 1 / -1; font: 12px var(--sans); color: var(--accent); display: flex; gap: 6px; align-items: center; }
-@keyframes rise { from { bottom: -140px; } }
+@keyframes hand-rise { from { bottom: -140px; } }
 
 /* The box a card goes back into: a drawer front that slides up while a card is carried. */
 .table-box {

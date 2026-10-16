@@ -1808,6 +1808,38 @@ mod tests {
         clear_record(temp.path());
         assert_eq!(recorded_url(temp.path()), None);
     }
+
+    #[test]
+    fn the_front_end_names_every_relation_kind() {
+        use crate::model::RelationKind;
+        let kinds = &APP_JS[APP_JS.find("const KINDS = {").expect("KINDS")..];
+        let kinds = &kinds[..kinds.find("};").expect("end of KINDS")];
+        for kind in [
+            RelationKind::RestsOn,
+            RelationKind::Illustrates,
+            RelationKind::Contrasts,
+            RelationKind::Relaxes,
+            RelationKind::Corresponds,
+            RelationKind::Objects,
+            RelationKind::Specializes,
+            RelationKind::Refers,
+        ] {
+            let id = kind.id();
+            assert!(
+                kinds.contains(&format!("'{id}':")) || kinds.contains(&format!("\n    {id}:")),
+                "app.js KINDS has no `{id}`"
+            );
+        }
+    }
+
+    #[test]
+    fn each_css_animation_name_is_defined_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for rest in APP_CSS.split("@keyframes ").skip(1) {
+            let name = rest.split_whitespace().next().unwrap_or_default();
+            assert!(seen.insert(name), "@keyframes {name} is defined twice in app.css");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -508,7 +508,7 @@ cargo test --bin zt gui::
 cargo test --bin zt spread::
 ```
 
-`cargo test --bin zt gui::` runs `src/gui.rs` `tests` (query decoding, the recorded URL) and `render_tests` (Snapshot cache invalidation by another connection, TeX spans and LaTeX delimiters, chart fences and raw HTML charts into frames, plain inline tags and comments, artifact figures and forged digests, Document links, KaTeX inlining with fonts, chart store capacity) and `src/gui/document.rs` `tests` (image path resolution, reading page and its script policy).
+`cargo test --bin zt gui::` runs `src/gui.rs` `tests` (query decoding, the recorded URL, every `RelationKind` id as a `KINDS` key in `app.js`, no `@keyframes` name defined twice in `app.css`) and `render_tests` (Snapshot cache invalidation by another connection, TeX spans and LaTeX delimiters, chart fences and raw HTML charts into frames, plain inline tags and comments, artifact figures and forged digests, Document links, KaTeX inlining with fonts, chart store capacity) and `src/gui/document.rs` `tests` (image path resolution, reading page and its script policy).
 
 Integration tests (each starts a test service with `ZT_GUI_PORT=0` and talks raw HTTP):
 
@@ -549,8 +549,8 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 - **`/api/literature/check` and `/api/spreads` open their own connections** instead of using the Snapshot.
 - **The chart store is FIFO, not LRU.** Re-rendering a Card does not refresh its chart's place; with more than 512 distinct charts rendered, a chart still on screen can expire and its frame shows 404 until the Card is opened again.
 - **The search tray and the Map share words.** The Map draws far cards as `.node.slip` and folds as `.badge.fold`; the tray uses `.fslip`/`.ffold`/`.in-hand` (`d7168d2` fixed a collision). Grep for a class name before adding one.
-- **`KINDS` in `app.js` has no `specializes`.** `RelationKind::Specializes` exists in `src/model.rs`, but `kindOf` in `app.js` maps any kind not in `KINDS` to `rests-on`, so a `specializes` relation is drawn on the model board as a `rests-on` thread and placed by it; on the Table it is labelled "refers to" and is not offered among the kinded neighbours within reach.
-- **`@keyframes rise` is defined twice in `app.css`**: first as a transform/opacity rise (used by `.command-menu`, `.sheet-dlg`, `.toast`, `.nav-menu`), later as `from { bottom: -140px; }` for `.table-hand`. The later definition wins for the whole document, so dialogs, menus, and toasts do not get their intended rise.
+- **`kindOf` falls back to `rests-on`.** A kind missing from `KINDS` is drawn on the model board as a `rests-on` thread and placed by it, and the Table labels it "refers to". The unit test `the_front_end_names_every_relation_kind` fails when `RelationKind` gains a kind that `KINDS` lacks.
+- **CSS animation names are global.** A second `@keyframes` with the same name replaces the first for the whole page (the table hand once overrode the dialogs' `rise`; it is now `hand-rise`). `each_css_animation_name_is_defined_once` checks it.
 - **The system-dark block in `app.css` lacks `--hub`.** `:root[data-theme="dark"]` sets `--hub: #8fd1ae`, but `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` does not, so with the system theme dark and no explicit choice, hub ink keeps the light green.
 - **Mirrors must stay in step.** `parentOf` in `app.js` mirrors `parent_location`; `CARD_TYPES`, `FACETS`, `LEVELS`, `HUB_LEVELS`, `MATH_FORMS`, `KINDS` mirror Rust enums; the command bar mirrors the Session's vocabulary.
 - **Tree roots that half the tree links** would light everything: the Map draws inbound Link arcs only when there are at most 16.
@@ -560,6 +560,7 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 
 ## Change history
 
+- `2026-10-16` — `KINDS` gains `specializes` (`.thread.kind-specializes`), so a `特例` Link is no longer drawn as `rests-on`; the table hand's animation is `hand-rise`, so dialogs, menus, and toasts get their `rise` again; unit tests for both.
 - `2026-10-16` `753bd7b` — Finding Cards: the `finding` type in the type picker, stamps, search chips, and desk tallies (zt 0.20.0).
 - `2026-10-15` `2597c6c` — Study a whole theory on the desk (`theoryRun`), and a cited lemma inside its step.
 - `2026-10-15` `1e67fdc` — GUI views for mathematical units: theory board, study desk, label chips, tool tabs; `theoryRows`, `studyStations`, `labelsIn` in `layout.js`.
