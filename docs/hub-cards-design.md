@@ -17,7 +17,7 @@ Chinese and follows the Card language rules.
 - `model-compiler-design.md` decides the division of work in the book digest: a planner model plans
   the structure, DeepSeek writes, and scripts build and check. The hub compiler copies that division,
   with Haiku in place of Sonnet.
-- `zt-book-digest-workflow.md` describes the stages. Before 0.16.0 the Organize stage wrote the hubs.
+- `zt-digest-workflow.md` describes the stages. Before 0.16.0 the Organize stage wrote the hubs.
 
 ## The problem
 

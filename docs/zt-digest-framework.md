@@ -7,7 +7,7 @@ The ZT digests are built by the Workflow Framework Protocol (global skill `workf
 | `zt-econ-digest` | `scripts/book-digest/workflow/zt-econ-digest.blueprint.json` | `.claude/workflows/zt-econ-digest.js` | economics |
 | `zt-math-digest` | `scripts/book-digest/workflow/zt-math-digest.blueprint.json` | `.claude/workflows/zt-math-digest.js` | mathematics |
 
-Both share `scripts/book-digest/workflow/zt-digest-base.blueprint.json`. The hand-written workflows stay: `.claude/workflows/zt-book-digest.js`, and `.claude/workflows-legacy/zt-math-digest.js` (moved there unchanged when the framework build took the name `zt-math-digest`; `make-math-workflow.mjs` and `math-workflow-harness.mjs` follow it there).
+Both share `scripts/book-digest/workflow/zt-digest-base.blueprint.json`. The hand-written `zt-book-digest.js`, the legacy `.claude/workflows-legacy/zt-math-digest.js`, its generator `make-math-workflow.mjs`, and their harnesses were removed on 2026-10-16: the base and the two variants replace them.
 
 ## The base: what every book type shares
 
@@ -34,7 +34,7 @@ args → source → prepare → [after-prepare] → terms → cards-book → dig
 | bridge | `zt-bridge` | full unless `bridge: false`; mode bridge discovers or applies an identified selection | continue; expects a status other than `failed`, and the result keeps `{status: failed}` |
 | hubs | `zt-hubs` | full with `hubs` not false, or link with `hubs` true | — |
 | audit | `zt-audit` | mode audit, or full with `audit` not false | — |
-| report | `zt-digest-report` | always: the result in the shape of zt-book-digest.js | — |
+| report | `zt-digest-report` | always: the result per mode (the shape the removed zt-book-digest.js returned) | — |
 
 The base writes no Model Card, no Event Card, and runs no model compiler: those are layers of a book type. Its digest prompt is `dsh-digest-base.zh.md` (`dsh-instructions.zh.md` without the section on Event and Model Cards). Roles: `manager` (Haiku, effort low), `architect` (Sonnet), `organizer` (Opus). Shared machinery: `zt-digest-lib` (managers, `drive`, the card cycle). Base modes: `link`, `cards`, `hubs`, `figures`, `audit`, `bridge`. Checkpoint: `until: "digest"`.
 
@@ -44,7 +44,7 @@ The installed versions are base 2.1.3, `zt-econ-digest` 3.1.3, and `zt-math-dige
 
 ## Bridge discovery and apply
 
-All three workflows (`zt-book-digest`, `zt-econ-digest`, `zt-math-digest`) use the same `bridge-compiler.ps1`, judge prompt (`dsh-bridge-instructions.zh.md`), attribution helper (`book-of.ps1`), and checker. Each variant sets `profile.bridgeProfile`: `book` for economics, `math` for mathematics. `zt-book-digest` uses `book`. With the math profile, the stage carries out L6 of `docs/math-cards-luhmann-comparison.md`. Full mode runs Bridge after Figures and before Hubs. It publishes proposals and changes no Card. `bridge: false` returns `skipped`. Other maintenance modes do not run Bridge. `mode: "bridge"` needs only `out` and `citationKey`; no old groups, source, or BibTeX.
+Both workflows (`zt-econ-digest`, `zt-math-digest`) use the same `bridge-compiler.ps1`, judge prompt (`dsh-bridge-instructions.zh.md`), attribution helper (`book-of.ps1`), and checker. Each variant sets `profile.bridgeProfile`: `book` for economics, `math` for mathematics. `zt-book-digest` uses `book`. With the math profile, the stage carries out L6 of `docs/math-cards-luhmann-comparison.md`. Full mode runs Bridge after Figures and before Hubs. It publishes proposals and changes no Card. `bridge: false` returns `skipped`. Other maintenance modes do not run Bridge. `mode: "bridge"` needs only `out` and `citationKey`; no old groups, source, or BibTeX.
 
 ```javascript
 // Discovery: use a fresh folder; replace the book key and paths with actual values.
@@ -132,7 +132,7 @@ Modes: the base modes plus `models`, `explain`, `math`.
 ## Changing a digest
 
 1. Change a module (`scripts/book-digest/workflow/modules/*.js`; raise its version when its behaviour changes), a compiler script, or a blueprint (raise its version; update the `preflight` lines it touches).
-2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (`tests/event-compiler.tests.ps1`, `tests/finding-compiler.tests.ps1`). `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs all of them in parallel.
+2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (the stage, command, and manager checks on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (`tests/event-compiler.tests.ps1`, `tests/finding-compiler.tests.ps1`). `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs all of them in parallel.
 3. Install (project scope) and verify, in PowerShell:
 
 ```powershell

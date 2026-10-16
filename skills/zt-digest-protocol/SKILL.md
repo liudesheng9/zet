@@ -1,13 +1,13 @@
 ---
 name: zt-digest-protocol
-description: The base protocol of the ZT digest workflows (zt-book-digest, zt-math-digest) that turn a book into ZET Cards. It names the building blocks, every script and what to use it for, the order of the stages, the job and file formats, the quality checks (zt-check and the SELF-CHECK lines), and the rules each run must keep. Use it to run or change a digest workflow, to debug a stage, or to build a new digest variant on the same blocks.
+description: The base protocol of the ZT digest workflows (zt-econ-digest, zt-math-digest) that turn a book into ZET Cards. It names the building blocks, every script and what to use it for, the order of the stages, the job and file formats, the quality checks (zt-check and the SELF-CHECK lines), and the rules each run must keep. Use it to run or change a digest workflow, to debug a stage, or to build a new digest variant on the same blocks.
 ---
 
 # ZT Digest Protocol
 
-A digest turns one book (a Chinese or bilingual Markdown file from the Scholar Archive) into Cards in the **agent Workspace** of the ZET slip-box. The reference implementation is `E:\zet\.claude\workflows\zt-book-digest.js`. `zt-math-digest.js` is the first variant: `scripts/book-digest/make-math-workflow.mjs` generates it from the book digest. Build every new variant on the blocks below, so all digests keep one standard.
+A digest turns one book (a Chinese or bilingual Markdown file from the Scholar Archive) into Cards in the **agent Workspace** of the ZET slip-box. The Workflow Framework Protocol builds every digest from one base blueprint (`scripts/book-digest/workflow/zt-digest-base.blueprint.json`) and the stage modules in `scripts/book-digest/workflow/modules/`. Two variants are installed frozen in `E:\zet\.claude\workflows\`: `zt-econ-digest` (economics books: the model, event, and empirical-results layers) and `zt-math-digest` (mathematics textbooks: the model layer and the math stages). Build every new variant on the blocks below, so all digests keep one standard.
 
-Detailed docs in the repo (`E:\zet\doc`): `zt-book-digest-workflow.md` (the stages and arguments), `model-compiler-design.md`, `hub-cards-design.md`, `digest-card-layers-proposal.md`, `derivation-explanations-proposal.md`, `zt-math-digest-workflow.md`, `math-cards-design.md`. The full list of scripts and instruction files is in [references/scripts.md](references/scripts.md).
+Detailed docs in the repo (`E:\zet\docs`): `zt-digest-workflow.md` (the stages and arguments), `zt-digest-framework.md` (base, variants, install), `model-compiler-design.md`, `hub-cards-design.md`, `digest-card-layers-proposal.md`, `derivation-explanations-proposal.md`, `zt-math-digest-workflow.md`, `math-cards-design.md`. The full list of scripts and instruction files is in [references/scripts.md](references/scripts.md).
 
 ## 1. Roles
 
@@ -41,17 +41,18 @@ survey ──▶ plan ──▶ DeepSeek writes ──▶ SELF-CHECK ──▶ a
 
 Compilers that follow it: `model-compiler.ps1` (brief, plan, apply, derive, review, split, explain), `card-compiler.ps1` (card cycle), `hub-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `math-compiler.ps1`, `bridge-compiler.ps1`. A new stage is a new compiler with the same steps.
 
-## 3. Stage logistics (zt-book-digest, mode `full`)
+## 3. Stage logistics (the base, mode `full`)
 
 ```
-Prepare ─▶ Digest blocks (in parallel) ─┬─▶ Models for the block (model compiler)  ─┐
-                                        └─▶ Card cycle for the block (card compiler) ┴─▶ model sweep ─▶ Link ─▶ Link check ─▶ Cleanup ─▶ Organize ─▶ Figures ─▶ Bridge ─▶ Hubs ─▶ Audit
+Prepare ─▶ [after-prepare] ─▶ Terms ─▶ Digest blocks (in parallel, each with its card cycle) ─▶ [after-digest] ─▶ Link ─▶ Link check ─▶ [after-link] ─▶ Cleanup ─▶ Organize ─▶ Figures ─▶ Bridge ─▶ Hubs ─▶ Audit ─▶ [after-audit] ─▶ Report
 ```
+
+The `[slots]` take each variant's layers. `zt-econ-digest` fills `after-digest` with Models, Explain, Events, and Findings. `zt-math-digest` fills `after-prepare` with the statement skeleton and notation, `after-digest` with Models, Explain, Boundary, and Proof, `after-link` with Theory, and `after-audit` with the math check. The model layer runs once after the whole digest.
 
 | Stage | Steps | Writes Cards? |
 | --- | --- | --- |
 | Prepare | Haiku probes the DeepSeek source (`dshSource`). `prepare-book-digest.ps1 -Apply`: Chinese text, section groups, the Literature tree with one anchor per group, the shared prefixes. `book-terms.ps1`: the term table (术语表). | anchors, 术语表 |
-| Digest | One Haiku manager per block of `perManager` groups (at most 8). Each group: `snapshot-topics.ps1`, then one DeepSeek run (`dsh-instructions.zh.md` + the group file) that writes Idea, Event, and Model Cards with the helper (`-Log`, `-SrcLog`, `-TopicGate`), then its SELF-CHECK. | yes |
+| Digest | One Haiku manager per block of `perManager` groups (at most 8). Each group: `snapshot-topics.ps1`, then one DeepSeek run (the prefix built from the profile's instruction files, `dsh-digest-base.zh.md` and `dsh-model-cards.zh.md`, + the group file) that writes Idea and Model Cards with the helper (Event and Finding Cards come from their own layers) (`-Log`, `-SrcLog`, `-TopicGate`), then its SELF-CHECK. | yes |
 | Models | `list-models.ps1`, then per batch the model compiler: brief (DeepSeek) → plan (Sonnet) → fill → derive → review → split → report. | Model parts |
 | Cards | The card compiler per block: plan → fix/review/orphan jobs (JSON) → apply → check → report. | rewrites |
 | Link | `prepare-link-pass.ps1`, then link managers (up to 8 runs each) that append reasoned Links (`dsh-link-instructions.zh.md`), each with its SELF-CHECK. Then a card cycle on L1, L2, and orphans. | Links |
@@ -62,7 +63,7 @@ Prepare ─▶ Digest blocks (in parallel) ─┬─▶ Models for the block (mo
 | Hubs | `hub-compiler.ps1` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards |
 | Audit | `digest-audit.ps1`, read-only, over both Workspaces: faults per rule, orphans, models, explanations, figures, hubs, semantic Bridge counts in and out per book, and islands (books with no Bridge). | no |
 
-Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `bridge`, `audit` (see `docs/zt-book-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
+Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `bridge`, `audit` (see `docs/zt-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
 
 ## 4. Protocols every variant inherits
 
@@ -102,10 +103,10 @@ The SELF-CHECK commands per task:
 
 ## 6. Building a new digest variant
 
-1. **Generate, do not copy.** Write `make-<name>-workflow.mjs` like `make-math-workflow.mjs`: read `zt-book-digest.js`, apply exact-match edits (each must match once), write `.claude/workflows/zt-<name>-digest.js`. Shared stages stay the book digest's own text. Rerun the generator after every change to the base.
+1. **A variant is a blueprint, not a copy.** Write `scripts/book-digest/workflow/zt-<name>-digest.blueprint.json` that names the base in `"base"`, sets the profile, and fills the slots with its own stage modules (`modules/zt-<name>-*.js`, each one `defineModule` block). Install it with `node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs install` (see `docs/zt-digest-framework.md`). A change to the base or a shared module needs every variant reinstalled.
 2. **A new stage is a compiler** (section 2): a `.ps1` with plan, precheck, apply, check, report; a `dsh-<name>-*.zh.md` instruction file with a 自查 section; a `SELF-CHECK:` line in every job file; JSON answers applied by the script.
 3. **New rules go into zt-check** (`tools/zt-check/src/check.rs`) with a unit test, so every agent gets them.
-4. **Tests**: `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs every test file and harness in parallel. A new compiler gets a test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and a workflow harness (`tests/workflow-harness.mjs`, `tests/math-workflow-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
+4. **Tests**: `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs every test file and harness in parallel. A new compiler gets a test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and checks in the workflow harness (`tests/framework-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
 5. **Approvals and docs**: add the new read-only commands to the manager approval lines; document the stage in `docs/`.
 6. **Pilot** on one model or one chapter (`only`, `explainMax`, `cardMax`, `hubTrees`), with a database backup first, before any whole-book run.
 

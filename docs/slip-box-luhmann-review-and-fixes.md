@@ -90,7 +90,7 @@ The table checks each feature of the design against the code after the fixes.
 | --- | --- | --- |
 | F21 | `skills/zettelkasten/references/luhmann-and-practice.md` | The 57/12a point and `insert_card before` in "Internal branching" and in the mapping. |
 | F22 | the same | Repository paths instead of GitHub URLs. The Z1 to Z12 note. |
-| — | `docs/zt-book-digest-workflow.md` | The stage diagram, the stage table, the modes, the seven Bridge arguments, and the audit section. |
+| — | `docs/zt-digest-workflow.md` | The stage diagram, the stage table, the modes, the seven Bridge arguments, and the audit section. |
 | — | `docs/wiki/digest-workflows.md`, `digest-scripts.md`, `digest-prompts.md`, `agent-skills.md` | Bridge rows in the stage, mode, argument, and interface tables. The text "apply is under implementation" is replaced. The Bridge contract moved out of the Purpose sections. Change history lines. |
 | — | `docs/zt-digest-framework.md` | "Bridge discovery and apply" is its own section, not part of the economics module set. |
 | — | `skills/zt-digest-protocol/SKILL.md`, `references/scripts.md` | Bridge in the stage diagram and the Audit row. The publish and cleanup rules. |

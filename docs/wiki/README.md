@@ -13,7 +13,6 @@ ignore:
   - Cargo.toml
   - Cargo.lock
   - "src/gui/vendor/**"
-  - ".claude/workflows-legacy/**"
   - ".claude/workflow-framework/*/history/**"
 updated: 2026-10-16
 ---
@@ -145,7 +144,7 @@ The digest tooling is a client of the binary. A [Digest workflow](digest-workflo
 
 ### A book becomes agent Cards
 
-1. A person runs a digest Workflow (`zt-book-digest`, `zt-econ-digest`, or `zt-math-digest`) with an args object ([Digest workflows](digest-workflows.md)).
+1. A person runs a digest Workflow (`zt-econ-digest` or `zt-math-digest`) with an args object ([Digest workflows](digest-workflows.md)).
 2. The prepare stage reads the book through the Scholar Archive tools and writes job files; Haiku managers hand each section to DeepSeek runs with the matching instruction file ([Digest scripts](digest-scripts.md), [Digest prompts](digest-prompts.md)).
 3. DeepSeek and the compilers write Cards through `zt-mcp.ps1` and `zt mcp` into the agent Workspace ([Agent skills and integrations](agent-skills.md), [MCP server](mcp-server.md)).
 4. Each Card is checked with `zt-check`, and faults go back to a fix cycle ([zt-check](zt-check.md)).

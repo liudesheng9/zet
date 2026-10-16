@@ -28,7 +28,7 @@ The user decided three questions on 2026-10-12:
 
 - `CONTEXT.md` defines **Model Card**, **Model part**, **Model facet**, **Model relation**, **Relation kind**, and **Model board**. This proposal adds the terms in "Proposed terms".
 - `open-models-design.md` (zt 0.10.0) stays authoritative for membership by Link, shared parts, Relation kinds, and Model neighbours. This proposal adds rules to it. It cancels none of its rules.
-- `zt-book-digest-workflow.md` describes the current workflow. "Workflow update" below replaces its Models stage.
+- `zt-digest-workflow.md` describes the current workflow. "Workflow update" below replaces its Models stage.
 - The `asd-ste100` skill holds the English rules of ASD-STE100. "Card language" below adapts them for Chinese Card text.
 
 ## The problem

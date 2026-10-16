@@ -271,9 +271,9 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 
 ### 消化一本书
 
-Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。书中的图随书进入卡片：准备阶段把书的 Markdown 中的每张图收进 ZET（见“来自 archive 的图”），并把每张图写成一行 `![图 2.C.1](artifact:…)` 交给写卡的 DeepSeek，卡片讨论这张图时原样粘贴；整理之后，`scripts/book-digest/attach-figures.ps1` 把图放进本书每一张提到它但还没显示它的卡片，并在文献卡上链接原书的 PDF 与 Markdown（模式 `figures` 只对已有的消化结果做这一步）。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
-详见 [docs/zt-book-digest-workflow.md](docs/zt-book-digest-workflow.md)。
+Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（数学教材）由同一个基础蓝图构建，把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
+全书消化之后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。书中的图随书进入卡片：准备阶段把书的 Markdown 中的每张图收进 ZET（见“来自 archive 的图”），并把每张图写成一行 `![图 2.C.1](artifact:…)` 交给写卡的 DeepSeek，卡片讨论这张图时原样粘贴；整理之后，`scripts/book-digest/attach-figures.ps1` 把图放进本书每一张提到它但还没显示它的卡片，并在文献卡上链接原书的 PDF 与 Markdown（模式 `figures` 只对已有的消化结果做这一步）。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
+详见 [docs/zt-digest-workflow.md](docs/zt-digest-workflow.md)。
 
 ### 枢纽卡
 

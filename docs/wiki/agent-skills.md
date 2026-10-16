@@ -149,11 +149,11 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 **`zt-digest-protocol`** (`skills/zt-digest-protocol/SKILL.md`):
 
 1. Roles: Scripts do every structural step and every zt write of a JSON answer; DeepSeek (V4.1 Flash, effort high) writes text; Haiku manages DeepSeek runs; Sonnet writes one `plan.json` per model; Opus writes only `decisions.json`.
-2. The compiler cycle and the compilers that follow it (`model-compiler.ps1`, `card-compiler.ps1`, `hub-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `math-compiler.ps1`).
-3. The stages of `zt-book-digest` mode `full` (Prepare, Digest, Models, Cards, Link, Cleanup, Organize, Figures, Bridge, Hubs, Audit) and the single-stage modes. The cross-book Bridge contract: report-only discovery, a report published only after every judge job answered, a cleanup that always runs, and apply only of proposals the user accepted from one report.
+2. The compiler cycle and the compilers that follow it (`model-compiler.ps1`, `card-compiler.ps1`, `hub-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `math-compiler.ps1`, `bridge-compiler.ps1`).
+3. The base stage graph of mode `full` (Prepare, Terms, Digest blocks, Link, Link check, Cleanup, Organize, Figures, Bridge, Hubs, Audit, Report) with its four slots (`after-prepare`, `after-digest`, `after-link`, `after-audit`), the layers each variant puts in them (`zt-econ-digest`: Models, Explain, Events, Findings; `zt-math-digest`: the statement skeleton and notation, Models, Explain, Boundary, Proof, Theory, the math check), a table of the stages, and the single-stage modes. The cross-book Bridge contract: report-only discovery, a report published only after every judge job answered, a cleanup that always runs, and apply only of proposals the user accepted from one report.
 4. Inherited protocols: the DeepSeek Subagent Managed Protocol, self-checks, the manager approval list, `state.json` per compiler, compact JSON last lines, the installed helper and its flags, source fidelity marks `（补：书中略去）`.
 5. `zt-check` as the only checker, its command forms, its output (`faults: N`), and the SELF-CHECK command per task.
-6. How to build a variant, and operating rules (back up with `VACUUM INTO`, run edited workflows by `scriptPath`, never rerun finished models, do not deploy zt during a run, the `CARGO_TARGET_DIR` locations, script traps).
+6. How to build a variant (a blueprint that names the base, sets the profile, and fills the slots with its own modules, installed with `assemble.mjs`), and operating rules (back up with `VACUUM INTO`, run edited workflows by `scriptPath`, never rerun finished models, do not deploy zt during a run, the `CARGO_TARGET_DIR` locations, script traps).
 
 ### `zt-mcp.ps1` command line
 
@@ -403,7 +403,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **One source, copied out.** The repository is the only source of the skills; the installer copies them rather than linking, so a harness never sees a half-edited working tree. DeepSeek Harness links to the Codex copy, so one copy serves both.
 - **A shell helper instead of a second server.** DeepSeek Harness has no `zt` tools, so `zt-mcp.ps1` speaks MCP to the same `zt mcp` with the same agent Access. The `zt` shell commands are never a fallback because they act with human Access (`skills/zt/SKILL.md`).
 - **Ownership by allow list, not by trust.** Parallel digest runs get `-Allow` so a DeepSeek run can change only its own Cards; `-Log` records what each run made, and `-TopicGate` stops two runs making one Topic (`docs/digest-card-layers-proposal.md`, the Topic gate row).
-- **Skills are sent, not pasted.** Digest managers pass `zettelkasten` and `asd-ste100-zh` in the `skills` field of `deepseek_run` and every `deepseek_prompt`; no prompt file carries skill text. Where an instruction file's limits differ from a skill, the instruction file wins, because `zt-check` checks those numbers (`docs/zt-book-digest-workflow.md`, *Skills for DeepSeek*).
+- **Skills are sent, not pasted.** Digest managers pass `zettelkasten` and `asd-ste100-zh` in the `skills` field of `deepseek_run` and every `deepseek_prompt`; no prompt file carries skill text. Where an instruction file's limits differ from a skill, the instruction file wins, because `zt-check` checks those numbers (`docs/zt-digest-workflow.md`, *Skills for DeepSeek*).
 
 ### Keeping the skill text consistent
 
@@ -425,8 +425,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **Inline mode has no options.** `-Tool`/`-Json` is its own parameter set; use a file or stdin for `-Allow`, `-Log`, and the rest.
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 - **Stale text found while reading** (fix in the skills, not in this doc):
-  - `skills/zt-digest-protocol/SKILL.md` points to the docs folder as `E:\zet\doc`; the folder is `docs` since `63d77d1`.
-  - `skills/zt-digest-protocol/SKILL.md` names only `zt-book-digest` and `zt-math-digest` in its description and says `make-math-workflow.mjs` generates `zt-math-digest.js`. Today `.claude/workflows/zt-math-digest.js` and `.claude/workflows/zt-econ-digest.js` are built by the Workflow Framework Protocol (`docs/zt-digest-framework.md`), and `make-math-workflow.mjs` writes `.claude/workflows-legacy/zt-math-digest.js`. `references/scripts.md` repeats this, says the rules are "R2 to R17, I, E, L" (no F), and lists no `event-compiler.ps1` or `finding-compiler.ps1`.
+  - `skills/zt-digest-protocol/references/scripts.md` says the rules are "R2 to R17, I, E, L" (no F), and lists no `event-compiler.ps1` or `finding-compiler.ps1`.
 
 ## Change history
 

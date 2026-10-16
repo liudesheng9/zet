@@ -1022,7 +1022,7 @@ The code and its functional-block doc belong in the same commit. The minimum doc
 | C1 | `docs/wiki/agent-skills.md`, plus the skill/reference files themselves. |
 | Shared helper, compiler, audit | `docs/wiki/digest-scripts.md`. |
 | Prompt | `docs/wiki/digest-prompts.md`. |
-| Module, base, adapters, modes, result | `docs/wiki/digest-workflows.md`, `docs/zt-digest-framework.md`, `docs/zt-book-digest-workflow.md`, and the math workflow guide where its modes are listed. |
+| Module, base, adapters, modes, result | `docs/wiki/digest-workflows.md`, `docs/zt-digest-framework.md`, `docs/zt-digest-workflow.md`, and the math workflow guide where its modes are listed. |
 | Shared operational protocol | `skills/zt-digest-protocol/SKILL.md` and `skills/zt-digest-protocol/references/scripts.md`. |
 | Terms | `CONTEXT.md`: Bridge, Bridge proposal, Bridge report, and carrier if used as a public term. |
 | Completion status | This specification, the conceptual design, and L6 in `math-cards-luhmann-comparison.md`. Mark built only after verification. |
@@ -1129,7 +1129,7 @@ Design and decisions:
 - [Slip-box comparison](slip-box-luhmann-comparison.md).
 - [Math comparison](math-cards-luhmann-comparison.md).
 - [Domain language](../CONTEXT.md).
-- [Digest framework](zt-digest-framework.md) and [book workflow](zt-book-digest-workflow.md).
+- [Digest framework](zt-digest-framework.md) and [book workflow](zt-digest-workflow.md).
 
 Implementation evidence:
 

@@ -2,7 +2,7 @@
 // The fixture of the framework-built digests (docs/zt-digest-framework.md). It builds zt-econ-digest and
 // zt-math-digest from their blueprints (scripts/book-digest/workflow) with the workflow-framework-protocol
 // assembler, runs them with stand-ins for the Workflow runtime (every agent returns a canned answer that fits its
-// label or command, as in workflow-harness.mjs and math-workflow-harness.mjs), and runs every check of those two
+// label or command, as the removed workflow-harness.mjs and math-workflow-harness.mjs did), and runs every check of those two
 // harnesses on them, plus the checks of the framework: one shared base, frozen structure, installed = built.
 // The assembler: $WFP_ROOT, else ~/.claude/skills/workflow-framework-protocol.
 import fs from 'node:fs'
@@ -24,7 +24,7 @@ for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-diges
 }
 const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
 
-// --- the stand-in runtime: workflow-harness.mjs (book) and math-workflow-harness.mjs (math) answers ------------
+// --- the stand-in runtime: the canned answers (from the removed book and math workflow harnesses) -------------
 let planJobs = 21
 let applyPending = 0
 let explainApplies = 0
@@ -196,7 +196,7 @@ const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${messa
 }
 
 // ================================================================================================================
-// zt-econ-digest: every check of workflow-harness.mjs
+// zt-econ-digest: every check of the removed workflow-harness.mjs
 // ================================================================================================================
 const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@book{Key}', bookTitle: '书', hubs: false }
 {
@@ -342,7 +342,7 @@ planJobs = 21
 }
 
 // ================================================================================================================
-// zt-math-digest: every check of math-workflow-harness.mjs
+// zt-math-digest: every check of the removed math-workflow-harness.mjs
 // ================================================================================================================
 const mbase = { ...base, hubs: true, figures: false }
 {

@@ -46,7 +46,7 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 
 | File | Task | Output |
 | --- | --- | --- |
-| `dsh-instructions.zh.md` | Digest run: Idea, Event, and Model Cards of one group, and its anchor | Cards through the helper |
+| `dsh-digest-base.zh.md`, `dsh-model-cards.zh.md` | Digest run: Idea and Model Cards of one group, and its anchor (the variants pass both with `-Instructions`; `dsh-instructions.zh.md` is only the default of `prepare-book-digest.ps1` without `-Instructions`) | Cards through the helper |
 | `dsh-bridge-instructions.zh.md` | Read frozen candidate bodies; assess actual mechanism, scope and direction; SELF-CHECK; never edit Cards | assigned `br-NNN.json` only |
 | `dsh-link-instructions.zh.md` | Link run: reasoned Links from a group's own Cards | Links through the helper |
 | `dsh-brief-instructions.zh.md` | Model brief: equations, skipped steps, the book's own intuition (直觉) | `brief.md` |
@@ -61,19 +61,20 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | `dsh-math-*.zh.md` | The math variant's stages | see `docs/zt-math-digest-workflow.md` |
 | `model-architect.md`, `model-architect-math.md` | Sonnet's planning instructions | `plan.json` |
 
-## Workflows and generators
+## Workflows and blueprints
 
 | File | Use it to |
 | --- | --- |
-| `.claude/workflows/zt-book-digest.js` | The base workflow. Run an edited copy by `scriptPath`. |
-| `.claude/workflows/zt-math-digest.js` | The math variant. Generated: do not edit by hand. |
-| `scripts/book-digest/make-math-workflow.mjs` | Regenerate the math variant after every change to the base. |
+| `scripts/book-digest/workflow/zt-digest-base.blueprint.json` | The base: shared stages, slots, args, roles, modes. |
+| `scripts/book-digest/workflow/zt-econ-digest.blueprint.json`, `zt-math-digest.blueprint.json` | The two variants: profile and slot fills. |
+| `scripts/book-digest/workflow/modules/*.js` | The stage modules and libraries. |
+| `.claude/workflows/zt-econ-digest.js`, `.claude/workflows/zt-math-digest.js` | The installed, frozen builds. Never edit them: change a blueprint or module and reinstall with `assemble.mjs install`. |
 
 ## Tests (`scripts/book-digest/tests/`)
 
 | Test | Covers |
 | --- | --- |
-| `workflow-harness.mjs`, `math-workflow-harness.mjs` | Each workflow with canned agent answers: stage order, commands, manager counts and the 8-manager cap, deletes not archives, drift between base and variant. |
+| `framework-harness.mjs` | Both variants built in memory with canned agent answers: stage order, commands, manager counts and the 8-manager cap, deletes not archives, one shared base, frozen structure, installed = built. |
 | `model-compiler.tests.ps1`, `card-compiler.tests.ps1`, `hub-compiler.tests.ps1`, `math-compiler.tests.ps1` | Each compiler on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`), including the precheck and explain-check steps. |
 | `zt-check.tests.ps1`, `card-layer.tests.ps1` + fixtures, and `cargo test` in `tools/zt-check` | zt-check's rules, on fixtures. |
 | `book-terms`, `organize`, `attach-figures`, `zt-calls`, `zt-helper-gate` `.tests.ps1` | Their scripts. |

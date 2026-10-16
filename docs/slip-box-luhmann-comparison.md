@@ -79,7 +79,7 @@ The user asked for the design on 2026-10-16. Nothing goes into the code until th
 
 - Luhmann's practice: `skills/zettelkasten/references/luhmann-and-practice.md` and the section "What Luhmann did" in `hub-cards-design.md`. They give the evidence: Luhmann 1981 and the 1968 lecture, Schmidt 2016 and 2018, and the Bielefeld archive. They also give the later practice of Ahrens, Matuschak, zettelkasten.de, and Doto.
 - The earlier comparison and its decisions: `math-cards-luhmann-comparison.md` (decisions of 2026-10-15).
-- The current card box: `CONTEXT.md`, `skills/zettelkasten/SKILL.md`, `docs/wiki/`, `hub-cards-design.md`, `table-and-spreads-design.md`, `zt-book-digest-workflow.md`, and the digest prompts in `scripts/book-digest/`.
+- The current card box: `CONTEXT.md`, `skills/zettelkasten/SKILL.md`, `docs/wiki/`, `hub-cards-design.md`, `table-and-spreads-design.md`, `zt-digest-workflow.md`, and the digest prompts in `scripts/book-digest/`.
 - This analysis read no new external source. The Luhmann facts come only from the two documents above.
 
 ## Short answer

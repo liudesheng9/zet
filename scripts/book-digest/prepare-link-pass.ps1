@@ -1,7 +1,7 @@
 #Requires -Version 7.5
 <#
 .SYNOPSIS
-  Prepare the link pass of the zt-book-digest workflow: a snapshot of every Card, and for each
+  Prepare the link pass of the ZT digest workflows: a snapshot of every Card, and for each
   group the Cards it owns (with bodies) plus the allow-list the helper enforces.
 
 .DESCRIPTION

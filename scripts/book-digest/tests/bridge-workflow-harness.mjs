@@ -8,7 +8,7 @@ const lib=await import(pathToFileURL(path.join(os.homedir(),'.claude/skills/work
 const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor
 async function run(kind,args,options={}){
  const calls=[]
- const source=kind==='book'?fs.readFileSync(path.join(root,'.claude/workflows/zt-book-digest.js'),'utf8'):(()=>{const l=lib.loadBlueprint(path.join(folder,`zt-${kind}-digest.blueprint.json`));return lib.build(l.bp,lib.loadModules(l.dirs)).script})()
+ const l=lib.loadBlueprint(path.join(folder,`zt-${kind}-digest.blueprint.json`)), source=lib.build(l.bp,lib.loadModules(l.dirs)).script
  const agent=async(prompt,opts)=>{
   const cmd=(String(prompt).match(/pwsh -NoProfile -File[^\n]*/)||[''])[0];calls.push({prompt:String(prompt),...opts,cmd})
   if(opts.label==='choose DeepSeek source')return {source:'official',errors:''}
@@ -25,7 +25,7 @@ async function run(kind,args,options={}){
  try{result=await new AsyncFunction('args','agent','phase','log','parallel','pipeline',source.replace(/^export /m,''))(args,agent,()=>{},()=>{},fns=>Promise.all(fns.map(fn=>fn())),()=>{})}catch(e){error=e}
  return {result:result?.result||result,error,calls,halted:result?.halted}
 }
-for(const kind of ['econ','math','book']){
+for(const kind of ['econ','math']){
  const args={mode:'bridge',out:'D:\\work',citationKey:'Key'}
  const discovery=await run(kind,args)
  assert(!discovery.error,`${kind} supports bridge mode: ${discovery.error}`)

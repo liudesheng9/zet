@@ -9,7 +9,7 @@ Since 2026-10-14 the **model compiler** (`model-compiler-design.md`) does the wo
 - `CONTEXT.md` defines **Elaboration level**, **Concept model**, and **Formal model**, beside **Model Card**, **Model part**, **Derivation part**, and **Self-sufficient model**.
 - `self-sufficient-models-proposal.md` stays authoritative for formal models: build order, the build report, Derivation parts, the tree operations, and Card language.
 - `open-models-design.md` stays authoritative for membership by Link, shared parts, Relation kinds, and neighbours. Levels change none of it.
-- `zt-book-digest-workflow.md` describes the workflow that applies the levels.
+- `zt-digest-workflow.md` describes the workflow that applies the levels.
 
 ## The problem
 

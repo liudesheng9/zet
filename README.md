@@ -330,8 +330,9 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 
 ### Digesting a book
 
-The `zt-book-digest` Claude Code workflow turns a book from the Scholar Archive into agent Cards:
-DeepSeek Harness runs digest it section by section; as soon as a block finishes, the model
+The Claude Code workflows `zt-econ-digest` (economics books) and `zt-math-digest` (mathematics
+textbooks), built from one shared base, turn a book from the Scholar Archive into agent Cards:
+DeepSeek Harness runs digest it section by section; after the digest, the model
 compiler builds every model it wrote to its elaboration level (a Sonnet architect only plans each
 model; a script builds the skeleton; DeepSeek writes the Cards and charts, then the Derivation
 parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense); a link pass ties
@@ -342,7 +343,7 @@ it; after Organize, `scripts/book-digest/attach-figures.ps1` puts each figure in
 book that names it but does not show it yet, and links the book's PDF and Markdown from its
 Literature Card (mode `figures` runs only this step on an earlier digest). Last, the hub stage
 builds the Hub Cards of the whole agent Workspace (see *Hub Cards*). See
-[docs/zt-book-digest-workflow.md](docs/zt-book-digest-workflow.md).
+[docs/zt-digest-workflow.md](docs/zt-digest-workflow.md).
 
 ### Hub Cards
 

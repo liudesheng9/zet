@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  Prepare a book for the zt-book-digest workflow: Chinese-only text, section groups, the shared
+  Prepare a book for the ZT digest workflows: Chinese-only text, section groups, the shared
   DeepSeek instructions, and (with -Apply) the agent Literature tree with one anchor Card per group.
 
 .DESCRIPTION

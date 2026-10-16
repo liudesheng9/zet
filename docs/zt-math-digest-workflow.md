@@ -1,6 +1,6 @@
 # The zt-math-digest workflow
 
-`zt-math-digest` digests a mathematics textbook from the Scholar Archive. It writes into the agent Workspace. The file `.claude/workflows/zt-math-digest.js` holds it. It is the `zt-book-digest` workflow (`zt-book-digest-workflow.md`) with math stages added. Every shared stage keeps its standard. The shared stages are the card cycles, the link pass, the link check, Organize, Figures, the hub stage, and the audit. All follow the same Card language. The DeepSeek Subagent Managed Protocol holds for every stage.
+`zt-math-digest` digests a mathematics textbook from the Scholar Archive. It writes into the agent Workspace. The file `.claude/workflows/zt-math-digest.js` holds it. It is the digest base (`zt-digest-workflow.md`) with math stages added. Every shared stage keeps its standard. The shared stages are the card cycles, the link pass, the link check, Organize, Figures, the hub stage, and the audit. All follow the same Card language. The DeepSeek Subagent Managed Protocol holds for every stage.
 
 The current workflow is the frozen framework build (math 2.2.2, base 2.1.2). Edit `scripts/book-digest/workflow/zt-math-digest.blueprint.json` and its source modules, then assemble/install/verify at project scope as described in [the framework guide](zt-digest-framework.md). The legacy generator targets `.claude/workflows-legacy/zt-math-digest.js`; never run it against the installed framework artifact.
 
@@ -25,7 +25,7 @@ Every math stage runs its DeepSeek jobs through `drive`, the book digest's own d
 
 ## Arguments
 
-All arguments of `zt-book-digest` hold. These are new:
+All arguments of the base (`zt-digest-workflow.md`) hold. These are new:
 
 | Argument | Meaning | Default |
 | --- | --- | --- |

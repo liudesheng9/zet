@@ -1,12 +1,20 @@
-# The zt-book-digest workflow
+# The ZT digest workflows
 
-`zt-book-digest` (`.claude/workflows/zt-book-digest.js`) turns a book from the Scholar Archive into
+The digest turns a book from the Scholar Archive into
 Cards in the agent Workspace: a Literature tree for the book, Topic trees for the ideas that stand
 on their own, Event Cards for the real events it reports, and a **structured model** for every
-model it sets out. Run it from Claude Code ("run the zt-book-digest workflow on …"); it uses
-DeepSeek Harness for the bulk reading and writing, the **model compiler** for the models (a Sonnet
-architect plans each model, a script builds it, DeepSeek writes and reviews it), and Opus for the
-final organization.
+model it sets out. Two Workflows run it: `zt-econ-digest` (economics books) and `zt-math-digest`
+(mathematics textbooks, see `zt-math-digest-workflow.md`). Both are built by the Workflow Framework
+Protocol from the shared base `scripts/book-digest/workflow/zt-digest-base.blueprint.json` and are
+installed frozen (`zt-digest-framework.md`). Run one from Claude Code ("run the zt-econ-digest
+workflow on …"); it uses DeepSeek Harness for the bulk reading and writing, the **model compiler**
+for the models (a Sonnet architect plans each model, a script builds it, DeepSeek writes and
+reviews it), and Opus for the final organization.
+
+This doc began as the doc of the hand-written `zt-book-digest.js`, which was removed on 2026-10-16:
+the base and its two variants replace it. The stages and arguments below are those of the base.
+One difference stays from that history: the model layer runs once after the whole digest, with no
+per-block compile and no model sweep.
 
 ## Bridge mode
 
@@ -286,7 +294,6 @@ Arguments (`args`):
 | `dshPerBatch` | DeepSeek runs one batch keeps going at the same time (default 8; `dshPerSonnet` is the old name) |
 | `briefEffort`, `deriveEffort`, `reviewEffort` | DeepSeek effort of the brief, the Derivation parts and follow-ups, and the review; `dshEffort` is the digest, link, and fill runs' effort. All default to `high`. |
 | `reviewRounds` | review, split, review again (default 2); 0 skips the review |
-| `architectEffort` | the Sonnet architect's effort (default: the model's own) |
 | `only` | mode `models`: the Model Card addresses to work on (a pilot); default every Model Card of the book |
 | `maxSentences`, `maxPartChars`, `maxSteps` | the Card size of a formal model's part (12, 400, 6): a part over a limit splits, and a long step becomes a Derivation chain |
 | `dshSource` | where DeepSeek V4.1 Flash runs: `official` (`deepseek-official/deepseek-flash`, the DeepSeek platform), `opencode` (`opencode-go/deepseek-v4.1-flash`), or `auto` (default): a Haiku probe asks the official source for one short answer, takes OpenCode Go when the official source does not answer, and stops the run when neither does. The result names the model in `dsh_model`. |

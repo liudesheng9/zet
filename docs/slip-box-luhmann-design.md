@@ -698,7 +698,7 @@ Each change updates its block doc in the same commit (project-wiki rule).
 | Change | Documents |
 | --- | --- |
 | C1 | `skills/zettelkasten/SKILL.md`, `skills/zettelkasten/references/luhmann-and-practice.md`, `docs/wiki/agent-skills.md` |
-| C2 | `CONTEXT.md`: Bridge, Bridge proposal, Bridge report. `docs/zt-digest-framework.md`: stage table and modes. `docs/zt-book-digest-workflow.md`: stage table and args. `docs/wiki/digest-workflows.md`. `docs/wiki/digest-scripts.md`: `bridge-compiler.ps1`, `book-of.ps1`, the audit list. `docs/wiki/digest-prompts.md`: `dsh-bridge-instructions.zh.md`. `skills/zt-digest-protocol/SKILL.md`: the stage order and the bridge rules. |
+| C2 | `CONTEXT.md`: Bridge, Bridge proposal, Bridge report. `docs/zt-digest-framework.md`: stage table and modes. `docs/zt-digest-workflow.md`: stage table and args. `docs/wiki/digest-workflows.md`. `docs/wiki/digest-scripts.md`: `bridge-compiler.ps1`, `book-of.ps1`, the audit list. `docs/wiki/digest-prompts.md`: `dsh-bridge-instructions.zh.md`. `skills/zt-digest-protocol/SKILL.md`: the stage order and the bridge rules. |
 | L6 | `math-cards-luhmann-comparison.md`: L6 is carried out by C2 with the math profile |
 
 ## Implementation order
@@ -737,7 +737,7 @@ Steps 1 and 2 to 5 are independent. Each step waits for the user to ask for it.
 - `slip-box-luhmann-comparison.md` (the practices and the decisions).
 - `math-cards-luhmann-comparison.md` (L1 to L7).
 - `hub-cards-design.md`, `table-and-spreads-design.md`, `open-models-design.md`, `self-sufficient-models-proposal.md`.
-- `zt-digest-framework.md`, `zt-book-digest-workflow.md`, `digest-card-layers-proposal.md`.
+- `zt-digest-framework.md`, `zt-digest-workflow.md`, `digest-card-layers-proposal.md`.
 - `skills/zettelkasten/SKILL.md` and `skills/zettelkasten/references/luhmann-and-practice.md`.
 - Luhmann, N. (1981). Kommunikation mit Zettelkästen. Ein Erfahrungsbericht. Trans. M. Kuehn, "Communicating with Slip Boxes".
 - Schmidt, J. F. K. (2018). Niklas Luhmann's card index: The fabrication of serendipity. *Sociologica*, 12(1).
