@@ -306,9 +306,75 @@ fn daemon_lock_path(root: &Path) -> PathBuf {
 }
 
 /// Whether the service is up: its record names a daemon that still holds the daemon lock. A
-/// record left by a daemon that ended without `zt down` (the machine lost power, or the daemon
-/// was killed) is cleared, so the service reads as down.
+/// daemon that ended without `zt down` (the machine lost power, or the daemon was killed) left
+/// its record behind; the check clears it and starts the service again, so the service only
+/// stays down after `zt down` or when the machine ends the session.
 fn is_service_up(root: &Path) -> bool {
+    if !service_path(root).exists() {
+        return restart_in_progress(root) && wait_for_service(root);
+    }
+    if daemon_alive(root) != Some(false) {
+        return true;
+    }
+    // The first process to find the dead daemon restarts the service; the others wait for it.
+    let Some(_marker) = RestartMarker::claim(root) else {
+        return wait_for_service(root);
+    };
+    // Another process may have restarted the service before this one claimed the restart.
+    if !service_path(root).exists() {
+        return false;
+    }
+    if daemon_alive(root) != Some(false) {
+        return true;
+    }
+    match clear_stale_service(root) {
+        Some(pid) => restart_service(root, &pid),
+        None => wait_for_service(root),
+    }
+}
+
+fn restart_marker_path(root: &Path) -> PathBuf {
+    root.join("zt.restart")
+}
+
+/// A restart that started this long ago was abandoned (its process died): ignore its marker.
+const RESTART_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether a process is starting the service again after its daemon ended without `zt down`.
+fn restart_in_progress(root: &Path) -> bool {
+    fs::metadata(restart_marker_path(root))
+        .and_then(|meta| meta.modified())
+        .is_ok_and(|made| made.elapsed().unwrap_or_default() < RESTART_TIMEOUT)
+}
+
+/// The claim on a restart: made atomically, so one process restarts the service, and removed
+/// when the restart is over, however it went.
+struct RestartMarker(PathBuf);
+
+impl RestartMarker {
+    fn claim(root: &Path) -> Option<Self> {
+        let path = restart_marker_path(root);
+        if fs::metadata(&path).is_ok() && !restart_in_progress(root) {
+            let _ = fs::remove_file(&path);
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()?;
+        Some(Self(path))
+    }
+}
+
+impl Drop for RestartMarker {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Whether the service is up, clearing a record left by a daemon that ended without `zt down`
+/// but not starting the service again: for `zt up`, `zt down` and `zt config set`.
+fn is_service_recorded_up(root: &Path) -> bool {
     if !service_path(root).exists() {
         return false;
     }
@@ -317,6 +383,39 @@ fn is_service_up(root: &Path) -> bool {
     }
     clear_stale_service(root);
     false
+}
+
+/// Starts the service again after daemon `pid` ended without `zt down`, and logs the outcome.
+fn restart_service(root: &Path, pid: &str) -> bool {
+    match start_service_at(root) {
+        Ok(_) => {
+            log_event(
+                root,
+                &format!("service restarted: daemon {pid} ended without `zt down`"),
+            )
+            .ok();
+            true
+        }
+        Err(error) => {
+            log_event(root, &format!("service did not restart: {error:#}")).ok();
+            false
+        }
+    }
+}
+
+/// Waits for the restart another process is making, until its daemon is up or it is over.
+fn wait_for_service(root: &Path) -> bool {
+    let deadline = Instant::now() + RESTART_TIMEOUT;
+    loop {
+        let recorded = service_path(root).exists();
+        if recorded && daemon_alive(root) != Some(false) {
+            return true;
+        }
+        if !restart_in_progress(root) || Instant::now() >= deadline {
+            return recorded && daemon_alive(root) != Some(false);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Whether a daemon holds the daemon lock; `None` when no daemon has made one (a daemon from
@@ -337,21 +436,19 @@ fn daemon_alive(root: &Path) -> Option<bool> {
     }
 }
 
-fn clear_stale_service(root: &Path) {
-    let Ok(pid) = fs::read_to_string(service_path(root)) else {
-        return;
-    };
+/// Clears the record of a daemon that ended without `zt down`; returns its pid when this
+/// process removed the record, so only one of several processes that find it acts on it.
+fn clear_stale_service(root: &Path) -> Option<String> {
+    let pid = fs::read_to_string(service_path(root)).ok()?;
+    let pid = pid.trim().to_string();
     gui::clear_record(root);
-    if fs::remove_file(service_path(root)).is_ok() {
-        log_event(
-            root,
-            &format!(
-                "service record of daemon {} cleared: the daemon ended without `zt down`",
-                pid.trim()
-            ),
-        )
-        .ok();
-    }
+    fs::remove_file(service_path(root)).ok()?;
+    log_event(
+        root,
+        &format!("service record of daemon {pid} cleared: the daemon ended without `zt down`"),
+    )
+    .ok();
+    Some(pid)
 }
 
 /// A record from a daemon of zt 0.7 or earlier, which holds no daemon lock, is stale when no
@@ -384,7 +481,7 @@ fn cmd_config_show() -> Result<()> {
 fn cmd_config_set_archive_root(value: &str) -> Result<()> {
     let new_root = PathBuf::from(value);
     if let Ok(current_root) = require_archive_root()
-        && is_service_up(&current_root)
+        && is_service_recorded_up(&current_root)
     {
         bail!("cannot change archive_root while service is up");
     }
@@ -431,29 +528,37 @@ fn cmd_boot() -> Result<()> {
 
 fn start_service() -> Result<String> {
     let root = require_archive_root()?;
-    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
-    clear_stale_legacy_service(&root);
-    if is_service_up(&root) {
-        let pid = fs::read_to_string(service_path(&root)).unwrap_or_else(|_| "unknown".to_string());
+    // A second daemon would only wait for the daemon lock behind the one being restarted.
+    if restart_in_progress(&root) {
+        wait_for_service(&root);
+    }
+    start_service_at(&root)
+}
+
+fn start_service_at(root: &Path) -> Result<String> {
+    fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
+    clear_stale_legacy_service(root);
+    if is_service_recorded_up(root) {
+        let pid = fs::read_to_string(service_path(root)).unwrap_or_else(|_| "unknown".to_string());
         return Ok(format!("service already running pid: {}", pid.trim()));
     }
-    initialize_database(&root)?;
+    initialize_database(root)?;
     fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path(&root))
-        .with_context(|| format!("failed to open {}", log_path(&root).display()))?;
-    let child_id = spawn_daemon(&root)?;
+        .open(log_path(root))
+        .with_context(|| format!("failed to open {}", log_path(root).display()))?;
+    let child_id = spawn_daemon(root)?;
     // Generous, for a machine still busy signing in; a daemon that starts promptly ends the
     // wait at once.
     let deadline = Instant::now() + Duration::from_secs(15);
-    while !service_path(&root).exists() && Instant::now() < deadline {
+    while !service_path(root).exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
-    if !service_path(&root).exists() {
+    if !service_path(root).exists() {
         bail!("daemon did not start");
     }
-    let pid = fs::read_to_string(service_path(&root)).unwrap_or_else(|_| {
+    let pid = fs::read_to_string(service_path(root)).unwrap_or_else(|_| {
         child_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "unknown".to_string())
@@ -935,7 +1040,7 @@ fn cmd_down() -> Result<()> {
             return Ok(());
         }
     };
-    if !is_service_up(&root) {
+    if !is_service_recorded_up(&root) {
         println!("service already stopped");
         return Ok(());
     }

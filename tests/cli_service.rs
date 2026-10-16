@@ -3622,10 +3622,11 @@ fn gui_runs_with_the_service_and_zt_gui_only_reports_where() {
 }
 
 #[test]
-fn a_dead_daemon_leaves_no_gui_behind() {
+fn a_dead_daemon_leaves_no_gui_behind_and_the_restart_brings_a_new_one() {
     let home = TestHome::new();
     home.configure_and_up();
     let port = gui_port(&home);
+    let token = gui_token(port);
     let pid = fs::read_to_string(home.archive_root.join("zt.pid")).expect("pid");
     kill_process(pid.trim());
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -3633,12 +3634,14 @@ fn a_dead_daemon_leaves_no_gui_behind() {
         thread::sleep(Duration::from_millis(50));
     }
     assert!(!gui_listening(port));
-    home.cmd()
-        .arg("gui")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("service is not up"));
-    assert!(!home.archive_root.join("zt.gui").exists());
+
+    // `zt gui` finds the dead daemon and starts the service again, with a new GUI.
+    let port = gui_port(&home);
+    assert!(gui_listening(port));
+    assert_ne!(gui_token(port), token);
+    let restarted = fs::read_to_string(home.archive_root.join("zt.pid")).expect("pid");
+    assert_ne!(restarted.trim(), pid.trim());
+    home.cmd().arg("down").assert().success();
 }
 
 #[test]

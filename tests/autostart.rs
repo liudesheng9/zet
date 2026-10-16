@@ -495,14 +495,10 @@ fn restarting_the_machine_brings_the_service_down_and_up_again() {
     assert!(stopped < restarted, "zt.log: {log}");
 }
 
-#[test]
-fn a_daemon_that_died_with_the_machine_reads_as_down() {
-    let machine = Machine::new();
-    machine.configure();
-    machine.zt().arg("up").assert().success();
+/// Ends the daemon at once, as a power cut or a killed process would, with no chance to clean
+/// up, and waits until it is gone. Its record stays behind.
+fn kill_daemon(machine: &Machine) -> String {
     let pid = machine.pid();
-
-    // Power loss: the daemon ends with no chance to clean up.
     let killed = StdCommand::new("taskkill")
         .args(["/F", "/PID", &pid])
         .stdout(Stdio::null())
@@ -512,31 +508,102 @@ fn a_daemon_that_died_with_the_machine_reads_as_down() {
     assert!(killed.success());
     machine.wait_until("the daemon is gone", || !process_exists(&pid));
     assert!(machine.archive_root.join("zt.pid").exists());
+    pid
+}
 
+#[test]
+fn the_next_command_restarts_a_daemon_that_ended_without_zt_down() {
+    let machine = Machine::new();
+    machine.configure();
+    machine.zt().arg("up").assert().success();
+    let pid = kill_daemon(&machine);
+
+    machine
+        .zt()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("total:"));
+    let restarted = machine.pid();
+    assert_ne!(restarted, pid);
+    assert!(process_exists(&restarted));
+    let log = machine.log();
+    let cleared = log
+        .find(&format!(
+            "service record of daemon {pid} cleared: the daemon ended without `zt down`"
+        ))
+        .expect("the stale record is logged");
+    let started = log
+        .find(&format!(
+            "service restarted: daemon {pid} ended without `zt down`"
+        ))
+        .expect("the restart is logged");
+    assert!(cleared < started, "zt.log: {log}");
+
+    // `zt status` is a check of the service too.
+    let pid = kill_daemon(&machine);
     machine
         .zt()
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("state: down"));
-    assert!(!machine.archive_root.join("zt.pid").exists());
-    assert!(machine.log().contains(&format!(
-        "service record of daemon {pid} cleared: the daemon ended without `zt down`"
-    )));
+        .stdout(predicate::str::contains("state: up"));
+    assert_ne!(machine.pid(), pid);
+
+    // `zt down` is the way to keep the service down.
+    machine.zt().arg("down").assert().success();
     machine
         .zt()
         .arg("stats")
         .assert()
         .failure()
         .stderr(predicate::str::contains("service is not up"));
-
     machine
         .zt()
-        .arg("up")
+        .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("service started pid:"));
-    assert_ne!(machine.pid(), pid);
+        .stdout(predicate::str::contains("state: down"));
+}
+
+#[test]
+fn commands_that_find_the_same_dead_daemon_start_one_service() {
+    let machine = Machine::new();
+    machine.configure();
+    machine.zt().arg("up").assert().success();
+    let pid = kill_daemon(&machine);
+
+    let commands: Vec<_> = (0..4)
+        .map(|_| {
+            let mut command = StdCommand::new(env!("CARGO_BIN_EXE_zt"));
+            command
+                .arg("stats")
+                .env("ZT_CONFIG_DIR", &machine.config_dir)
+                .env("ZT_GUI_PORT", "0")
+                .env("ZT_AUTOSTART_KEY", &machine.run_key)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            command.spawn().expect("zt stats")
+        })
+        .collect();
+    for command in commands {
+        let output = command.wait_with_output().expect("zt stats");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let log = machine.log();
+    assert_eq!(
+        log.matches(&format!("service restarted: daemon {pid}"))
+            .count(),
+        1,
+        "zt.log: {log}"
+    );
+    assert_eq!(log.matches("daemon started").count(), 2, "zt.log: {log}");
+    assert!(process_exists(&machine.pid()));
 }
 
 #[test]

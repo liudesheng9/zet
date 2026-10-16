@@ -75,8 +75,9 @@ file, and `zt status` shows whether autostart is on.
 
 When the machine shuts down or restarts, or you sign out, the daemon stops the service itself and
 writes the reason to `zt.log`; it does not wait for open Sessions, which end with the machine. If
-the daemon dies without warning (a power cut, a killed process), the service reads as down, and
-the next sign-in or `zt up` starts it again.
+the daemon dies without warning (a power cut, a killed process), the next `zt` command that checks
+the service (any command that needs it, `zt status`, an open Session, an MCP call) starts it
+again and writes `service restarted` to `zt.log`. Only `zt down` keeps the service down.
 
 ## Markdown Cards
 
