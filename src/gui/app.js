@@ -175,14 +175,33 @@
     concept: { label: 'L1 concept', note: 'level 1, a concept model: the question, mechanism, and result in words; no Derivation parts' },
     formal: { label: 'L2 formal', note: 'level 2, a formal model: self-sufficient, built in order with Derivation parts for skipped steps' },
   };
+  // A Model Card may state one mathematical unit (mirrors `MathForm` in src/math.rs).
+  const MATH_FORMS = {
+    theory: { note: 'a Theory Card: the way into one theory; it takes in whole units in dependency order' },
+    definition: { note: 'a definition: its examples, non-examples, and intuition give it meaning' },
+    axiom: { note: 'an axiom: assumed, not proved' },
+    theorem: { note: 'a theorem: a main result with its proof' },
+    proposition: { note: 'a proposition: a result of the second rank' },
+    lemma: { note: 'a lemma: a step that a proof cites; met just in time' },
+    corollary: { note: 'a corollary: a result that follows from a theorem' },
+  };
   /** How a facet reads: a common facet by its English name, any other label as written. */
   const facetLabel = (facet) => FACETS[facet]?.label || facet || '';
   /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. A Model part's
    *  stamp names its facet; a core part's stamp carries a dot; a Model Card's names its level. */
-  const typeStamp = (type, title, facet, emphasis, level) => {
+  const typeStamp = (type, title, facet, emphasis, level, form) => {
     if (!CARD_TYPES[type] || type === 'idea') return null;
     const part = type === 'model' && facet;
     const lvl = type === 'model' ? !part && LEVELS[level] : type === 'hub' && HUB_LEVELS[level];
+    // A Model Card that states a mathematical unit names its form, then its level.
+    const unit = type === 'model' && !part && MATH_FORMS[form];
+    if (unit) {
+      return h('span', {
+        class: 'type-stamp model form-' + form + (lvl ? ' level-' + level : ''),
+        title: title || `${form} — ${unit.note}${lvl ? ` · ${lvl.note}` : ''}`,
+        text: lvl ? `${form} · ${lvl.label}` : form,
+      });
+    }
     const note = part && [FACETS[facet]?.note, EMPHASIS[emphasis] && `${EMPHASIS[emphasis].label}: ${EMPHASIS[emphasis].note}`].filter(Boolean).join(' · ');
     return h('span', {
       class: 'type-stamp ' + type + (part ? ' part' : '') + (part && emphasis ? ' ' + emphasis : '') + (lvl ? ' level-' + level : ''),
@@ -279,6 +298,7 @@
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
     ['ty <idea|event|model|hub> [<facet>]', 'make the current card an Idea, Event, Model, or Hub Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
+    ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -354,6 +374,13 @@
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
         return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`);
+      }
+      case 'mf': {
+        needCard();
+        if (rest.length !== 1) throw new Error('usage: mf <form|none>');
+        const none = rest[0] === 'none';
+        const result = await api('edit', { at: state.card.address, form: none ? '' : rest[0] });
+        return afterChange(result.address, none ? `${result.address} states no mathematical unit` : `${result.address} is a ${rest[0]}`);
       }
       case 'stats': {
         const s = state.overview.stats;
@@ -710,7 +737,7 @@
       },
         h('span', { class: 'fslip-head' },
           h('span', { class: 'fslip-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
-          typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level),
+          typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level, hit.form),
           h('span', { class: 'addr', text: hit.address })),
         hit.snippet ? h('span', { class: 'fslip-text' }, marked(hit.snippet, words)) : null,
         h('button', {
@@ -827,7 +854,7 @@
             h('div', { class: 'card-meta' },
               h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
               h('span', { class: 'ws-tag ' + card.workspace, text: wsLabel(card.workspace) }),
-              typeStamp(card.type, null, card.facet, card.emphasis, card.level),
+              typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
               h('span', { class: 'stamp', text: card.address })),
             h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)'))),
           md);
@@ -1152,14 +1179,14 @@
       // Inside a Literature tree the long Citation key is known, so cards show the rest.
       const short = card.edge !== 'root' && slash > 4 ? '…' + card.address.slice(slash) : card.address;
       if (n.lod === 'slip') {
-        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet, card.emphasis, card.level), fold].filter(Boolean));
+        el.replaceChildren(...[h('span', { class: 'addr', text: short }), title, typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form), fold].filter(Boolean));
         return;
       }
       el.replaceChildren(...[
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: n.lod === 'focus' ? card.address : short }),
           h('span', { class: 'badges' },
-            typeStamp(card.type, null, card.facet, card.emphasis, card.level),
+            typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
             card.inbound ? h('span', { class: 'badge in', title: `Referred by ${card.inbound}`, text: '←' + card.inbound }) : null,
             external ? h('span', { class: 'badge', title: 'Links to other trees', text: '↗' + external }) : null,
             fold,
@@ -1682,7 +1709,7 @@
         h('span', { class: 'top' },
           h('span', { class: 'addr', text: address }),
           h('span', { class: 'badges' },
-            typeStamp(node.type, null, node.facet, node.emphasis, node.level),
+            typeStamp(node.type, null, node.facet, node.emphasis, node.level, node.form),
             node.workspace === 'agent' ? h('span', { class: 'ws-tag agent', text: 'agent' }) : null)),
         h('span', { class: 't' + (node.title ? '' : ' untitled') }, node.title ? titleNodes(node.title) : 'untitled'),
         node.excerpt ? h('span', { class: 'x' }, titleNodes(node.excerpt)) : null,
@@ -2483,7 +2510,7 @@
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
-          typeStamp(card.type, null, card.facet, card.emphasis, card.level),
+          typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
           h('button', {
             class: 'stamp', title: 'Copy address', text: card.address,
             onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
@@ -2806,7 +2833,7 @@
         h('span', { class: 'way', text: glyph[n.way] }),
         h('span', { class: 'mb-kind', text: n.way === 'out' ? KINDS[kind].fwd : KINDS[kind].back }),
         h('span', { class: 'note' }, titleNodes(n.card.title || n.card.address),
-          n.card.type !== 'idea' ? typeStamp(n.card.type, null, n.card.facet, null, n.card.level) : null),
+          n.card.type !== 'idea' ? typeStamp(n.card.type, null, n.card.facet, null, n.card.level, n.card.form) : null),
       );
     };
     const shown = beyond.slice(0, 6);

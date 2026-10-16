@@ -709,6 +709,7 @@ impl App {
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
+            "form": card.form.map(crate::math::MathForm::id),
             "model": snapshot.model(&card.address),
             "hubs": crate::hub::hubs_of(&snapshot, &card.address),
             "context": context,
@@ -917,6 +918,10 @@ impl App {
         if hub_level.is_some() && card_type != CardType::Hub {
             return Err(ApiError(crate::hub::LEVEL_NEEDS_HUB_CARD.to_string()));
         }
+        let form = form_field(body)?.flatten();
+        if form.is_some() && (card_type != CardType::Model || part.is_some()) {
+            return Err(ApiError(crate::math::FORM_NEEDS_MODEL_CARD.to_string()));
+        }
         let location = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError(
@@ -944,10 +949,11 @@ impl App {
             )?,
             other => return Err(ApiError(format!("unknown card kind `{other}`"))),
         };
-        if level.is_some() || hub_level.is_some() {
+        if level.is_some() || hub_level.is_some() || form.is_some() {
             let change = TypeChange {
                 level: level.map(Some),
                 hub_level: hub_level.map(Some),
+                form: form.map(Some),
                 ..TypeChange::default()
             };
             ops::edit(&self.root, ACCESS, &location, None, change, None)?;
@@ -987,6 +993,7 @@ impl App {
             emphasis: emphasis_field(body)?,
             level,
             hub_level,
+            form: form_field(body)?,
         };
         let text = if change.is_empty() {
             Some(str_field(body, "text")?)
@@ -1632,6 +1639,16 @@ fn emphasis_field(body: &Value) -> Result<Option<Option<Emphasis>>> {
         Some(Value::Null) => Ok(Some(None)),
         Some(Value::String(value)) => crate::model::parse_optional_emphasis(value).map(Some),
         Some(_) => bail!("`emphasis` must be a string"),
+    }
+}
+
+/// An optional Math form: absent leaves it alone, `""` or null clears it.
+fn form_field(body: &Value) -> Result<Option<Option<crate::math::MathForm>>> {
+    match body.get("form") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::math::parse_optional_form(value).map(Some),
+        Some(_) => bail!("`form` must be a string"),
     }
 }
 

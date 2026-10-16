@@ -123,6 +123,7 @@ pub(crate) struct TypeChange {
     pub(crate) emphasis: Option<Option<Emphasis>>,
     pub(crate) level: Option<Option<Level>>,
     pub(crate) hub_level: Option<Option<crate::hub::HubLevel>>,
+    pub(crate) form: Option<Option<crate::math::MathForm>>,
 }
 
 impl TypeChange {
@@ -132,6 +133,19 @@ impl TypeChange {
             && self.emphasis.is_none()
             && self.level.is_none()
             && self.hub_level.is_none()
+            && self.form.is_none()
+    }
+
+    /// The Math form the Card has after the change: only a Model Card (no
+    /// facet) has one, and it keeps its form unless the change names one.
+    pub(crate) fn resolve_form(&self, card: &Card) -> Result<Option<crate::math::MathForm>> {
+        let (card_type, facet, _) = self.resolve(card);
+        let head = card_type == CardType::Model && facet.is_none();
+        match self.form {
+            Some(Some(_)) if !head => bail!(crate::math::FORM_NEEDS_MODEL_CARD),
+            Some(form) => Ok(form),
+            None => Ok(card.form.filter(|_| head)),
+        }
     }
 
     /// The hub level the Card has after the change: only a Hub Card has one,
@@ -225,6 +239,7 @@ pub(crate) fn edit(
     let (card_type, facet, emphasis) = change.resolve(&card);
     let level = change.resolve_level(&card)?;
     let hub_level = change.resolve_hub_level(&card)?;
+    let form = change.resolve_form(&card)?;
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
@@ -245,6 +260,10 @@ pub(crate) fn edit(
     if hub_level != card.hub_level {
         let card = crate::load_card(&conn, &card.address)?;
         crate::hub::set_level(&conn, &card, hub_level)?;
+    }
+    if form != card.form {
+        let card = crate::load_card(&conn, &card.address)?;
+        crate::math::set_form(&conn, &card, form)?;
     }
     Ok(card.address)
 }
@@ -498,6 +517,8 @@ impl Snapshot {
             hasher.update([0]);
             hasher.update(card.level_id().unwrap_or_default().as_bytes());
             hasher.update([0]);
+            hasher.update(card.form.map_or("", crate::math::MathForm::id).as_bytes());
+            hasher.update([0]);
         }
         hasher
             .finalize()
@@ -585,6 +606,7 @@ impl Snapshot {
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
+            "form": card.form.map(crate::math::MathForm::id),
             "head": self.model_head(card),
             "edge": edge,
             "parent": parent,
@@ -804,6 +826,7 @@ impl Snapshot {
                     "facet": card.facet.as_ref().map(Facet::id),
                     "emphasis": card.emphasis.map(Emphasis::id),
                     "level": card.level_id(),
+                    "form": card.form.map(crate::math::MathForm::id),
                     "workspace": card.workspace.id(),
                     "tree": tree,
                     "tree_title": self.title(&crate::tree_root_address(tree)),
@@ -821,6 +844,7 @@ impl Snapshot {
     /// Case-insensitive full-text search over address, title, and body. With
     /// a Card type, only Cards of that type match, and an empty query lists
     /// them all.
+    #[cfg(test)]
     pub(crate) fn search(
         &self,
         query: &str,
@@ -828,14 +852,28 @@ impl Snapshot {
         card_type: Option<CardType>,
         limit: usize,
     ) -> Vec<Value> {
+        self.search_in(query, workspace, card_type, None, limit)
+    }
+
+    /// [`Snapshot::search`] that may keep only the Model Cards of one Math form;
+    /// with a form, an empty query lists them all.
+    pub(crate) fn search_in(
+        &self,
+        query: &str,
+        workspace: Option<Workspace>,
+        card_type: Option<CardType>,
+        form: Option<crate::math::MathForm>,
+        limit: usize,
+    ) -> Vec<Value> {
         let needle = query.trim().to_lowercase();
-        if needle.is_empty() && card_type.is_none() {
+        if needle.is_empty() && card_type.is_none() && form.is_none() {
             return Vec::new();
         }
         self.cards
             .iter()
             .filter(|card| workspace.is_none_or(|workspace| card.workspace == workspace))
             .filter(|card| card_type.is_none_or(|card_type| card.card_type == card_type))
+            .filter(|card| form.is_none_or(|form| card.form == Some(form)))
             .filter_map(|card| {
                 let parsed = &self.parsed[&card.address];
                 let snippet = if needle.is_empty() {
@@ -855,6 +893,7 @@ impl Snapshot {
                     "facet": card.facet.as_ref().map(Facet::id),
                     "emphasis": card.emphasis.map(Emphasis::id),
                     "level": card.level_id(),
+                    "form": card.form.map(crate::math::MathForm::id),
                     "workspace": card.workspace.id(),
                     "snippet": snippet,
                 }))

@@ -18,6 +18,7 @@ mod gui;
 mod hub;
 mod link;
 mod literature;
+mod math;
 mod mcp;
 mod model;
 mod ops;
@@ -712,13 +713,15 @@ fn initialize_database(root: &Path) -> Result<()> {
         let before_emphasis = [&before_facets[..], &["model_facet"]].concat();
         let before_level = [&before_emphasis[..], &["model_emphasis"]].concat();
         let before_hubs = [&before_level[..], &["model_level"]].concat();
-        let current = [&before_hubs[..], &["hub_level"]].concat();
+        let before_math = [&before_hubs[..], &["hub_level"]].concat();
+        let current = [&before_math[..], &["math_form"]].concat();
         if columns != before_workspaces
             && columns != before_card_types
             && columns != before_facets
             && columns != before_emphasis
             && columns != before_level
             && columns != before_hubs
+            && columns != before_math
             && columns != current
         {
             bail!("unsupported cards schema; database was not modified");
@@ -744,14 +747,15 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_open_model_parts(&conn, root)?;
     ensure_model_level_column(&conn, root)?;
     ensure_hub_cards(&conn, root)?;
+    ensure_math_form_column(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
 
 /// `CREATE TABLE <name> (…)` for the current cards schema. A Model facet is a
 /// short label of the model's author; only a Model part has an emphasis, only
-/// a Model Card (no facet) has an elaboration level, and only a Hub Card has a
-/// hub level.
+/// a Model Card (no facet) has an elaboration level or a Math form, and only a
+/// Hub Card has a hub level.
 fn cards_table(name: &str) -> String {
     format!(
         "CREATE TABLE {name} (
@@ -768,6 +772,7 @@ fn cards_table(name: &str) -> String {
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
             hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
+            math_form TEXT CHECK(math_form IS NULL OR math_form IN ({})),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
@@ -775,10 +780,44 @@ fn cards_table(name: &str) -> String {
             ),
             CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
             CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
-            CHECK(hub_level IS NULL OR card_type = 'hub')
+            CHECK(hub_level IS NULL OR card_type = 'hub'),
+            CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL))
         );",
-        model::Facet::MAX_CHARS
+        model::Facet::MAX_CHARS,
+        math_form_values()
     )
+}
+
+/// The Math forms as an SQL list: `'theory', 'definition', …`.
+fn math_form_values() -> String {
+    math::MathForm::ALL
+        .iter()
+        .map(|form| format!("'{}'", form.id()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Archives written before Model Cards could state a mathematical unit: add the
+/// `math_form` column with no form on any Model Card. A column added by ALTER
+/// TABLE takes only column constraints, so the rule that only a Model Card has
+/// a form is kept by `math::set_form` and `model::set`.
+fn ensure_math_form_column(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'math_form')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE cards ADD COLUMN math_form TEXT
+             CHECK(math_form IS NULL OR math_form IN ({}));",
+        math_form_values()
+    ))
+    .context("failed to add Math forms to the archive")?;
+    log_event(root, "added math forms; no model card states a unit yet").ok();
+    Ok(())
 }
 
 /// Archives created before Workspaces existed hold only the human's Cards:
@@ -1139,7 +1178,8 @@ fn cmd_dump() -> Result<()> {
                 Ok(
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
                         .with_part(card.facet, card.emphasis)
-                        .with_level(card.level),
+                        .with_level(card.level)
+                        .with_form(card.form),
                 )
             }
         })
@@ -1282,6 +1322,8 @@ struct Card {
     level: Option<model::Level>,
     /// Set only on a Hub Card: how wide its subject is.
     hub_level: Option<hub::HubLevel>,
+    /// Set only on a Model Card: the mathematical unit it states, if any.
+    form: Option<math::MathForm>,
 }
 
 impl Card {
@@ -1451,7 +1493,7 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         |row| {
@@ -1471,6 +1513,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
                 ),
                 level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
                 hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
+                form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
             })
         },
     )
@@ -1480,7 +1523,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1498,6 +1541,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
             emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
             level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
             hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
+            form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

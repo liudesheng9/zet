@@ -362,6 +362,7 @@ pub(crate) fn set(
     conn.execute(
         "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3,
              model_level = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN model_level END,
+             math_form = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN math_form END,
              hub_level = CASE WHEN ?1 = 'hub' THEN hub_level END
          WHERE row_id = ?4",
         params![
@@ -408,6 +409,8 @@ pub(crate) enum RelationKind {
     Corresponds,
     /// An objection, critique, or counterexample.
     Objects,
+    /// A special case: every object of the linking Card is one of the linked Card.
+    Specializes,
     /// A plain reference.
     Refers,
 }
@@ -416,7 +419,7 @@ pub(crate) enum RelationKind {
 /// English words match at the start of a word, so `relax` covers `relaxes`.
 /// The last row names words that announce a plain reference, so a Link after
 /// them does not share the kind of a Link before them in the sentence.
-pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
+pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 8] = [
     (
         RelationKind::RestsOn,
         "rests on the linked Card: a premise or a derivation step",
@@ -433,6 +436,7 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
             "代入",
             "推导自",
             "由此推出",
+            "按定义",
             "substitut",
             "rests on",
             "builds on",
@@ -441,6 +445,13 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
             "derived from",
             "follows from",
             "uses",
+            "cites",
+            "by definition",
+            "by theorem",
+            "by lemma",
+            "by proposition",
+            "by corollary",
+            "by axiom",
         ],
     ),
     (
@@ -473,6 +484,7 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
             "不同于",
             "区别",
             "相反",
+            "逆命题",
             "contrast",
             "unlike",
             "compared with",
@@ -532,6 +544,11 @@ pub(crate) const RELATION_KINDS: [(RelationKind, &str, &[&str]); 7] = [
         ],
     ),
     (
+        RelationKind::Specializes,
+        "a special case of it: every object of this Card is an object of the linked one",
+        &["特例", "特殊情形", "special case", "specializ"],
+    ),
+    (
         RelationKind::Refers,
         "a plain reference: 引出 points the other way (the linked Card builds on this one), and that Card's 承接 carries the relation",
         &["引出"],
@@ -547,6 +564,7 @@ impl RelationKind {
             RelationKind::Relaxes => "relaxes",
             RelationKind::Corresponds => "corresponds",
             RelationKind::Objects => "objects",
+            RelationKind::Specializes => "specializes",
             RelationKind::Refers => "refers",
         }
     }
@@ -723,7 +741,7 @@ pub(crate) fn heads(
 /// The parts of the model whose Model Card is `head`: first the parts it
 /// links, in the order it names them, then the parts filed under it that it
 /// does not name, in Folgezettel order.
-fn parts_of<'a>(
+pub(crate) fn parts_of<'a>(
     head: &str,
     by_address: &'a BTreeMap<String, Card>,
     parsed: &BTreeMap<String, crate::ParsedCard>,
@@ -798,6 +816,8 @@ pub(crate) fn structure(
         return Some(json!({
             "head": null,
             "level": null,
+            "form": null,
+            "math": null,
             "models": [],
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
@@ -946,10 +966,29 @@ pub(crate) fn structure(
         .filter(|source| !members.contains(*source))
         .collect::<BTreeSet<_>>();
     let level = by_address[&head].level;
+    let form = by_address[&head].form;
     let build = build_report(&head, level, &parts, by_address, parsed, inbound, &name);
+    let view = crate::math::View {
+        by_address,
+        parsed,
+        inbound,
+    };
+    let math = match form {
+        Some(crate::math::MathForm::Theory) => crate::math::theory_report(&view, &head),
+        Some(form) => crate::math::unit_report(
+            &view,
+            &head,
+            form,
+            level,
+            build["order"].as_array().map_or(&[][..], Vec::as_slice),
+        ),
+        None => Value::Null,
+    };
     Some(json!({
         "head": reference(&head),
         "level": level.map(Level::id),
+        "form": form.map(crate::math::MathForm::id),
+        "math": math,
         "models": models.iter().map(|at| reference(at)).collect::<Vec<_>>(),
         "facet": card.facet.as_ref().map(Facet::id),
         "emphasis": card.emphasis.map(Emphasis::id),
@@ -1232,6 +1271,13 @@ fn build_report(
                 .is_some_and(|card| !crate::is_tree_root(card))
     };
     let mut closure = Vec::new();
+    let mut cited = Vec::new();
+    let mut reach_in = Vec::new();
+    let view = crate::math::View {
+        by_address,
+        parsed,
+        inbound,
+    };
     let mut range = std::iter::once(head.to_string())
         .chain(in_range.iter().cloned())
         .collect::<Vec<_>>();
@@ -1242,6 +1288,33 @@ fn build_report(
             if outside(&read.target) && seen.insert(read.target.clone()) {
                 let target = &by_address[&read.target];
                 let models = homes(&read.target);
+                // A proof rests on the statement of an earlier unit, or on the book's notation table.
+                if crate::math::is_unit_head(target)
+                    || crate::math::is_notation_table(&title(&read.target))
+                {
+                    cited.push(json!({
+                        "from": from,
+                        "to": read.target,
+                        "note": read.note,
+                        "form": target.form.map(crate::math::MathForm::id),
+                        "title": title(&read.target),
+                    }));
+                    continue;
+                }
+                // A step inside another unit: cite its statement, or make the step a lemma.
+                if let Some(unit) = view.unit_of(&read.target) {
+                    reach_in.push(json!({
+                        "from": from,
+                        "to": read.target,
+                        "unit": unit,
+                        "note": read.note,
+                        "fix": format!(
+                            "`{from}` rests on `{}`, a part inside the unit `{unit}`: rest on the statement `{unit}` instead, or make the step a lemma that both proofs cite",
+                            read.target
+                        ),
+                    }));
+                    continue;
+                }
                 closure.push(json!({
                     "from": from,
                     "to": read.target,
@@ -1387,10 +1460,15 @@ fn build_report(
         "order": order_values,
         "chains": chains,
         "closure": closure,
+        "cited": cited,
+        "reach_in": reach_in,
         "forward": forward,
         "tolerated": tolerated,
         "unanchored": unanchored,
-        "self_sufficient": closure.is_empty() && forward.is_empty() && unanchored.is_empty(),
+        "self_sufficient": closure.is_empty()
+            && reach_in.is_empty()
+            && forward.is_empty()
+            && unanchored.is_empty(),
         "beyond_level": beyond_level,
     })
 }

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::math::MathForm;
 use crate::model::{Emphasis, Facet, Level};
 use crate::{CardType, Workspace};
 
@@ -23,6 +24,7 @@ pub(crate) struct DumpCard {
     facet: Option<Facet>,
     emphasis: Option<Emphasis>,
     level: Option<Level>,
+    form: Option<MathForm>,
     bibtex: Option<String>,
     text: String,
 }
@@ -46,6 +48,7 @@ impl DumpCard {
             facet: None,
             emphasis: None,
             level: None,
+            form: None,
             bibtex: None,
             text,
         }
@@ -64,6 +67,12 @@ impl DumpCard {
         self
     }
 
+    /// The Math form of a Model Card that states a mathematical unit.
+    pub(crate) fn with_form(mut self, form: Option<MathForm>) -> Self {
+        self.form = form;
+        self
+    }
+
     pub(crate) fn literature(
         address: String,
         workspace: Workspace,
@@ -77,6 +86,7 @@ impl DumpCard {
             facet: None,
             emphasis: None,
             level: None,
+            form: None,
             bibtex: Some(bibtex),
             text,
         }
@@ -88,7 +98,8 @@ impl DumpCard {
 /// to its Workspace, `types` maps every Event and Model Card to its Card type
 /// (Idea Cards are left out), `facets` maps every Model part to its Model
 /// facet, `emphasis` maps every core or aside part to its emphasis, `levels`
-/// maps every Model Card with an elaboration level to it, and `next_topic_id`
+/// maps every Model Card with an elaboration level to it, `forms` maps every
+/// Model Card that states a mathematical unit to its Math form, and `next_topic_id`
 /// keeps deleted Topic numbers from being reused.
 fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
     let workspaces = cards
@@ -119,14 +130,19 @@ fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
         .iter()
         .filter_map(|card| card.level.map(|level| (card.address.clone(), level.id())))
         .collect::<BTreeMap<_, _>>();
+    let forms = cards
+        .iter()
+        .filter_map(|card| card.form.map(|form| (card.address.clone(), form.id())))
+        .collect::<BTreeMap<_, _>>();
     // serde_json sorts object keys, so the documented key order is written out.
     Ok(format!(
-        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{}}}"#,
+        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{}}}"#,
         serde_json::to_string(&workspaces)?,
         serde_json::to_string(&types)?,
         serde_json::to_string(&facets)?,
         serde_json::to_string(&emphasis)?,
-        serde_json::to_string(&levels)?
+        serde_json::to_string(&levels)?,
+        serde_json::to_string(&forms)?
     ))
 }
 
@@ -924,7 +940,8 @@ mod tests {
                 CardType::Model,
                 "m".to_string(),
             )
-            .with_level(Some(Level::Formal)),
+            .with_level(Some(Level::Formal))
+            .with_form(Some(MathForm::Theorem)),
             DumpCard::new(
                 "0/1|a".to_string(),
                 Workspace::Human,
@@ -956,15 +973,15 @@ mod tests {
         ];
         assert_eq!(
             manifest(&cards, 7).unwrap(),
-            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}"#
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"}}"#
         );
         assert_eq!(
             manifest(&cards[..1], 1).unwrap(),
-            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"facets":{},"emphasis":{},"levels":{}}"#
+            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{}}"#
         );
         assert_eq!(
             manifest(&[], 0).unwrap(),
-            r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{}}"#
+            r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{}}"#
         );
     }
 

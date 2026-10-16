@@ -37,6 +37,11 @@
 
   Structural changes (insert, move, delete) run one call at a time through the zt helper with
   -Moves, and every address in state.json follows each moved map.
+
+  Mathematical units (zt-math-digest): -BriefDoc, -FillDoc, and -ReviewDoc replace the shared
+  instruction files (the math workflow passes the shared file with its math supplement appended).
+  A unit's first main-line part may be its premises (facet 前提), and a premise that is the Model
+  Card of another unit is a cited premise, not a closure fault.
 #>
 [CmdletBinding()]
 param(
@@ -51,7 +56,10 @@ param(
     [string]$Level = '',
     [int]$MaxSentences = 12,
     [int]$MaxChars = 400,
-    [int]$MaxSteps = 6
+    [int]$MaxSteps = 6,
+    [string]$BriefDoc = '',
+    [string]$FillDoc = '',
+    [string]$ReviewDoc = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
@@ -62,6 +70,19 @@ $Docs = @{
     brief  = Join-Path $PSScriptRoot 'dsh-brief-instructions.zh.md'
     fill   = Join-Path $PSScriptRoot 'dsh-fill-instructions.zh.md'
     review = Join-Path $PSScriptRoot 'dsh-review-instructions.zh.md'
+}
+if ($BriefDoc) { $Docs.brief = $BriefDoc }
+if ($FillDoc) { $Docs.fill = $FillDoc }
+if ($ReviewDoc) { $Docs.review = $ReviewDoc }
+# A premise that states a mathematical unit (a Model Card with a unit form) is cited, not taken in.
+$UnitForms = @('definition', 'axiom', 'theorem', 'proposition', 'lemma', 'corollary')
+$UnitCache = @{}
+function Test-Unit($address) {
+    if (-not $UnitCache.ContainsKey($address)) {
+        $card = try { @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $address } }))[0] } catch { $null }
+        $UnitCache[$address] = [bool]($card -and $card.type -eq 'model' -and -not $card.facet -and [string]$card.form -in $UnitForms)
+    }
+    $UnitCache[$address]
 }
 $Limits = "-MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps"
 $Words = @{ rests = '依赖'; substitutes = '代入'; illustrates = '例示'; contrasts = '对照'; relaxes = '放宽'; corresponds = '对应'; objects = '反驳'; refers = '见' }
@@ -205,7 +226,7 @@ function Test-Plan($plan, $structure, $model) {
     }
     if ($plan.level -eq 'formal') {
         if (-not $main.Count) { & $add 'a formal model needs a main line' }
-        elseif ($main[0].facet -notmatch '设定' -and -not $main[0].existing) { & $add 'the first main-line part is the setting (facet 设定)' }
+        elseif ($main[0].facet -notmatch '设定|前提|premises' -and -not $main[0].existing) { & $add 'the first main-line part is the setting (facet 设定; a mathematical unit: 前提)' }
         if (-not @($plan.symbols | Where-Object { $null -ne $_ }).Count) { & $add 'a formal model needs symbols (the setting''s symbol table)' }
         if (-not @($plan.terms | Where-Object { $null -ne $_ }).Count) { & $add 'a formal model needs terms (the setting''s term table)' }
     }
@@ -223,7 +244,7 @@ function Test-Plan($plan, $structure, $model) {
             } elseif ($ref -match '#') {
                 $other = ($ref -split '#')[0]
                 if ($other -notin @($State.order | Where-Object { $null -ne $_ }) -or [array]::IndexOf(@($State.order | Where-Object { $null -ne $_ }), $other) -ge [array]::IndexOf(@($State.order | Where-Object { $null -ne $_ }), $model)) { & $add "$($p.id): $ref must name a model planned earlier in this batch" }
-            } elseif (-not $memberAddresses.Contains($ref) -and $ref -ne $model) {
+            } elseif (-not $memberAddresses.Contains($ref) -and $ref -ne $model -and -not (Test-Unit $ref)) {
                 & $add "closure: $($p.id) rests on $ref, which is outside the model; take it in, move it in, or restate it as a new part"
             }
         }

@@ -34,7 +34,7 @@ model), set with `type` on create_successor or edit_card and listed with search_
 A model is presented by its Model Card (its entry point: the question and what the model shows) and \
 by Model parts: Model Cards with a `facet`, a short label you choose for what the part presents in \
 this model (`设定`, `均衡`, `数值例子`), and optionally an `emphasis` (`core` for what a reader must \
-see, `aside` for detail). A Model Card also carries its model's elaboration `level`: `concept` (level 1: a concept model, stated in words in the Model Card and a few parts, with no Derivation parts) or `formal` (level 2: a formal model, built self-sufficient with a derivation and Derivation parts for the steps the source skips); set it with create_successor or edit_card. Where a part is filed does not decide its model: a part belongs to the \
+see, `aside` for detail). A Model Card may state one mathematical unit, named by its `form`: `definition`, `axiom`, `theorem`, `proposition`, `lemma`, or `corollary` (a unit: its Model Card holds the statement with labelled hypotheses (H1) or clauses (C1), and its parts take the fixed facets 前提, 证明思路, 证明：…, 推导：…, 结论, 直觉, 图示, 例子, 非例, 反例, 假设作用：Hi, 等价刻画, 另证, 习题, 历史), or `theory` (a Theory Card: the way into one theory, which takes in whole units by Link). A proof rests on the statement of an earlier unit (a cited premise: `依赖`, `基于`, `按定义`), never on a step inside another unit's proof (a reach-in); a narrower concept links a broader one with `特例` (specializes). get_model reports a unit's or theory's `math`: tiers, faults, load, used_by, and study order. A Model Card also carries its model's elaboration `level`: `concept` (level 1: a concept model, stated in words in the Model Card and a few parts, with no Derivation parts) or `formal` (level 2: a formal model, built self-sufficient with a derivation and Derivation parts for the steps the source skips); set it with create_successor or edit_card. Where a part is filed does not decide its model: a part belongs to the \
 Model Card it is filed under and to every Model Card that links it, so file it where it first \
 connects and let one part serve several models. Every Link says what it is by the words before it \
 in its sentence: rests on (`依赖`, `基于`), illustrates (`例示`, `案例`, `印证`), contrasts \
@@ -317,6 +317,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "facet": card.facet.as_ref().map(Facet::id),
                 "emphasis": card.emphasis.map(Emphasis::id),
                 "level": card.level_id(),
+                "form": card.form.map(crate::math::MathForm::id),
                 "model": snapshot.model(&card.address),
                 "hubs": crate::hub::hubs_of(&snapshot, &card.address),
                 "title": parsed.title,
@@ -374,10 +375,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
             let card_type = optional_card_type(args)?;
-            // With a type, the query may be left out to list every Card of that type.
-            let query = match card_type {
-                Some(_) => optional_string(args, "query")?,
-                None => string_arg(args, "query")?,
+            let form = optional_form(args)?.flatten();
+            // With a type or a form, the query may be left out to list every Card of it.
+            let query = match (card_type, form) {
+                (None, None) => string_arg(args, "query")?,
+                _ => optional_string(args, "query")?,
             };
             let limit = args
                 .get("limit")
@@ -385,7 +387,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 .unwrap_or(30)
                 .clamp(1, 200) as usize;
             Ok(json!({
-                "results": snapshot.search(&query, optional_workspace(args)?, card_type, limit),
+                "results": snapshot.search_in(&query, optional_workspace(args)?, card_type, form, limit),
             }))
         }
         "list_links" => {
@@ -458,6 +460,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             if level.is_some() && (card_type != CardType::Model || part.is_some()) {
                 bail!(crate::model::LEVEL_NEEDS_MODEL_CARD);
             }
+            let form = optional_form(args)?.flatten();
+            if form.is_some() && (card_type != CardType::Model || part.is_some()) {
+                bail!(crate::math::FORM_NEEDS_MODEL_CARD);
+            }
             if hub_level.is_some() && card_type != CardType::Hub {
                 bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
             }
@@ -466,10 +472,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             crate::artifact::require_present(&root, &text)?;
             let address =
                 ops::create_successor(&root, ACCESS, kind, &at, card_type, part.clone(), &text)?;
-            if level.is_some() || hub_level.is_some() {
+            if level.is_some() || hub_level.is_some() || form.is_some() {
                 let change = ops::TypeChange {
                     level: level.map(Some),
                     hub_level: hub_level.map(Some),
+                    form: form.map(Some),
                     ..ops::TypeChange::default()
                 };
                 ops::edit(&root, ACCESS, &address, None, change, None)?;
@@ -480,6 +487,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "facet": part.as_ref().map(|part| part.facet.id()),
                 "emphasis": part.and_then(|part| part.emphasis).map(Emphasis::id),
                 "level": level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),
+                "form": form.map(crate::math::MathForm::id),
             }))
         }
         "edit_card" => {
@@ -495,6 +503,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 emphasis: optional_emphasis(args)?,
                 level,
                 hub_level,
+                form: optional_form(args)?,
             };
             let parsed = crate::parse_card_text(&card.text)?;
             let text_given = ["text", "title", "body"]
@@ -672,6 +681,17 @@ fn optional_card_type(args: &Value) -> Result<Option<CardType>> {
     }
 }
 
+/// `None` when absent; `Some(None)` for null, an empty string, or `none`,
+/// which clears a Math form.
+fn optional_form(args: &Value) -> Result<Option<Option<crate::math::MathForm>>> {
+    match args.get("form") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => crate::math::parse_optional_form(value).map(Some),
+        Some(_) => bail!("argument `form` must be a string"),
+    }
+}
+
 /// `None` when absent; `Some(None)` for an empty string or `none`, which
 /// clears a facet.
 fn optional_facet(args: &Value) -> Result<Option<Option<Facet>>> {
@@ -774,6 +794,13 @@ fn tool_definitions() -> Vec<Value> {
             "description": description,
         })
     };
+    let form = |description: &str| {
+        json!({
+            "type": "string",
+            "enum": ["theory", "definition", "axiom", "theorem", "proposition", "lemma", "corollary", ""],
+            "description": description,
+        })
+    };
     let card_type = |description: &str| {
         json!({
             "type": "string",
@@ -834,7 +861,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_model",
             "Get model",
-            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model). `level` is the Model Card's elaboration level (concept, formal, or null), and `build` gives the build order, the Derivation chains (`chains`: each run of Derivation parts with the members `after` and `before` it), and the faults (`closure`, `forward`, `unanchored`, and for a concept model `beyond_level`); `tolerated` lists premises of shared parts that stay in their home model.",
+            "Read a whole model from its Model Card or any of its Model parts: `models` (every model the Card belongs to; the first is shown); the Model Card; its parts, in the order the Model Card names them and then in filing order, with their facets, emphasis, and bodies, whether each is filed under the Model Card or joined by its Link (`filed`), and the other models it serves (`also`); the `relations` between parts (each Link from one part to another, with its `kind` (rests-on, illustrates, contrasts, relaxes, corresponds, objects, or refers) and the sentence that makes it); the `loose` parts in no relation; the `neighbours`, Links between the model and Cards outside it either way, with kind and sentence; how many outside Cards discuss it; and `issues` (a part that belongs to no model). `level` is the Model Card's elaboration level (concept, formal, or null), and `build` gives the build order, the Derivation chains (`chains`: each run of Derivation parts with the members `after` and `before` it), and the faults (`closure`, `reach_in` (a rests-on Link into a part of another mathematical unit), `forward`, `unanchored`, and for a concept model `beyond_level`); `cited` lists the cited premises (rests-on Links to the Model Card of a mathematical unit, or to the book's notation table), which are no fault; `tolerated` lists premises of shared parts that stay in their home model. `form` is the Math form; `math` is the unit report (labels, tiers, core, crux, budget, faults, theories, load, building_block, used_by, and `study`: the stations of Learn mode) or, for a Theory Card, the theory report (units in dependency order with weight and load, main_results, objects, cycle, forward, tools, users, faults, and study passes).",
             json!({ "at": at }),
             &["at"],
             true,
@@ -869,10 +896,11 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "search_cards",
             "Search cards",
-            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type`, only Cards of that type match, and `query` may be empty or left out to list every Card of that type.",
+            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it.",
             json!({
-                "query": { "type": "string", "description": "Text to find; required unless `type` is given." },
+                "query": { "type": "string", "description": "Text to find; required unless `type` or `form` is given." },
                 "type": card_type("Only Cards of this type: idea, event (Event Cards), model (Model Cards), or hub (Hub Cards)."),
+                "form": form("Only Model Cards of this Math form: theory (Theory Cards) or a unit (definition, axiom, theorem, proposition, lemma, corollary)."),
                 "workspace": workspace_filter,
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
             }),
@@ -940,6 +968,7 @@ fn tool_definitions() -> Vec<Value> {
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
                 "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
+                "form": form("For a Model Card (type model, no facet) that states a mathematical unit: definition, axiom, theorem, proposition, lemma, or corollary; or theory for a Theory Card, the way into one theory. Omit for an ordinary model."),
             }),
             &["at", "title"],
             false,
@@ -948,7 +977,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), and `level` to set a Model Card's elaboration level (concept or formal; empty for none); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
@@ -957,6 +986,7 @@ fn tool_definitions() -> Vec<Value> {
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
                 "level": level("New elaboration level of a Model Card (concept or formal), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
+                "form": form("New Math form of a Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary; empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },
             }),

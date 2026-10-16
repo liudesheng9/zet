@@ -98,6 +98,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         "set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)",
         Availability::OnRegular,
     ),
+    (
+        "mf <form|none>",
+        "set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary",
+        Availability::OnRegular,
+    ),
     ("stats", "count cards by kind", Availability::Always),
     ("status", "show service status", Availability::Always),
     ("lsbk", "list broken links", Availability::Always),
@@ -778,6 +783,16 @@ fn execute_command(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["lv", ..] => bail!("usage: lv <level|none>"),
+        ["mf", value] => {
+            let at = state.current_card("mf")?;
+            let form = crate::math::parse_optional_form(value)?;
+            let _lock = crate::acquire_edit_lock(root)?;
+            let conn = crate::open_db(root)?;
+            let card = crate::load_card(&conn, &at)?;
+            crate::math::set_form(&conn, &card, form)?;
+            Ok(Execution::Continue(CommandResult::Changed))
+        }
+        ["mf", ..] => bail!("usage: mf <form|none>"),
         [name, ..] => bail!("unknown session command: {name}"),
     }
 }
@@ -1425,7 +1440,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;
