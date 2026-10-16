@@ -1526,6 +1526,30 @@ fn delete_side_successor_compacts_later_sides_and_rewrites_links() {
 }
 
 #[test]
+fn config_set_rewrites_only_the_archive_root_line() {
+    let home = TestHome::new();
+    fs::create_dir_all(&home.config_dir).expect("config dir");
+    let config = home.config_dir.join("config.toml");
+    fs::write(&config, "# my note\narchive_root=C:/old\nother=1\n").expect("config");
+    home.cmd()
+        .args([
+            "config",
+            "set",
+            "archive_root",
+            home.archive_root.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        format!(
+            "# my note\narchive_root={}\nother=1\n",
+            home.archive_root.display()
+        )
+    );
+}
+
+#[test]
 fn a_killed_session_does_not_leave_its_edit_lock_holding_every_write() {
     let home = TestHome::new();
     home.configure_and_up();

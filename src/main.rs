@@ -224,11 +224,26 @@ impl Config {
                 format!("failed to create config directory {}", parent.display())
             })?;
         }
+        // Only the archive_root line changes; every other line of the file stays as it was.
+        let root_line = self
+            .archive_root
+            .as_ref()
+            .map(|root| format!("archive_root={}\n", root.to_string_lossy()));
         let mut body = String::new();
-        if let Some(root) = &self.archive_root {
-            body.push_str("archive_root=");
-            body.push_str(&root.to_string_lossy());
+        let mut placed = false;
+        for line in fs::read_to_string(&path).unwrap_or_default().lines() {
+            if line.starts_with("archive_root=") {
+                if !placed {
+                    body.push_str(root_line.as_deref().unwrap_or_default());
+                    placed = true;
+                }
+                continue;
+            }
+            body.push_str(line);
             body.push('\n');
+        }
+        if !placed {
+            body.push_str(root_line.as_deref().unwrap_or_default());
         }
         fs::write(&path, body).with_context(|| format!("failed to write config {}", path.display()))
     }

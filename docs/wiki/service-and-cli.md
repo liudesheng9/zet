@@ -392,7 +392,7 @@ Command plans (`command_plan`):
 
 | File | Written by | Content |
 |---|---|---|
-| `config.toml` | `Config::save` | `archive_root=<path>` (one line; not real TOML) |
+| `config.toml` | `Config::save` | `archive_root=<path>` (`key=value` lines, not real TOML; `save` changes only this line and keeps the rest) |
 | `autostart.log` | `autostart::record_boot` | `<unix-seconds> <outcome>` per sign-in |
 | `scholar-bridge.json`, `scholar-archive/` | [Scholar bridge](scholar-bridge.md) | pairing credential, cache |
 
@@ -624,7 +624,7 @@ Gaps:
 - **`zt status` and `zt help` may start the service.** They call `is_service_up`, which restarts a daemon that ended without `zt down`. Only `zt up`, `zt down`, and `zt config set` never restart.
 - **`zt down` does not wait for the daemon to exit.** A `zt up` right after it starts a new daemon that blocks on the daemon lock until the old one releases it; `zt up` waits up to 15 s for the record.
 - **A daemon of zt 0.7 or earlier has no lock file**: `daemon_alive` returns `None`, which counts as alive everywhere except `clear_stale_legacy_service` in `zt up`.
-- **`Config::save` writes only `archive_root`.** Any other line in `config.toml` is lost on the next `zt config set`. Despite the name the file is not TOML; values are not quoted.
+- **`config.toml` is not TOML.** It is `key=value` lines; values are not quoted. `Config::save` rewrites only the `archive_root` line (in place, or appended) and keeps every other line, comments included (test `config_set_rewrites_only_the_archive_root_line`).
 - **`EDITOR` is split on whitespace**, so an editor path with spaces needs a wrapper or a path without spaces.
 - **Every write rewrites every Card.** `regenerate_reverse_links_tx` and `apply_location_mapping_tx` load all Cards and update each row; cost grows with the archive.
 - **Two `move_plan`s.** `crate::move_plan` (plain move to a free Location) is the base case; the shell calls `place::move_plan`, which delegates to it only for `To` without `--alone`.
@@ -635,6 +635,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — `Config::save` keeps the other lines of `config.toml` and changes only `archive_root`.
 - `2026-10-16` — `sessions_lock_path` (`zt.sessions.lock`); the daemon creates `zt.sessions` in append mode instead of an exists-then-write.
 - `2026-10-16` — The edit lock keeps an OS lock on `zt.edit.lock` with a marker, so a writer killed while holding it (for example a Session with its editor open) no longer blocks every later write; `zt.edit.guard` orders take-over and removal (test `a_killed_session_does_not_leave_its_edit_lock_holding_every_write`).
 - `2026-10-16` — `DeletePlan` holds the side compaction; `DeletePlan::compaction` keeps later Side successors in place when a breaking Link would land on a renamed one.
