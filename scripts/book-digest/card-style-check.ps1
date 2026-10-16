@@ -287,7 +287,8 @@ foreach ($card in $cards) {
         if ($isStep) { $steps++ }
         $isNote = $derivation -and -not $isStep -and $section -eq '步骤' -and $line.text -match '^说明\s*[：:]'
         $text = if ($isNote) { $line.text -replace '^说明\s*[：:]\s*', '' } else { $line.text }
-        $isExplain = $isNote -or ($derivation -and $section -in '思路', '解读')
+        # The 来源 line after 解读 is not part of the explanation.
+        $isExplain = $isNote -or ($derivation -and $section -in '思路', '解读' -and $line.text -notmatch '^来源\s*[：:]')
         if ($isNote) {
             if (-not $steps) { Add-Fault $address 17 "a 说明 line before the first step: $text" }
             elseif ($notes.ContainsKey($steps)) { Add-Fault $address 17 "a second 说明 line under step $($steps): $text" }
