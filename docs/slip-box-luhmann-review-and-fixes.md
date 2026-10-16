@@ -134,13 +134,29 @@ Observations for the next step:
 - **The source cap took only Model Cards.** With `bridgeMax: 12`, the formal and concept models fill the cap. The book's Topic-tree Idea Cards did not get a turn. A larger `bridgeMax` reaches them.
 - **The report is long.** The list of sources left out by the cap has 283 rows. A later version can shorten that section.
 
-The apply step (#63) waits for the user's acceptance of exact ids from report `r-4cc98a89…311c`, and for a fresh backup first.
+## The first live apply (#63), 2026-10-16
+
+The user accepted 7 proposals from report `r-4cc98a89…311c`: `b001`, `b006`, `b008`, `b012`, `b013`, `b015`, `b016`.
+
+| Step | Result |
+| --- | --- |
+| Backup | `D:\zt\backups\zt.sqlite3.pre-bridge-apply-20261016T224911Z` by `VACUUM INTO`: integrity `ok`, 8,052 Cards, SHA-256 `3e9d8f11…04a9` |
+| Preview (apply without `-Apply`) | all 7 `ready`, no state file written |
+| Apply (`zt-econ-digest` 3.1.3, mode `bridge`) | 7 `verified`, 9 `open` (not accepted). 6 carriers changed: `5|a` carries two. Stages run: args and bridge only, no source probe. |
+| Row diff against the backup | exactly 13 rows changed: 6 carriers gained only the accepted `跨书关联：` paragraphs (earlier text unchanged), and 7 targets changed only in their generated Reverse links. No Card added, removed, or retyped. |
+| Relation kinds (`get_model` neighbours) | all 7 as accepted: 2 `contrasts`, 5 `corresponds` |
+| Reverse links | each target lists its carrier |
+| Models of the 6 carriers | all formal, all self-sufficient, 0 `closure`, `forward`, `unanchored`, `beyond_level` faults |
+| `zt-check` on the 6 carriers, before and after | 0 faults before, 0 after (L1 to L3, R2 to R5, R7, R9) |
+| Repeat apply | `done`, no paragraph added again |
+
+The apply took about 7 minutes for 6 Cards. Most of the time went to whole-archive reads: the apply step reads every tree before and after each carrier. A later change can read only the endpoints and the tree index once (see "What stays open").
 
 ## What stays open
 
 - **#62, a real report-only pilot.** Done on 2026-10-16 (see above). The issue can close when the user agrees.
-- **#63, a live apply.** It changes Cards in `D:\zt`. It needs the user's acceptance of exact ids from a real report, and a fresh backup first.
-- **Apply reads the archive once per carrier.** `Current-Context` reads every tree for each carrier. With 60 carriers that is about 60 full reads. It gives the right result, but it is slow. A later change can read only the endpoints.
+- **#63, a live apply.** Done for 7 proposals on 2026-10-16 (see above). The other 9 proposals stay open.
+- **Apply reads the archive once per carrier.** The first live apply showed the cost: about 7 minutes for 6 Cards. `Current-Context` reads every tree for each carrier. With 60 carriers that is about 60 full reads. It gives the right result, but it is slow. A later change can read only the endpoints.
 - **The sims dry-run mode `full` only.** The Bridge harness covers mode `bridge` with discovery, apply, and failures. A mode `bridge` case in the sim files is left for a later version.
 
 ## Versions and installation
