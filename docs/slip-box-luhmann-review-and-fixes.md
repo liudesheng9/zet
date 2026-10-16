@@ -108,9 +108,37 @@ The implementing agent changed some features on purpose. The review accepts thes
 - **A report id on apply.** The arguments add `bridgeReport`, so `b001` or `"all"` cannot point to a different report after a rerun.
 - **One result per source.** The answer holds one result per source with zero to two Bridges. So "every source appears once" and "two Bridges" both hold.
 
+## The report-only pilot (#62), 2026-10-16
+
+At the user's request, Claude Code ran the installed workflow on one digested book. The run applied nothing. This record holds counts and ids only. The Card text stays in the local report.
+
+| Item | Value |
+| --- | --- |
+| Command | `Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: { mode: "bridge", out: "D:\\zt-digest\\bridge-pilot\\hart1995firms", citationKey: "hart1995firms", bridgeMax: 12, bridgeCandidates: 5 } })` |
+| Installed workflow | `zt-econ-digest` 3.1.3, fingerprint `f58e668a16054da5` |
+| Stages run | args, source (DeepSeek official), bridge, report. No prepare, digest, link, organize, hubs, or models stage ran. |
+| Plan and report | `p-f449f647…b208`, `r-4cc98a89…311c` |
+| Read coverage | complete: 149 trees, 8,052 Card summaries, 67 endpoints, 2 term tables, 27 model settings |
+| Sources | 295 eligible, 12 selected (all Model Cards of the book: formal before concept), 283 left out by the cap |
+| Judge | 1 job (`br-001`), 1 DeepSeek conversation, 0 faults after its self-check |
+| Proposals | 16, all carried by the new book's Cards (`b001` to `b016`). 0 for earlier Cards. 0 refused. 11 sources with a proposal, 1 with a reasoned "none". |
+| Kinds | 9 `contrasts` (对照), 7 `corresponds` (对应) |
+| Target books | `mascolell1995microeconomic` 11, `missingmarkets2026interviews` 4, `grossman2002integration` 1 |
+| Card changes | none: a SHA-256 over every Card (location, type, Workspace, full text) was identical before and after the run |
+| Cleanup | the cleanup agent deleted the judge conversation, and the DeepSeek workspace of the run no longer exists |
+| Time | about 7 minutes, 5 agents |
+
+Observations for the next step:
+
+- **The proposals need a human read.** Some name a specific shared mechanism, for example two definitions of ownership or the same relation-specific investment mechanism in another field. Others are broad analogies, for example "both use a threshold condition". The report gives each sentence and reason, so the user can accept ids one by one.
+- **The source cap took only Model Cards.** With `bridgeMax: 12`, the formal and concept models fill the cap. The book's Topic-tree Idea Cards did not get a turn. A larger `bridgeMax` reaches them.
+- **The report is long.** The list of sources left out by the cap has 283 rows. A later version can shorten that section.
+
+The apply step (#63) waits for the user's acceptance of exact ids from report `r-4cc98a89…311c`, and for a fresh backup first.
+
 ## What stays open
 
-- **#62, a real report-only pilot.** Run mode `bridge` on one digested book with a small `bridgeMax`, read `report.md`, and check the counts. It costs DeepSeek runs and needs the user's go-ahead.
+- **#62, a real report-only pilot.** Done on 2026-10-16 (see above). The issue can close when the user agrees.
 - **#63, a live apply.** It changes Cards in `D:\zt`. It needs the user's acceptance of exact ids from a real report, and a fresh backup first.
 - **Apply reads the archive once per carrier.** `Current-Context` reads every tree for each carrier. With 60 carriers that is about 60 full reads. It gives the right result, but it is slow. A later change can read only the endpoints.
 - **The sims dry-run mode `full` only.** The Bridge harness covers mode `bridge` with discovery, apply, and failures. A mode `bridge` case in the sim files is left for a later version.
