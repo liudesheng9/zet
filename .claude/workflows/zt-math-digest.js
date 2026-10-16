@@ -26,7 +26,7 @@ export const meta = {
 //   'examples+answers': what DeepSeek may add that the book does not give; default 'examples'),
 //   unitsPerJob (4: units per boundary or proof job), mainResults (7: main results per Theory
 //   Card), coreBudget (3: core parts per unit), notation (true: write the Book notation table).
-// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit'), source, out, citationKey, bibtex, bookTitle,
+// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain'), source, out, citationKey, bibtex, bookTitle,
 //         fileId (the book Markdown's Scholar Archive file id; read from a source path such as
 //         ...\scholar-archive\files\83\... when not given): its figures are kept in ZET and shown in the Cards,
 //         figures (mode "full": true; false skips the Figures stage),
@@ -67,7 +67,14 @@ export const meta = {
 //         cardChecks (modes "full" and "link": true; false skips the card layer cycle), ideaSample (0.1: the share
 //         of a block's Idea Cards without faults that DeepSeek reviews against the source; mode "cards": 0),
 //         cardRules (the rules the cycle fixes; default all hard rules), cardFixRounds (1: check, fix, apply again),
-//         cardMax (a pilot: at most this many Cards with faults and this many orphans) }
+//         cardMax (a pilot: at most this many Cards with faults and this many orphans),
+//         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
+//         (思路, 说明, and 解读 together; doc/derivation-explanations-proposal.md),
+//         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
+//
+// Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
+// Model Cards in `only`). DeepSeek writes JSON; model-compiler.ps1 writes the Cards and never
+// changes 起点, a step, or 结果. It never rebuilds a model.
 //
 // How the stages hand work on:
 //   Prepare (figures kept) ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (model compiler, per batch) ─┐
@@ -137,7 +144,7 @@ const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
 const REVIEW_ROUNDS = Math.max(0, A.reviewRounds ?? 2)
 // Card size limits, passed to card-style-check.ps1 (R13, R14): the size of a Card, not the length of
 // a derivation, decides how many Derivation parts carry a step.
-const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6}`
+const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6} -MaxExplainSentences ${A.maxExplainSentences || 16} -MaxExplainChars ${A.maxExplainChars || 600}`
 const CHECK = `${SCRIPTS}\\card-style-check.ps1`
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 // Skills the manager passes to DeepSeek Harness in the `skills` field of deepseek_run and deepseek_prompt.
@@ -202,7 +209,7 @@ Return ok (true when it exits without an error) and output = its last output lin
   )
   const summary = run && run.ok ? lastJson(run.output) : null
   if (!summary) { log(`Audit failed: ${run && run.output}`); return { status: 'failed', error: run && run.output } }
-  for (const b of summary.books || []) log(`Audit ${b.key}: ${b.cards} Cards in ${b.topic_trees} Topic trees; ${b.style_faults} Card language faults; ${b.layer_faults ?? 0} Card layer faults (${b.layer_advisory ?? 0} advisory); ${b.orphans} orphans; ${b.no_source} with no source; ${b.unkinded} with no kinded Link; ${b.not_self_sufficient} of ${b.models} models not self-sufficient; ${b.figures_missing} figures named but not shown.`)
+  for (const b of summary.books || []) log(`Audit ${b.key}: ${b.cards} Cards in ${b.topic_trees} Topic trees; ${b.style_faults} Card language faults; ${b.layer_faults ?? 0} Card layer faults (${b.layer_advisory ?? 0} advisory); ${b.orphans} orphans; ${b.no_source} with no source; ${b.unkinded} with no kinded Link; ${b.not_self_sufficient} of ${b.models} models not self-sufficient; ${b.explained ?? 0} of ${b.derivations ?? 0} Derivation parts with 思路 and 解读; ${b.figures_missing} figures named but not shown.`)
   log(`Audit: ${summary.hubs_missing} missing hubs, ${summary.broken_links} broken Links in the Workspace. Report: ${OUT}\\audit.md`)
   return { status: 'done', ...summary }
 }
@@ -274,7 +281,7 @@ Return groups = the number of entries in manifest.groups and usage_before = the 
   groupCount = prep.groups
   usageBefore = prep.usage_before
 }
-if (!groupCount && MODE !== 'math' && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit' && MODE !== 'cards') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
+if (!groupCount && MODE !== 'math' && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit' && MODE !== 'cards' && MODE !== 'explain') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
 
 const groups = Array.from({ length: groupCount }, (_, i) => {
   const n = i + 1
@@ -780,6 +787,51 @@ const cardBlock = async (block) => {
   return runCards(`groups ${block[0].n}-${block[block.length - 1].n}`, `${OUT}\\cards-g${String(block[0].n).padStart(2, '0')}`, ` -Groups "${groups}" -Sample ${IDEA_SAMPLE} -NoOrphans`)
 }
 if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
+
+// --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
+// doc/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
+// most three parts), DeepSeek writes JSON, the script writes the Cards and refuses any change to 起点,
+// a step, or 结果. A refused part goes back to the same conversation once. No model is rebuilt.
+const runExplain = async () => {
+  phase('Models')
+  const work = `${OUT}\\explain`
+  const xstep = (s, extra = '') => `pwsh -NoProfile -File "${COMPILER}" -Step ${s} -Work "${work}" -Staging "${OUT}" ${LIMITS}${extra}`
+  let models = Array.isArray(A.only) && A.only.length ? A.only : null
+  if (!models) {
+    const listed = await listModels(`-All -CitationKey ${KEY}`, 'find models: explain')
+    if (!listed || !listed.ok) return { status: 'failed', error: `listing failed: ${listed && listed.error}` }
+    models = listed.models.filter(m => m.level !== 'concept').map(m => m.address)
+  }
+  if (!models.length) return { status: 'done', models: [] }
+  const sessions = {}
+  let jobs = 0
+  const xrun = async (what, command, opts = {}) => {
+    const r = await drive(`explain: ${what}`, {
+      command, dsh: work, skills: FILL_SKILLS, effort: DSH_EFFORT, sessions: opts.continues ? sessions : null,
+      cleanup: opts.cleanup, phase: 'Models', writes: `${work}\\out`, keep: true,
+    })
+    for (const x of (r && r.results) || []) {
+      jobs++
+      if (x.session_id) sessions[x.id] = x.session_id
+    }
+    if (!r || !r.ok) log(`explain ${what}: ${(r && r.error) || 'no report from its driver'}`)
+    return r
+  }
+  const planned = lastJson(((await xrun('plan', xstep('explain', ` -Models "${models.join(',')}"${A.explainMax ? ` -MaxParts ${A.explainMax}` : ''}`))) || {}).output)
+  if (!planned) return { status: 'failed', error: 'explain plan: no output from model-compiler.ps1' }
+  log(`Explain: ${planned.parts || 0} Derivation parts of ${models.length} models in ${(planned.jobs || []).length} DeepSeek jobs.`)
+  // The first apply writes what passes and sends refused parts back once (its follow-up jobs run in
+  // the same drive); the second apply writes the follow-ups' answers.
+  const first = lastJson(((await xrun('apply 1', xstep('explain-apply'), { continues: true })) || {}).output)
+  const second = first && (first.jobs || []).length ? lastJson(((await xrun('apply 2', xstep('explain-apply'))) || {}).output) : null
+  const reported = lastJson(((await xrun('report', xstep('explain-report'), { cleanup: true })) || {}).output)
+  const rows = (reported && reported.models) || []
+  const sum = (field) => rows.reduce((s, r) => s + (Number(r[field]) || 0), 0)
+  const refused = [...((first && first.refused) || []), ...((second && second.refused) || [])]
+  log(`Explain: ${sum('explained')} of ${sum('derivations')} Derivation parts have 思路 and 解读; ${(first ? first.applied : 0) + (second ? second.applied : 0)} written now, ${refused.length} refused, ${rows.reduce((s, r) => s + (r.blocked || []).length, 0)} blocked; ${jobs} DeepSeek jobs.`)
+  return { status: reported && first ? 'done' : 'failed', parts: planned.parts, applied: [first, second].filter(Boolean), refused, report: reported }
+}
+if (MODE === 'explain') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, explain: await runExplain() }
 
 let digestReports = []
 const cardReports = []

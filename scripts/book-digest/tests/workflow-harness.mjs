@@ -13,6 +13,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 let planJobs = 21
 let applyPending = 0
+let explainApplies = 0
 function runtime(opts0 = {}) {
   const calls = []
   const managed = []
@@ -68,6 +69,15 @@ function runtime(opts0 = {}) {
       else if (/hub-compiler\.ps1" -Step plan/.test(cmd)) output = json({ tree_count: 1, jobs: [{ id: 'h', files: [], prompt: 'p' }] })
       else if (/hub-compiler\.ps1" -Step check/.test(cmd)) output = json({ hubs: 1, faults: 0, jobs: [] })
       else if (/hub-compiler\.ps1" -Step report/.test(cmd)) output = json({ counts: {}, faults: {}, mirror: 0, missing_count: 0 })
+      else if (/model-compiler\.ps1" -Step explain-apply /.test(cmd)) {
+        // the first apply refuses one part and sends it back to its conversation; the second writes it
+        explainApplies++
+        output = explainApplies === 1
+          ? json({ applied: 2, refused: [], blocked: [], jobs: [{ id: 'm:x01+2', continue: 'm:x01', files: ['follow.md'], fallback: ['x.md', 'follow.md'], prompt: 'p' }] })
+          : json({ applied: 1, refused: [], blocked: [], jobs: [] })
+      }
+      else if (/model-compiler\.ps1" -Step explain-report /.test(cmd)) output = json({ models: [{ model: 'Key/3|a', derivations: 3, explained: 3, missing: [], refused: [], blocked: [] }] })
+      else if (/model-compiler\.ps1" -Step explain /.test(cmd)) output = json({ parts: 3, jobs: [{ id: 'm:x01', files: ['a', 'b', 'c'], prompt: 'p' }] })
       return { ok: true, output, results: [], deleted: 0 }
     }
     return {}
@@ -181,6 +191,20 @@ planJobs = 21
   const applies = calls.filter(c => /card-compiler\.ps1" -Step apply/.test(c.cmd))
   check(applies.filter(c => /: apply 1/.test(c.label)).length === 3 && applies.every(c => / -MaxJobs 30/.test(c.cmd)), `apply: 2 pending jobs take 3 calls of -MaxJobs 30 (${applies.map(c => c.label).join(', ')})`)
   applyPending = 0
+}
+// explain: plan, apply (with its follow-up to the same conversation), apply again, report and clean up
+{
+  explainApplies = 0
+  const { result, calls, managed, cleanups } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })
+  const cmds = calls.map(c => c.cmd).filter(Boolean)
+  const steps = cmds.map(c => (c.match(/-Step (\S+)/) || [])[1]).filter(Boolean)
+  check(result && result.mode === 'explain' && result.explain && result.explain.status === 'done', `explain: runs to its end (${JSON.stringify(result && result.explain && result.explain.status)})`)
+  check(steps.join(',') === 'explain,explain-apply,explain-apply,explain-report', `explain: plan, apply, apply, report (${steps.join(',')})`)
+  check(cmds.some(c => /-Step explain -Work "D:\\x\\Key\\explain" .*-MaxExplainSentences 16 -MaxExplainChars 600 -Models "Key\/3\|a" -MaxParts 5/.test(c)), 'explain: the plan gets the explanation budget, the Model Cards, and the pilot cap')
+  const follow = managed.find(m => /explain: apply 1/.test(m.label))
+  check(follow && follow.given.length === 1 && follow.given[0].continue === 'm:x01', 'explain: the refused part goes back to the same conversation')
+  check(cleanups.some(l => /explain: report: clean up/.test(l)), 'explain: the report step deletes the conversations')
+  check(!calls.some(c => /^(digest|link) manager|^plan: |prepare book/.test(c.label)), 'explain: no other stage and no architect runs')
 }
 // audit: one script, no DeepSeek source probe
 {

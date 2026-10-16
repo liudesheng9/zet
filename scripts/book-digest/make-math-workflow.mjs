@@ -82,7 +82,7 @@ const NOTATION = MODE === 'full' && A.notation !== false
 `)
 
 // 4. The model compiler takes the math instruction files; the architect reads the math supplement.
-rep('compiler docs', '-Staging "${OUT}" ${LIMITS}${extra}`', '-Staging "${OUT}" ${LIMITS}${MATH_DOC_ARGS}${extra}`')
+rep('compiler docs', '-Work "${dsh}" -Staging "${OUT}" ${LIMITS}${extra}`', '-Work "${dsh}" -Staging "${OUT}" ${LIMITS}${MATH_DOC_ARGS}${extra}`')
 rep('architect doc', 'Read your instructions first: ${ARCH_DOC} (Read tool).', 'Read your instructions first: ${ARCH_DOC}, then the math supplement ${ARCH_MATH_DOC} (Read tool).')
 // Theory Cards are written by the theory pass, never by the model compiler.
 rep('no theory in the compiler', 'const todo = models.filter(m => !only || only.has(m.address))', 'const todo = models.filter(m => m.form !== \'theory\').filter(m => !only || only.has(m.address))')

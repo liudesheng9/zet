@@ -133,8 +133,7 @@ wrote, supervised, and checked everything itself. Per batch of models:
 
 Haiku drivers only relay DeepSeek jobs: each runs one compiler step and the jobs it prints.
 
-## Derivation chains, Card size, and building blocks (zt 0.15.0)
-
+()=>b
 A formal model no longer gets one Derivation part per skipped step. The **Card size** decides how
 many parts a step or a statement takes:
 
@@ -257,7 +256,7 @@ Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. |
+| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). ()=>b
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
 | `figures` | `false` skips the Figures stage in a full run |
@@ -287,7 +286,7 @@ Arguments (`args`):
 | `ideaSample` | the share of a block's Idea Cards without faults that DeepSeek reviews against the source (0.1 in mode `full`, 0 in mode `cards`) |
 | `cardRules` | the rules the card cycle fixes (default all hard rules but R6; add R6 once the book's term table is checked) |
 | `cardFixRounds` | check, fix, apply again (1) |
-| `cardMax` | a pilot: at most this many Cards with faults and this many orphans |
+()=>b
 | `organize` | `"legacy"`: the old single Opus job instead of survey, decisions, apply, notes, and skeleton |
 | `dshManagers` | the most Haiku managers that run the DeepSeek jobs of one compiler step in parallel (8): one manager per `dshPerBatch` (8) jobs, each keeping 8 jobs running; one more Haiku agent runs the step's script and one cleans up |
 | `linkPerManager` | the link runs one Haiku manager starts at once (8) |

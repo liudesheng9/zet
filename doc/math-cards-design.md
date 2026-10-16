@@ -52,6 +52,10 @@ The user asked that the math workflow keep the book digest's standards for Card 
 1. **The math prompts append, they do not replace.** `math-compiler.ps1 -Step docs` writes each math prompt file as the shared instruction file followed by its math supplement. A rule of the shared file applies unchanged. The supplement says where it adds to it.
 2. **A script makes the math workflow.** `make-math-workflow.mjs` takes `zt-book-digest.js` and makes 14 named edits. Every other line is the book digest's own text. That text holds the DeepSeek Subagent Managed Protocol pool, the managers, the card cycles, the link check, Organize, Figures, Hubs, and the Audit. `math-workflow-harness.mjs` fails when the committed `zt-math-digest.js` differs from the generator's output. It also checks that the shared stages build the same 26 commands in both workflows.
 
+### Derivation explanations
+
+The branch merges `model-compiler` at `fc7dfba` (doc/derivation-explanations-proposal.md). A Derivation part of a unit has the five sections 思路, 起点, 步骤, 结果, and 解读, as in every other model, and R15 to R17 check them. The math fill supplement gives a proof step (`证明：…`) the same order: 思路, 起点, 论证 with 说明 lines, and 结果. The crux step adds 解读. Mode `explain` of the book digest is also a mode of the math workflow.
+
 ## Differences from the proposal
 
 | Proposal | As built | Reason |
