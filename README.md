@@ -436,7 +436,9 @@ zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` dis
 `zt mcp` offers the same reads to agents as five read-only tools: `scholar_archive_status`,
 `scholar_archive_read` (any of the archive's read tools), `scholar_archive_sql`,
 `scholar_archive_file` (Markdown comes back as text, PDFs as a cached path), and
-`scholar_archive_export`. They do not need the ZET service to be up. The protocol is in
+`scholar_archive_export`. They do not need the ZET service to be up. A sixth tool,
+`scholar_archive_artifact`, writes: it copies one figure into ZET's artifact store (see below),
+so it needs the service up. The protocol is in
 [docs/scholar-archive-bridge-design.md](docs/scholar-archive-bridge-design.md).
 
 ### Figures from the archive

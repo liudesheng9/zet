@@ -346,7 +346,8 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 
 `zt mcp` 以五个只读工具向 agent 提供同样的读取能力：`scholar_archive_status`、`scholar_archive_read`
 （archive 的任意只读工具）、`scholar_archive_sql`、`scholar_archive_file`（Markdown 以文本返回，PDF 返回缓存路径）
-和 `scholar_archive_export`。这些工具不需要启动 ZET 服务。协议见
+和 `scholar_archive_export`。这些工具不需要启动 ZET 服务。第六个工具 `scholar_archive_artifact` 会写入：
+它把一张图复制进 ZET 的 artifact 存储（见下文），所以需要 ZET 服务处于运行状态。协议见
 [docs/scholar-archive-bridge-design.md](docs/scholar-archive-bridge-design.md)。
 
 
