@@ -166,6 +166,9 @@ try {
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
     $ids = $state.models[$model].ids
     $d2 = $ids['D2']
+    # A real part ends its 结果 with a 来源 line. D2 also has a fault before explain (R5): it is kept.
+    $d2old = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $d2; body = ($d2old -replace '\*\*步骤\*\*', "- 这里对上界进行代入。`n`n**步骤**").TrimEnd() + "`n`n来源：原书 §5.2" } })
     $d2before = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body
     $explain = Last (Run 'explain' @('-Models', $model))
     Assert ($explain.jobs.Count -eq 2 -and $explain.parts -eq 4) "explain: a chain of four parts gives two jobs ($($explain.jobs.Count) jobs, $($explain.parts) parts)"
@@ -186,9 +189,10 @@ try {
     )), $utf8)
     $ap = Last (Run 'explain-apply')
     Assert ($ap.applied -eq 1 -and @($ap.blocked).Count -eq 1 -and @($ap.jobs).Count -eq 1 -and $ap.jobs[0].continue -eq $explain.jobs[0].id) "explain-apply: one part written, one blocked, one follow-up to the same conversation ($($ap | ConvertTo-Json -Compress -Depth 4))"
+    Assert (@($ap.kept | Where-Object { $_ -match "^$([regex]::Escape($d2)): R5 " }).Count -eq 1) "explain-apply: D2's old R5 fault does not block it and is listed as kept ($($ap.kept -join ' / '))"
     $d2after = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body
-    Assert ($d2after -match '(?s)^\*\*思路\*\*\n第 4 张，共 4 张：从 \$P\\le L\$ 推到 \$L\\ge K-w\$。\n把上界代入.*\*\*起点\*\*.*\*\*步骤\*\*\n1\. c\n   说明：这一步代入上一张的结果。\n\n\*\*结果\*\*\n\$\$L\\ge K-w\$\$\n\n\*\*解读\*\*\n清算价值够大') "explain-apply: D2 gets 思路 with its position, a 说明 line, and 解读 ($d2after)"
-    $core = { param($b) (($b -replace '(?s)\*\*思路\*\*.*?(?=\*\*起点\*\*)', '' -replace '(?s)\n*\*\*解读\*\*.*$', '' -split "`n") | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^说明：' } | ForEach-Object { $_.Trim() }) -join "`n" }
+    Assert ($d2after -match '(?s)^\*\*思路\*\*\n第 4 张，共 4 张：从 \$P\\le L\$ 推到 \$L\\ge K-w\$。\n把上界代入.*\*\*起点\*\*.*\*\*步骤\*\*\n1\. c\n   说明：这一步代入上一张的结果。\n\n\*\*结果\*\*\n\$\$L\\ge K-w\$\$\n\n\*\*解读\*\*\n清算价值够大[^\n]*\n\n来源：原书 §5\.2$') "explain-apply: D2 gets 思路 with its position, a 说明 line, and 解读; its 来源 line stays last ($d2after)"
+    $core = { param($b) (($b -replace '(?s)\*\*思路\*\*.*?(?=\*\*起点\*\*)', '' -replace '(?s)\n*\*\*解读\*\*.*?(?=\n来源：|$)', '' -split "`n") | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^说明：' } | ForEach-Object { $_.Trim() }) -join "`n" }
     Assert ((& $core $d2after) -eq (& $core $d2before)) 'explain-apply: 起点, the steps, and 结果 do not change'
     $follow = Get-Content -LiteralPath $ap.jobs[0].files[0] -Raw -Encoding utf8
     Assert ($follow.Contains("[[$($ids['D1'])]]") -and $follow -match 'R16' -and $follow.Contains("[[$($ids['D1~3'])]]") -and $follow -match 'no entry') "explain-apply: the follow-up names the long 思路 (R16) and the missing entry ($follow)"

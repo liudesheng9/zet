@@ -42,9 +42,10 @@
     explain -Models a,b,...     one job per chain (at most three parts) of each model's own
                                 Derivation parts that lack 思路 or 解读; -MaxParts caps the parts.
     explain-apply               reads the jobs' JSON, inserts the sections, refuses a part whose
-                                body changed since its job, whose core changed, or that fails
-                                R15 to R17; sends refused parts back to the same conversation
-                                once, and prints those follow-up jobs.
+                                body changed since its job, whose core changed, or whose new body
+                                has a fault that the old body does not have (a fault the old body
+                                already has is kept and listed under `kept`); sends refused parts
+                                back to the same conversation once, and prints those follow-up jobs.
     explain-report              per model: Derivation parts, explained, missing, refused.
 
   A Derivation part has five sections: 思路, 起点, 步骤, 结果, 解读. In a chain of two or more parts,
@@ -368,10 +369,10 @@ function Set-ChainLine([string]$body, [string]$line) {
     $idea.lines = [Collections.Generic.List[string]]::new([string[]]@(@($line | Where-Object { $_ }) + $rest))
     Join-Sections $sections
 }
-# The result of a Derivation part: the 结果 section only.
+# The result of a Derivation part: the 结果 section only, without a 来源 line.
 function Get-Result($body) {
     $r = (Split-Sections ([string]$body)) | Where-Object { $_.head -eq '结果' } | Select-Object -First 1
-    if ($r) { ($r.lines -join "`n").Trim() } else { '' }
+    if ($r) { (@($r.lines | Where-Object { $_.Trim() -notmatch '^来源\s*[：:]' }) -join "`n").Trim() } else { '' }
 }
 # Rewrites the position lines of every chain of a model's own parts, from the Cards themselves.
 function Update-ChainLines($model) {
@@ -1023,10 +1024,15 @@ function Get-Explained($s) {
     @(Get-OwnDerivations $s | Where-Object { Test-Explained $bodies[$_] })
 }
 # What explain-apply must never change: 起点, the step lines, 结果, and any other text, line by line.
+# The 来源 line counts too: Add-Explanation moves it after 解读, so it reads back inside 解读.
 function Get-Core([string]$body) {
     $lines = foreach ($sec in (Split-Sections $body)) {
-        if ($sec.head -in '思路', '解读') { continue }
-        foreach ($l in $sec.lines) { if ($l.Trim() -and $l.Trim() -notmatch '^说明\s*[：:]') { $l.Trim() } }
+        $explanation = $sec.head -in '思路', '解读'
+        foreach ($l in $sec.lines) {
+            if (-not $l.Trim()) { continue }
+            if ($explanation) { if ($l.Trim() -match '^来源\s*[：:]') { $l.Trim() }; continue }
+            if ($l.Trim() -notmatch '^说明\s*[：:]') { $l.Trim() }
+        }
     }
     $lines -join "`n"
 }
@@ -1147,7 +1153,7 @@ function Step-Explain {
 
 function Step-ExplainApply {
     $X = Get-ExplainState
-    $applied = @(); $refused = @(); $blocked = @(); $jobs = @(); $edits = @(); $done = @()
+    $applied = @(); $refused = @(); $blocked = @(); $jobs = @(); $edits = @(); $done = @(); $kept = @()
     foreach ($id in @($X.jobs.Keys)) {
         $j = $X.jobs[$id]
         $todo = @($j.addresses | Where-Object { $_ -notin @($j.done) })
@@ -1174,23 +1180,41 @@ function Step-ExplainApply {
         }
         if ($candidates.Count) {
             # The new bodies pass R2 to R17 before any write; the setting gives the term table (R6).
+            # Only a fault the explanation adds blocks a part: a fault the old body already has
+            # (a long derivation, a passive sentence) stays as it is and is reported as kept.
             $setting = [string]$X.settings[$j.model]
-            $entriesFile = Join-Path $Work 'explain-check.json'
-            $toCheck = @($candidates)
-            if ($setting) { $sc = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $setting } }); $toCheck += [ordered]@{ address = $setting; title = [string]$sc.title; body = [string]$sc.body; facet = [string]$sc.facet } }
-            Save-Text $entriesFile (ConvertTo-Json -InputObject @($toCheck) -Depth 5)
-            $checkArgs = @('-NoProfile', '-File', $Check, '-Json', $entriesFile, '-RequireExplain', '-MaxSentences', $MaxSentences, '-MaxChars', $MaxChars, '-MaxSteps', $MaxSteps, '-MaxExplainSentences', $MaxExplainSentences, '-MaxExplainChars', $MaxExplainChars)
-            if ($setting) { $checkArgs += @('-Setting', $setting) }
-            $found = @{}
-            $checked = @(pwsh @checkArgs 2>&1)
-            # No `faults: N` line means the check did not run: write nothing rather than unchecked text.
-            if (-not @($checked | Where-Object { [string]$_ -match '^faults: \d+' }).Count) { throw "card-style-check.ps1 did not run: $($checked -join ' | ')" }
-            foreach ($line in $checked) {
-                $l = [string]$line
-                if ($l -match '^(\S+) (R\d+ .*)$' -and $Matches[1] -ne $setting) {
-                    if (-not $found.ContainsKey($Matches[1])) { $found[$Matches[1]] = @() }
-                    $found[$Matches[1]] += $Matches[2]
+            $sc = if ($setting) { Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $setting } }) }
+            $styleFaults = {
+                param($entries, [string]$name, [bool]$explain)
+                $toCheck = @($entries)
+                if ($setting) { $toCheck += [ordered]@{ address = $setting; title = [string]$sc.title; body = [string]$sc.body; facet = [string]$sc.facet } }
+                $entriesFile = Join-Path $Work $name
+                Save-Text $entriesFile (ConvertTo-Json -InputObject @($toCheck) -Depth 5)
+                $checkArgs = @('-NoProfile', '-File', $Check, '-Json', $entriesFile, '-MaxSentences', $MaxSentences, '-MaxChars', $MaxChars, '-MaxSteps', $MaxSteps, '-MaxExplainSentences', $MaxExplainSentences, '-MaxExplainChars', $MaxExplainChars)
+                if ($explain) { $checkArgs += '-RequireExplain' }
+                if ($setting) { $checkArgs += @('-Setting', $setting) }
+                $checked = @(pwsh @checkArgs 2>&1)
+                # No `faults: N` line means the check did not run: write nothing rather than unchecked text.
+                if (-not @($checked | Where-Object { [string]$_ -match '^faults: \d+' }).Count) { throw "card-style-check.ps1 did not run: $($checked -join ' | ')" }
+                $out = @{}
+                foreach ($line in $checked) {
+                    if ([string]$line -match '^(\S+) (R\d+ .*)$' -and $Matches[1] -ne $setting) {
+                        if (-not $out.ContainsKey($Matches[1])) { $out[$Matches[1]] = [Collections.Generic.List[string]]::new() }
+                        $out[$Matches[1]].Add($Matches[2])
+                    }
                 }
+                $out
+            }
+            $old = & $styleFaults @($candidates | ForEach-Object { [ordered]@{ address = $_.address; title = $_.title; body = [string]$cards[$_.address].body; facet = $_.facet } }) 'explain-check-old.json' $false
+            $all = & $styleFaults @($candidates) 'explain-check.json' $true
+            $found = @{}
+            foreach ($a in @($all.Keys)) {
+                $before = [Collections.Generic.List[string]]::new()
+                if ($old.ContainsKey($a)) { foreach ($f in $old[$a]) { $before.Add($f) } }
+                $added = @(foreach ($f in $all[$a]) { if (-not $before.Remove($f)) { $f } })
+                $was = @($all[$a] | Where-Object { $_ -notin $added })
+                if ($was.Count) { $kept += @{ address = $a; faults = $was } }
+                if ($added.Count) { $found[$a] = $added }
             }
             foreach ($c in $candidates) {
                 if ($found.ContainsKey($c.address)) { $faults[$c.address] = $found[$c.address] -join ' | '; continue }
@@ -1218,7 +1242,7 @@ function Step-ExplainApply {
     foreach ($r in $refused) { $X.refused[$r.model] = @(@($X.refused[$r.model] | Where-Object { $_ }) + $r.text) }
     foreach ($b in $blocked) { $X.blocked[$b.model] = @(@($X.blocked[$b.model] | Where-Object { $_ }) + $b.text) }
     Save-State
-    Out-Last ([ordered]@{ applied = $applied.Count; refused = @($refused | ForEach-Object { $_.text }); blocked = @($blocked | ForEach-Object { $_.text }); jobs = $jobs })
+    Out-Last ([ordered]@{ applied = $applied.Count; refused = @($refused | ForEach-Object { $_.text }); blocked = @($blocked | ForEach-Object { $_.text }); kept = @($kept | ForEach-Object { "$($_.address): $($_.faults -join ' | ')" }); jobs = $jobs })
 }
 
 function Step-ExplainReport {
