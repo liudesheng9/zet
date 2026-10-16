@@ -1,8 +1,8 @@
 // ==== module zt-digest-lib v1 ====
-// The shared machinery of the ZT digest workflows (doc/zt-digest-framework.md), ported from
+// The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), ported from
 // .claude/workflows/zt-book-digest.js: the settings read from the args, the digest and link managers, the
-// compiler-step driver (drive), the model compiler (compileBatch, elaborateAll), and the card layer cycle
-// (runCards). A library module: the stage modules call zdMake(ctx, params) and use what it returns.
+// compiler-step driver (drive), and the card layer cycle (runCards). The model compiler is zt-model-lib (the
+// model layer, which each book type installs). A library module: the stage modules call zdMake(ctx, params) and use what it returns.
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
@@ -167,7 +167,7 @@ ${block.map(S.steps).join('\n')}
 Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
 Then follow "status" until the run ends:
   - "running": deepseek_wait (session_id, wait_seconds 900).
-  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
   - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
   Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
@@ -206,21 +206,7 @@ Return reports: one entry per group in this block with group, status, ${S.fields
     return { reports, extras }
   }
 
-  // --- Models: the model compiler ------------------------------------------------------------------
-  const MODEL_LIST = {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' }, error: { type: 'string' },
-      models: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, title: { type: 'string' }, level: { type: ['string', 'null'] }, parts: { type: 'number' }, issues: { type: 'number' }, faults: { type: 'number' } }, required: ['address'] } },
-    },
-    required: ['ok', 'models'],
-  }
-  const listModels = (selector, label) => zAgent(
-    `List the Model Cards of a ZET book digest. Run this one PowerShell command and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
-pwsh -NoProfile -File ${SCRIPTS}\\list-models.ps1 -Staging "${OUT}" ${selector}
-If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
-    { label, phase: 'Models', model: 'haiku', schema: MODEL_LIST },
-  )
+  // --- The compiler-step driver (drive): one Haiku agent runs a step, managers run its DeepSeek jobs ---
   const DRIVE = {
     type: 'object',
     properties: {
@@ -262,7 +248,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1, hub-compiler.ps1, or event-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -323,159 +309,6 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
   }
   const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(zdJsonIn).filter(Boolean))
 
-  const PLANS = {
-    type: 'object',
-    properties: {
-      plans: { type: 'array', items: { type: 'object', properties: {
-        model: { type: 'string' }, status: { type: 'string', enum: ['planned', 'skipped', 'failed'] }, level: { type: 'string' },
-        parts: { type: 'number' }, derivations: { type: 'number' }, chains: { type: 'number' },
-        notes: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' },
-      }, required: ['model', 'status'] } },
-    },
-    required: ['plans'],
-  }
-  const slug = (address) => String(address).replace(/[\/|]/g, '_')
-  const managerFolders = []
-  let dshJobs = 0
-  const compileBatch = async (batch, kind) => {
-    const name = `m-${slug(batch[0].address)}`
-    const dsh = `${MODEL_WORK}\\${name}`
-    managerFolders.push(dsh)
-    const tag = `${kind} ${batch[0].address}${batch.length > 1 ? ` +${batch.length - 1}` : ''}`
-    const step = (s, extra = '') => `pwsh -NoProfile -File "${COMPILER}" -Step ${s} -Work "${dsh}" -Staging "${OUT}" ${LIMITS}${COMPILER_DOCS}${extra}`
-    const sessions = {}
-    const run = async (what, command, skills, effort, opts = {}) => {
-      const r = await drive(`${what}: ${tag}`, { command, dsh, skills, effort, sessions: opts.continues ? sessions : null, cleanup: opts.cleanup })
-      for (const x of (r && r.results) || []) {
-        dshJobs++
-        if (x.session_id) sessions[x.id] = x.session_id
-      }
-      if (!r || !r.ok) log(`${what} ${tag}: ${(r && r.error) || 'no report from its driver'}`)
-      return r
-    }
-    const splitNeeds = async (driven) => {
-      const need = answerLines(driven).filter(l => l.status === 'split' && l.address && l.need > 1).map(l => `${l.address}=${l.need}`)
-      if (need.length) await run('split', step('split', ` -Need "${need.join(';')}"`), FILL_SKILLS, DERIVE_EFFORT, { continues: true })
-    }
-    const failed = (why) => batch.map(m => ({ model: m.address, status: 'failed', parts: [], charts: 0, issues: [why] }))
-    // 1. Brief: the script writes each context pack; DeepSeek reads the source and writes brief.md.
-    const brief = await run('brief', step('brief', ` -Models "${batch.map(m => m.address).join(',')}"${REBUILD ? ' -Rebuild' : ''}${LEVEL ? ` -Level ${LEVEL}` : ''}`), [], BRIEF_EFFORT)
-    const briefed = zdLastJson(brief && brief.output)
-    if (!briefed) return failed(`brief failed: ${(brief && brief.error) || 'no output'}`)
-    const skipped = new Set(briefed.skipped || [])
-    const todo = batch.filter(m => !skipped.has(m.address))
-    if (!todo.length) return batch.map(m => ({ model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }))
-    // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
-    const entry = (m, i) => `## Model ${i + 1}
-MODEL: ${m.address} (${m.title || ''})
-DIR: ${dsh}\\${slug(m.address)}
-LEVEL NOW: ${m.level || 'none'}`
-    const planned = await zAgent(
-      `You are the Sonnet architect in the Models stage of the ZET digest of 《${A.bookTitle || KEY}》. Read your instructions first: ${ARCH_DOC}${ARCH_SUPPLEMENT ? `, then ${profile.architectSupplement.name || 'the supplement'} ${ARCH_SUPPLEMENT}` : ''} (Read tool). Then follow them for each model in turn. These models are near each other in the book: where one part serves two of them, plan it in the first and take it in from the second (\`<model>#<id>\`).
-COMPILER: ${COMPILER}
-WORK: ${dsh}
-LIMITS: ${LIMITS}${REBUILD ? '\nREBUILD: rebuild each model even if it already has parts.' : ''}${LEVEL ? `\nLEVEL: ${LEVEL}` : ''}
-
-${todo.map(entry).join('\n\n')}
-
-Return plans: one entry per model, in this order.`,
-      { label: `plan: ${tag}`, phase: 'Models', model: 'sonnet', schema: PLANS },
-    )
-    const plans = (planned && planned.plans) || []
-    if (!plans.some(p => p.status === 'planned')) {
-      await run('clean up', step('report'), [], DSH_EFFORT, { cleanup: true })
-      return batch.map(m => skipped.has(m.address) ? { model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }
-        : { model: m.address, status: (plans.find(p => p.model === m.address) || {}).status || 'failed', parts: [], charts: 0, issues: planned ? [] : ['no plan from the architect'] })
-    }
-    // 3. Fill, 4. derive and 5. review (only where the plans have Derivation parts).
-    await splitNeeds(await run('fill', step('apply'), FILL_SKILLS, DSH_EFFORT))
-    if (plans.some(p => p.status === 'planned' && p.derivations > 0)) {
-      await splitNeeds(await run('derive', step('derive'), FILL_SKILLS, DERIVE_EFFORT))
-      for (let round = 0; round < REVIEW_ROUNDS; round++) {
-        const review = await run(`review ${round + 1}`, step('review', round ? ' -Changed' : ''), [], REVIEW_EFFORT)
-        const verdicts = answerLines(review).reduce((s, l) => ({ split: s.split + (Number(l.split) || 0), fix: s.fix + (Number(l.fix) || 0) }), { split: 0, fix: 0 })
-        log(`review ${round + 1} ${tag}: ${verdicts.split} parts to split, ${verdicts.fix} to fix`)
-        if (!verdicts.split && !verdicts.fix) break
-        await splitNeeds(await run(`split ${round + 1}`, step('split'), FILL_SKILLS, DERIVE_EFFORT, { continues: true }))
-      }
-    }
-    // 6. Report (script) and clean-up.
-    const reported = zdLastJson((await run('report', step('report'), [], DSH_EFFORT, { cleanup: true }) || {}).output)
-    const reports = (reported && reported.models) || []
-    return batch.map(m => {
-      const r = reports.find(x => x.model === m.address)
-      const pl = plans.find(x => x.model === m.address) || {}
-      if (skipped.has(m.address)) return { model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }
-      if (!r) return { model: m.address, status: 'failed', parts: [], charts: 0, issues: ['no report from the compiler'] }
-      const faults = Object.entries(r.faults || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`)
-      return {
-        ...r,
-        issues: [...(r.issues || []), ...(r.error ? [r.error] : []), ...faults, ...((r.todo || []).length ? [`still 待写: ${r.todo.join(', ')}`] : [])],
-        notes: [...(r.notes || []), ...(pl.notes || [])], summary: pl.summary,
-      }
-    })
-  }
-  const groupNo = (m) => Number(m.group) || Number(String(m.address).split('/')[1].split('|')[0]) || 0
-  const elaborateAll = async (models, label) => {
-    const only = Array.isArray(A.only) && A.only.length ? new Set(A.only) : null
-    // A model whose level the run changes is never skipped; a form the profile skips (math: theory) never goes in.
-    const todo = models.filter(m => !SKIP_FORMS.includes(m.form)).filter(m => !only || only.has(m.address)).filter(m => REBUILD || (LEVEL && m.level !== LEVEL) || !(m.parts > 0 && !m.issues))
-      .sort((a, b) => groupNo(a) - groupNo(b) || String(a.address).localeCompare(String(b.address)))
-    if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
-    const concept = todo.filter(m => (LEVEL || m.level) === 'concept')
-    const formal = todo.filter(m => (LEVEL || m.level) !== 'concept')
-    const batches = []
-    for (let i = 0; i < concept.length; i += PER_CONCEPT) batches.push({ kind: 'concept', models: concept.slice(i, i + PER_CONCEPT) })
-    for (let i = 0; i < formal.length; i += PER_SONNET) batches.push({ kind: 'formal', models: formal.slice(i, i + PER_SONNET) })
-    log(`${label}: ${todo.length} models (${concept.length} concept, ${formal.length} formal or undecided) in ${batches.length} batches, one Sonnet architect each; up to ${DSH_PER_BATCH} DeepSeek runs at a time per batch.`)
-    const results = (await parallel(batches.map(b => () => compileBatch(b.models, b.kind).catch(error => { log(`batch ${b.models[0].address}: ${error}`); return null })))).flatMap((r, i) => r || batches[i].models.map(() => null))
-    const ordered = batches.flatMap(b => b.models)
-    return results.map((r, i) => r || { model: ordered[i].address, status: 'failed', parts: [], charts: 0, issues: ['no report from its batch'] })
-  }
-  const elaborateBlock = async (block, managed) => {
-    const reports = (managed && managed.reports) || []
-    const groups = block.map(g => g.n).filter(n => {
-      const r = reports.find(x => x.group === n)
-      return r && r.status === 'done' && r.models !== 0
-    })
-    if (!groups.length) return []
-    const listed = await listModels(`-Groups ${groups.join(',')}`, `find models: groups ${groups[0]}-${groups[groups.length - 1]}`)
-    if (!listed || !listed.ok) { log(`Models for groups ${groups.join(',')}: listing failed (${listed && listed.error})`); return [] }
-    const reported = reports.filter(r => groups.includes(r.group)).reduce((s, r) => s + (r.models || 0), 0)
-    if (reported && !listed.models.length) log(`Models for groups ${groups.join(',')}: the runs reported ${reported} Model Cards but the listing found none; the whole-book sweep will pick them up.`)
-    return elaborateAll(listed.models, `groups ${groups[0]}-${groups[groups.length - 1]}`)
-  }
-  const kindTally = (reports) => {
-    const tally = {}
-    for (const r of reports) for (const [kind, n] of Object.entries(r.kinds || {})) tally[kind] = (tally[kind] || 0) + n
-    return Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([kind, n]) => `${kind} ${n}`).join(', ') || 'no kinds reported'
-  }
-  const logModels = (reports) => {
-    const done = reports.filter(r => r.status === 'done')
-    const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
-    const deriv = (field) => done.reduce((s, r) => s + ((r.derivations && r.derivations[field]) || 0), 0)
-    log(`Build: ${deriv('total')} Derivation parts in ${deriv('chains')} chains of two or more (longest ${done.reduce((m, r) => Math.max(m, (r.derivations && r.derivations.longest) || 0), 0)}), ${sum('split')} parts split by review or for the Card size, ${done.reduce((s, r) => s + ((r.moved || []).length), 0)} Cards moved into ranges, ${sum('shared')} shared parts taken in, ${sum('tolerated')} tolerated premises, ${sum('style')} style faults left, ${done.reduce((s, r) => s + ((r.todo || []).length), 0)} parts still 待写; ${dshJobs} DeepSeek jobs.`)
-    log(`Levels: ${done.filter(r => r.level === 'concept').length} concept models (level 1), ${done.filter(r => r.level === 'formal').length} formal models (level 2), ${done.filter(r => !r.level).length} without a level.`)
-    log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(pp => pp.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts), ${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
-  }
-  // A batch's cleanup deletes its own DeepSeek conversations; this sweep deletes any a failed batch left.
-  const modelCleanup = async () => {
-    if (!managerFolders.length) return null
-    const c = await zAgent(
-      `Clean up after the batches of a ZET model stage (a batch deletes its own conversations; this catches a batch that failed). Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
-For each folder below: deepseek_list with that cwd (a workspace that is not found needs nothing); deepseek_delete every conversation there that is not running, and count them; then, when none is running, deepseek_remove_workspace with that cwd and delete_conversations true. Never archive a conversation.
-${managerFolders.join('\n')}
-Then delete what is left of those folders with one PowerShell call: ${managerFolders.map(f => `Remove-Item -LiteralPath "${f}" -Recurse -Force -ErrorAction SilentlyContinue`).join('; ')}
-Return late_deleted (the count) and folders (how many folders you handled).`,
-      {
-        label: 'cleanup model managers', phase: 'Models', model: 'haiku',
-        schema: { type: 'object', properties: { late_deleted: { type: 'number' }, folders: { type: 'number' } }, required: ['late_deleted'] },
-      },
-    )
-    if (c) log(`Model clean-up: ${c.late_deleted} conversations deleted late.`)
-    return c
-  }
-
   // --- Cards: the card layer cycle -----------------------------------------------------------------
   const runCards = async (label, work, extra = '', only = '') => {
     const cstep = (s, more = '') => `pwsh -NoProfile -File "${CARD_COMPILER}" -Step ${s} -Work "${work}" -Compact${more}`
@@ -533,8 +366,9 @@ Return late_deleted (the count) and folders (how many folders you handled).`,
   return {
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
     HUB_WORK, HUB_COMPILER, HUB_EFFORT, HUB_FIX_ROUNDS, HUB_SKILLS, PER_MANAGER, LINK_PER_MANAGER, raised,
-    zAgent, runScript, groupsOf, toBlocks, runStage, listModels, drive, expandJobs, answerLines, elaborateAll, elaborateBlock,
-    logModels, modelCleanup, runCards, cardBlock, dshJobs: () => dshJobs,
+    zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
+    runCards, cardBlock, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
+    BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 

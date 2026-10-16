@@ -1,18 +1,18 @@
 # ZT digests on the Workflow Framework Protocol
 
-The ZT digests are built by the Workflow Framework Protocol (global skill `workflow-framework-protocol`): one **base** holds every stage the digests share, and each book type is a **variant** that installs its own modules into the base's slots. The assembler composes a variant with the base, builds one self-contained Workflow script, and installs it frozen: while it runs, its stages, their order, the roles and their models, the retries, checks, and modes cannot change; only data moves.
+The ZT digests are built by the Workflow Framework Protocol (global skill `workflow-framework-protocol`): one **base** holds every stage that all book types share, and each book type is a **variant** that installs its own **module set** (its layers and its prompts) into the base's slots. The assembler composes a variant with the base, builds one self-contained Workflow script, and installs it frozen: while it runs, its stages, their order, the roles and their models, the retries, checks, and modes cannot change; only data moves.
 
 | Workflow | Blueprint | Installed script | Book type |
 | --- | --- | --- | --- |
-| `zt-econ-digest` | `scripts/book-digest/workflow/zt-econ-digest.blueprint.json` | `.claude/workflows/zt-econ-digest.js` | economics (today's `zt-book-digest`) |
-| `zt-math-digest-v2` | `scripts/book-digest/workflow/zt-math-digest-v2.blueprint.json` | `.claude/workflows/zt-math-digest-v2.js` | mathematics (today's `zt-math-digest`) |
+| `zt-econ-digest` | `scripts/book-digest/workflow/zt-econ-digest.blueprint.json` | `.claude/workflows/zt-econ-digest.js` | economics |
+| `zt-math-digest` | `scripts/book-digest/workflow/zt-math-digest.blueprint.json` | `.claude/workflows/zt-math-digest.js` | mathematics |
 
-Both share `scripts/book-digest/workflow/zt-digest-base.blueprint.json`. The hand-written `zt-book-digest.js`, `zt-math-digest.js`, and `make-math-workflow.mjs` stay beside them until the switch is approved; the new workflows take the same args, build the same commands, and return the same result per mode.
+Both share `scripts/book-digest/workflow/zt-digest-base.blueprint.json`. The hand-written workflows stay: `.claude/workflows/zt-book-digest.js`, and `.claude/workflows-legacy/zt-math-digest.js` (moved there unchanged when the framework build took the name `zt-math-digest`; `make-math-workflow.mjs` and `math-workflow-harness.mjs` follow it there).
 
-## The base
+## The base: what every book type shares
 
 ```
-args → source → prepare → [after-prepare] → terms → cards-book → explain → digest → models → [after-models]
+args → source → prepare → [after-prepare] → terms → cards-book → digest → [after-digest]
      → hubs-first → link-prepare → link → link-check → [after-link] → cleanup → organize → figures → hubs → audit
      → [after-audit] → report
 ```
@@ -21,15 +21,12 @@ args → source → prepare → [after-prepare] → terms → cards-book → exp
 | --- | --- | --- | --- |
 | args | `gate` | always: citationKey (not in modes hubs, audit); source, bibtex, bookTitle (mode full) | halt |
 | source | `zt-dsh-source` | not in modes figures, audit: the DeepSeek source probe | halt |
-| prepare | `zt-digest-prepare` | mode full: prepare-book-digest.ps1; else args.groups | halt |
+| prepare | `zt-digest-prepare` | mode full: prepare-book-digest.ps1 with the profile's instruction files; else args.groups | halt |
 | terms | `zt-book-terms` | mode full, `terms` not false | continue |
 | cards-book | `zt-cards-book` | mode cards | — |
-| explain | `zt-explain` | mode explain | — |
-| digest | `zt-digest-blocks` | mode full: digest blocks, each block's models and card cycle as a pipeline, the model sweep, the late clean-up | halt when no group is done |
-| models | `zt-models-book` | mode models | halt |
+| digest | `zt-digest-blocks` | mode full: the digest blocks (Idea Cards and anchors, plus what the type's prompt supplements ask for); each block's card cycle as soon as it finishes | halt when no group is done |
 | hubs-first | `zt-hubs` | mode hubs | — |
-| link-prepare | `zt-link-prepare` | modes full, link | halt |
-| link | `zt-link-pass` | modes full, link | — |
+| link-prepare, link | `zt-link-prepare`, `zt-link-pass` | modes full, link | halt (prepare) |
 | link-check | `zt-link-check` | modes full, link; `cardChecks` not false | — |
 | cleanup | `zt-dsh-cleanup` | modes full, link | — |
 | organize | `zt-organize` | mode full, or `organize` true or "legacy" | continue |
@@ -38,35 +35,51 @@ args → source → prepare → [after-prepare] → terms → cards-book → exp
 | audit | `zt-audit` | mode audit, or full with `audit` not false | — |
 | report | `zt-digest-report` | always: the result in the shape of zt-book-digest.js | — |
 
-Roles: `manager` (Haiku, effort low), `architect` (Sonnet), `organizer` (Opus). All shared machinery (the digest and link managers, `drive`, the model compiler, the card cycle) is the library module `zt-digest-lib`, ported from `zt-book-digest.js`; every manager takes a slot of the DeepSeek Subagent Managed Protocol pool (at most 8 managers in the run).
+The base writes no Model Card, no Event Card, and runs no model compiler: those are layers of a book type. Its digest prompt is `dsh-digest-base.zh.md` (`dsh-instructions.zh.md` without the section on Event and Model Cards). Roles: `manager` (Haiku, effort low), `architect` (Sonnet), `organizer` (Opus). Shared machinery: `zt-digest-lib` (managers, `drive`, the card cycle). Base modes: `link`, `cards`, `hubs`, `figures`, `audit`. Checkpoint: `until: "digest"`.
 
-Modes: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `audit`, as before. Checkpoint: `until: "digest"` stops before the link pass; go on with mode `link` (`groups`, `organize: true`, `hubs: true`).
+The book profile (`consts.profile`) is the base's one open const: `instructions` (the digest prompt: `dsh-digest-base.zh.md` plus the type's supplements, inserted before its reply section), `noEventCandidates`, `digestPrefix`, `linkPrefix`, `compilerDocs`, `architectSupplement`, `skipForms`.
 
-The book profile (`consts.profile`) is the base's one open const: `digestPrefix`, `linkPrefix`, `compilerDocs` (extra model-compiler instruction files, in order), `architectSupplement` (an extra architect file), `skipForms` (Model Card forms the model compiler leaves out).
+## The economics module set (`zt-econ-digest`)
 
-## The economics set
+| Layer | What it is |
+| --- | --- |
+| Prompts | `dsh-digest-base.zh.md` + `dsh-model-cards.zh.md` (the digest writes Idea Cards and Model Cards, no Event Card; no event candidates in the group files); `shared-prefix.md`, `link-prefix.md` |
+| Model layer | `models` (`zt-model-layer`, `zt-model-lib`): after the digest, the model compiler on every Model Card of the book with the economic architect `model-architect.md` (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split). `explain` (`zt-explain`): mode explain |
+| Event layer | `events` (`zt-event-layer`, `event-compiler.ps1`, `dsh-event-instructions.zh.md`): see below |
+| Empirical results | to come: Finding Cards (the `finding` Card type, zt 0.20.0, on branch `claude/trusting-jepsen-4e77dd`; the layer is built when it is merged and deployed) |
 
-`zt-econ-digest` fills no slot. Its module set is its profile: `shared-prefix.md` and `link-prefix.md` (written by prepare-book-digest.ps1) and the economic model architect `model-architect.md` alone.
+Modes: the base modes plus `models`, `explain`, `events` (the event layer alone on an existing digest). Args: the base args plus `events` (false skips the event layer).
 
-## The mathematics set
+### The event layer
 
-`zt-math-digest-v2` sets the math profile (`math-prefix.md`, `math-link-prefix.md`, `-BriefDoc`/`-FillDoc`/`-ReviewDoc` under `<out>\math`, `model-architect-math.md`, Theory Cards out of the model compiler) and fills the slots:
+`event-compiler.ps1` is a compiler cycle (zt-digest-protocol section 2):
 
-| Slot | Stage | Module | Runs |
-| --- | --- | --- | --- |
-| after-prepare | math-skeleton | `zt-math-skeleton` | mode full: index, docs, skeleton (halt on a failure), notation table (unless `notation` is false) |
-| after-models | math-boundary | `zt-math-boundary` | modes full, math; `boundary` not false |
-| after-models | math-proof | `zt-math-proof` | modes full, math; `proof` not false |
-| after-link | math-theory | `zt-math-theory` | modes full, math; `theory` not false |
-| after-audit | math-check | `zt-math-check` | mode math, or `audit` not false with a citationKey |
+1. **plan**: groups the event candidates (`events.json`: the sentences of a group that name a year, from prepare-book-digest.ps1) by group, lists each group's own Idea Cards (`owned-gNN.txt`) with titles, and writes one job per 3 groups with its `SELF-CHECK:` line.
+2. **DeepSeek** writes `events\out\<job>.json`: per real event its title (with the year), 时间, 地点, 参与者, 经过, the section, the Idea Cards it supports (only its group's), the evidence role (`本事件例示 [[…]] …`), and `existing` (an Event Card of the same event, found with `search_cards`).
+3. **precheck** (the SELF-CHECK, read-only): the fields, the supported Cards, the role Link, the existing Event Card, and zt-check (E1, E2, the Card language) on the new Event Cards as drafts.
+4. **apply**: refuses an event with a fault; for `existing`, adds this book's 来源 line and role to that Card; else creates the Event Card (type event) as a Side successor of its first supported Idea Card; then every supported Idea Card links it: `案例 [[event]]：<title>。`. A rerun skips applied jobs (`state.json`).
+5. **report**; the last step deletes the DeepSeek conversations. In mode full the link check card cycle then checks every Event Card (E rules).
 
-Mode `math`: args, source, prepare, the four math stages, report. The result adds `math: {index, docs, skeleton, notation, boundary, proof, theory, check}`.
+Test: `pwsh -NoProfile -File scripts\book-digest\tests\event-compiler.tests.ps1` (a scratch archive).
+
+## The mathematics module set (`zt-math-digest`)
+
+| Layer | What it is |
+| --- | --- |
+| Prompts | `dsh-digest-base.zh.md` + `dsh-model-cards.zh.md`, then `math-prefix.md` and `math-link-prefix.md` (math-compiler.ps1 -Step docs appends the math supplement); no Event Card |
+| Model layer | `models` with the math supplements (`-BriefDoc`, `-FillDoc`, `-ReviewDoc`, `model-architect-math.md`), Theory Cards left out; `explain` |
+| math-skeleton (after-prepare) | index, docs, skeleton (halt on a failure), notation table (unless `notation` is false) |
+| math-boundary → math-proof (after-digest, after the models) | hypothesis roles, counterexamples, contrast pairs; the proof review |
+| math-theory (after-link) | the Theory Cards, once the cited premises are complete |
+| math-check (after-audit) | rules M1 to M18 |
+
+Modes: the base modes plus `models`, `explain`, `math`.
 
 ## Changing a digest
 
-1. Change the module (`scripts/book-digest/workflow/modules/*.js`, raise its version when its behaviour changes) or the blueprint (raise the blueprint's version; update the `preflight` lines it touches).
-2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs`. It builds both variants from their blueprints and runs every check of `workflow-harness.mjs` and `math-workflow-harness.mjs` on them, plus: both variants hold every base stage with the same module and params; the math set is installed only in the math workflow; an edited script, an undeclared arg, and an undeclared mode are refused; the checkpoint stops before the link pass; the installed scripts are the current builds.
-3. Install (project scope) and verify:
+1. Change a module (`scripts/book-digest/workflow/modules/*.js`; raise its version when its behaviour changes), a compiler script, or a blueprint (raise its version; update the `preflight` lines it touches).
+2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (e.g. `tests/event-compiler.tests.ps1`).
+3. Install (project scope) and verify, in PowerShell:
 
 ```powershell
 $A = "$HOME\.claude\skills\workflow-framework-protocol\tools\assemble.mjs"
@@ -76,4 +89,4 @@ node $A verify zt-econ-digest --scope project --project E:\zet
 
 4. Run by path: `Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {...} })`, a pilot first, after a database backup.
 
-A new book type is a new variant: its profile and its own modules in the slots (or a new slot in the base, which every variant then gets empty).
+A new book type is a new variant: its profile, its prompt supplements, and its layers in the slots.

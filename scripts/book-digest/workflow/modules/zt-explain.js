@@ -3,7 +3,7 @@
 // args.only). model-compiler.ps1 plans one job per chain, DeepSeek writes JSON, the script writes the Cards and
 // refuses any change to 起点, a step, or 结果. A refused part goes back to the same conversation once.
 defineModule({
-  id: 'zt-explain', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-explain', version: '1', requires: ['zt-model-lib'],
   summary: 'ZT digest: explanations of finished Derivation parts (mode explain).',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -11,13 +11,14 @@ defineModule({
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },
   },
   run: async (ctx, p) => {
-    const Z = zdMake(ctx, p)
+    const M = zmlMake(ctx, p)
+    const Z = M.Z
     const A = Z.A
     const work = `${Z.OUT}\\explain`
     const xstep = (s, extra = '') => `pwsh -NoProfile -File "${Z.COMPILER}" -Step ${s} -Work "${work}" -Staging "${Z.OUT}" ${Z.LIMITS}${extra}`
     let models = Array.isArray(A.only) && A.only.length ? A.only : null
     if (!models) {
-      const listed = await Z.listModels(`-All -CitationKey ${Z.KEY}`, 'find models: explain')
+      const listed = await M.listModels(`-All -CitationKey ${Z.KEY}`, 'find models: explain')
       if (!listed || !listed.ok) return { status: 'failed', error: `listing failed: ${listed && listed.error}` }
       models = listed.models.filter(m => m.level !== 'concept').map(m => m.address)
     }

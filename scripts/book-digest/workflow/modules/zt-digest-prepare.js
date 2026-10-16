@@ -9,6 +9,8 @@ defineModule({
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     needGroups: { type: 'array', default: ['full', 'link'], description: 'modes that need a group count' },
+    instructions: { type: 'any', description: 'the digest instruction files (comma-separated, from consts.profile): the base prompt and the supplements of the book type' },
+    noEventCandidates: { type: 'any', description: 'true: the group files leave out the event candidates (the event layer reads events.json)' },
   },
   run: async (ctx, p) => {
     const A = p.args
@@ -19,7 +21,7 @@ defineModule({
       const prep = await Z.zAgent(
         `You prepare a book for a ZET digest. Do exactly these steps and nothing else.
 1. Run this PowerShell command (one call) and read its last output line, a compact JSON manifest:
-pwsh -NoProfile -File ${Z.SCRIPTS}\\prepare-book-digest.ps1 -Source "${A.source}" -Out "${Z.OUT}" -CitationKey ${Z.KEY} -BibTeX '${A.bibtex}' -BookTitle '${A.bookTitle}' -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''}${A.skipHeadings ? ` -SkipHeadings '${A.skipHeadings}'` : ''}${A.fileId ? ` -FileId ${A.fileId}` : ''} -Apply
+pwsh -NoProfile -File ${Z.SCRIPTS}\\prepare-book-digest.ps1 -Source "${A.source}" -Out "${Z.OUT}" -CitationKey ${Z.KEY} -BibTeX '${A.bibtex}' -BookTitle '${A.bookTitle}' -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''}${A.skipHeadings ? ` -SkipHeadings '${A.skipHeadings}'` : ''}${A.fileId ? ` -FileId ${A.fileId}` : ''}${p.instructions ? ` -Instructions '${p.instructions}'` : ''}${p.noEventCandidates ? ' -NoEventCandidates' : ''} -Apply
 If it fails, return ok=false with the error text; do not retry with other options and do not delete anything.
 2. ${ZD_USAGE_STEP}
 Return groups = the number of entries in manifest.groups and usage_before = the summed usage.`,

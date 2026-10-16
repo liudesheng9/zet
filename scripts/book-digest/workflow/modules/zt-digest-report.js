@@ -12,7 +12,7 @@ defineModule({
     model: { type: 'any', description: 'the DeepSeek model from the source stage' },
     groups: { type: 'any', description: 'the group count' },
     digest: { type: 'any', description: 'the digest stage output' },
-    models: { type: 'any', description: 'the models stage output (mode models)' },
+    models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
     cardsBook: { type: 'any', description: 'the whole-book card cycle (mode cards)' },
     explain: { type: 'any', description: 'the explain stage output (mode explain)' },
@@ -40,14 +40,14 @@ defineModule({
     if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null) }
     if (!['full', 'link', 'models', 'hubs'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra }
     const digestReports = (p.digest && p.digest.reports) || []
-    const modelReports = MODE === 'models' ? ((p.models && p.models.models) || []) : ((p.digest && p.digest.models) || [])
+    const modelReports = (p.models && p.models.models) || []
     const linkReports = (p.link && p.link.reports) || []
     const groupCount = p.groups || 0
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
       digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
       models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: (r.parts || []).length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
-      model_cleanup: MODE === 'models' ? ((p.models && p.models.model_cleanup) || null) : ((p.digest && p.digest.model_cleanup) || null),
+      model_cleanup: (p.models && p.models.model_cleanup) || null,
       link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
       terms: (p.terms && p.terms.report) || null, cards: { blocks: (p.digest && p.digest.cards) || [], link: or(p.linkCheck, null) },
       deepseek_usage: (p.cleanup && p.cleanup.usage) || null, cleanup: (p.cleanup && p.cleanup.cleanup) || null,

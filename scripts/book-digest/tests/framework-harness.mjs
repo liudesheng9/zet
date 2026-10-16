@@ -1,6 +1,6 @@
 // Run: node scripts/book-digest/tests/framework-harness.mjs
-// The fixture of the framework-built digests (doc/zt-digest-framework.md). It builds zt-econ-digest and
-// zt-math-digest-v2 from their blueprints (scripts/book-digest/workflow) with the workflow-framework-protocol
+// The fixture of the framework-built digests (docs/zt-digest-framework.md). It builds zt-econ-digest and
+// zt-math-digest from their blueprints (scripts/book-digest/workflow) with the workflow-framework-protocol
 // assembler, runs them with stand-ins for the Workflow runtime (every agent returns a canned answer that fits its
 // label or command, as in workflow-harness.mjs and math-workflow-harness.mjs), and runs every check of those two
 // harnesses on them, plus the checks of the framework: one shared base, frozen structure, installed = built.
@@ -18,7 +18,7 @@ const lib = await import(pathToFileURL(path.join(wfpRoot, 'tools', 'lib.mjs')).h
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 const builds = {}
-for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-digest-v2']]) {
+for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-digest']]) {
   const l = lib.loadBlueprint(path.join(workflowDir, `${name}.blueprint.json`))
   builds[which] = { name, ...lib.build(l.bp, lib.loadModules(l.dirs)), bp: l.bp }
 }
@@ -110,6 +110,9 @@ function runtime(kind, opts0 = {}) {
       else if (/math-compiler\.ps1" -Step proof-apply/.test(cmd)) output = json({ ok: 3, fixed: 1, refused: 0, parts: [] })
       else if (/math-compiler\.ps1" -Step theory /.test(cmd + ' ')) output = json({ theories: 2, jobs: [job('t-01')] })
       else if (/math-compiler\.ps1" -Step theory-apply/.test(cmd)) output = json({ ok: true, theories: 2, answered: 2 })
+      else if (/event-compiler\.ps1" -Step plan/.test(cmd)) output = json({ candidates: 2, groups: 2, jobs: [job('ev-01')] })
+      else if (/event-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, applied_jobs: 1, created: 1, merged: 0, linked: 1, refused: [], pending_jobs: 0 })
+      else if (/event-compiler\.ps1" -Step report/.test(cmd)) output = json({ jobs: 1, created: 1, merged: 0, linked: 1, refused: 0, errors: [] })
       return { ok: true, output, results: [], deleted: 0 }
     }
     return {}
@@ -158,7 +161,13 @@ const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${messa
   const pick = (bp, id) => bp.stages.find(s => s.id === id)
   const same = baseIds.filter(id => id !== 'report').every(id => JSON.stringify(pick(e, id)) === JSON.stringify(pick(m, id).after ? pick(m, id) : pick(m, id)) || JSON.stringify({ ...pick(e, id), after: null }) === JSON.stringify({ ...pick(m, id), after: null }))
   check(baseIds.every(id => pick(e, id) && pick(m, id)) && same, `base: both variants hold every base stage with the same module and params (${baseIds.length} stages)`)
-  check(e.stages.length === baseIds.length && m.stages.map(s => s.id).filter(id => !baseIds.includes(id)).join(',') === 'math-skeleton,math-boundary,math-proof,math-theory,math-check', 'base: econ adds no stage; math adds exactly its five stages in the slots')
+  const own = (bp) => bp.stages.map(s => s.id).filter(id => !baseIds.includes(id)).join(',')
+  check(own(e) === 'models,explain,events', `base: the economics set adds the model layer, explain, and the event layer (${own(e)})`)
+  check(own(m) === 'math-skeleton,models,explain,math-boundary,math-proof,math-theory,math-check', `base: the mathematics set adds the model layer, explain, and its five math stages (${own(m)})`)
+  check(!baseIds.some(id => /^(models|explain|events)$/.test(id)), 'base: no model, explain, or event layer in the shared base')
+  check(Object.keys(e.installed.modules).includes('zt-event-layer') && !Object.keys(m.installed.modules).includes('zt-event-layer'), 'modules: the event layer is installed only in the economics workflow')
+  check(['zt-model-layer', 'zt-model-lib'].every(id => e.installed.modules[id] && m.installed.modules[id]), 'modules: each book type installs its own model layer')
+  check(e.consts.profile.noEventCandidates === true && m.consts.profile.noEventCandidates === true && /dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md/.test(e.consts.profile.instructions), 'profile: the digest prompt is the base prompt plus the model-card supplement, without event candidates')
   check(e.consts.profile.digestPrefix === 'shared-prefix.md' && m.consts.profile.digestPrefix === 'math-prefix.md', 'base: each variant sets its own profile')
   check(Object.keys(m.installed.modules).includes('zt-math-lib') && !Object.keys(e.installed.modules).some(id => /^zt-math/.test(id)), 'modules: the math set is installed only in the math workflow')
   for (const which of ['econ', 'math']) {
@@ -203,6 +212,10 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(result.terms && result.terms.ok && result.cards && result.cards.blocks.length === 1 && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, cards, organize, and audit')
   check(phases.includes('Cards') || calls.some(c => c.phase === 'Cards'), 'econ full: the card cycle runs in the Cards phase')
   check(/shared-prefix\.md/.test(calls.find(c => /^digest manager/.test(c.label)).prompt) && /link-prefix\.md/.test(calls.find(c => /^link manager/.test(c.label)).prompt), 'econ full: the digest and link runs read the economics profile\'s prefixes')
+  check(cmds.some(c => /prepare-book-digest\.ps1 .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'econ full: Prepare builds the prompt from the base and the model-card supplement, with no event candidates')
+  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
+  check(labels.indexOf('find models: whole book') > lastDigest && labels.indexOf('events: write') > lastDigest && labels.indexOf('events: report') < labels.indexOf('prepare link pass'), 'econ full: the model layer and the event layer run after the digest and before the link pass')
+  check(cmds.some(c => /event-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.events && result.events.status === 'done' && result.events.applied.created === 1, 'econ full: the event layer applies and reports its Event Cards')
   check(!logs.some(l => /failed(?! none)/.test(l)), `econ full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
 }
 {
@@ -290,8 +303,23 @@ planJobs = 21
   check(result && result.cards && result.cards.blocks.every(b => b.status === 'failed'), 'econ full: a card apply crash fails its card cycle')
 }
 
+{
+  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'models' })
+  const labels = calls.map(c => c.label)
+  check(result && result.mode === 'models' && Array.isArray(result.models) && labels.includes('find models: whole book') && !labels.some(l => /^(digest|link) manager|^events:/.test(l)), 'econ models: only the model layer on an existing digest')
+}
+{
+  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'events' })
+  const labels = calls.map(c => c.label)
+  check(result && result.mode === 'events' && result.events && result.events.status === 'done' && !labels.some(l => /^(digest|link) manager|^find models/.test(l)), 'econ events: only the event layer on an existing digest')
+}
+{
+  const { calls } = await run('econ', { ...base, mode: 'full', figures: false, events: false, models: false })
+  check(!calls.some(c => /^(events:|find models)/.test(c.label)), 'econ full: events false and models false skip their layers')
+}
+
 // ================================================================================================================
-// zt-math-digest-v2: every check of math-workflow-harness.mjs
+// zt-math-digest: every check of math-workflow-harness.mjs
 // ================================================================================================================
 const mbase = { ...base, hubs: true, figures: false }
 {
@@ -309,13 +337,15 @@ const mbase = { ...base, hubs: true, figures: false }
   check(compiler.length > 0 && compiler.every(c => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md" -FillDoc "D:\\x\\Key\\math\\fill\.zh\.md" -ReviewDoc "D:\\x\\Key\\math\\review\.zh\.md"/.test(c)), 'math full: every model-compiler step takes the math instruction files')
   check(!compiler.some(c => /Key\/2\|e/.test(c)), 'math full: the model compiler never builds a Theory Card')
   check(/model-architect-math\.md/.test(calls.find(c => /^plan: /.test(c.label)).prompt), 'math full: the architect reads the math supplement')
-  check(at(/^boundary: write/) > at(/^find models: sweep/) && at(/^boundary: settle/) < at(/^proof: review/) && at(/^proof: apply/) < at(/^link manager/), 'math full: Boundary and Proof run after the models and before the link pass')
+  check(at(/^boundary: write/) > at(/^find models: whole book/) && at(/^boundary: settle/) < at(/^proof: review/) && at(/^proof: apply/) < at(/^link manager/), 'math full: Boundary and Proof run after the models and before the link pass')
   check(at(/^theory: write/) > at(/^cards link check: report/) && at(/^theory: apply/) < at(/^cleanup DeepSeek$/), 'math full: Theory runs after the link check and before the cleanup')
   check(at(/^math: check$/) > at(/^audit cards$/), 'math full: the math check runs after the audit')
   check(['notation: apply', 'boundary: settle', 'proof: apply', 'theory: apply'].every(s => cleanups.some(l => l.startsWith(`${s}: clean up`))), 'math full: each math stage\'s last step deletes its DeepSeek conversations')
   check(pool.prompts.every(p => /deepseek_delete/.test(p) && !/deepseek_archive/.test(p)), `math protocol: every DeepSeek manager deletes, none archives (${pool.prompts.length} managers)`)
   check(pool.peak <= 8 && managed.every(m => m.jobs.length <= 8), `math protocol: at most 8 managers at once and 8 jobs per manager (peak ${pool.peak})`)
   check(calls.filter(c => /^(boundary|proof|theory|notation):/.test(c.label)).every(c => c.model === 'haiku'), 'math protocol: Haiku runs every math step and manager')
+  check(!labels.some(l => /^events:/.test(l)) && !cmds.some(c => /event-compiler/.test(c)), 'math full: no event layer (Event Cards are the economics set\'s)')
+  check(cmds.some(c => /prepare-book-digest\.ps1 .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'math full: Prepare builds the base prompt with the model-card supplement (the math supplement follows in math-prefix.md)')
   check(!logs.some(l => /failed(?! none)/.test(l)), `math full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
 }
 {

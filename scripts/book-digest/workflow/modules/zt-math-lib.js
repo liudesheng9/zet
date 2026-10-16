@@ -1,5 +1,5 @@
 // ==== module zt-math-lib v1 ====
-// The shared code of the math stages (doc/math-cards-design.md): math-compiler.ps1 does every structural step;
+// The shared code of the math stages (docs/math-cards-design.md): math-compiler.ps1 does every structural step;
 // DeepSeek writes JSON files and Card bodies; Haiku drivers relay the jobs under the DeepSeek Subagent Managed
 // Protocol (drive, from zt-digest-lib). Each stage has its own DeepSeek workspace under <out>\math\, and its last
 // step's cleanup deletes the conversations.

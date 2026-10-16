@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/make-math-workflow.mjs
-// Writes .claude/workflows/zt-math-digest.js from .claude/workflows/zt-book-digest.js. The math
+// Writes .claude/workflows-legacy/zt-math-digest.js from .claude/workflows/zt-book-digest.js. The math
 // workflow is the book digest with math stages added: every shared stage (the DeepSeek Subagent
 // Managed Protocol, the digest and link managers, the model compiler, the card cycles, the link
 // check, Organize, Figures, Hubs, and the Audit) is the book digest's own text, so its standards
@@ -184,7 +184,9 @@ async function runTheory() {
 `)
 
 if (crlf) s = s.replace(/\n/g, '\r\n')
-const target = path.join(workflows, 'zt-math-digest.js')
+// The hand-written math digest lives in .claude/workflows-legacy since the framework-built zt-math-digest took its
+// name in .claude/workflows (docs/zt-digest-framework.md).
+const target = path.join(here, '..', '..', '.claude', 'workflows-legacy', 'zt-math-digest.js')
 // --check: compare with the file on disk instead of writing it (the harness runs this).
 if (process.argv.includes('--check')) {
   const disk = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n') : ''
