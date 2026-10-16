@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The deterministic half of the card layer cycle (doc/digest-card-layers-proposal.md, proposals 3,
+  The deterministic half of the card layer cycle (docs/digest-card-layers-proposal.md, proposals 3,
   4, and 6): check the Idea Cards, Event Cards, and anchors of one book, hand their faults to
   DeepSeek as jobs, check what DeepSeek writes, apply it, check again, and report. DeepSeek writes
   only JSON files; this script makes every zt write. It never writes a Model Card, a Model part,
@@ -27,10 +27,24 @@
              have faults of -Rules or were refused. The follow-up continues the job's conversation.
     report   runs digest-audit.ps1 again; compares the faults of the picked Cards before and
              after, per rule; writes report.json and decisions.json.
+    precheck reads the JSON file of one job (-Job; -File, or the job's `out` in state.json) and
+             checks it the way apply and the audit will, without a write: no zt call, no change to
+             state.json. Every job file names this command in its `SELF-CHECK:` line, so DeepSeek
+             checks its draft before it replies. A fix entry: a known verdict, an address of the
+             job, a writable category, the rewrite test (every Link, figure, and formula kept, no
+             Link to an unknown Card), then the Card language and layer rules of -Rules on the new
+             title and body and on each split Card (zt-check --json, with the Link kinds
+             as ZT reads them). Rules that need the whole Workspace are left out: I5, E4, I6, E5,
+             and L3 (advisory). An orphan entry: the orphan and the candidate belong to the job, the
+             text links the orphan with a kind word before the Link, no semicolon, no Link to an
+             unknown Card, and L2 (with the R rules and L1 of -Rules) on the sentence. Output: one
+             line per fault, `<address> <rule or check> <text>`, then `faults: N` as the last line.
+             The check `refuse` names what apply refuses; a split Card is `<address>+split<n>`; an
+             orphan Link is `<orphan><-<candidate>`.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('plan', 'apply', 'check', 'report')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('plan', 'apply', 'check', 'report', 'precheck')][string]$Step,
     [Parameter(Mandatory)][string]$Work,
     [string]$Book = '',
     [string]$Staging = '',
@@ -49,7 +63,10 @@ param(
     # hundreds of jobs (the workflow expands them). Without it the output is as before.
     [switch]$Compact,
     # apply: at most this many jobs per call (0: all); the output's pending_jobs counts the rest.
-    [int]$MaxJobs = 0
+    [int]$MaxJobs = 0,
+    # precheck: the job whose JSON file is checked, and that file (default: the job's `out`).
+    [string]$Job = '',
+    [string]$File = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
@@ -59,13 +76,20 @@ $Audit = Join-Path $PSScriptRoot 'digest-audit.ps1'
 $FixDoc = Join-Path $PSScriptRoot 'dsh-card-instructions.zh.md'
 $OrphanDoc = Join-Path $PSScriptRoot 'dsh-orphan-instructions.zh.md'
 $OutDir = Join-Path $Work 'out'
-New-Item -ItemType Directory -Force -Path $Work, $OutDir | Out-Null
+# precheck writes nothing, not even the folders.
+if ($Step -ne 'precheck') { New-Item -ItemType Directory -Force -Path $Work, $OutDir | Out-Null }
 $StateFile = Join-Path $Work 'state.json'
 # The words before a Link that ZT reads as a Relation kind (src/model.rs RELATION_KINDS).
-$Cues = @('依赖', '依据', '基于', '建立在', '取自', '沿用', '承接', '用到', '借用', '代入', '推导自', '由此推出',
-    '例示', '举例', '例子', '示例', '演示', '例证', '实例', '案例', '印证', '对照', '对比', '相比', '不同于', '区别', '相反',
+$Cues = @('依赖', '依据', '基于', '建立在', '取自', '沿用', '承接', '用到', '借用', '代入', '推导自', '由此推出', '按定义',
+    '例示', '举例', '例子', '示例', '演示', '例证', '实例', '案例', '印证', '对照', '对比', '相比', '不同于', '区别', '相反', '逆命题',
     '放宽', '放松', '推广', '扩展', '拓展', '一般化', '对应', '类比', '同构', '相当于', '等价', '参照',
-    '反驳', '批评', '质疑', '反例', '否定', '挑战')
+    '反驳', '批评', '质疑', '反例', '否定', '挑战', '特例', '特殊情形')
+# The English cues of the same table. ZT matches them in lower case, never inside a word.
+$CuesEn = @('substitut', 'rests on', 'builds on', 'depends on', 'relies on', 'derived from', 'follows from', 'uses', 'cites',
+    'by definition', 'by theorem', 'by lemma', 'by proposition', 'by corollary', 'by axiom',
+    'illustrat', 'example of', 'instance of', 'for example', 'e.g.', 'contrast', 'unlike', 'compared with', 'compare', 'versus',
+    'differs from', 'relax', 'extend', 'generaliz', 'correspond', 'maps onto', 'analog', 'equivalent', 'mirrors',
+    'objection', 'objects to', 'critici', 'refut', 'counterexample', 'challeng', 'special case', 'specializ')
 $Writable = @('idea', 'event', 'anchor')
 
 function Read-Json($path) { Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String }
@@ -87,6 +111,14 @@ function Get-CompactJobs($jobs) {
         $c
     }
     [ordered]@{ dir = $Work; lead = [ordered]@{ fix = $fixDoc; orphans = $orphanDoc }; prompts = $prompts; jobs = @($list) }
+}
+# The line of a job file that names the job's precheck command, with absolute paths.
+function Get-SelfCheck([string]$id) {
+    $dir = (Resolve-Path -LiteralPath $Work).Path
+    "SELF-CHECK: pwsh -NoProfile -File ""$PSCommandPath"" -Step precheck -Work ""$dir"" -Job $id"
+}
+function Add-SelfCheck([Text.StringBuilder]$sb, [string]$id) {
+    [void]$sb.AppendLine('写完 JSON 文件后，按说明的“自查”一节运行这条自查命令：').AppendLine().AppendLine((Get-SelfCheck $id)).AppendLine()
 }
 $State = if (Test-Path -LiteralPath $StateFile) { Read-Json $StateFile } else { $null }
 function Save-State { Save-Text $StateFile ($State | ConvertTo-Json -Depth 20) }
@@ -204,6 +236,45 @@ function Test-Kinded([string]$text, [string]$target) {
     foreach ($cue in $Cues) { if ($before.Contains($cue)) { return $true } }
     $false
 }
+# The Link targets of a body that ZT reads a Relation kind for, as get_card `kinds` gives them
+# (src/model.rs read_links): the cue that ends last in the words before the Link, in its sentence
+# and after an earlier Link of that sentence, decides the kind. A Link with no cue there takes the
+# kind of that earlier Link. 引出 is a plain reference.
+function Get-LinkKinds([string]$body) {
+    $kinds = [Collections.Generic.List[string]]::new()
+    $lower = $body.ToLowerInvariant()
+    $prevEnd = -1
+    $prevKinded = $false
+    foreach ($m in [regex]::Matches($body, '\[\[([^\]]+)\]\]')) {
+        $start = 0
+        for ($i = $m.Index - 1; $i -ge 0; $i--) {
+            $ch = $body[$i]
+            if ($ch -in [char[]]'。！？!?；;' -or $ch -eq "`n" -or ($ch -eq '.' -and $i + 1 -lt $body.Length -and [char]::IsWhiteSpace($body[$i + 1]))) { $start = $i + 1; break }
+        }
+        $shared = $prevEnd -gt $start
+        $from = if ($shared) { $prevEnd } else { $start }
+        $words = $lower.Substring($from, $m.Index - $from)
+        # The cue that ends last; of two that end at one place, the longer.
+        $best = $null
+        foreach ($cue in @($Cues + $CuesEn + @('引出'))) {
+            $word = $cue -match '^[a-z]'
+            $at = $words.IndexOf($cue, [StringComparison]::Ordinal)
+            while ($at -ge 0) {
+                if (-not ($word -and $at -gt 0 -and $words[$at - 1] -match '[A-Za-z0-9]')) {
+                    $end = $at + $cue.Length
+                    if (-not $best -or $end -gt $best.end -or ($end -eq $best.end -and $cue.Length -gt $best.cue.Length)) { $best = @{ end = $end; cue = $cue } }
+                }
+                $at = $words.IndexOf($cue, $at + 1, [StringComparison]::Ordinal)
+            }
+        }
+        $kinded = if ($best) { $best.cue -ne '引出' } elseif ($shared) { $prevKinded } else { $false }
+        $target = $m.Groups[1].Value.Trim()
+        if ($kinded -and -not $kinds.Contains($target)) { $kinds.Add($target) }
+        $prevEnd = $m.Index + $m.Length
+        $prevKinded = $kinded
+    }
+    $kinds.ToArray()
+}
 
 # --- plan ----------------------------------------------------------------------------------------
 function Format-Card($card, $faults, [string]$parentTitle, [string]$source) {
@@ -248,6 +319,7 @@ function New-OrphanJobs($audit, $orphans) {
         $out = Join-Path $OutDir "$id.json"
         $sb = [Text.StringBuilder]::new()
         [void]$sb.AppendLine("# 任务 $id").AppendLine().AppendLine("把结果写入 ``$out``。本任务共 $($chunk.Count) 张孤立卡片。").AppendLine()
+        Add-SelfCheck $sb $id
         $candidates = [ordered]@{}
         foreach ($o in $chunk) {
             $a = [string]$o.address
@@ -351,6 +423,7 @@ function Step-Plan {
         $sb = [Text.StringBuilder]::new()
         [void]$sb.AppendLine("# 任务 $id").AppendLine()
         [void]$sb.AppendLine("把结果写入 ``$out``。本任务共 $($chunk.Count) 张卡。").AppendLine()
+        Add-SelfCheck $sb $id
         foreach ($x in $chunk) {
             $a = [string]$x.card.address
             $source = if ($x.review -or @(Get-HardFaults $audit $a | Where-Object { $_.rule -in @('I3', 'E1', 'E2') }).Count) { Get-SourceHint $x.card } else { '' }
@@ -540,6 +613,8 @@ function Step-Check {
         $sb = [Text.StringBuilder]::new()
         [void]$sb.AppendLine("# 任务 $fid（第二轮）").AppendLine()
         [void]$sb.AppendLine("检查脚本核对了你写入的卡片。下面的卡片仍有问题，或你的改写被拒绝。只修正这些卡片，把结果写入 ``$out``（格式同前）。").AppendLine()
+        # The follow-up has its own id and file: its own self-check line, not the first job's.
+        Add-SelfCheck $sb $fid
         foreach ($o in $open) {
             $card = $audit.cards[$o.address]
             if (-not $card) { continue }
@@ -567,6 +642,7 @@ function Step-Check {
         $out = Join-Path $OutDir "$fid.json"
         $sb = [Text.StringBuilder]::new()
         [void]$sb.AppendLine("# 任务 $fid").AppendLine().AppendLine("把结果写入 ``$out``。本任务共 $($open.Count) 张卡：它们刚追加了一句链接，检查脚本在其中找到问题。").AppendLine()
+        Add-SelfCheck $sb $fid
         foreach ($a in $open) {
             $card = $audit.cards[$a]
             $State.plan[$a] = [ordered]@{ title = [string]$card.title; body = [string]$card.body; category = [string]$card.category }
@@ -631,9 +707,145 @@ function Step-Report {
     Out-Last $short
 }
 
+# --- precheck ------------------------------------------------------------------------------------
+# Rules that need the whole Workspace (who links a Card, the other titles of its tree, a Link in
+# two paragraphs is advisory): only the audit checks them.
+$WholeWorkspace = @('I5', 'E4', 'I6', 'E5', 'L3')
+# The audit's view of each Card (category, book, parent): the later run wins.
+function Get-AuditCards {
+    $cards = @{}
+    foreach ($dir in @('before', 'after')) {
+        $f = Join-Path $Work "$dir\audit-cards.json"
+        if (Test-Path -LiteralPath $f) { foreach ($c in @(Read-Json $f)) { $cards[[string]$c.address] = $c } }
+    }
+    $cards
+}
+# A --json entry of zt-check, with the Links and the kinded Links as zt will read them.
+function New-CheckEntry([string]$address, [string]$title, [string]$body, [string]$category, [string]$book, [string]$parent) {
+    [ordered]@{
+        address = $address; title = $title; body = $body; category = $category; book = $book; parent = $parent
+        links = @([regex]::Matches($body, '\[\[([^\]]+)\]\]') | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
+        kinds = @(Get-LinkKinds $body)
+    }
+}
+# Runs zt-check on the entries (and the term table entry for R6, when given); returns
+# the faults of the entries as {address, rule, text}.
+function Invoke-StyleCheck($entries, $term) {
+    $want = @($entries | ForEach-Object { [string]$_.address })
+    $all = @($entries) + @($(if ($term) { $term }))
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "card-precheck-$PID-$([guid]::NewGuid().ToString('N')).json"
+    try {
+        [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject @($all) -Depth 5), $utf8)
+        $splat = @{ Json = $tmp }
+        if ($term) { $splat.Setting = [string]$term.address }
+        foreach ($line in @(Invoke-ZtCheck @splat)) {
+            $p = ([string]$line) -split ' ', 3
+            if ($p.Count -eq 3 -and $p[0] -in $want -and $p[1] -match '^[RIEL]\d+$') { @{ address = $p[0]; rule = $p[1]; text = $p[2] } }
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+# A fix job's draft: what apply refuses, then the rules of -Rules on each new text.
+function Test-FixDraft($theJob, $result, $add) {
+    if (-not $result.Contains('cards')) { & $add $Job 'json' 'the file holds no "cards" list'; return }
+    $rules = @(Get-RuleList | Where-Object { $_ -notin $WholeWorkspace })
+    $info = Get-AuditCards
+    $entries = [Collections.Generic.List[object]]::new()
+    $seen = @{}
+    foreach ($entry in @($result.cards | Where-Object { $_ })) {
+        $a = [string]$entry.address
+        if ($a -notin @($theJob.cards)) { & $add $(if ($a) { $a } else { '-' }) 'refuse' "``$a`` is not a Card of job $Job"; continue }
+        if ($seen.ContainsKey($a)) { & $add $a 'entry' 'a second entry for this Card: write one entry per Card'; continue }
+        $seen[$a] = $true
+        $verdict = [string]$entry.verdict
+        if ($verdict -eq 'ok') { continue }
+        if ($verdict -eq 'merge') { if (-not ([string]$entry.merge_with).Trim()) { & $add $a 'entry' 'merge names no merge_with' }; continue }
+        if ($verdict -notin @('fix', 'split', 'unfaithful')) { & $add $a 'refuse' "unknown verdict ``$verdict``"; continue }
+        $old = $State.plan[$a]
+        if ($old.category -notin $Writable) { & $add $a 'refuse' "category $($old.category) is not writable"; continue }
+        $why = Test-Rewrite $old $entry
+        if ($why) { & $add $a 'refuse' $why }
+        $card = $info[$a]
+        $book = if ($card -and $card.book) { [string]$card.book } else { [string]$State.book }
+        $parent = if ($card) { [string]$card.parent } else { '' }
+        $title = ([string]$entry.title).Trim()
+        $body = ([string]$entry.body).TrimEnd()
+        if ($title -and $body.Trim()) { $entries.Add((New-CheckEntry $a $title $body ([string]$old.category) $book $parent)) }
+        if ($verdict -eq 'split') {
+            # A split Card is an Idea Card filed as a Side successor of this Card: its parent.
+            $n = 0
+            foreach ($p in @($entry.split | Where-Object { $_ })) {
+                $n++
+                $pt = ([string]$p.title).Trim()
+                $pb = ([string]$p.body).TrimEnd()
+                if ($pt -and $pb.Trim()) { $entries.Add((New-CheckEntry "$a+split$n" $pt $pb 'idea' $book $a)) }
+            }
+        }
+    }
+    foreach ($a in @($theJob.cards)) { if (-not $seen.ContainsKey([string]$a)) { & $add $a 'entry' 'no entry for this Card: write one entry per Card' } }
+    if (-not $entries.Count) { return }
+    $term = $null
+    if ('R6' -in $rules) {
+        $t = @($info.Values | Where-Object { [string]$_.tree -eq [string]$State.book -and [string]$_.title -match '^术语表' } | Select-Object -First 1)
+        if ($t.Count) { $term = [ordered]@{ address = [string]$t[0].address; title = [string]$t[0].title; body = [string]$t[0].body } }
+    }
+    foreach ($f in @(Invoke-StyleCheck $entries $term)) { if ($f.rule -in $rules) { & $add $f.address $f.rule $f.text } }
+}
+# An orphan job's draft: what apply refuses, then L2 (and the R rules and L1 of -Rules) on each
+# sentence. A semicolon is refused, so R3 is not named twice.
+function Test-OrphanDraft($theJob, $result, $add) {
+    $rules = @(@(Get-RuleList | Where-Object { ($_ -match '^R\d+$' -and $_ -ne 'R3') -or $_ -eq 'L1' }) + @('L2'))
+    $entries = [Collections.Generic.List[object]]::new()
+    $done = @{}
+    foreach ($l in @($result.links | Where-Object { $_ })) {
+        $to = [string]$l.to
+        $from = [string]$l.from
+        $text = ([string]$l.text).Trim()
+        $at = "$to<-$from"
+        if ($to -notin @($theJob.cards)) { & $add $at 'refuse' "``$to`` is not an orphan of job $Job"; continue }
+        $done[$to] = $true
+        if ($from -notin @($theJob.candidates[$to])) { & $add $at 'refuse' "``$from`` is not a candidate: choose one of $(@($theJob.candidates[$to]) -join ', ')" }
+        if (-not $text.Contains("[[$to]]")) { & $add $at 'refuse' 'the text does not link the orphan' }
+        elseif (-not (Test-Kinded $text $to)) { & $add $at 'refuse' 'no kind word before the Link' }
+        if ($text -match '[；;]') { & $add $at 'refuse' 'a semicolon' }
+        $unknown = @([regex]::Matches($text, '\[\[([^\]]+)\]\]') | ForEach-Object { $_.Groups[1].Value } | Where-Object { -not (Get-Known).Contains($_) -and $_ -ne $to })
+        if ($unknown.Count) { & $add $at 'refuse' "a Link to a Card that does not exist: $(@($unknown | ForEach-Object { "[[$_]]" }) -join ' ')" }
+        # The sentence alone, as an anchor: no I2 on one sentence; I1 on the empty title is dropped.
+        if ($text) { $entries.Add((New-CheckEntry $at '' $text 'anchor' ([string]$State.book) '')) }
+    }
+    foreach ($n in @($result.none | Where-Object { $_ })) {
+        $o = [string]$n.orphan
+        if ($o -notin @($theJob.cards)) { & $add $(if ($o) { $o } else { '-' }) 'entry' "``$o`` is not an orphan of job $Job" } else { $done[$o] = $true }
+    }
+    foreach ($a in @($theJob.cards)) { if (-not $done.ContainsKey([string]$a)) { & $add $a 'entry' 'no entry for this orphan: put it in "links" or in "none"' } }
+    if (-not $entries.Count) { return }
+    foreach ($f in @(Invoke-StyleCheck $entries $null)) { if ($f.rule -in $rules) { & $add $f.address $f.rule $f.text } }
+}
+function Step-Precheck {
+    $faults = [Collections.Generic.List[string]]::new()
+    $add = { param($address, $rule, $text) $faults.Add("$address $rule $(([string]$text -replace '\s+', ' ').Trim())") }
+    $theJob = if ($State -and $Job -and $State.jobs.Contains($Job)) { $State.jobs[$Job] } else { $null }
+    if (-not $theJob) { & $add $(if ($Job) { $Job } else { '-' }) 'job' "no job ``$Job`` in $StateFile" }
+    else {
+        $path = if ($File) { $File } else { [string]$theJob.out }
+        $result = $null
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { & $add $Job 'json' "no JSON file at $path" }
+        else {
+            try {
+                $result = Read-Json $path
+                if ($null -eq $result) { & $add $Job 'json' "the file $path is empty" }
+                elseif ($result -isnot [Collections.IDictionary]) { & $add $Job 'json' "the file $path holds no JSON object"; $result = $null }
+            } catch { & $add $Job 'json' "unreadable JSON in ${path}: $($_.Exception.Message)" }
+        }
+        if ($result) { if ($theJob.kind -eq 'fix') { Test-FixDraft $theJob $result $add } else { Test-OrphanDraft $theJob $result $add } }
+    }
+    $faults | ForEach-Object { Write-Output $_ }
+    Write-Output "faults: $($faults.Count)"
+}
+
 switch ($Step) {
     'plan' { Step-Plan }
     'apply' { Step-Apply }
     'check' { Step-Check }
     'report' { Step-Report }
+    'precheck' { Step-Precheck }
 }

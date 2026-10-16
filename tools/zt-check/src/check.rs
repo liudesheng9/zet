@@ -1,0 +1,1943 @@
+//! `zt-check`: the Card language rules (R2 to R17) and the Card layer rules
+//! (I, E, L) of the book digest, run in-process on Cards read straight from
+//! the archive. It is the one Card quality check of the digest workflows and
+//! the only source of truth: every agent and script calls it. It replaced the
+//! PowerShell checkers card-style-check.ps1 and self-check.ps1 (deleted on
+//! 2026-10-15) with the same faults, in the same order, in the same words;
+//! comments below that name them describe where a behaviour came from.
+//!
+//! The checks keep PowerShell's text semantics where they differ from Rust's:
+//! a length counts UTF-16 code units, `-match` and `-replace` ignore case, a
+//! string comparison skips the characters the culture ignores, a hashtable key
+//! ignores case, and `Sort-Object` / `Group-Object` order by the culture's
+//! collation. Text is first put in a "UTF-16 form": each character outside the
+//! Basic Multilingual Plane becomes two private-use stand-ins, one per surrogate,
+//! so a regex class, a count, and a cut see what .NET sees. A fault line turns
+//! the stand-ins back into the character.
+
+use crate::mcp::Zt;
+use anyhow::{Context, Result, bail};
+use regex::{Captures, Regex};
+use serde_json::{Map, Value, json};
+use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::Write;
+use std::path::Path;
+use std::sync::LazyLock;
+
+macro_rules! pattern {
+    ($name:ident, $pattern:expr) => {
+        static $name: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new($pattern).expect("a valid check pattern"));
+    };
+}
+
+// Prose: what the rules apply to.
+pattern!(DISPLAY_MATH, r"\$\$[\s\S]*?\$\$");
+pattern!(INLINE_MATH, r"\$[^$\n]+\$");
+pattern!(LINK, r"\[\[[^\]]+\]\]");
+pattern!(LINK_TARGET, r"\[\[([^\]]+)\]\]");
+pattern!(CODE, r"`[^`\n]*`");
+pattern!(BOLD, r"\*\*|__");
+pattern!(HIDE, r"\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\[\[[^\]]+\]\]");
+pattern!(HIDDEN, r"§(\d+)§");
+pattern!(MEASURE_STRIP, r#"[\s“”"「」（）()《》]"#);
+pattern!(PLACEHOLDERS, r"(?i)F|C");
+pattern!(SPACE, r"\s");
+pattern!(SPACES, r"\s+");
+pattern!(CJK, r"[㐀-鿿豈-﫿]");
+// .NET's \w: letters, nonspacing marks, decimal digits, connector punctuation.
+pattern!(WORD, r"[\p{L}\p{Mn}\p{Nd}\p{Pc}]");
+pattern!(FENCE, r"^(```|~~~)");
+pattern!(HEADING, r"^#{1,6}\s");
+pattern!(DISPLAY_LINE, r"^\$\$.*\$\$$");
+pattern!(STEP, r"^\d+[.、)]");
+pattern!(MARKER, r"^([-*+]|\d+[.、)])\s*");
+// The rules.
+pattern!(SEMICOLON, r"[；;]");
+pattern!(LIGHT_VERB, r"(进行|加以|予以|作出|做出)[㐀-鿿豈-﫿]");
+pattern!(
+    NOUN_PHRASE,
+    r"的[^，。、：；！？,.;:!?\s的]{0,7}的[^，。、：；！？,.;:!?\s的]{0,7}的"
+);
+pattern!(DERIVATION, r"(?i)^derivation");
+pattern!(SECTION, r"^\*{0,2}(思路|起点|步骤|结果|解读)\*\*\s*$");
+pattern!(POSITION, r"^第 \d+ 张，共 \d+ 张");
+pattern!(NOTE, r"^说明\s*[：:]");
+pattern!(NOTE_LABEL, r"^说明\s*[：:]\s*");
+pattern!(SOURCE_LABEL, r"^来源\s*[：:]");
+// The term table.
+pattern!(TABLE_RULE, r"^-+$|^:?-+:?$");
+pattern!(AVOID_SPLIT, r"[、,，/]");
+pattern!(AVOID_NONE, r"^[-—无]+$");
+// The Card layer rules.
+pattern!(
+    CLAIM_VERB,
+    r"是|会|能|让|使|要|不|没|把|被|决定|导致|取决|依赖|提高|降低|减少|增加|等于|大于|小于|高于|低于|来自|需要|带来|引起|产生|改变|保证|排除|允许|阻止|证明|说明|表明"
+);
+pattern!(BOOK_CARD, r"^[^\d/|][^/|]*$");
+pattern!(BOOK_ANCHOR, r"^[^\d/|][^/|]*/\d+$");
+pattern!(SOURCE_LINE, r"(?i)^\s*(来源|出处|Source)\s*[：:]");
+pattern!(REASON_STRIP, r"[\s\p{P}\p{S}]");
+pattern!(NOT_LETTER_OR_NUMBER, r"[^\p{L}\p{N}]");
+pattern!(
+    DATE,
+    r"(1[0-9]{3}|20[0-9]{2})|[0-9一二三四五六七八九十]+\s*(年|世纪)"
+);
+pattern!(YEAR, r"(1[0-9]{3}|20[0-9]{2})");
+// self-check.ps1.
+pattern!(ANCHOR_ADDRESS, r"^[^/]+/\d+$");
+pattern!(TERMS_TITLE, r"^术语表");
+pattern!(STRUCTURE_BODY, r"^本卡是《.*》的结构卡");
+pattern!(FAULT_LINE, r"^\S+ ([RIEL]\d+) ");
+pattern!(LIST_SPLIT, r"[,\s]+");
+// What ICU collation (and so a culture string comparison) skips: control and
+// format characters, and variation selectors.
+pattern!(
+    IGNORABLE,
+    r"[\x{0}-\x{8}\x{E}-\x{1F}\x{7F}-\x{84}\x{86}-\x{9F}\p{Cf}\x{FE00}-\x{FE0F}]"
+);
+pattern!(MARK, r"^\p{M}");
+
+const HEDGES: [&str; 18] = [
+    "值得注意的是",
+    "需要注意的是",
+    "在某种程度上",
+    "某种意义上",
+    "在一定程度上",
+    "不难看出",
+    "显而易见",
+    "毋庸置疑",
+    "众所周知",
+    "可以说",
+    "精妙",
+    "巧妙",
+    "深刻",
+    "精彩",
+    "极其重要",
+    "非常重要",
+    "十分重要",
+    "优雅",
+];
+
+/// The labels of an Event Card (`时间：…`).
+static EVENT_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    ["时间", "地点", "参与者", "经过", "来源"]
+        .into_iter()
+        .map(|label| {
+            let pattern = format!(r"(?m)^\s*[-*]?\s*(\*\*)?{label}(\*\*)?\s*[：:]");
+            (label, Regex::new(&pattern).expect("a label pattern"))
+        })
+        .collect()
+});
+
+const SECTIONS: [&str; 5] = ["思路", "起点", "步骤", "结果", "解读"];
+
+/// The rules self-check.ps1 reports by default: every hard rule but R6.
+const DEFAULT_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,I1,I2,I3,I4,L1,L2,E1,E2";
+
+const USAGE: &str = "usage:
+  zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,R3,...] [limits]
+limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16
+        --max-explain-chars 600 --min-idea-chars 40 --max-idea-chars 300 --min-reason 8";
+
+// --- UTF-16 form ------------------------------------------------------------------------------
+
+const HIGH_STAND_IN: u32 = 0xE000;
+const LOW_STAND_IN: u32 = 0xE400;
+
+fn is_high_stand_in(ch: char) -> bool {
+    (HIGH_STAND_IN..LOW_STAND_IN).contains(&(ch as u32))
+}
+
+fn is_low_stand_in(ch: char) -> bool {
+    (LOW_STAND_IN..LOW_STAND_IN + 0x400).contains(&(ch as u32))
+}
+
+/// The text with each character outside the BMP as two stand-ins, so one
+/// `char` is one UTF-16 code unit.
+fn utf16_form(text: &str) -> String {
+    if text.chars().all(|ch| (ch as u32) < 0x10000) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let mut buffer = [0u16; 2];
+        let units = ch.encode_utf16(&mut buffer);
+        if units.len() == 1 {
+            out.push(ch);
+        } else {
+            for unit in units.iter() {
+                let stand_in = HIGH_STAND_IN + (u32::from(*unit) - 0xD800);
+                out.push(char::from_u32(stand_in).expect("a private-use character"));
+            }
+        }
+    }
+    out
+}
+
+/// The text with each pair of stand-ins back as its character.
+fn from_utf16_form(text: &str) -> String {
+    if !text.chars().any(is_high_stand_in) {
+        return text.to_string();
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if is_high_stand_in(ch)
+            && chars
+                .get(index + 1)
+                .is_some_and(|next| is_low_stand_in(*next))
+        {
+            let high = 0xD800 + (ch as u32 - HIGH_STAND_IN);
+            let low = 0xDC00 + (chars[index + 1] as u32 - LOW_STAND_IN);
+            let code = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+            index += 2;
+        } else {
+            out.push(ch);
+            index += 1;
+        }
+    }
+    out
+}
+
+/// A length as .NET counts it (the text is in UTF-16 form).
+fn length(text: &str) -> i64 {
+    text.chars().count() as i64
+}
+
+// --- PowerShell comparisons -------------------------------------------------------------------
+
+/// The text without the characters a culture comparison ignores.
+fn culture(text: &str) -> Cow<'_, str> {
+    IGNORABLE.replace_all(text, "")
+}
+
+/// `-eq` on strings: case and ignorable characters do not count.
+fn ps_eq(a: &str, b: &str) -> bool {
+    a == b || culture(a).to_lowercase() == culture(b).to_lowercase()
+}
+
+fn ps_in(value: &str, list: &[impl AsRef<str>]) -> bool {
+    list.iter().any(|item| ps_eq(value, item.as_ref()))
+}
+
+/// `String.StartsWith(string)`: a culture comparison, so an ignorable
+/// character before the prefix does not count, and a combining mark after it
+/// breaks the match.
+fn culture_starts_with(text: &str, prefix: &str) -> bool {
+    let text = culture(text);
+    text.starts_with(prefix) && !MARK.is_match(&text[prefix.len()..])
+}
+
+/// A hashtable key: hashtables ignore case.
+fn key(text: &str) -> String {
+    text.to_lowercase()
+}
+
+/// The primary collation weight of a character (ICU root order for ASCII).
+fn weight(ch: char) -> u32 {
+    const PUNCTUATION: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+    if ch.is_whitespace() {
+        1
+    } else if let Some(at) = PUNCTUATION.find(ch) {
+        10 + at as u32
+    } else if ch.is_ascii_digit() {
+        100 + (ch as u32 - '0' as u32)
+    } else if ch.is_ascii_lowercase() {
+        200 + (ch as u32 - 'a' as u32)
+    } else {
+        1000 + ch as u32
+    }
+}
+
+/// `Sort-Object` order: the culture's collation, ignoring case.
+fn culture_cmp(a: &str, b: &str) -> Ordering {
+    let weights = |text: &str| {
+        culture(text)
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(weight)
+            .collect::<Vec<_>>()
+    };
+    weights(a).cmp(&weights(b))
+}
+
+// --- JSON values as PowerShell reads them -----------------------------------------------------
+
+/// A property of an entry; PowerShell property names ignore case.
+fn prop<'a>(card: &'a Value, name: &str) -> Option<&'a Value> {
+    let object = card.as_object()?;
+    object.get(name).or_else(|| {
+        object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    })
+}
+
+/// `[string]$value`.
+fn ps_string(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Bool(true)) => "True".to_string(),
+        Some(Value::Bool(false)) => "False".to_string(),
+        Some(Value::Number(number)) => {
+            if let Some(int) = number.as_i64() {
+                int.to_string()
+            } else if let Some(int) = number.as_u64() {
+                int.to_string()
+            } else {
+                let float = number.as_f64().unwrap_or_default();
+                if float.fract() == 0.0 && float.abs() < 1e15 {
+                    format!("{}", float as i64)
+                } else {
+                    format!("{float}")
+                }
+            }
+        }
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| ps_string(Some(item)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        Some(Value::Object(_)) => String::new(),
+    }
+}
+
+/// `[string]$value`, in UTF-16 form.
+fn text(value: Option<&Value>) -> String {
+    utf16_form(&ps_string(value))
+}
+
+/// Whether PowerShell reads a value as true.
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64().is_some_and(|float| float != 0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => match items.as_slice() {
+            [] => false,
+            [one] => truthy(one),
+            _ => true,
+        },
+        Value::Object(_) => true,
+    }
+}
+
+/// `@($value | Where-Object { $_ } | ForEach-Object { [string]$_ })`.
+fn strings(value: Option<&Value>) -> Vec<String> {
+    let items = match value {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items.iter().collect(),
+        Some(other) => vec![other],
+    };
+    items
+        .into_iter()
+        .filter(|item| truthy(item))
+        .map(|item| text(Some(item)))
+        .collect()
+}
+
+/// `[int]$value` (null is 0; a fraction rounds half to even).
+fn ps_int(value: Option<&Value>) -> i64 {
+    match value {
+        None | Some(Value::Null) => 0,
+        Some(Value::Bool(flag)) => i64::from(*flag),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .unwrap_or_else(|| number.as_f64().unwrap_or_default().round_ties_even() as i64),
+        Some(Value::String(text)) => text.trim().parse().unwrap_or(0),
+        Some(other) => i64::from(truthy(other)),
+    }
+}
+
+// --- prose ------------------------------------------------------------------------------------
+
+/// The text without what the rules do not cover; a formula keeps a placeholder
+/// so it still splits nothing.
+fn plain(text: &str) -> String {
+    let text = DISPLAY_MATH.replace_all(text, "F");
+    let text = INLINE_MATH.replace_all(&text, "F");
+    let text = LINK.replace_all(&text, "");
+    let text = CODE.replace_all(&text, "C");
+    BOLD.replace_all(&text, "").into_owned()
+}
+
+struct Measure {
+    size: i64,
+    words: bool,
+}
+
+impl Measure {
+    fn unit(&self) -> &'static str {
+        if self.words { "words" } else { "characters" }
+    }
+}
+
+/// A sentence's size: characters when it holds Chinese, else words.
+fn measure(sentence: &str) -> Measure {
+    let plain = plain(sentence);
+    if CJK.is_match(sentence) {
+        let stripped = MEASURE_STRIP.replace_all(&plain, "");
+        let stripped = PLACEHOLDERS.replace_all(&stripped, "");
+        return Measure {
+            size: length(&stripped),
+            words: false,
+        };
+    }
+    Measure {
+        size: SPACES
+            .split(&plain)
+            .filter(|word| WORD.is_match(word))
+            .count() as i64,
+        words: true,
+    }
+}
+
+struct ProseLine {
+    text: String,
+    step: bool,
+}
+
+/// The lines of prose in a body, each with whether it is a numbered step.
+fn prose_lines(body: &str) -> Vec<ProseLine> {
+    let mut out = Vec::new();
+    let mut fence = false;
+    let mut display = false;
+    for raw in body.split('\n') {
+        let trim = raw.trim_end().trim();
+        if FENCE.is_match(trim) {
+            fence = !fence;
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        if ps_eq(trim, "$$") {
+            display = !display;
+            continue;
+        }
+        if display {
+            continue;
+        }
+        if trim.is_empty()
+            || culture_starts_with(trim, "|")
+            || culture_starts_with(trim, ">")
+            || culture_starts_with(trim, "<")
+            || culture_starts_with(trim, "![")
+            || HEADING.is_match(trim)
+            || DISPLAY_LINE.is_match(trim)
+        {
+            continue;
+        }
+        out.push(ProseLine {
+            text: MARKER.replace(trim, "").into_owned(),
+            step: STEP.is_match(trim),
+        });
+    }
+    out
+}
+
+/// The sentences of a line; formulas and Links split nothing.
+fn split_sentences(line: &str) -> Vec<String> {
+    let mut hidden = Vec::new();
+    let masked = HIDE.replace_all(line, |caps: &Captures| {
+        hidden.push(caps[0].to_string());
+        format!("§{}§", hidden.len() - 1)
+    });
+    // Split after 。！？!? and at the spaces after a period.
+    let chars = masked.chars().collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        current.push(ch);
+        index += 1;
+        if matches!(ch, '。' | '！' | '？' | '!' | '?') {
+            parts.push(std::mem::take(&mut current));
+        } else if ch == '.' && chars.get(index).is_some_and(|next| next.is_whitespace()) {
+            parts.push(std::mem::take(&mut current));
+            while chars.get(index).is_some_and(|next| next.is_whitespace()) {
+                index += 1;
+            }
+        }
+    }
+    parts.push(current);
+    parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            HIDDEN
+                .replace_all(part, |caps: &Captures| {
+                    caps[1]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|at| hidden.get(at))
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .into_owned()
+        })
+        .collect()
+}
+
+/// A `被` that names no actor: not 被告, 被保险, 被动, 被子, or a party (被收购方).
+fn passive(plain: &str) -> bool {
+    let is_cjk = |ch: char| {
+        ('\u{3400}'..='\u{9FFF}').contains(&ch) || ('\u{F900}'..='\u{FAFF}').contains(&ch)
+    };
+    plain.match_indices('被').any(|(at, _)| {
+        let rest = &plain[at + '被'.len_utf8()..];
+        if ["告", "保险", "动", "子"]
+            .iter()
+            .any(|word| rest.starts_with(word))
+        {
+            return false;
+        }
+        let next = rest.chars().take(3).collect::<Vec<_>>();
+        let party =
+            |n: usize| next.len() > n && next[..n].iter().all(|ch| is_cjk(*ch)) && next[n] == '方';
+        !(party(1) || party(2))
+    })
+}
+
+// --- the term table ---------------------------------------------------------------------------
+
+type Terms = Vec<(String, Vec<String>)>;
+
+/// The term table under a line that holds `术语表`: the term, and the words not to use.
+fn read_terms(body: &str) -> Terms {
+    let mut terms: Terms = Vec::new();
+    let mut in_table = false;
+    for line in body.split('\n') {
+        if line.contains("术语表") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        let t = line.trim();
+        if t.is_empty() || !culture_starts_with(t, "|") {
+            if terms.is_empty() {
+                continue;
+            }
+            break;
+        }
+        let cells = t
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        if cells.len() < 2 || TABLE_RULE.is_match(cells[0]) || ps_eq(cells[0], "术语") {
+            continue;
+        }
+        let avoid = AVOID_SPLIT
+            .split(cells[1])
+            .map(|word| word.trim_matches(&[' ', '`', '“', '”'][..]))
+            .filter(|word| !word.is_empty() && !AVOID_NONE.is_match(word))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if avoid.is_empty() {
+            continue;
+        }
+        // An ordered hashtable: a term that differs only in case replaces the earlier one.
+        let term = cells[0].to_string();
+        match terms.iter_mut().find(|(known, _)| key(known) == key(&term)) {
+            Some(entry) => *entry = (term, avoid),
+            None => terms.push((term, avoid)),
+        }
+    }
+    terms
+}
+
+// --- the checks -------------------------------------------------------------------------------
+
+/// The limits of card-style-check.ps1 and self-check.ps1.
+#[derive(Clone, Debug)]
+pub(crate) struct Limits {
+    pub(crate) max_sentences: i64,
+    pub(crate) max_chars: i64,
+    pub(crate) max_steps: i64,
+    pub(crate) max_explain_sentences: i64,
+    pub(crate) max_explain_chars: i64,
+    pub(crate) min_idea_chars: i64,
+    pub(crate) max_idea_chars: i64,
+    pub(crate) min_reason: i64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_sentences: 12,
+            max_chars: 400,
+            max_steps: 6,
+            max_explain_sentences: 16,
+            max_explain_chars: 600,
+            min_idea_chars: 40,
+            max_idea_chars: 300,
+            min_reason: 8,
+        }
+    }
+}
+
+/// One run of card-style-check.ps1: the limits, the level, the term table, and
+/// the shared parts that follow another model's term table.
+pub(crate) struct Check {
+    pub(crate) limits: Limits,
+    pub(crate) require_explain: bool,
+    pub(crate) level: String,
+    terms: Terms,
+    shared: Vec<String>,
+}
+
+impl Check {
+    pub(crate) fn new(limits: Limits, require_explain: bool, level: &str) -> Self {
+        Self {
+            limits,
+            require_explain,
+            level: level.to_string(),
+            terms: Vec::new(),
+            shared: Vec::new(),
+        }
+    }
+
+    /// The term table from the setting Card's body.
+    fn with_terms(mut self, setting_body: Option<&str>) -> Self {
+        self.terms = setting_body
+            .map(|body| read_terms(&utf16_form(body)))
+            .unwrap_or_default();
+        self
+    }
+
+    fn with_shared(mut self, shared: Vec<String>) -> Self {
+        self.shared = shared.iter().map(|address| utf16_form(address)).collect();
+        self
+    }
+
+    /// Every fault of the Cards (`{"address","title","body","facet",...}`), in
+    /// the order card-style-check.ps1 writes them.
+    pub(crate) fn run(&self, cards: &[Value]) -> Vec<String> {
+        let mut faults = Faults::default();
+        let mut prose_chars = HashMap::new();
+        for card in cards {
+            let address = text(prop(card, "address"));
+            let chars = self.language(card, &address, &mut faults);
+            prose_chars.insert(key(&address), chars);
+        }
+        self.layer(cards, &prose_chars, &mut faults);
+        faults.lines
+    }
+
+    /// R2 to R17 for one Card; returns its prose characters (I2 reads them).
+    fn language(&self, card: &Value, address: &str, faults: &mut Faults) -> i64 {
+        let title = text(prop(card, "title"));
+        let facet = text(prop(card, "facet"));
+        let shared = ps_in(address, &self.shared);
+        let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);
+        if !title.is_empty() {
+            let measure = measure(&title);
+            let limit = if measure.words { 25 } else { 40 };
+            if measure.size > limit {
+                faults.add(
+                    address,
+                    "R12",
+                    &format!("({} {} > {limit}) {title}", measure.size, measure.unit()),
+                );
+            }
+            if SEMICOLON.is_match(&plain(&title)) {
+                faults.add(address, "R12", &format!("two claims: {title}"));
+            }
+        }
+        let mut sentences = 0;
+        let mut chars = 0;
+        let mut steps = 0;
+        // A Derivation part: its sections, the explanation (思路, 说明, 解读), and the 说明 lines per step.
+        let mut section = String::new();
+        let mut order = Vec::new();
+        let mut explain_sentences = 0;
+        let mut explain_chars = 0;
+        let mut thought = 0;
+        let mut reading = 0;
+        let mut notes = BTreeMap::new();
+        for line in prose_lines(&text(prop(card, "body"))) {
+            if derivation && let Some(caps) = SECTION.captures(&line.text) {
+                section = caps[1].to_string();
+                order.push(section.clone());
+                continue;
+            }
+            // The position line of 思路 (`第 2 张，共 3 张：…`) is the compiler's, not the writer's text.
+            if derivation && section == "思路" && POSITION.is_match(&line.text) {
+                continue;
+            }
+            let is_step = derivation && line.step;
+            if is_step {
+                steps += 1;
+            }
+            let is_note = derivation && !is_step && section == "步骤" && NOTE.is_match(&line.text);
+            let line_text = if is_note {
+                NOTE_LABEL.replace(&line.text, "").into_owned()
+            } else {
+                line.text.clone()
+            };
+            // The 来源 line after 解读 is not part of the explanation.
+            let is_explain = is_note
+                || (derivation
+                    && (section == "思路" || section == "解读")
+                    && !SOURCE_LABEL.is_match(&line.text));
+            if is_note {
+                if steps == 0 {
+                    faults.add(
+                        address,
+                        "R17",
+                        &format!("a 说明 line before the first step: {line_text}"),
+                    );
+                } else if notes.contains_key(&steps) {
+                    faults.add(
+                        address,
+                        "R17",
+                        &format!("a second 说明 line under step {steps}: {line_text}"),
+                    );
+                }
+                notes.insert(steps, 0);
+            }
+            for sentence in split_sentences(&line_text) {
+                self.sentence(faults, address, shared, &sentence, is_step);
+                if is_step {
+                    continue;
+                }
+                let measure = measure(&sentence);
+                let size = if measure.words { 0 } else { measure.size };
+                if is_explain {
+                    explain_sentences += 1;
+                    explain_chars += size;
+                    if is_note {
+                        *notes.entry(steps).or_insert(0) += 1;
+                    } else if !ps_eq(sentence.trim(), "待写") {
+                        if section == "思路" {
+                            thought += 1;
+                        } else {
+                            reading += 1;
+                        }
+                    }
+                } else {
+                    sentences += 1;
+                    chars += size;
+                }
+            }
+        }
+        // R15 to R17: a formal model's Derivation part with an explanation, or any one with --require-explain.
+        if derivation && !ps_eq(&self.level, "concept") {
+            let has = order.iter().any(|name| name == "思路" || name == "解读");
+            if has || self.require_explain {
+                if order.join(",") != SECTIONS.join(",") {
+                    let found = if order.is_empty() {
+                        "none".to_string()
+                    } else {
+                        order.join(", ")
+                    };
+                    faults.add(
+                        address,
+                        "R15",
+                        &format!("sections {found}; want {}", SECTIONS.join(", ")),
+                    );
+                }
+                if order.iter().any(|name| name == "思路") && thought > 5 {
+                    faults.add(
+                        address,
+                        "R16",
+                        &format!("(思路 has {thought} sentences > 5)"),
+                    );
+                }
+                if order.iter().any(|name| name == "解读") && reading > 6 {
+                    faults.add(
+                        address,
+                        "R16",
+                        &format!("(解读 has {reading} sentences > 6)"),
+                    );
+                }
+                for (step, count) in &notes {
+                    if *count > 2 {
+                        faults.add(
+                            address,
+                            "R17",
+                            &format!("(说明 under step {step} has {count} sentences > 2)"),
+                        );
+                    }
+                }
+                let limits = &self.limits;
+                if explain_sentences > limits.max_explain_sentences {
+                    faults.add(
+                        address,
+                        "R17",
+                        &format!(
+                            "({explain_sentences} explanation sentences > {}) shorten the explanation",
+                            limits.max_explain_sentences
+                        ),
+                    );
+                } else if explain_chars > limits.max_explain_chars {
+                    faults.add(
+                        address,
+                        "R17",
+                        &format!(
+                            "({explain_chars} explanation characters > {}) shorten the explanation",
+                            limits.max_explain_chars
+                        ),
+                    );
+                }
+            }
+        }
+        // Card size: only a Model part of a formal model; the Model Card is the model's entry
+        // point, and a concept model keeps its few parts whole.
+        if ps_eq(&self.level, "concept") {
+            return chars;
+        }
+        let limits = &self.limits;
+        if !facet.is_empty() {
+            if sentences > limits.max_sentences {
+                faults.add(
+                    address,
+                    "R13",
+                    &format!(
+                        "({sentences} sentences > {}) split the part into two or more parts",
+                        limits.max_sentences
+                    ),
+                );
+            } else if chars > limits.max_chars {
+                faults.add(
+                    address,
+                    "R13",
+                    &format!(
+                        "({chars} characters > {}) split the part into two or more parts",
+                        limits.max_chars
+                    ),
+                );
+            }
+        }
+        if steps > limits.max_steps {
+            faults.add(
+                address,
+                "R14",
+                &format!(
+                    "({steps} steps > {}) split the derivation into a chain of Derivation parts",
+                    limits.max_steps
+                ),
+            );
+        }
+        chars
+    }
+
+    /// R2 to R9 for one sentence.
+    fn sentence(
+        &self,
+        faults: &mut Faults,
+        address: &str,
+        shared: bool,
+        sentence: &str,
+        step: bool,
+    ) {
+        let plain = plain(sentence);
+        let measure = measure(sentence);
+        let limit = match (measure.words, step) {
+            (false, true) => 30,
+            (false, false) => 40,
+            (true, true) => 20,
+            (true, false) => 25,
+        };
+        if measure.size > limit {
+            faults.add(
+                address,
+                "R2",
+                &format!("({} {} > {limit}) {sentence}", measure.size, measure.unit()),
+            );
+        }
+        if SEMICOLON.is_match(&plain) {
+            faults.add(address, "R3", sentence);
+        }
+        // `被收购方`, `被投资方`: a party, not a passive (and a 被 that names the party has its actor).
+        if passive(&plain) {
+            faults.add(address, "R4", sentence);
+        }
+        if LIGHT_VERB.is_match(&plain) {
+            faults.add(address, "R5", sentence);
+        }
+        if !shared {
+            for (term, words) in &self.terms {
+                // A rejected word inside the term itself is the term, not the word.
+                let rest = plain.replace(term.as_str(), "");
+                for word in words {
+                    if rest.contains(word.as_str()) {
+                        faults.add(
+                            address,
+                            "R6",
+                            &format!("uses `{word}` for `{term}`: {sentence}"),
+                        );
+                    }
+                }
+            }
+        }
+        if NOUN_PHRASE.is_match(&plain) {
+            faults.add(address, "R7", sentence);
+        }
+        if let Some(word) = HEDGES.iter().find(|word| plain.contains(*word)) {
+            faults.add(address, "R9", &format!("`{word}`: {sentence}"));
+        }
+    }
+
+    /// The Card layer rules (I, E, L): only for entries that name their category.
+    fn layer(&self, cards: &[Value], prose_chars: &HashMap<String, i64>, faults: &mut Faults) {
+        let layer = cards
+            .iter()
+            .filter(|card| prop(card, "category").is_some_and(truthy))
+            .collect::<Vec<_>>();
+        let limits = &self.limits;
+        for card in &layer {
+            let address = text(prop(card, "address"));
+            let category = text(prop(card, "category"));
+            let is = |names: &[&str]| ps_in(&category, names);
+            if !is(&["idea", "anchor", "event"]) {
+                continue;
+            }
+            let title = text(prop(card, "title"));
+            let body = text(prop(card, "body"));
+            let has = |name: &str| prop(card, name).is_some();
+            let parent = text(prop(card, "parent"));
+            let links = strings(prop(card, "links"));
+            let kinds = strings(prop(card, "kinds"));
+            let title_plain = SPACE
+                .replace_all(&PLACEHOLDERS.replace_all(&plain(&title), ""), "")
+                .into_owned();
+            if is(&["idea", "anchor"])
+                && length(&title_plain) <= 6
+                && !CLAIM_VERB.is_match(&title_plain)
+            {
+                faults.add(
+                    &address,
+                    "I1",
+                    &format!("(advisory) the title states no claim: {title}"),
+                );
+            }
+            if is(&["idea"]) {
+                let size = prose_chars.get(&key(&address)).copied().unwrap_or(0);
+                if size > limits.max_idea_chars {
+                    faults.add(
+                        &address,
+                        "I2",
+                        &format!(
+                            "({size} characters > {}) split candidate",
+                            limits.max_idea_chars
+                        ),
+                    );
+                } else if size < limits.min_idea_chars {
+                    faults.add(
+                        &address,
+                        "I2",
+                        &format!(
+                            "({size} characters < {}) merge candidate",
+                            limits.min_idea_chars
+                        ),
+                    );
+                }
+            }
+            if is(&["idea", "event"])
+                && has("book")
+                && prop(card, "book").is_some_and(truthy)
+                && has("links")
+            {
+                let book = text(prop(card, "book"));
+                let anchor = Regex::new(&format!("(?i)^{}/\\d+$", regex::escape(&book)))
+                    .expect("an escaped Citation key");
+                if !links
+                    .iter()
+                    .any(|link| ps_eq(link, &book) || anchor.is_match(link))
+                {
+                    faults.add(
+                        &address,
+                        "I3",
+                        &format!("no source line: no Link to [[{book}]] or one of its anchors"),
+                    );
+                }
+            }
+            if is(&["idea"]) && has("kinds") && !kinds.iter().any(|kind| !ps_eq(kind, &parent)) {
+                faults.add(
+                    &address,
+                    "I4",
+                    "no kinded Link to a Card other than the parent",
+                );
+            }
+            if is(&["idea", "event"]) && has("inbound") {
+                let inbound = match prop(card, "inbound") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(Value::Array(items)) => items.iter().collect(),
+                    Some(other) => vec![other],
+                };
+                if !inbound
+                    .iter()
+                    .any(|from| truthy(from) && !ps_eq(&text(Some(from)), &parent))
+                {
+                    faults.add(&address, "I5", "no Card other than the parent links here");
+                }
+            }
+            if is(&["event"]) {
+                if !DATE.is_match(&title_plain) {
+                    faults.add(&address, "E1", &format!("no date in the title: {title}"));
+                }
+                let missing = EVENT_LABELS
+                    .iter()
+                    .filter(|(_, pattern)| !pattern.is_match(&body))
+                    .map(|(label, _)| *label)
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    faults.add(
+                        &address,
+                        "E2",
+                        &format!("missing labels: {}", missing.join("、")),
+                    );
+                }
+                if has("inbound_kinded") && ps_int(prop(card, "inbound_kinded")) == 0 {
+                    faults.add(&address, "E4", "no Idea Card links it with a kind word");
+                }
+            }
+            if has("links") {
+                let mut refers: Vec<String> = Vec::new();
+                for link in &links {
+                    if !ps_in(link, &kinds)
+                        && !book_place(link)
+                        && !leads_to(&body, link)
+                        && !refers.iter().any(|seen| culture(seen) == culture(link))
+                    {
+                        refers.push(link.clone());
+                    }
+                }
+                if !refers.is_empty() {
+                    let shown = refers
+                        .iter()
+                        .take(5)
+                        .map(|link| format!("[[{link}]]"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    faults.add(
+                        &address,
+                        "L1",
+                        &format!("({} Links read as refers) {shown}", refers.len()),
+                    );
+                }
+            }
+            // L2 and L3 read the body: the sentence of each Link, and the paragraphs it appears in.
+            let mut paragraphs: Vec<(String, BTreeSet<usize>)> = Vec::new();
+            let mut paragraph = 0;
+            for raw in body.split('\n') {
+                let trim = raw.trim();
+                if trim.is_empty() {
+                    paragraph += 1;
+                    continue;
+                }
+                for caps in LINK_TARGET.captures_iter(trim) {
+                    let target = caps[1].trim();
+                    match paragraphs
+                        .iter_mut()
+                        .find(|(known, _)| key(known) == key(target))
+                    {
+                        Some((_, seen)) => {
+                            seen.insert(paragraph);
+                        }
+                        None => paragraphs.push((target.to_string(), BTreeSet::from([paragraph]))),
+                    }
+                }
+            }
+            for line in prose_lines(&body) {
+                for sentence in split_sentences(&line.text) {
+                    if !sentence.contains("[[") || SOURCE_LINE.is_match(&sentence) {
+                        continue;
+                    }
+                    let reason = PLACEHOLDERS.replace_all(&plain(&sentence), "").into_owned();
+                    let reason = REASON_STRIP.replace_all(&reason, "");
+                    // A formula states the reason too (`代入 [[…]] 的定义得 $MRTS=…$`).
+                    if length(&reason) < limits.min_reason && !INLINE_MATH.is_match(&sentence) {
+                        faults.add(
+                            &address,
+                            "L2",
+                            &format!(
+                                "({} characters < {}) a Link with no reason: {sentence}",
+                                length(&reason),
+                                limits.min_reason
+                            ),
+                        );
+                    }
+                }
+            }
+            paragraphs.sort_by(|a, b| culture_cmp(&a.0, &b.0));
+            for (target, seen) in &paragraphs {
+                if seen.len() >= 2 {
+                    faults.add(
+                        &address,
+                        "L3",
+                        &format!(
+                            "(advisory) [[{target}]] is linked in {} paragraphs",
+                            seen.len()
+                        ),
+                    );
+                }
+            }
+        }
+        // I6 and E5 compare Cards with each other. Group-Object sorts its groups.
+        let mut groups: Vec<(String, Vec<(String, HashSet<String>)>)> = Vec::new();
+        for card in &layer {
+            if !ps_eq(&text(prop(card, "category")), "idea")
+                || !prop(card, "tree").is_some_and(truthy)
+            {
+                continue;
+            }
+            let tree = text(prop(card, "tree"));
+            let item = (
+                text(prop(card, "address")),
+                bigrams(&text(prop(card, "title"))),
+            );
+            match groups
+                .iter_mut()
+                .find(|(name, _)| culture(name).to_lowercase() == culture(&tree).to_lowercase())
+            {
+                Some((_, items)) => items.push(item),
+                None => groups.push((tree, vec![item])),
+            }
+        }
+        groups.sort_by(|a, b| culture_cmp(&a.0, &b.0));
+        for (_, items) in &groups {
+            for i in 0..items.len() {
+                for j in i + 1..items.len() {
+                    if similarity(&items[i].1, &items[j].1) >= 0.8 {
+                        faults.add(
+                            &items[j].0,
+                            "I6",
+                            &format!("(advisory) a title very similar to [[{}]]", items[i].0),
+                        );
+                    }
+                }
+            }
+        }
+        let events = layer
+            .iter()
+            .filter(|card| ps_eq(&text(prop(card, "category")), "event"))
+            .map(|card| {
+                let title = text(prop(card, "title"));
+                let year = YEAR
+                    .captures(&title)
+                    .map(|caps| caps[1].to_string())
+                    .unwrap_or_default();
+                (text(prop(card, "address")), year, bigrams(&title))
+            })
+            .collect::<Vec<_>>();
+        for i in 0..events.len() {
+            for j in i + 1..events.len() {
+                if !events[i].1.is_empty()
+                    && ps_eq(&events[i].1, &events[j].1)
+                    && similarity(&events[i].2, &events[j].2) >= 0.5
+                {
+                    faults.add(
+                        &events[j].0,
+                        "E5",
+                        &format!("(advisory) the same event as [[{}]]?", events[i].0),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A source line or a place in the book: a Literature Card (`hart1995firms`)
+/// or an anchor (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
+fn book_place(target: &str) -> bool {
+    BOOK_CARD.is_match(target) || BOOK_ANCHOR.is_match(target)
+}
+
+/// A Link that 引出 announces in its sentence: it points the other way.
+fn leads_to(body: &str, target: &str) -> bool {
+    let link = format!("[[{target}]]");
+    body.match_indices(&link).any(|(at, _)| {
+        let start = body[..at]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| matches!(ch, '。' | '！' | '？' | '!' | '?' | '；' | ';' | '\n'))
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+        body[start..at].contains("引出")
+    })
+}
+
+/// Character bigrams of a title without formulas and Links.
+fn bigrams(title: &str) -> HashSet<String> {
+    let plain = PLACEHOLDERS.replace_all(&plain(title), "").into_owned();
+    let chars = NOT_LETTER_OR_NUMBER
+        .replace_all(&plain, "")
+        .chars()
+        .collect::<Vec<_>>();
+    chars.windows(2).map(|pair| pair.iter().collect()).collect()
+}
+
+fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let common = a.iter().filter(|bigram| b.contains(*bigram)).count();
+    2.0 * common as f64 / (a.len() + b.len()) as f64
+}
+
+#[derive(Default)]
+struct Faults {
+    lines: Vec<String>,
+}
+
+impl Faults {
+    /// `<address> <rule> <text>`, the text on one line and clipped to 90 characters.
+    fn add(&mut self, address: &str, rule: &str, text: &str) {
+        let collapsed = SPACES.replace_all(text, " ");
+        let trimmed = collapsed.trim();
+        let units = trimmed.chars().collect::<Vec<_>>();
+        let clip = if units.len() > 90 {
+            let mut kept = units[..89].iter().collect::<String>();
+            // A cut through a surrogate pair leaves half a character; .NET writes U+FFFD for it.
+            if is_high_stand_in(units[88]) && is_low_stand_in(units[89]) {
+                kept.pop();
+                kept.push('\u{FFFD}');
+            }
+            kept.push('…');
+            kept
+        } else {
+            trimmed.to_string()
+        };
+        self.lines
+            .push(from_utf16_form(&format!("{address} {rule} {clip}")));
+    }
+}
+
+// --- inputs -----------------------------------------------------------------------------------
+
+/// `--json`: a JSON array of entries (or one entry), as card-style-check.ps1 -Json reads it.
+pub(crate) fn check_json(
+    raw: &str,
+    setting: &str,
+    limits: Limits,
+    require_explain: bool,
+    level: &str,
+) -> Result<Vec<String>> {
+    let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
+    let cards = match serde_json::from_str::<Value>(raw).context("the file is not JSON")? {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    let shared = cards
+        .iter()
+        .filter(|card| ps_eq(&text_of(card, "line"), "shared"))
+        .map(|card| ps_string(prop(card, "address")))
+        .collect();
+    let setting = utf16_form(setting);
+    let setting_body = (!setting.is_empty())
+        .then(|| {
+            cards
+                .iter()
+                .find(|card| ps_eq(&text(prop(card, "address")), &setting))
+                .map(|card| ps_string(prop(card, "body")))
+        })
+        .flatten();
+    let check = Check::new(limits, require_explain, level)
+        .with_terms(setting_body.as_deref())
+        .with_shared(shared);
+    Ok(check.run(&cards))
+}
+
+fn text_of(card: &Value, name: &str) -> String {
+    text(prop(card, name))
+}
+
+/// A Card as card-style-check.ps1 reads it from get_card: address, title, body, facet.
+fn card_entry(card: &Value) -> Value {
+    json!({
+        "address": card.get("address").cloned().unwrap_or(Value::Null),
+        "title": card.get("title").cloned().unwrap_or(Value::Null),
+        "body": card.get("body").cloned().unwrap_or(Value::Null),
+        "facet": card.get("facet").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// The body of the setting Card: from the Cards checked, else from zt.
+fn setting_body(zt: &mut Zt, cards: &[Value], setting: &str) -> Result<Option<String>> {
+    if setting.is_empty() {
+        return Ok(None);
+    }
+    let wanted = utf16_form(setting);
+    if let Some(card) = cards
+        .iter()
+        .find(|card| ps_eq(&text(prop(card, "address")), &wanted))
+    {
+        return Ok(Some(ps_string(prop(card, "body"))));
+    }
+    let card = zt.call("get_card", json!({ "at": setting }))?;
+    Ok(Some(ps_string(card.get("body"))))
+}
+
+/// `--model`: every Card of the model, with its setting's term table and its
+/// level (card-style-check.ps1 -Model: get_model, and get_card for the head).
+pub(crate) fn check_model(
+    zt: &mut Zt,
+    at: &str,
+    setting: &str,
+    level: &str,
+    limits: Limits,
+    require_explain: bool,
+    skip_shared: bool,
+) -> Result<Vec<String>> {
+    let structure = zt.call("get_model", json!({ "at": at }))?;
+    let head = structure["head"]["address"]
+        .as_str()
+        .with_context(|| format!("`{at}` belongs to no model"))?
+        .to_string();
+    let mut cards = vec![card_entry(&zt.call("get_card", json!({ "at": head }))?)];
+    for part in structure["parts"].as_array().into_iter().flatten() {
+        cards.push(card_entry(part));
+    }
+    let setting = if setting.is_empty() {
+        ps_string(structure["build"].get("setting"))
+    } else {
+        setting.to_string()
+    };
+    let level = if level.is_empty() {
+        ps_string(structure.get("level"))
+    } else {
+        level.to_string()
+    };
+    // A shared part follows the term table of its home model, not this one.
+    let shared = structure["build"]["order"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| ps_eq(&ps_string(item.get("line")), "shared"))
+        .map(|item| ps_string(item.get("address")))
+        .collect::<Vec<_>>();
+    if skip_shared {
+        cards.retain(|card| !ps_in(&ps_string(prop(card, "address")), &shared));
+    }
+    let body = setting_body(zt, &cards, &setting)?;
+    let check = Check::new(limits, require_explain, &level)
+        .with_terms(body.as_deref())
+        .with_shared(shared);
+    Ok(check.run(&cards))
+}
+
+/// `--cards`: self-check.ps1. Each Card as digest-audit.ps1 sees it: a Model
+/// part or Model Card with its model (setting, level, and every Derivation
+/// part with an explanation); an Idea Card, an anchor, or an Event Card with
+/// its layer rules; any other Card with the R rules only. Returns every line,
+/// before the rule filter.
+pub(crate) fn check_cards(
+    zt: &mut Zt,
+    addresses: &[String],
+    book: &str,
+    limits: Limits,
+) -> Result<Vec<String>> {
+    let mut cards = Vec::new();
+    for at in addresses {
+        cards.push(zt.call("get_card", json!({ "at": at }))?);
+    }
+    let trees = zt.call("list_trees", json!({ "workspace": "agent" }))?;
+    let books = trees["trees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tree| ps_eq(&ps_string(tree.get("kind")), "literature"))
+        .map(|tree| ps_string(tree.get("tree")))
+        .collect::<Vec<_>>();
+    // get_tree of every tree the Cards are in: each Card's Links and Relation kinds.
+    let mut entries: HashMap<String, Value> = HashMap::new();
+    let mut seen: Vec<String> = Vec::new();
+    for card in &cards {
+        let tree = ps_string(card.get("tree"));
+        if tree.is_empty() || seen.iter().any(|known| key(known) == key(&tree)) {
+            continue;
+        }
+        seen.push(tree.clone());
+        let read = zt.call("get_tree", json!({ "tree": tree }))?;
+        for entry in read["cards"].as_array().into_iter().flatten() {
+            let address = ps_string(entry.get("address"));
+            if ps_in(&address, addresses) {
+                entries.insert(key(&address), entry.clone());
+            }
+        }
+    }
+    let mut by_model: Vec<(String, Vec<Value>)> = Vec::new();
+    let mut plain = Vec::new();
+    for card in &cards {
+        let address = ps_string(card.get("address"));
+        let tree = ps_string(card.get("tree"));
+        let title = ps_string(card.get("title"));
+        let body = ps_string(card.get("body"));
+        let in_book = ps_in(&tree, &books);
+        let entry = entries.get(&key(&address));
+        // The same categories as digest-audit.ps1 (Get-Category).
+        let has_facet = !ps_string(card.get("facet")).is_empty();
+        let category = if entry.is_some_and(|entry| ps_in(&ps_string(entry.get("kind")), &["topic", "literature"])) {
+            "root"
+        } else {
+            match key(&ps_string(card.get("type"))).as_str() {
+                "hub" => "hub",
+                "event" => "event",
+                "model" if has_facet => "part",
+                "model" => "model",
+                _ if in_book && ANCHOR_ADDRESS.is_match(&address) => "anchor",
+                _ if in_book && TERMS_TITLE.is_match(&title) => "terms",
+                _ if in_book && STRUCTURE_BODY.is_match(&body) => "structure",
+                _ => "idea",
+            }
+        };
+        let head = card["model"]["head"]["address"].as_str().map(str::to_string);
+        if matches!(category, "part" | "model")
+            && let Some(head) = head
+        {
+            match by_model.iter_mut().find(|(known, _)| key(known) == key(&head)) {
+                Some((_, members)) => members.push(card.clone()),
+                None => by_model.push((head, vec![card.clone()])),
+            }
+            continue;
+        }
+        let mut item = Map::new();
+        item.insert("address".into(), json!(address));
+        item.insert("title".into(), json!(title));
+        item.insert("body".into(), json!(body));
+        item.insert("facet".into(), Value::Null);
+        if matches!(category, "idea" | "anchor" | "event") {
+            let parent = card["parent"]["address"].as_str().unwrap_or_default().to_string();
+            let links = entry
+                .and_then(|entry| entry["links"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|link| !link.is_empty())
+                .collect::<Vec<_>>();
+            let kinds = entry
+                .and_then(|entry| entry["kinds"].as_object())
+                .map(|kinds| kinds.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            item.insert("category".into(), json!(category));
+            item.insert("parent".into(), json!(parent));
+            item.insert("links".into(), json!(links));
+            item.insert("kinds".into(), json!(kinds));
+            let key = if !book.is_empty() {
+                book.to_string()
+            } else if in_book {
+                tree.clone()
+            } else {
+                String::new()
+            };
+            if !key.is_empty() {
+                item.insert("book".into(), json!(key));
+            }
+        }
+        plain.push(Value::Object(item));
+    }
+    let mut lines = Vec::new();
+    // Model parts and Model Cards: per model, with its setting (term table) and
+    // level, as card-style-check.ps1 -Addresses reads them from the first Card.
+    for (_, members) in &by_model {
+        let model = &members[0]["model"];
+        let setting = ps_string(model["build"].get("setting"));
+        let level = ps_string(model.get("level"));
+        let checked = members.iter().map(card_entry).collect::<Vec<_>>();
+        let body = setting_body(zt, &checked, &setting)?;
+        let check = Check::new(limits.clone(), true, &level).with_terms(body.as_deref());
+        lines.extend(check.run(&checked));
+    }
+    if !plain.is_empty() {
+        lines.extend(Check::new(limits, false, "").run(&plain));
+    }
+    Ok(lines)
+}
+
+/// The lines of the rules asked for; advisory lines are shown but not counted.
+fn filter_rules(lines: &[String], rules: &str) -> (Vec<String>, usize) {
+    let allowed = LIST_SPLIT
+        .split(rules)
+        .filter(|rule| !rule.is_empty())
+        .collect::<Vec<_>>();
+    let mut kept = Vec::new();
+    let mut faults = 0;
+    for line in lines {
+        let Some(caps) = FAULT_LINE.captures(line) else {
+            continue;
+        };
+        if !ps_in(&caps[1], &allowed) {
+            continue;
+        }
+        kept.push(line.clone());
+        if !line.contains("(advisory)") {
+            faults += 1;
+        }
+    }
+    (kept, faults)
+}
+
+// --- the command ------------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Options {
+    json: Option<String>,
+    model: Option<String>,
+    addresses: Option<String>,
+    cards: Option<String>,
+    log: Option<String>,
+    book: Option<String>,
+    rules: Option<String>,
+    setting: Option<String>,
+    level: Option<String>,
+    require_explain: bool,
+    skip_shared: bool,
+    limits: Limits,
+}
+
+impl Options {
+    fn parse(args: &[String]) -> Result<Self> {
+        let mut options = Options::default();
+        let mut index = 0;
+        while index < args.len() {
+            let flag = args[index].as_str();
+            let mut value = || -> Result<String> {
+                index += 1;
+                args.get(index)
+                    .cloned()
+                    .with_context(|| format!("{flag} needs a value\n{USAGE}"))
+            };
+            let number = |text: String| -> Result<i64> {
+                text.trim()
+                    .parse::<i64>()
+                    .with_context(|| format!("{flag} needs a whole number, not `{text}`"))
+            };
+            match flag {
+                "--json" => options.json = Some(value()?),
+                "--model" => options.model = Some(value()?),
+                "--addresses" => options.addresses = Some(value()?),
+                "--cards" => options.cards = Some(value()?),
+                "--log" => options.log = Some(value()?),
+                "--book" => options.book = Some(value()?),
+                "--rules" => options.rules = Some(value()?),
+                "--setting" => options.setting = Some(value()?),
+                "--level" => {
+                    let level = value()?;
+                    if !ps_in(&level, &["", "concept", "formal"]) {
+                        bail!("--level is concept or formal, not `{level}`");
+                    }
+                    options.level = Some(level.to_lowercase());
+                }
+                "--require-explain" => options.require_explain = true,
+                "--skip-shared" => options.skip_shared = true,
+                "--max-sentences" => options.limits.max_sentences = number(value()?)?,
+                "--max-chars" => options.limits.max_chars = number(value()?)?,
+                "--max-steps" => options.limits.max_steps = number(value()?)?,
+                "--max-explain-sentences" => {
+                    options.limits.max_explain_sentences = number(value()?)?
+                }
+                "--max-explain-chars" => options.limits.max_explain_chars = number(value()?)?,
+                "--min-idea-chars" => options.limits.min_idea_chars = number(value()?)?,
+                "--max-idea-chars" => options.limits.max_idea_chars = number(value()?)?,
+                "--min-reason" => options.limits.min_reason = number(value()?)?,
+                "-h" | "--help" => bail!("{USAGE}"),
+                other => bail!("unknown option `{other}`\n{USAGE}"),
+            }
+            index += 1;
+        }
+        let modes = [
+            options.json.is_some(),
+            options.model.is_some(),
+            options.addresses.is_some(),
+            options.cards.is_some() || options.log.is_some(),
+        ]
+        .into_iter()
+        .filter(|on| *on)
+        .count();
+        if modes != 1 {
+            bail!("name one input: --json, --model, --addresses, or --cards/--log\n{USAGE}");
+        }
+        let cards_mode = options.cards.is_some() || options.log.is_some();
+        if cards_mode
+            && (options.setting.is_some()
+                || options.level.is_some()
+                || options.require_explain
+                || options.skip_shared)
+        {
+            bail!(
+                "--cards takes each model's own setting and level; --setting, --level, --require-explain, and --skip-shared do not apply"
+            );
+        }
+        if !cards_mode && (options.book.is_some() || options.rules.is_some()) {
+            bail!("--book and --rules apply to --cards only");
+        }
+        if options.skip_shared && options.model.is_none() {
+            bail!("--skip-shared applies to --model only");
+        }
+        Ok(options)
+    }
+}
+
+/// `--addresses`: card-style-check.ps1 -Addresses. The Cards from get_card;
+/// the term table from --setting or the first Card's model setting; the level
+/// from --level or the first Card's model.
+pub(crate) fn check_addresses(
+    zt: &mut Zt,
+    addresses: &[String],
+    setting: &str,
+    level: &str,
+    limits: Limits,
+    require_explain: bool,
+) -> Result<Vec<String>> {
+    let mut read = Vec::new();
+    for at in addresses {
+        read.push(zt.call("get_card", json!({ "at": at }))?);
+    }
+    let first = read.first().map(|card| card["model"].clone()).unwrap_or(Value::Null);
+    let setting = if setting.is_empty() { ps_string(first["build"].get("setting")) } else { setting.to_string() };
+    let level = if level.is_empty() { ps_string(first.get("level")) } else { level.to_string() };
+    let cards = read.iter().map(card_entry).collect::<Vec<_>>();
+    let body = setting_body(zt, &cards, &setting)?;
+    Ok(Check::new(limits, require_explain, &level).with_terms(body.as_deref()).run(&cards))
+}
+
+/// `zt-check …`.
+pub(crate) fn run_cli(args: &[String]) -> Result<()> {
+    let options = Options::parse(args)?;
+    let setting = options.setting.clone().unwrap_or_default();
+    let level = options.level.clone().unwrap_or_default();
+    let (mut out, count) = if let Some(path) = &options.json {
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
+        let lines = check_json(
+            &raw,
+            &setting,
+            options.limits.clone(),
+            options.require_explain,
+            &level,
+        )?;
+        let count = lines.len();
+        (lines, count)
+    } else if let Some(list) = &options.addresses {
+        let list = LIST_SPLIT.split(list).filter(|at| !at.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let mut zt = Zt::start()?;
+        let lines = check_addresses(&mut zt, &list, &setting, &level, options.limits.clone(), options.require_explain)?;
+        let count = lines.len();
+        (lines, count)
+    } else if let Some(at) = &options.model {
+        let mut zt = Zt::start()?;
+        let lines = check_model(
+            &mut zt,
+            at,
+            &setting,
+            &level,
+            options.limits.clone(),
+            options.require_explain,
+            options.skip_shared,
+        )?;
+        let count = lines.len();
+        (lines, count)
+    } else {
+        let mut list = LIST_SPLIT
+            .split(options.cards.as_deref().unwrap_or_default())
+            .filter(|at| !at.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if let Some(log) = options.log.as_deref().filter(|log| Path::new(log).exists()) {
+            let raw =
+                std::fs::read_to_string(log).with_context(|| format!("failed to read {log}"))?;
+            let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+            list.extend(
+                raw.split(['\r', '\n'])
+                    .map(str::trim)
+                    .filter(|at| !at.is_empty())
+                    .map(str::to_string),
+            );
+        }
+        // Select-Object -Unique: case counts, ignorable characters do not.
+        let mut unique: Vec<String> = Vec::new();
+        for at in list {
+            if !unique.iter().any(|seen| culture(seen) == culture(&at)) {
+                unique.push(at);
+            }
+        }
+        if unique.is_empty() {
+            (vec!["no Cards to check".to_string()], 0)
+        } else {
+            let mut zt = Zt::start()?;
+            let lines = check_cards(
+                &mut zt,
+                &unique,
+                options.book.as_deref().unwrap_or_default(),
+                options.limits.clone(),
+            )?;
+            filter_rules(&lines, options.rules.as_deref().unwrap_or(DEFAULT_RULES))
+        }
+    };
+    out.push(format!("faults: {count}"));
+    write_lines(&out)
+}
+
+/// One line each, UTF-8 whatever the console code page, with the line ends
+/// PowerShell writes (CRLF on Windows).
+fn write_lines(lines: &[String]) -> Result<()> {
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    let mut text = String::new();
+    for line in lines {
+        text.push_str(line);
+        text.push_str(newline);
+    }
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(text.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIXTURE: &str = include_str!("../../../scripts/book-digest/tests/card-style-fixture.json");
+
+    fn run_json(
+        cards: &Value,
+        setting: &str,
+        limits: Limits,
+        require_explain: bool,
+        level: &str,
+    ) -> Vec<String> {
+        let mut lines =
+            check_json(&cards.to_string(), setting, limits, require_explain, level).unwrap();
+        let count = lines.len();
+        lines.push(format!("faults: {count}"));
+        lines
+    }
+
+    fn assert_prefixes(lines: &[String], expected: &[&str]) {
+        assert_eq!(lines.len(), expected.len(), "lines: {lines:#?}");
+        for (line, want) in lines.iter().zip(expected) {
+            assert!(line.starts_with(want), "expected `{want}`, got `{line}`");
+        }
+    }
+
+    /// card-style-check.tests.ps1: one fault for each rule, and text the checks leave alone.
+    #[test]
+    fn the_fixture_raises_one_fault_for_each_rule() {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let lines = run_json(&fixture, "K/1|a|a", Limits::default(), false, "");
+        assert_prefixes(
+            &lines,
+            &[
+                "K/1|a|a|1 R12 (49 characters > 40) 清算比例：E 付不出 P 时",
+                "K/1|a|a|1 R3 E 在时点 1 付不出去；E 能部分付出。",
+                "K/1|a|a|1 R4 资产被清算。",
+                "K/1|a|a|1 R5 双方进行谈判。",
+                "K/1|a|a|1 R7 E 在时点 1 的用来还债的现金的上限是 $P$。",
+                "K/1|a|a|1 R6 uses `卖资产` for `清算`: 值得注意的是，C 会卖资产。",
+                "K/1|a|a|1 R9 `值得注意的是`: 值得注意的是，C 会卖资产。",
+                "K/1|a|a|1 R6 uses `还款额` for `可承诺的还款`: 可承诺的还款等于 $B$，还款额不会更高。",
+                "K/1|a|a|1 R2 (50 characters > 40) 这一句很长很长",
+                "K/1|a|a|2 R2 (34 characters > 30) 代入 $P=B$ 以后",
+                "K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.",
+                "K/1|a|a|4 R13 (13 sentences > 12) split the part",
+                "K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts",
+                "faults: 13",
+            ],
+        );
+        // The setting's own tables, the quotation, chart, and formulas, and a shared part's words
+        // under another model's term table raise nothing.
+        let skipped = Regex::new(r"引文|图里|清算价值；|^Other/").unwrap();
+        for line in &lines {
+            assert!(!skipped.is_match(line), "checked text it must skip: {line}");
+        }
+    }
+
+    fn small() -> Value {
+        json!([
+            { "address": "S/1|a|a", "facet": "设定", "title": "设定", "body": "E 有一个项目，项目在时点 2 产生收益。C 出资，换取时点 1 的还款。E 可以挪用一部分收益。" },
+            { "address": "S/1|a|a|1", "facet": "推导", "title": "推导", "body": "1. E 在时点 1 还款以后，手里剩下项目的收益。\n2. E 在时点 2 挪用一部分收益，留下其余部分。\n3. 两边加上初始财富，得到参与约束。" },
+        ])
+    }
+
+    /// R13 counts prose characters too; a Derivation part's steps count under R14 only.
+    #[test]
+    fn card_size_counts_characters_and_steps() {
+        let limits = Limits {
+            max_chars: 30,
+            max_steps: 2,
+            ..Limits::default()
+        };
+        let size = run_json(&small(), "", limits.clone(), false, "");
+        assert_prefixes(
+            &size,
+            &["S/1|a|a R13 (", "S/1|a|a|1 R14 (3 steps > 2)", "faults: 2"],
+        );
+        assert!(
+            size[0].contains("characters > 30"),
+            "R13 must count characters: {}",
+            size[0]
+        );
+        // A concept model keeps its few parts whole: no size faults.
+        let concept = run_json(&small(), "", limits, false, "concept");
+        assert_eq!(concept, ["faults: 0"]);
+    }
+
+    fn explain_cards() -> Value {
+        let steps = "**步骤**\n1. 参与约束：E 的所得高于 $w$，即 $R+fy_2>w$。\n2. 情形 $f=1$：$R=c-P$。\n   说明：不清算时，现金够还款，E 留下差额。\n3. 两边加 $K-w$，得 $y_1+fy_2>K$。";
+        let good = format!(
+            "**思路**\nE 只在还款后所得超过 $w$ 时参与。先求 E 还款后剩下的现金 $R$。\n\n**起点**\n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 $w$。\n\n{steps}\n\n**结果**\n$$y_1+fy_2>K$$\n\n**解读**\n$w$ 在两边相消，所以 E 的财富不影响参与。检验：$f=1$ 时它是普通的净现值条件。"
+        );
+        let long = (1..=17)
+            .map(|n| format!("第 {n} 句解释推导的一步。"))
+            .collect::<String>();
+        let without_reading = good[..good.find("**解读**").unwrap()].trim().to_string();
+        json!([
+            { "address": "X/1|a|a|1", "facet": "推导：参与约束", "title": "推导：参与约束", "body": good },
+            { "address": "X/1|a|a|2", "facet": "推导：缺解读", "title": "推导：缺解读", "body": without_reading },
+            { "address": "X/1|a|a|3", "facet": "推导：两行说明", "title": "推导：两行说明", "body": good.replace("留下差额。", "留下差额。\n   说明：这一行多余。") },
+            { "address": "X/1|a|a|4", "facet": "推导：太长", "title": "推导：太长", "body": good.replace("**解读**\n", &format!("**解读**\n{long}\n")) },
+            { "address": "X/1|a|a|5", "facet": "推导：旧格式", "title": "推导：旧格式", "body": format!("**起点**\n- 依赖设定 [[X/1|a|a]]。\n\n{steps}\n\n**结果**\n$$y_1+fy_2>K$$") },
+        ])
+    }
+
+    /// R15 to R17: the explanation of a Derivation part.
+    #[test]
+    fn a_derivation_part_holds_its_explanation_sections() {
+        let cards = explain_cards();
+        let plain_run = run_json(&cards, "", Limits::default(), false, "");
+        assert_prefixes(
+            &plain_run,
+            &[
+                "X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读",
+                "X/1|a|a|3 R17 a second 说明 line under step 2",
+                "X/1|a|a|4 R16 (解读 has 19 sentences > 6)",
+                "X/1|a|a|4 R17 (22 explanation sentences > 16)",
+                "faults: 4",
+            ],
+        );
+        // --require-explain flags the older part too.
+        let strict = run_json(&cards, "", Limits::default(), true, "");
+        assert!(
+            strict
+                .iter()
+                .any(|line| line.starts_with("X/1|a|a|5 R15 sections 起点, 步骤, 结果")),
+            "{strict:#?}"
+        );
+        assert_eq!(strict.last().unwrap(), "faults: 5");
+        // The explanation does not count under R13: 12 sentences of 思路 and 解读 fit a 3-sentence part.
+        let limits = Limits {
+            max_sentences: 3,
+            max_explain_sentences: 40,
+            max_explain_chars: 2000,
+            ..Limits::default()
+        };
+        let r13 = run_json(&cards, "", limits, false, "");
+        let part = Regex::new(r"^X/1\|a\|a\|[1-4] R13 ").unwrap();
+        assert!(!r13.iter().any(|line| part.is_match(line)), "{r13:#?}");
+    }
+
+    #[test]
+    fn the_position_line_of_a_chain_is_not_the_writers_text() {
+        let body = "**思路**\n第 2 张，共 3 张：这一行很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长。\n本张求出剩下的现金。\n\n**起点**\n- 依赖设定 [[X/1|a|a]]。\n\n**步骤**\n1. 代入 $P=B$。\n\n**结果**\n$$R=c$$\n\n**解读**\n现金决定参与。";
+        let lines = run_json(
+            &json!([{ "address": "X/1|a|a|1", "facet": "推导", "title": "推导：现金", "body": body }]),
+            "",
+            Limits::default(),
+            true,
+            "",
+        );
+        assert_eq!(lines, ["faults: 0"]);
+    }
+
+    /// The Card layer rules read the entry's category, Links, kinds, and tree
+    /// (the expected lines are card-style-check.ps1's own output on these entries).
+    #[test]
+    fn the_layer_rules_read_category_links_and_kinds() {
+        let cards = json!([
+            { "address": "5/1", "title": "税", "body": "引出 [[5/2]]。参见 [[5/3]]。\n\n依赖 [[5/3]] 的结论，税负落在买方。", "category": "idea", "parent": "", "links": ["5/2", "5/3"], "kinds": ["5/3"], "book": "Hart1995", "tree": "5" },
+            { "address": "5/2", "title": "1999 年的亚洲金融危机", "body": "时间：1999 年。\n地点：亚洲。", "category": "event", "links": [], "inbound": ["5/1"], "parent": "5/1", "inbound_kinded": 0 },
+            { "address": "5/3", "title": "1999 年亚洲的金融危机", "body": "- **时间**：1999 年。\n- 地点：亚洲。\n参与者：银行。\n经过：挤兑。\n来源：[[Hart1995/2]]", "category": "event", "links": ["Hart1995/2"], "kinds": [], "inbound": [], "inbound_kinded": 1, "book": "Hart1995" },
+            { "address": "5/4", "title": "商品税的负担落在买方身上", "body": "商品税的负担落在买方身上，因为需求缺乏弹性。来源：[[Hart1995]]。", "category": "idea", "parent": "5/3", "links": ["Hart1995"], "kinds": [], "tree": "5" },
+            { "address": "5/5", "title": "商品税的负担落在买方身上了", "body": "同上。", "category": "idea", "parent": "5/4", "links": [], "kinds": [], "tree": "5" },
+        ]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert_eq!(
+            lines,
+            [
+                "5/1 I1 (advisory) the title states no claim: 税",
+                "5/1 I2 (19 characters < 40) merge candidate",
+                "5/1 I3 no source line: no Link to [[Hart1995]] or one of its anchors",
+                "5/1 L2 (2 characters < 8) a Link with no reason: 引出 [[5/2]]。",
+                "5/1 L2 (2 characters < 8) a Link with no reason: 参见 [[5/3]]。",
+                "5/1 L3 (advisory) [[5/3]] is linked in 2 paragraphs",
+                "5/2 I5 no Card other than the parent links here",
+                "5/2 E2 missing labels: 参与者、经过、来源",
+                "5/2 E4 no Idea Card links it with a kind word",
+                "5/3 I5 no Card other than the parent links here",
+                "5/4 I2 (26 characters < 40) merge candidate",
+                "5/4 I4 no kinded Link to a Card other than the parent",
+                "5/5 I2 (3 characters < 40) merge candidate",
+                "5/5 I4 no kinded Link to a Card other than the parent",
+                "5/5 I6 (advisory) a title very similar to [[5/4]]",
+                "5/3 E5 (advisory) the same event as [[5/2]]?",
+                "faults: 16",
+            ]
+        );
+    }
+
+    #[test]
+    fn lengths_count_utf16_units_and_a_clip_ends_with_an_ellipsis() {
+        assert_eq!(length(&utf16_form("a😀b")), 4);
+        assert_eq!(from_utf16_form(&utf16_form("a😀b")), "a😀b");
+        let mut faults = Faults::default();
+        let long = format!("{}😀tail", "x".repeat(88));
+        faults.add("A/1", "R2", &utf16_form(&long));
+        assert_eq!(
+            faults.lines[0],
+            format!("A/1 R2 {}\u{FFFD}…", "x".repeat(88))
+        );
+    }
+
+    #[test]
+    fn sentences_split_after_end_marks_and_keep_formulas_whole() {
+        assert_eq!(
+            split_sentences("甲。乙！ 丙 $a. b$ 丁. Next one? [[x.y]] end"),
+            ["甲。", "乙！", "丙 $a. b$ 丁.", "Next one?", "[[x.y]] end"]
+        );
+    }
+
+    #[test]
+    fn culture_order_puts_punctuation_before_digits_and_ignores_case() {
+        let mut keys = vec!["3/10", "3/1|a", "b", "A", "3/1"];
+        keys.sort_by(|a, b| culture_cmp(a, b));
+        assert_eq!(keys, ["3/1", "3/1|a", "3/10", "A", "b"]);
+        assert!(culture_starts_with("\u{200B}| a |", "|"));
+        assert!(!culture_starts_with("|\u{0301}", "|"));
+    }
+
+    #[test]
+    fn the_rule_filter_keeps_asked_rules_and_counts_hard_faults() {
+        let lines = vec![
+            "a/1 R6 uses x".to_string(),
+            "a/1 R3 x；y".to_string(),
+            "a/1 I1 (advisory) the title states no claim: x".to_string(),
+        ];
+        let (kept, count) = filter_rules(&lines, DEFAULT_RULES);
+        assert_eq!(
+            kept,
+            [
+                "a/1 R3 x；y",
+                "a/1 I1 (advisory) the title states no claim: x"
+            ]
+        );
+        assert_eq!(count, 1);
+    }
+}

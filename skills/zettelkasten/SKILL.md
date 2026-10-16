@@ -47,7 +47,7 @@ A Card is one index card's worth of thought: Luhmann's slips were half a letter 
   | 11 | A sentence names each display formula | `C 收支相抵，须` + `$$…$$` | A formula with no sentence |
   | 12 | A title states one claim in at most 40 characters | `融资条件：$L\ge K-w$ 且净现值为正` | A title with two claims |
 
-  `scripts/book-digest/card-style-check.ps1` (in the zet repository) checks rules 2–7, 9, and 12 and prints one line per fault; it never changes text.
+  `zt-check` (from `tools/zt-check` in the zet repository) checks rules 2–7, 9, and 12 and prints one line per fault; it never changes text.
 
 Template:
 

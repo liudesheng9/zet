@@ -2,7 +2,7 @@
 // Runs .claude/workflows/zt-book-digest.js with stand-ins for the Workflow runtime (agent, phase,
 // log, parallel, pipeline): every agent returns a canned answer that fits its label or command. It
 // checks that each mode runs to its end without a script error, calls its stages in order, and
-// builds the commands it should (doc/digest-card-layers-proposal.md). No model and no zt call runs.
+// builds the commands it should (docs/digest-card-layers-proposal.md). No model and no zt call runs.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

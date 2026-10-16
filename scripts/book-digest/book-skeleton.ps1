@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The book's skeleton (doc/digest-card-layers-proposal.md, proposal 7): the Literature Card index,
+  The book's skeleton (docs/digest-card-layers-proposal.md, proposal 7): the Literature Card index,
   the structure Card, and the bodies of the book's Topics. The script builds each frame from the
   manifest and the trees; one DeepSeek job writes the short texts as JSON; Opus gives only the
   thesis (the structure Card's title).
@@ -92,6 +92,8 @@ if ($Step -eq 'plan') {
         foreach ($x in @($cards | Where-Object { [string]$_.tree -eq [string]$t.tree -and $_.category -in @('idea', 'event', 'model') } | Sort-Object { [string]$_.address } | Select-Object -First 12)) { [void]$sb.AppendLine("- ``$($x.address)`` $($x.title)") }
         [void]$sb.AppendLine()
     }
+    # apply without -Apply checks the JSON and writes nothing: the writer's own check.
+    [void]$sb.AppendLine("SELF-CHECK: ``pwsh -NoProfile -File `"$PSCommandPath`" -Step apply -Staging `"$Staging`" -Work `"$Work`"``（不要加 -Apply）")
     $job = Join-Path $Work 'job.md'
     [IO.File]::WriteAllText($job, $sb.ToString(), $utf8)
     $docCopy = Join-Path $Work (Split-Path -Leaf $Doc)

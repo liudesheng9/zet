@@ -12,7 +12,7 @@ export const meta = {
     { title: 'Organize', detail: 'organize-survey.ps1 lists what to decide (duplicate Topics, small Topics, merge proposals, model faults, notes); Opus writes only decisions.json (the thesis, Topic merges, moves, Card notes); organize-apply.ps1 carries out the merges and moves; a card cycle hands the notes to DeepSeek; book-skeleton.ps1 and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies; organize "legacy" runs the old single Opus job', model: 'opus' },
     { title: 'Figures', detail: 'attach-figures.ps1 puts each book figure ZET keeps (![图 2.C.1](artifact:…)) into every Card of the book that names it but does not show it yet, and links the book\'s PDF and Markdown (scholar:<file_id>) from the Literature Card', model: 'haiku' },
     { title: 'Hubs', detail: 'the hub compiler on the whole agent Workspace: hub-compiler.ps1 surveys every Topic tree; a Haiku hub manager chooses the limits (when a tree or branch needs a hub, how large a hub may be) from the survey; Haiku drivers start DeepSeek jobs in the hub workspace: one field planner (fields and register terms) and topic writers (topic and line hubs as JSON); the script builds the Hub Cards, links them from Topic bodies and the register, checks every hub with get_hub, and sends faults back to the writer once; the last driver deletes the DeepSeek conversations', model: 'haiku' },
-    { title: 'Audit', detail: 'digest-audit.ps1, read-only: per book, the Cards by category, the Topic trees, the Card language faults per rule (card-style-check.ps1), orphans, Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown; for the Workspace, missing hubs and broken Links. It writes audit.json, audit.md, and audit-faults.txt in out', model: 'haiku' },
+    { title: 'Audit', detail: 'digest-audit.ps1, read-only: per book, the Cards by category, the Topic trees, the Card language faults per rule (zt-check), orphans, Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown; for the Workspace, missing hubs and broken Links. It writes audit.json, audit.md, and audit-faults.txt in out', model: 'haiku' },
   ],
 }
 
@@ -53,13 +53,13 @@ export const meta = {
 //         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
 //         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again),
 //         terms (mode "full": true; false skips the book term table at Prepare),
-//         audit (mode "full": true; false skips the Audit stage; read-only, see doc/digest-card-layers-proposal.md),
+//         audit (mode "full": true; false skips the Audit stage; read-only, see docs/digest-card-layers-proposal.md),
 //         cardChecks (modes "full" and "link": true; false skips the card layer cycle), ideaSample (0.1: the share
 //         of a block's Idea Cards without faults that DeepSeek reviews against the source; mode "cards": 0),
 //         cardRules (the rules the cycle fixes; default all hard rules), cardFixRounds (1: check, fix, apply again),
 //         cardMax (a pilot: at most this many Cards with faults and this many orphans),
 //         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
-//         (思路, 说明, and 解读 together; doc/derivation-explanations-proposal.md),
+//         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
 //         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
 //
 // Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
@@ -132,10 +132,9 @@ const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
 const DERIVE_EFFORT = atLeastHigh(A.deriveEffort, 'deriveEffort')
 const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
 const REVIEW_ROUNDS = Math.max(0, A.reviewRounds ?? 2)
-// Card size limits, passed to card-style-check.ps1 (R13, R14): the size of a Card, not the length of
+// Card size limits, passed to zt-check through the compilers (R13, R14): the size of a Card, not the length of
 // a derivation, decides how many Derivation parts carry a step.
 const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6} -MaxExplainSentences ${A.maxExplainSentences || 16} -MaxExplainChars ${A.maxExplainChars || 600}`
-const CHECK = `${SCRIPTS}\\card-style-check.ps1`
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 // Skills the manager passes to DeepSeek Harness in the `skills` field of deepseek_run and deepseek_prompt.
 // Both skills are installed in DeepSeek Harness (deepseek_skills lists them). No prompt file carries a copy of a skill.
@@ -164,7 +163,7 @@ const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
 const AUDIT = MODE === 'audit' || (MODE === 'full' && A.audit !== false)
-// The card layer cycle (doc/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
+// The card layer cycle (docs/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
 // writes; DeepSeek rewrites and reviews as JSON files; Haiku drivers relay the jobs.
 const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
 const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
@@ -174,7 +173,7 @@ const CARD_SKILLS = ['asd-ste100-zh']
 // The jobs one apply call writes (A.applyShare): about 8 Cards each.
 const APPLY_SHARE = Math.max(1, A.applyShare || 30)
 
-// --- Audit: a read-only report on the book's Cards (phase 1 of doc/digest-card-layers-proposal.md) --
+// --- Audit: a read-only report on the book's Cards (phase 1 of docs/digest-card-layers-proposal.md) --
 // A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
 async function runAudit() {
   phase('Audit')
@@ -318,7 +317,7 @@ ${block.map(S.steps).join('\n')}
 Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
 Then follow "status" until the run ends:
   - "running": deepseek_wait (session_id, wait_seconds 900).
-  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
   - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
   Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
@@ -403,7 +402,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -718,7 +717,7 @@ const cardBlock = async (block) => {
 if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
 
 // --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
-// doc/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
+// docs/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
 // most three parts), DeepSeek writes JSON, the script writes the Cards and refuses any change to 起点,
 // a step, or 结果. A refused part goes back to the same conversation once. No model is rebuilt.
 const runExplain = async () => {
@@ -1043,7 +1042,7 @@ if (MODE === 'full' || A.organize) {
       { label: 'organize card structure', phase: 'Organize', model: 'opus' },
     )
   } else {
-    // 1. The survey: a script lists what Opus must decide (doc/digest-card-layers-proposal.md, proposal 8).
+    // 1. The survey: a script lists what Opus must decide (docs/digest-card-layers-proposal.md, proposal 8).
     const surveyed = await agent(
       `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
 pwsh -NoProfile -File "${SCRIPTS}\\organize-survey.ps1" -Staging "${OUT}" -Work "${ORG}"

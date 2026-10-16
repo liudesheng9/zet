@@ -1,14 +1,14 @@
 #Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\card-layer.tests.ps1
-# Checks the Card layer rules of card-style-check.ps1 (I, E, and L rules) against a fixture: a
+# Checks the Card layer rules of zt-check (I, E, and L rules) against a fixture: a
 # good Idea Card (its Link after 引出 is no L1 fault), a short one with every Idea fault, a long one, a bare Event Card, a good one, a
 # second report of the same event, an anchor, and a Model part that names no category (it gets the
 # R rules only).
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$script = Join-Path $PSScriptRoot '..\card-style-check.ps1'
+. (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $fixture = Join-Path $PSScriptRoot 'card-layer-fixture.json'
-$lines = @(pwsh -NoProfile -File $script -Json $fixture -MaxIdeaChars 250)
+$lines = @(Invoke-ZtCheck -Json $fixture -MaxIdeaChars 250)
 $expected = @(
     '40/1|a I1 (advisory) the title states no claim: 所有权'
     '40/1|a I2 (9 characters < 40) merge candidate'
@@ -50,7 +50,7 @@ foreach ($line in $lines) {
 $plain = Join-Path ([IO.Path]::GetTempPath()) "card-layer-plain-$PID.json"
 Get-Content -LiteralPath $fixture -Raw -Encoding utf8 | ConvertFrom-Json |
     Select-Object address, title, body, facet, line | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $plain -Encoding utf8
-$r = @(pwsh -NoProfile -File $script -Json $plain)
+$r = @(Invoke-ZtCheck -Json $plain)
 Remove-Item -LiteralPath $plain
 if (@($r | Where-Object { $_ -match ' [IEL]\d ' }).Count) { Write-Output 'entries without a category raised layer rules:'; $r | ForEach-Object { Write-Output "  $_" }; $failed++ }
 # A formula is a reason: "代入 [[…]] 的定义得 $…$" raises no L2.
@@ -58,7 +58,7 @@ $formula = Join-Path ([IO.Path]::GetTempPath()) "card-layer-formula-$PID.json"
 @([pscustomobject]@{ address = '43/1'; category = 'idea'; title = '边际技术替代率等于两种投入之比'; parent = '43/0'; links = @('41/2', 'Key'); kinds = @('41/2')
         body = "代入 [[41/2]] 的定义得 `$MRTS=\alpha z_2/(\beta z_1)`$。`n`n来源：[[Key]] §3" }) |
     ConvertTo-Json -Depth 4 -AsArray | Set-Content -LiteralPath $formula -Encoding utf8
-$fr = @(pwsh -NoProfile -File $script -Json $formula)
+$fr = @(Invoke-ZtCheck -Json $formula)
 Remove-Item -LiteralPath $formula
 if (@($fr | Where-Object { $_ -match ' L2 ' }).Count) { Write-Output 'a Link whose sentence holds a formula was called reasonless:'; $fr | ForEach-Object { Write-Output "  $_" }; $failed++ }
 # A `|` belongs to the address: [[41/1|a]] and [[41/1|b]] are two targets, so no L3.
@@ -66,7 +66,7 @@ $pipe = Join-Path ([IO.Path]::GetTempPath()) "card-layer-pipe-$PID.json"
 @([pscustomobject]@{ address = '42/1'; category = 'idea'; title = '控制权随状态转移给债权人'; parent = '42/0'; links = @('41/1|a', '41/1|b', 'Key'); kinds = @('41/1|a', '41/1|b')
         body = "违约时债权人取得控制权。对照 [[41/1|a]]：那里控制权留在企业家手里。`n`n对照 [[41/1|b]]：那里控制权按投票分配。`n`n来源：[[Key]] §2" }) |
     ConvertTo-Json -Depth 4 -AsArray | Set-Content -LiteralPath $pipe -Encoding utf8
-$p = @(pwsh -NoProfile -File $script -Json $pipe)
+$p = @(Invoke-ZtCheck -Json $pipe)
 Remove-Item -LiteralPath $pipe
 if (@($p | Where-Object { $_ -match ' L3 ' }).Count) { Write-Output 'two addresses that differ after | were read as one target:'; $p | ForEach-Object { Write-Output "  $_" }; $failed++ }
 if ($failed) { Write-Output "FAILED: $failed"; exit 1 }
