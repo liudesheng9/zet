@@ -9,7 +9,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
 - Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Table to lay related Cards from anywhere side by side, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
-- Mark a Regular Card as an Event Card (one real-world event) or a Model Card (one whole model); the other Cards that cite it link to it.
+- Mark a Regular Card as an Event Card (one real-world event), a Finding Card (one empirical result from a source), or a Model Card (one whole model); the other Cards that cite it link to it.
 - Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
 - Let coding agents work in the agent Workspace through the `zt mcp` server, with read-only access to yours.
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
@@ -197,7 +197,10 @@ Every Card has a **Card type**. Most Cards are **Idea Cards** (`idea`, the defau
 your own words. A Regular Card may instead be
 
 - an **Event Card** (`event`): one event that happened in the real world (what, when, where,
-  who, and the source that reports it), with no interpretation in its description; or
+  who, and the source that reports it), with no interpretation in its description;
+- a **Finding Card** (`finding`): one empirical result from a source, in six labelled lines
+  (`测量` what was measured, `数据` the sample, period, and place, `方法`, `结果` the one result with
+  its size or direction, `局限`, `来源`); see `docs/finding-cards-design.md`; or
 - a **Model Card** (`model`): one whole model (question, setup, assumptions, timing and
   one part of a model (see Model structure).
 
@@ -207,12 +210,12 @@ with the Card when it moves, when Side successors are compacted, and when a Cita
 renamed; it changes nothing else about the Card. Archives created before 0.5.0 are upgraded on
 `zt up`, with every Card an Idea Card.
 
-- **Session**: the Card view shows `[event]` or `[model]` after the Location; `ty event`,
+- **Session**: the Card view shows `[event]`, `[finding]`, or `[model]` after the Location; `ty event`, `ty finding`,
   `ty model`, or `ty idea` sets the type of the current Regular Card.
-- **GUI**: Event and Model Cards carry an EVENT or MODEL stamp on the Reader card, in the map,
+- **GUI**: Event, Finding, and Model Cards carry an EVENT, FINDING, or MODEL stamp on the Reader card, in the map,
   and in search results, and each desk stack counts them; the writing desk of a Regular Card has a
   type selector, and the command bar takes `ty`.
-- **MCP**: `create_successor` and `edit_card` take `type` (`idea`, `event`, or `model`;
+- **MCP**: `create_successor`, `insert_card`, and `edit_card` take `type` (`idea`, `event`, `finding`, `model`, or `hub`;
   `edit_card` accepts it alone), `get_card`, `get_tree`, and `search_cards` report it, and
   `search_cards` filters by `type`, with an empty `query` listing every Card of that type.
 - **Dump**: `archive.json` lists the non-Idea Cards under `types`.

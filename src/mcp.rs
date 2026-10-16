@@ -29,7 +29,9 @@ Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by 
 between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
 create new trees with create_topic or create_literature, then grow them with create_successor. \
 Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
-real-world event with its date, place, actors, and source) or a Model Card (`model`: one whole \
+real-world event with its date, place, actors, and source), a Finding Card (`finding`: one \
+empirical result from a source: what was measured, the data, the method, the result with its size \
+or direction, its limits, and the source line), or a Model Card (`model`: one whole \
 model), set with `type` on create_successor or edit_card and listed with search_cards by `type`. \
 A model is presented by its Model Card (its entry point: the question and what the model shows) and \
 by Model parts: Model Cards with a `facet`, a short label you choose for what the part presents in \
@@ -804,7 +806,7 @@ fn tool_definitions() -> Vec<Value> {
     let card_type = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["idea", "event", "model", "hub"],
+            "enum": ["idea", "event", "finding", "model", "hub"],
             "description": description,
         })
     };
@@ -831,7 +833,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "list_trees",
             "List trees",
-            "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, and size.",
+            "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, size, and how many Event Cards, Finding Cards, and models each holds.",
             json!({
                 "workspace": workspace_filter,
                 "zone": { "type": "string", "enum": ["topic", "literature", "all"], "description": "Only this Zone; omit for both." },
@@ -843,7 +845,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_tree",
             "Get tree",
-            "Every Card of one tree, root first, with its type (idea, event, model), edge (root, direct, side), parent, excerpt, and Links.",
+            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub), edge (root, direct, side), parent, excerpt, and Links.",
             json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." } }),
             &["tree"],
             true,
@@ -852,7 +854,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, or model), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. A Model Card or Model part also reports `model`: its model's structure.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, or hub), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. A Model Card or Model part also reports `model`: its model's structure.",
             json!({ "at": at }),
             &["at"],
             true,
@@ -899,7 +901,7 @@ fn tool_definitions() -> Vec<Value> {
             "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it.",
             json!({
                 "query": { "type": "string", "description": "Text to find; required unless `type` or `form` is given." },
-                "type": card_type("Only Cards of this type: idea, event (Event Cards), model (Model Cards), or hub (Hub Cards)."),
+                "type": card_type("Only Cards of this type: idea, event (Event Cards), finding (Finding Cards), model (Model Cards), or hub (Hub Cards)."),
                 "form": form("Only Model Cards of this Math form: theory (Theory Cards) or a unit (definition, axiom, theorem, proposition, lemma, corollary)."),
                 "workspace": workspace_filter,
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
@@ -958,13 +960,13 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event) or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event), `finding` for a Finding Card (one empirical result from a source), or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, model, or hub."),
+                "type": card_type("The Card type: idea (default), event, finding, model, or hub."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
                 "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
@@ -977,12 +979,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, or Model Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, or Hub Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
-                "type": card_type("New Card type: idea, event, model, or hub (event, model, and hub only for Regular Cards)."),
+                "type": card_type("New Card type: idea, event, finding, model, or hub (event, finding, model, and hub only for Regular Cards)."),
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
                 "level": level("New elaboration level of a Model Card (concept or formal), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
@@ -1039,7 +1041,7 @@ fn tool_definitions() -> Vec<Value> {
                 "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, model, or hub."),
+                "type": card_type("The Card type: idea (default), event, finding, model, or hub."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model); a Derivation part's facet starts with `推导`."),
                 "emphasis": emphasis("For a Model part: core or aside; omit for a regular part."),
                 "confirm": confirm,

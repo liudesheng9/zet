@@ -31,7 +31,7 @@ I made these decisions in this proposal. Each one is open for the user to change
 | D6 | How many fix rounds? | **One**, the same as `hubFixRounds`. The faults go to the same DeepSeek conversation. | The conversation keeps its cache prefix. A second round adds cost for few faults. |
 | D7 | Do the new layers touch models? | **No.** They skip Model Cards and Model parts. They never restart a model manager. | Finished models stay as built. |
 | D8 | Where does the Topic gate go? | **In the zt helper**, as an option. It is not a new stage. | Digest blocks run in parallel. A new serial stage stops the pipeline. |
-| D9 | A new Card type for empirical findings? | **Not now.** See open question Q1. | A new type changes ZT itself. The audit report must show the need first. |
+| D9 | A new Card type for empirical findings? | **Decided (2026-10-16): a new Card type `finding`.** The user chose the type over an Idea Card template (Q1). Built in zt 0.20.0 with zt-check rules F1 to F4. See `finding-cards-design.md`. | A result of a study is not an event and not a model. A type lets a digest stage, a search, and the GUI find every empirical result. |
 | D10 | Which part comes first? | **The audit report.** Its numbers decide the order of the other parts. | It is read-only and safe on the four books in the slip-box today. |
 
 The pilot changed or added these decisions:
@@ -88,7 +88,7 @@ What the numbers show:
 
 - The text of the Idea Cards is good in this sample. The gap is not the writing. The gap is that no step finds the faults that exist.
 - The run has no record of these faults. I found them only with a manual check.
-- The empirical book `missingmarkets2026interviews` has no Event Card. Its findings from 48 firm interviews are not events and not models. No Card type fits them well.
+- The empirical book `missingmarkets2026interviews` has no Event Card. Its findings from 48 firm interviews are not events and not models. No Card type fits them well. (D9 later added the type `finding` for them.)
 - The sample is small. It cannot show how faithful the Cards are to the book. Only a review against the source lines can show that.
 
 ## The layers today
@@ -310,6 +310,10 @@ The scripts are in `scripts/book-digest/`. The workflow is `.claude/workflows/zt
 | I6 | Advisory. Character bigram similarity of 0.8 or more between two titles of one tree. |
 | E1, E2, E4 | As proposed. E4 counts the Idea Cards that link the Event Card with a kind word. |
 | E5 | Advisory. The same year and a title similarity of 0.5 or more. |
+| F1 | Added with the type `finding` (D9). The labels `测量`, `数据`, `方法`, `结果`, `局限`, and `来源`. |
+| F2 | The `来源` line links the Literature Card or one of its anchors. With no book, it is not empty. |
+| F3 | One result per Card: one `结果` label, and at most one list item under it. |
+| F4 | An Idea Card links the Finding Card with a kind word, as E4. Not a default rule. |
 | L1 | One fault per Card, naming the Links that ZT reads as "refers". A Link to a Literature Card or an anchor is a source line or a place in the book, and is exempt. |
 | L2 | The sentence of a Link holds 8 characters (`-MinReason`) besides its Links, or a formula. A source line is exempt. |
 | L3 | Advisory. One target linked in two or more paragraphs. |
@@ -441,7 +445,7 @@ Measured in the pilot:
 
 | No. | Question | Recommendation |
 | --- | --- | --- |
-| Q1 | Empirical findings fit no Card type. A new type `finding`, or an Idea Card with a fixed evidence template? | The template first. |
+| Q1 | Empirical findings fit no Card type. A new type `finding`, or an Idea Card with a fixed evidence template? | **Decided: the type `finding`** (D9). The economics digest writes Finding Cards in its empirical stage. |
 | Q2 | Does the Idea layer need a plan step before the write? | Not now. The review found 1 error in 17 Cards. |
 | Q3 | Opus or Sonnet for the Organize decisions? | Compare Sonnet on the same `survey.md` once. |
 | Q4 | The sample rate of the review? | 10%. |
@@ -454,6 +458,6 @@ Measured in the pilot:
 
 - It does not change the model stage, the model compiler, or any model.
 - It does not change the hub stage or the Figures stage.
-- It does not add a Card type to ZT.
+- It does not add a Card type to ZT. (D9 later added the type `finding`, outside this proposal.)
 - It does not change the Card language rules R2 to R14. It adds rules beside them.
 - It does not rerun a finished stage. Mode `cards` changes only the Cards that a check flags.

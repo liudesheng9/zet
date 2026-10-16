@@ -1,6 +1,6 @@
 # Event and Model Cards Design
 
-Status: implemented in zt 0.5.0. Model parts, facets, math, and HTML charts were added in zt 0.6.0; see `model-structure-design.md`.
+Status: implemented in zt 0.5.0. Model parts, facets, math, and HTML charts were added in zt 0.6.0; see `model-structure-design.md`. Hub Cards (`hub`) came in zt 0.16.0 (`hub-cards-design.md`), and Finding Cards (`finding`: one empirical result from a source) in zt 0.20.0 (`finding-cards-design.md`). Those types follow the storage, Access, move, search, and dump rules of this document.
 
 ## Source Authority
 
