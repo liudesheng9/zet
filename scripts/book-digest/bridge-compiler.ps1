@@ -399,17 +399,31 @@ function Select-Proposals($Published) {
     }
     , $chosen.ToArray()
 }
+# The Cards an apply touches, read fast: the tree index once per run, the trees that hold the
+# addresses (a Card's category and inferred book depend only on its own tree, its own Links, and the
+# list of Literature trees), and the Cards themselves in one batched read.
 function Current-Context($Addresses) {
-    $trees = @((Read-Zt @(@{tool='list_trees';arguments=@{}}))[0].trees)
-    $details = @(Read-Zt @($trees | ForEach-Object { @{tool='get_tree';arguments=@{tree=$_.tree}} }))
+    if (-not $script:TreeIndex) { $script:TreeIndex = @((Read-Zt @(@{tool='list_trees';arguments=@{}}))[0].trees) }
+    $trees = $script:TreeIndex
+    $known = New-Set; foreach ($tree in $trees) { [void]$known.Add([string]$tree.tree) }
+    $wanted = New-Set
+    foreach ($address in $Addresses) { $tree = ([string]$address -split '/', 2)[0]; if ($known.Contains($tree)) { [void]$wanted.Add($tree) } }
+    $details = @(Read-Zt @($wanted | ForEach-Object { @{tool='get_tree';arguments=@{tree=$_}} }))
     $summaries = @($details | ForEach-Object cards)
     $index = Get-BookIndex -Trees $trees -Cards $summaries
     $byAddress = New-Map; $cards = New-Map; $errors = New-Map
     foreach ($card in $summaries) { $byAddress[[string]$card.address] = $card }
-    foreach ($address in $Addresses) {
-        if (-not $byAddress.ContainsKey($address)) { continue }
-        try { $cards[$address] = (Read-Zt @(@{tool='get_card';arguments=@{at=$address}}))[0] }
-        catch { $errors[$address] = $_.Exception.Message }
+    $present = @($Addresses | Where-Object { $byAddress.ContainsKey([string]$_) } | ForEach-Object { [string]$_ })
+    $reads = $null
+    if ($present.Count) { try { $reads = @(Read-Zt @($present | ForEach-Object { @{tool='get_card';arguments=@{at=$_}} })) } catch { $reads = $null } }
+    if ($null -ne $reads -and $reads.Count -eq $present.Count) {
+        for ($i = 0; $i -lt $present.Count; $i++) { $cards[$present[$i]] = $reads[$i] }
+    } else {
+        # One read failed: read each Card alone, so the failure names its Card.
+        foreach ($address in $present) {
+            try { $cards[$address] = (Read-Zt @(@{tool='get_card';arguments=@{at=$address}}))[0] }
+            catch { $errors[$address] = $_.Exception.Message }
+        }
     }
     @{index=$index;summaries=$byAddress;cards=$cards;errors=$errors}
 }
@@ -546,9 +560,10 @@ function Apply-Selected($Chosen, $Published) {
                 $attempt.status='prepared'
             }
         }
+        # Prepare every carrier's intent from the one read above. No write happened since it.
+        $prepared = [Collections.Generic.List[object]]::new()
         foreach ($carrier in @($Chosen | ForEach-Object carrier | Sort-Object -Unique -CaseSensitive)) {
             $group = @($Chosen | Where-Object carrier -CEQ $carrier | Sort-Object id -CaseSensitive)
-            $context = Current-Context $addresses
             $outcomes = Selection-States $group $Published $state $context
             $pending = @($state.attempts | Where-Object { $_.carrier -ceq $carrier -and $_.status -cnotin @('verified','abandoned') })
             if (@($pending | Where-Object { $_.status -cin @('conflict','written_unverified') }).Count) {
@@ -579,22 +594,57 @@ function Apply-Selected($Chosen, $Published) {
                 $state.attempts += $attempt
             }
             Set-Outcomes $state $attempt 'prepared' 'Saved intent; no write verified yet.'
-            Save-State $state
-            # Pass the raw reread as base. No metadata, title, or address mutation is possible here.
-            $allow = Join-Path $Work 'tmp\accepted-carriers.allow.txt'
-            [IO.File]::WriteAllText($allow, "$carrier`n", $utf8)
-            $call = @{tool='edit_card';arguments=@{at=$carrier;body=$attempt.intended_body;base=$current.text}}
-            try {
-                $lines = @((ConvertTo-Json -InputObject @($call) -Depth 15) | pwsh -NoProfile -File $script:ZtHelper - -Allow $allow)
-                if ($LASTEXITCODE -ne 0 -or -not @($lines | Where-Object { $_ -match '^0 ok ' }).Count) { throw "guarded edit was not confirmed: $($lines -join ' | ')" }
+            $prepared.Add($attempt)
+        }
+        Save-State $state
+        if ($prepared.Count) {
+            # A carrier that is also a target of another accepted Bridge goes first: an edit of its
+            # source regenerates its Reverse links, which would change its raw text before its own edit.
+            $targeted = New-Set
+            foreach ($attempt in $prepared) { foreach ($target in @($attempt.targets)) { [void]$targeted.Add([string]$target) } }
+            $queue = @(@($prepared | Where-Object { $targeted.Contains([string]$_.carrier) }) + @($prepared | Where-Object { -not $targeted.Contains([string]$_.carrier) }))
+            $order = @($queue)
+            $written = [Collections.Generic.List[object]]::new(); $tries = @{}
+            while ($queue.Count) {
+                # Each edit carries the carrier's raw text, read just now, as base: ZT refuses an edit to a
+                # Card that changed since. The helper runs the calls in order and stops at the first failure.
+                $raw = @(Read-Zt @($queue | ForEach-Object { @{tool='get_card';arguments=@{at=$_.carrier}} }))
+                $allow = Join-Path $Work 'tmp\accepted-carriers.allow.txt'
+                [IO.File]::WriteAllText($allow, (($queue | ForEach-Object carrier) -join "`n") + "`n", $utf8)
+                $calls = @(for ($i = 0; $i -lt $queue.Count; $i++) { @{tool='edit_card';arguments=@{at=$queue[$i].carrier;body=$queue[$i].intended_body;base=$raw[$i].text}} })
+                $lines = @((ConvertTo-Json -InputObject $calls -Depth 15) | pwsh -NoProfile -File $script:ZtHelper - -Allow $allow)
+                $ok = New-Set
+                foreach ($line in $lines) { if ($line -match '^(\d+) ok ') { [void]$ok.Add($Matches[1]) } }
+                $failAt = -1
+                for ($i = 0; $i -lt $queue.Count; $i++) { if (-not $ok.Contains([string]$i)) { $failAt = $i; break } }
+                $end = if ($failAt -lt 0) { $queue.Count } else { $failAt }
+                for ($i = 0; $i -lt $end; $i++) { $written.Add($queue[$i]) }
+                if ($failAt -lt 0) { break }
+                $failed = $queue[$failAt]; $rest = @($queue | Select-Object -Skip ($failAt + 1))
+                $tries[$failed.carrier] = 1 + [int]$tries[$failed.carrier]
+                $detail = "guarded edit was not confirmed: $($lines -join ' | ')"
+                try { $read = (Read-Zt @(@{tool='get_card';arguments=@{at=$failed.carrier}}))[0]; $fp = (Endpoint $read $context.index).fingerprint } catch { $fp = '' }
+                if ($fp -and $fp -ceq $failed.intended_fingerprint) { $written.Add($failed) }
+                elseif ($fp -and $fp -ceq $failed.expected_fingerprint -and $tries[$failed.carrier] -lt 2) { $rest = @(@($failed) + $rest) }
+                elseif ($fp) { $failed.status='conflict'; Set-Outcomes $state $failed 'conflict' $detail }
+                else { $failed.status='written_unverified'; Set-Outcomes $state $failed 'written_unverified' $detail }
+                $queue = $rest
+                Save-State $state
+            }
+            # One read after all writes, then verification in write order. A check that failed because
+            # a target carrier was not verified yet runs once more after the others.
+            if ($written.Count) {
                 $context = Current-Context $addresses
-                Verify-Attempt $attempt $Published $state $context
-                $attempt.status='verified';Set-Outcomes $state $attempt 'verified' 'Persisted text, Relation, Reverse link, and model boundaries verified.'
-            } catch {
-                $detail=$_.Exception.Message
-                try{$read=(Read-Zt @(@{tool='get_card';arguments=@{at=$carrier}}))[0];$fp=(Endpoint $read $context.index).fingerprint}catch{$fp=''}
-                if($fp -and $fp -cne $attempt.intended_fingerprint){$attempt.status='conflict';Set-Outcomes $state $attempt 'conflict' $detail}
-                else{$attempt.status='written_unverified';Set-Outcomes $state $attempt 'written_unverified' $detail}
+                $again = [Collections.Generic.List[object]]::new()
+                foreach ($attempt in @($order | Where-Object { $written.Contains($_) })) {
+                    try { Verify-Attempt $attempt $Published $state $context; $attempt.status='verified'; Set-Outcomes $state $attempt 'verified' 'Persisted text, Relation, Reverse link, and model boundaries verified.' }
+                    catch { $again.Add(@{attempt=$attempt;detail=$_.Exception.Message}) }
+                }
+                foreach ($item in $again) {
+                    $attempt = $item.attempt
+                    try { Verify-Attempt $attempt $Published $state $context; $attempt.status='verified'; Set-Outcomes $state $attempt 'verified' 'Persisted text, Relation, Reverse link, and model boundaries verified.' }
+                    catch { $attempt.status='written_unverified'; Set-Outcomes $state $attempt 'written_unverified' $_.Exception.Message }
+                }
             }
             Save-State $state
         }

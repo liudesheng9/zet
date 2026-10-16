@@ -150,13 +150,28 @@ The user accepted 7 proposals from report `r-4cc98a89…311c`: `b001`, `b006`, `
 | `zt-check` on the 6 carriers, before and after | 0 faults before, 0 after (L1 to L3, R2 to R5, R7, R9) |
 | Repeat apply | `done`, no paragraph added again |
 
-The apply took about 7 minutes for 6 Cards. Most of the time went to whole-archive reads: the apply step reads every tree before and after each carrier. A later change can read only the endpoints and the tree index once (see "What stays open").
+The apply took about 7 minutes for 6 Cards. Most of the time went to whole-archive reads: the apply step reads every tree before and after each carrier. The fast apply (next section) removes this cost.
+
+## Fast apply, 2026-10-16
+
+At the user's request, apply now reads only what it touches, and keeps every safety check:
+
+- **Reads.** The tree index once per run. Only the trees that hold the carriers and targets (a Card's category and inferred book depend only on its own tree, its own Links, and the list of Literature trees). The Cards themselves in one batched `get_card` call. When that batch fails, each Card is read alone, so the failure names its Card.
+- **Writes.** Every intent is prepared and saved from one read. All guarded edits (`edit_card` with the raw text as `base`) go in one helper call. The helper stops at the first failure, and the loop resumes after it. A carrier that is also a target of another accepted Bridge goes first, because the other edit regenerates its Reverse links. When an edit fails only because generated text changed (the body still matches its expected fingerprint), it retries once with a fresh base. Changed prose stays a `conflict`.
+- **Verification.** One read after all writes, then every check as before: text, Relation kind, Reverse link, model boundaries, and the changed-Card check. A check that failed because a target carrier was not verified yet runs once more.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Apply of the same 7 ids on a scratch copy of the pre-apply backup (8,052 Cards) | about 7 minutes (live run, through the workflow) | 36 seconds (the compiler alone) |
+| Result | 13 changed rows | identical: 0 rows differ from the live archive after the slow apply |
+
+The workflows run `bridge-compiler.ps1` by path, so the installed `zt-econ-digest` 3.1.3 and `zt-math-digest` 2.2.3 use the fast apply with no rebuild. `verify` still reports both as current.
 
 ## What stays open
 
 - **#62, a real report-only pilot.** Done on 2026-10-16 (see above). The issue can close when the user agrees.
 - **#63, a live apply.** Done for 7 proposals on 2026-10-16 (see above). The other 9 proposals stay open.
-- **Apply reads the archive once per carrier.** The first live apply showed the cost: about 7 minutes for 6 Cards. `Current-Context` reads every tree for each carrier. With 60 carriers that is about 60 full reads. It gives the right result, but it is slow. A later change can read only the endpoints.
+- **Apply reads the archive once per carrier.** Fixed by the fast apply (see above): 36 seconds instead of about 7 minutes for the same 7 ids.
 - **The sims dry-run mode `full` only.** The Bridge harness covers mode `bridge` with discovery, apply, and failures. A mode `bridge` case in the sim files is left for a later version.
 
 ## Versions and installation
