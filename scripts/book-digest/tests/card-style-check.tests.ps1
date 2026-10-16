@@ -63,5 +63,42 @@ else {
     }
     if ($size[0] -notmatch 'characters > 30') { Write-Output "size check: R13 must count characters: $($size[0])"; $failed++ }
 }
+# R15 to R17: the explanation of a Derivation part (doc/derivation-explanations-proposal.md).
+$steps = "**步骤**`n1. 参与约束：E 的所得高于 `$w`$，即 `$R+fy_2>w`$。`n2. 情形 `$f=1`$：`$R=c-P`$。`n   说明：不清算时，现金够还款，E 留下差额。`n3. 两边加 `$K-w`$，得 `$y_1+fy_2>K`$。"
+$good = "**思路**`nE 只在还款后所得超过 `$w`$ 时参与。先求 E 还款后剩下的现金 `$R`$。`n`n**起点**`n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 `$w`$。`n`n$steps`n`n**结果**`n`$`$y_1+fy_2>K`$`$`n`n**解读**`n`$w`$ 在两边相消，所以 E 的财富不影响参与。检验：`$f=1`$ 时它是普通的净现值条件。"
+$long = (1..17 | ForEach-Object { "第 $_ 句解释推导的一步。" }) -join ''
+$explainCards = @(
+    [pscustomobject]@{ address = 'X/1|a|a|1'; facet = '推导：参与约束'; title = '推导：参与约束'; body = $good }
+    [pscustomobject]@{ address = 'X/1|a|a|2'; facet = '推导：缺解读'; title = '推导：缺解读'; body = ($good -replace '(?s)\*\*解读\*\*.*$', '').Trim() }
+    [pscustomobject]@{ address = 'X/1|a|a|3'; facet = '推导：两行说明'; title = '推导：两行说明'; body = $good.Replace("留下差额。", "留下差额。`n   说明：这一行多余。") }
+    [pscustomobject]@{ address = 'X/1|a|a|4'; facet = '推导：太长'; title = '推导：太长'; body = $good.Replace("**解读**`n", "**解读**`n$long`n") }
+    [pscustomobject]@{ address = 'X/1|a|a|5'; facet = '推导：旧格式'; title = '推导：旧格式'; body = "**起点**`n- 依赖设定 [[X/1|a|a]]。`n`n$steps`n`n**结果**`n`$`$y_1+fy_2>K`$`$" }
+)
+$explainFile = Join-Path ([IO.Path]::GetTempPath()) "card-style-explain-$PID.json"
+$explainCards | ConvertTo-Json | Set-Content -LiteralPath $explainFile -Encoding utf8
+$plainRun = @(pwsh -NoProfile -File $script -Json $explainFile)
+$strictRun = @(pwsh -NoProfile -File $script -Json $explainFile -RequireExplain)
+# The explanation does not count under R13: 12 sentences of 思路 and 解读 fit a -MaxSentences 3 part.
+$r13Run = @(pwsh -NoProfile -File $script -Json $explainFile -MaxSentences 3 -MaxExplainSentences 40 -MaxExplainChars 2000)
+Remove-Item -LiteralPath $explainFile
+$expectedExplain = @(
+    'X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读'
+    'X/1|a|a|3 R17 a second 说明 line under step 2'
+    'X/1|a|a|4 R16 (解读 has 19 sentences > 6)'
+    'X/1|a|a|4 R17 (22 explanation sentences > 16)'
+    'faults: 4'
+)
+if ($plainRun.Count -ne $expectedExplain.Count) { Write-Output "explain check: expected $($expectedExplain.Count) lines, got:"; $plainRun | ForEach-Object { Write-Output "  $_" }; $failed++ }
+else {
+    for ($i = 0; $i -lt $plainRun.Count; $i++) {
+        if (-not $plainRun[$i].StartsWith($expectedExplain[$i])) { Write-Output "explain line $i`n  expected: $($expectedExplain[$i])`n  got:      $($plainRun[$i])"; $failed++ }
+    }
+}
+if (-not @($strictRun | Where-Object { $_ -like 'X/1|a|a|5 R15 sections 起点, 步骤, 结果*' }).Count -or $strictRun[-1] -ne 'faults: 5') {
+    Write-Output "explain check: -RequireExplain must flag the older part:"; $strictRun | ForEach-Object { Write-Output "  $_" }; $failed++
+}
+if (@($r13Run | Where-Object { $_ -match '^X/1\|a\|a\|[1-4] R13 ' }).Count) {
+    Write-Output "explain check: R13 must not count the explanation:"; $r13Run | ForEach-Object { Write-Output "  $_" }; $failed++
+}
 if ($failed) { Write-Output "FAILED: $failed"; exit 1 }
 Write-Output 'card-style-check: all checks passed'

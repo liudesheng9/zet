@@ -326,7 +326,10 @@ foreach ($key in $books) {
         $b = $m.build
         $n = [ordered]@{ closure = @($b.closure).Count; forward = @($b.forward).Count; unanchored = @($b.unanchored).Count; beyond_level = @($b.beyond_level).Count }
         $open = $n.closure + $n.forward + $n.unanchored + $(if ($m.level -eq 'concept') { $n.beyond_level } else { 0 })
-        $modelRows += [ordered]@{ address = [string]$heads[$i].address; title = [string]$heads[$i].title; level = $m.level; parts = @($m.parts).Count; issues = @($m.issues).Count; faults = $n; self_sufficient = ($open -eq 0) }
+        # Derivation parts, and those with both explanation sections (doc/derivation-explanations-proposal.md).
+        $derived = @($m.parts | Where-Object { ([string]$_.facet).StartsWith('推导') })
+        $explained = @($derived | Where-Object { [string]$_.body -match '(?m)^\s*\*\*思路\*\*\s*$' -and [string]$_.body -match '(?m)^\s*\*\*解读\*\*\s*$' })
+        $modelRows += [ordered]@{ address = [string]$heads[$i].address; title = [string]$heads[$i].title; level = $m.level; parts = @($m.parts).Count; issues = @($m.issues).Count; faults = $n; self_sufficient = ($open -eq 0); derivations = $derived.Count; explained = $explained.Count }
     }
 
     # Figures: named but not shown.
@@ -378,6 +381,8 @@ foreach ($key in $books) {
             levels = Get-Tally @($modelRows | ForEach-Object { if ($_.level) { $_.level } else { 'none' } })
             not_self_sufficient = @($modelRows | Where-Object { -not $_.self_sufficient }).Count
             with_issues = @($modelRows | Where-Object { $_.issues }).Count
+            derivations = [int](@($modelRows | ForEach-Object { [int]$_.derivations }) + @(0) | Measure-Object -Sum).Sum
+            explained = [int](@($modelRows | ForEach-Object { [int]$_.explained }) + @(0) | Measure-Object -Sum).Sum
             list = $modelRows
         }
         figures = [ordered]@{
@@ -435,7 +440,7 @@ foreach ($b in $report.books) {
     [void]$md.AppendLine("- **Orphans** (no inbound Link): $($b.orphans.count) ($(& $tally $b.orphans.by_category)): $(& $cut $b.orphans.list)")
     [void]$md.AppendLine("- **No source line** (Idea and Event Cards with no Link to the Literature Card or an anchor): $($b.no_source.count) of $($b.no_source.of): $(& $cut $b.no_source.list)")
     [void]$md.AppendLine("- **No kinded Link** to a Card other than the parent: $($b.unkinded.count) of $($b.unkinded.of). Links read as ""refers"": $($b.unkinded.refers_links). $(& $cut $b.unkinded.list)")
-    [void]$md.AppendLine("- **Models**: $($b.models.count) ($(& $tally $b.models.levels)). Not self-sufficient: $($b.models.not_self_sufficient). With get_model issues: $($b.models.with_issues). $(& $cut @($b.models.list | Where-Object { -not $_.self_sufficient } | ForEach-Object address))")
+    [void]$md.AppendLine("- **Models**: $($b.models.count) ($(& $tally $b.models.levels)). Not self-sufficient: $($b.models.not_self_sufficient). With get_model issues: $($b.models.with_issues). Derivation parts with 思路 and 解读: $($b.models.explained) of $($b.models.derivations). $(& $cut @($b.models.list | Where-Object { -not $_.self_sufficient } | ForEach-Object address))")
     [void]$md.AppendLine("- **Figures**: $($b.figures.shown_labels) figures shown. Named but not shown: $($b.figures.missing_known) known, $($b.figures.missing_unknown) unknown. $(& $cut @($b.figures.list | Where-Object known | ForEach-Object { "$($_.address) 图 $($_.figure)" }))")
     [void]$md.AppendLine("- **Broken Links** from the book's Cards: $($b.broken_links)").AppendLine()
 }
@@ -451,6 +456,7 @@ foreach ($b in $report.books) {
             layer_faults = $_.layer.faults; layer_advisory = $_.layer.advisory
             orphans = $_.orphans.count; no_source = $_.no_source.count; unkinded = $_.unkinded.count
             models = $_.models.count; not_self_sufficient = $_.models.not_self_sufficient
+            derivations = $_.models.derivations; explained = $_.models.explained
             figures_missing = $_.figures.missing_known + $_.figures.missing_unknown
         }
     })

@@ -33,14 +33,30 @@
                                 (`need` Cards for one part): inserts the new parts, re-points the
                                 next member, updates the 结构 list, and prints follow-up jobs.
     report                      one report per model: parts, relations, charts, Derivation chains,
-                                build faults, style faults, parts still `待写`.
+                                build faults, style faults, parts still `待写`, and how many
+                                Derivation parts have both 思路 and 解读 (explained).
+
+  Explain (doc/derivation-explanations-proposal.md): adds 思路, 说明 lines, and 解读 to finished
+  Derivation parts. DeepSeek writes JSON; this script writes the Cards and never changes 起点, a
+  step, or 结果. It never runs the brief, plan, fill, derive, or review of a finished model.
+    explain -Models a,b,...     one job per chain (at most three parts) of each model's own
+                                Derivation parts that lack 思路 or 解读; -MaxParts caps the parts.
+    explain-apply               reads the jobs' JSON, inserts the sections, refuses a part whose
+                                body changed since its job, whose core changed, or that fails
+                                R15 to R17; sends refused parts back to the same conversation
+                                once, and prints those follow-up jobs.
+    explain-report              per model: Derivation parts, explained, missing, refused.
+
+  A Derivation part has five sections: 思路, 起点, 步骤, 结果, 解读. In a chain of two or more parts,
+  the first line of 思路 is the part's position (`第 2 张，共 3 张：从 … 推到 …。`); the script
+  writes it in apply and explain and rewrites it after every split.
 
   Structural changes (insert, move, delete) run one call at a time through the zt helper with
   -Moves, and every address in state.json follows each moved map.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('brief', 'validate', 'apply', 'derive', 'review', 'split', 'report')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('brief', 'validate', 'apply', 'derive', 'review', 'split', 'report', 'explain', 'explain-apply', 'explain-report')][string]$Step,
     [Parameter(Mandatory)][string]$Work,
     [string]$Staging = '',
     [string]$Models = '',
@@ -51,7 +67,10 @@ param(
     [string]$Level = '',
     [int]$MaxSentences = 12,
     [int]$MaxChars = 400,
-    [int]$MaxSteps = 6
+    [int]$MaxSteps = 6,
+    [int]$MaxExplainSentences = 16,
+    [int]$MaxExplainChars = 600,
+    [int]$MaxParts = 0
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
@@ -62,8 +81,11 @@ $Docs = @{
     brief  = Join-Path $PSScriptRoot 'dsh-brief-instructions.zh.md'
     fill   = Join-Path $PSScriptRoot 'dsh-fill-instructions.zh.md'
     review = Join-Path $PSScriptRoot 'dsh-review-instructions.zh.md'
+    explain = Join-Path $PSScriptRoot 'dsh-explain-instructions.zh.md'
 }
-$Limits = "-MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps"
+$Explain = "-MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars"
+# Writers check their own new Cards, so a Derivation part must have its 思路 and 解读 (R15).
+$Limits = "-MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps $Explain -RequireExplain"
 $Words = @{ rests = '依赖'; substitutes = '代入'; illustrates = '例示'; contrasts = '对照'; relaxes = '放宽'; corresponds = '对应'; objects = '反驳'; refers = '见' }
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 $StateFile = Join-Path $Work 'state.json'
@@ -265,6 +287,89 @@ function Get-Tables($plan) {
     foreach ($s in @($plan.terms | Where-Object { $null -ne $_ })) { $s = @($s); [void]$t.AppendLine("| $($s[0]) | $(@($s | Select-Object -Skip 1) -join '、') |") }
     $t.ToString().TrimEnd()
 }
+# --- Derivation explanations: chain position lines -------------------------------------------------
+# A display formula ($$…$$) as an inline one, for a sentence.
+function Get-Inline([string]$formula) {
+    $f = $formula.Trim()
+    if ($f -match '^\$\$([\s\S]*)\$\$$') { $f = '$' + $Matches[1].Trim() + '$' }
+    $f
+}
+# The first line of a chain member's 思路: its place in the chain and what it derives. $tos holds
+# each member's result in chain order; a chain of one part gets no line.
+function Format-ChainLine([int]$k, [int]$n, $tos) {
+    if ($n -lt 2) { return '' }
+    $tos = @($tos)
+    if ($k -eq 1) { return "第 1 张，共 $n 张。全链依次推出 $(@($tos | ForEach-Object { Get-Inline ([string]$_) }) -join '、')。" }
+    "第 $k 张，共 $n 张：从 $(Get-Inline ([string]$tos[$k - 2])) 推到 $(Get-Inline ([string]$tos[$k - 1]))。"
+}
+# Plan id -> @{ k; n; tos }: the runs of neighbouring Derivation parts on the plan's main line.
+function Get-PlanChains($plan) {
+    $out = @{}
+    $run = @()
+    foreach ($p in @(@($plan.parts | Where-Object { $null -ne $_ -and (Get-Line $_) -eq 'main' }) + $null)) {
+        if ($p -and (Test-Derive $p)) { $run += $p; continue }
+        for ($i = 0; $i -lt $run.Count; $i++) { $out[[string]$run[$i].id] = @{ k = $i + 1; n = $run.Count; tos = @($run | ForEach-Object { [string]$_.to }) } }
+        $run = @()
+    }
+    $out
+}
+# The sections of a body as an ordered list of @{ head; lines }; text before the first heading has
+# head ''. A heading is a line `**思路**` (or 起点, 步骤, 结果, 解读).
+function Split-Sections([string]$body) {
+    $out = [Collections.Generic.List[object]]::new()
+    $cur = @{ head = ''; lines = [Collections.Generic.List[string]]::new() }
+    foreach ($line in (($body -replace "`r", '') -split "`n")) {
+        if ($line -match '^\s*\*\*(思路|起点|步骤|结果|解读)\*\*\s*$') {
+            $out.Add($cur)
+            $cur = @{ head = $Matches[1]; lines = [Collections.Generic.List[string]]::new() }
+            continue
+        }
+        $cur.lines.Add($line)
+    }
+    $out.Add($cur)
+    $out
+}
+function Join-Sections($sections) {
+    $parts = foreach ($s in $sections) {
+        $text = ($s.lines -join "`n").Trim()
+        if ($s.head) { "**$($s.head)**$(if ($text) { "`n$text" })" } elseif ($text) { $text }
+    }
+    ($parts -join "`n`n").Trim()
+}
+# Writes the position line at the top of 思路 (replaces an old one, or removes it for a chain of
+# one). A body with no 思路 is left as it is.
+function Set-ChainLine([string]$body, [string]$line) {
+    $sections = Split-Sections $body
+    $idea = $sections | Where-Object { $_.head -eq '思路' } | Select-Object -First 1
+    if (-not $idea) { return $body }
+    $rest = @($idea.lines | Where-Object { $_.Trim() })
+    if ($rest.Count -and $rest[0].Trim() -match '^第 \d+ 张，共 \d+ 张') { $rest = @($rest | Select-Object -Skip 1) }
+    $idea.lines = [Collections.Generic.List[string]]::new([string[]]@(@($line | Where-Object { $_ }) + $rest))
+    Join-Sections $sections
+}
+# The result of a Derivation part: the 结果 section only.
+function Get-Result($body) {
+    $r = (Split-Sections ([string]$body)) | Where-Object { $_.head -eq '结果' } | Select-Object -First 1
+    if ($r) { ($r.lines -join "`n").Trim() } else { '' }
+}
+# Rewrites the position lines of every chain of a model's own parts, from the Cards themselves.
+function Update-ChainLines($model) {
+    $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
+    $bodies = @{}
+    foreach ($p in @($s.parts | Where-Object { $null -ne $_ })) { $bodies[[string]$p.address] = [string]$p.body }
+    $shared = @($s.build.order | Where-Object { $_.line -eq 'shared' } | ForEach-Object { [string]$_.address })
+    $edits = @()
+    foreach ($c in @($s.build.chains | Where-Object { $null -ne $_ })) {
+        $parts = @($c.parts | Where-Object { $_ -notin $shared } | ForEach-Object { [string]$_ })
+        $tos = @($parts | ForEach-Object { Get-Result $bodies[$_] })
+        for ($k = 1; $k -le $parts.Count; $k++) {
+            $old = $bodies[$parts[$k - 1]]
+            $new = Set-ChainLine $old (Format-ChainLine $k $parts.Count $tos)
+            if ($new -ne $old.Trim()) { $edits += @{ tool = 'edit_card'; arguments = @{ at = $parts[$k - 1]; body = $new } } }
+        }
+    }
+    Invoke-Edits $edits
+}
 function Get-Skeleton($part, $plan, $model, $previous) {
     $links = @(@($part.rests | Where-Object { $null -ne $_ }) | Where-Object { @($_)[0] } | ForEach-Object { Format-Link $_ $model })
     if ($part.of) {
@@ -275,7 +380,10 @@ function Get-Skeleton($part, $plan, $model, $previous) {
         $start = @($links | ForEach-Object { "- $_" })
         if ($previous -and (Test-Derive $previous)) { $start = @("- 依赖上一步 [[$(Resolve-Ref $previous.id $model)]] 的结果：$($previous.to)。") + $start }
         if ($part.from) { $start += "- 从 $($part.from) 出发。" }
-        return "**起点**`n$($start -join "`n")`n`n**步骤**`n待写`n`n**结果**`n$($part.to)"
+        $c = (Get-PlanChains $plan)[[string]$part.id]
+        $position = if ($c) { Format-ChainLine $c.k $c.n $c.tos } else { '' }
+        $idea = (@($position, '待写') | Where-Object { $_ }) -join "`n"
+        return "**思路**`n$idea`n`n**起点**`n$($start -join "`n")`n`n**步骤**`n待写`n`n**结果**`n$($part.to)`n`n**解读**`n待写"
     }
     $body = (@($links) + @('', '待写')) -join "`n"
     if ($plan.level -eq 'formal' -and $part.facet -match '设定' -and (Get-Line $part) -eq 'main') { $body += "`n`n$(Get-Tables $plan)" }
@@ -383,6 +491,7 @@ function Get-PartBlock($n, $part, $model, [switch]$Bodies) {
     if ($part.spec) { [void]$b.AppendLine("- 要陈述的内容：$($part.spec)") }
     if (Test-Derive $part) {
         [void]$b.AppendLine("- 推导：从起点写到结果 $($part.to)$(if ($part.steps) { "，约 $($part.steps) 步" })。骨架里已写好起点和结果。")
+        [void]$b.AppendLine('- 解释：写思路、步骤下的说明和解读（见“讲清推导”）。思路的位置行原样保留。')
         # A chain member starts from the result of the part before it, which may sit in another job.
         $main = @($State.models[$model].main | Where-Object { $null -ne $_ })
         $k = [array]::IndexOf($main, [string]$part.id)
@@ -691,7 +800,6 @@ function Find-Job($model, $id) {
     foreach ($key in @($State.jobs.Keys)) { $j = $State.jobs[$key]; if ($j.model -eq $model -and $id -in @($j.ids)) { $found = $key } }
     $found
 }
-function Get-Result($body) { if ($body -match '(?s)\*\*结果\*\*\s*(.+)$') { $Matches[1].Trim() } else { '' } }
 
 function Split-Part($model, $id, [int]$count, $cuts, $reason) {
     $m = $State.models[$model]
@@ -724,7 +832,8 @@ function Split-Part($model, $id, [int]$count, $cuts, $reason) {
         $m.titles[$newId] = $fields.title
         $from = if (@($cuts | Where-Object { $null -ne $_ })[$k - 2]) { @($cuts | Where-Object { $null -ne $_ })[$k - 2] } else { '（上一张卡选定的中间结论）' }
         $to = if ($k -eq $count) { $final } elseif (@($cuts | Where-Object { $null -ne $_ })[$k - 1]) { @($cuts | Where-Object { $null -ne $_ })[$k - 1] } else { '（由你选定的中间结论）' }
-        $start = if ($derive) { "**起点**`n- 依赖上一步 [[$($m.ids[$prevId])]] 的结果：$from。`n`n**步骤**`n待写`n`n**结果**`n$to" } else { "依赖上一步 [[$($m.ids[$prevId])]]：本卡接着上一张卡写。`n`n待写" }
+        # The position line of 思路 comes from Update-ChainLines once every new part exists.
+        $start = if ($derive) { "**思路**`n待写`n`n**起点**`n- 依赖上一步 [[$($m.ids[$prevId])]] 的结果：$from。`n`n**步骤**`n待写`n`n**结果**`n$to`n`n**解读**`n待写" } else { "依赖上一步 [[$($m.ids[$prevId])]]：本卡接着上一张卡写。`n`n待写" }
         $m.added[$newId] = [ordered]@{ id = $newId; facet = $facet; title = $fields.title; derive = $derive; to = $to; line = 'main'; spec = "接着 [[$($m.ids[$prevId])]] 写。" }
         Invoke-Edits @(@{ tool = 'edit_card'; arguments = @{ at = $address; body = $start } })
         $new += $newId
@@ -734,8 +843,13 @@ function Split-Part($model, $id, [int]$count, $cuts, $reason) {
     }
     $edits = @()
     if ($derive -and @($cuts | Where-Object { $null -ne $_ }).Count) {
-        $body = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $m.ids[$id] } })).body
-        $edits += @{ tool = 'edit_card'; arguments = @{ at = $m.ids[$id]; body = ($body -replace '(?s)\*\*结果\*\*\s*.+$', "**结果**`n$(@($cuts | Where-Object { $null -ne $_ })[0])") } }
+        # The part now ends at the first cut: its 结果 is the cut, and its 解读 must be written again.
+        $sections = Split-Sections ([string](Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $m.ids[$id] } })).body)
+        foreach ($sec in $sections) {
+            if ($sec.head -eq '结果') { $sec.lines = [Collections.Generic.List[string]]::new([string[]]@(@($cuts | Where-Object { $null -ne $_ })[0])) }
+            if ($sec.head -eq '解读') { $sec.lines = [Collections.Generic.List[string]]::new([string[]]@('待写')) }
+        }
+        $edits += @{ tool = 'edit_card'; arguments = @{ at = $m.ids[$id]; body = (Join-Sections $sections) } }
     }
     if ($derive -and $next) {
         $nextCard = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $m.ids[$next] } })
@@ -761,7 +875,8 @@ function Split-Part($model, $id, [int]$count, $cuts, $reason) {
         Save-Text $State.jobs[$job].allow ((@($State.jobs[$job].addresses | Where-Object { $null -ne $_ }) -join "`n") + "`n")
     }
     $text = "## 拆分：[[$($m.ids[$id])]] 拆成 $count 张$(if ($reason) { "（$reason）" })`n`n"
-    $text += "- [[$($m.ids[$id])]]：只写到 $(if ($derive -and @($cuts | Where-Object { $null -ne $_ }).Count) { @($cuts | Where-Object { $null -ne $_ })[0] } else { '你选的中间结论' })。`n"
+    $text += "- [[$($m.ids[$id])]]：只写到 $(if ($derive -and @($cuts | Where-Object { $null -ne $_ }).Count) { @($cuts | Where-Object { $null -ne $_ })[0] } else { '你选的中间结论' })。$(if ($derive) { '它的解读已清空：按新的结果重写。' })`n"
+    if ($derive) { $text += "- 每张推导分卡写自己的思路、说明和解读。思路的位置行由脚本写好，原样保留。`n" }
     foreach ($n in $new) { $text += "- [[$($m.ids[$n])]]：$($m.added[$n].title)，从上一张的结果写到 $(if ($m.added[$n].to) { $m.added[$n].to } else { '你选的中间结论' })。标题可改成本卡的结论。`n" }
     @{ job = $job; text = $text; ids = @(@($id) + $new) }
 }
@@ -794,17 +909,21 @@ function Step-Split {
             }
         }
     }
+    $resplit = @()
     foreach ($a in $actions) {
         $o = $a.owner
         if ($a.verdict -eq 'split' -and $a.parts -ge 2) {
             $r = Split-Part $o.model $o.id $a.parts $a.cuts $a.reason
             $r.model = $o.model
+            $resplit += $o.model
             & $add $r
         } else {
             $State.rereview = @($State.rereview | Where-Object { $null -ne $_ }) + "$($o.model)#$($o.id)"
             & $add @{ model = $o.model; job = (Find-Job $o.model $o.id); text = "## 修正：[[$(Resolve-Ref $o.id $o.model)]]`n`n$($a.reason)`n"; ids = @($o.id) }
         }
     }
+    # A split changes the length of its chain: every member gets its new position line.
+    foreach ($model in @($resplit | Select-Object -Unique)) { Update-ChainLines $model }
     $jobs = @()
     foreach ($key in @($follow.Keys)) {
         $f = $follow[$key]
@@ -834,7 +953,7 @@ function Step-Report {
         $style = 0
         if (@($s.parts | Where-Object { $null -ne $_ }).Count) {
             # Shared parts belong to their home models, which this batch does not change.
-            $lines = @(pwsh -NoProfile -File $Check -Model $model -SkipShared -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps 2>&1)
+            $lines = @(pwsh -NoProfile -File $Check -Model $model -SkipShared -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps -MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars 2>&1)
             $last = [string]($lines | Where-Object { [string]$_ -match '^faults: \d+' } | Select-Object -Last 1)
             $style = if ($last) { [int]($last -replace '^faults: ', '') } else { -1 }
         }
@@ -851,7 +970,7 @@ function Step-Report {
             neighbours = @($s.neighbours | Where-Object { $null -ne $_ }).Count; loose = @($s.loose | Where-Object { $null -ne $_ }).Count
             charts = @($s.parts | Where-Object { $_.body -match '```chart' }).Count
             todo = @($s.parts | Where-Object { $_.body -match '(^|\n)\s*待写\s*($|\n)' } | ForEach-Object { $_.address })
-            derivations = [ordered]@{ total = @($order | Where-Object { $_.derivation -and $_.line -ne 'shared' }).Count; chains = @($chains | Where-Object { $_.length -ge 2 }).Count; longest = [int](@($chains | ForEach-Object { [int]$_.length }) + @(0) | Measure-Object -Maximum).Maximum }
+            derivations = [ordered]@{ total = @($order | Where-Object { $_.derivation -and $_.line -ne 'shared' }).Count; explained = @(Get-Explained $s).Count; chains = @($chains | Where-Object { $_.length -ge 2 }).Count; longest = [int](@($chains | ForEach-Object { [int]$_.length }) + @(0) | Measure-Object -Maximum).Maximum }
             split = [int]$m.split; moved = @($m.moved | Where-Object { $null -ne $_ }); shared = @($order | Where-Object { $_.line -eq 'shared' }).Count
             tolerated = @($s.build.tolerated | Where-Object { $null -ne $_ }).Count; style = $style
             faults = [ordered]@{ closure = @($s.build.closure | Where-Object { $null -ne $_ }).Count; forward = @($s.build.forward | Where-Object { $null -ne $_ }).Count; unanchored = @($s.build.unanchored | Where-Object { $null -ne $_ }).Count; beyond_level = @($s.build.beyond_level | Where-Object { $null -ne $_ }).Count }
@@ -862,7 +981,245 @@ function Step-Report {
     Out-Last ([ordered]@{ models = $reports })
 }
 
+# --- Explain: 思路, 说明, and 解读 for finished Derivation parts -------------------------------------
+# The text of a section without the position line and 待写; '' when it says nothing yet.
+function Get-SectionText($sections, [string]$head) {
+    $s = $sections | Where-Object { $_.head -eq $head } | Select-Object -First 1
+    if (-not $s) { return '' }
+    (@($s.lines | Where-Object { $_.Trim() -and $_.Trim() -ne '待写' -and $_.Trim() -notmatch '^第 \d+ 张，共 \d+ 张' }) -join "`n").Trim()
+}
+function Test-Explained([string]$body) {
+    $sections = Split-Sections $body
+    [bool]((Get-SectionText $sections '思路') -and (Get-SectionText $sections '解读'))
+}
+# The model's own Derivation parts (shared parts belong to their home models), in build order.
+function Get-OwnDerivations($s) {
+    @($s.build.order | Where-Object { $_.derivation -and $_.line -ne 'shared' } | ForEach-Object { [string]$_.address })
+}
+function Get-Explained($s) {
+    $bodies = @{}
+    foreach ($p in @($s.parts | Where-Object { $null -ne $_ })) { $bodies[[string]$p.address] = [string]$p.body }
+    @(Get-OwnDerivations $s | Where-Object { Test-Explained $bodies[$_] })
+}
+# What explain-apply must never change: 起点, the step lines, 结果, and any other text, line by line.
+function Get-Core([string]$body) {
+    $lines = foreach ($sec in (Split-Sections $body)) {
+        if ($sec.head -in '思路', '解读') { continue }
+        foreach ($l in $sec.lines) { if ($l.Trim() -and $l.Trim() -notmatch '^说明\s*[：:]') { $l.Trim() } }
+    }
+    $lines -join "`n"
+}
+# The body with the new 思路 (after the position line), 说明 lines, and 解读. Old 思路, 解读, and
+# 说明 lines go. A 来源 line at the end of 结果 stays the last line, after 解读.
+function Add-Explanation([string]$body, [string]$idea, $notes, [string]$meaning, [string]$position) {
+    $sections = [Collections.Generic.List[object]]::new()
+    foreach ($sec in (Split-Sections $body)) { if ($sec.head -notin '思路', '解读') { $sections.Add($sec) } }
+    $steps = $sections | Where-Object { $_.head -eq '步骤' } | Select-Object -First 1
+    if ($steps) {
+        $out = [Collections.Generic.List[string]]::new()
+        foreach ($line in $steps.lines) {
+            if ($line.Trim() -match '^说明\s*[：:]') { continue }
+            $out.Add($line)
+            if ($notes -and $line -match '^\s*(\d+)[.、)]') {
+                $note = [string]$notes[$Matches[1]]
+                if ($note.Trim()) { $out.Add("   说明：$($note.Trim() -replace '^说明\s*[：:]\s*', '')") }
+            }
+        }
+        $steps.lines = $out
+    }
+    $ideaLines = [Collections.Generic.List[string]]::new([string[]]@(@($position, $idea.Trim()) | Where-Object { $_ }))
+    $at = 0
+    for ($i = 0; $i -lt $sections.Count; $i++) { if ($sections[$i].head -eq '起点') { $at = $i; break } }
+    if ($at -eq 0 -and $sections.Count -and -not $sections[0].head) { $at = 1 }
+    $sections.Insert($at, @{ head = '思路'; lines = $ideaLines })
+    $result = -1
+    for ($i = 0; $i -lt $sections.Count; $i++) { if ($sections[$i].head -eq '结果') { $result = $i } }
+    $tail = @()
+    if ($result -ge 0) {
+        $keep = [Collections.Generic.List[string]]::new([string[]]@($sections[$result].lines))
+        while ($keep.Count -and -not $keep[$keep.Count - 1].Trim()) { $keep.RemoveAt($keep.Count - 1) }
+        if ($keep.Count -and $keep[$keep.Count - 1].Trim() -match '^来源\s*[：:]') { $tail = @($keep[$keep.Count - 1]); $keep.RemoveAt($keep.Count - 1) }
+        $sections[$result].lines = $keep
+    }
+    $where = if ($result -ge 0) { $result + 1 } else { $sections.Count }
+    $sections.Insert($where, @{ head = '解读'; lines = [Collections.Generic.List[string]]::new([string[]]@($meaning.Trim())) })
+    if ($tail.Count) { $sections.Insert($where + 1, @{ head = ''; lines = [Collections.Generic.List[string]]::new([string[]]$tail) }) }
+    Join-Sections $sections
+}
+function Get-ExplainState {
+    if (-not $State.explain) { $State.explain = [ordered]@{ models = @(); settings = [ordered]@{}; jobs = [ordered]@{}; refused = [ordered]@{}; blocked = [ordered]@{} } }
+    $State.explain
+}
+
+function Step-Explain {
+    $X = Get-ExplainState
+    $jobs = @()
+    $left = if ($MaxParts -gt 0) { $MaxParts } else { [int]::MaxValue }
+    $pending = @{}
+    foreach ($j in $X.jobs.Values) { foreach ($a in @($j.addresses | Where-Object { $_ -notin @($j.done) })) { $pending[$a] = $true } }
+    foreach ($model in @($Models -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        if ($left -le 0) { break }
+        $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
+        if (-not $s.head -or $s.level -eq 'concept') { continue }
+        $bodies = @{}; $titles = @{}
+        foreach ($p in @($s.parts | Where-Object { $null -ne $_ })) { $bodies[[string]$p.address] = [string]$p.body; $titles[[string]$p.address] = [string]$p.title }
+        $own = @(Get-OwnDerivations $s)
+        $missing = @($own | Where-Object { -not (Test-Explained $bodies[$_]) -and -not $pending.ContainsKey($_) })
+        if (-not $missing.Count) { continue }
+        $dir = Get-Dir $model
+        if ($model -notin @($X.models)) { $X.models = @(@($X.models) + $model) }
+        $X.settings[$model] = [string]$s.build.setting
+        $setting = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $s.build.setting } })
+        Save-Text (Join-Path $dir 'setting.md') "# 本模型的设定：[[$($setting.address)]] $($setting.title)`n`n$($setting.body)`n"
+        $context = '无'
+        if ($Staging) {
+            $context = Join-Path $dir 'context.md'
+            $null = pwsh -NoProfile -File (Join-Path $PSScriptRoot 'model-context.ps1') -Staging $Staging -Model $model -Out $context
+            if ($LASTEXITCODE -ne 0) { $context = '无' }
+        }
+        $head = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })
+        $headBody = [string]$head.body
+        if ($headBody.Length -gt 3000) { $headBody = $headBody.Substring(0, 3000) + '……' }
+        # Groups: up to three neighbouring parts of one chain, with the members around them.
+        $groups = [Collections.Generic.List[object]]::new()
+        $covered = @{}
+        foreach ($c in @($s.build.chains | Where-Object { $null -ne $_ })) {
+            $parts = @($c.parts | Where-Object { $_ -in $own } | ForEach-Object { [string]$_ })
+            $tos = @($parts | ForEach-Object { Get-Result $bodies[$_] })
+            $todo = @($parts | Where-Object { $_ -in $missing })
+            for ($i = 0; $i -lt $todo.Count; $i += 3) {
+                $g = @($todo | Select-Object -Skip $i -First 3)
+                $groups.Add(@{ parts = $g; chain = $parts; tos = $tos; after = $c.after; before = $c.before })
+                foreach ($a in $g) { $covered[$a] = $true }
+            }
+        }
+        foreach ($a in @($missing | Where-Object { -not $covered.ContainsKey($_) })) { $groups.Add(@{ parts = @($a); chain = @($a); tos = @(Get-Result $bodies[$a]); after = $null; before = $null }) }
+        foreach ($g in $groups) {
+            if ($left -le 0) { break }
+            $g.parts = @($g.parts | Select-Object -First $left)
+            $left -= $g.parts.Count
+            $State.seq++
+            $id = "$(Get-Slug $model):x$('{0:d2}' -f $State.seq)"
+            $out = Join-Path (Join-Path $Work 'out') "explain-$('{0:d2}' -f $State.seq).json"
+            $file = Join-Path $dir "explain-$('{0:d2}' -f $State.seq).md"
+            $text = [Text.StringBuilder]::new()
+            [void]$text.AppendLine("# 讲解任务 $id`n`n结果文件: $out`n上下文包: $context`n模型卡: [[$model]] $($head.title)`n`n## 模型卡的正文`n`n$headBody`n")
+            if ($g.after -and $bodies[$g.after]) { [void]$text.AppendLine("## 链之前的分卡（推导从它出发）：[[$($g.after)]] $($titles[$g.after])`n`n$($bodies[$g.after])`n") }
+            $positions = [ordered]@{}
+            foreach ($a in $g.parts) {
+                $k = [array]::IndexOf(@($g.chain), $a) + 1
+                $positions[$a] = Format-ChainLine $k @($g.chain).Count $g.tos
+                [void]$text.AppendLine("## 推导分卡 [[$a]] $($titles[$a])$(if (@($g.chain).Count -ge 2) { "（第 $k 张，共 $(@($g.chain).Count) 张）" })`n`n$($bodies[$a])`n")
+            }
+            if ($g.before -and $bodies[$g.before]) { [void]$text.AppendLine("## 链之后的分卡（它用推导的结果）：[[$($g.before)]] $($titles[$g.before])`n`n$($bodies[$g.before])`n") }
+            Save-Text $file $text.ToString()
+            $X.jobs[$id] = [ordered]@{ model = $model; file = $file; out = $out; addresses = @($g.parts); done = @(); round = 1
+                bodies = [ordered]@{}; positions = $positions }
+            foreach ($a in $g.parts) { $X.jobs[$id].bodies[$a] = $bodies[$a] }
+            $jobs += [ordered]@{ id = $id; files = @($Docs.explain, (Join-Path $dir 'setting.md'), $file); prompt = "按以上说明写出结果文件 $out，最后只回复一行 JSON。" }
+        }
+    }
+    New-Item -ItemType Directory -Force -Path (Join-Path $Work 'out') | Out-Null
+    Save-State
+    Out-Last ([ordered]@{ jobs = $jobs; parts = @($jobs | ForEach-Object { @($X.jobs[$_.id].addresses).Count } | Measure-Object -Sum).Sum })
+}
+
+function Step-ExplainApply {
+    $X = Get-ExplainState
+    $applied = @(); $refused = @(); $blocked = @(); $jobs = @(); $edits = @(); $done = @()
+    foreach ($id in @($X.jobs.Keys)) {
+        $j = $X.jobs[$id]
+        $todo = @($j.addresses | Where-Object { $_ -notin @($j.done) })
+        if (-not $todo.Count) { continue }
+        $faults = [ordered]@{}
+        $entries = @()
+        if (Test-Path -LiteralPath $j.out) {
+            try { $entries = @(Read-Json $j.out) } catch { foreach ($a in $todo) { $faults[$a] = "the result file is not a JSON array: $_" } }
+        } else { foreach ($a in $todo) { $faults[$a] = 'no result file' } }
+        $cards = @{}
+        foreach ($c in @(Invoke-Zt @($todo | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[[string]$c.address] = $c }
+        $candidates = @()
+        foreach ($a in $todo) {
+            if ($faults.Contains($a)) { continue }
+            $e = $entries | Where-Object { $_ -and [string]$_.address -eq $a } | Select-Object -First 1
+            if (-not $e) { $faults[$a] = 'no entry for this part in the result file'; continue }
+            if ($e.blocked) { $blocked += @{ model = $j.model; text = "$($a): $($e.blocked)" }; $done += @{ job = $id; address = $a }; continue }
+            $card = $cards[$a]
+            if (([string]$card.body).Trim() -ne ([string]$j.bodies[$a]).Trim()) { $refused += @{ model = $j.model; text = "$($a): the part changed after its job" }; $done += @{ job = $id; address = $a }; continue }
+            if (-not ([string]$e.idea).Trim() -or -not ([string]$e.meaning).Trim()) { $faults[$a] = 'idea and meaning must not be empty'; continue }
+            $new = Add-Explanation ([string]$card.body) ([string]$e.idea) $e.notes ([string]$e.meaning) ([string]$j.positions[$a])
+            if ((Get-Core $new) -ne (Get-Core ([string]$card.body))) { $refused += @{ model = $j.model; text = "$($a): inserting the explanation would change 起点, a step, or 结果" }; $done += @{ job = $id; address = $a }; continue }
+            $candidates += [ordered]@{ address = $a; title = [string]$card.title; facet = [string]$card.facet; body = $new }
+        }
+        if ($candidates.Count) {
+            # The new bodies pass R2 to R17 before any write; the setting gives the term table (R6).
+            $setting = [string]$X.settings[$j.model]
+            $entriesFile = Join-Path $Work 'explain-check.json'
+            $toCheck = @($candidates)
+            if ($setting) { $sc = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $setting } }); $toCheck += [ordered]@{ address = $setting; title = [string]$sc.title; body = [string]$sc.body; facet = [string]$sc.facet } }
+            Save-Text $entriesFile (ConvertTo-Json -InputObject @($toCheck) -Depth 5)
+            $checkArgs = @('-NoProfile', '-File', $Check, '-Json', $entriesFile, '-RequireExplain', '-MaxSentences', $MaxSentences, '-MaxChars', $MaxChars, '-MaxSteps', $MaxSteps, '-MaxExplainSentences', $MaxExplainSentences, '-MaxExplainChars', $MaxExplainChars)
+            if ($setting) { $checkArgs += @('-Setting', $setting) }
+            $found = @{}
+            $checked = @(pwsh @checkArgs 2>&1)
+            # No `faults: N` line means the check did not run: write nothing rather than unchecked text.
+            if (-not @($checked | Where-Object { [string]$_ -match '^faults: \d+' }).Count) { throw "card-style-check.ps1 did not run: $($checked -join ' | ')" }
+            foreach ($line in $checked) {
+                $l = [string]$line
+                if ($l -match '^(\S+) (R\d+ .*)$' -and $Matches[1] -ne $setting) {
+                    if (-not $found.ContainsKey($Matches[1])) { $found[$Matches[1]] = @() }
+                    $found[$Matches[1]] += $Matches[2]
+                }
+            }
+            foreach ($c in $candidates) {
+                if ($found.ContainsKey($c.address)) { $faults[$c.address] = $found[$c.address] -join ' | '; continue }
+                $edits += @{ tool = 'edit_card'; arguments = @{ at = $c.address; body = $c.body } }
+                $applied += $c.address
+                $done += @{ job = $id; address = $c.address }
+            }
+        }
+        if (-not $faults.Count) { continue }
+        if ([int]$j.round -ge 2) {
+            foreach ($a in @($faults.Keys)) { $refused += @{ model = $j.model; text = "$($a): $($faults[$a])" }; $done += @{ job = $id; address = $a } }
+            continue
+        }
+        # Once: the same conversation rewrites the refused parts into a new result file.
+        $j.round = 2
+        $State.seq++
+        $j.out = Join-Path (Join-Path $Work 'out') "explain-$('{0:d2}' -f $State.seq).json"
+        $follow = Join-Path (Get-Dir $j.model) "explain-follow-$('{0:d2}' -f $State.seq).md"
+        $lines = @($faults.Keys | ForEach-Object { "- [[$_]]：$($faults[$_])" })
+        Save-Text $follow "# 补充任务（改正这些分卡的解释）`n`n新的结果文件: $($j.out)`n`n脚本没有写入下面的分卡。改正每张分卡的问题，只为它们写新的结果文件：`n`n$($lines -join "`n")`n"
+        $jobs += [ordered]@{ id = "$id+2"; continue = $id; files = @($follow); fallback = @($Docs.explain, (Join-Path (Get-Dir $j.model) 'setting.md'), $j.file, $follow); prompt = '按以上补充说明改正，写出新的结果文件，最后只回复一行 JSON。' }
+    }
+    for ($i = 0; $i -lt $edits.Count; $i += 25) { Invoke-Edits @($edits | Select-Object -Skip $i -First 25) }
+    foreach ($d in $done) { $X.jobs[$d.job].done = @(@($X.jobs[$d.job].done) + $d.address) }
+    foreach ($r in $refused) { $X.refused[$r.model] = @(@($X.refused[$r.model] | Where-Object { $_ }) + $r.text) }
+    foreach ($b in $blocked) { $X.blocked[$b.model] = @(@($X.blocked[$b.model] | Where-Object { $_ }) + $b.text) }
+    Save-State
+    Out-Last ([ordered]@{ applied = $applied.Count; refused = @($refused | ForEach-Object { $_.text }); blocked = @($blocked | ForEach-Object { $_.text }); jobs = $jobs })
+}
+
+function Step-ExplainReport {
+    $X = Get-ExplainState
+    $reports = @()
+    foreach ($model in @($X.models)) {
+        $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
+        $own = @(Get-OwnDerivations $s)
+        $explained = @(Get-Explained $s)
+        $reports += [ordered]@{
+            model = $model; derivations = $own.Count; explained = $explained.Count
+            missing = @($own | Where-Object { $_ -notin $explained })
+            refused = @($X.refused[$model] | Where-Object { $_ }); blocked = @($X.blocked[$model] | Where-Object { $_ })
+        }
+    }
+    Out-Last ([ordered]@{ models = $reports })
+}
+
 switch ($Step) {
+    'explain' { Step-Explain }
+    'explain-apply' { Step-ExplainApply }
+    'explain-report' { Step-ExplainReport }
     'brief' { Step-Brief }
     'validate' { Step-Validate }
     'apply' { Step-Apply }

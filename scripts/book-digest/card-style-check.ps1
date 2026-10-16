@@ -20,11 +20,21 @@
     R12 A title states one claim in at most 40 characters (formulas do not count), with no `；`.
     R13 Card size: a Model part (a Card with a facet) holds at most -MaxSentences sentences (12)
         and -MaxChars characters (400) of prose. Formulas, Links, tables, charts, and quotations do
-        not count. In a Derivation part, the numbered steps count under R14 instead. A part over
-        the limit splits into two or more parts.
+        not count. In a Derivation part, the numbered steps count under R14 instead, and its
+        explanation (思路, 说明, 解读) counts under R17. A part over the limit splits into two or
+        more parts.
     R14 A Derivation part holds at most -MaxSteps numbered steps (6). A longer step splits into a
         chain of Derivation parts: each one starts from the result of the one before.
-    R13 and R14 apply to a formal model (Elaboration level 2) and to a model with no level. A
+    R15 A Derivation part that has a 思路 or a 解读 section holds the five sections 思路, 起点, 步骤,
+        结果, 解读, in this order (doc/derivation-explanations-proposal.md). A part with neither is
+        an older part: it raises no fault, unless -RequireExplain is set (new builds and the
+        explain step set it).
+    R16 思路 holds 1 to 5 sentences and 解读 1 to 6. Each sentence follows R2 (40 characters).
+    R17 At most one 说明 line under each numbered step, of 1 or 2 sentences. The explanation (思路,
+        说明, and 解读 together) holds at most -MaxExplainSentences sentences (16) and
+        -MaxExplainChars characters (600). Formulas and Links do not count. Over the budget, the
+        writer shortens the explanation: only the steps (R14) decide a split.
+    R13 to R17 apply to a formal model (Elaboration level 2) and to a model with no level. A
     concept model (level 1) states itself in the Model Card and at most four parts, so its parts
     may be long. The level comes from get_model (-Model, -Addresses) or from -Level (-Json).
 
@@ -89,6 +99,9 @@ param(
     [int]$MaxSentences = 12,
     [int]$MaxChars = 400,
     [int]$MaxSteps = 6,
+    [int]$MaxExplainSentences = 16,
+    [int]$MaxExplainChars = 600,
+    [switch]$RequireExplain,
     [ValidateSet('', 'concept', 'formal')][string]$Level = '',
     [switch]$SkipShared,
     [int]$MinIdeaChars = 40,
@@ -258,16 +271,54 @@ foreach ($card in $cards) {
     $sentences = 0
     $chars = 0
     $steps = 0
+    # A Derivation part: its sections, the explanation (思路, 说明, 解读), and the 说明 lines per step.
+    $section = ''
+    $order = [Collections.Generic.List[string]]::new()
+    $explain = @{ sentences = 0; chars = 0; 思路 = 0; 解读 = 0 }
+    $notes = @{}
     foreach ($line in Get-ProseLines ([string]$card.body)) {
+        # Get-ProseLines reads the first `*` of `**思路**` as a list marker.
+        if ($derivation -and $line.text -match '^\*{0,2}(思路|起点|步骤|结果|解读)\*\*\s*$') {
+            $section = $Matches[1]
+            $order.Add($section)
+            continue
+        }
         $isStep = $derivation -and $line.step
         if ($isStep) { $steps++ }
-        foreach ($sentence in Split-Sentences $line.text) {
+        $isNote = $derivation -and -not $isStep -and $section -eq '步骤' -and $line.text -match '^说明\s*[：:]'
+        $text = if ($isNote) { $line.text -replace '^说明\s*[：:]\s*', '' } else { $line.text }
+        $isExplain = $isNote -or ($derivation -and $section -in '思路', '解读')
+        if ($isNote) {
+            if (-not $steps) { Add-Fault $address 17 "a 说明 line before the first step: $text" }
+            elseif ($notes.ContainsKey($steps)) { Add-Fault $address 17 "a second 说明 line under step $($steps): $text" }
+            $notes[$steps] = 0
+        }
+        foreach ($sentence in Split-Sentences $text) {
             Test-Sentence $address $sentence $isStep
-            if (-not $isStep) {
+            if ($isStep) { continue }
+            $measure = Measure-Sentence $sentence
+            $size = if ($measure.unit -eq 'characters') { $measure.size } else { 0 }
+            if ($isExplain) {
+                $explain.sentences++
+                $explain.chars += $size
+                if ($isNote) { $notes[$steps]++ } elseif ($sentence.Trim() -ne '待写') { $explain[$section]++ }
+            } else {
                 $sentences++
-                $measure = Measure-Sentence $sentence
-                if ($measure.unit -eq 'characters') { $chars += $measure.size }
+                $chars += $size
             }
+        }
+    }
+    # R15 to R17: a formal model's Derivation part with an explanation, or any one with -RequireExplain.
+    if ($derivation -and $Level -ne 'concept') {
+        $has = @($order | Where-Object { $_ -in '思路', '解读' }).Count
+        if ($has -or $RequireExplain) {
+            $want = @('思路', '起点', '步骤', '结果', '解读')
+            if (($order -join ',') -ne ($want -join ',')) { Add-Fault $address 15 "sections $(if ($order.Count) { $order -join ', ' } else { 'none' }); want $($want -join ', ')" }
+            if ($order -contains '思路' -and $explain['思路'] -gt 5) { Add-Fault $address 16 "(思路 has $($explain['思路']) sentences > 5)" }
+            if ($order -contains '解读' -and $explain['解读'] -gt 6) { Add-Fault $address 16 "(解读 has $($explain['解读']) sentences > 6)" }
+            foreach ($k in @($notes.Keys | Sort-Object)) { if ($notes[$k] -gt 2) { Add-Fault $address 17 "(说明 under step $k has $($notes[$k]) sentences > 2)" } }
+            if ($explain.sentences -gt $MaxExplainSentences) { Add-Fault $address 17 "($($explain.sentences) explanation sentences > $MaxExplainSentences) shorten the explanation" }
+            elseif ($explain.chars -gt $MaxExplainChars) { Add-Fault $address 17 "($($explain.chars) explanation characters > $MaxExplainChars) shorten the explanation" }
         }
     }
     $proseChars[$address] = $chars
