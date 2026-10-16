@@ -21,7 +21,7 @@ Status: built on branch `math-cards` (zt 0.19.0, 2026-10-16). Tested on scratch 
 | `get_model` | Adds `form` and `math`. For a unit, `math` holds labels, tiers, core parts, the crux, the budget, faults, theories, load, `building_block`, `used_by`, and `study`. For a Theory Card, it holds the units in dependency order with weight and load, `main_results`, `objects`, `cycle`, `forward`, `tools`, `users`, `faults`, and `study`. |
 | Relation kinds | New kind `specializes` (`特例`, `特殊情形`, `special case`, `specializ…`). Rests-on adds `按定义`, `cites`, and `by definition`/`by theorem`/`by lemma`/`by proposition`/`by corollary`/`by axiom`. Contrasts adds `逆命题`. |
 | MCP | `create_successor` and `edit_card` take `form`. `get_card`, `get_tree`, and `search_cards` report it. `search_cards` filters by `form`, with an empty query. The server instructions and the `get_model` description name the math reports. |
-| GUI | The card JSON carries `form`. A unit's stamp reads `theorem · L2 formal`. The command bar takes `mf <form|none>`. The create and edit endpoints take `form`. |
+| GUI | The card JSON carries `form`. A unit's stamp reads `theorem · L2 formal`. The command bar takes `mf <form|none>`. The create and edit endpoints take `form`. The theory board, the study desk, label chips, and tool tabs (see "The GUI views"). |
 | Session | `mf <form|none>`. The Card view shows `[model · theorem · formal]`. |
 | Dump | `archive.json` adds `forms`. |
 
@@ -65,7 +65,29 @@ The branch merges `model-compiler` at `fc7dfba` (doc/derivation-explanations-pro
 | The model compiler's reviewer checks proofs | A separate proof review (`math-compiler.ps1 proof`) checks the proof plan, every `证明：…` step, and the conclusion. The compiler's reviewer checks the Derivation parts, with the math review supplement. | The compiler reviews Derivation chains only. A proof step that is not a Derivation part would go unchecked. |
 | M9: every symbol is in the notation table | The check reports a formal result with no symbol table in its premises. A Link to the notation table also counts. | A symbol-by-symbol check of TeX gives too many false faults. |
 | M15 and M18 | The proof review checks M15 (titles state the proof in outline). M18 is in the architect's and the writer's instructions. No script checks it. | Both need judgment. |
-| GUI: theory board, study desk, face-down cards, label chips, tool tabs | Only the stamp and the `mf` command. `get_model` already returns everything the views need (`math.study`, `math.order`, tiers, tools). | The views are a GUI project of their own (see "Not built yet"). |
+| GUI: a lemma that a step cites is a companion with a "new" mark | The lemma is a tool tab with a "new" mark. Its statement comes out of the box when the reader opens the tab. | A companion takes one of the three places beside the focus. The tab costs no place until the reader asks for it. |
+| GUI: Review mode shows `直觉` and examples as support | Review mode takes the Why and Boundary stations of Learn mode, face down, between the statement and the exercises. Their companions stay as in Learn mode. | One study order serves both modes. `math.study` has no separate Review stations. |
+
+## The GUI views
+
+The views read only `get_model`'s `math` report. They change no Card. `src/gui/layout.js` holds the pure parts: `theoryRows` (the rows of the theory board), `studyStations` (the stations of one reading mode), and `labelsIn` (the labels a text names). `src/gui/app.js` draws them. Each new CSS class starts with `tb-`, `sd-`, `lchip`, `ttab`, or `pullout`. No class of the Map, the Table, or the search tray changed.
+
+| View | Where | What it shows |
+| --- | --- | --- |
+| Theory board | Below a Theory Card in the reader. Below a unit, folded under "In theory", with that unit open. | The units by dependency: each unit one row below the deepest unit it cites, under the mean place of those units. A unit with the weight `focus` is a full card. A `support` unit is a smaller card. A lemma with the weight `detail` is a slim slip between the results it connects. A corollary that follows from one result alone, and that no unit cites, hangs under that result. An axiom lies on a bottom row. The tools of other theories are tabs on the left edge. The theories that use this one (`后续`) are tabs on the right edge. Below the board, the study path lists each main result after the units it needs. A click on a stop opens that unit on the study desk. |
+| Degree of interest | Theory board | The open unit is lifted. The units it cites and the units that cite it keep full ink, and their threads are drawn in the model colour. The main results, the theory objects, and the units with the weight `focus` keep their ink. All other units recede to their form and one line of title. When the pointer is on a unit, that unit is the open unit until the pointer leaves the board. |
+| Study desk | Key `s` or the button Study on any Card of a unit. A stop of a study path. | One station of `math.study` at a time, over the whole window. The focus Card lies in the centre, lifted. A contrast pair lies side by side. At most three companions lie beside the focus. The Derivation slips of a step (`details`) lie under the focus and unfold on a click. All other Cards of the unit lie in a "+N" stack at the edge. The stack fans out on a click, and a Card from it comes out of the box (as a tool tab does). A track of dots shows the passes and the stations. The crux station has an accent dot and an accent edge. Keys: ← and → move between stations, Space turns the focus over, 1, 2, and 3 set the reading mode, Esc puts the Cards back in the box. |
+| Motion | Study desk | A Card that stays from one station to the next slides to its new place. A new Card comes off the stack. A Card that leaves goes back onto the stack. Each motion takes about 0.35 s. A face-down Card turns over about its vertical axis in 0.55 s. The reduced-motion setting of the system removes the motion. |
+| Reading modes | A switch on the desk and on the theory board. The GUI keeps the last choice. | Learn: the stations of `math.study` without the recall pass. The proof-plan station shows the tool tabs of all steps. A proof step lies face down until the reader turns it. Review: the statement face down, then the Why and Boundary stations face down, then the exercises face down. On the theory board, each main result lies face down with its title. The first click turns it over and shows the statement. Look up: one station with the statement and its chips only, and every tool of the proof. |
+| Statement and motive | Study desk, tool tabs | The GUI reads the bold labels of the Model Card's body. A Model Card in Look up mode, a Model Card as a companion, and the Model Card of another unit show only the `陈述`, `定义`, or `公理` section. Without such a section they show the body without `动机`, `思路`, `结构`, and `来源`. Before the station that has the statement as its focus, the Model Card as a companion shows only its `动机`. |
+| Label chips | The statement of a unit in the reader, on the desk, and on a tool. | Each `(H1)` or `（C2）` becomes a chip. When the reader points at a chip, the Cards of the unit that name the label lift: the model board's slips in the reader, and the Cards, slips, and stacked Cards on the desk. A Card linked from a hypothesis role (`假设作用：H2`) also takes its label, so the counterexample lifts with it. The Card that holds the chip stays in place. On the desk, the statement's chips mark (accent colour) the labels that the focus uses and the clause that a non-example beside it fails. A Card that names labels shows them as small chips in its header. |
+| Tool tabs | Bottom edge of the desk, left edge of the theory board. | A cited premise of the station (`tools`). A lemma (`just_in_time`) has a "new" mark. A click brings the unit half out of the box in Look up mode: the statement and its chips. A second click, the × button, or Esc drops it back. A tab held down for more than 0.35 s drops the unit back when the reader lets go. |
+
+### Checks
+
+- The views were tried in the browser pane on a scratch archive: a copy of the debug exe, `ZT_CONFIG_DIR` in the scratchpad, and `ZT_GUI_PORT=4799`. A node script built the chapter of `tests/math_units.rs` through `zt mcp`, with longer bodies (a motive, a statement, a second non-example, and an example of the theorem). The live archive did not change.
+- Each station of the theorem and of the definition in Learn, Review, and Look up mode. The turn of a face-down step. The chips C2 and H1 in the reader and on the desk. The tool tab of the lemma. The theory board on the Theory Card and folded under a unit. Light and dark themes. A window 700 px wide (one column, no horizontal scroll).
+- The Map with `x` on the scratch tree, unfolded and folded: no two `.node` boxes overlap.
 
 ## The workflow
 
@@ -101,7 +123,8 @@ I read the live archive once, read-only, to measure the effect of candidate rela
 
 ## Not built yet
 
-- **The GUI views** of the proposal: the theory board, laid out by dependency and weight, and the study desk with stations. Also face-down cards in Review mode, label chips, and tool tabs in Look up mode.
+- **The Theory study desk.** The theory board shows the Orient, Path, and Recall passes of a theory. The study path opens each unit's desk. No desk steps through a whole theory in one run, and the Connect pass is only the edge tabs.
+- **A unit inside another unit's study order.** A tool tab shows the statement of a lemma. The lemma's own short study order does not run inside the desk of the result that cites it.
 - **A pilot digest** of a real textbook. It changes the slip-box, so it waits for the user's go-ahead and choice of book (proposal question Q4).
 - **Linking the economics books to the new units** (proposal Q6).
 - **A record of what a reader studied** (proposal Q7).

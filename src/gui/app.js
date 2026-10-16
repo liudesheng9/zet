@@ -16,7 +16,7 @@
       else if (key === 'text') node.textContent = value;
       else if (key === 'html') node.innerHTML = value;
       else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
-      else if (key === 'dataset') Object.assign(node.dataset, value);
+      else if (key === 'dataset') for (const [name, item] of Object.entries(value)) { if (item != null) node.dataset[name] = item; }
       else node.setAttribute(key, value === true ? '' : value);
     }
     for (const kid of kids.flat(Infinity)) {
@@ -2481,6 +2481,7 @@
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
           ['x', 'unfold the whole tree, or fold it back around the pointer'],
           ['p · P', 'lay the card on the Table · with every card it relates to'],
+          ['s', 'study a mathematical unit on the desk, one station at a time'],
           ['v', 'switch Map / Table / Constellation'],
           ['w · ws', 'switch the human / agent workspace'],
         ].flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })]),
@@ -2497,6 +2498,7 @@
     if (card.body.trim()) md.innerHTML = card.html;
     else md.append(h('p', { class: 'empty', text: 'No body yet — press e to write in Markdown.' }));
     wireMarkdown(md);
+    wireUnitReader(md, card);
     const regular = card.context === 'regular';
     // The article is the physical index card; links and tools lie on the desk below it.
     // Back brings the card in from the left, forward from the right; one carried from the
@@ -2525,7 +2527,9 @@
       ),
       md,
     ), h('div', { class: 'card-tools' },
-      card.model ? modelBoard(card) : null,
+      isTheory(card.model) ? mathTools(card) : null,
+      card.model && !(isTheory(card.model) && !card.model.parts.length) ? modelBoard(card) : null,
+      isUnit(card.model) ? mathTools(card) : null,
       card.kind === 'literature' ? h('details', { class: 'biblio' },
         h('summary', { text: `BibTeX · ${card.citation_key}` }),
         h('pre', { text: card.bibtex })) : null,
@@ -2536,6 +2540,10 @@
           title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
           cls: 'table-btn',
         }),
+        isUnit(card.model) ? actionButton('Study', 's', () => study.open(card.address), {
+          title: 'Take the unit out onto the study desk: one station at a time, in the reading mode you chose',
+          cls: 'study-btn',
+        }) : null,
         actionButton('Edit', 'e', editCard, { primary: true }),
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
         actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),
@@ -2718,6 +2726,7 @@
         class: `mb-slip ${at}${part.emphasis ? ' ' + part.emphasis : ''}${joined ? ' joined' : ''}${also ? ' shared' : ''}${derivations.has(part.address) ? ' derivation' : ''}`,
         title: `${facetLabel(part.facet)}${part.emphasis ? ` · ${part.emphasis}` : ''} · ${part.address}${joined ? ' (filed elsewhere, joined by Link)' : ''}${also ? `\nalso in ${also}` : ''}\n${part.title}`,
         'aria-current': part.address === here ? 'true' : null,
+        dataset: { at: part.address },
         onclick: part.address === here ? null : () => go(part.address),
       },
         h('span', { class: 'mb-facet', text: facetLabel(part.facet) }),
@@ -2895,6 +2904,721 @@
         h('span', { class: 'note' }, titleNodes(row.text)))));
   }
 
+  // ------------------------------------------------------------- math units
+  // A Model Card with a Math form states one unit of a theory, or a whole theory (src/math.rs).
+  // The reader meets a unit in one of three reading modes: Learn (first study, one station at
+  // a time), Review (the focus cards lie face down: recall, then turn over), and Look up (the
+  // statement and its labels, as a tool for another proof). get_model's `math` holds the study
+  // order and the theory's dependency order; these views only lay them out.
+  const READING = {
+    learn: { label: 'Learn', key: '1', note: 'first study: one station at a time; proof steps lie face down until you turn them' },
+    review: { label: 'Review', key: '2', note: 'recall: the focus cards lie face down; recall each one, then turn it over' },
+    lookup: { label: 'Look up', key: '3', note: 'use the unit as a tool: its statement and labels only' },
+  };
+  const PASSES = { meet: 'Meet', why: 'Why', boundary: 'Boundary', connect: 'Connect', recall: 'Recall', 'look up': 'Look up' };
+  state.reading = READING[store.get('zt-reading')] ? store.get('zt-reading') : 'learn';
+  const setReading = (mode) => { state.reading = mode; store.set('zt-reading', mode); };
+  const isUnit = (model) => Boolean(model && model.head && model.math && model.form && model.form !== 'theory');
+  const isTheory = (model) => Boolean(model && model.head && model.math && model.form === 'theory');
+
+  // The Cards of a unit, read once per change of the archive.
+  const cardCache = { fingerprint: null, cards: new Map() };
+  function cardAt(address) {
+    if (cardCache.fingerprint !== state.fingerprint) {
+      cardCache.fingerprint = state.fingerprint;
+      cardCache.cards.clear();
+    }
+    let card = cardCache.cards.get(address);
+    if (!card) {
+      card = api('card?at=' + enc(address));
+      card.catch(() => cardCache.cards.delete(address));
+      cardCache.cards.set(address, card);
+    }
+    return card;
+  }
+  /** The labels (H1, C2, ...) a Card names, in its facet, title, or body. */
+  const labelsOf = (card) => ZtLayout.labelsIn(`${card.facet || ''} ${card.title || ''} ${card.body || ''}`);
+  /**
+   * The labels each Card of a unit uses: the ones it names, and the ones of a hypothesis role
+   * (`假设作用：H2`) that links it, so a counterexample lifts with the hypothesis it shows.
+   * Returns address -> labels joined by spaces.
+   */
+  function unitLabels(cards) {
+    const labels = new Map(cards.map((card) => [card.address, labelsOf(card)]));
+    for (const card of cards) {
+      if (!/^(假设作用|hypothesis role)/i.test(card.facet || '')) continue;
+      for (const link of card.outbound || []) {
+        const target = labels.get(link.address);
+        if (target) for (const label of labels.get(card.address)) target.add(label);
+      }
+    }
+    return new Map([...labels].map(([address, set]) => [address, [...set].join(' ')]));
+  }
+
+  // A unit's Model Card opens its sections with bold labels: `**动机**：`, `**陈述**：`.
+  const STATEMENT = ['陈述', '定义', '公理', 'statement', 'definition', 'axiom'];
+  const MOTIVE = ['动机', 'motive', 'motivation'];
+  const NOT_STATEMENT = [...MOTIVE, '思路', '结构', '来源', 'idea', 'structure', 'source'];
+  /** The top-level blocks of a rendered body, grouped by the bold label that opens a section. */
+  function sectionsOf(md) {
+    const sections = [{ name: '', blocks: [] }];
+    for (const block of md.children) {
+      const lead = block.firstElementChild;
+      const after = lead && block.firstChild === lead && lead.tagName === 'STRONG'
+        ? block.textContent.slice(lead.textContent.length).trimStart() : '';
+      if (/^[：:]/.test(after)) sections.push({ name: lead.textContent.trim().toLowerCase(), blocks: [] });
+      sections[sections.length - 1].blocks.push(block);
+    }
+    return sections;
+  }
+  /** Keep only a body's statement (`statement`) or its motive (`motive`); false when it has none. */
+  function keepSections(md, which) {
+    const sections = sectionsOf(md);
+    let keep = sections.filter((section) => (which === 'motive' ? MOTIVE : STATEMENT).includes(section.name));
+    if (!keep.length && which === 'statement') keep = sections.filter((section) => !NOT_STATEMENT.includes(section.name));
+    const kept = new Set(keep.flatMap((section) => section.blocks));
+    for (const block of [...md.children]) if (!kept.has(block)) block.remove();
+    return kept.size > 0;
+  }
+
+  /** Turn each `(H1)` or `（C2）` of a rendered body into a label chip. */
+  function chipLabels(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.parentElement.closest('.math-inline, .math-display, .katex, code, pre, .lchip')
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    const found = [];
+    while (walker.nextNode()) found.push(walker.currentNode);
+    for (const node of found) {
+      const parts = node.textContent.split(/[(（]([HC][0-9]+)[)）]/);
+      if (parts.length < 2) continue;
+      node.replaceWith(...parts.map((part, at) => (at % 2
+        ? h('span', { class: 'lchip', tabindex: '0', dataset: { label: part }, title: `${part}: point at it to lift the Cards that use it`, text: part })
+        : part)).filter((part) => part !== ''));
+    }
+  }
+
+  /**
+   * Label chips lift the Cards that use them: pointing at `H1` lifts, inside `scope`, every
+   * element whose `data-labels` names H1 (a proof step that uses it, its counterexample). `ready`
+   * may first fill in the labels (the Cards are read on the first point).
+   */
+  function wireLabels(listen, { scope = () => listen, ready, onLift } = {}) {
+    // The Card that holds the chip the reader points at stays where it is.
+    const lift = (label, on, from) => {
+      for (const chip of scope().querySelectorAll(`.lchip[data-label="${label}"]`)) chip.classList.toggle('on', on);
+      for (const node of scope().querySelectorAll('[data-labels]')) {
+        if (node.dataset.labels.split(' ').includes(label)) node.classList.toggle('lchip-lift', on && !node.contains(from));
+      }
+      onLift?.(label, on);
+    };
+    let pointed = null;
+    const enter = (event) => {
+      const chip = event.target.closest?.('.lchip');
+      if (!chip || pointed === chip.dataset.label) return;
+      pointed = chip.dataset.label;
+      Promise.resolve(ready?.()).then(() => { if (pointed === chip.dataset.label) lift(pointed, true, chip); });
+    };
+    const leave = (event) => {
+      const chip = event.target.closest?.('.lchip');
+      if (!chip || !pointed) return;
+      lift(pointed, false);
+      pointed = null;
+    };
+    listen.addEventListener('pointerover', enter);
+    listen.addEventListener('pointerout', leave);
+    listen.addEventListener('focusin', enter);
+    listen.addEventListener('focusout', leave);
+  }
+
+  /** On a unit's Model Card in the reader: chips on its statement lift the model board's slips. */
+  function wireUnitReader(root, card) {
+    const model = card.model;
+    if (!isUnit(model) || model.head.address !== card.address) return;
+    chipLabels(root);
+    let filled = null;
+    const ready = () => (filled ||= Promise.all(model.parts.map((part) => cardAt(part.address).catch(() => null))).then((parts) => {
+      for (const [address, labels] of unitLabels(parts.filter(Boolean))) {
+        const slip = document.querySelector(`.mb-slip[data-at="${CSS.escape(address)}"]`);
+        if (slip && labels) slip.dataset.labels = labels;
+      }
+    }));
+    wireLabels(root, { scope: () => document.querySelector('#reader') || root, ready });
+  }
+
+  // ------------------------------------------------------------ tool tabs
+  // A cited premise is a tab on the edge of the desk or the board. Opening it brings the unit
+  // half out of the box in Look up mode: its statement and chips only. A tab held down drops
+  // the unit back when let go; a tab clicked keeps it out until it is clicked again or Esc.
+  const pullout = { node: null, address: null, held: 0 };
+  function toolTab(tool, extra) {
+    const tab = h('button', {
+      class: 'ttab' + (tool.just_in_time ? ' new' : '') + (extra ? ' ' + extra : ''),
+      title: `${tool.form || 'unit'} ${tool.address} — ${tool.title}\nPull it out of the box (hold to peek)`,
+      dataset: { at: tool.address },
+    },
+      h('span', { class: 'ttab-form', text: tool.form || 'unit' }),
+      h('span', { class: 'ttab-title' }, titleNodes(bareTitle(tool.title || tool.address))),
+      tool.just_in_time ? h('span', { class: 'ttab-new', text: 'new' }) : null);
+    tab.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      pullout.held = performance.now();
+      if (pullout.address === tool.address) { dropBack(); pullout.held = 0; return; }
+      pullOut(tool.address, tab).catch(fail);
+    });
+    tab.addEventListener('pointerup', () => { if (pullout.held && performance.now() - pullout.held > 350) dropBack(); pullout.held = 0; });
+    tab.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (pullout.address === tool.address) dropBack(); else pullOut(tool.address, tab).catch(fail);
+    });
+    return tab;
+  }
+
+  /** Bring a unit (or any Card of a unit) half out of the box beside `from`: Look up mode. */
+  async function pullOut(address, from) {
+    dropBack(true);
+    pullout.address = address;
+    const card = await cardAt(address);
+    if (pullout.address !== address) return;
+    const unitHead = card.model && card.model.head && card.model.head.address === address && isUnit(card.model);
+    const md = h('div', { class: 'md' });
+    md.innerHTML = card.html;
+    // A unit is a tool by its statement; any other Card shows its whole body.
+    if (unitHead) keepSections(md, 'statement');
+    if (unitHead) chipLabels(md);
+    wireMarkdown(md);
+    const node = h('aside', { class: 'pullout', role: 'dialog', 'aria-label': `Look up ${address}` },
+      h('div', { class: 'pullout-card' },
+        h('header', { class: 'pullout-head' },
+          unitHead ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(card.facet) || card.type }),
+          h('button', { class: 'stamp', title: 'Open this Card in the reader', text: address, onclick: () => { study.close(); dropBack(); go(address); } }),
+          h('button', { class: 'pullout-close', title: 'Drop it back into the box (Esc)', 'aria-label': 'Drop back', text: '×', onclick: () => dropBack() })),
+        h('h3', { class: 'pullout-title' }, titleNodes(card.title || address)),
+        md),
+      h('div', { class: 'pullout-lip', 'aria-hidden': 'true' }));
+    // It rises out of the box under the tab that holds it.
+    const rect = from?.getBoundingClientRect();
+    const width = Math.min(460, window.innerWidth - 32);
+    const left = rect ? Math.max(16, Math.min(window.innerWidth - width - 16, rect.left + rect.width / 2 - width / 2)) : (window.innerWidth - width) / 2;
+    node.style.setProperty('--pull-left', left + 'px');
+    node.style.setProperty('--pull-width', width + 'px');
+    document.body.append(node);
+    wireLabels(node);
+    pullout.node = node;
+    for (const tab of document.querySelectorAll('.ttab')) tab.classList.toggle('out', tab.dataset.at === address);
+    requestAnimationFrame(() => node.classList.add('up'));
+  }
+  function dropBack(now) {
+    const node = pullout.node;
+    pullout.node = null;
+    pullout.address = null;
+    for (const tab of document.querySelectorAll('.ttab.out')) tab.classList.remove('out');
+    if (!node) return;
+    if (now) { node.remove(); return; }
+    node.classList.remove('up');
+    setTimeout(() => node.remove(), 320);
+  }
+
+  // ---------------------------------------------------------- theory board
+  /**
+   * A Theory Card's board: its units laid out by dependency (layout.js `theoryRows`), each a
+   * card whose size is its weight: a focus unit (a main result, a theory object, a unit many
+   * cite) is a full card, a support unit a smaller card, a lemma a slim slip on the thread
+   * between the results it connects, a corollary hung under its theorem, an axiom on the
+   * bottom row. Tools from other theories are tabs on the left edge; the theories that use it,
+   * tabs on the right. Ink follows the degree of interest: the open unit is lifted, the units
+   * it cites and the units that cite it stay inked, the main results and objects keep their
+   * ink, and the rest recede to their form and title. Pointing at a unit opens it for a
+   * moment. In Review mode the main results lie face down: recall each from its title.
+   */
+  function theoryBoard(theory, openUnit) {
+    const math = theory.model.math;
+    const units = math.order || [];
+    const byAddress = new Map(units.map((unit) => [unit.address, unit]));
+    const users = new Map(units.map((unit) => [unit.address, []]));
+    for (const unit of units) for (const premise of unit.cites || []) users.get(premise)?.push(unit.address);
+    const { rows, base, hung } = ZtLayout.theoryRows(units);
+    const review = state.reading === 'review';
+    const nodes = new Map();
+    const keep = (unit) => unit.main || unit.object || unit.weight === 'focus';
+    const ink = (unit, open) => {
+      if (unit.address === open) return 'here';
+      if (open && ((byAddress.get(open)?.cites || []).includes(unit.address) || users.get(open)?.includes(unit.address))) return 'near';
+      return keep(unit) ? 'keep' : 'far';
+    };
+    const shape = (unit) => (unit.form === 'lemma' && unit.weight === 'detail' ? 'slim' : unit.weight === 'focus' ? 'full' : 'small');
+
+    const unitNode = (address, hangs) => {
+      const unit = byAddress.get(address);
+      const down = review && unit.main;
+      const lvl = LEVELS[unit.level];
+      const node = h('button', {
+        class: `tb-unit ${hangs ? 'small hung' : shape(unit)}${down ? ' down' : ''}`,
+        dataset: { at: address },
+        title: `${unit.form}${lvl ? ' · ' + lvl.label : ''} · ${address}${unit.main ? ' · main result' : unit.object ? ' · theory object' : ''}${unit.load ? ` · cited by ${unit.load}` : ''}\n${unit.title}${down ? '\nFace down: recall the statement, then click to turn it over' : ''}`,
+      },
+        h('span', { class: 'tb-head' },
+          h('span', { class: 'tb-form', text: unit.form }),
+          unit.main ? h('span', { class: 'tb-role', text: 'main' }) : unit.object ? h('span', { class: 'tb-role', text: 'object' }) : null,
+          unit.load >= 2 ? h('span', { class: 'tb-load', title: `${unit.load} units and models cite it`, text: `用于 ${unit.load}` }) : null),
+        h('span', { class: 'tb-title' }, titleNodes(bareTitle(unit.title))),
+        down ? h('span', { class: 'tb-statement', hidden: true }) : null);
+      node.addEventListener('click', () => {
+        // Face down: the first click turns it over to show the statement; the next opens it.
+        if (node.classList.contains('down')) {
+          node.classList.remove('down');
+          node.classList.add('turned');
+          cardAt(address).then((card) => {
+            const md = h('div', { class: 'md' });
+            md.innerHTML = card.html;
+            keepSections(md, 'statement');
+            chipLabels(md);
+            wireMarkdown(md);
+            const slot = node.querySelector('.tb-statement');
+            slot.replaceChildren(md);
+            slot.hidden = false;
+          }).catch(fail);
+          return;
+        }
+        go(address);
+      });
+      nodes.set(address, node);
+      return node;
+    };
+    const cell = (address) => h('div', { class: 'tb-cell' }, unitNode(address),
+      (hung.get(address) || []).map((corollary) => unitNode(corollary, true)));
+    const threads = svg('svg', { class: 'tb-threads', 'aria-hidden': 'true' });
+    const toolsEdge = (math.tools || []).length ? h('div', { class: 'tb-edge tools', 'aria-label': 'Tools from other theories' },
+      h('span', { class: 'mb-tray', text: 'Tools' }),
+      math.tools.map((tool) => toolTab(tool))) : null;
+    const usersEdge = (math.users || []).filter((user) => user.theory).length ? h('div', { class: 'tb-edge users', 'aria-label': 'Theories that use this one' },
+      h('span', { class: 'mb-tray', text: '后续' }),
+      math.users.filter((user) => user.theory).map((user) => h('button', {
+        class: 'ttab user', title: `${user.theory.address} — ${user.theory.title}\ncites ${user.units.map((u) => u.address).join(', ')}`,
+        onclick: () => go(user.theory.address),
+      }, h('span', { class: 'ttab-form', text: 'theory' }), h('span', { class: 'ttab-title' }, titleNodes(user.theory.title))))) : null;
+    const field = h('div', { class: 'tb-field' },
+      threads,
+      rows.map((row) => h('div', { class: 'tb-row' }, row.map(cell))),
+      base.length ? h('div', { class: 'tb-row base', title: 'Axioms hold the theory up' }, base.map(cell)) : null);
+    const board = h('div', { class: 'theory-board' + (review ? ' review' : '') }, toolsEdge, field, usersEdge);
+
+    // Ink: the open unit, its premises and users, the main results and objects; the rest recedes.
+    let open = openUnit || null;
+    const paint = (focus) => {
+      for (const [address, node] of nodes) {
+        node.classList.remove('here', 'near', 'keep', 'far');
+        node.classList.add(ink(byAddress.get(address), focus));
+      }
+      for (const group of threads.children) {
+        const hot = focus && (group.dataset.from === focus || group.dataset.to === focus);
+        group.classList.toggle('hot', Boolean(hot));
+        group.classList.toggle('quiet', Boolean(focus) && !hot);
+      }
+    };
+    field.addEventListener('pointerover', (event) => {
+      const node = event.target.closest('.tb-unit');
+      if (node) paint(node.dataset.at);
+    });
+    field.addEventListener('pointerleave', () => paint(open));
+
+    // A thread runs from a premise down to the unit that cites it; from an axiom, up.
+    const draw = () => {
+      const box = field.getBoundingClientRect();
+      if (!box.width) return;
+      threads.setAttribute('width', box.width);
+      threads.setAttribute('height', box.height);
+      threads.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+      threads.replaceChildren();
+      const place = (address) => {
+        const r = nodes.get(address)?.getBoundingClientRect();
+        return r && { x: r.left - box.left + r.width / 2, t: r.top - box.top, b: r.bottom - box.top };
+      };
+      for (const unit of units) {
+        if ([...hung.values()].some((list) => list.includes(unit.address))) continue;
+        for (const premise of unit.cites || []) {
+          const from = place(premise);
+          const to = place(unit.address);
+          if (!from || !to) continue;
+          const up = from.t > to.b;
+          const y1 = up ? from.t : from.b;
+          const y2 = up ? to.b + 2 : to.t - 2;
+          const mid = (y1 + y2) / 2;
+          const group = svg('g', { class: 'tb-thread' });
+          group.dataset.from = premise;
+          group.dataset.to = unit.address;
+          const d = `M ${from.x} ${y1} C ${from.x} ${mid}, ${to.x} ${mid}, ${to.x} ${y2}`;
+          const s = up ? 1 : -1;
+          group.append(svg('path', { d, class: 'line' }), svg('path', { d: `M ${to.x - 3.5} ${y2 + 5 * s} L ${to.x} ${y2} L ${to.x + 3.5} ${y2 + 5 * s}`, class: 'tip' }));
+          threads.append(group);
+        }
+      }
+      paint(open);
+    };
+    setTimeout(draw);
+    new ResizeObserver(draw).observe(field);
+    paint(open);
+    return board;
+  }
+
+  /** The Learn path of a theory: each main result after the units it needs that came before. */
+  function theoryPath(theory) {
+    const math = theory.model.math;
+    const byAddress = new Map((math.order || []).map((unit) => [unit.address, unit]));
+    const pass = (math.study || []).find((station) => station.pass === 'path');
+    if (!pass || !pass.results.length) return null;
+    const stop = (address, main) => {
+      const unit = byAddress.get(address) || { form: '', title: address };
+      return h('button', {
+        class: 'tb-stop' + (main ? ' main' : ''),
+        title: `Study ${unit.form} ${address} — ${unit.title}`,
+        onclick: () => study.open(address, 'learn').catch(fail),
+      }, h('span', { class: 'tb-form', text: unit.form }), h('span', { class: 'tb-title' }, titleNodes(bareTitle(unit.title))));
+    };
+    return h('div', { class: 'tb-path', 'aria-label': 'Study path' },
+      h('div', { class: 'mb-tray', text: 'Study path · each main result after what it needs' }),
+      pass.results.map((result) => h('div', { class: 'tb-route' },
+        result.path.map((address) => [stop(address), h('span', { class: 'tb-arrow', 'aria-hidden': 'true', text: '→' })]),
+        stop(result.result, true))));
+  }
+
+  /** The reading-mode switch: one setting for the study desk and the theory board. */
+  function readingSwitch(onChange) {
+    return h('div', { class: 'seg sd-modes', role: 'tablist', 'aria-label': 'Reading mode' },
+      Object.entries(READING).map(([mode, info]) => h('button', {
+        role: 'tab', class: state.reading === mode ? 'on' : null, 'aria-selected': state.reading === mode ? 'true' : 'false',
+        title: `${info.label} (${info.key}) — ${info.note}`,
+        onclick: () => { if (state.reading !== mode) { setReading(mode); onChange(mode); } },
+      }, info.label)));
+  }
+
+  /** The math block under a Theory Card or a unit in the reader. */
+  function mathTools(card) {
+    const model = card.model;
+    if (isTheory(model) && model.head.address === card.address) {
+      const holder = h('div', { class: 'tb-wrap' });
+      const fill = () => holder.replaceChildren(...[
+        h('div', { class: 'tb-bar' },
+          h('div', { class: 'section-label', text: `Theory · ${model.math.units} unit${model.math.units === 1 ? '' : 's'} in dependency order` }),
+          readingSwitch(fill)),
+        theoryBoard(card, null),
+        theoryPath(card),
+        theoryFaults(model.math),
+      ].filter(Boolean));
+      fill();
+      return holder;
+    }
+    if (!isUnit(model)) return null;
+    const theories = model.math.theories || [];
+    const holder = h('div', { class: 'tb-wrap' });
+    if (theories.length) {
+      // The theory around this unit, folded: it opens on this unit.
+      const fold = h('details', { class: 'tb-fold' }, h('summary', {},
+        h('span', { class: 'mb-tray', text: 'In theory' }), ' ', titleNodes(theories[0].title)));
+      fold.open = store.get('zt-theory-fold') === '1';
+      let filled = false;
+      const fill = () => {
+        if (filled || !fold.open) return;
+        filled = true;
+        cardAt(theories[0].address).then((theory) => {
+          if (isTheory(theory.model)) fold.append(theoryBoard(theory, model.head.address));
+        }).catch(fail);
+      };
+      fold.addEventListener('toggle', () => { store.set('zt-theory-fold', fold.open ? '1' : '0'); fill(); });
+      fill();
+      holder.append(fold);
+    }
+    return holder;
+  }
+
+  function theoryFaults(math) {
+    const rows = [...(math.faults || []).map((f) => f.fix), ...(math.cycle || []).map((f) => f.fix), ...(math.forward || []).map((f) => f.note)];
+    if (!rows.length) return null;
+    return h('details', { class: 'mb-build' }, h('summary', { text: `Theory · ${rows.length} fault${rows.length === 1 ? '' : 's'}` }),
+      rows.map((text) => h('p', { class: 'mb-reason fault' }, h('span', { class: 'note' }, titleNodes(text)))));
+  }
+
+  // ----------------------------------------------------------- study desk
+  /**
+   * The study desk: a unit's Cards taken out of the box onto a desk, one station at a time
+   * (get_model's `math.study`). The focus Card lies in the centre, squared up and lifted; at
+   * most three companions lie beside it in full ink; the Derivation slips of a step wait under
+   * it; every other Card of the unit lies in a "+N" stack at the edge; the premises its proof
+   * cites are tabs on the bottom edge. Moving to the next station slides the Cards that stay
+   * to their new places, brings new ones out of the stack, and puts the others back on it. A
+   * face-down Card shows its back with its title only: recall it, then turn it over.
+   */
+  const study = (() => {
+    const desk = { node: null, model: null, head: null, stations: [], at: 0, turned: new Set(), cards: new Map(), labels: new Map(), fan: false };
+    const isOpen = () => Boolean(desk.node);
+
+    async function open(address, mode) {
+      const card = await cardAt(address);
+      const model = card.model;
+      if (!isUnit(model)) { toast(`${address} is in no mathematical unit`, 'err'); return; }
+      if (mode) setReading(mode);
+      desk.model = model;
+      desk.head = model.head.address;
+      desk.turned = new Set();
+      desk.fan = false;
+      // The unit's Cards, and the Cards of other units its stations lay beside them.
+      const members = new Set([desk.head, ...model.parts.map((part) => part.address)]);
+      for (const station of model.math.study || []) {
+        for (const at of [...station.focus, ...station.companions, ...(station.details || [])]) members.add(at);
+      }
+      const read = await Promise.all([...members].map((at) => cardAt(at).catch(() => null)));
+      desk.cards = new Map(read.filter(Boolean).map((one) => [one.address, one]));
+      desk.labels = unitLabels([desk.head, ...model.parts.map((part) => part.address)].map((at) => desk.cards.get(at)).filter(Boolean));
+      plan();
+      if (address !== desk.head) {
+        const at = desk.stations.findIndex((station) => station.focus.includes(address));
+        if (at >= 0) desk.at = at;
+      }
+      if (!desk.node) {
+        desk.node = h('section', { class: 'sd', role: 'dialog', 'aria-label': 'Study desk' });
+        document.body.append(desk.node);
+        // Pointing at a label also lifts the Cards in the stack that use it.
+        wireLabels(desk.node, { onLift: (label, on) => {
+          const stack = desk.node?.querySelector('.sd-fold');
+          if (!stack) return;
+          const any = [...stack.querySelectorAll('.sd-fslip')].some((slip) => (slip.dataset.labels || '').split(' ').includes(label));
+          stack.classList.toggle('peek', on && any);
+        } });
+        requestAnimationFrame(() => desk.node?.classList.add('open'));
+      }
+      render(false);
+    }
+
+    function plan() {
+      const facetOf = new Map(desk.model.parts.map((part) => [part.address, part.facet || '']));
+      const isPlan = (at) => /^(证明思路|proof plan)/i.test(facetOf.get(at) || '');
+      desk.stations = ZtLayout.studyStations(desk.model.math.study, state.reading, desk.head, isPlan);
+      desk.at = 0;
+    }
+
+    function close() {
+      const node = desk.node;
+      if (!node) return;
+      desk.node = null;
+      dropBack();
+      node.classList.remove('open');
+      setTimeout(() => node.remove(), 260);
+    }
+
+    function go_(at) {
+      if (at < 0 || at >= desk.stations.length || at === desk.at) return;
+      desk.at = at;
+      desk.fan = false;
+      render(true);
+    }
+
+    function turn(address) {
+      const key = `${state.reading}:${desk.at}:${address}`;
+      desk.turned.add(key);
+      for (const node of desk.node.querySelectorAll(`.sd-card[data-at="${CSS.escape(address)}"].down`)) node.classList.remove('down');
+    }
+    const isDown = (station, address) => station.face_down && station.focus.includes(address) && !desk.turned.has(`${state.reading}:${desk.at}:${address}`);
+
+    /** One Card of the unit as an index card on the desk. `as`: focus, companion, or detail. */
+    function deskCard(address, as, station) {
+      const card = desk.cards.get(address);
+      if (!card) return null;
+      // A unit's Model Card: this unit's, or another unit's lying beside it as a tool.
+      const head = Boolean(card.model && card.model.head && card.model.head.address === address && card.form);
+      const own = address === desk.head;
+      const md = h('div', { class: 'md' });
+      md.innerHTML = card.html;
+      let lean = false;
+      if (head) {
+        // The statement as a tool, the motive alone before the statement is met, or the whole Model Card.
+        const meetsMotive = own && as === 'companion' && station.pass === 'meet' && !desk.stations.slice(0, desk.at).some((s) => s.focus.includes(desk.head));
+        if (station.lookup || !own || (as === 'companion' && !meetsMotive)) lean = !keepSections(md, 'statement');
+        else if (meetsMotive) lean = !keepSections(md, 'motive');
+        chipLabels(md);
+      }
+      wireMarkdown(md);
+      const down = as === 'focus' && isDown(station, address);
+      const labels = head ? '' : desk.labels.get(address) || [...labelsOf(card)].join(' ');
+      const crux = station.crux && as === 'focus';
+      const facet = head ? null : card.facet;
+      const back = facet && /^(假设作用|hypothesis role)/i.test(facet) && labels
+        ? `Why ${labels.split(' ')[0]}?` : null;
+      const node = h('article', {
+        class: `sd-card ${as}${head ? ' head' : ''}${down ? ' down' : ''}${crux ? ' crux' : ''}${card.emphasis === 'core' ? ' core' : ''}`,
+        dataset: { at: address, labels: labels || null },
+      },
+        h('div', { class: 'sd-flip' },
+          h('div', { class: 'sd-face front' },
+            h('header', { class: 'sd-head' },
+              head ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(facet) }),
+              crux ? h('span', { class: 'sd-crux', title: 'The crux step: the idea of the proof', text: 'crux' }) : null,
+              labels && !head ? h('span', { class: 'sd-uses', title: 'The labels this Card uses' }, labels.split(' ').map((label) => h('span', { class: 'lchip small', tabindex: '0', dataset: { label }, text: label }))) : null,
+              h('button', { class: 'stamp', title: 'Open this Card in the reader', text: address, onclick: () => { close(); go(address); } })),
+            h('h3', { class: 'sd-title' }, titleNodes(card.title || address)),
+            lean && as !== 'focus' ? null : md),
+          down ? h('div', { class: 'sd-face back', 'aria-label': 'Face down' },
+            h('span', { class: 'sd-back-title' }, back || titleNodes(head ? card.title : bareTitle(card.title))),
+            h('span', { class: 'sd-back-hint', text: head ? 'Recall the hypotheses and the conclusion, then turn it over' : 'Recall it, then turn it over' }),
+            h('kbd', { text: 'Space' })) : null));
+      if (down) node.addEventListener('click', (event) => { if (!event.target.closest('button')) turn(address); });
+      return node;
+    }
+
+    function render(slide) {
+      const before = slide ? measure() : null;
+      const station = desk.stations[desk.at];
+      const model = desk.model;
+      const headCard = desk.cards.get(desk.head);
+      const shown = new Set([...station.focus, ...station.companions, ...(station.details || [])]);
+      const all = [desk.head, ...model.parts.map((part) => part.address)];
+      const folded = all.filter((at) => !shown.has(at) && desk.cards.has(at));
+      const companions = station.companions.map((at) => deskCard(at, 'companion', station)).filter(Boolean);
+      const left = companions.filter((_, at) => at % 2 === 1);
+      const right = companions.filter((_, at) => at % 2 === 0);
+
+      // The pass track: one group of dots per pass, one dot per station.
+      const groups = [];
+      desk.stations.forEach((s, at) => {
+        if (!groups.length || groups[groups.length - 1].pass !== s.pass) groups.push({ pass: s.pass, stops: [] });
+        groups[groups.length - 1].stops.push(at);
+      });
+      const track = h('nav', { class: 'sd-track', 'aria-label': 'Stations' }, groups.map((group) => h('span', { class: 'sd-pass' + (group.stops.includes(desk.at) ? ' on' : '') },
+        h('span', { class: 'sd-pass-name', text: PASSES[group.pass] || group.pass }),
+        group.stops.map((at) => h('button', {
+          class: 'sd-dot' + (at === desk.at ? ' on' : at < desk.at ? ' past' : '') + (desk.stations[at].crux ? ' crux' : ''),
+          title: `${PASSES[group.pass] || group.pass} · ${desk.stations[at].focus.map((a) => facetLabel(desk.cards.get(a)?.facet) || (a === desk.head ? 'statement' : a)).join(' + ')}`,
+          'aria-current': at === desk.at ? 'step' : null,
+          onclick: () => go_(at),
+        })))));
+
+      const fold = folded.length ? h('div', { class: 'sd-fold' + (desk.fan ? ' fanned' : '') },
+        h('div', { class: 'sd-fan' }, folded.map((at) => {
+          const card = desk.cards.get(at);
+          return h('button', {
+            class: 'sd-fslip', dataset: { at, labels: at === desk.head ? null : desk.labels.get(at) || null },
+            title: `${at} — ${card.title}\nPull it out of the stack`,
+            onclick: (event) => pullOut(at, event.currentTarget).catch(fail),
+          }, h('span', { class: 'sd-facet', text: at === desk.head ? card.form : facetLabel(card.facet) }), h('span', { class: 'sd-fslip-title' }, titleNodes(bareTitle(card.title))));
+        })),
+        h('button', {
+          class: 'sd-stack', title: `${folded.length} more Card${folded.length === 1 ? '' : 's'} of this unit, face down in a stack`,
+          onclick: () => { desk.fan = !desk.fan; desk.node.querySelector('.sd-fold').classList.toggle('fanned', desk.fan); },
+        }, h('span', { text: `+${folded.length}` }))) : null;
+
+      const focus = station.focus.map((at) => deskCard(at, 'focus', station)).filter(Boolean);
+      const details = (station.details || []).map((at) => {
+        const card = desk.cards.get(at);
+        if (!card) return null;
+        return h('details', { class: 'sd-slip', dataset: { at, labels: desk.labels.get(at) || null } },
+          h('summary', {}, h('span', { class: 'sd-facet', text: facetLabel(card.facet) }), ' ', titleNodes(bareTitle(card.title))),
+          (() => { const md = h('div', { class: 'md' }); md.innerHTML = card.html; wireMarkdown(md); return md; })());
+      }).filter(Boolean);
+      const anyDown = focus.some((node) => node.classList.contains('down'));
+
+      desk.node.replaceChildren(
+        h('header', { class: 'sd-bar' },
+          h('div', { class: 'sd-unit' }, typeStamp(headCard.type, null, null, null, headCard.level, headCard.form), h('span', { class: 'sd-unit-title' }, titleNodes(headCard.title))),
+          readingSwitch(() => { plan(); render(false); }),
+          h('button', { class: 'icon-btn sd-close', title: 'Put the cards back in the box (Esc)', 'aria-label': 'Close the study desk', onclick: close },
+            h('span', { 'aria-hidden': 'true', text: '×' }))),
+        track,
+        h('div', { class: 'sd-surface' },
+          h('div', { class: 'sd-spread' + (focus.length > 1 ? ' pair' : '') },
+            h('div', { class: 'sd-side left' }, left),
+            h('div', { class: 'sd-center' }, h('div', { class: 'sd-focus' }, focus), details.length ? h('div', { class: 'sd-slips' }, details) : null),
+            h('div', { class: 'sd-side right' }, right)),
+          fold),
+        h('footer', { class: 'sd-foot' },
+          h('button', { class: 'btn', disabled: desk.at === 0, onclick: () => go_(desk.at - 1) }, '← Back'),
+          station.tools && station.tools.length ? h('div', { class: 'sd-tabs', 'aria-label': 'Cited premises' }, station.tools.map((tool) => toolTab(tool))) : h('div', { class: 'sd-tabs' }),
+          anyDown ? h('button', { class: 'btn', onclick: () => station.focus.forEach(turn) }, 'Turn over', h('kbd', { text: 'Space' })) : null,
+          h('button', { class: 'btn primary', disabled: desk.at === desk.stations.length - 1, onclick: () => go_(desk.at + 1) }, 'Next →')),
+      );
+      // The statement's chips cue the labels the focus uses, and the clause a non-example fails.
+      const cued = new Set();
+      for (const at of station.focus) if (at !== desk.head) (desk.labels.get(at) || '').split(' ').forEach((label) => label && cued.add(label));
+      for (const at of station.companions) {
+        if (/^(非例|反例|non-example|counterexample)/i.test(desk.cards.get(at)?.facet || '')) (desk.labels.get(at) || '').split(' ').forEach((label) => label && cued.add(label));
+      }
+      for (const chip of desk.node.querySelectorAll('.sd-card.head .md .lchip')) chip.classList.toggle('cue', cued.has(chip.dataset.label));
+      if (before) slideFrom(before);
+    }
+
+    // Motion: the Cards that stay slide to their new places; new Cards come off the stack;
+    // the Cards that leave go back onto it (FLIP).
+    function measure() {
+      const rects = new Map();
+      for (const node of desk.node.querySelectorAll('.sd-card')) rects.set(node.dataset.at, { rect: node.getBoundingClientRect(), node });
+      const stack = desk.node.querySelector('.sd-stack');
+      return { rects, stack: stack ? stack.getBoundingClientRect() : null };
+    }
+    function slideFrom(before) {
+      const stack = desk.node.querySelector('.sd-stack')?.getBoundingClientRect() || before.stack;
+      const stays = new Set();
+      for (const node of desk.node.querySelectorAll('.sd-card')) {
+        const now = node.getBoundingClientRect();
+        const was = before.rects.get(node.dataset.at)?.rect;
+        stays.add(node.dataset.at);
+        const from = was || stack;
+        if (!from) continue;
+        const dx = from.left - now.left;
+        const dy = from.top - now.top;
+        const scale = was ? 1 : 0.35;
+        node.animate([
+          { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: was ? 1 : 0, transformOrigin: 'top left' },
+          { transform: 'none', opacity: 1, transformOrigin: 'top left' },
+        ], { duration: 380, easing: 'cubic-bezier(.3, .7, .25, 1)' });
+      }
+      // The Cards that leave are carried back onto the stack.
+      if (!stack) return;
+      for (const [address, { rect, node }] of before.rects) {
+        if (stays.has(address)) continue;
+        const ghost = node.cloneNode(true);
+        ghost.classList.add('sd-ghost');
+        Object.assign(ghost.style, { left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', height: rect.height + 'px' });
+        document.body.append(ghost);
+        const motion = ghost.animate([
+          { transform: 'none', opacity: 1 },
+          { transform: `translate(${stack.left - rect.left}px, ${stack.top - rect.top}px) scale(.25)`, opacity: 0 },
+        ], { duration: 340, easing: 'cubic-bezier(.4, 0, .6, 1)', fill: 'forwards' });
+        motion.onfinish = () => ghost.remove();
+      }
+    }
+
+    function key(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (pullout.node) dropBack(); else close();
+        return true;
+      }
+      if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return false;
+      const station = desk.stations[desk.at];
+      switch (event.key) {
+        case 'ArrowRight': case 'PageDown': case 'j': event.preventDefault(); go_(desk.at + 1); return true;
+        case 'ArrowLeft': case 'PageUp': case 'k': event.preventDefault(); go_(desk.at - 1); return true;
+        case ' ': case 'Enter':
+          if (event.target.closest?.('button, summary, .ttab')) return false;
+          event.preventDefault();
+          station.focus.forEach(turn);
+          return true;
+        default: {
+          const mode = Object.keys(READING).find((one) => READING[one].key === event.key);
+          if (mode) {
+            event.preventDefault();
+            setReading(mode);
+            plan();
+            render(false);
+          }
+          return true;
+        }
+      }
+    }
+
+    return { open, close, key, isOpen };
+  })();
+
   function wireMarkdown(root) {
     typeset(root);
     wireCharts(root);
@@ -3049,7 +3773,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(30)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · w workspace · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · s study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up) · w workspace · f fit · Esc close' }),
     ]);
   }
 
@@ -3716,6 +4440,8 @@
   function installKeys() {
     document.addEventListener('keydown', (event) => {
       if (state.editing || finder.isOpen) return;
+      // The study desk takes the keys while it lies open.
+      if (study.isOpen()) { study.key(event); return; }
       // Ctrl+K searches from anywhere, as in most desktop apps.
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -3757,7 +4483,8 @@
         case 'f': return run(() => fitView());
         case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
         case '?': return run(showHelp);
-        case 'Escape': return run(() => openRail(false));
+        case 's': return isUnit(card?.model) ? run(() => study.open(card.address)) : undefined;
+        case 'Escape': return run(() => (pullout.node ? dropBack() : openRail(false)));
         default: return undefined;
       }
     });

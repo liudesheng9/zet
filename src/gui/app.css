@@ -1625,3 +1625,302 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 }
 .finder-preview .card.in-hand.filled { animation: none; }
 .finder-preview .card.in-hand .pending { color: var(--ink-faint); }
+
+/* ---------- mathematical units ---------- */
+/* Label chips: H1 … Hn on a statement, C1 … Cn on a definition. Pointing at one lifts the
+   Cards that use it. */
+.lchip {
+  display: inline-block; margin: 0 2px; padding: 3px 5px 2px; border-radius: 4px; vertical-align: 1px;
+  font: 700 10.5px/1 var(--mono); letter-spacing: .02em; cursor: help;
+  color: var(--model); background: color-mix(in srgb, var(--model) 7%, var(--stock));
+  border: 1px solid color-mix(in srgb, var(--model) 45%, transparent);
+  transition: background .15s, color .15s, transform .15s var(--ease);
+}
+.lchip:hover, .lchip.on { background: var(--model); color: var(--stock); transform: translateY(-1px); }
+.lchip.small { font-size: 9px; padding: 2px 4px 1px; margin: 0; }
+/* A chip the station points to: the label the focus uses, or the clause a non-example fails. */
+.lchip.cue:not(.on) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.mb-slip.lchip-lift {
+  opacity: 1; z-index: 2; transform: translateY(-6px) rotate(-.5deg);
+  box-shadow: 0 0 0 1.5px var(--model), 0 0 26px -8px color-mix(in srgb, var(--model) 50%, transparent), var(--card-shadow-lift);
+}
+.mb-slip.lchip-lift .mb-title { display: -webkit-box; }
+.study-btn { border-color: color-mix(in srgb, var(--model) 40%, transparent); color: var(--model); }
+
+/* The theory board: a Theory Card's units by dependency. A unit's size is its weight (a full
+   card, a smaller card, a slim slip); its ink is its degree of interest. */
+.tb-wrap { margin-top: 18px; }
+.tb-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 8px; }
+.tb-bar .section-label { flex: 1; margin: 0; }
+.sd-modes button { padding: 4px 11px; font-size: 12px; }
+.theory-board {
+  position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px;
+  margin: 0 -8px; padding: 18px 0 20px; border-radius: 8px;
+  background: radial-gradient(ellipse 90% 70% at 50% 0%, color-mix(in srgb, var(--model) 5%, transparent), transparent 75%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--model) 9%, transparent);
+}
+.tb-field { position: relative; grid-column: 2; display: flex; flex-direction: column; gap: 30px; min-width: 0; padding: 0 6px; }
+.tb-threads { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.tb-thread .line, .tb-thread .tip { fill: none; stroke: var(--ink-faint); stroke-width: 1; opacity: .42; stroke-linecap: round; stroke-linejoin: round; transition: opacity .2s, stroke .2s; }
+.tb-thread.hot .line, .tb-thread.hot .tip { stroke: var(--model); stroke-width: 1.6; opacity: .9; }
+.tb-thread.quiet .line, .tb-thread.quiet .tip { opacity: .12; }
+.tb-row { position: relative; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 16px 18px; pointer-events: none; }
+.tb-row.base { padding-top: 16px; border-top: 1px dashed color-mix(in srgb, var(--ink-faint) 45%, transparent); }
+.tb-cell { display: flex; flex-direction: column; align-items: center; pointer-events: auto; }
+.tb-unit {
+  position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 0 10px 8px; border: 0; border-radius: 2px; text-align: left; font: inherit; color: var(--ink);
+  background: var(--stock); box-shadow: var(--card-shadow); cursor: pointer;
+  transition: transform .25s var(--ease), box-shadow .25s, opacity .25s;
+}
+.tb-unit.full { width: 214px; min-height: 96px; }
+.tb-unit.small { width: 164px; }
+.tb-unit.slim { width: 138px; padding-bottom: 4px; }
+.tb-unit.hung { width: 150px; margin-top: -4px; transform: rotate(.7deg); }
+.tb-head {
+  display: flex; align-items: baseline; gap: 6px; margin: 0 -10px; padding: 5px 10px 3px;
+  border-bottom: 1px solid var(--paper-margin);
+  font: 700 8.5px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--model); white-space: nowrap;
+}
+.tb-role { color: var(--accent); }
+.tb-load { margin-left: auto; font-weight: 600; letter-spacing: .04em; text-transform: none; color: var(--ink-faint); }
+.tb-title {
+  font: 500 12.5px/1.45 var(--serif); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
+.tb-title .katex { font-size: 1em; }
+.tb-unit.full .tb-title { font-size: 13.5px; font-weight: 600; }
+.tb-unit.slim .tb-head { padding: 3px 10px 2px; }
+.tb-unit.slim .tb-title { -webkit-line-clamp: 1; font-size: 11.5px; }
+/* Degree of interest. */
+.tb-unit.here {
+  z-index: 2; transform: translateY(-4px) rotate(-.5deg);
+  box-shadow: 0 0 0 1.5px var(--model), 0 0 30px -8px color-mix(in srgb, var(--model) 45%, transparent), var(--card-shadow-lift);
+}
+.tb-unit.near { box-shadow: 0 0 0 1px color-mix(in srgb, var(--model) 40%, transparent), var(--card-shadow); }
+.tb-unit.far { opacity: .5; box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .08); }
+.tb-unit.far .tb-title { -webkit-line-clamp: 1; color: var(--ink-soft); }
+.tb-unit.hung.here { transform: translateY(-4px) rotate(.7deg); }
+/* Review: a main result lies face down with its title; the first click turns it over. */
+.tb-unit.down {
+  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--model) 6%, transparent) 6px 7px), var(--stock);
+}
+.tb-unit.down .tb-head { color: var(--ink-faint); }
+.tb-unit.turned { animation: tb-turn .45s var(--ease); }
+@keyframes tb-turn { from { transform: perspective(900px) rotateY(80deg); } }
+.tb-statement .md { font-size: 12.5px; line-height: 1.6; }
+.tb-statement .md > :first-child { margin-top: 4px; }
+/* Tabs on the board's edges: the tools it takes from other theories, the theories that use it. */
+.tb-edge { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; min-width: 0; max-width: 132px; }
+.tb-edge.tools { grid-column: 1; align-items: flex-start; }
+.tb-edge.users { grid-column: 3; align-items: flex-end; }
+.tb-edge .mb-tray { padding: 0 8px; }
+.ttab {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; max-width: 132px; padding: 5px 9px 6px;
+  border: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer;
+  background: var(--stock); box-shadow: var(--card-shadow);
+  transition: transform .2s var(--ease), box-shadow .2s;
+}
+.tb-edge.tools .ttab { border-radius: 0 5px 5px 0; }
+.tb-edge.users .ttab { border-radius: 5px 0 0 5px; }
+.tb-edge.tools .ttab:hover, .tb-edge.tools .ttab.out { transform: translateX(4px); box-shadow: var(--card-shadow-lift); }
+.tb-edge.users .ttab:hover { transform: translateX(-4px); box-shadow: var(--card-shadow-lift); }
+.ttab-form { font: 700 8px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--model); }
+.ttab-title {
+  font: 500 11.5px/1.35 var(--serif); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.ttab-new {
+  align-self: flex-start; margin-top: 2px; padding: 0 4px; border: 1px solid var(--accent); border-radius: 3px;
+  font: 700 8px/1.5 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
+}
+/* The study path of a theory, and the theory around a unit (folded). */
+.tb-path { display: flex; flex-direction: column; gap: 6px; margin: 14px 0 0; }
+.tb-route { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tb-stop {
+  display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 4px 10px;
+  border: 1px solid var(--hairline); border-radius: 4px; background: var(--paper); text-align: left;
+  font: 500 12.5px var(--serif); transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.tb-stop:hover { border-color: color-mix(in srgb, var(--model) 50%, transparent); box-shadow: var(--shadow); transform: translateY(-1px); }
+.tb-stop.main { border-color: color-mix(in srgb, var(--model) 45%, transparent); font-weight: 600; }
+.tb-stop .tb-form { font: 700 8.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--model); }
+.tb-stop .tb-title { -webkit-line-clamp: 1; }
+.tb-arrow { color: var(--ink-faint); }
+.tb-fold { margin: 22px 0 0; }
+.tb-fold > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 4px; color: var(--ink-soft); font: 500 13px var(--serif); }
+.tb-fold > summary::-webkit-details-marker { display: none; }
+.tb-fold > summary::before { content: "▸"; color: var(--ink-faint); font-size: 11px; transition: transform .2s; }
+.tb-fold[open] > summary::before { transform: rotate(90deg); }
+.tb-fold > .theory-board { margin-top: 10px; }
+
+/* The study desk: one station of a unit at a time. The focus Card lies in the centre, lifted;
+   up to three companions lie beside it; the rest of the unit waits in a "+N" stack; the
+   premises its proof cites are tabs that rise from the box along the bottom edge. */
+.sd {
+  position: fixed; left: 0; right: 0; top: 58px; bottom: 0; z-index: 42;
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: radial-gradient(ellipse 70% 60% at 50% 40%, color-mix(in srgb, var(--paper) 50%, transparent), transparent 80%), var(--desk);
+  border-top: 1px solid var(--hairline);
+  opacity: 0; transform: translateY(12px); transition: opacity .26s var(--ease), transform .26s var(--ease);
+}
+.sd.open { opacity: 1; transform: none; }
+.sd-bar { display: flex; align-items: center; gap: 14px; padding: 12px 22px 4px; min-width: 0; }
+.sd-unit { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.sd-unit-title { font: 600 16px/1.3 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-close span { font-size: 22px; line-height: 1; }
+.sd-track { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 20px; padding: 4px 22px 6px; }
+.sd-pass { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); }
+.sd-pass-name { margin-right: 2px; font: 600 9.5px var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+.sd-pass.on .sd-pass-name { color: var(--ink); }
+.sd-dot {
+  width: 9px; height: 9px; padding: 0; border-radius: 50%; border: 1.5px solid var(--ink-faint); background: none;
+  transition: transform .2s var(--ease), background .2s, border-color .2s;
+}
+.sd-dot.past { background: var(--ink-faint); }
+.sd-dot.crux { border-color: var(--accent); }
+.sd-dot.on { background: var(--accent); border-color: var(--accent); transform: scale(1.4); }
+.sd-surface { position: relative; display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 18px 24px 96px; }
+.sd-spread {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 600px) minmax(0, 1fr); gap: 26px;
+  align-items: start; width: 100%; max-width: 1560px; margin: auto;
+}
+.sd-spread.pair { grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr); }
+.sd-side { display: flex; flex-direction: column; gap: 18px; padding-top: 34px; min-width: 0; }
+.sd-side.left { align-items: flex-end; }
+.sd-side.right { align-items: flex-start; }
+.sd-focus { display: flex; justify-content: center; align-items: flex-start; gap: 22px; }
+.sd-card { --rule: 26px; --pad: 18px; position: relative; width: 100%; max-width: 340px; min-width: 0; perspective: 1600px; transition: translate .25s var(--ease); }
+.sd-card.focus { --rule: 28px; --pad: 24px; flex: 1 1 0; max-width: 600px; }
+.sd-flip { display: grid; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.3, .7, .25, 1); }
+.sd-face {
+  grid-area: 1 / 1; min-width: 0; padding: 0 var(--pad) var(--pad);
+  -webkit-backface-visibility: hidden; backface-visibility: hidden;
+  background-color: var(--stock);
+  background-image: radial-gradient(ellipse 120% 90% at 50% 35%, transparent 55%, var(--stock-shade));
+  border-radius: 3px; box-shadow: var(--card-shadow);
+}
+.sd-card.focus .sd-face { min-height: 330px; box-shadow: var(--card-shadow-lift); }
+.sd-card.companion .sd-face { min-height: 180px; }
+.sd-card.focus { translate: 0 -6px; }
+.sd-card.crux .sd-face { box-shadow: 0 0 0 1.5px var(--accent), 0 0 34px -10px color-mix(in srgb, var(--accent) 55%, transparent), var(--card-shadow-lift); }
+.sd-card.lchip-lift { translate: 0 -10px; }
+.sd-card.lchip-lift .sd-face { box-shadow: 0 0 0 1.5px var(--model), 0 0 30px -8px color-mix(in srgb, var(--model) 50%, transparent), var(--card-shadow-lift); }
+/* Face down: the back of the card, its title only; turning it over follows a real card. */
+.sd-face.back {
+  transform: rotateY(180deg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: 30px var(--pad); text-align: center;
+  background-image: repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--model) 6%, transparent) 7px 8px);
+}
+.sd-card.down { cursor: pointer; }
+.sd-card.down .sd-flip { transform: rotateY(180deg); }
+.sd-card.down:hover .sd-flip { transform: rotateY(172deg) translateY(-3px); }
+.sd-back-title { font: 600 19px/1.45 var(--serif); overflow-wrap: anywhere; }
+.sd-back-hint { font-size: 12.5px; color: var(--ink-faint); }
+.sd-head {
+  display: flex; align-items: center; gap: 8px; margin: 0 calc(-1 * var(--pad)); padding: 12px var(--pad) 7px;
+  border-bottom: 1.5px solid var(--paper-margin);
+}
+.sd-head .stamp { margin-left: auto; font-size: 11px; padding: 2px 7px; }
+.sd-facet { font: 700 9px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--model); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-crux {
+  padding: 1px 5px; border: 1.5px solid var(--accent); border-radius: 3px; transform: rotate(-3deg);
+  font: 700 9px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+}
+.sd-uses { display: inline-flex; gap: 3px; }
+.sd-title { margin: 10px 0 4px; font: 600 15px/1.4 var(--serif); overflow-wrap: anywhere; }
+.sd-card.focus .sd-title { margin-top: 12px; font-size: 20px; }
+.sd-card .md {
+  margin: 0 calc(-1 * var(--pad)); padding: 0 var(--pad);
+  font-size: 14.5px; line-height: var(--rule); color: var(--ink);
+  background-image: repeating-linear-gradient(to bottom, transparent 0 calc(var(--rule) - 1px), var(--paper-rule) calc(var(--rule) - 1px) var(--rule));
+  background-position: 0 -5px;
+}
+.sd-card.focus .md { font-size: 16px; }
+.sd-card .md > * { margin: 0 0 var(--rule); }
+.sd-card .md > :last-child { margin-bottom: 0; }
+.sd-card .md h1, .sd-card .md h2, .sd-card .md h3, .sd-card .md h4 { line-height: var(--rule); margin: 0; font-size: 1em; }
+.sd-card .md li, .sd-card .md li > p { margin: 0; }
+.sd-card.companion .md { max-height: 42vh; overflow: auto; }
+/* Derivation slips wait under the focus. */
+.sd-slips { display: flex; flex-direction: column; gap: 6px; max-width: 520px; margin: 18px auto 0; }
+.sd-slip {
+  padding: 4px 12px; border-radius: 2px; background: var(--stock); opacity: .72;
+  box-shadow: 0 0 0 .5px var(--stock-edge), 0 1px 2px rgba(60, 45, 20, .08);
+  transition: opacity .2s, transform .2s var(--ease), box-shadow .2s;
+}
+.sd-slip[open], .sd-slip:hover { opacity: 1; }
+.sd-slip.lchip-lift { opacity: 1; transform: translateY(-4px); box-shadow: 0 0 0 1.5px var(--model), var(--card-shadow-lift); }
+.sd-slip > summary { cursor: pointer; list-style: none; font: 500 12.5px/1.5 var(--serif); }
+.sd-slip > summary::-webkit-details-marker { display: none; }
+.sd-slip .md { font-size: 13.5px; padding: 4px 0 6px; }
+/* The rest of the unit: a stack of cards at the edge; it fans out on a click. */
+.sd-fold { position: absolute; right: 24px; bottom: 18px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.sd-stack {
+  width: 66px; height: 46px; border: 0; border-radius: 3px; background: var(--stock);
+  font: 600 13px var(--mono); color: var(--ink-soft);
+  box-shadow: 3px -3px 0 -1px var(--stock), 3px -3px 0 0 var(--stock-edge), 6px -6px 0 -1px var(--stock), 6px -6px 0 0 var(--stock-edge), var(--card-shadow);
+  transition: transform .2s var(--ease);
+}
+.sd-stack:hover { transform: translateY(-2px); }
+.sd-fan { display: none; flex-direction: column; gap: 5px; max-height: 52vh; overflow: auto; padding: 4px 8px 4px 14px; }
+.sd-fold.fanned .sd-fan, .sd-fold.peek .sd-fan { display: flex; }
+.sd-fold.peek:not(.fanned) .sd-fslip:not(.lchip-lift) { display: none; }
+.sd-fslip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 230px; padding: 0 10px 6px;
+  border: 0; border-radius: 2px; text-align: left; font: inherit; color: var(--ink);
+  background: var(--stock); box-shadow: var(--card-shadow); animation: sd-deal .24s var(--ease);
+  transition: transform .2s var(--ease), box-shadow .2s;
+}
+.sd-fslip .sd-facet { align-self: stretch; padding: 4px 0 2px; border-bottom: 1px solid var(--paper-margin); }
+.sd-fslip:hover { transform: translateX(-4px); box-shadow: var(--card-shadow-lift); }
+.sd-fslip.lchip-lift { transform: translateX(-8px); box-shadow: 0 0 0 1.5px var(--model), var(--card-shadow-lift); }
+.sd-fslip-title { font: 500 12.5px/1.45 var(--serif); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+@keyframes sd-deal { from { opacity: 0; transform: translate(14px, 10px); } }
+/* The bottom edge: the box the tool tabs rise from, and the way on. */
+.sd-foot {
+  display: flex; align-items: flex-end; gap: 12px; padding: 10px 22px 0; min-height: 60px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--desk-grain) 70%, transparent));
+  border-top: 1px solid var(--hairline);
+}
+.sd-foot .btn { margin-bottom: 12px; }
+.sd-tabs { flex: 1; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 8px; min-width: 0; }
+.sd-tabs .ttab { max-width: 220px; padding-bottom: 10px; border-radius: 6px 6px 0 0; }
+.sd-tabs .ttab:hover, .sd-tabs .ttab.out { transform: translateY(-5px); box-shadow: var(--card-shadow-lift); }
+.sd-ghost { position: fixed; z-index: 43; margin: 0; pointer-events: none; }
+@media (max-width: 900px) {
+  .sd-spread, .sd-spread.pair { grid-template-columns: minmax(0, 1fr); }
+  .sd-side { padding-top: 0; }
+  .sd-side.left, .sd-side.right { align-items: stretch; }
+  .sd-side.left { order: 3; }
+  .sd-focus { flex-direction: column; align-items: stretch; }
+  .sd-card, .sd-card.focus { max-width: none; }
+  .sd-fold { position: static; margin-top: 18px; }
+  .theory-board { grid-template-columns: minmax(0, 1fr); }
+  .tb-edge, .tb-field { grid-column: 1; }
+  .tb-edge { flex-direction: row; flex-wrap: wrap; max-width: none; }
+}
+
+/* A unit out of the box in Look up mode: it rises behind the box's front lip. */
+.pullout { position: fixed; left: var(--pull-left); width: var(--pull-width); bottom: 0; z-index: 48; pointer-events: none; }
+.pullout-card {
+  --rule: 26px; position: relative; max-height: 64vh; overflow: auto; padding: 0 20px 52px; pointer-events: auto;
+  background-color: var(--stock); background-image: radial-gradient(ellipse 120% 90% at 50% 35%, transparent 55%, var(--stock-shade));
+  border-radius: 3px 3px 0 0; box-shadow: var(--card-shadow-lift);
+  transform: translateY(105%); transition: transform .32s cubic-bezier(.3, .7, .25, 1);
+}
+.pullout.up .pullout-card { transform: translateY(22px); }
+.pullout-head { display: flex; align-items: center; gap: 8px; margin: 0 -20px; padding: 12px 20px 7px; border-bottom: 1.5px solid var(--paper-margin); }
+.pullout-head .stamp { margin-left: auto; font-size: 11px; padding: 2px 7px; }
+.pullout-close { border: 0; background: none; font-size: 18px; line-height: 1; color: var(--ink-faint); padding: 0 2px; }
+.pullout-close:hover { color: var(--ink); }
+.pullout-title { margin: 10px 0 4px; font: 600 16px/1.4 var(--serif); }
+.pullout .md { font-size: 14.5px; line-height: var(--rule); }
+.pullout-lip {
+  position: absolute; left: -16px; right: -16px; bottom: 0; height: 34px; border-radius: 5px 5px 0 0;
+  background: color-mix(in srgb, var(--accent) 22%, var(--desk-grain));
+  box-shadow: 0 -2px 8px rgba(40, 25, 10, .16), inset 0 1px 0 rgba(255, 255, 255, .25);
+  transform: translateY(100%); transition: transform .2s var(--ease);
+}
+.pullout.up .pullout-lip { transform: none; }

@@ -493,8 +493,97 @@
     };
   }
 
+  /**
+   * The theory board: a Theory Card's units laid out by dependency. `units` come in
+   * dependency order (`math.order`), each with its `form` and the units of the theory it
+   * `cites`. A unit lies one row below the deepest unit it cites, under the mean slot of
+   * those units (ties keep the dependency order). An axiom lies on the bottom row: it holds
+   * the theory up. A corollary that follows from one result alone, and that no unit cites,
+   * hangs under that result instead of taking a slot. Linear in units and citations.
+   * Returns { rows: [[address]], base: [address], hung: Map(address -> [address]) }.
+   */
+  function theoryRows(units) {
+    const index = new Map(units.map((unit, at) => [unit.address, at]));
+    const cited = new Set();
+    for (const unit of units) for (const premise of unit.cites || []) cited.add(premise);
+    const formOf = new Map(units.map((unit) => [unit.address, unit.form]));
+    const base = units.filter((unit) => unit.form === 'axiom').map((unit) => unit.address);
+    const hung = new Map();
+    const hanging = new Set();
+    for (const unit of units) {
+      const premises = (unit.cites || []).filter((premise) => index.has(premise));
+      const host = premises[0];
+      if (unit.form !== 'corollary' || premises.length !== 1 || cited.has(unit.address)) continue;
+      if (formOf.get(host) === 'axiom' || hanging.has(host)) continue;
+      if (!hung.has(host)) hung.set(host, []);
+      hung.get(host).push(unit.address);
+      hanging.add(unit.address);
+    }
+    const depth = new Map();
+    const rows = [];
+    for (const unit of units) {
+      if (hanging.has(unit.address) || formOf.get(unit.address) === 'axiom') continue;
+      let d = 0;
+      for (const premise of unit.cites || []) if (depth.has(premise)) d = Math.max(d, depth.get(premise) + 1);
+      depth.set(unit.address, d);
+      (rows[d] ||= []).push(unit);
+    }
+    const slot = new Map();
+    const placed = rows.filter(Boolean).map((row) => {
+      const key = new Map(row.map((unit) => {
+        const xs = (unit.cites || []).map((premise) => slot.get(premise)).filter((x) => x !== undefined);
+        return [unit.address, xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : (index.get(unit.address) + 0.5) / units.length];
+      }));
+      row.sort((a, b) => key.get(a.address) - key.get(b.address) || index.get(a.address) - index.get(b.address));
+      row.forEach((unit, at) => slot.set(unit.address, (at + 0.5) / row.length));
+      return row.map((unit) => unit.address);
+    });
+    return { rows: placed, base, hung };
+  }
+
+  /**
+   * The labels a text names: hypotheses `H1`, `H2`, ... and clauses `C1`, `C2`, ..., as
+   * `(H1)`, `（H1）`, or a bare `H1` that no letter or digit touches.
+   */
+  function labelsIn(text) {
+    const found = new Set();
+    for (const match of String(text || '').matchAll(/(?<![A-Za-z0-9])([HC][0-9]+)(?![0-9])/g)) found.add(match[1]);
+    return found;
+  }
+
+  /**
+   * The stations of a unit in one reading mode, from its study order (`math.study`: the
+   * Learn passes, then the recall pass). Learn takes every station but the recall pass, and
+   * the proof plan's station (`isPlan`) shows the tools of every step it plans. Review recalls
+   * the statement, then each Why and Boundary station face down, then the exercises. Look
+   * up is one station: the statement alone, with every tool its proof cites.
+   */
+  function studyStations(study, mode, head, isPlan = () => false) {
+    const learn = (study || []).filter((station) => station.pass !== 'recall');
+    const tools = [];
+    const seen = new Set();
+    for (const station of learn) {
+      for (const tool of station.tools || []) {
+        if (!seen.has(tool.address)) { seen.add(tool.address); tools.push(tool); }
+      }
+    }
+    const blank = { companions: [], details: [], tools: [] };
+    if (mode === 'lookup') return [{ ...blank, pass: 'look up', focus: [head], tools, lookup: true }];
+    if (mode === 'review') {
+      const recall = (study || []).filter((station) => station.pass === 'recall');
+      const statement = recall.find((station) => station.focus.includes(head)) || { ...blank, pass: 'recall', focus: [head] };
+      const middle = learn.filter((station) => station.pass === 'why' || station.pass === 'boundary');
+      const exercises = recall.filter((station) => station !== statement);
+      return [statement, ...middle, ...exercises].map((station) => ({ ...blank, ...station, face_down: true }));
+    }
+    return learn.map((station) => (station.focus.some(isPlan) && station.pass === 'why'
+      ? { ...blank, ...station, tools: tools.length ? tools : station.tools || [] }
+      : { ...blank, ...station }));
+  }
+
   return {
     sideRank, outline, pathTo, focusLens, edgePath, elbow, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
+    theoryRows, labelsIn, studyStations,
   };
 });
