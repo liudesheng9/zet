@@ -324,6 +324,59 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 
 `gate` v1 comes from `~/.claude/skills/workflow-framework-protocol/modules/gate.js`: params `subject`, `checks`; it throws `gate: <message>` on the first failed check.
 
+### Tools per workflow
+
+The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the PowerShell step, Haiku managers run its DeepSeek jobs, and a cleanup agent deletes the conversations (see Control inside one compiler step). Every PowerShell script is in `scripts/book-digest/` (see [Digest scripts](digest-scripts.md)).
+
+Tools that every workflow uses through `zt-digest-lib`:
+
+- Agents through `ctx.agent`: Haiku (`manager`) for every command runner and DeepSeek manager, Sonnet (`architect`) for the model plans, Opus (`organizer`) for Organize.
+- DeepSeek Harness MCP tools (each manager loads them with one ToolSearch call): `deepseek_run`, `deepseek_wait`, `deepseek_respond`, `deepseek_prompt`, `deepseek_delete`, `deepseek_list`, `deepseek_remove_workspace`, `deepseek_usage`.
+- The zt helper `C:\Users\chenx\.codex\skills\zt\scripts\zt-mcp.ps1`: the DeepSeek jobs write Cards through it, and the managers approve its commands.
+- `zt-check`: the read-only self-checks of the DeepSeek jobs, approved by the managers.
+- `card-compiler.ps1`: the card cycle (`runCards`) of the digest blocks, `cards-book`, `link-check`, and the Organize notes.
+
+**Base** (`zt-digest-base.blueprint.json`, in both workflows):
+
+| Module | Tools |
+|---|---|
+| `gate` | none (checks the args in the script) |
+| `zt-dsh-source` | a Haiku probe: `deepseek_run`, `deepseek_wait`, `deepseek_delete`, `deepseek_remove_workspace` |
+| `zt-digest-prepare` | a Haiku agent: `prepare-book-digest.ps1`, `deepseek_usage` |
+| `zt-book-terms` | compiler steps `book-terms.ps1` (plan, apply) |
+| `zt-cards-book` | the card cycle: `card-compiler.ps1` |
+| `zt-digest-blocks` | Haiku managers: `deepseek_run` per group (digest prefix, skills, model, effort), `zt-mcp.ps1`, `zt-check`; then the card cycle per block |
+| `zt-hubs` | a Haiku hub manager (`hub-compiler.ps1 -Step survey`), then compiler steps `hub-compiler.ps1` (plan, apply, check, report) |
+| `zt-link-prepare` | a Haiku agent: `prepare-link-pass.ps1`, `deepseek_usage` (mode `link`) |
+| `zt-link-pass` | Haiku managers: `deepseek_run` per pending group (link prefix), `zt-mcp.ps1`, `zt-check` |
+| `zt-link-check` | the card cycle: `card-compiler.ps1` |
+| `zt-dsh-cleanup` | a Haiku agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace`, `deepseek_usage` |
+| `zt-organize` | `organize-survey.ps1`; Opus with the zt skills and every zt call through `zt-mcp.ps1`, never the `mcp__zt__*` tools (decisions: read-only `get_card`, `get_tree`, `get_model`, `search_cards`; the legacy job also writes, for example `move_card`, `delete_card`) and Read/Write for `decisions.json`; `organize-apply.ps1`; the card cycle for the notes; compiler steps `book-skeleton.ps1` (plan, apply; DeepSeek skill `asd-ste100-zh`) |
+| `zt-figures` | `attach-figures.ps1` |
+| `zt-bridge` | compiler steps `bridge-compiler.ps1` (plan, read-only judge jobs, report; apply with a selection) |
+| `zt-audit` | `digest-audit.ps1` (read-only) |
+| `zt-digest-report` | none (assembles the result) |
+
+**`zt-econ-digest`** (slot `after-digest`):
+
+| Module | Tools |
+|---|---|
+| `zt-model-layer` (with `zt-model-lib`) | a Haiku agent: `list-models.ps1`; per batch compiler steps `model-compiler.ps1` (brief, skeleton and fill, derive, review and split, report), Sonnet for `plan.json`; a Haiku cleanup agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace` |
+| `zt-explain` | compiler steps `model-compiler.ps1` (`explain`, `explain-apply`, `explain-report`) |
+| `zt-event-layer` | compiler steps `event-compiler.ps1` (plan, apply, report) |
+| `zt-finding-layer` | compiler steps `finding-compiler.ps1` (plan, apply, report) |
+
+**`zt-math-digest`** (all four slots; the math modules use `zt-math-lib`, which runs `math-compiler.ps1`):
+
+| Module | Slot | Tools |
+|---|---|---|
+| `zt-math-skeleton` | `after-prepare` | Haiku agents: `math-compiler.ps1` (`index`, `docs`, `skeleton`); compiler steps `notation`, `notation-apply` |
+| `zt-model-layer`, `zt-explain` | `after-digest` | as in `zt-econ-digest` |
+| `zt-math-boundary` | `after-digest` | compiler steps `math-compiler.ps1` (`boundary`, `boundary-apply`, `boundary-settle`) |
+| `zt-math-proof` | `after-digest` | compiler steps `math-compiler.ps1` (`proof`, `proof-apply`) |
+| `zt-math-theory` | `after-link` | compiler steps `math-compiler.ps1` (`theory`, `theory-apply`) |
+| `zt-math-check` | `after-audit` | a Haiku agent: `math-compiler.ps1 -Step check` (read-only) |
+
 ### The generator
 
 ```text
@@ -635,6 +688,7 @@ Gaps:
 ## Change history
 
 
+- `2026-10-16` — Interfaces gain "Tools per workflow": the agents, DeepSeek Harness MCP tools, zt tools, and PowerShell scripts that each module of the base, `zt-econ-digest`, and `zt-math-digest` uses.
 - `2026-10-16` — Bridge review fixes (`zt-econ-digest` 3.1.3, `zt-math-digest` 2.2.3, base 2.1.3; `zt-bridge` v4, `zt-digest-lib` v4, `zt-digest-report` v5). A Bridge report is published only after every judge job answered, and the cleanup always runs. The stage expects `status != failed` and continues on a failure. The gate checks that `bridgeMax` and `bridgeCandidates` are whole numbers. Judges get one exclusive read-only approval list. `zt-book-digest.js` `runBridge()` follows the same rules.
 - `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
 - `2026-10-16` `cbba3b1` — The economics set gains the empirical-results layer: module `zt-finding-layer`, stage and mode `findings`, arg `findings`; `zt-econ-digest` 3.0.0.
