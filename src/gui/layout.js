@@ -581,9 +581,44 @@
       : { ...blank, ...station }));
   }
 
+  /**
+   * The stations of a whole theory in one run, from its theory report (`math.study`,
+   * `math.tools`). Learn: Orient (the Theory Card, its first main results beside it), then for
+   * each main result its prerequisite path and the result itself, each unit by its own Meet,
+   * Why, and Boundary stations, then Connect (the Theory Card, the theories that use it, its
+   * tools as tabs) and Recall (each main result face down). Review: each main result's own
+   * Review stations. Look up: the Theory Card with its first main results. `unitStations(unit)`
+   * gives a unit's stations in the same mode. Each station names its `unit` (the theory's own
+   * stations name the Theory Card).
+   */
+  function theoryRun(math, head, mode, unitStations) {
+    const study = (math && math.study) || [];
+    const pass = (name) => study.find((station) => station.pass === name);
+    const blank = { companions: [], details: [], tools: [] };
+    const own = (station) => ({ ...blank, ...station, unit: head });
+    const mains = (pass('recall') || {}).focus || [];
+    const units = (list, keep) => list.flatMap((unit) => unitStations(unit)
+      .filter((station) => !keep || keep.includes(station.pass))
+      .map((station) => ({ ...blank, ...station, unit })));
+    if (mode === 'lookup') return [own({ pass: 'look up', focus: [head], companions: mains.slice(0, 3), lookup: true })];
+    if (mode === 'review') return units(mains);
+    const run = [];
+    const orient = pass('orient');
+    if (orient) run.push(own({ pass: 'orient', focus: orient.focus, companions: orient.companions || [] }));
+    for (const result of (pass('path') || {}).results || []) {
+      run.push(...units([...result.path, result.result], ['meet', 'why', 'boundary']));
+    }
+    const connect = pass('connect');
+    if (connect) {
+      const tools = (math.tools || []).filter((tool) => (connect.tools || []).includes(tool.address));
+      run.push(own({ pass: 'connect', focus: connect.focus, companions: (connect.users || []).filter(Boolean).slice(0, 3), tools }));
+    }
+    run.push(...mains.map((at) => own({ pass: 'recall', focus: [at], face_down: true })));
+    return run;
+  }
   return {
     sideRank, outline, pathTo, focusLens, edgePath, elbow, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
-    theoryRows, labelsIn, studyStations,
+    theoryRows, labelsIn, studyStations, theoryRun,
   };
 });

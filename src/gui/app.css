@@ -1902,6 +1902,22 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   .tb-edge { flex-direction: row; flex-wrap: wrap; max-width: none; }
 }
 
+/* A run through a theory, and a lemma studied inside a step: the bar names where the reader
+   stands (the run, the unit it stepped in from, the unit now on the desk). Only the last
+   crumb keeps full ink. */
+.sd-crumb { display: inline-flex; align-items: center; gap: 8px; min-width: 0; opacity: .62; }
+.sd-crumb.here { opacity: 1; }
+.sd-crumb:not(.here) .sd-unit-title { font-size: 13px; font-weight: 500; max-width: 16em; }
+.sd-crumb:not(.here) .type-stamp { display: none; }
+.sd-crumb-sep { color: var(--ink-faint); font-size: 15px; }
+.sd-return { flex: none; border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
+/* In a theory run the track groups the dots by unit: each group names the unit's form and title. */
+.sd-pass-name.unit { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .02em; text-transform: none; font: 500 11px var(--serif); }
+.sd-pass-name.unit b { font: 700 8.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--model); }
+.sd-track.run { gap: 6px 16px; }
+.sd-inset .sd-pass-name { padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; color: var(--accent); }
+.pullout-study { margin: 2px 0 8px; border-color: color-mix(in srgb, var(--model) 40%, transparent); color: var(--model); }
+
 /* A unit out of the box in Look up mode: it rises behind the box's front lip. */
 .pullout { position: fixed; left: var(--pull-left); width: var(--pull-width); bottom: 0; z-index: 48; pointer-events: none; }
 .pullout-card {

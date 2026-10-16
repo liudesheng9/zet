@@ -2540,8 +2540,8 @@
           title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
           cls: 'table-btn',
         }),
-        isUnit(card.model) ? actionButton('Study', 's', () => study.open(card.address), {
-          title: 'Take the unit out onto the study desk: one station at a time, in the reading mode you chose',
+        isStudied(card) ? actionButton('Study', 's', () => study.open(card.address), {
+          title: isUnit(card.model) ? 'Take the unit out onto the study desk: one station at a time, in the reading mode you chose' : 'Study the whole theory on the desk: orient, each main result after what it needs, connect, recall',
           cls: 'study-btn',
         }) : null,
         actionButton('Edit', 'e', editCard, { primary: true }),
@@ -2920,6 +2920,8 @@
   const setReading = (mode) => { state.reading = mode; store.set('zt-reading', mode); };
   const isUnit = (model) => Boolean(model && model.head && model.math && model.form && model.form !== 'theory');
   const isTheory = (model) => Boolean(model && model.head && model.math && model.form === 'theory');
+  /** A unit or a Theory Card: what the study desk opens on. */
+  const isStudied = (card) => Boolean(card && (isUnit(card.model) || (isTheory(card.model) && card.model.head.address === card.address)));
 
   // The Cards of a unit, read once per change of the archive.
   const cardCache = { fingerprint: null, cards: new Map() };
@@ -3096,6 +3098,14 @@
           h('button', { class: 'stamp', title: 'Open this Card in the reader', text: address, onclick: () => { study.close(); dropBack(); go(address); } }),
           h('button', { class: 'pullout-close', title: 'Drop it back into the box (Esc)', 'aria-label': 'Drop back', text: '×', onclick: () => dropBack() })),
         h('h3', { class: 'pullout-title' }, titleNodes(card.title || address)),
+        study.canEnter(card) ? h('button', {
+          class: 'btn pullout-study', title: 'Study its proof here, then come back to the step',
+          onclick: () => {
+            const rect = node.querySelector('.pullout-card').getBoundingClientRect();
+            dropBack(true);
+            study.enter(address, rect).catch(fail);
+          },
+        }, 'Study its proof', h('span', { 'aria-hidden': 'true', text: '→' })) : null,
         md),
       h('div', { class: 'pullout-lip', 'aria-hidden': 'true' }));
     // It rises out of the box under the tab that holds it.
@@ -3274,7 +3284,7 @@
       return h('button', {
         class: 'tb-stop' + (main ? ' main' : ''),
         title: `Study ${unit.form} ${address} — ${unit.title}`,
-        onclick: () => study.open(address, 'learn').catch(fail),
+        onclick: () => study.open(theory.address, 'learn', { unit: address }).catch(fail),
       }, h('span', { class: 'tb-form', text: unit.form }), h('span', { class: 'tb-title' }, titleNodes(bareTitle(unit.title))));
     };
     return h('div', { class: 'tb-path', 'aria-label': 'Study path' },
@@ -3349,33 +3359,72 @@
    * cites are tabs on the bottom edge. Moving to the next station slides the Cards that stay
    * to their new places, brings new ones out of the stack, and puts the others back on it. A
    * face-down Card shows its back with its title only: recall it, then turn it over.
+   *
+   * A run is one unit, or a whole theory (layout.js `theoryRun`: orient, each main result's
+   * prerequisite path, connect, recall). From a step, the reader may study a lemma it cites:
+   * the lemma's own stations take the desk, and its last station leads back to the same step.
    */
   const study = (() => {
-    const desk = { node: null, model: null, head: null, stations: [], at: 0, turned: new Set(), cards: new Map(), labels: new Map(), fan: false };
+    const desk = {
+      node: null, run: null, units: new Map(), stations: [], at: 0, turned: new Set(),
+      cards: new Map(), labels: new Map(), fan: false, nest: [],
+    };
     const isOpen = () => Boolean(desk.node);
+    const station = () => desk.stations[desk.at];
 
-    async function open(address, mode) {
+    async function read(addresses) {
+      const missing = [...new Set(addresses)].filter((at) => at && !desk.cards.has(at));
+      const cards = await Promise.all(missing.map((at) => cardAt(at).catch(() => null)));
+      for (const card of cards) if (card) desk.cards.set(card.address, card);
+    }
+
+    /** Read a unit: its Model Card, its parts, and the Cards its stations lay beside them. */
+    async function readUnit(head) {
+      if (desk.units.has(head)) return desk.units.get(head);
+      const card = desk.cards.get(head) || await cardAt(head).catch(() => null);
+      if (!card || !isUnit(card.model) || card.model.head.address !== head) return null;
+      desk.cards.set(head, card);
+      const model = card.model;
+      const members = [head, ...model.parts.map((part) => part.address)];
+      const beside = (model.math.study || []).flatMap((s) => [...s.focus, ...s.companions, ...(s.details || [])]);
+      await read([...members, ...beside]);
+      for (const [address, labels] of unitLabels(members.map((at) => desk.cards.get(at)).filter(Boolean))) desk.labels.set(address, labels);
+      const facetOf = new Map(model.parts.map((part) => [part.address, part.facet || '']));
+      const unit = { head, model, members, isPlan: (at) => /^(证明思路|proof plan)/i.test(facetOf.get(at) || '') };
+      desk.units.set(head, unit);
+      return unit;
+    }
+    const unitStations = (head, mode) => {
+      const unit = desk.units.get(head);
+      return unit ? ZtLayout.studyStations(unit.model.math.study, mode, head, unit.isPlan).map((s) => ({ ...s, unit: head })) : [];
+    };
+
+    /**
+     * Open the desk on a unit (any of its Cards) or a Theory Card. `options.unit` starts a
+     * theory run at the first station of that unit.
+     */
+    async function open(address, mode, options = {}) {
       const card = await cardAt(address);
       const model = card.model;
-      if (!isUnit(model)) { toast(`${address} is in no mathematical unit`, 'err'); return; }
+      const theory = isTheory(model) && model.head.address === address;
+      if (!theory && !isUnit(model)) { toast(`${address} is in no mathematical unit or theory`, 'err'); return; }
       if (mode) setReading(mode);
-      desk.model = model;
-      desk.head = model.head.address;
-      desk.turned = new Set();
-      desk.fan = false;
-      // The unit's Cards, and the Cards of other units its stations lay beside them.
-      const members = new Set([desk.head, ...model.parts.map((part) => part.address)]);
-      for (const station of model.math.study || []) {
-        for (const at of [...station.focus, ...station.companions, ...(station.details || [])]) members.add(at);
+      Object.assign(desk, { units: new Map(), cards: new Map(), labels: new Map(), turned: new Set(), fan: false, nest: [] });
+      if (theory) {
+        desk.cards.set(address, card);
+        desk.run = { kind: 'theory', head: address, math: model.math };
+        await Promise.all((model.math.order || []).map((unit) => readUnit(unit.address)));
+        const connect = (model.math.study || []).find((s) => s.pass === 'connect');
+        await read((connect?.users || []).filter(Boolean));
+      } else {
+        const unit = await readUnit(model.head.address);
+        desk.run = { kind: 'unit', head: unit.head };
       }
-      const read = await Promise.all([...members].map((at) => cardAt(at).catch(() => null)));
-      desk.cards = new Map(read.filter(Boolean).map((one) => [one.address, one]));
-      desk.labels = unitLabels([desk.head, ...model.parts.map((part) => part.address)].map((at) => desk.cards.get(at)).filter(Boolean));
       plan();
-      if (address !== desk.head) {
-        const at = desk.stations.findIndex((station) => station.focus.includes(address));
-        if (at >= 0) desk.at = at;
-      }
+      const at = options.unit
+        ? desk.stations.findIndex((s) => s.unit === options.unit)
+        : address === desk.run.head ? 0 : desk.stations.findIndex((s) => s.focus.includes(address));
+      if (at > 0) desk.at = at;
       if (!desk.node) {
         desk.node = h('section', { class: 'sd', role: 'dialog', 'aria-label': 'Study desk' });
         document.body.append(desk.node);
@@ -3388,14 +3437,46 @@
         } });
         requestAnimationFrame(() => desk.node?.classList.add('open'));
       }
-      render(false);
+      render(null);
     }
 
     function plan() {
-      const facetOf = new Map(desk.model.parts.map((part) => [part.address, part.facet || '']));
-      const isPlan = (at) => /^(证明思路|proof plan)/i.test(facetOf.get(at) || '');
-      desk.stations = ZtLayout.studyStations(desk.model.math.study, state.reading, desk.head, isPlan);
+      const mode = state.reading;
+      desk.nest = [];
+      desk.stations = desk.run.kind === 'theory'
+        ? ZtLayout.theoryRun(desk.run.math, desk.run.head, mode, (unit) => unitStations(unit, mode))
+        : unitStations(desk.run.head, mode);
       desk.at = 0;
+    }
+
+    /** A lemma the open step cites can be studied in place: not the unit on the desk, not one already open. */
+    function canEnter(card) {
+      if (!isOpen() || !card || card.form !== 'lemma' || !isUnit(card.model) || card.model.head.address !== card.address) return false;
+      const open = new Set([station()?.unit, ...desk.nest.map((frame) => frame.unit)]);
+      return !open.has(card.address);
+    }
+
+    /** Step into a lemma's own short study order; the Cards come out of the pulled-out lemma. */
+    async function enter(head, from) {
+      const unit = await readUnit(head);
+      const stations = unit ? unitStations(head, state.reading).filter((s) => s.pass !== 'connect') : [];
+      if (!stations.length) { toast(`${head} has no study order`, 'err'); return; }
+      const before = measure(from);
+      desk.nest.push({ stations: desk.stations, at: desk.at, unit: station().unit, lemma: head });
+      desk.stations = stations;
+      desk.at = 0;
+      desk.fan = false;
+      render(before);
+    }
+    /** Back to the step the lemma was opened from; the lemma's Cards go back under its tab. */
+    function leave() {
+      const frame = desk.nest.pop();
+      if (!frame) return;
+      const before = measure(null, frame.lemma);
+      desk.stations = frame.stations;
+      desk.at = frame.at;
+      desk.fan = false;
+      render(before);
     }
 
     function close() {
@@ -3409,39 +3490,43 @@
 
     function go_(at) {
       if (at < 0 || at >= desk.stations.length || at === desk.at) return;
+      const before = measure();
       desk.at = at;
       desk.fan = false;
-      render(true);
+      render(before);
     }
+    const forward = () => (desk.at === desk.stations.length - 1 && desk.nest.length ? leave() : go_(desk.at + 1));
+    const backward = () => (desk.at === 0 && desk.nest.length ? leave() : go_(desk.at - 1));
 
+    const turnKey = (address) => `${state.reading}:${desk.nest.length}:${desk.at}:${address}`;
     function turn(address) {
-      const key = `${state.reading}:${desk.at}:${address}`;
-      desk.turned.add(key);
+      desk.turned.add(turnKey(address));
       for (const node of desk.node.querySelectorAll(`.sd-card[data-at="${CSS.escape(address)}"].down`)) node.classList.remove('down');
     }
-    const isDown = (station, address) => station.face_down && station.focus.includes(address) && !desk.turned.has(`${state.reading}:${desk.at}:${address}`);
+    const isDown = (s, address) => s.face_down && s.focus.includes(address) && !desk.turned.has(turnKey(address));
 
-    /** One Card of the unit as an index card on the desk. `as`: focus, companion, or detail. */
-    function deskCard(address, as, station) {
+    /** One Card as an index card on the desk. `as`: focus or companion. */
+    function deskCard(address, as, s) {
       const card = desk.cards.get(address);
       if (!card) return null;
-      // A unit's Model Card: this unit's, or another unit's lying beside it as a tool.
+      // A Model Card of a unit or a theory: this station's own, or another lying beside it as a tool.
       const head = Boolean(card.model && card.model.head && card.model.head.address === address && card.form);
-      const own = address === desk.head;
+      const own = address === s.unit;
       const md = h('div', { class: 'md' });
       md.innerHTML = card.html;
       let lean = false;
       if (head) {
         // The statement as a tool, the motive alone before the statement is met, or the whole Model Card.
-        const meetsMotive = own && as === 'companion' && station.pass === 'meet' && !desk.stations.slice(0, desk.at).some((s) => s.focus.includes(desk.head));
-        if (station.lookup || !own || (as === 'companion' && !meetsMotive)) lean = !keepSections(md, 'statement');
+        const meetsMotive = own && as === 'companion' && s.pass === 'meet'
+          && !desk.stations.slice(0, desk.at).some((other) => other.unit === s.unit && other.focus.includes(address));
+        if (s.lookup || !own || (as === 'companion' && !meetsMotive)) lean = !keepSections(md, 'statement');
         else if (meetsMotive) lean = !keepSections(md, 'motive');
         chipLabels(md);
       }
       wireMarkdown(md);
-      const down = as === 'focus' && isDown(station, address);
+      const down = as === 'focus' && isDown(s, address);
       const labels = head ? '' : desk.labels.get(address) || [...labelsOf(card)].join(' ');
-      const crux = station.crux && as === 'focus';
+      const crux = s.crux && as === 'focus';
       const facet = head ? null : card.facet;
       const back = facet && /^(假设作用|hypothesis role)/i.test(facet) && labels
         ? `Why ${labels.split(' ')[0]}?` : null;
@@ -3466,49 +3551,78 @@
       return node;
     }
 
-    function render(slide) {
-      const before = slide ? measure() : null;
-      const station = desk.stations[desk.at];
-      const model = desk.model;
-      const headCard = desk.cards.get(desk.head);
-      const shown = new Set([...station.focus, ...station.companions, ...(station.details || [])]);
-      const all = [desk.head, ...model.parts.map((part) => part.address)];
-      const folded = all.filter((at) => !shown.has(at) && desk.cards.has(at));
-      const companions = station.companions.map((at) => deskCard(at, 'companion', station)).filter(Boolean);
-      const left = companions.filter((_, at) => at % 2 === 1);
-      const right = companions.filter((_, at) => at % 2 === 0);
+    /** Where the run stands: the run, the units the reader stepped in from, the station's unit. */
+    function trail(s) {
+      const units = [desk.run.head];
+      for (const frame of desk.nest) if (frame.unit !== units[units.length - 1]) units.push(frame.unit);
+      if (s.unit !== units[units.length - 1]) units.push(s.unit);
+      return h('div', { class: 'sd-unit' }, units.map((address, at) => {
+        const card = desk.cards.get(address);
+        if (!card) return null;
+        const last = at === units.length - 1;
+        return [at ? h('span', { class: 'sd-crumb-sep', 'aria-hidden': 'true', text: '›' }) : null,
+          h('span', { class: 'sd-crumb' + (last ? ' here' : '') }, typeStamp(card.type, null, null, null, card.level, card.form),
+            h('span', { class: 'sd-unit-title' }, titleNodes(at ? bareTitle(card.title) : card.title)))];
+      }));
+    }
 
-      // The pass track: one group of dots per pass, one dot per station.
+    /** The track: one group of dots per pass, or, in a theory run, per unit on its path. */
+    function track() {
+      const theoryRun = desk.run.kind === 'theory' && !desk.nest.length;
+      const keyOf = (s) => (theoryRun && s.unit !== desk.run.head ? 'u:' + s.unit : 'p:' + s.pass);
       const groups = [];
       desk.stations.forEach((s, at) => {
-        if (!groups.length || groups[groups.length - 1].pass !== s.pass) groups.push({ pass: s.pass, stops: [] });
+        if (!groups.length || groups[groups.length - 1].key !== keyOf(s)) groups.push({ key: keyOf(s), first: s, stops: [] });
         groups[groups.length - 1].stops.push(at);
       });
-      const track = h('nav', { class: 'sd-track', 'aria-label': 'Stations' }, groups.map((group) => h('span', { class: 'sd-pass' + (group.stops.includes(desk.at) ? ' on' : '') },
-        h('span', { class: 'sd-pass-name', text: PASSES[group.pass] || group.pass }),
-        group.stops.map((at) => h('button', {
-          class: 'sd-dot' + (at === desk.at ? ' on' : at < desk.at ? ' past' : '') + (desk.stations[at].crux ? ' crux' : ''),
-          title: `${PASSES[group.pass] || group.pass} · ${desk.stations[at].focus.map((a) => facetLabel(desk.cards.get(a)?.facet) || (a === desk.head ? 'statement' : a)).join(' + ')}`,
-          'aria-current': at === desk.at ? 'step' : null,
-          onclick: () => go_(at),
-        })))));
+      const nameOf = (group) => {
+        if (group.key.startsWith('p:')) return h('span', { class: 'sd-pass-name', text: PASSES[group.first.pass] || group.first.pass });
+        const card = desk.cards.get(group.first.unit);
+        return h('span', { class: 'sd-pass-name unit', title: card ? `${card.form} ${card.address} — ${card.title}` : group.first.unit },
+          h('b', { text: card?.form || 'unit' }), ' ', card ? titleNodes(bareTitle(card.title)) : null);
+      };
+      const lemma = desk.nest.length ? desk.cards.get(desk.nest[desk.nest.length - 1].lemma) : null;
+      return h('nav', { class: 'sd-track' + (theoryRun ? ' run' : ''), 'aria-label': 'Stations' },
+        lemma ? h('span', { class: 'sd-pass sd-inset', title: 'Studying a lemma the step cites; its last station leads back to the step' },
+          h('span', { class: 'sd-pass-name', text: 'Lemma' })) : null,
+        groups.map((group) => h('span', { class: 'sd-pass' + (group.stops.includes(desk.at) ? ' on' : '') },
+          nameOf(group),
+          group.stops.map((at) => h('button', {
+            class: 'sd-dot' + (at === desk.at ? ' on' : at < desk.at ? ' past' : '') + (desk.stations[at].crux ? ' crux' : ''),
+            title: `${PASSES[desk.stations[at].pass] || desk.stations[at].pass} · ${desk.stations[at].focus.map((a) => facetLabel(desk.cards.get(a)?.facet) || (a === desk.stations[at].unit ? 'statement' : bareTitle(desk.cards.get(a)?.title || a))).join(' + ')}`,
+            'aria-current': at === desk.at ? 'step' : null,
+            onclick: () => go_(at),
+          })))));
+    }
+
+    function render(before) {
+      const s = station();
+      const unit = desk.units.get(s.unit);
+      const shown = new Set([...s.focus, ...s.companions, ...(s.details || [])]);
+      // The rest of the station's unit lies in the stack; at a theory station, the theory's other units.
+      const all = unit ? unit.members : (desk.run.math?.order || []).map((u) => u.address);
+      const folded = all.filter((at) => !shown.has(at) && desk.cards.has(at));
+      const companions = s.companions.map((at) => deskCard(at, 'companion', s)).filter(Boolean);
+      const left = companions.filter((_, at) => at % 2 === 1);
+      const right = companions.filter((_, at) => at % 2 === 0);
 
       const fold = folded.length ? h('div', { class: 'sd-fold' + (desk.fan ? ' fanned' : '') },
         h('div', { class: 'sd-fan' }, folded.map((at) => {
           const card = desk.cards.get(at);
+          const head = card.form && card.model?.head?.address === at;
           return h('button', {
-            class: 'sd-fslip', dataset: { at, labels: at === desk.head ? null : desk.labels.get(at) || null },
+            class: 'sd-fslip', dataset: { at, labels: head ? null : desk.labels.get(at) || null },
             title: `${at} — ${card.title}\nPull it out of the stack`,
             onclick: (event) => pullOut(at, event.currentTarget).catch(fail),
-          }, h('span', { class: 'sd-facet', text: at === desk.head ? card.form : facetLabel(card.facet) }), h('span', { class: 'sd-fslip-title' }, titleNodes(bareTitle(card.title))));
+          }, h('span', { class: 'sd-facet', text: head ? card.form : facetLabel(card.facet) }), h('span', { class: 'sd-fslip-title' }, titleNodes(bareTitle(card.title))));
         })),
         h('button', {
-          class: 'sd-stack', title: `${folded.length} more Card${folded.length === 1 ? '' : 's'} of this unit, face down in a stack`,
+          class: 'sd-stack', title: `${folded.length} more Card${folded.length === 1 ? '' : 's'} ${unit ? 'of this unit' : 'of this theory'}, face down in a stack`,
           onclick: () => { desk.fan = !desk.fan; desk.node.querySelector('.sd-fold').classList.toggle('fanned', desk.fan); },
         }, h('span', { text: `+${folded.length}` }))) : null;
 
-      const focus = station.focus.map((at) => deskCard(at, 'focus', station)).filter(Boolean);
-      const details = (station.details || []).map((at) => {
+      const focus = s.focus.map((at) => deskCard(at, 'focus', s)).filter(Boolean);
+      const details = (s.details || []).map((at) => {
         const card = desk.cards.get(at);
         if (!card) return null;
         return h('details', { class: 'sd-slip', dataset: { at, labels: desk.labels.get(at) || null } },
@@ -3516,14 +3630,20 @@
           (() => { const md = h('div', { class: 'md' }); md.innerHTML = card.html; wireMarkdown(md); return md; })());
       }).filter(Boolean);
       const anyDown = focus.some((node) => node.classList.contains('down'));
+      const frame = desk.nest[desk.nest.length - 1];
+      const stepCard = frame && desk.cards.get(frame.stations[frame.at].focus[0]);
+      const last = desk.at === desk.stations.length - 1;
 
       desk.node.replaceChildren(
         h('header', { class: 'sd-bar' },
-          h('div', { class: 'sd-unit' }, typeStamp(headCard.type, null, null, null, headCard.level, headCard.form), h('span', { class: 'sd-unit-title' }, titleNodes(headCard.title))),
-          readingSwitch(() => { plan(); render(false); }),
+          trail(s),
+          frame ? h('button', {
+            class: 'btn sd-return', title: `Back to the step ${stepCard ? bareTitle(stepCard.title) : ''} (Esc)`, onclick: leave,
+          }, '↩ Back to the step') : null,
+          readingSwitch(() => { plan(); render(null); }),
           h('button', { class: 'icon-btn sd-close', title: 'Put the cards back in the box (Esc)', 'aria-label': 'Close the study desk', onclick: close },
             h('span', { 'aria-hidden': 'true', text: '×' }))),
-        track,
+        track(),
         h('div', { class: 'sd-surface' },
           h('div', { class: 'sd-spread' + (focus.length > 1 ? ' pair' : '') },
             h('div', { class: 'sd-side left' }, left),
@@ -3531,48 +3651,48 @@
             h('div', { class: 'sd-side right' }, right)),
           fold),
         h('footer', { class: 'sd-foot' },
-          h('button', { class: 'btn', disabled: desk.at === 0, onclick: () => go_(desk.at - 1) }, '← Back'),
-          station.tools && station.tools.length ? h('div', { class: 'sd-tabs', 'aria-label': 'Cited premises' }, station.tools.map((tool) => toolTab(tool))) : h('div', { class: 'sd-tabs' }),
-          anyDown ? h('button', { class: 'btn', onclick: () => station.focus.forEach(turn) }, 'Turn over', h('kbd', { text: 'Space' })) : null,
-          h('button', { class: 'btn primary', disabled: desk.at === desk.stations.length - 1, onclick: () => go_(desk.at + 1) }, 'Next →')),
+          h('button', { class: 'btn', disabled: desk.at === 0 && !frame, onclick: backward }, desk.at === 0 && frame ? '↩ Back to the step' : '← Back'),
+          s.tools && s.tools.length ? h('div', { class: 'sd-tabs', 'aria-label': 'Cited premises' }, s.tools.map((tool) => toolTab(tool))) : h('div', { class: 'sd-tabs' }),
+          anyDown ? h('button', { class: 'btn', onclick: () => s.focus.forEach(turn) }, 'Turn over', h('kbd', { text: 'Space' })) : null,
+          h('button', { class: 'btn primary', disabled: last && !frame, onclick: forward }, last && frame ? 'Back to the step ↩' : 'Next →')),
       );
       // The statement's chips cue the labels the focus uses, and the clause a non-example fails.
       const cued = new Set();
-      for (const at of station.focus) if (at !== desk.head) (desk.labels.get(at) || '').split(' ').forEach((label) => label && cued.add(label));
-      for (const at of station.companions) {
-        if (/^(非例|反例|non-example|counterexample)/i.test(desk.cards.get(at)?.facet || '')) (desk.labels.get(at) || '').split(' ').forEach((label) => label && cued.add(label));
-      }
+      const cue = (at) => (desk.labels.get(at) || '').split(' ').forEach((label) => label && cued.add(label));
+      for (const at of s.focus) if (at !== s.unit) cue(at);
+      for (const at of s.companions) if (/^(非例|反例|non-example|counterexample)/i.test(desk.cards.get(at)?.facet || '')) cue(at);
       for (const chip of desk.node.querySelectorAll('.sd-card.head .md .lchip')) chip.classList.toggle('cue', cued.has(chip.dataset.label));
       if (before) slideFrom(before);
     }
 
-    // Motion: the Cards that stay slide to their new places; new Cards come off the stack;
-    // the Cards that leave go back onto it (FLIP).
-    function measure() {
+    // Motion: the Cards that stay slide to their new places; new Cards come off the stack (or
+    // out of the lemma the reader pulled out); the Cards that leave go back onto the stack (or
+    // under the lemma's tab). FLIP.
+    function measure(origin, sinkAt) {
       const rects = new Map();
       for (const node of desk.node.querySelectorAll('.sd-card')) rects.set(node.dataset.at, { rect: node.getBoundingClientRect(), node });
       const stack = desk.node.querySelector('.sd-stack');
-      return { rects, stack: stack ? stack.getBoundingClientRect() : null };
+      return { rects, stack: stack ? stack.getBoundingClientRect() : null, origin, sinkAt };
     }
     function slideFrom(before) {
       const stack = desk.node.querySelector('.sd-stack')?.getBoundingClientRect() || before.stack;
+      const source = before.origin || stack;
+      const tab = before.sinkAt && desk.node.querySelector(`.sd-tabs .ttab[data-at="${CSS.escape(before.sinkAt)}"]`);
+      const sink = tab ? tab.getBoundingClientRect() : stack;
       const stays = new Set();
       for (const node of desk.node.querySelectorAll('.sd-card')) {
         const now = node.getBoundingClientRect();
         const was = before.rects.get(node.dataset.at)?.rect;
         stays.add(node.dataset.at);
-        const from = was || stack;
+        const from = was || source;
         if (!from) continue;
-        const dx = from.left - now.left;
-        const dy = from.top - now.top;
-        const scale = was ? 1 : 0.35;
+        const scale = was ? 1 : before.origin ? Math.min(1, before.origin.width / now.width) : 0.35;
         node.animate([
-          { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: was ? 1 : 0, transformOrigin: 'top left' },
+          { transform: `translate(${from.left - now.left}px, ${from.top - now.top}px) scale(${scale})`, opacity: was ? 1 : before.origin ? 0.6 : 0, transformOrigin: 'top left' },
           { transform: 'none', opacity: 1, transformOrigin: 'top left' },
         ], { duration: 380, easing: 'cubic-bezier(.3, .7, .25, 1)' });
       }
-      // The Cards that leave are carried back onto the stack.
-      if (!stack) return;
+      if (!sink) return;
       for (const [address, { rect, node }] of before.rects) {
         if (stays.has(address)) continue;
         const ghost = node.cloneNode(true);
@@ -3581,7 +3701,7 @@
         document.body.append(ghost);
         const motion = ghost.animate([
           { transform: 'none', opacity: 1 },
-          { transform: `translate(${stack.left - rect.left}px, ${stack.top - rect.top}px) scale(.25)`, opacity: 0 },
+          { transform: `translate(${sink.left - rect.left}px, ${sink.top - rect.top}px) scale(.25)`, opacity: 0 },
         ], { duration: 340, easing: 'cubic-bezier(.4, 0, .6, 1)', fill: 'forwards' });
         motion.onfinish = () => ghost.remove();
       }
@@ -3590,18 +3710,17 @@
     function key(event) {
       if (event.key === 'Escape') {
         event.preventDefault();
-        if (pullout.node) dropBack(); else close();
+        if (pullout.node) dropBack(); else if (desk.nest.length) leave(); else close();
         return true;
       }
       if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return false;
-      const station = desk.stations[desk.at];
       switch (event.key) {
-        case 'ArrowRight': case 'PageDown': case 'j': event.preventDefault(); go_(desk.at + 1); return true;
-        case 'ArrowLeft': case 'PageUp': case 'k': event.preventDefault(); go_(desk.at - 1); return true;
+        case 'ArrowRight': case 'PageDown': case 'j': event.preventDefault(); forward(); return true;
+        case 'ArrowLeft': case 'PageUp': case 'k': event.preventDefault(); backward(); return true;
         case ' ': case 'Enter':
           if (event.target.closest?.('button, summary, .ttab')) return false;
           event.preventDefault();
-          station.focus.forEach(turn);
+          station().focus.forEach(turn);
           return true;
         default: {
           const mode = Object.keys(READING).find((one) => READING[one].key === event.key);
@@ -3609,14 +3728,14 @@
             event.preventDefault();
             setReading(mode);
             plan();
-            render(false);
+            render(null);
           }
           return true;
         }
       }
     }
 
-    return { open, close, key, isOpen };
+    return { open, close, key, isOpen, canEnter, enter };
   })();
 
   function wireMarkdown(root) {
@@ -4483,7 +4602,7 @@
         case 'f': return run(() => fitView());
         case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
         case '?': return run(showHelp);
-        case 's': return isUnit(card?.model) ? run(() => study.open(card.address)) : undefined;
+        case 's': return isStudied(card) ? run(() => study.open(card.address)) : undefined;
         case 'Escape': return run(() => (pullout.node ? dropBack() : openRail(false)));
         default: return undefined;
       }
