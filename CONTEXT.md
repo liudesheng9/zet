@@ -36,7 +36,7 @@ What a Model part presents in its model: a short label (at most 32 characters, o
 _Avoid_: Role, section, aspect, slot
 
 **Emphasis**:
-How much of a reader's attention a Model part asks for: `core` (the heart of the model, what a reader must see first), `aside` (detail a reader may skip), or none (a regular part). Only Model parts have one; the GUI spends ink and space by it.
+How much of a reader's attention a Model part asks for: `core` (the heart of the model, what a reader must see first), `aside` (detail a reader may skip), or none (a regular part). Only Model parts have one; the GUI spends ink and space by it. In a unit, `core` is the focus tier, no emphasis the support tier, and `aside` the detail tier, and at most three parts are `core`.
 _Avoid_: Priority, weight, importance
 
 **Model relation**:
@@ -44,7 +44,7 @@ A Link from one Model part to another part of the same model. The sentence that 
 _Avoid_: Dependency edge, arrow
 
 **Relation kind**:
-What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `代入`, `推导自`, `rests on`, `uses`), `illustrates` (`例示`, `案例`, `印证`, `for example`), `contrasts` (`对照`, `区别`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `参照`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), or `refers` when no such word stands before it or the word is `引出`, which points the other way (the linked Card builds on this one, and its `承接` carries the relation). A Link right after another in the same sentence shares its kind. Kinds are computed, never stored; only `rests-on` places a part on the Model board.
+What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `代入`, `推导自`, `按定义`, `rests on`, `uses`, `cites`), `illustrates` (`例示`, `案例`, `印证`, `for example`), `contrasts` (`对照`, `区别`, `逆命题`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `参照`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), `specializes` (`特例`, `特殊情形`, `special case`: every object of the linking Card is an object of the linked one), or `refers` when no such word stands before it or the word is `引出`, which points the other way (the linked Card builds on this one, and its `承接` carries the relation). A Link right after another in the same sentence shares its kind. Kinds are computed, never stored; only `rests-on` places a part on the Model board.
 _Avoid_: Link type, edge label
 
 **Loose part**:
@@ -189,11 +189,11 @@ Two or more Derivation parts next to each other in the build order that together
 _Avoid_: Derivation sequence, proof chain
 
 **Building block**:
-A shared part, or a shared Derivation chain, that two or more models use. It is filed once, in the first model that needs it; every other Model Card takes in each of its Cards, and the build order keeps them in their own order.
-_Avoid_: Library part, common part, lemma card
+A shared part, or a shared Derivation chain, that two or more models use. It is filed once, in the first model that needs it; every other Model Card takes in each of its Cards, and the build order keeps them in their own order. Among mathematical units, a building block is a whole unit that units of two or more theories cite; its home is the theory that proves it, and a step that two proofs need becomes a lemma, not a shared part.
+_Avoid_: Library part, common part, lemma card (for a shared part of a model)
 
 **Self-sufficient model**:
-A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, and no main-line part rests on a later part. ZT reports the faults (`closure`, `forward`, `unanchored`) in the build report; it does not enforce them.
+A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, a Cited premise, or the Book notation table, and no main-line part rests on a later part. ZT reports the faults (`closure`, `reach_in`, `forward`, `unanchored`) in the build report; it does not enforce them.
 _Avoid_: Closed model, complete model
 
 **Elaboration level**:
@@ -211,6 +211,50 @@ _Avoid_: Math model, full model, rigorous model
 **Tolerated premise**:
 A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault. When it is a Derivation part, the report suggests taking it in too, so the whole derivation reads in the model.
 _Avoid_: Borrowed premise, leak
+
+**Math form**:
+What mathematical unit a Model Card states: `theory`, `definition`, `axiom`, `theorem`, `proposition`, `lemma`, or `corollary`. It is stored on the Model Card, never on a part; a Model Card without one is an ordinary model.
+_Avoid_: Math type, statement kind, role
+
+**Unit**:
+A Model Card with the Math form `definition`, `axiom`, `theorem`, `proposition`, `lemma`, or `corollary`, with its parts. It states one definition, one axiom, or one result. Its parts take a fixed facet set (`前提`, `证明思路`, `证明：…`, `推导：…`, `结论`, `直觉`, `图示`, `例子`, `非例`, `反例`, `假设作用`, `等价刻画`, `另证`, `习题`, `历史`, `记号`).
+_Avoid_: Math card, entry
+
+**Result**:
+A unit of the Math form `theorem`, `proposition`, `lemma`, or `corollary`. Its Model Card holds the statement: labelled hypotheses (H1, H2, …) and a conclusion. Its main line holds the proof: the premises, the proof plan, the proof steps, and their Derivation parts.
+_Avoid_: Theorem card, claim
+
+**Theory Card**:
+A Model Card with the Math form `theory`: the way into one theory, normally one chapter. It states the theory's question, its main results (at most seven), and its objects; a Link from it takes in a whole unit. ZT orders its units by dependency and reports its tools and users.
+_Avoid_: Chapter Card, hub (a hub orders nothing), structure Card
+
+**Cited premise**:
+A rests-on Link from a Card of any model to the Model Card of a unit, or to the Book notation table. The proof uses the statement as a tool; it is not a closure fault.
+_Avoid_: Imported result, external premise
+
+**Reach-in**:
+A rests-on Link to a part inside another unit. It is a fault: rest on the unit's statement, or make the step a lemma.
+_Avoid_: Leak, borrowed step
+
+**Crux step**:
+The one proof step that carries the idea of a proof: a main-line `证明：…` part with the emphasis `core`, named in the proof plan. A proof of eight or more steps may have two.
+_Avoid_: Key step, trick
+
+**Load**:
+How many units and models cite a unit as a premise. ZT computes it; a unit with a high load takes one tier more attention on the theory board.
+_Avoid_: Weight, popularity
+
+**Dependency order**:
+The order of a theory's units: each unit after every unit it cites, with Folgezettel order for ties. ZT computes it (`get_model` `math.order` of a Theory Card).
+_Avoid_: Logical order, prerequisite chain
+
+**Study order**:
+The order in which a learner meets a unit's Cards in Learn mode: passes (meet, why, boundary, connect, recall) of stations, each with one focus Card and at most three companions. ZT computes it (`math.study`); it changes no Location.
+_Avoid_: Reading order, learning path
+
+**Book notation table**:
+The symbols of one digested book, each with its meaning and the unit that defines it: a Card titled `符号表…`, a Side successor of the book's first anchor, beside the Book term table. A proof may rest on it.
+_Avoid_: Symbol list, glossary
 
 **Card language**:
 The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Technical English), adapted for Chinese: one statement per sentence, short sentences, no semicolons, active voice, a verb for an action, one term per meaning (a model's term table), and no hedges or praise words. Formulas, Links, charts, and quotations are exempt.

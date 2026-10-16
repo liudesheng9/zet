@@ -12,7 +12,9 @@
   Model Card whose model already has parts is listed with its part count, so a rerun can skip it.
   Each model also names its elaboration level (concept, formal, or null when not yet decided) and its
   build faults (`faults`: closure, forward, unanchored, and beyond_level entries together).
-  Prints one compact JSON line: {"models":[{"address","title","group","level","parts","issues","faults"}]}.
+  Each model also names its Math form (null for an ordinary model; zt-math-digest leaves Theory
+  Cards to its theory pass).
+  Prints one compact JSON line: {"models":[{"address","title","group","level","form","parts","issues","faults"}]}.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Groups')]
 param(
@@ -60,6 +62,7 @@ if ($heads.Count) {
             title = $heads[$i].title
             group = $owner[$heads[$i].address]
             level = $structures[$i].level
+            form = $structures[$i].form
             parts = @($structures[$i].parts).Count
             issues = @($structures[$i].issues).Count
             faults = @($structures[$i].build.closure).Count + @($structures[$i].build.forward).Count +
