@@ -41,6 +41,10 @@
   step, or 结果. It never runs the brief, plan, fill, derive, or review of a finished model.
     explain -Models a,b,...     one job per chain (at most three parts) of each model's own
                                 Derivation parts that lack 思路 or 解读; -MaxParts caps the parts.
+    explain-check -Job <id>     the writer's own check (read-only): prints what explain-apply would
+                                refuse in the job's result file, one line per part, `faults: N`
+                                last. Faults the old body already has are listed as kept, not
+                                counted. Each explain job file names it on its SELF-CHECK line.
     explain-apply               reads the jobs' JSON, inserts the sections, refuses a part whose
                                 body changed since its job, whose core changed, or whose new body
                                 has a fault that the old body does not have (a fault the old body
@@ -62,7 +66,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('brief', 'validate', 'apply', 'derive', 'review', 'split', 'report', 'explain', 'explain-apply', 'explain-report')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('brief', 'validate', 'apply', 'derive', 'review', 'split', 'report', 'explain', 'explain-check', 'explain-apply', 'explain-report')][string]$Step,
     [Parameter(Mandatory)][string]$Work,
     [string]$Staging = '',
     [string]$Models = '',
@@ -79,13 +83,17 @@ param(
     [int]$MaxParts = 0,
     [string]$BriefDoc = '',
     [string]$FillDoc = '',
-    [string]$ReviewDoc = ''
+    [string]$ReviewDoc = '',
+    # explain-check: the job and its result file (default: the job's own result file)
+    [string]$Job = '',
+    [string]$File = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
 $utf8 = [Text.UTF8Encoding]::new($false)
 $Helper = $script:ZtHelper
-$Check = Join-Path $PSScriptRoot 'card-style-check.ps1'
+# The writers' own check: zt-check (tools/zt-check), on PATH.
+$Check = 'zt-check'
 $Docs = @{
     brief  = Join-Path $PSScriptRoot 'dsh-brief-instructions.zh.md'
     fill   = Join-Path $PSScriptRoot 'dsh-fill-instructions.zh.md'
@@ -107,7 +115,7 @@ function Test-Unit($address) {
 }
 $Explain = "-MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars"
 # Writers check their own new Cards, so a Derivation part must have its 思路 and 解读 (R15).
-$Limits = "-MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps $Explain -RequireExplain"
+$Limits = "--max-sentences $MaxSentences --max-chars $MaxChars --max-steps $MaxSteps --max-explain-sentences $MaxExplainSentences --max-explain-chars $MaxExplainChars --require-explain"
 $Words = @{ rests = '依赖'; substitutes = '代入'; illustrates = '例示'; contrasts = '对照'; relaxes = '放宽'; corresponds = '对应'; objects = '反驳'; refers = '见' }
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 $StateFile = Join-Path $Work 'state.json'
@@ -310,6 +318,17 @@ function Get-Tables($plan) {
     $t.ToString().TrimEnd()
 }
 # --- Derivation explanations: chain position lines -------------------------------------------------
+# The formula a 结果 states: its last display formula, else its first inline one, else its first
+# sentence (cut to 30 characters).
+function Get-ResultFormula([string]$result) {
+    $display = @([regex]::Matches($result, '\$\$[\s\S]+?\$\$'))
+    if ($display.Count) { return $display[$display.Count - 1].Value }
+    $inline = [regex]::Match($result, '\$[^$\n]+\$')
+    if ($inline.Success) { return $inline.Value }
+    $first = (($result -split '[。！？\n]')[0]).Trim()
+    if ($first.Length -gt 30) { $first = $first.Substring(0, 30) + '…' }
+    $first
+}
 # A display formula ($$…$$) as an inline one, for a sentence.
 function Get-Inline([string]$formula) {
     $f = $formula.Trim()
@@ -320,7 +339,8 @@ function Get-Inline([string]$formula) {
 # each member's result in chain order; a chain of one part gets no line.
 function Format-ChainLine([int]$k, [int]$n, $tos) {
     if ($n -lt 2) { return '' }
-    $tos = @($tos)
+    # A 结果 may hold sentences besides its formula: the line names the formula only.
+    $tos = @(@($tos) | ForEach-Object { Get-ResultFormula ([string]$_) })
     if ($k -eq 1) { return "第 1 张，共 $n 张。全链依次推出 $(@($tos | ForEach-Object { Get-Inline ([string]$_) }) -join '、')。" }
     "第 $k 张，共 $n 张：从 $(Get-Inline ([string]$tos[$k - 2])) 推到 $(Get-Inline ([string]$tos[$k - 1]))。"
 }
@@ -975,7 +995,7 @@ function Step-Report {
         $style = 0
         if (@($s.parts | Where-Object { $null -ne $_ }).Count) {
             # Shared parts belong to their home models, which this batch does not change.
-            $lines = @(pwsh -NoProfile -File $Check -Model $model -SkipShared -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps -MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars 2>&1)
+            $lines = @(Invoke-ZtCheck -Model $model -SkipShared -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps -MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars)
             $last = [string]($lines | Where-Object { [string]$_ -match '^faults: \d+' } | Select-Object -Last 1)
             $style = if ($last) { [int]($last -replace '^faults: ', '') } else { -1 }
         }
@@ -1073,6 +1093,10 @@ function Add-Explanation([string]$body, [string]$idea, $notes, [string]$meaning,
     if ($tail.Count) { $sections.Insert($where + 1, @{ head = ''; lines = [Collections.Generic.List[string]]::new([string[]]$tail) }) }
     Join-Sections $sections
 }
+# The command a writer runs to check its own result file (the SELF-CHECK line of its job file).
+function Get-ExplainCheckCommand([string]$id) {
+    "pwsh -NoProfile -File `"$PSCommandPath`" -Step explain-check -Work `"$Work`" -Job `"$id`" -MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps $Explain"
+}
 function Get-ExplainState {
     if (-not $State.explain) { $State.explain = [ordered]@{ models = @(); settings = [ordered]@{}; jobs = [ordered]@{}; refused = [ordered]@{}; blocked = [ordered]@{} } }
     $State.explain
@@ -1130,7 +1154,7 @@ function Step-Explain {
             $out = Join-Path (Join-Path $Work 'out') "explain-$('{0:d2}' -f $State.seq).json"
             $file = Join-Path $dir "explain-$('{0:d2}' -f $State.seq).md"
             $text = [Text.StringBuilder]::new()
-            [void]$text.AppendLine("# 讲解任务 $id`n`n结果文件: $out`n上下文包: $context`n模型卡: [[$model]] $($head.title)`n`n## 模型卡的正文`n`n$headBody`n")
+            [void]$text.AppendLine("# 讲解任务 $id`n`n结果文件: $out`nSELF-CHECK: $(Get-ExplainCheckCommand $id)`n上下文包: $context`n模型卡: [[$model]] $($head.title)`n`n## 模型卡的正文`n`n$headBody`n")
             if ($g.after -and $bodies[$g.after]) { [void]$text.AppendLine("## 链之前的分卡（推导从它出发）：[[$($g.after)]] $($titles[$g.after])`n`n$($bodies[$g.after])`n") }
             $positions = [ordered]@{}
             foreach ($a in $g.parts) {
@@ -1151,78 +1175,106 @@ function Step-Explain {
     Out-Last ([ordered]@{ jobs = $jobs; parts = @($jobs | ForEach-Object { @($X.jobs[$_.id].addresses).Count } | Measure-Object -Sum).Sum })
 }
 
+# What explain-apply would do with one job's result file, without a write: the new bodies that
+# pass, and why each other part does not. explain-check (the writer's own check) and explain-apply
+# share it, so the writer sees exactly what the apply step will refuse.
+function Test-ExplainJob([string]$id, [string]$file) {
+    $X = Get-ExplainState
+    $j = $X.jobs[$id]
+    if (-not $j) { throw "no explain job $id" }
+    $r = @{ faults = [ordered]@{}; candidates = @(); blocked = @(); refused = @(); kept = @() }
+    $todo = @($j.addresses | Where-Object { $_ -notin @($j.done) })
+    if (-not $todo.Count) { return $r }
+    $entries = @()
+    if (Test-Path -LiteralPath $file) {
+        try { $entries = @(Read-Json $file) } catch { foreach ($a in $todo) { $r.faults[$a] = "the result file is not a JSON array: $_" } }
+    } else { foreach ($a in $todo) { $r.faults[$a] = 'no result file' } }
+    $cards = @{}
+    foreach ($c in @(Invoke-Zt @($todo | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[[string]$c.address] = $c }
+    foreach ($a in $todo) {
+        if ($r.faults.Contains($a)) { continue }
+        $e = $entries | Where-Object { $_ -and [string]$_.address -eq $a } | Select-Object -First 1
+        if (-not $e) { $r.faults[$a] = 'no entry for this part in the result file'; continue }
+        if ($e.blocked) { $r.blocked += "$($a): $($e.blocked)"; continue }
+        $card = $cards[$a]
+        if (([string]$card.body).Trim() -ne ([string]$j.bodies[$a]).Trim()) { $r.refused += "$($a): the part changed after its job"; continue }
+        if (-not ([string]$e.idea).Trim() -or -not ([string]$e.meaning).Trim()) { $r.faults[$a] = 'idea and meaning must not be empty'; continue }
+        $new = Add-Explanation ([string]$card.body) ([string]$e.idea) $e.notes ([string]$e.meaning) ([string]$j.positions[$a])
+        if ((Get-Core $new) -ne (Get-Core ([string]$card.body))) { $r.refused += "$($a): inserting the explanation would change 起点, a step, or 结果"; continue }
+        $r.candidates += [ordered]@{ address = $a; title = [string]$card.title; facet = [string]$card.facet; body = $new; old = [string]$card.body }
+    }
+    if (-not $r.candidates.Count) { return $r }
+    # The new bodies pass R2 to R17; the setting gives the term table (R6). Only a fault the
+    # explanation adds counts: a fault the old body already has (a long derivation, a passive
+    # sentence) stays as it is and is reported as kept, not as the writer's.
+    $setting = [string]$X.settings[$j.model]
+    $sc = if ($setting) { Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $setting } }) }
+    $styleFaults = {
+        param($items, [string]$name, [bool]$explain)
+        $toCheck = @($items)
+        if ($setting) { $toCheck += [ordered]@{ address = $setting; title = [string]$sc.title; body = [string]$sc.body; facet = [string]$sc.facet } }
+        $entriesFile = Join-Path ([IO.Path]::GetTempPath()) "explain-$PID-$name"
+        Save-Text $entriesFile (ConvertTo-Json -InputObject @($toCheck) -Depth 5)
+        $checkArgs = @{ Json = $entriesFile; MaxSentences = $MaxSentences; MaxChars = $MaxChars; MaxSteps = $MaxSteps; MaxExplainSentences = $MaxExplainSentences; MaxExplainChars = $MaxExplainChars; RequireExplain = $explain }
+        if ($setting) { $checkArgs.Setting = $setting }
+        # Invoke-ZtCheck throws when zt-check does not run: nothing unchecked is written.
+        try { $checked = @(Invoke-ZtCheck @checkArgs) } finally { Remove-Item -LiteralPath $entriesFile -ErrorAction SilentlyContinue }
+        $out = @{}
+        foreach ($line in $checked) {
+            if ([string]$line -match '^(\S+) (R\d+ .*)$' -and $Matches[1] -ne $setting) {
+                if (-not $out.ContainsKey($Matches[1])) { $out[$Matches[1]] = [Collections.Generic.List[string]]::new() }
+                $out[$Matches[1]].Add($Matches[2])
+            }
+        }
+        $out
+    }
+    $old = & $styleFaults @($r.candidates | ForEach-Object { [ordered]@{ address = $_.address; title = $_.title; body = $_.old; facet = $_.facet } }) 'old.json' $false
+    $all = & $styleFaults @($r.candidates | ForEach-Object { [ordered]@{ address = $_.address; title = $_.title; body = $_.body; facet = $_.facet } }) 'new.json' $true
+    $pass = @()
+    foreach ($c in $r.candidates) {
+        $a = $c.address
+        $before = [Collections.Generic.List[string]]::new()
+        if ($old.ContainsKey($a)) { foreach ($f in $old[$a]) { $before.Add($f) } }
+        $now = if ($all.ContainsKey($a)) { @($all[$a]) } else { @() }
+        $added = @(foreach ($f in $now) { if (-not $before.Remove($f)) { $f } })
+        $was = @($now | Where-Object { $_ -notin $added })
+        if ($was.Count) { $r.kept += "$($a): $($was -join ' | ')" }
+        if ($added.Count) { $r.faults[$a] = $added -join ' | ' } else { $pass += $c }
+    }
+    $r.candidates = $pass
+    $r
+}
+
+# The writer's own check of its result file: what explain-apply would refuse, as fault lines.
+function Step-ExplainCheck {
+    $X = Get-ExplainState
+    if (-not $Job -or -not $X.jobs.Contains($Job)) { throw "explain-check needs -Job <an explain job id>" }
+    $file = if ($File) { $File } else { [string]$X.jobs[$Job].out }
+    $r = Test-ExplainJob $Job $file
+    foreach ($a in @($r.faults.Keys)) { Write-Output "$a explain $($r.faults[$a])" }
+    foreach ($t in $r.refused) { Write-Output ($t -replace '^(\S+): ', '$1 refused ') }
+    foreach ($t in $r.blocked) { Write-Output "(blocked, not counted) $t" }
+    foreach ($t in $r.kept) { Write-Output "(kept: the old body has these faults; not yours, not counted) $t" }
+    foreach ($c in $r.candidates) { Write-Output "$($c.address) ok" }
+    Write-Output "faults: $($r.faults.Count + $r.refused.Count)"
+}
+
 function Step-ExplainApply {
     $X = Get-ExplainState
     $applied = @(); $refused = @(); $blocked = @(); $jobs = @(); $edits = @(); $done = @(); $kept = @()
     foreach ($id in @($X.jobs.Keys)) {
         $j = $X.jobs[$id]
-        $todo = @($j.addresses | Where-Object { $_ -notin @($j.done) })
-        if (-not $todo.Count) { continue }
-        $faults = [ordered]@{}
-        $entries = @()
-        if (Test-Path -LiteralPath $j.out) {
-            try { $entries = @(Read-Json $j.out) } catch { foreach ($a in $todo) { $faults[$a] = "the result file is not a JSON array: $_" } }
-        } else { foreach ($a in $todo) { $faults[$a] = 'no result file' } }
-        $cards = @{}
-        foreach ($c in @(Invoke-Zt @($todo | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[[string]$c.address] = $c }
-        $candidates = @()
-        foreach ($a in $todo) {
-            if ($faults.Contains($a)) { continue }
-            $e = $entries | Where-Object { $_ -and [string]$_.address -eq $a } | Select-Object -First 1
-            if (-not $e) { $faults[$a] = 'no entry for this part in the result file'; continue }
-            if ($e.blocked) { $blocked += @{ model = $j.model; text = "$($a): $($e.blocked)" }; $done += @{ job = $id; address = $a }; continue }
-            $card = $cards[$a]
-            if (([string]$card.body).Trim() -ne ([string]$j.bodies[$a]).Trim()) { $refused += @{ model = $j.model; text = "$($a): the part changed after its job" }; $done += @{ job = $id; address = $a }; continue }
-            if (-not ([string]$e.idea).Trim() -or -not ([string]$e.meaning).Trim()) { $faults[$a] = 'idea and meaning must not be empty'; continue }
-            $new = Add-Explanation ([string]$card.body) ([string]$e.idea) $e.notes ([string]$e.meaning) ([string]$j.positions[$a])
-            if ((Get-Core $new) -ne (Get-Core ([string]$card.body))) { $refused += @{ model = $j.model; text = "$($a): inserting the explanation would change 起点, a step, or 结果" }; $done += @{ job = $id; address = $a }; continue }
-            $candidates += [ordered]@{ address = $a; title = [string]$card.title; facet = [string]$card.facet; body = $new }
+        if (-not @($j.addresses | Where-Object { $_ -notin @($j.done) }).Count) { continue }
+        $r = Test-ExplainJob $id ([string]$j.out)
+        $kept += $r.kept
+        foreach ($t in $r.blocked) { $blocked += @{ model = $j.model; text = $t }; $done += @{ job = $id; address = ($t -split ': ', 2)[0] } }
+        foreach ($t in $r.refused) { $refused += @{ model = $j.model; text = $t }; $done += @{ job = $id; address = ($t -split ': ', 2)[0] } }
+        foreach ($c in $r.candidates) {
+            $edits += @{ tool = 'edit_card'; arguments = @{ at = $c.address; body = $c.body } }
+            $applied += $c.address
+            $done += @{ job = $id; address = $c.address }
         }
-        if ($candidates.Count) {
-            # The new bodies pass R2 to R17 before any write; the setting gives the term table (R6).
-            # Only a fault the explanation adds blocks a part: a fault the old body already has
-            # (a long derivation, a passive sentence) stays as it is and is reported as kept.
-            $setting = [string]$X.settings[$j.model]
-            $sc = if ($setting) { Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $setting } }) }
-            $styleFaults = {
-                param($entries, [string]$name, [bool]$explain)
-                $toCheck = @($entries)
-                if ($setting) { $toCheck += [ordered]@{ address = $setting; title = [string]$sc.title; body = [string]$sc.body; facet = [string]$sc.facet } }
-                $entriesFile = Join-Path $Work $name
-                Save-Text $entriesFile (ConvertTo-Json -InputObject @($toCheck) -Depth 5)
-                $checkArgs = @('-NoProfile', '-File', $Check, '-Json', $entriesFile, '-MaxSentences', $MaxSentences, '-MaxChars', $MaxChars, '-MaxSteps', $MaxSteps, '-MaxExplainSentences', $MaxExplainSentences, '-MaxExplainChars', $MaxExplainChars)
-                if ($explain) { $checkArgs += '-RequireExplain' }
-                if ($setting) { $checkArgs += @('-Setting', $setting) }
-                $checked = @(pwsh @checkArgs 2>&1)
-                # No `faults: N` line means the check did not run: write nothing rather than unchecked text.
-                if (-not @($checked | Where-Object { [string]$_ -match '^faults: \d+' }).Count) { throw "card-style-check.ps1 did not run: $($checked -join ' | ')" }
-                $out = @{}
-                foreach ($line in $checked) {
-                    if ([string]$line -match '^(\S+) (R\d+ .*)$' -and $Matches[1] -ne $setting) {
-                        if (-not $out.ContainsKey($Matches[1])) { $out[$Matches[1]] = [Collections.Generic.List[string]]::new() }
-                        $out[$Matches[1]].Add($Matches[2])
-                    }
-                }
-                $out
-            }
-            $old = & $styleFaults @($candidates | ForEach-Object { [ordered]@{ address = $_.address; title = $_.title; body = [string]$cards[$_.address].body; facet = $_.facet } }) 'explain-check-old.json' $false
-            $all = & $styleFaults @($candidates) 'explain-check.json' $true
-            $found = @{}
-            foreach ($a in @($all.Keys)) {
-                $before = [Collections.Generic.List[string]]::new()
-                if ($old.ContainsKey($a)) { foreach ($f in $old[$a]) { $before.Add($f) } }
-                $added = @(foreach ($f in $all[$a]) { if (-not $before.Remove($f)) { $f } })
-                $was = @($all[$a] | Where-Object { $_ -notin $added })
-                if ($was.Count) { $kept += @{ address = $a; faults = $was } }
-                if ($added.Count) { $found[$a] = $added }
-            }
-            foreach ($c in $candidates) {
-                if ($found.ContainsKey($c.address)) { $faults[$c.address] = $found[$c.address] -join ' | '; continue }
-                $edits += @{ tool = 'edit_card'; arguments = @{ at = $c.address; body = $c.body } }
-                $applied += $c.address
-                $done += @{ job = $id; address = $c.address }
-            }
-        }
+        $faults = $r.faults
         if (-not $faults.Count) { continue }
         if ([int]$j.round -ge 2) {
             foreach ($a in @($faults.Keys)) { $refused += @{ model = $j.model; text = "$($a): $($faults[$a])" }; $done += @{ job = $id; address = $a } }
@@ -1234,7 +1286,7 @@ function Step-ExplainApply {
         $j.out = Join-Path (Join-Path $Work 'out') "explain-$('{0:d2}' -f $State.seq).json"
         $follow = Join-Path (Get-Dir $j.model) "explain-follow-$('{0:d2}' -f $State.seq).md"
         $lines = @($faults.Keys | ForEach-Object { "- [[$_]]：$($faults[$_])" })
-        Save-Text $follow "# 补充任务（改正这些分卡的解释）`n`n新的结果文件: $($j.out)`n`n脚本没有写入下面的分卡。改正每张分卡的问题，只为它们写新的结果文件：`n`n$($lines -join "`n")`n"
+        Save-Text $follow "# 补充任务（改正这些分卡的解释）`n`n新的结果文件: $($j.out)`nSELF-CHECK: $(Get-ExplainCheckCommand $id)`n`n脚本没有写入下面的分卡。改正每张分卡的问题，只为它们写新的结果文件。写完后运行 SELF-CHECK，直到最后一行是 ``faults: 0``：`n`n$($lines -join "`n")`n"
         $jobs += [ordered]@{ id = "$id+2"; continue = $id; files = @($follow); fallback = @($Docs.explain, (Join-Path (Get-Dir $j.model) 'setting.md'), $j.file, $follow); prompt = '按以上补充说明改正，写出新的结果文件，最后只回复一行 JSON。' }
     }
     for ($i = 0; $i -lt $edits.Count; $i += 25) { Invoke-Edits @($edits | Select-Object -Skip $i -First 25) }
@@ -1242,7 +1294,7 @@ function Step-ExplainApply {
     foreach ($r in $refused) { $X.refused[$r.model] = @(@($X.refused[$r.model] | Where-Object { $_ }) + $r.text) }
     foreach ($b in $blocked) { $X.blocked[$b.model] = @(@($X.blocked[$b.model] | Where-Object { $_ }) + $b.text) }
     Save-State
-    Out-Last ([ordered]@{ applied = $applied.Count; refused = @($refused | ForEach-Object { $_.text }); blocked = @($blocked | ForEach-Object { $_.text }); kept = @($kept | ForEach-Object { "$($_.address): $($_.faults -join ' | ')" }); jobs = $jobs })
+    Out-Last ([ordered]@{ applied = $applied.Count; refused = @($refused | ForEach-Object { $_.text }); blocked = @($blocked | ForEach-Object { $_.text }); kept = @($kept); jobs = $jobs })
 }
 
 function Step-ExplainReport {
@@ -1263,6 +1315,7 @@ function Step-ExplainReport {
 
 switch ($Step) {
     'explain' { Step-Explain }
+    'explain-check' { Step-ExplainCheck }
     'explain-apply' { Step-ExplainApply }
     'explain-report' { Step-ExplainReport }
     'brief' { Step-Brief }

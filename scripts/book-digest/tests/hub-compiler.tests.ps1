@@ -77,6 +77,9 @@ try {
     Assert ($job -match '必须写线索枢纽的分支' -and $job -match [regex]::Escape("[[$($made[4])]]")) 'plan: the branch needs a line hub'
     Assert ($job -match '邻近主题' -and $job -match [regex]::Escape($legacy)) 'plan: neighbours and the legacy hub in the job'
     Assert (-not ($job -match [regex]::Escape("- $legacy |"))) 'plan: the legacy hub is not listed as a member'
+    $selfCheck = "SELF-CHECK: pwsh -NoProfile -File `"$compiler`" -Step precheck -Work `"$work`" -File `"$(Join-Path $work "out\hub-$a.json")`""
+    Assert ($job.Contains($selfCheck)) 'plan: the topic job names the SELF-CHECK command of its file'
+    Assert ((Get-Content -Raw -LiteralPath $plan.jobs[1].files[1]) -match 'SELF-CHECK: .* -Step precheck .*fields\.json') 'plan: the field job names its SELF-CHECK command'
 
     # DeepSeek's files
     $out = Join-Path $work 'out'
@@ -107,6 +110,33 @@ try {
             register = @([ordered]@{ term = '逆向选择'; refs = @("tree:$a", 'field:信息经济学') }, [ordered]@{ term = '不存在'; refs = @('tree:999') })
         })
 
+    # precheck: the writer checks its own file before it replies; nothing is written
+    $stateBefore = Get-Content -Raw (Join-Path $work 'state.json')
+    $clean = Run 'precheck' @('-File', (Join-Path $out "hub-$a.json"))
+    Assert (@($clean)[-1] -eq 'faults: 0') "precheck: a clean file gives faults: 0 ($($clean -join ' | '))"
+    Assert ((Get-Content -Raw (Join-Path $work 'state.json')) -eq $stateBefore -and -not (Test-Path (Join-Path $work 'report.json'))) 'precheck: no state change'
+    $drafts = Join-Path $work 'drafts'
+    New-Item -ItemType Directory -Force $drafts | Out-Null
+    function Precheck-Variant($name, [scriptblock]$change) {
+        $copy = $hubPlan | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+        & $change $copy
+        $path = Join-Path $drafts $name
+        Save-Json $path $copy
+        Run 'precheck' @('-File', $path)
+    }
+    $short = Precheck-Variant 'short.json' { param($p) $p.topic.groups[0].items[0].reason = '短' }
+    Assert (@($short -match ('^topic:' + [regex]::Escape($a) + ' bare ' + [regex]::Escape($made[0]))).Count -and @($short)[-1] -eq 'faults: 1') "precheck: a short reason is bare ($($short -join ' | '))"
+    $many = Precheck-Variant 'groups.json' { param($p) $p.topic.groups = @($p.topic.groups) + @(3..8 | ForEach-Object { @{ name = "第 $_ 组"; items = @(@{ ref = $made[3]; reason = '干预只在均衡不是约束最优时有用。' }) } }) }
+    Assert (@($many -match ('^topic:' + [regex]::Escape($a) + ' oversize .*8 组')).Count) "precheck: eight groups are too many ($($many -join ' | '))"
+    $dead = Precheck-Variant 'dead.json' { param($p) $p.topic.groups[1].items = @($p.topic.groups[1].items) + @(@{ ref = "$a/99"; reason = '这张卡在树里并不存在。' }) }
+    Assert (@($dead -match ('^topic:' + [regex]::Escape($a) + ' broken ' + [regex]::Escape("$a/99"))).Count) "precheck: a ref to a Card that does not exist ($($dead -join ' | '))"
+    $semicolon = Precheck-Variant 'style.json' { param($p) $p.topic.groups[0].items[1].reason = '极端时市场完全瓦解；没有交易。' }
+    Assert (@($semicolon -match ('^topic:' + [regex]::Escape($a) + ' R3 ')).Count) "precheck: zt-check finds a semicolon ($($semicolon -join ' | '))"
+    $alone = Precheck-Variant 'alone.json' { param($p) $p.topic.neighbours = @(); $p.lines = @(); $p.topic.groups[1].items = @($p.topic.groups[1].items | Where-Object { $_.ref -notlike 'line:*' -and $_.ref -ne $made[8] }) }
+    Assert (@($alone -match ' isolated ').Count -and @($alone -match (' unlisted .*' + [regex]::Escape("[[$($made[8])]]"))).Count -and @($alone -match (' unlisted .*' + [regex]::Escape("[[$($made[4])]]"))).Count) "precheck: isolated, an unlisted Model Card, a missing line hub ($($alone -join ' | '))"
+    $fieldCheck = Run 'precheck' @('-File', (Join-Path $out 'fields.json'))
+    Assert (@($fieldCheck -match '^register broken .*tree:999').Count -and -not @($fieldCheck -match '^field:').Count) "precheck: fields.json, a dead register ref ($($fieldCheck -join ' | '))"
+
     # apply
     $applied = Last (Run 'apply')
     Assert ($applied.trees -eq 1 -and $applied.fields -eq 1 -and $applied.register) 'apply: topic, field, and register'
@@ -134,6 +164,7 @@ try {
     $check = Last (Run 'check')
     Assert (@($check.jobs).Count -eq 1 -and $check.jobs[0].continue -eq $plan.jobs[0].id) 'check: one fix job continues the writer'
     Assert ((Get-Content -Raw -LiteralPath $check.jobs[0].files[0]) -match 'bare') 'check: the fix names the fault'
+    Assert ((Get-Content -Raw -LiteralPath $check.jobs[0].files[0]).Contains($selfCheck)) 'check: the fix names the SELF-CHECK command'
 
     # report
     $report = Last (Run 'report')

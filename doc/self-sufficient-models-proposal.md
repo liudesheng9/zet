@@ -1,5 +1,7 @@
 # Self-Sufficient Models: Proposal
 
+Note (2026-10-15): `card-style-check.ps1` and `self-check.ps1` no longer exist. The one Card quality check is now `zt-check` (crate `tools/zt-check`, installed by `scripts/install-zt-check.ps1`), with the same rules.
+
 Status: implemented in zt 0.12.0 and the `zt-book-digest` workflow (2026-10-12). Since zt 0.13.0 (`model-elaboration-levels-design.md`) this build applies to **formal models** (Elaboration level 2) only; a concept model (level 1) takes no ledger, no Derivation parts, and no DeepSeek fill. The tree operations, the build report, the divider tabs in build order, the derivation slips, the Card language check (`scripts/book-digest/card-style-check.ps1`), and the Sonnet-manager Models stage follow this document. Revision 2 (2026-10-12) records the user's decisions on shared parts, divider tabs, and insertion, and adds Sonnet managers, clean-up, and the Card language rules. Revision 3 (2026-10-13, zt 0.15.0) lets one step take a **Derivation chain** of any length, makes the Card size decide how many parts a step or a statement takes (rules 13 and 14 of "Card language"), and lets a whole derivation serve several models as a **building block** (rule 4).
 
 Since 2026-10-14 the **model compiler** (`model-compiler-design.md`) does the work this document gives to the Sonnet manager: a Sonnet architect only writes `plan.json`, `model-compiler.ps1` builds the skeleton and applies splits, and DeepSeek writes, derives, and reviews. The rules for the models themselves still hold.

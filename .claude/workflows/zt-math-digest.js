@@ -142,10 +142,9 @@ const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
 const DERIVE_EFFORT = atLeastHigh(A.deriveEffort, 'deriveEffort')
 const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
 const REVIEW_ROUNDS = Math.max(0, A.reviewRounds ?? 2)
-// Card size limits, passed to card-style-check.ps1 (R13, R14): the size of a Card, not the length of
+// Card size limits, passed to zt-check through the compilers (R13, R14): the size of a Card, not the length of
 // a derivation, decides how many Derivation parts carry a step.
 const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6} -MaxExplainSentences ${A.maxExplainSentences || 16} -MaxExplainChars ${A.maxExplainChars || 600}`
-const CHECK = `${SCRIPTS}\\card-style-check.ps1`
 const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 // Skills the manager passes to DeepSeek Harness in the `skills` field of deepseek_run and deepseek_prompt.
 // Both skills are installed in DeepSeek Harness (deepseek_skills lists them). No prompt file carries a copy of a skill.
@@ -341,7 +340,7 @@ ${block.map(S.steps).join('\n')}
 Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
 Then follow "status" until the run ends:
   - "running": deepseek_wait (session_id, wait_seconds 900).
-  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
   - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
   Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
@@ -426,7 +425,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.

@@ -14,11 +14,11 @@
                  "unattributed".
     topics       the Topic trees that hold Cards of the book, and the trees where the book holds
                  most of the Cards.
-    style        the Card language faults (card-style-check.ps1, rules R2 to R14) per rule and per
+    style        the Card language faults (zt-check, rules R2 to R17) per rule and per
                  category. A model is checked with its own term table and level, the other Cards of
                  a book with the book's term table (a Literature-tree Card titled 术语表…) when it
                  has one.
-    layer        the Card layer faults (rules I1 to L3 of card-style-check.ps1) per rule, with the
+    layer        the Card layer faults (rules I1 to L3 of zt-check) per rule, with the
                  advisory rules (I1, I6, E5, L3) counted apart. The script gives the checker each
                  Card's category, Links, kinded Links, parent, and inbound Links.
     orphans      Regular Cards that no Card links to (inbound 0).
@@ -56,7 +56,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
 . (Join-Path $PSScriptRoot 'zt-calls.ps1')
-$Check = Join-Path $PSScriptRoot 'card-style-check.ps1'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
 # --- read-only zt calls --------------------------------------------------------------------------
@@ -187,7 +186,7 @@ for ($i = 0; $i -lt $missing.Count; $i++) {
 }
 Write-Host "read $($bodies.Count) bodies, $($structures.Count) models ($([int]$sw.Elapsed.TotalSeconds) s)"
 
-# --- Card language: card-style-check.ps1 offline (-Json), in this process -------------------------
+# --- Card language: zt-check --json, offline -------------------------
 $tmp = Join-Path $Out 'audit-tmp'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $limits = @{ MaxSentences = $MaxSentences; MaxChars = $MaxChars; MaxSteps = $MaxSteps }
@@ -199,7 +198,7 @@ function Invoke-Check($entries, [string]$setting, [string]$level) {
     $splat = @{ Json = $file } + $limits
     if ($setting) { $splat.Setting = $setting }
     if ($level) { $splat.Level = $level }
-    foreach ($line in @(& $Check @splat)) { if ($line -match '^\S+ [RIEL]\d+ ') { [void]$faultLines.Add([string]$line) } }
+    foreach ($line in @(Invoke-ZtCheck @splat)) { if ($line -match '^\S+ [RIEL]\d+ ') { [void]$faultLines.Add([string]$line) } }
 }
 $inModel = @{}
 for ($i = 0; $i -lt $heads.Count; $i++) {

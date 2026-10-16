@@ -187,6 +187,13 @@ try {
     [IO.File]::WriteAllText($j2.out, (ConvertTo-Json -Depth 5 -InputObject @(
         [ordered]@{ address = $d2; idea = '把上界代入融资条件。（补：书中未写）'; notes = @{ '1' = '这一步代入上一张的结果。' }; meaning = '清算价值够大，项目才借得到钱。' }
     )), $utf8)
+    # explain-check: the writer's own check prints what explain-apply will refuse, and writes nothing.
+    Assert ($jobFile -match "SELF-CHECK: pwsh -NoProfile -File `"[^`"]+model-compiler\.ps1`" -Step explain-check -Work `"[^`"]+`" -Job `"$([regex]::Escape($explain.jobs[1].id))`" -MaxSentences 12 .*-MaxExplainChars 600") "explain: the job file names its SELF-CHECK command ($(($jobFile -split "`n") -match 'SELF-CHECK'))"
+    $c1 = @(Run 'explain-check' @('-Job', $explain.jobs[0].id))
+    Assert ($c1[-1] -eq 'faults: 2' -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1'])) explain R16 " }).Count -eq 1 -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1~3'])) explain no entry" }).Count -eq 1 -and @($c1 | Where-Object { $_ -match '^\(blocked, not counted\)' }).Count -eq 1) "explain-check: the long 思路 and the missing entry are faults, the blocked part is not counted ($($c1 -join ' / '))"
+    $c2 = @(Run 'explain-check' @('-Job', $explain.jobs[1].id))
+    Assert ($c2[-1] -eq 'faults: 0' -and @($c2 | Where-Object { $_ -eq "$d2 ok" }).Count -eq 1 -and @($c2 | Where-Object { $_ -match '^\(kept: .*R5 ' }).Count -eq 1) "explain-check: D2 passes; its old R5 fault is kept, not counted ($($c2 -join ' / '))"
+    Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body -eq $d2before) 'explain-check: writes nothing'
     $ap = Last (Run 'explain-apply')
     Assert ($ap.applied -eq 1 -and @($ap.blocked).Count -eq 1 -and @($ap.jobs).Count -eq 1 -and $ap.jobs[0].continue -eq $explain.jobs[0].id) "explain-apply: one part written, one blocked, one follow-up to the same conversation ($($ap | ConvertTo-Json -Compress -Depth 4))"
     Assert (@($ap.kept | Where-Object { $_ -match "^$([regex]::Escape($d2)): R5 " }).Count -eq 1) "explain-apply: D2's old R5 fault does not block it and is listed as kept ($($ap.kept -join ' / '))"
@@ -201,11 +208,14 @@ try {
         [ordered]@{ address = $ids['D1']; idea = '先求还款的上界。'; notes = @{}; meaning = '它给出上界。' },
         [ordered]@{ address = $ids['D1~3']; idea = '把两段合起来。'; notes = @{}; meaning = '还款不超过清算价值。' }
     )), $utf8)
+    Assert ($follow -match 'SELF-CHECK: pwsh .*-Step explain-check') 'explain-apply: the follow-up names the SELF-CHECK command'
+    $c3 = @(Run 'explain-check' @('-Job', $explain.jobs[0].id))
+    Assert ($c3[-1] -eq 'faults: 0') "explain-check: the follow-up's new result file passes ($($c3 -join ' / '))"
     $ap2 = Last (Run 'explain-apply')
     Assert ($ap2.applied -eq 2 -and @($ap2.jobs).Count -eq 0) "explain-apply: the follow-up's parts are written, no more jobs ($($ap2 | ConvertTo-Json -Compress -Depth 4))"
     $xr = (Last (Run 'explain-report')).models[0]
     Assert ($xr.derivations -eq 4 -and $xr.explained -eq 3 -and @($xr.missing) -contains $ids['D1~2'] -and @($xr.blocked).Count -eq 1) "explain-report: 3 of 4 explained, the blocked part missing ($($xr | ConvertTo-Json -Compress))"
-    $styled = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-style-check.ps1') -Addresses "$d2,$($ids['D1']),$($ids['D1~3'])" -RequireExplain)
+    $styled = @(Invoke-ZtCheck -Addresses "$d2,$($ids['D1']),$($ids['D1~3'])" -RequireExplain)
     Assert (-not @($styled | Where-Object { $_ -match ' R1[5-7] ' }).Count) "explain-apply: the written parts pass R15 to R17 ($($styled -join ' / '))"
 } catch {
     Write-Output "FAIL: $_"

@@ -1,6 +1,6 @@
 # Derivation Explanations: Proposal
 
-()=>b
+Status (2026-10-15): phases 1 to 3 exist and pass their tests. Phase 4 (the pilot on `hart1995firms/11|b|a|4`) ran, and the user approved it. Phase 5 (the existing books) runs book by book, on the user's go-ahead for each book. See "As built" below.
 
 A Derivation part (a Model part whose facet starts with `推导`) shows one step of a model's algebra. Today it holds three sections: **起点**, **步骤**, and **结果**. The steps have no errors, and a reader can check each line.
 
@@ -128,7 +128,7 @@ The writer answers `split` only when the steps do not fit (R14). When the explan
 
 ### 4. Check: new rules R15 to R17
 
-`card-style-check.ps1` gets three rules for Derivation parts. They apply to formal models and to models with no level, like R13 and R14.
+`zt-check` gets three rules for Derivation parts. They apply to formal models and to models with no level, like R13 and R14.
 
 | Rule | Checks | Fault |
 | --- | --- | --- |
@@ -136,7 +136,7 @@ The writer answers `split` only when the steps do not fit (R14). When the explan
 | R16 | 思路 has 1 to 5 sentences. 解读 has 1 to 6 sentences. Each sentence follows R2 (40 characters, formulas not counted). | Too many sentences, an empty section, or a long sentence. |
 | R17 | At most one 说明 line under each numbered step, of 1 or 2 sentences, each at most 40 characters. 思路, 说明, and 解读 together hold at most `-MaxExplainSentences` sentences (16) and `-MaxExplainChars` characters (600). | A second 说明 line under a step, a long sentence, or an explanation over its budget. |
 
-()=>b
+R13 no longer counts 思路, 说明, and 解读 in a Derivation part. A part with neither 思路 nor 解读 is an older part. It raises no R15 fault unless the check gets `-RequireExplain`. The writers and the `explain` step set it. The build report and `digest-audit.ps1` do not set it. The audit counts the parts with both sections per book, so the user sees the gap close.
 
 ### 5. Review: one new question
 
@@ -153,7 +153,7 @@ A fault here gives the verdict `fix`, with the section and the sentence in `reas
 
 A new compiler step, `explain`, adds the sections to finished Derivation parts. It works like the card cycle:
 
-1. **explain -Models …** lists the Derivation parts of each model that lack 思路 or 解读. ()=>b
+1. **explain -Models …** lists the Derivation parts of each model that lack 思路 or 解读. It writes one job per chain, or per three parts of a long chain. A job holds the setting, the Model Card, the bodies of the parts, and the path of the context pack (`model-context.ps1`). The writer reads source lines from the pack. A job also holds the part before the chain and the part after it.
 2. DeepSeek writes one JSON file per job: for each part, `idea` (思路), `notes` (step number to 说明 text), and `meaning` (解读).
 3. **explain-apply** inserts the sections. It refuses a part when 起点, a step line, or 结果 differs from the stored text, or when R15 to R17 fail. A refused part goes back to the same conversation once.
 4. **explain-report** gives the counts per model: explained, refused, and still missing.
@@ -179,7 +179,28 @@ The `explain` step is a one-time cost for the existing parts. 1,446 parts at thr
 
 Phases 4 and 5 change Cards in the slip-box. Each needs the user's go-ahead.
 
-()=>b
+## As built
+
+Phases 1 to 3 exist. The build differs from the plan above in these points:
+
+| Point | As built |
+| --- | --- |
+| R15 on older parts | Silent unless the caller passes `-RequireExplain` (see section 4). The plan called the rules "advisory". |
+| Source lines in an `explain` job | The job names the context pack, and the writer reads the source lines. A finished part has no `src` in a plan. |
+| Instructions of the `explain` step | A new file, `dsh-explain-instructions.zh.md`. DeepSeek writes `idea`, `notes` (step number to text), and `meaning`, or `blocked`. |
+| Position line | `第 1 张，共 n 张。全链依次推出 …。` for the first part, `第 k 张，共 n 张：从 … 推到 …。` for the others. It names each result's formula only. `apply`, `split`, and `explain` write it. A chain of one part gets none. The check does not count it. |
+| A split part | It keeps its steps and their 说明 lines. Its 结果 becomes the first cut, and its 解读 becomes `待写`. The follow-up asks the writer to write it again. |
+| `explain-apply` | It refuses a part that changed after its job and a part whose core would change. It also refuses a part with a fault that the old body does not have. It keeps a fault that the old body already has, and reports it without counting it. It stops with an error when the check does not run. A refused part goes back once. A second refusal is final. |
+| `explain-check` | The writer's own check: the same test as `explain-apply`, without a write. Each job file names it on its `SELF-CHECK` line. |
+
+The tests:
+
+- `zt-check.tests.ps1`: R15 (a missing 解读), R16, and R17 (a second 说明 under one step, the budget). An older part is silent, and `-RequireExplain` flags it. R13 does not count the explanation.
+- `model-compiler.tests.ps1`: the five-section skeleton and its position lines, a split that rewrites the positions and clears 解读, and the `explained` count. It also runs the `explain` cycle: plan, `explain-check`, apply with a refusal and a blocked part, the follow-up, and the report. The written parts pass R15 to R17, and 起点, the steps, and 结果 stay the same.
+- `workflow-harness.mjs`: mode `explain` runs plan, apply, apply, report, and sends the refused part back to the same conversation.
+
+## Verification
+
 - The tests show that `explain-apply` refuses a changed step, a changed 起点, and a changed 结果.
 - After the pilot, R15 to R17 report 0 faults on the pilot model. Every step line and every result equation stays the same. A script compares them with the backup.
 - The reviewer's verdicts on the pilot chains are `ok`, or `fix` with a reason that the fix round closes.

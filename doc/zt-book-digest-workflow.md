@@ -44,7 +44,7 @@ flowchart LR
 | **Cleanup** | Haiku | Deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files; reports DeepSeek token use. | — |
 | **Organize** | a script, Opus, scripts, DeepSeek | `organize-survey.ps1` lists what to decide: duplicate Topics, small Topics, merge proposals, model faults. Opus writes only `decisions.json`: the thesis, Topic merges, moves, and notes for single Cards. `organize-apply.ps1` carries out the merges and moves; a card cycle carries out the notes (rule N1); `book-skeleton.ps1` and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies. `organize: "legacy"` runs the old single Opus job. | A finished digest |
 | **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
-| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`card-style-check.ps1`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
+| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`zt-check`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
 
 ## DeepSeek Subagent Managed Protocol
 
@@ -75,7 +75,7 @@ No prompt file carries the text of a skill. Both skills are installed in DeepSee
 | Brief and Review (Models stage) | Haiku driver (model compiler) | none |
 
 The Card language sections of the instruction files keep the project's own limits (40 characters
-per description sentence, 30 per derivation step), because `card-style-check.ps1` checks those
+per description sentence, 30 per derivation step), because `zt-check` checks those
 numbers. Where they differ from the skill, the instruction files win. If a skill is not found, the
 manager stops and reports; it does not start the run without the skill.
 
@@ -133,13 +133,20 @@ wrote, supervised, and checked everything itself. Per batch of models:
 
 Haiku drivers only relay DeepSeek jobs: each runs one compiler step and the jobs it prints.
 
-()=>b
+## Derivation explanations (2026-10-15)
+
+A Derivation part has five sections: **思路**, **起点**, **步骤**, **结果**, **解读** (`doc/derivation-explanations-proposal.md`). 思路 says what the part shows and the route it takes. A `说明：` line under a step explains a step that a reader may not see at once. 解读 says what the result means, with at least one check. In a chain, the first line of 思路 is the part's position, which the compiler writes. The explanation has its own budget (R17), outside R13. The brief records the book's own intuition (直觉), and the writer marks its own words `（补：书中未写）`. The reviewer checks the explanation as its fifth question.
+
+Mode `explain` adds the sections to Derivation parts that a digest wrote before 2026-10-15. `model-compiler.ps1 -Step explain` plans one job per chain, DeepSeek writes JSON (`dsh-explain-instructions.zh.md`) and checks it with `explain-check`, and `explain-apply` writes the Cards. It refuses any change to 起点, a step, or 结果.
+
+## Derivation chains, Card size, and building blocks (zt 0.15.0)
+
 A formal model no longer gets one Derivation part per skipped step. The **Card size** decides how
 many parts a step or a statement takes:
 
 | Limit | Default | Argument | Checked by |
 | --- | --- | --- | --- |
-| Prose sentences in one part | 12 | `maxSentences` | `card-style-check.ps1` R13 |
+| Prose sentences in one part | 12 | `maxSentences` | `zt-check` R13 |
 | Prose characters in one part | 400 | `maxPartChars` | R13 |
 | Numbered steps in one Derivation part | 6 | `maxSteps` | R14 |
 
@@ -231,7 +238,7 @@ A book's own figures reach its Cards in three places, and every one is the same 
 
 ## The audit (phase 1 of the card layers proposal, 2026-10-15)
 
-`scripts/book-digest/digest-audit.ps1` measures the Cards that the model and hub stages do not check: Idea Cards, Event Cards, anchors, Topics, and Links. It makes only zt read calls (a guard refuses any other tool), so it is safe on any digest at any time. It reads every agent tree, attributes each Topic-tree Card to the book it cites (a source line or an anchor counts 10, a Link to another Card of the book counts 1), reads the bodies in parallel helper processes (`-Throttle`, default 6), and runs `card-style-check.ps1 -Json` in its own process: each model with its own term table and level, the other Cards without a term table. A run on the whole agent Workspace takes a few minutes.
+`scripts/book-digest/digest-audit.ps1` measures the Cards that the model and hub stages do not check: Idea Cards, Event Cards, anchors, Topics, and Links. It makes only zt read calls (a guard refuses any other tool), so it is safe on any digest at any time. It reads every agent tree, attributes each Topic-tree Card to the book it cites (a source line or an anchor counts 10, a Link to another Card of the book counts 1), reads the bodies in parallel helper processes (`-Throttle`, default 6), and runs `zt-check -Json` in its own process: each model with its own term table and level, the other Cards without a term table. A run on the whole agent Workspace takes a few minutes.
 
 ```bash
 pwsh -NoProfile -File scripts/book-digest/digest-audit.ps1 -Out D:zt-digestaudit
@@ -243,7 +250,7 @@ Add `-CitationKey <key>` for one book. The workflow runs it last in mode `full`,
 
 `doc/digest-card-layers-proposal.md` gives the Idea Cards, Event Cards, anchors, Topics, and Links the same shape as the models and hubs: a script checks, DeepSeek writes JSON, a script checks that and writes the Cards, and a report counts the faults before and after. The parts:
 
-- `card-style-check.ps1` checks the I, E, and L rules for entries that name their category. The model compiler's checks do not change.
+- `zt-check` checks the I, E, and L rules for entries that name their category. The model compiler's checks do not change.
 - `card-compiler.ps1` (plan, apply, check, report) is the fix cycle. `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md` are DeepSeek's instructions. A rewrite must keep every Link (an Organize note may replace one), every figure line, and every formula, and the Card must be unchanged since the plan. A split becomes a Side successor and joins its group's `owned-gNN.txt`.
 - The zt helper takes `src` on a create call (logged with `-SrcLog`, never sent to zt) and `-TopicGate <file>`, which refuses a Topic whose title another agent Topic has or nearly has. Prepare puts both into each group's write command, with the event candidates and the term table.
 - `organize-survey.ps1`, `organize-apply.ps1`, and `book-skeleton.ps1` are the new Organize. The structure Card starts with `本卡是《…》的结构卡`; the audit gives it, and the term table, a category of their own.
@@ -256,7 +263,7 @@ Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). ()=>b
+| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. `explain`: only adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (`citationKey`, or the Model Cards in `only`); it changes no step and rebuilds no model. |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
 | `figures` | `false` skips the Figures stage in a full run |
@@ -286,7 +293,9 @@ Arguments (`args`):
 | `ideaSample` | the share of a block's Idea Cards without faults that DeepSeek reviews against the source (0.1 in mode `full`, 0 in mode `cards`) |
 | `cardRules` | the rules the card cycle fixes (default all hard rules but R6; add R6 once the book's term table is checked) |
 | `cardFixRounds` | check, fix, apply again (1) |
-()=>b
+| `cardMax` | a pilot: at most this many Cards with faults and this many orphans |
+| `maxExplainSentences`, `maxExplainChars` | the explanation budget of a Derivation part: 思路, 说明, and 解读 together (16 sentences, 600 characters; formulas and Links do not count) |
+| `explainMax` | mode `explain`, a pilot: at most this many Derivation parts |
 | `organize` | `"legacy"`: the old single Opus job instead of survey, decisions, apply, notes, and skeleton |
 | `dshManagers` | the most Haiku managers that run the DeepSeek jobs of one compiler step in parallel (8): one manager per `dshPerBatch` (8) jobs, each keeping 8 jobs running; one more Haiku agent runs the step's script and one cleans up |
 | `linkPerManager` | the link runs one Haiku manager starts at once (8) |
