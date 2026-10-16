@@ -1,6 +1,31 @@
 # Mathematical Cards and Luhmann's Zettelkasten: Comparison
 
-Status: analysis and proposal (2026-10-15). It changes no code and no Card. It compares the math card system (`math-cards-proposal.md` rev. 2, `math-cards-design.md`, branch `math-dev` at `2597c6c`) with Niklas Luhmann's Zettelkasten practice, and it names the practices that can make the math cards better. The text follows ASD-STE100 as the other design documents do.
+Status: analysis and proposal (2026-10-15), with the user's decisions of 2026-10-15 (see "Decisions"). Only L4 is built (`639a5a4`). The other kept practices are recorded here and are not implemented. It compares the math card system (`math-cards-proposal.md` rev. 2, `math-cards-design.md`, branch `math-dev` at `2597c6c`) with Niklas Luhmann's Zettelkasten practice, and it names the practices that can make the math cards better. The text follows ASD-STE100 as the other design documents do.
+
+## Decisions
+
+The user decided these points on 2026-10-15. They replace the recommendations below where the two differ.
+
+**Purpose of the math cards.** The math cards serve the comprehension of AI agents. The user's own comprehension lives in the human Workspace. So no practice in this document asks the reader to write in the reader's own words, and no math feature writes Cards into the human Workspace.
+
+| Item | Decision |
+| --- | --- |
+| L1 Two layers | Keep |
+| L2 One concept, many books | Keep |
+| L3 The reader's slip | **Do not apply** (see "Purpose of the math cards") |
+| L4 Statement premises and proof premises apart | Keep. Built in `639a5a4`. |
+| L5 A short unit stays one Card | Keep |
+| L6 Bridges for surprise | Keep |
+| L7 The book's number as a stable label | Keep, as a stable label only |
+| Luhmann: own words | **Do not apply** |
+| Luhmann: literature notes apart from permanent notes | Apply (through L1 and L2) |
+| Luhmann: surprise from distant Links | Apply (through L6) |
+| Luhmann: half-sheet atomicity | Apply (through L5) |
+| Luhmann: no order by subject | Apply: no subject hierarchy decides where a Card is filed. A Card is filed where it first connects. The book's order in the Literature tree and the computed dependency order stay, because they are the order of the source and of the proof, not an order by subject. |
+| Luhmann: fixed numbers | Do not apply. ZET keeps its addresses that move, with Links that ZT rewrites. L7 adds only a stable label. |
+| Luhmann: one writer, slow growth | Do not apply. Agents write the math cards. |
+
+Nothing in this document goes into the code until the user asks for it.
 
 ## Source Authority
 
@@ -12,17 +37,17 @@ Status: analysis and proposal (2026-10-15). It changes no code and no Card. It c
 
 The math card system follows Luhmann well in its **mechanics**: Links that state their reason, one home per unit with references for every other place, a proof as a numbered sequence, inserted steps, and few ways in. It departs from Luhmann in its **purpose and in who does the thinking**. Luhmann's box was a partner for producing new thought. Each slip was a thought he processed in his own words, and the value came from surprising Links between distant regions. The math digest makes a faithful, attention-designed copy of one textbook, written by agents, filed only in the Literature tree. It is a very good study tool. It is not yet a slip-box in Luhmann's sense.
 
-Seven practices can close the gap. Three have a high value (L1 to L3). One is a concrete fault in the built code (L4).
+Seven practices can close the gap. Three have a high value (L1 to L3). One is a concrete fault in the built code (L4). The user keeps six of them and does not apply L3.
 
-| No. | Practice | Source of the practice | Value | Cost |
-| --- | --- | --- | --- | --- |
-| L1 | Two layers: book units in the Literature tree, and **concept and result Cards in Topic trees** that are not bound to one book | Luhmann's own words, Ahrens (literature and permanent notes) | high | medium: one new pass |
-| L2 | **One concept, many books**: a Topic Card per concept links the Definition unit of each book with `对应` and states how they differ | Luhmann's multiple storage, nLab | high | low after L1 |
-| L3 | **The reader's slip**: the Recall station asks the reader to write one sentence in the human Workspace, linked to the unit | Luhmann's communication partner, the generation effect | high | low: GUI only |
-| L4 | **Statement premises and proof premises apart** | Lean blueprints (`\uses` in a statement and in a proof) | medium, fixes a fault | low |
-| L5 | **A short unit stays one Card** | Luhmann's half-sheet slip, Matuschak on over-splitting | medium | low: architect rule |
-| L6 | **Bridges for surprise**: make the cross-book and cross-domain Link pass (proposal Q6) part of the normal run | Luhmann's surprise, Schmidt's "serendipity" | medium | medium |
-| L7 | **The book's number as a stable label** of each unit | Luhmann's fixed numbers, Stacks Project tags | low | low |
+| No. | Practice | Source of the practice | Value | Cost | Decision |
+| --- | --- | --- | --- | --- | --- |
+| L1 | Two layers: book units in the Literature tree, and **concept and result Cards in Topic trees** that are not bound to one book | Ahrens (literature and permanent notes), Luhmann's separate bibliographic box | high | medium: one new pass | Keep |
+| L2 | **One concept, many books**: a Topic Card per concept links the Definition unit of each book with `对应` and states how they differ | Luhmann's multiple storage, nLab | high | low after L1 | Keep |
+| L3 | **The reader's slip**: the Recall station asks the reader to write one sentence in the human Workspace, linked to the unit | Luhmann's communication partner, the generation effect | high | low: GUI only | Do not apply |
+| L4 | **Statement premises and proof premises apart** | Lean blueprints (`\uses` in a statement and in a proof) | medium, fixes a fault | low | Keep, built |
+| L5 | **A short unit stays one Card** | Luhmann's half-sheet slip, Matuschak on over-splitting | medium | low: architect rule | Keep |
+| L6 | **Bridges for surprise**: make the cross-book and cross-domain Link pass (proposal Q6) part of the normal run | Luhmann's surprise, Schmidt's "serendipity" | medium | medium | Keep |
+| L7 | **The book's number as a stable label** of each unit | Luhmann's fixed numbers, Stacks Project tags | low | low | Keep |
 
 ## Two systems, two goals
 
@@ -54,15 +79,15 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 
 ## Where the math cards depart from Luhmann
 
-| Luhmann's practice | What the math cards do | Effect | Accept or change |
-| --- | --- | --- | --- |
-| **Own words.** The slip records Luhmann's processed thought. | The digest copies the book's statements and proofs. The reader writes nothing. | The box holds the book, not the reader's understanding. Research on learning agrees with Luhmann here: a learner remembers what the learner generates (the generation effect, Slamecka and Graf 1978) and explains (Chi et al. 1989, already P10 of the proposal). | Change: L1, L3. |
-| **Literature notes apart from permanent notes** (Ahrens). Ideas go into the main box, not under the book. | The math digest files every unit in the Literature tree (`book/4\|d`). Unlike the book digest, it writes no Topic-tree Cards (`zt-math-digest-workflow.md` names no Topic stage). | The continuity theorem of book A and of book B become two unrelated units. A thought about continuity has no home outside one book. | Change: L1, L2. |
-| **Surprise from distant Links.** The box is useful when it is open and densely, ad hoc connected. | Links stay mostly inside one theory. Cross-book and cross-domain Links wait for a separate run (Q6). | The math tree can become a closed island. The economics books name the intermediate value theorem but do not reach it. | Change: L6. |
-| **Half-sheet atomicity.** | A unit is a Model Card plus parts. A lemma with a two-line proof still gets parts. | Many thin Cards. Matuschak and the Obsidian reports warn that over-splitting gives Cards that are titles with almost no body. | Change: L5. |
-| **No order by subject.** Placement records history. | The skeleton files units in book order. Dependency order decides the study path. | A deductive subject needs a dependency order. Luhmann's objection was to a fixed topical hierarchy, not to the order inside one argument. | Accept. |
-| **Fixed numbers.** A slip number never changes. | ZET addresses shift when a Side successor is deleted or a Card moves. ZT rewrites every Link. | Links inside ZET stay correct. A reference from outside ZET (the reader's own notes, a printed outline) can go stale. | Small change: L7. |
-| **One writer, slow growth.** | Agents write a whole book in one run. | Luhmann's "squeeze point" feeling does not exist. The hub design already replaces it with size rules. | Accept, with L3 to give the reader a part in the writing. |
+| Luhmann's practice | What the math cards do | Effect | Recommended | Decision |
+| --- | --- | --- | --- | --- |
+| **Own words.** The slip records Luhmann's processed thought. | The digest copies the book's statements and proofs. The reader writes nothing. | The box holds the book, not the reader's understanding. Research on learning agrees with Luhmann here: a learner remembers what the learner generates (the generation effect, Slamecka and Graf 1978) and explains (Chi et al. 1989, already P10 of the proposal). | Change: L1, L3. | **Do not apply.** The math cards serve the agents' comprehension. The user's comprehension lives in the human Workspace. |
+| **Literature notes apart from permanent notes** (Ahrens). Ideas go into the main box, not under the book. | The math digest files every unit in the Literature tree (`book/4\|d`). Unlike the book digest, it writes no Topic-tree Cards (`zt-math-digest-workflow.md` names no Topic stage). | The continuity theorem of book A and of book B become two unrelated units. A thought about continuity has no home outside one book. | Change: L1, L2. | Apply (L1, L2). |
+| **Surprise from distant Links.** The box is useful when it is open and densely, ad hoc connected. | Links stay mostly inside one theory. Cross-book and cross-domain Links wait for a separate run (Q6). | The math tree can become a closed island. The economics books name the intermediate value theorem but do not reach it. | Change: L6. | Apply (L6). |
+| **Half-sheet atomicity.** | A unit is a Model Card plus parts. A lemma with a two-line proof still gets parts. | Many thin Cards. Matuschak and the Obsidian reports warn that over-splitting gives Cards that are titles with almost no body. | Change: L5. | Apply (L5). |
+| **No order by subject.** Placement records history. | The skeleton files units in book order. Dependency order decides the study path. | A deductive subject needs a dependency order. Luhmann's objection was to a fixed topical hierarchy, not to the order inside one argument. | Accept. | Apply: no subject hierarchy decides where a Card is filed. A Card is filed where it first connects. The book's order and the dependency order stay. |
+| **Fixed numbers.** A slip number never changes. | ZET addresses shift when a Side successor is deleted or a Card moves. ZT rewrites every Link. | Links inside ZET stay correct. A reference from outside ZET (the reader's own notes, a printed outline) can go stale. | Small change: L7. | Do not apply fixed numbers. Keep L7 as a stable label. |
+| **One writer, slow growth.** | Agents write a whole book in one run. | Luhmann's "squeeze point" feeling does not exist. The hub design already replaces it with size rules. | Accept, with L3 to give the reader a part in the writing. | Do not apply. Agents write the math cards. L3 is not applied. |
 
 ## The recommended practices
 
@@ -74,12 +99,14 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 
 - The Literature tree keeps what is built: one unit per numbered environment, faithful to the book, with the attention design. This stays the study layer.
 - A new, small **Topic pass** at the end of the math run writes Topic Cards for the theory objects and the main results only (the units that a Theory Card lists in `对象` and `主要结果`). That is at most about 7 + 5 Cards per chapter, not one per unit.
-- Each Topic Card is an Idea Card in the zettelkasten skill's sense: a claim title, own words, 50 to 250 words, no proof. It says what the result means, why it matters, and where it is used. It links the book unit with `对应` (or `依据`), and other Topic Cards with kind words.
+- Each Topic Card is an Idea Card in the zettelkasten skill's sense: a claim title, 50 to 250 words, no proof, written by the agents under the Card rules of the book digest. (The user's own-words practice is not applied: see "Decisions".) It says what the result means, why it matters, and where it is used. It links the book unit with `对应` (or `依据`), and other Topic Cards with kind words.
 - Proofs, examples, and study stations stay in the Literature tree. The Topic Card does not repeat them (the rule of M16, at the level of two layers).
 
 **What it changes.** A new pass in the math workflow and its prompt supplement. No ZT change. The live archive gets new Topic Cards only when the user runs a digest.
 
-**Open choice.** Should the Topic Card be a Model Card with a Math form (so that `get_model` reports it), or a plain Idea Card? An Idea Card is simpler and keeps the Math form for the faithful unit. This analysis recommends the plain Idea Card.
+- Placement (no order by subject): the pass files each Topic Card where it first connects, as a successor of the Topic Card it continues or in the Topic tree where its subject already starts. No subject hierarchy of Topics (such as analysis, then continuity) decides the place. A hub gives the ways in.
+
+**Open choice.** Should the Topic Card be a Model Card with a Math form (so that `get_model` reports it), or a plain Idea Card? An Idea Card is simpler and keeps the Math form for the faithful unit. This analysis recommends the plain Idea Card. The user has not decided this yet (C2).
 
 ### L2. One concept, many books
 
@@ -90,6 +117,8 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 **What it changes.** A rule in the Topic pass of L1, and one line in the hub stage's register rule (`math-cards-proposal.md`, "Concepts and hubs"). No ZT change.
 
 ### L3. The reader's slip
+
+**Decision: not applied.** The math cards serve the agents' comprehension, and the user keeps their own comprehension in the human Workspace. The text below stays as the record of the proposal only.
 
 **Logic.** The math cards design study (Learn, Review, Recall) but keep the reader passive in the slip-box. Luhmann's box answered back because its writer had put his own thought in. A reader who writes one sentence in their own words, at the moment of recall, both learns more (generation effect, self-explanation) and makes the box their partner. Proposal question Q7 asks whether ZT should record what a reader studied. A Card is a better record than a hidden database: the reader can read it, link it, and find it again.
 
@@ -150,7 +179,8 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 
 - **Fixed numbers for every Card.** ZET's moving addresses with rewritten Links are better inside the archive. L7 keeps only a stable label.
 - **No order at all.** A proof and a theory have a deductive order, and a learner needs it. The dependency order stays.
-- **One writer only.** The agents' scale is the reason the math digest exists. L3 gives the reader a part, and the agents keep the bulk.
+- **One writer only.** The agents' scale is the reason the math digest exists. The agents write the math cards.
+- **Own words of the reader.** The math cards serve the agents' comprehension. The user's own comprehension lives in the human Workspace (user's decision, 2026-10-15).
 - **Hand-written reasons only.** The computed lists (`所用工具`, `后续`, load) are an improvement, because they cannot go stale as Luhmann's register did.
 
 ## Suggested order
@@ -161,19 +191,18 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 | 2 | L5 and L7: rules in the architect supplement and the skeleton. Measure in the pilot. | Only in the pilot |
 | 3 | L1 and L2: the Topic pass and its prompt, tried in the pilot. | A new pilot tree and its Topic Cards |
 | 4 | L6: the bridge pass, report only, then the user's go-ahead. | Only after the go-ahead |
-| 5 | L3: the reader's slip on the study desk. | Only the reader's own Cards |
 
-Steps 1 and 2 need no new decision. Steps 3 to 5 need the user's choice below.
+Step 1 is built (`639a5a4`). Steps 2 to 4 are kept and wait for the user to ask for them. L3 is not applied, so it has no step.
 
 ## Questions for the user
 
-| No. | Question | Recommendation |
-| --- | --- | --- |
-| C1 | Should the math digest write Topic Cards for the main results and objects (L1, L2)? | Yes, for main results and theory objects only. |
-| C2 | Should a Topic Card be a plain Idea Card or a Model Card with a Math form? | A plain Idea Card. |
-| C3 | May the study desk create Cards in the human Workspace when the reader writes (L3)? | Yes, only on the reader's action. |
-| C4 | Should the bridge to the economics books run in every math digest, as a report (L6)? | Yes, as a report. Links only after the go-ahead. |
-| C5 | Should a short unit stay one Card (L5)? | Yes, after the pilot shows how many units it affects. |
+| No. | Question | Recommendation | Answer (2026-10-15) |
+| --- | --- | --- | --- |
+| C1 | Should the math digest write Topic Cards for the main results and objects (L1, L2)? | Yes, for main results and theory objects only. | Yes (L1 and L2 kept). |
+| C2 | Should a Topic Card be a plain Idea Card or a Model Card with a Math form? | A plain Idea Card. | Open. |
+| C3 | May the study desk create Cards in the human Workspace when the reader writes (L3)? | Yes, only on the reader's action. | No (L3 not applied). |
+| C4 | Should the bridge to the economics books run in every math digest, as a report (L6)? | Yes, as a report. Links only after the go-ahead. | Yes (L6 kept). |
+| C5 | Should a short unit stay one Card (L5)? | Yes, after the pilot shows how many units it affects. | Yes (L5 kept). |
 
 ## References
 
