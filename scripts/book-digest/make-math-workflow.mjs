@@ -88,7 +88,7 @@ rep('architect doc', 'Read your instructions first: ${ARCH_DOC} (Read tool).', '
 rep('no theory in the compiler', 'const todo = models.filter(m => !only || only.has(m.address))', 'const todo = models.filter(m => m.form !== \'theory\').filter(m => !only || only.has(m.address))')
 
 // 5. Modes: "math" needs no groups.
-rep('math mode needs no groups', "if (!groupCount && MODE !== 'models' && MODE !== 'hubs'", "if (!groupCount && MODE !== 'math' && MODE !== 'models' && MODE !== 'hubs'")
+rep('math mode needs no groups', "if (!groupCount && MODE !== 'bridge' && MODE !== 'models' && MODE !== 'hubs'", "if (!groupCount && MODE !== 'math' && MODE !== 'bridge' && MODE !== 'models' && MODE !== 'hubs'")
 
 // 6. Prepare: the statement index, the prompt files, the skeleton, and the notation table.
 rep('math prepare', '// The book term table (proposal 2)', `// The math skeleton (zt-math-digest only): after Prepare, before the term table and the digest.
@@ -129,7 +129,8 @@ if (THEORY && !NO_LINK) mathReports.theory = await runTheory()
 rep('math check', 'const audit = AUDIT ? await runAudit() : null\n', `const audit = AUDIT ? await runAudit() : null
 if (AUDIT && KEY) mathReports.check = await runMathScript('check', 'check', \` -Out "\${OUT}"\`, 'Audit')
 `)
-rep('math result', '  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport, audit,\n}', '  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport, audit, math: mathReports,\n}')
+rep('math result', '  deepseek_usage: dshUsage, cleanup, organize, figures, bridge, hubs: hubReport, audit,\n}', '  deepseek_usage: dshUsage, cleanup, organize, figures, bridge, hubs: hubReport, audit, math: mathReports,\n}')
+rep('math Bridge profile', " -Profile 'book' -MaxSources", " -Profile 'math' -MaxSources")
 
 // 9. The math stage functions, before the card layer cycle.
 rep('math functions', '// --- Cards: the card layer cycle -----------------------------------------------------------------\n', `// --- Math stages (zt-math-digest only) -------------------------------------------------------------

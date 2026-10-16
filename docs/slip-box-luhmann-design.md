@@ -1,6 +1,8 @@
 # The ZET Card Box after Luhmann: Design
 
-Status: design (2026-10-16). It carries out the user's decisions of 2026-10-16 on `slip-box-luhmann-comparison.md`. No part of it is in the code yet. Nothing goes into the code until the user asks for it. The text follows ASD-STE100 as the other design documents do.
+Status: design authority (2026-10-16). It carries out the user's decisions of 2026-10-16 on `slip-box-luhmann-comparison.md`. C1 and C2 now have source implementation and installed workflows; real Workflow and accepted live-apply qualification remain open for the user's Claude Code test. See [the delivery receipt](slip-box-luhmann-delivery-status.md). The text follows ASD-STE100 as the other design documents do.
+
+Implementation specification: [slip-box-luhmann-implementation-design.md](slip-box-luhmann-implementation-design.md). It preserves these decisions and resolves the concrete file formats, workflow integration, guarded edits, stale reports, retries, and verification. Its implementation contracts take precedence over the corresponding C1/C2 mechanics below.
 
 ## Source Authority
 

@@ -13,14 +13,14 @@ Both share `scripts/book-digest/workflow/zt-digest-base.blueprint.json`. The han
 
 ```
 args → source → prepare → [after-prepare] → terms → cards-book → digest → [after-digest]
-     → hubs-first → link-prepare → link → link-check → [after-link] → cleanup → organize → figures → hubs → audit
+     → hubs-first → link-prepare → link → link-check → [after-link] → cleanup → organize → figures → bridge → hubs → audit
      → [after-audit] → report
 ```
 
 | Stage | Module | Runs | On failure |
 | --- | --- | --- | --- |
 | args | `gate` | always: citationKey (not in modes hubs, audit); source, bibtex, bookTitle (mode full) | halt |
-| source | `zt-dsh-source` | not in modes figures, audit: the DeepSeek source probe | halt |
+| source | `zt-dsh-source` | ordinary model modes and Bridge discovery; skipped for figures, audit and accepted Bridge apply | halt |
 | prepare | `zt-digest-prepare` | mode full: prepare-book-digest.ps1 with the profile's instruction files; else args.groups | halt |
 | terms | `zt-book-terms` | mode full, `terms` not false | continue |
 | cards-book | `zt-cards-book` | mode cards | — |
@@ -31,15 +31,45 @@ args → source → prepare → [after-prepare] → terms → cards-book → dig
 | cleanup | `zt-dsh-cleanup` | modes full, link | — |
 | organize | `zt-organize` | mode full, or `organize` true or "legacy" | continue |
 | figures | `zt-figures` | mode figures, or full with `figures` not false | — |
+| bridge | `zt-bridge` | full unless `bridge: false`; mode bridge discovers or applies an identified selection | preserve failed/partial result; full continues |
 | hubs | `zt-hubs` | full with `hubs` not false, or link with `hubs` true | — |
 | audit | `zt-audit` | mode audit, or full with `audit` not false | — |
 | report | `zt-digest-report` | always: the result in the shape of zt-book-digest.js | — |
 
-The base writes no Model Card, no Event Card, and runs no model compiler: those are layers of a book type. Its digest prompt is `dsh-digest-base.zh.md` (`dsh-instructions.zh.md` without the section on Event and Model Cards). Roles: `manager` (Haiku, effort low), `architect` (Sonnet), `organizer` (Opus). Shared machinery: `zt-digest-lib` (managers, `drive`, the card cycle). Base modes: `link`, `cards`, `hubs`, `figures`, `audit`. Checkpoint: `until: "digest"`.
+The base writes no Model Card, no Event Card, and runs no model compiler: those are layers of a book type. Its digest prompt is `dsh-digest-base.zh.md` (`dsh-instructions.zh.md` without the section on Event and Model Cards). Roles: `manager` (Haiku, effort low), `architect` (Sonnet), `organizer` (Opus). Shared machinery: `zt-digest-lib` (managers, `drive`, the card cycle). Base modes: `link`, `cards`, `hubs`, `figures`, `audit`, `bridge`. Checkpoint: `until: "digest"`.
 
 The book profile (`consts.profile`) is the base's one open const: `instructions` (the digest prompt: `dsh-digest-base.zh.md` plus the type's supplements, inserted before its reply section), `noEventCandidates`, `digestPrefix`, `linkPrefix`, `compilerDocs`, `architectSupplement`, `skipForms`.
 
 ## The economics module set (`zt-econ-digest`)
+
+The current source versions are base 2.1.2, economics 3.1.2 and math 2.2.2. Each variant sets `profile.bridgeProfile` (`book` for economics, `math` for mathematics). Build, install and verify through the assembler; edit the source modules and blueprints only. Earlier frozen versions remain in the registry history.
+
+### Bridge discovery and apply
+
+All three workflows use the same `bridge-compiler.ps1`, judge prompt, attribution helper and checker. Full mode runs Bridge after Figures and before Hubs, publishes proposals without Card edits, and retains failures in its result. `bridge: false` returns `skipped`. Other maintenance modes do not run Bridge. `mode: "bridge"` needs only `out` and `citationKey`; no old groups, source or BibTeX are required.
+
+```javascript
+// Discovery: use a fresh folder; replace the book key and paths with actual values.
+Workflow({scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
+  mode: "bridge", out: "E:\\zet-staging\\book-bridge-review", citationKey: "<actual key>",
+  bridgeMax: 12, bridgeCandidates: 5, bridgeBooks: "<optional exact earlier key>"
+}})
+// Only after the user reviews the actual report and selects its exact ids:
+Workflow({scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
+  mode: "bridge", out: "E:\\zet-staging\\book-bridge-review", citationKey: "<same key>",
+  bridgeReport: "<actual report_id>", bridgeApply: ["<actual bNNN>"]
+}})
+```
+
+`bridgeMax` accepts integers 1–120 (default 60); candidates accept integers 1–8 (default 5), with at most two extra literal term matches. Up to twelve sources share a judge job. Retrieval uses the existing 80-term TF-IDF over title twice plus excerpt, then preferred-term/unit-title matches. It is not exhaustive. Book attribution uses distinct source Links weighted 10 for roots/anchors and 1 for other Literature Cards, with ordinal ties. Missing tree reads fail planning.
+
+Read `out/bridge/report.md` and `proposals.json`: their immutable plan/report ids bind the exact endpoint snapshots and sentences. The seven tables show new carriers, separately accepted earlier carriers, target groups, no relation/no candidate, omitted sources, refused/failed work, and apply outcomes. Late judge files do not replace a report. Keep `plan.json`, `proposals.json`, answers and the separate mutable `state.json` journal.
+
+Selections are `"all"` or unique arrays of ids. `bridgeApplyEarlier` independently selects earlier carriers, including earlier-only apply. Empty arrays authorize no edit; booleans/mixed arrays, wrong sections, unknown ids and mismatched reports fail. Apply skips source probes, planning, judges, model compilers, Organize and Hubs. It calls the compiler's script path and returns persisted outcomes with the same report id, including partial failures.
+
+Before live apply, retain a consistent archive backup (`zt dp`, or the established SQLite `VACUUM INTO` procedure with integrity verification) and keep filing quiet: no insertion/move/deletion/key rename/retype or concurrent Organize. Exact raw `base` protects each carrier, not both endpoint identities in one transaction. A per-report lock and saved write intent permit verification after interruption. Existing Links without a matching verified journal remain `already_linked`; failed verification after persistence remains `written_unverified`. No automatic rollback erases accepted text. A stale report needs a fresh folder and new review. Later Hubs are an independently requested action; a whole-archive restore is the user's decision.
+
+The read-only audit counts actual distinct semantic pairs, including human and unattributed buckets, rather than proposals. Both endpoints must be substantive and the Link must have a non-`refers` kind. Incomplete tree reads yield `complete: false, island: null`; zero counts then do not establish isolation. Source tests, installed-copy checks, the real report-only pilot and actual accepted live apply remain separate delivery gates.
 
 | Layer | What it is |
 | --- | --- |

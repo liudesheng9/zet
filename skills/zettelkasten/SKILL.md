@@ -148,8 +148,8 @@ ZET keeps Luhmann's idea of an address that encodes where a thought grew from, b
 
 Where ZET differs from Luhmann's box, and what that changes in practice:
 
-- **No insertion.** Luhmann filed 57/12a *between* 57/12 and 57/13, so a thought could enter a line anywhere. In ZET a Card has one Direct successor slot, nothing goes between `3/2` and `3/3`, and `3/2|a` stands beside `3/2` in its own column. So keep the numbered line as the spine of the argument and give the Direct slot only to its true next step. A thought that belongs between `3/2` and `3/3` becomes the Side successor `3/2|a`, and its body says so: `补在 [[3/2]] 与 [[3/3]] 之间：…`.
-- **Addresses can shift.** Luhmann's numbers never changed. In ZET, deleting a Side successor moves *every* later sibling branch down one letter, with its subtree: deleting `3/2|a` turns `3/2|b` into `3/2|a`, `3/2|c` into `3/2|b`, and `3/2|c|1` into `3/2|b|1`. A move changes addresses too; ZT rewrites every `[[link]]` to match. So refer to Cards inside Cards only by `[[link]]`, and treat an address in a report to the user as valid as of now.
+- **Insertion renumbers.** Use `insert_card` with `before` to add a step inside an existing line. The new Card takes `3/3`. The old `3/3` becomes `3/4`, the new Card's Direct successor. ZT shows the renamed addresses first and rewrites their Links. Use a Side successor for an example, objection, qualification, or tangent beside a step.
+- **Addresses can shift.** Luhmann's numbers never changed. In ZET, deleting a Side successor moves *every* later sibling branch down one letter, with its subtree: deleting `3/2|a` turns `3/2|b` into `3/2|a`, `3/2|c` into `3/2|b`, and `3/2|c|1` into `3/2|b|1`. An insert or move changes addresses too; ZT rewrites every `[[link]]` to match. So refer to Cards inside Cards only by `[[link]]`, and treat an address in a report to the user as valid as of now.
 - **Cards can move.** Luhmann's slips stayed put. `move_card` relocates a Regular Card *with all its successors* to the next free Direct or Side slot of another agent Card, across agent Topic trees or within one Literature tree. A misplaced Card or branch can be repositioned: show the plan, then confirm with `move`.
 - **Deletion takes the subtree.** `delete_card` removes the Card *and every successor under it*. Rewrite a Card that has successors instead of deleting it.
 - **Two Workspaces.** Luhmann had one box; you can grow only agent trees. Continue a human line in an agent tree and Link back (rule 4 below).
@@ -159,8 +159,8 @@ Where ZET differs from Luhmann's box, and what that changes in practice:
 
 Placement is about **conversation**, not category: a new Card goes directly behind the Card it talks to, and every other context it belongs to gets a Link. Luhmann: where a slip is stored matters little, as long as it can be reached from elsewhere. Pick the first rule that fits:
 
-1. **The next step in a line, and that Card's Direct slot is free** ("therefore", "next", "this leads to"): its **Direct successor**. When the line already continues, go to the last Card of the line (follow the Direct successors to the end) if the thought comes after everything there; otherwise use rule 2.
-2. **Everything else that grows from one specific Card**: objection, example, qualification, tangent, a second consequence, or a step that belongs mid-line. Make it a **Side successor** of that Card. A side branch is a line of its own: give it Direct successors as it develops (`3/2|a → 3/2|a|1 → 3/2|a|2`). Topic roots and Literature Cards take no Side successors; branch from `<n>/1` or `Key/1` onward.
+1. **The next step in a line** ("therefore", "next", "this leads to"): use its free **Direct successor** at the end. If the step belongs before an existing Regular Card, use `insert_card` with `before` and its confirmation flow. Do not turn a mid-line step into a tangent because the Direct slot is occupied.
+2. **A different thought that grows from one specific Card**: objection, example, qualification, tangent, or a separate consequence. Make it a **Side successor** of that Card. A side branch is a line of its own: give it Direct successors as it develops (`3/2|a → 3/2|a|1 → 3/2|a|2`). Topic roots and Literature Cards take no Side successors; branch from `<n>/1` or `Key/1` onward.
 3. **A new line of thought with no plausible neighbour** after step 1 of the filing steps: a new **Topic** (`create_topic`), whose first Card is `<n>/1` (`create_successor` at `<n>/0`). Keep the number of Topics small; check twice that the thought cannot grow from an existing Card.
 4. **The thought continues a human Card.** Human trees take no agent successors, so place it in the agent Topic tree where it fits best, or in a new agent Topic, and open its body with the Link: `延续 [[0/1|a]]：…` / `Continues [[0/1|a]]: …`.
 
@@ -188,6 +188,7 @@ A Link is a claim about a relationship, so it carries its reason. Write each `[[
 | source | 来源：[[Key]] 第10页 · Source: [[Key]] p. 10 |
 
 - Link to the most specific Card that carries the point, not to the Topic.
+- A Link names a whole Card. If your sentence needs only one part of your writable Card, split that Card first and link the resulting Card. For a human Card, respect read-only Access and report the needed split to the user. A math Link sentence can name a hypothesis or clause label, such as `(H2)`.
 - Two to five Links is typical. A Card with no Links is lost: Luhmann found that unconnected slips come back only by chance.
 - The most valuable Link joins distant trees, because it produces **surprise**: the same mechanism in money and in industrialisation. Look for one every time you file.
 - Reverse links are generated, so each Link is written once, on the Card whose argument uses it.
@@ -211,7 +212,7 @@ Collecting feels like learning; it is not (Christian Tietze). A slip-box fills w
 
 Whenever you work in a tree:
 
-- Split a Card that holds two ideas: keep one idea in the original, put the other in a new successor (Direct if its slot is free and the idea is the next step, otherwise Side), and Link them.
+- Split a writable Card that holds two ideas: keep one idea in the original and Link the other in a new Card. Use a free Direct slot for its next step, or insert before the existing next step when the line is occupied. Use a Side successor for a different thought. Human Cards stay read-only.
 - Merge a duplicate by editing the weaker agent Card into a pointer to the stronger one. Delete it through the confirm flow only when it has no successors and no Card Links to it; deleting a Side successor also shifts its later siblings' letters, and ZT refuses a shift that would rewrite a Link inside a human Card.
 - Reposition a misplaced Card or branch with `move_card` rather than deleting and recreating it, so its Links and Reverse links survive.
 - Fix Links reported by `list_broken_links` in the agent Workspace.

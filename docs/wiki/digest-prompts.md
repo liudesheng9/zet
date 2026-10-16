@@ -11,6 +11,11 @@ updated: 2026-10-16
 
 ## Purpose
 
+### Bridge delivery contract (2026-10-16)
+
+The shared `dsh-bridge-instructions.zh.md` is used with zettelkasten and asd-ste100-zh. Judges read frozen candidates, assess scope/mechanism/direction, write only their assigned `br-NNN.json`, and run SELF-CHECK at most three times. The relation matrix excludes every human/part/Theory carrier, Model-head-to-part Link, rests-on-to-part, and unsupported earlier direction. Mechanical validation never attests semantic truth or user acceptance.
+
+
 This block is the text that the book digest gives to its models. The 25 `dsh-*.zh.md` files are the Chinese instructions for DeepSeek Harness (DSH) runs: the digest writer, the link writer, the model briefer, writer, reviewer and explainer, the Card fixers, and the writers of the term table, skeleton, Event Cards, Finding Cards, Hub Cards, and the math units. The two `model-architect*.md` files are the English instructions for the Sonnet architect that plans each model. The scripts of the digest are deterministic and write no prose. These files are where every writing rule, output format, and self-check loop is set out for the model that does the writing. A developer edits this block to change what a digest writes or how it writes it.
 
 **Owns:** the wording of each instruction, the output format each run must produce (JSON shape, reply line, Card body layout), the Card-language limits as they are told to writers, the self-check loop the writers follow, and the placeholders (`{{KEY}}` and the others) that loaders fill in.
@@ -324,6 +329,10 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令") are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
+
+
+- `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
+- `2026-10-16` — `dsh-bridge-instructions.zh.md` judges frozen cross-book candidates, returns zero to two directed relations per source, preserves model and human boundaries, and runs the read-only Bridge precheck. The script derives ids and kinds. It grants no Card-edit acceptance.
 
 - `2026-10-16` `cbba3b1` — Added `dsh-finding-instructions.zh.md`: the empirical-results layer (Finding Cards) of the economics digest.
 - `2026-10-16` `1d585ef` — Split the digest prompt into `dsh-digest-base.zh.md` and `dsh-model-cards.zh.md`. Added `dsh-event-instructions.zh.md`, so Event Cards come from their own layer in the economics set.

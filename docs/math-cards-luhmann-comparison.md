@@ -1,6 +1,6 @@
 # Mathematical Cards and Luhmann's Zettelkasten: Comparison
 
-Status: analysis and proposal (2026-10-15), with the user's decisions of 2026-10-15 (see "Decisions"). Only L4 is built (`639a5a4`). The other kept practices are recorded here and are not implemented. It compares the math card system (`math-cards-proposal.md` rev. 2, `math-cards-design.md`, branch `math-dev` at `2597c6c`) with Niklas Luhmann's Zettelkasten practice, and it names the practices that can make the math cards better. The text follows ASD-STE100 as the other design documents do.
+Status: analysis and proposal (2026-10-15), with the user's decisions of 2026-10-15 (see "Decisions"). L4 is built (`639a5a4`). L6 now has source implementation and installed workflows through C2; its real Workflow and accepted live-apply qualification remain open in [the delivery receipt](slip-box-luhmann-delivery-status.md). L1, L2, L5 and L7 remain unimplemented. It compares the math card system (`math-cards-proposal.md` rev. 2, `math-cards-design.md`, branch `math-dev` at `2597c6c`) with Niklas Luhmann's Zettelkasten practice, and it names the practices that can make the math cards better. The text follows ASD-STE100 as the other design documents do.
 
 ## Decisions
 

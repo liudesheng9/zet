@@ -1,0 +1,57 @@
+#Requires -Version 7.5
+param([Parameter(Mandatory)][string]$Python)
+# Human Cards are seeded only into a newly created, stopped, isolated fixture database.
+# All behavior under test then uses the public agent MCP/compiler interfaces.
+$ErrorActionPreference='Stop'
+$scratch=Join-Path ([IO.Path]::GetTempPath()) "bridge-human-test-$PID"
+$archive=Join-Path $scratch 'archive';$staging=Join-Path $scratch 'staging'
+New-Item -ItemType Directory -Force $staging|Out-Null
+$env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
+. (Join-Path $PSScriptRoot '..\zt-calls.ps1')
+$compiler=Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
+function Assert($ok,$text){if(-not $ok){throw $text};Write-Output "ok: $text"}
+function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper -);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
+function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$LASTEXITCODE;$lines[-1]|ConvertFrom-Json -AsHashtable -DateKind String}
+function Audit($out){$lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $out -SkipModels);if($LASTEXITCODE){throw "$lines"};Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String}
+try{
+ zt config set archive_root $archive|Out-Null;zt up|Out-Null;zt down|Out-Null
+ @'
+import sqlite3,sys,pathlib,tempfile
+p=pathlib.Path(sys.argv[1]).resolve()
+assert p.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()) and p.parent.parent.name.startswith('bridge-human-test-')
+c=sqlite3.connect(p)
+assert c.execute('select count(*) from cards').fetchone()[0]==0
+for at,root,text in [('99990/0',1,'# 人类主题\n\n控制权'),('99990/1',0,'# 人类卡片讨论控制权\n\n控制权决定投资的激励。'),('99990/2',0,'# 人类卡片比较控制权\n\n对应 [[0/2]]：两处都讨论控制权决定投资的激励。')]:
+ c.execute('insert into cards(location,is_topic,is_lit,text,workspace,card_type) values(?,?,0,?,"human","idea")',(at,root,text))
+c.execute('insert or replace into metadata(key,value) values("next_topic_id","0")')
+c.commit();c.close()
+'@ | & $Python - (Join-Path $archive 'zt.sqlite3')
+ if($LASTEXITCODE){throw 'human fixture seed failed'}
+ zt up|Out-Null
+ $made=Calls @(
+  @{tool='create_literature';arguments=@{bibtex='@book{New2026,title={New},year={2026}}'}},
+  @{tool='create_successor';arguments=@{at='New2026';title='第一组';body='§1 控制权'}},
+  @{tool='create_topic';arguments=@{title='控制权';body='控制权与投资'}},
+  @{tool='create_successor';arguments=@{at='@@2';title='控制权影响投资';body='控制权决定投资的激励。来源：[[New2026]] §1'}}
+ )
+ $source=$made[3];$target='99990/1'
+ $before=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$target}}))[0]
+ $r=Compile @('-Step','plan','-Staging',$staging,'-CitationKey','New2026')
+ $work=Join-Path $staging 'bridge';$plan=Get-Content -LiteralPath (Join-Path $work 'plan.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String
+ Assert ($r.ok -and $plan.cards[$target].workspace -ceq 'human' -and $target -cin @($plan.sources[0].candidates|ForEach-Object address)) 'the planner can offer a substantive human target without attributing it to an agent book'
+ $answer=@{schema=1;plan_id=$plan.plan_id;job='br-001';sources=@(@{source=$source;none='';bridges=@(@{carrier=$source;target=$target;word='对应';sentence="对应 [[$target]]：两张卡都由控制权解释投资激励。";why='两张卡讨论同一个控制权机制。'})})}
+ [IO.File]::WriteAllText((Join-Path $work 'out\br-001.json'),(ConvertTo-Json -InputObject $answer -Depth 20),[Text.UTF8Encoding]::new($false))
+ $report=Compile @('-Step','report','-Staging',$staging,'-CitationKey','New2026')
+ $audit=Audit (Join-Path $scratch 'before-audit')
+ Assert ($report.ok -and $audit.books[0].bridges.complete -and $audit.books[0].bridges.island -and $audit.books[0].bridges.out.human -eq 0) 'a proposed-only Bridge is absent from the complete actual-Link audit'
+ $applied=Compile @('-Step','apply','-Staging',$staging,'-CitationKey','New2026','-ReportId',$report.report_id,'-Accept','all','-Apply')
+ $after=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$target}}))[0]
+ Assert ($applied.ok -and $applied.outcomes[0].status -ceq 'verified' -and $before.body -ceq $after.body -and $source -cin @($after.inbound|ForEach-Object address)) 'accepted agent prose links a human target whose body stays read-only while Reverse links update'
+ Calls @(
+  @{tool='create_successor';arguments=@{at=$source;title='控制权的另一个结果';body='控制权改变退出选择。来源：[[New2026]] §2'}},
+  @{tool='create_topic';arguments=@{title='未归属的比较';body='比较不同机制'}},
+  @{tool='create_successor';arguments=@{at='@@1';title='不同机制影响投资';body="对照 [[$source]]：这张卡使用不同的决策前提。"}}
+ )|Out-Null
+ $audit=Audit (Join-Path $scratch 'after-audit')
+ Assert ($audit.books[0].bridges.out.human -eq 1 -and $audit.books[0].bridges.in.human -eq 1 -and $audit.books[0].bridges.in.unattributed -eq 1 -and -not $audit.books[0].bridges.island) 'a filtered audit includes actual human and unattributed pairs in the correct incoming and outgoing buckets'
+}finally{zt down|Out-Null}

@@ -13,6 +13,15 @@ updated: 2026-10-16
 
 ## Purpose
 
+### Bridge delivery contract (2026-10-16)
+
+Bridge compiler: `plan` freezes bounded sources/candidates and complete endpoints using ordinal attribution and existing relatedness; `precheck` applies BR1–BR9 plus offline Card checks; `report` publishes immutable review data; `apply` previews or writes only report-bound accepted agent carriers. Raw `edit_card` base, an exclusive per-report file handle, saved intent and persisted-text/Relation/Reverse-link/model verification make interruption recoverable. Earlier-only math citations use separate acceptance. No Rust/schema/helper edit is needed. Audit now counts actual distinct semantic pairs across both Workspaces and reports unknown isolation on incomplete tree reads. Tests use isolated archives; live pilot evidence is tracked separately in `../slip-box-luhmann-delivery-status.md`.
+
+A resumed unpublished plan recreates missing job inputs from its frozen snapshot after an interrupted render, while retaining existing inputs and valid answers. It never replaces that snapshot with fresh archive reads.
+
+Verified attempts also retain the carrier's resulting inferred book. An accepted Link can change the attribution vote; repeat apply compares the exact journal-proven body and its verified attribution instead of incorrectly treating its own paragraph as unrelated drift.
+
+
 The digest scripts are the deterministic half of the book digest workflows (`zt-book-digest`, `zt-econ-digest`, `zt-math-digest`), which turn a Scholar Archive book into agent Literature trees, Topic trees, Idea, Event, Finding, Model, and Hub Cards. Every stage follows one pattern: a script plans the work and writes job files, a DeepSeek Harness run (or a Sonnet architect, or Opus) writes only JSON or Card prose, a script checks that output (the writer's own `SELF-CHECK:` command), applies it through the zt helper, checks the result, and reports. The scripts exist so that structure (Locations, Links, moves, tables, skeletons, ownership, retries) is done by code that costs no model tokens and follows one rule, and so that a model's text is checked by `zt-check` before it reaches a Card. They are PowerShell 7 scripts, run by the workflow's Haiku drivers as one `pwsh -NoProfile -File …` command per step, and by developers by hand.
 
 **Owns:** the PowerShell scripts in `scripts/book-digest/` (preparation of the staging folder, the compiler cycles of every layer, the read-only audit and surveys, figure attachment), the job, plan, answer, and state JSON formats they read and write, the `zt-calls.ps1` bridge from scripts to the zt helper and to `zt-check`, and the PowerShell tests and fixtures in `scripts/book-digest/tests/`.
@@ -41,6 +50,8 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 | | `hub-compiler.ps1` — the Hub Cards of the whole agent Workspace |
 | | `math-compiler.ps1` — units, Theory Cards, notation, boundary, proof review, rules M1 to M18 |
 | | `digest-audit.ps1` — read-only audit of a book or of the Workspace |
+| | `book-of.ps1` — pure `Get-BookIndex -Trees -Cards`, shared Card categories and inferred book attribution |
+| | `bridge-compiler.ps1` — frozen candidate plans, checked judge output, and immutable review reports; guarded apply is under implementation |
 | | `zt-calls.ps1` — `Invoke-Zt` (zt MCP tools through the helper) and `Invoke-ZtCheck` (`zt-check`) |
 | | `relatedness.ps1` — TF-IDF over Chinese character bigrams, compiled ranking |
 | | `figures.ps1` — a book's figures and its Document links |
@@ -687,6 +698,11 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests, and describes zt-check rules as "R2 to R17, I, E, L" without the F rules; the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+
+- `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
+- `2026-10-16` — The audit uses the pure `book-of.ps1` index: exact ordinal identities, distinct weighted votes, deterministic ties, retained structure detection, and an explicit Finding category. `book-of.tests.ps1` and the public audit fixture verify the change. The index does not assign human Cards to agent books and adds no ownership metadata.
+- `2026-10-16` — Bridge compiler plan/precheck/report use the existing relatedness and offline checker. Plans and reports hash canonical JSON and retain frozen endpoints. Current tests exercise read-only planning, term retrieval, validation refusals, and immutable publication; apply/workflow rollout remain separate gates.
 
 - `2026-10-16` — The scripts that use `ConvertFrom-Json -DateKind` or load `zt-calls.ps1` declare `#Requires -Version 7.5`; `tests/requires-version.tests.ps1` checks it.
 - `2026-10-16` — `event-compiler.ps1` and `finding-compiler.ps1` `apply`: two helper runs, Link edits with `base`, a failed job stays pending under `partial` and the rerun reuses its Cards (`tests/racing-zt-mcp.ps1`). `model-compiler.ps1` `Get-FigureLine` without `-Staging` finds `figures.json` above `-Work`.

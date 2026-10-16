@@ -12,6 +12,11 @@ updated: 2026-10-16
 
 ## Purpose
 
+### Bridge delivery contract (2026-10-16)
+
+Source guidance now describes insertion before occupied steps and whole-Card Links, with writable-only splitting and human read-only Access. Rollout runs `scripts/install-agent-integrations.ps1`, compares repository/Claude/Codex/DeepSeek skill hashes, and checks guidance in a new client conversation. Existing conversations can retain their old instructions. The shared digest protocol also documents report-bound Bridge discovery and apply.
+
+
 This block holds what AI agents get to know about ZT, and the means to put it in front of them. It has three agent skills: `zt` teaches the slip-box's Workspaces, the `zt` MCP server's tools, and the Access rules. `zettelkasten` teaches how to compose, place, and link a Card the way Luhmann worked. `zt-digest-protocol` teaches the building blocks of the book-digest workflows. It also holds the shell helper `zt-mcp.ps1`, which lets an agent with no MCP tools (DeepSeek Harness) call the same server, and the installer `scripts/install-agent-integrations.ps1`. The installer copies the skills into Claude Code, Codex, and DeepSeek Harness and registers `zt mcp` as an MCP server. The block exists because the server only enforces the rules (agent Access, Card rules, confirm plans). The conventions that make Cards good (one idea, claim titles, kinded Links, model structure) live in skill text, and every agent harness must load that text from one source.
 
 **Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the shell helper `skills/zt/scripts/zt-mcp.ps1` (batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, the helper-only `append_card` call); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
@@ -427,9 +432,12 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **Stale text found while reading** (fix in the skills, not in this doc):
   - `skills/zt-digest-protocol/SKILL.md` points to the docs folder as `E:\zet\doc`; the folder is `docs` since `63d77d1`.
   - `skills/zt-digest-protocol/SKILL.md` names only `zt-book-digest` and `zt-math-digest` in its description and says `make-math-workflow.mjs` generates `zt-math-digest.js`. Today `.claude/workflows/zt-math-digest.js` and `.claude/workflows/zt-econ-digest.js` are built by the Workflow Framework Protocol (`docs/zt-digest-framework.md`), and `make-math-workflow.mjs` writes `.claude/workflows-legacy/zt-math-digest.js`. `references/scripts.md` repeats this, says the rules are "R2 to R17, I, E, L" (no F), and lists no `event-compiler.ps1` or `finding-compiler.ps1`.
-  - `skills/zettelkasten/SKILL.md` (*ZET addresses*, "No insertion") says nothing goes between `3/2` and `3/3`, and `references/luhmann-and-practice.md` says ZET cannot insert into a line. `insert_card` does exactly that (`skills/zt/SKILL.md`, `CONTEXT.md` **Insert**), and the same skill's model section tells agents to use it.
 
 ## Change history
+
+
+- `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
+- `2026-10-16` — C1: insertion, Placement, and Maintenance agree with `insert_card before`; whole-Card Links and human read-only splitting are explicit. Rollout verifies installed hashes and freshly loaded client guidance.
 
 - `2026-10-16` — `zt-mcp.ps1` declares `#Requires -Version 7.5` (it uses `ConvertFrom-Json -DateKind`).
 - `2026-10-16` `753bd7b` — Finding Cards: `finding` type in the `zt` skill, the Finding Card template and F1–F4 in the `zettelkasten` skill, F rules in the digest protocol.

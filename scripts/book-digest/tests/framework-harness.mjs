@@ -75,6 +75,7 @@ function runtime(kind, opts0 = {}) {
       if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], deleted: 2 } }
       if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
       let output = json({ jobs: [] })
+      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,status:'done',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[job('br-001')]:[]}), results: [] }
       const compact = / -Compact/.test(cmd)
       const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
       if (/model-compiler\.ps1" -Step brief/.test(cmd)) output = json({ jobs: [job('brief')], skipped: [] })
@@ -392,6 +393,25 @@ const mbase = { ...base, hubs: true, figures: false }
 {
   const { result } = await run('math', { ...mbase, mode: 'full' }, { failStep: /never/ }, 'math')
   check(result && result.math && result.math.index && result.math.skeleton && result.math.notation, 'math full: the result holds the skeleton reports (index, skeleton, notation)')
+}
+
+// Report-first Bridge stage order and failure visibility.
+for(const kind of ['econ','math']) {
+{
+ const {result,calls} = await run(kind, {...base,mode:'full',figures:true,hubs:true})
+ const labels=calls.map(c=>c.label), at=s=>labels.indexOf(s)
+ check(result.bridge?.status==='done' && at('show figures')<at('bridge: plan') && at('bridge: plan')<at('hub manager: survey and limits'), 'full: Figures then report-only Bridge then Hubs')
+ check(!calls.some(c=>/bridge-compiler/.test(c.cmd)&&/-Apply\b/.test(c.cmd)), 'full: discovery never applies proposals')
+}
+{
+ const {result,calls}=await run(kind, {...base,mode:'full',bridge:false})
+ check(result.bridge?.status==='skipped'&&!calls.some(c=>/bridge-compiler/.test(c.cmd)), 'full: bridge false returns skipped without commands')
+}
+{
+ const {result,calls}=await run(kind, {...base,mode:'full'}, {failStep:/bridge-compiler\.ps1.*-Step plan/})
+ check(result.bridge?.status==='failed'&&result.audit?.status==='done', 'full: Bridge failure survives successful later stages')
+ check(calls.some(c=>c.label==='bridge: report: clean up'), 'full: failed planning still cleans stage conversations')
+}
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)

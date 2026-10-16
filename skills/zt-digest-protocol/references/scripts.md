@@ -11,6 +11,7 @@ All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the p
 | `hub-compiler.ps1` | Hubs | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | Build the line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `D:\zt-digest\hubs\state.json`. | yes |
 | `book-terms.ps1` | Prepare | `plan`, `apply` | The book term table (术语表) that rule R6 checks against. | the 术语表 Card |
 | `book-skeleton.ps1` | Organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index, the structure Card, and the Topic bodies. | yes, with `-Apply` |
+| `bridge-compiler.ps1` | Bridge | `plan`, `precheck`, `report`, `apply` | Freeze candidate endpoints, check BR1–BR9 and Card rules, publish an immutable report, and apply only explicit report-bound ids. Flags: Step/Staging/CitationKey/Work/Profile/MaxSources/Candidates/Books/Job/ReportId/Accept/AcceptEarlier/Apply. Preview without -Apply changes no Card or apply state. | only accepted agent carriers with `-Apply` |
 | `math-compiler.ps1` | math variant | see its header | Numbered statements, mathematical units, Theory Cards (`docs/math-cards-design.md`). | yes |
 
 ## Preparation and passes
@@ -19,6 +20,7 @@ All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the p
 | --- | --- | --- | --- |
 | `prepare-book-digest.ps1` | Prepare | Chinese-only text, section groups, the group files (with their `SELF-CHECK` line), the shared DeepSeek prefixes, and with `-Apply` the agent Literature tree with one anchor per group. | anchors |
 | `snapshot-topics.ps1` | Digest | A compact list of every Topic tree for one digest run, so it places and links Cards without searching. | no |
+| `book-of.ps1` | Bridge, Audit | Pure ordinal classification and weighted inferred attribution, including Finding Cards. No archive calls. | no |
 | `relatedness.ps1` | Digest, Link | Dot-sourced: TF-IDF over Chinese character bigrams; tells each run which other sections and Cards are related. | no |
 | `prepare-link-pass.ps1` | Link | A snapshot of every Card; per group, the Cards it owns, the candidate targets, the allow list, and the `SELF-CHECK` line. | no |
 | `list-models.ps1` | Models | The Model Cards a digest wrote (`-Groups`, `-All -CitationKey`), with level, parts, and faults. | no |
@@ -35,7 +37,7 @@ All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the p
 | `zt-check` (`tools/zt-check`, install with `scripts/install-zt-check.ps1`) | The one checker and the only source of truth, for every agent: `--cards` (a writer's own Cards, classified as the audit does), `--addresses`, `--model`, `--json` (drafts, offline). Rules R2 to R17, I, E, L. Starts `zt mcp` once to read Cards; `--json` needs no archive. | no |
 | `Invoke-ZtCheck` (in `zt-calls.ps1`) | How the scripts call zt-check: the old parameter names (`-Json`, `-Model`, `-Addresses`, `-Cards`, `-Log`, `-Book`, `-Rules`, `-Setting`, `-Level`, `-RequireExplain`, `-SkipShared`, `-Max*`). Throws when zt-check does not run. | no |
 | `scripts/install-zt-check.ps1` | Build the crate (target `D:\zt-check-target`) and install `zt-check.exe` beside `zt.exe`. A running copy is renamed aside. | no |
-| `digest-audit.ps1` | Read-only audit of one book or the whole Workspace: faults per rule and category, Topic trees, orphans, Cards without a source line or kinded Link, models not self-sufficient, explained Derivation parts, figures, missing hubs, broken Links. Writes `audit.json`, `audit.md`, `audit-faults.txt`. | no |
+| `digest-audit.ps1` | Read-only audit of one book or the whole Workspace: faults per rule and category, Topic trees, orphans, Cards without a source line or kinded Link, models not self-sufficient, explained Derivation parts, figures, missing hubs, broken Links, and actual distinct semantic Bridge pairs in/out by book/human/unattributed. Incomplete tree reads give complete=false and island=null. Writes `audit.json`, `audit.md`, `audit-faults.txt`. | no |
 | `zt-calls.ps1` | Dot-sourced: `Invoke-Zt` calls zt MCP tools through the helper with UTF-8 decoding. | as called |
 
 ## DeepSeek instruction files (`dsh-*.zh.md`)
@@ -45,6 +47,7 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | File | Task | Output |
 | --- | --- | --- |
 | `dsh-instructions.zh.md` | Digest run: Idea, Event, and Model Cards of one group, and its anchor | Cards through the helper |
+| `dsh-bridge-instructions.zh.md` | Read frozen candidate bodies; assess actual mechanism, scope and direction; SELF-CHECK; never edit Cards | assigned `br-NNN.json` only |
 | `dsh-link-instructions.zh.md` | Link run: reasoned Links from a group's own Cards | Links through the helper |
 | `dsh-brief-instructions.zh.md` | Model brief: equations, skipped steps, the book's own intuition (直觉) | `brief.md` |
 | `dsh-fill-instructions.zh.md` | Model fill and derive: Model Card, setting, parts, charts, Derivation parts with 思路, 说明, 解读 | Cards through the helper |

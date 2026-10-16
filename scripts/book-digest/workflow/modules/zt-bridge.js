@@ -1,0 +1,46 @@
+// ==== module zt-bridge v3 ====
+defineModule({
+  id: 'zt-bridge', version: '3', requires: ['zt-digest-lib'],
+  summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
+  params: {
+    args: { type: 'object', required: true, description: 'run arguments' },
+    mode: { type: 'string', required: true, description: 'run mode' },
+    model: { type: 'any', description: 'resolved judge model; unused for apply' },
+    profile: { type: 'string', required: true, description: 'book or math' },
+  },
+  run: async (ctx, p) => {
+    const Z=zdMake(ctx,p), A=Z.A, work=`${Z.OUT}\\bridge`
+    for(const [key,low,high] of [['bridgeMax',1,120],['bridgeCandidates',1,8]])if(A[key]!==undefined&&(!Number.isInteger(A[key])||A[key]<low||A[key]>high))return {status:'failed',error:`${key} must be an integer in ${low}..${high}.`}
+    if((A.bridgeBooks!==undefined&&typeof A.bridgeBooks!=='string')||(A.bridgeReport!==undefined&&typeof A.bridgeReport!=='string'))return {status:'failed',error:'bridgeBooks and bridgeReport must be strings.'}
+    const q=v=>`'${String(v).replace(/'/g,"''")}'`
+    const selection=v=>{
+      if(v===undefined)return ''
+      if(v==='all')return 'all'
+      if(!Array.isArray(v)||v.some(id=>typeof id!=='string'||!/^b[0-9]{3}$/.test(id))||new Set(v).size!==v.length)throw Error('Bridge selection must be all or a unique array of proposal ids.')
+      return v.join(',')
+    }
+    let accept,earlier
+    try{accept=selection(A.bridgeApply);earlier=selection(A.bridgeApplyEarlier)}catch(e){return {status:'failed',error:String(e)}}
+    const applying=!!(A.bridgeReport||accept||earlier)
+    if(applying&&(p.mode!=='bridge'||!A.bridgeReport||!(accept||earlier)))
+      return {status:'failed',error:'Bridge apply requires mode bridge, bridgeReport, and a nonempty acceptance section.'}
+    const step=(s,more='')=>`pwsh -NoProfile -File "${Z.SCRIPTS}\\bridge-compiler.ps1" -Step ${s} -Staging ${q(Z.OUT)} -CitationKey ${q(Z.KEY)} -Work ${q(work)}${more}`
+    if(applying){
+      const extra=` -ReportId ${q(A.bridgeReport)}${accept?` -Accept ${q(accept)}`:''}${earlier?` -AcceptEarlier ${q(earlier)}`:''} -Apply`
+      const result=await Z.runScript('bridge: apply','Bridge',step('apply',extra),'; filing must stay quiet: no insertion, movement, deletion, key rename, retype, or Organize during apply')
+      return result.json||{status:'failed',error:result.run&&result.run.output}
+    }
+    const opts={dsh:work,skills:['zettelkasten','asd-ste100-zh'],effort:Z.DSH_EFFORT,phase:'Bridge',writes:`${work}\\out`,readOnly:true,remove:'delete',keep:true}
+    let planned,reported,error
+    try{
+      planned=await Z.drive('bridge: plan',{...opts,command:step('plan',` -Profile ${q(p.profile)} -MaxSources ${q(A.bridgeMax??60)} -Candidates ${q(A.bridgeCandidates??5)}${A.bridgeBooks?` -Books ${q(A.bridgeBooks)}`:''}`)})
+      if(!planned||!planned.ok)error=(planned&&planned.output)||'Bridge planning failed.'
+    }catch(e){error=String(e)}finally{
+      try{reported=await Z.drive('bridge: report',{...opts,command:step('report'),cleanup:true})}catch(e){error=error||String(e)}
+    }
+    const summary=zdLastJson((reported&&reported.output)||'')
+    if(error)return {status:'failed',error,...(summary?{report:summary.report,counts:summary.counts}:{} )}
+    return summary||{status:'failed',error:'No Bridge report output.'}
+  },
+})
+// ==== end module zt-bridge ====

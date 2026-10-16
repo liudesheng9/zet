@@ -8,6 +8,22 @@
   },
   "answers": [
     {
+      "label": "^bridge: plan$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"status\":\"done\",\"plan_id\":\"p-sim\",\"selected\":1,\"jobs\":[{\"id\":\"br-001\",\"files\":[\"prompt.md\",\"job.md\"],\"prompt\":\"judge\"}]}",
+        "results": []
+      }
+    },
+    {
+      "label": "^bridge: report$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"status\":\"done\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"report\":\"report.md\"}",
+        "results": []
+      }
+    },
+    {
       "label": "^choose DeepSeek source$",
       "answer": {
         "source": "official",

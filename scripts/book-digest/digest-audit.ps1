@@ -99,67 +99,68 @@ function Get-Tally($items) {
 
 # --- the trees -----------------------------------------------------------------------------------
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$trees = @((Read-Zt @(@{ tool = 'list_trees'; arguments = @{ workspace = 'agent' } })).trees)
+$allTrees = @((Read-Zt @(@{ tool = 'list_trees'; arguments = @{} })).trees)
+$trees = @($allTrees | Where-Object workspace -CEQ 'agent')
 $books = @($trees | Where-Object { $_.kind -eq 'literature' } | ForEach-Object { [string]$_.tree })
 if ($CitationKey) {
-    if ($CitationKey -notin $books) { throw "no agent Literature tree ``$CitationKey``" }
+    if ($CitationKey -cnotin $books) { throw "no agent Literature tree ``$CitationKey``" }
     $books = @($CitationKey)
 }
 $allBooks = @($trees | Where-Object { $_.kind -eq 'literature' } | ForEach-Object { [string]$_.tree })
 $treeInfo = @{}
 foreach ($t in $trees) { $treeInfo[[string]$t.tree] = $t }
 $topicTrees = @($trees | Where-Object { $_.kind -eq 'topic' } | ForEach-Object { [string]$_.tree })
-$read = Read-Many @(@($allBooks + $topicTrees) | ForEach-Object { @{ tool = 'get_tree'; arguments = @{ tree = $_ } } })
-$cards = @($read | Where-Object { $_ } | ForEach-Object { $_.cards } | Where-Object { $_.workspace -eq 'agent' })
+$read = Read-Many @($allTrees | ForEach-Object { @{ tool = 'get_tree'; arguments = @{ tree = $_.tree } } })
+$graphComplete = @($read | Where-Object { $null -eq $_ }).Count -eq 0 -and $read.Count -eq $allTrees.Count
+$graphCards = @($read | Where-Object { $_ } | ForEach-Object cards)
+$cards = @($graphCards | Where-Object workspace -CEQ 'agent')
 $byAddress = @{}
 foreach ($c in $cards) { $byAddress[[string]$c.address] = $c }
 Write-Host "read $($cards.Count) Cards in $($trees.Count) trees ($([int]$sw.Elapsed.TotalSeconds) s)"
 
-# The book a Card's Link points into: `Key`, `Key/…`.
-function Get-LinkBook([string]$target) {
-    $head = ($target -split '/', 2)[0]
-    if ($head -in $allBooks) { $head } else { $null }
+. (Join-Path $PSScriptRoot 'book-of.ps1')
+$bookIndex = Get-BookIndex -Trees $allTrees -Cards $graphCards
+$bookOf = $bookIndex.BookOf
+foreach ($c in $cards) { $c | Add-Member -NotePropertyName category -NotePropertyValue $bookIndex.Category[[string]$c.address] -Force }
+# A semantic Bridge is an actual distinct directed pair between substantive endpoints.
+# Source references and navigation Cards do not establish external semantic connection.
+$graphByAddress = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+foreach ($card in $graphCards) { $graphByAddress[[string]$card.address]=$card }
+function Bridge-Endpoint($Card) {
+    $Card.kind -ceq 'regular' -and $bookIndex.Category[[string]$Card.address] -cin @('idea','finding','event','model','part') -and ([string]$Card.title) -notmatch '^(符号表|(?i:notation))'
 }
-function Test-SourceTarget([string]$target) {
-    # A Literature Card or an anchor (`Key/<n>`): a source line or a place in the book.
-    $head = ($target -split '/', 2)[0]
-    ($head -in $allBooks) -and ($target -eq $head -or $target -match '^[^/]+/\d+$')
+function Bridge-Bucket($Card) {
+    if ($Card.workspace -ceq 'human') { return 'human' }
+    if ($bookIndex.BookOf.ContainsKey([string]$Card.address)) { return $bookIndex.BookOf[[string]$Card.address] }
+    'unattributed'
 }
-function Get-Category($c) {
-    if ($c.kind -in @('topic', 'literature')) { return 'root' }
-    switch ([string]$c.type) {
-        'hub' { return 'hub' }
-        'event' { return 'event' }
-        'model' { if ($c.facet) { return 'part' } else { return 'model' } }
+function Bridge-Counts([string]$Key) {
+    $counts = [ordered]@{out=@{books=[Collections.Generic.SortedDictionary[string,int]]::new([StringComparer]::Ordinal);human=0;unattributed=0};in=@{books=[Collections.Generic.SortedDictionary[string,int]]::new([StringComparer]::Ordinal);human=0;unattributed=0};island=$null;complete=$graphComplete}
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($carrier in $graphCards) {
+        if (-not (Bridge-Endpoint $carrier)) { continue }
+        foreach ($property in $carrier.kinds.PSObject.Properties) {
+            $at=[string]$property.Name
+            if ($property.Value -ceq 'refers' -or -not $graphByAddress.ContainsKey($at) -or $at -cnotin @($carrier.links)) { continue }
+            $target=$graphByAddress[$at]
+            if (-not (Bridge-Endpoint $target) -or -not $seen.Add("$($carrier.address)`0$at")) { continue }
+            $from=Bridge-Bucket $carrier; $to=Bridge-Bucket $target
+            if ($from -ceq $to) { continue }
+            foreach ($direction in @('out','in')) {
+                $ours=if($direction -ceq 'out'){$from}else{$to}
+                $other=if($direction -ceq 'out'){$to}else{$from}
+                if ($ours -cne $Key) { continue }
+                if ($other -cin @('human','unattributed')) { $counts[$direction][$other]++ }
+                else { $counts[$direction].books[$other]=1+[int]$counts[$direction].books[$other] }
+            }
+        }
     }
-    if ([string]$c.tree -in $allBooks -and [string]$c.address -match '^[^/]+/\d+$') { return 'anchor' }
-    # The book's term table (book-terms.ps1): a table, not an idea.
-    if ([string]$c.tree -in $allBooks -and [string]$c.title -match '^术语表') { return 'terms' }
-    # The book's structure Card (book-skeleton.ps1): it lists the argument; its Links are an index.
-    if ([string]$c.tree -in $allBooks -and [string]$c.excerpt -match '^本卡是《.*》的结构卡') { return 'structure' }
-    # An older structure Card has no marker: a Side successor of <key>/1 that links at least half
-    # of the book's anchors.
-    if ([string]$c.tree -in $allBooks -and [string]$c.parent -eq "$($c.tree)/1" -and [string]$c.edge -eq 'side' -and [string]$c.type -eq 'idea') {
-        $anchorLinks = @(@($c.links) | Where-Object { [string]$_ -match ('^' + [regex]::Escape([string]$c.tree) + '/\d+$') } | Select-Object -Unique).Count
-        if ($anchorLinks -ge 3 -and $anchorLinks * 2 -ge [int]$anchorCount[[string]$c.tree]) { return 'structure' }
+    if ($graphComplete) {
+        $total=0
+        foreach($direction in @('out','in')) { $total += $counts[$direction].human+$counts[$direction].unattributed;foreach($n in $counts[$direction].books.Values){$total+=$n} }
+        $counts.island=$total -eq 0
     }
-    'idea'
-}
-
-# Which book each Card belongs to.
-# Anchors per book: an older structure Card links at least half of them.
-$anchorCount = @{}
-foreach ($c in $cards) { if ([string]$c.tree -in $allBooks -and [string]$c.address -match '^[^/]+/\d+$') { $anchorCount[[string]$c.tree] = 1 + [int]$anchorCount[[string]$c.tree] } }
-$bookOf = @{}
-foreach ($c in $cards) {
-    $address = [string]$c.address
-    $c | Add-Member -NotePropertyName category -NotePropertyValue (Get-Category $c) -Force
-    if ([string]$c.tree -in $allBooks) { $bookOf[$address] = [string]$c.tree; continue }
-    $votes = @{}
-    # A source line (`来源：[[Key]] §n`) or an anchor names the book. Another Card of the book only
-    # suggests it: a Card of one book often links the Cards of another.
-    foreach ($l in @($c.links)) { $b = Get-LinkBook ([string]$l); if ($b) { $votes[$b] = $(if (Test-SourceTarget ([string]$l)) { 10 } else { 1 }) + [int]$votes[$b] } }
-    if ($votes.Count) { $bookOf[$address] = @($votes.GetEnumerator() | Sort-Object { -$_.Value }, Name)[0].Name }
+    $counts
 }
 $scope = @($cards | Where-Object { $bookOf[[string]$_.address] -in $books })
 # Topic roots and Hub Cards seldom link a book. A Workspace audit checks them too, in their own section.
@@ -306,12 +307,12 @@ foreach ($key in $books) {
     $orphans = @($regular | Where-Object { [int]$_.inbound -eq 0 })
     # A source line links the Literature Card or an anchor of the book. A Link to another Card of
     # the book is not a source: every Card attributed to the book has one.
-    $noSource = @($writing | Where-Object { -not @(@($_.links) | Where-Object { (Test-SourceTarget ([string]$_)) -and (Get-LinkBook ([string]$_)) -eq $key }).Count })
+    $noSource = @($writing | Where-Object { -not @(@($_.links) | Where-Object { (Test-SourceTarget -Target ([string]$_) -Books $bookIndex.BookSet) -and (Get-LinkBook -Target ([string]$_) -Books $bookIndex.BookSet) -eq $key }).Count })
     $refers = 0
     $unkinded = @()
     foreach ($c in $writing) {
         $kinded = @(@($c.kinds.PSObject.Properties) | ForEach-Object Name)
-        $others = @(@($c.links) | Where-Object { -not (Test-SourceTarget ([string]$_)) })
+        $others = @(@($c.links) | Where-Object { -not (Test-SourceTarget -Target ([string]$_) -Books $bookIndex.BookSet) })
         $refers += @($others | Where-Object { $_ -notin $kinded }).Count
         if (-not @($kinded | Where-Object { $_ -ne [string]$c.parent }).Count) { $unkinded += $c }
     }
@@ -355,6 +356,7 @@ foreach ($key in $books) {
     $title = [string]$treeInfo[$key].title
     $report.books += [ordered]@{
         key = $key; title = $title
+        bridges = Bridge-Counts $key
         cards = $mine.Count
         cards_by_category = Get-Tally @($mine | ForEach-Object category)
         cards_in_topic_trees = @($mine | Where-Object { [string]$_.tree -in $topicTrees }).Count
@@ -441,6 +443,7 @@ foreach ($b in $report.books) {
     [void]$md.AppendLine("- **No kinded Link** to a Card other than the parent: $($b.unkinded.count) of $($b.unkinded.of). Links read as ""refers"": $($b.unkinded.refers_links). $(& $cut $b.unkinded.list)")
     [void]$md.AppendLine("- **Models**: $($b.models.count) ($(& $tally $b.models.levels)). Not self-sufficient: $($b.models.not_self_sufficient). With get_model issues: $($b.models.with_issues). Derivation parts with 思路 and 解读: $($b.models.explained) of $($b.models.derivations). $(& $cut @($b.models.list | Where-Object { -not $_.self_sufficient } | ForEach-Object address))")
     [void]$md.AppendLine("- **Figures**: $($b.figures.shown_labels) figures shown. Named but not shown: $($b.figures.missing_known) known, $($b.figures.missing_unknown) unknown. $(& $cut @($b.figures.list | Where-Object known | ForEach-Object { "$($_.address) 图 $($_.figure)" }))")
+    [void]$md.AppendLine("- **Semantic Bridges** (actual directed pairs; inferred book attribution): $(ConvertTo-Json -InputObject $b.bridges -Depth 5 -Compress)")
     [void]$md.AppendLine("- **Broken Links** from the book's Cards: $($b.broken_links)").AppendLine()
 }
 [IO.File]::WriteAllText((Join-Path $Out 'audit.md'), $md.ToString(), $utf8)
@@ -452,6 +455,7 @@ foreach ($b in $report.books) {
     books = @($report.books | ForEach-Object {
         [ordered]@{
             key = $_.key; cards = $_.cards; topic_trees = $_.topics.trees; style_faults = $_.style.faults
+            bridges = $_.bridges
             layer_faults = $_.layer.faults; layer_advisory = $_.layer.advisory
             orphans = $_.orphans.count; no_source = $_.no_source.count; unkinded = $_.unkinded.count
             models = $_.models.count; not_self_sufficient = $_.models.not_self_sufficient
@@ -459,4 +463,4 @@ foreach ($b in $report.books) {
             figures_missing = $_.figures.missing_known + $_.figures.missing_unknown
         }
     })
-} | ConvertTo-Json -Depth 4 -Compress
+} | ConvertTo-Json -Depth 8 -Compress

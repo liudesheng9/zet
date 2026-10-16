@@ -16,6 +16,11 @@ updated: 2026-10-16
 
 ## Purpose
 
+### Bridge delivery contract (2026-10-16)
+
+Bridge is now declared after Figures and before Hubs. Source versions: base 2.1.2, economics 3.1.2, math 2.2.2; new zt-bridge v3, shared library v3/report v4. Full discovers and reports without applying; disabled full returns skipped. Mode bridge reuses the frozen report; explicit bridgeReport with bridgeApply/bridgeApplyEarlier runs only the script path, without source probes, judges, model work or maintenance. Both adapters use bridgeMax (60, max120), bridgeCandidates (5, max8), optional bridgeBooks, and separate all-or-id-array selections. Cleanup is in finally and retains review artifacts. Build/install/verify use the assembler; generated files are never hand edited. See `../zt-digest-framework.md` for commands and operator limits.
+
+
 This block holds the Claude Code Workflow scripts that turn a book from the Scholar Archive into Cards in the agent Workspace: a Literature tree with one anchor per section group, Topic trees, Idea, Event, Finding, and Model Cards, Hub Cards, and a read-only audit. There are three digest workflows. `zt-book-digest` is hand-written. `zt-econ-digest` (economics books) and `zt-math-digest` (mathematics textbooks) are built by the Workflow Framework Protocol from one shared base blueprint, a variant blueprint each, and a library of stage modules, and are installed frozen. A workflow script does no Card work itself. It orchestrates agents: Haiku managers relay script commands and drive DeepSeek Harness conversations, one Sonnet architect plans each model batch, and Opus makes the Organize decisions. The PowerShell scripts do every structural step and DeepSeek writes the text. The block exists so that the stage order, the roles and their models, the DeepSeek Subagent Managed Protocol limits, and the failure policy stay fixed and testable while only data moves.
 
 **Owns:** the stage graph and modes of each digest workflow, the args each one takes, the roles and models per stage, the Haiku manager prompts and the DeepSeek job driver (`drive`), the DeepSeek Subagent Managed Protocol limits in code, the base and variant blueprints, the stage modules, the installed scripts with their registry (lock, sim, sources), the generator of the legacy math workflow, and the stand-in-runtime harnesses.
@@ -133,7 +138,7 @@ Every stage module calls `zdMake(ctx, params)` (directly or through `zmlMake` / 
 
 ### Workflows and their stages
 
-#### zt-econ-digest (v3.0.0) and zt-math-digest (v2.1.0): the composed stage graph
+#### zt-econ-digest (v3.1.2) and zt-math-digest (v2.2.2): the composed stage graph
 
 The stage ids, modules, and `after` edges come from the registry `blueprint.json` of each variant; titles are the progress phases.
 
@@ -278,7 +283,7 @@ Library modules (no stage; their top-level names carry a prefix because all modu
 
 | Module | Version | Requires | Exports |
 |---|---|---|---|
-| `zt-digest-lib` | 2 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_HELPER`, `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, runCards, cardBlock` |
+| `zt-digest-lib` | 3 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_HELPER`, `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, runCards, cardBlock` |
 | `zt-model-lib` | 1 | `zt-digest-lib` | `zmlMake(ctx, p)` → `{ Z, listModels(selector, label), elaborateAll(models, label), logModels(reports), modelCleanup(), dshJobs() }`; internal `compileBatch(batch, kind)` |
 | `zt-math-lib` | 1 | `zt-digest-lib` | `zmMake(ctx, p)` → `{ Z, A, MATH_WORK, SUPPLY, UNITS_PER_JOB, MAIN_RESULTS, mstep(step, more), runMathScript(what, step, extra, phase), mathOpts(stage, phase) }` |
 
@@ -307,8 +312,9 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 | `zt-dsh-cleanup` | 1 | `usageBefore`, `usageBeforeLink`, `groups`, `linkRuns` | deletes leftover conversations in `<out>`, removes the workspace, deletes scratch files, reads usage | `{ cleanup, usage }` |
 | `zt-organize` | 1 | `groups`, `digest`, `link`, `models`, `modelsBook` | survey → Opus `decisions.json` → `organize-apply.ps1` → notes card cycle → `book-skeleton.ps1` plan/apply; or the legacy Opus job | `{ survey, decisions, applied, notes, skeleton }` (legacy: the Opus report text) |
 | `zt-figures` | 1 | — | `attach-figures.ps1 -CitationKey -Staging [-FileId] -Report <out>\figures-report.json -Apply` | `{ status, ...summary }` |
+| `zt-bridge` | 3 | `profile` (`book` or `math`) | bounded `plan` → judges → `report`; accepted mode calls only `apply -Apply`; workspace `<out>\bridge` | compiler summary, immutable ids/counts/path and per-id outcomes |
 | `zt-audit` | 1 | — | `digest-audit.ps1 [-CitationKey] -Out <out>` (read-only) | `{ status, ...summary }` |
-| `zt-digest-report` | 2 | `groups`, `digest`, `models`, `terms`, `cardsBook`, `explain`, `hubsFirst`, `link`, `linkCheck`, `cleanup`, `organize`, `figures`, `hubs`, `audit`, `extra` | no agent; assembles the result per mode | the run's result |
+| `zt-digest-report` | 4 | `groups`, `digest`, `models`, `terms`, `cardsBook`, `explain`, `hubsFirst`, `link`, `linkCheck`, `cleanup`, `organize`, `figures`, `bridge`, `hubs`, `audit`, `extra` | no agent; assembles the result per mode and preserves Bridge failure | the run's result |
 
 `gate` v1 comes from `~/.claude/skills/workflow-framework-protocol/modules/gate.js`: params `subject`, `checks`; it throws `gate: <message>` on the first failed check.
 
@@ -604,11 +610,13 @@ Gaps:
 - **The hub stage is Workspace-wide.** It rewrites hubs of every changed agent Topic tree, not only the book's; `hubTrees` limits a pilot.
 - **`coreBudget` goes nowhere.** It is declared in `zt-math-digest.blueprint.json` (and mentioned by the generator) but no module or the legacy script passes `-CoreBudget` to `math-compiler.ps1`, so the script's default 3 always holds.
 - **Theory Cards rely on `form` surviving a Haiku answer.** `elaborateAll` drops models whose `form` is in `skipForms`, but the `MODEL_LIST` schema the Haiku lister answers with does not declare `form`; if the agent leaves it out, Theory Cards reach the model compiler.
-- **Stale text.** `zt-digest-base.blueprint.json` `whenToUse` and `preflight.P9` still name `zt-math-digest-v2`; the `zt-digest-lib` module summary still lists the model compiler, which lives in `zt-model-lib`; the `remove: 'delete'` option that several modules pass to `drive` is read nowhere.
+- **Unused option.** The `remove: 'delete'` option that several modules pass to `drive` is read nowhere; cleanup deletes stage conversations through its established cleanup path.
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
 
+
+- `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
 - `2026-10-16` `cbba3b1` — The economics set gains the empirical-results layer: module `zt-finding-layer`, stage and mode `findings`, arg `findings`; `zt-econ-digest` 3.0.0.
 - `2026-10-16` `1d585ef` — The model and event layers move out of the base into the economics set (`zt-model-lib`, `zt-model-layer`, `zt-explain`, `zt-event-layer`); the math build takes the name `zt-math-digest` (from `zt-math-digest-v2`); the hand-written math workflow moves to `.claude/workflows-legacy/`, and `make-math-workflow.mjs` and `math-workflow-harness.mjs` follow it.
 - `2026-10-16` `587c572` — The digests are built on the Workflow Framework Protocol: base blueprint, economics and mathematics variants, the module library, sim files, the install registry, and `framework-harness.mjs`.

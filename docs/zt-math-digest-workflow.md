@@ -2,13 +2,9 @@
 
 `zt-math-digest` digests a mathematics textbook from the Scholar Archive. It writes into the agent Workspace. The file `.claude/workflows/zt-math-digest.js` holds it. It is the `zt-book-digest` workflow (`zt-book-digest-workflow.md`) with math stages added. Every shared stage keeps its standard. The shared stages are the card cycles, the link pass, the link check, Organize, Figures, the hub stage, and the audit. All follow the same Card language. The DeepSeek Subagent Managed Protocol holds for every stage.
 
-Do not edit `zt-math-digest.js`. Edit `zt-book-digest.js` or the generator, then run:
+The current workflow is the frozen framework build (math 2.2.2, base 2.1.2). Edit `scripts/book-digest/workflow/zt-math-digest.blueprint.json` and its source modules, then assemble/install/verify at project scope as described in [the framework guide](zt-digest-framework.md). The legacy generator targets `.claude/workflows-legacy/zt-math-digest.js`; never run it against the installed framework artifact.
 
-```bash
-node scripts/book-digest/make-math-workflow.mjs
-```
-
-The harness `scripts/book-digest/tests/math-workflow-harness.mjs` fails when the two workflows drift apart.
+Bridge discovery runs after Figures and before Hubs. The math profile selects theory main results/objects, definitions, and units with load at least two; it retrieves literal theorem names as well as similarity candidates. An earlier economics Idea or Model head can cite a new unit through a separately accepted earlier-carrier proposal. It never enrolls a proof part. Mode bridge and its report-bound apply arguments follow [the shared operator contract](zt-digest-framework.md#bridge-discovery-and-apply). Source tests and actual live acceptance are separate gates.
 
 ## What it adds to the book digest
 

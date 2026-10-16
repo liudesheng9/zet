@@ -1,6 +1,8 @@
 # The ZET Card Box and Luhmann's Zettelkasten: Comparison
 
-Status: analysis and proposal (2026-10-16), with the user's decisions of 2026-10-16 (see "Decisions"). No part of this document is in the code yet. `slip-box-luhmann-design.md` holds the design that follows from it. The text follows ASD-STE100 as the other design documents do.
+Status: analysis and decision record (2026-10-16), with the user's decisions of 2026-10-16 (see "Decisions"). `slip-box-luhmann-design.md` holds the design that follows from it. C1/G1 and C2/G2 source and installed delivery are recorded in [the delivery receipt](slip-box-luhmann-delivery-status.md); real Workflow and accepted live-apply qualification remain open. The text follows ASD-STE100 as the other design documents do.
+
+Concrete implementation: [slip-box-luhmann-implementation-design.md](slip-box-luhmann-implementation-design.md). It specifies C1/G1 and C2/G2, including L6, without changing the accepted and rejected practices below.
 
 This document compares Niklas Luhmann's slip-box practice with the whole ZET card box as it is on `main` at `383f078`. It extends `math-cards-luhmann-comparison.md`, which compares Luhmann with the math cards only. Where the two documents name the same practice, this document repeats the user's decision of 2026-10-15 and does not change it.
 

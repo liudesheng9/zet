@@ -2,6 +2,8 @@
 
 Gathered on 2026-10-10 for the ZT `zettelkasten` skill. Each rule in `SKILL.md` traces to a finding below. Quotes are short paraphrases unless marked.
 
+ZT's accepted practices and decisions: [comparison](https://github.com/liudesheng9/zet/blob/main/docs/slip-box-luhmann-comparison.md), [design](https://github.com/liudesheng9/zet/blob/main/docs/slip-box-luhmann-design.md), and [implementation specification](https://github.com/liudesheng9/zet/blob/main/docs/slip-box-luhmann-implementation-design.md).
+
 Source quality: Luhmann's essay (Kuehn translation), Matuschak's notes, and the zettelkasten.de posts were read directly. Schmidt's articles could not be opened (the PDF is protected and the HTML and archive pages render by script), so the archive facts come from the Bielefeld digitization talk and from secondary reports, and the register's "one or two numbers per keyword" is Ahrens citing Schmidt (2013, p. 171). Doto's book and most practitioner reports are known through summaries and forum posts, not controlled studies.
 
 ## Luhmann's own account (1981)
@@ -44,7 +46,7 @@ Sources: Schmidt, "Niklas Luhmann's Card Index: Thinking Tool, Communication Par
 The rules in `SKILL.md` follow ZET's actual Location scheme (`docs/zt-note-system-design.md`, `src/main.rs`), not Luhmann's.
 
 - **Fixed slip number → Location**, with a different grammar. Luhmann alternated digits and letters inside one token (`21/3d7a7`); ZET joins segments with `|` (`3/2|c|4`), and every letter segment is a branch, every number a step.
-- **Continue a sequence (57/12 → 57/13) → Direct successor**, but only one per Card. Luhmann could still file 57/12a *between* 57/12 and 57/13; ZET cannot insert into a line, so a mid-line thought becomes a Side successor that names its place.
+- **Continue a sequence → Direct successor**, one per Card. ZET can also insert a missing step with `insert_card before`. This renumbers the line and rewrites its Links. Use a Side successor for a different thought beside a step.
 - **Branch at a slip (57/12a) → Side successor**, ordered `a…z, aa…`. Luhmann's numbers were permanent; deleting a ZET Side successor moves its later siblings down a letter, and ZT rewrites the Links.
 - **Section number (the leading 21 in 21/3d7) → Topic `<n>/0`**, whose only successor is `<n>/1`. A Topic cannot branch at its root, so `<n>/1` is the doorway and branches start there. Topic numbers are shared by both Workspaces and never reused.
 - **Fixed placement → movable placement.** `move_card` carries a Card with its subtree to another free slot; Luhmann never moved a slip.

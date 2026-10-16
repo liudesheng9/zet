@@ -86,6 +86,20 @@ export const meta = {
 //   folder and its state.json stay for the next run.
 const A =args && typeof args === 'object' ? args : {}
 const MODE = A.mode || 'full'
+if(A.bridge!==undefined&&typeof A.bridge!=='boolean')return {stage:'args',error:'bridge must be a boolean.'}
+for(const [key,low,high] of [['bridgeMax',1,120],['bridgeCandidates',1,8]])if(A[key]!==undefined&&(!Number.isInteger(A[key])||A[key]<low||A[key]>high))return {stage:'args',error:`${key} must be an integer in ${low}..${high}.`}
+if((A.bridgeBooks!==undefined&&typeof A.bridgeBooks!=='string')||(A.bridgeReport!==undefined&&typeof A.bridgeReport!=='string'))return {stage:'args',error:'bridgeBooks and bridgeReport must be strings.'}
+const bridgeSelection=v=>{
+  if(v===undefined)return ''
+  if(v==='all')return 'all'
+  if(!Array.isArray(v)||v.some(id=>typeof id!=='string'||!/^b[0-9]{3}$/.test(id))||new Set(v).size!==v.length)throw Error('Bridge selection must be all or a unique array of proposal ids.')
+  return v.join(',')
+}
+let bridgeAccepted,bridgeEarlier
+try{bridgeAccepted=bridgeSelection(A.bridgeApply);bridgeEarlier=bridgeSelection(A.bridgeApplyEarlier)}catch(e){return {stage:'args',error:String(e)}}
+const BRIDGE_APPLY = !!(A.bridgeReport || bridgeAccepted || bridgeEarlier)
+if (BRIDGE_APPLY && (MODE !== 'bridge' || !A.bridgeReport || !(bridgeAccepted || bridgeEarlier)))
+  return { stage: 'args', error: 'Bridge apply requires mode bridge, bridgeReport, and a nonempty acceptance section.' }
 // The args are an object, never free text: without these fields the stages would run on "undefined".
 const missing = ['out', ...(MODE !== 'hubs' && MODE !== 'audit' ? ['citationKey'] : []), ...(MODE === 'full' ? ['source', 'bibtex', 'bookTitle'] : [])].filter(k => !A[k])
 if (missing.length) return { stage: 'args', error: `args must be an object with ${missing.join(', ')}; got ${typeof args === 'string' ? 'a string' : JSON.stringify(args)}` }
@@ -201,6 +215,7 @@ const USAGE = {
 const usageStep = 'Load the DeepSeek tools with ToolSearch query "select:mcp__deepseek__deepseek_usage" and call deepseek_usage with days=1. Sum each field over the rows for the last day listed.'
 
 // --- Prepare ---------------------------------------------------------------------------------
+if (MODE === 'bridge' && BRIDGE_APPLY) return { mode: MODE, citation_key: KEY, bridge: await runBridge() }
 phase('Prepare')
 if (raised.length) log(`DeepSeek efforts raised to high (the user wants at least medium; V4.1 Flash has no medium): ${raised.join(', ')}.`)
 // The DeepSeek source: with dshSource 'auto', a Haiku probe asks each source for one short answer and
@@ -257,7 +272,7 @@ Return groups = the number of entries in manifest.groups and usage_before = the 
   groupCount = prep.groups
   usageBefore = prep.usage_before
 }
-if (!groupCount && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit' && MODE !== 'cards' && MODE !== 'explain') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
+if (!groupCount && MODE !== 'bridge' && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit' && MODE !== 'cards' && MODE !== 'explain') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
 
 const groups = Array.from({ length: groupCount }, (_, i) => {
   const n = i + 1
@@ -402,7 +417,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only bridge-compiler.ps1 with -Step precheck (never -Apply), zt-check, and frozen snapshot reads; refuse every zt write or other compiler step` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only)`}; a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -468,7 +483,7 @@ const drive = async (label, o) => {
 }
 // The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"):
 // DeepSeek does not always put its JSON on a line of its own.
-const jsonIn = (line) => {
+function jsonIn(line) {
   for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
     try { const v = JSON.parse(line.slice(i).trim()); if (v && typeof v === 'object') return v } catch {}
   }
@@ -476,7 +491,7 @@ const jsonIn = (line) => {
 }
 // The compiler's JSON line: the last line holding a JSON object. A driver may wrap it in prose
 // ("Report JSON: {…}") although it is told to pass the line unchanged.
-const lastJson = (text) => {
+function lastJson(text) {
   for (const line of String(text || '').trim().split('\n').reverse()) { const v = jsonIn(line); if (v) return v }
   return null
 }
@@ -715,6 +730,7 @@ const cardBlock = async (block) => {
   return runCards(`groups ${block[0].n}-${block[block.length - 1].n}`, `${OUT}\\cards-g${String(block[0].n).padStart(2, '0')}`, ` -Groups "${groups}" -Sample ${IDEA_SAMPLE} -NoOrphans`)
 }
 if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
+if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: await runBridge() }
 
 // --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
 // docs/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
@@ -914,6 +930,26 @@ ${hstep('survey')}
 // figures they discuss; this puts every figure a Card names but does not show yet into that Card, and
 // links the book's documents from the Literature Card. It runs after Organize, which rewrites bodies.
 const FIGURES = MODE === 'figures' || (MODE === 'full' && A.figures !== false)
+async function runBridge() {
+  const work=`${OUT}\\bridge`, q=v=>`'${String(v).replace(/'/g,"''")}'`
+  const step=(s,more='')=>`pwsh -NoProfile -File "${SCRIPTS}\\bridge-compiler.ps1" -Step ${s} -Staging ${q(OUT)} -CitationKey ${q(KEY)} -Work ${q(work)}${more}`
+  if(BRIDGE_APPLY){
+    const extra=` -ReportId ${q(A.bridgeReport)}${bridgeAccepted?` -Accept ${q(bridgeAccepted)}`:''}${bridgeEarlier?` -AcceptEarlier ${q(bridgeEarlier)}`:''} -Apply`
+    const run=await agent(`Run this PowerShell command once in the foreground with timeout 600000 and wait for it. Filing must stay quiet: no insertion, movement, deletion, key rename, retype, or Organize during apply. Do nothing else:\n${step('apply',extra)}\nReturn ok and output = its last compact JSON line exactly. Do not retry.`,{label:'bridge: apply',phase:'Bridge',model:'haiku',effort:'low',schema:{type:'object',properties:{ok:{type:'boolean'},output:{type:'string'}},required:['ok','output']}})
+    return (run&&run.ok&&lastJson(run.output))||{status:'failed',error:run&&run.output}
+  }
+  const opts={dsh:work,skills:['zettelkasten','asd-ste100-zh'],effort:DSH_EFFORT,phase:'Bridge',writes:`${work}\\out`,readOnly:true,remove:'delete',keep:true}
+  let planned,reported,error
+  try{
+    planned=await drive('bridge: plan',{...opts,command:step('plan',` -Profile 'book' -MaxSources ${q(A.bridgeMax??60)} -Candidates ${q(A.bridgeCandidates??5)}${A.bridgeBooks?` -Books ${q(A.bridgeBooks)}`:''}`)})
+    if(!planned||!planned.ok)error=(planned&&planned.output)||'Bridge planning failed.'
+  }catch(e){error=String(e)}finally{
+    try{reported=await drive('bridge: report',{...opts,command:step('report'),cleanup:true})}catch(e){error=error||String(e)}
+  }
+  const summary=lastJson((reported&&reported.output)||'')
+  if(error)return {status:'failed',error,...(summary?{report:summary.report,counts:summary.counts}:{} )}
+  return summary||{status:'failed',error:'No Bridge report output.'}
+}
 async function runFigures() {
   phase('Figures')
   const run = await agent(
@@ -1095,6 +1131,7 @@ Return ok and output = its last output line exactly, or the error text. Do not r
   }
 }
 const figures = FIGURES && MODE !== 'figures' ? await runFigures() : null
+const bridge = MODE === 'full' ? (A.bridge === false ? {status:'skipped'} : await runBridge()) : null
 // The hub stage runs last, on the trees as Organize left them.
 if (HUBS && MODE !== 'hubs') hubReport = await runHubs()
 // The audit runs last, on the Cards as every other stage left them.
@@ -1107,5 +1144,5 @@ return {
   model_cleanup: modelCleanup,
   link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
   terms: termReport, cards: { blocks: cardReports, link: linkCards },
-  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport, audit,
+  deepseek_usage: dshUsage, cleanup, organize, figures, bridge, hubs: hubReport, audit,
 }

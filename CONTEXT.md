@@ -299,3 +299,19 @@ _Avoid_: Index, keyword list, home note
 **Insert**:
 Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.
 _Avoid_: Splice, shift
+
+**Bridge**:
+A semantic Link between substantive Cards attributed to different books, or between a book's Card and a human or unattributed Card. It uses an existing Relation kind and explains the relationship. Book attribution is inferred from source Links; it is not stored ownership. Filing and source-reference Links alone do not count as semantic Bridges.
+_Avoid_: External edge, cross-link
+
+**Bridge proposal**:
+An exact proposed Bridge sentence in an immutable local review report. Its id (`b001`, ...) is meaningful only together with that report's `report_id`. A candidate is an endpoint offered to the judge; it is not yet a proposal or an existing Link.
+_Avoid_: Pending Link, approval token
+
+**Bridge report**:
+The local, content-identified review of one frozen Bridge plan: endpoint snapshots, exact proposals, limits, missing work, and a rendered view of apply outcomes. Discovery changes no Card. Explicit new-carrier and earlier-carrier selections are separate.
+_Avoid_: Latest suggestions, graph store
+
+**Carrier**:
+The agent Card whose body receives an accepted Bridge sentence. The target is the Card named by its Link. A human Card can be a target but never a carrier. A Bridge cannot take a Model part into a Model Card; an earlier carrier is permitted only for an accepted dependency on a new mathematical unit head.
+_Avoid_: Writable endpoint, source when direction is ambiguous

@@ -8,6 +8,10 @@ DeepSeek Harness for the bulk reading and writing, the **model compiler** for th
 architect plans each model, a script builds it, DeepSeek writes and reviews it), and Opus for the
 final organization.
 
+## Bridge mode
+
+Full mode runs report-only Bridge discovery after Figures and before Hubs. Use `mode: "bridge"` with a fresh `out` and an existing `citationKey` for a bounded report; `bridgeMax`, `bridgeCandidates` and optional `bridgeBooks` control coverage. After actual review, use the same folder with `bridgeReport` and `bridgeApply` / `bridgeApplyEarlier` (each `"all"` or a unique array of report ids). Apply uses no source probe, judge, model compiler, Organize or Hubs. See [the shared operator contract](zt-digest-framework.md#bridge-discovery-and-apply) for limits, backup, quiet filing, retries and stale-report handling.
+
 ## What happens
 
 ```mermaid
