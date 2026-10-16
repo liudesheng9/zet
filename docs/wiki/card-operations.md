@@ -419,7 +419,7 @@ Pitfalls:
 - **`edit` is several commits.** The text, the type, and each level/form are written in separate statements. Validation runs before the first write, but a database error in a later step leaves the earlier ones applied. Likewise, GUI/MCP `create_successor` with `level`/`form` is a create followed by a separate `ops::edit`.
 - **`base` compares the full stored text**, including the generated Reverse link section. An edit to another Card that links this one changes that section, so a `base` taken earlier fails.
 - **`edit_metadata` refuses a change of case only** (`Smith2024` -> `smith2024`), because `eq_ignore_ascii_case` is checked before the conflict query.
-- **`insert_card` sets no level, hub level, or form**, although the MCP tool text says it "takes the same fields as create_successor". Set them with `edit_card` afterwards.
+- **`insert_card` sets no level, hub level, or form.** Set them with `edit_card` afterwards; the MCP tool description says so ([MCP server](mcp-server.md)).
 - **The Session and the shell skip `Access`.** They call `src/main.rs` and `src/place.rs` directly, which is correct only because they always act as the owner. A new non-owner client must go through `ops`.
 - **`Snapshot::read` runs the schema upgrades** (`ensure_markdown_cards`) and parses every Card, which takes "a few hundred milliseconds" (the `Snapshots` comment in `src/gui.rs`). Keep new per-request work over all Cards memoized per Snapshot, as `folded` is.
 - In `src/place.rs`, the comment in `before_reorders_one_step_of_a_chain` says "Move 3/4 alone", but the call passes `alone = false`.

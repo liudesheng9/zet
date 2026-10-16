@@ -403,7 +403,7 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **Every read re-parses the whole archive.** On a large archive each `get_card` or `search_cards` costs a full `Snapshot::read`. A batch of reads is cheaper through fewer, wider calls (`get_tree`, `get_model`).
 - **`edit_card` composes title and body from text read outside the edit lock.** Without `base`, a concurrent edit between that read and `ops::edit` can be overwritten. Pass `base` when edits may race.
 - **`create_successor` with `level`, a hub level, or `form` is two operations.** If the second (`ops::edit`) fails, the Card exists without them. The handler checks most combinations before creating, which makes this rare.
-- **`insert_card` takes fewer fields than its description says.** Its description says "Takes the same fields as create_successor", but its schema and handler have no `kind`, `level`, or `form`; the handler ignores them if a client sends them. Set a level or form with `edit_card` after the insert.
+- **`insert_card` takes no `level` or `form`.** Its schema and handler take `title`, `body`, `type`, `facet`, and `emphasis`; the description says so and sends a Model Card's level or Math form to `edit_card` after the insert. The unit test `insert_card_names_the_create_successor_fields_it_does_not_take` fails when `create_successor` gains a field that `insert_card` neither takes nor names.
 - **The server ignores unknown arguments.** Schemas say `additionalProperties: false`, but the handlers read only the names they know, so a misspelt optional argument is silently dropped.
 - **`initialized` is never enforced**, and an empty batch gets no reply (JSON-RPC 2.0 expects an Invalid Request error).
 - **Insert and move renumber Cards.** Addresses read before an `insert_card` or `move_card` may name another Card after it; use the returned `moved` map.
@@ -412,6 +412,7 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 
 ## Change history
 
+- `2026-10-16` — The `insert_card` description no longer claims every `create_successor` field; it names `level` and `form` as `edit_card` work, checked by a unit test.
 - `2026-10-16` `753bd7b` — Finding Cards: `type: finding` in every type enum, Finding counts in `list_trees`, Finding Cards in `INSTRUCTIONS` (zt 0.20.0).
 - `2026-10-15` `9918ba6` — Math form: `form` on `create_successor`, `edit_card`, and `search_cards`; `get_card` reports `form`; `get_model` reports `math`; unit and theory rules in `INSTRUCTIONS`.
 - `2026-10-15` `9cf4097` — `INSTRUCTIONS` names `印证` and `参照` as kind words and `引出` as a plain reference (zt 0.18.1).
