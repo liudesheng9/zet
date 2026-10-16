@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The book term table of a digest (docs/digest-card-layers-proposal.md, proposal 2). The script

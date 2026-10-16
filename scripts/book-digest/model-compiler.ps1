@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The deterministic half of the book digest's model compiler. Sonnet plans each model (plan.json);

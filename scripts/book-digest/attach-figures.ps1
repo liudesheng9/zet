@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Show the book's own figures in the digest Cards that refer to them, and link the book's

@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   List the Model Cards a ZET book digest wrote, so the workflow can hand each one to its own

@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The deterministic half of the zt-math-digest workflow (docs/math-cards-design.md). DeepSeek writes

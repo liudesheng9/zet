@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Call zt MCP tools from a shell, for agents whose harness has no `zt` tools (DeepSeek Harness).

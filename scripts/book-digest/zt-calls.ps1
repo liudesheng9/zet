@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Call zt MCP tools from a book-digest script. Dot-source it: . (Join-Path $PSScriptRoot 'zt-calls.ps1')

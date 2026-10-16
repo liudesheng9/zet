@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Write a compact snapshot of every Topic tree (address and title of each Card) for a DeepSeek

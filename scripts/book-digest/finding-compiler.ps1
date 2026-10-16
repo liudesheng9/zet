@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The empirical-results layer of the economics digest (docs/zt-digest-framework.md, docs/finding-cards-design.md):

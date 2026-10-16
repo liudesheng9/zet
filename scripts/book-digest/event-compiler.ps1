@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The event layer of the economics digest (docs/zt-digest-framework.md): the Event Cards of a book, written

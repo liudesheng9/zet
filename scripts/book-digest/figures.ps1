@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The figures of a Scholar Archive book, for the book digest. Dot-source it:

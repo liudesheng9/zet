@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Carry out the Topic merges and Card moves that Opus decided in the Organize stage

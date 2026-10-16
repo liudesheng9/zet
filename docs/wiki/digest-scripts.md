@@ -637,6 +637,7 @@ Each test prints `ok:`/`FAIL:` lines (or only failures) and exits 1 on a failure
 | `math-compiler.tests.ps1` | index, docs, skeleton and rerun, a unit plan that cites another unit in `model-compiler.ps1 validate`, notation, boundary, boundary-apply, boundary-settle (no broken Link), proof, proof-apply, theory, theory-apply (order, tools, users, chart), check M1, M5, M8 |
 | `event-compiler.tests.ps1` | plan, precheck (EV2, zt-check E1), apply (new, existing, refused, `案例` Link), zt-check E1/E2 on the new Card, rerun, report; a parallel edit between read and write (`racing-zt-mcp.ps1`): refused by `base`, job pending, rerun reuses the Event Card and writes the Link |
 | `finding-compiler.tests.ps1` | plan (candidates, no model assumption), precheck (FD1, FD2, R rules), apply (Side successor of the anchor, `印证` Link), F1 to F4, `search_cards type finding`, rerun, report; the same parallel-edit case as the event test |
+| `requires-version.tests.ps1` | static: every script under `scripts/` and `skills/` that uses `-DateKind` or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5` |
 | `racing-zt-mcp.ps1` | not a test: a stand-in for the zt helper that the two compiler tests copy into a copy of the scripts tree; once, before the first run that edits `$env:ZT_RACE_TARGET`, it appends `$env:ZT_RACE_LINE` to that Card through the real helper (`$env:ZT_REAL_HELPER`) |
 | `book-terms.tests.ps1` | plan candidates, apply filtering, rerun rewrites the same Card, audit R6 against the table, `terms` category |
 | `organize.tests.ps1` | survey pair, apply merge, move, three refusals, note translation; skeleton plan and apply (Structure Card, Literature index with document line, Topic body keeps its hub line), rerun, `structure` category |
@@ -662,6 +663,7 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 ### Pitfalls
 
 - **The last line is parsed.** Any extra `Write-Output` at the end of a step breaks the workflow's `zdLastJson`. Use `Write-Host` for progress.
+- **PowerShell 7.5.** `ConvertFrom-Json -DateKind` needs 7.5, and every script that uses it or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5` (`tests/requires-version.tests.ps1`). A new script that loads `zt-calls.ps1` must too.
 - **Encoding.** A script that runs the helper without dot-sourcing `zt-calls.ps1` must set `[Console]::OutputEncoding` to UTF-8 itself (`prepare-book-digest.ps1` does); otherwise Chinese output is decoded as GBK (`scripts/book-digest/tests/zt-calls.tests.ps1`).
 - **`-Groups` is a string.** Under `pwsh -File`, `-Groups 1,2,3` arrives as one argument that `[int[]]` would bind as 123 (`list-models.ps1`, `card-compiler.ps1`).
 - **`$changed` vs `-Changed`.** PowerShell names are case-insensitive: a local `$changed` in `model-compiler.ps1` would overwrite the switch (the code uses `$touched`).
@@ -686,6 +688,7 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 
 ## Change history
 
+- `2026-10-16` — The scripts that use `ConvertFrom-Json -DateKind` or load `zt-calls.ps1` declare `#Requires -Version 7.5`; `tests/requires-version.tests.ps1` checks it.
 - `2026-10-16` — `event-compiler.ps1` and `finding-compiler.ps1` `apply`: two helper runs, Link edits with `base`, a failed job stays pending under `partial` and the rerun reuses its Cards (`tests/racing-zt-mcp.ps1`). `model-compiler.ps1` `Get-FigureLine` without `-Staging` finds `figures.json` above `-Work`.
 - `2026-10-16` `cbba3b1` — `finding-compiler.ps1` and its test: the empirical-results layer (Finding Cards, F rules).
 - `2026-10-16` `1d585ef` — `event-compiler.ps1` and its test; `prepare-book-digest.ps1 -Instructions` takes several files and `-NoEventCandidates`; the model and event layers move into the economics set.

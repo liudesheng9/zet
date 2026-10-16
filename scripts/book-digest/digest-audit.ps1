@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Audit the Cards of a digested book, or of every book in the agent Workspace. Read-only: the

@@ -32,7 +32,7 @@ This block holds what AI agents get to know about ZT, and the means to put it in
 | | `skills/zt-digest-protocol/SKILL.md` — the base protocol of the digest workflows: roles, the compiler cycle, stages, inherited protocols, quality checks, how to build a variant, operating rules. |
 | | `skills/zt-digest-protocol/references/scripts.md` — a table of every digest script, instruction file, workflow, and test. |
 | | `scripts/install-agent-integrations.ps1` — copies and links the skills, registers the server in Claude Code and Codex, checks the handshake. |
-| Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); external: PowerShell 7 (7.5 for the installer), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
+| Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); external: PowerShell 7.5 (the installer and `zt-mcp.ps1` both call `ConvertFrom-Json -DateKind`), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
 | Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1`, `model-compiler.ps1`, `organize-apply.ps1`, `card-compiler.ps1`, `math-compiler.ps1`, and the job files of `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` call the helper); [Digest prompts](digest-prompts.md) (`dsh-fill-instructions.zh.md`, `dsh-link-instructions.zh.md` show helper commands); [Digest workflows](digest-workflows.md) (`HELPER`/`ZD_HELPER` in `.claude/workflows/*.js`, and the `zettelkasten` skill sent to digest and link runs); every Claude Code, Codex, and DeepSeek Harness conversation that touches the slip-box. |
 | Tests | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` (helper `-SrcLog`, `-TopicGate`), `scripts/book-digest/tests/zt-calls.tests.ps1` (helper output under a GBK console), `scripts/book-digest/tests/card-compiler.tests.ps1` (uses `append_card`). The skills and the installer have no tests. |
 
@@ -388,6 +388,7 @@ cargo test mcp::tests
 | Test | Covers |
 |---|---|
 | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `src` never reaches zt and goes to `-SrcLog`; the Topic gate refuses the same title (with spaces and punctuation changed) and a near title, with a resume line; a different title passes; without `-TopicGate` nothing is checked; two helpers at once create one Topic. `-Zt` tests another binary. |
+| `scripts/book-digest/tests/requires-version.tests.ps1` | Every script under `scripts/` and `skills/` that uses `-DateKind` or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5`. |
 | `scripts/book-digest/tests/zt-calls.tests.ps1` | A batch of `create_topic`, `create_literature`, and `create_successor` with `@@` chaining through the helper; `list-models.ps1` reads the helper's UTF-8 output under a GBK (936) console. |
 | `scripts/book-digest/tests/card-compiler.tests.ps1` | The card compiler, whose orphan Links use `append_card`. |
 | `cargo test mcp::tests` (`src/mcp.rs`) | The server side the helper relies on: the handshake and protocol fallback, error codes, unique tool names with object schemas, no new trees in the human Workspace. |
@@ -418,7 +419,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **One backup slot.** `Backup` overwrites `<file>.zt-backup` on every run, so a second run replaces the original with the first run's output.
 - **The project approval needs an existing entry.** The `.mcp.json` approval is written only when `~/.claude.json` already has a `projects` key for this repository (the repository path with `/`); on a fresh machine open the project in Claude Code once and re-run.
 - **All three skills are installed.** The loop takes every directory under `skills/`, but the installer's help text and `README.md` name only `zt` and `zettelkasten`, and `skills/zt/SKILL.md` asks for a re-run only after changes to `skills/zt/` and `skills/zettelkasten/`.
-- **PowerShell version.** `zt-mcp.ps1` declares `#Requires -Version 7` but calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added (the installer requires 7.5 for the same call). On 7.0–7.4 the helper fails on its first parse.
+- **PowerShell version.** `zt-mcp.ps1` calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added, so it declares `#Requires -Version 7.5` like the installer; an older pwsh refuses it at the start. `scripts/book-digest/tests/requires-version.tests.ps1` checks every script that needs 7.5.
 - **`-Allow` refuses more than its help text says.** The code also refuses `create_literature` and `edit_literature_metadata`; the comment lists only `create_topic`, `move_card`, `insert_card`, and `delete_card`.
 - **`@@N` counts calls, not writes.** A read call takes an index too; `@@N` of a call whose result has no `address` throws `@@N has no address yet`.
 - **Inline mode has no options.** `-Tool`/`-Json` is its own parameter set; use a file or stdin for `-Allow`, `-Log`, and the rest.
@@ -430,6 +431,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 
 ## Change history
 
+- `2026-10-16` — `zt-mcp.ps1` declares `#Requires -Version 7.5` (it uses `ConvertFrom-Json -DateKind`).
 - `2026-10-16` `753bd7b` — Finding Cards: `finding` type in the `zt` skill, the Finding Card template and F1–F4 in the `zettelkasten` skill, F rules in the digest protocol.
 - `2026-10-16` `63d77d1` — Paths in the skills changed from `doc/` to `docs/` (one in `zt-digest-protocol/SKILL.md` was missed).
 - `2026-10-15` `02499c0` — `zt-digest-protocol` skill and its script reference added; the `zettelkasten` skill names `zt-check` (not `card-style-check.ps1`) as the checker of the Card language.

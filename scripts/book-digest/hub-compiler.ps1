@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The deterministic half of the book digest's hub stage (docs/hub-cards-design.md). A Haiku hub

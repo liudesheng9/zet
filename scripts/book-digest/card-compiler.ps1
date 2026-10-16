@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The deterministic half of the card layer cycle (docs/digest-card-layers-proposal.md, proposals 3,

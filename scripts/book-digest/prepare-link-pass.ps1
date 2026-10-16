@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Prepare the link pass of the zt-book-digest workflow: a snapshot of every Card, and for each

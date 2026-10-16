@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   Write the context pack one Sonnet model elaborator starts from: the Model Card, the Cards it

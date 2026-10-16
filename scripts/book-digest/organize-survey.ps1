@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.5
 <#
 .SYNOPSIS
   The survey of the Organize stage (docs/digest-card-layers-proposal.md, proposal 8): everything Opus
