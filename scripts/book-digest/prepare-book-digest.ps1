@@ -22,6 +22,11 @@
     other heading.
   - Writes to -Out: book.zh.md, groups/gNN.md, shared-prefix.md (identical for every run, so the
     DeepSeek prompt cache can reuse it), and manifest.json.
+  - -Instructions (comma-separated instruction files of this folder, default dsh-instructions.zh.md)
+    builds shared-prefix.md: the first file, with each further file inserted before its `## 回复`
+    section. The framework digests pass dsh-digest-base.zh.md plus their book type's files
+    (docs/zt-digest-framework.md). -NoEventCandidates leaves the event candidates out of the group
+    files (events.json still lists them, for the event layer).
   - -Apply creates, through `zt mcp` with agent Access, the Literature Card -CitationKey from
     -BibTeX and the anchor line <key>/1 .. <key>/N, one per group. It refuses if the tree exists.
     The Literature Card's body links the Work's PDF and Markdown documents with Document links
@@ -44,6 +49,8 @@ param(
     [int]$FileId = 0,
     [int]$MinFigureBytes = 3000,
     [int]$MaxEventCandidates = 12,
+    [string]$Instructions = 'dsh-instructions.zh.md',
+    [switch]$NoEventCandidates,
     [switch]$NoFigures,
     [switch]$Apply
 )
@@ -233,9 +240,7 @@ for ($g = 0; $g -lt $groups.Count; $g++) {
 - 现有主题卡片快照：``$staging\snapshot-$id.md``（本组启动时生成）
 - 全书索引：``$($manifest.index)``
 - 本书术语表：``$staging\terms.md``（存在时先读它，按它用词）
-- 事件候选（本组小节中写出年份的句子；由你判断哪些是真实事件）：
-$eventLines
-
+$(if (-not $NoEventCandidates) { "- 事件候选（本组小节中写出年份的句子；由你判断哪些是真实事件）：`n$eventLines`n" })
 ## 你的小节原文
 
 "@
@@ -247,8 +252,15 @@ $eventLines
 [IO.File]::WriteAllText((Join-Path $staging 'events.json'), (ConvertTo-Json -InputObject @($eventCandidates) -Depth 4), $utf8)
 $manifest.event_candidates = $eventCandidates.Count
 
-foreach ($pair in @(@('dsh-instructions.zh.md', $manifest.shared_prefix), @('dsh-link-instructions.zh.md', $manifest.link_prefix))) {
-    $template = Get-Content -LiteralPath (Join-Path $PSScriptRoot $pair[0]) -Raw -Encoding utf8
+foreach ($pair in @(@($Instructions, $manifest.shared_prefix), @('dsh-link-instructions.zh.md', $manifest.link_prefix))) {
+    # The first file is the template; each further file goes in before its "## 回复" section.
+    $files = @($pair[0] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $template = Get-Content -LiteralPath (Join-Path $PSScriptRoot $files[0]) -Raw -Encoding utf8
+    foreach ($extra in @($files | Select-Object -Skip 1)) {
+        $part = (Get-Content -LiteralPath (Join-Path $PSScriptRoot $extra) -Raw -Encoding utf8).TrimEnd() + "`n`n"
+        $at = $template.IndexOf("`n## 回复")
+        $template = if ($at -ge 0) { $template.Substring(0, $at + 1) + $part + $template.Substring($at + 1) } else { $template.TrimEnd() + "`n`n" + $part }
+    }
     $prefix = $template.Replace('{{KEY}}', $CitationKey).Replace('{{TITLE}}', $BookTitle).
         Replace('{{HELPER}}', $installedHelper).Replace('{{STAGING}}', $staging).
         Replace('{{INDEX}}', $manifest.index).Replace('{{SOURCE}}', $Source).

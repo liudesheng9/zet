@@ -9,7 +9,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
 - 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、把各处相关 Card 并排摊开的桌面（Table）、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
-- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
+- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）、Finding Card（来源中的一个实证结果）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
 - 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
 - 通过 `zt mcp` 服务器让编程 agent 在 agent Workspace 中工作，而你的 Workspace 对它只读。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
@@ -169,23 +169,24 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 在 GUI 中，卡片柜顶部的两个标签页（或快捷键 `w`、命令 `ws`）用于切换 Workspace；agent 的 Card
 带有紫色的 AI AGENT 标记，指向另一个 Workspace 的 Link 会用该 Workspace 的颜色显示。
 
-## Event Card 与 Model Card
+## Event Card、Finding Card 与 Model Card
 
 每张 Card 都有一个 **Card type**。大多数 Card 是 **Idea Card**（`idea`，默认值）：用自己的话写下一个想法。
 Regular Card 也可以是：
 
 - **Event Card**（`event`）：记录一个真实发生的事件（什么、何时、何地、谁，以及报道它的来源），描述部分不做解释；
+- **Finding Card**（`finding`）：记录来源中的一个实证结果，正文有六行标签：`测量`、`数据`（样本、时期、地点）、`方法`、`结果`（一个结果，带大小或方向）、`局限`、`来源`；见 `docs/finding-cards-design.md`；
 - **Model Card**（`model`）：一个完整模型的入口（它的问题和它说明了什么），带 facet 时则是模型的一个 part（见“模型结构”）。
 
 Idea Card 用普通的 `[[target]]` Link 引用它们，因此 Model Card 的 Reverse link 会列出所有讨论该模型的 Card。
 Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移动、Side successor 压缩编号和修改 Citation key
 都不会改变它，它也不影响 Card 的其他任何内容。0.5.0 之前创建的归档会在 `zt up` 时自动升级，所有已有 Card 都是 Idea Card。
 
-- **Session**：非 Idea Card 的视图会在 Location 后显示 `[event]` 或 `[model]`；`ty event`、`ty model` 或
+- **Session**：非 Idea Card 的视图会在 Location 后显示 `[event]`、`[finding]` 或 `[model]`；`ty event`、`ty finding`、`ty model` 或
   `ty idea` 设置当前 Regular Card 的类型。
-- **GUI**：Event 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
+- **GUI**：Event、Finding 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT、FINDING 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
   Regular Card 的写作台有类型选择器，命令栏也支持 `ty`。
-- **MCP**：`create_successor` 和 `edit_card` 接受 `type`（`idea`、`event` 或 `model`；`edit_card` 可以只传 `type`），
+- **MCP**：`create_successor`、`insert_card` 和 `edit_card` 接受 `type`（`idea`、`event`、`finding`、`model` 或 `hub`；`edit_card` 可以只传 `type`），
   `get_card`、`get_tree` 和 `search_cards` 会返回类型；`search_cards` 可按 `type` 筛选，此时 `query` 可以为空，
   用来列出该类型的全部 Card。
 - **导出**：`archive.json` 在 `types` 中列出所有非 Idea Card。
@@ -209,7 +210,7 @@ Model Card，每张深入呈现模型的一部分。按照卢曼的原则，卡�
 
 ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 emphasis 外不存储任何结构。Model Card 与 part
 之间不必互相链接；`get_model` 只报告不属于任何模型的 part。带有 part 的 Model Card 在其 part 被修改、移走或
-不再被它链接之前不能改类型。详见 `doc/open-models-design.md`。
+不再被它链接之前不能改类型。详见 `docs/open-models-design.md`。
 
 - **Session**：part 显示为 `[model · <facet>]`（以及它的 emphasis）；`ty model <facet>` 把当前 Card 设为 part
   （facet 取该行余下的全部文字），`ty model` 则恢复为 Model Card。
@@ -226,7 +227,7 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
 
 ### 细化层级
 
-每张 Model Card 带有其模型的**细化层级**（zt 0.13.0，见 `doc/model-elaboration-levels-design.md`）：
+每张 Model Card 带有其模型的**细化层级**（zt 0.13.0，见 `docs/model-elaboration-levels-design.md`）：
 
 - **第 1 层 `concept`**：**概念模型**，原书用文字或示意图给出（一个机制、一个分类、一个框架）。Model Card 和至多几张
   part 用文字写明问题、机制和结论；它没有推导 part，`get_model` 把其中的推导 part 列在 `build.beyond_level` 中。
@@ -240,7 +241,7 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
 ### 自足的模型
 
 读者只按**构建顺序**读一个形式模型自己的卡片，就应能从零重建整个模型（zt 0.12.0，见
-`doc/self-sufficient-models-proposal.md`）：
+`docs/self-sufficient-models-proposal.md`）：
 
 - **构建顺序**：Model Card 的第一个侧后继是设定（参与者、时序、信息、符号表和 `术语表`）；它的直接后继是**主线**，
   即逐步的推导；例子放在它所例示的那一步旁边（该步的侧后继）；Model Card 后面的侧后继位于构建之外；共享 part
@@ -272,11 +273,11 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 
 Claude Code 工作流 `zt-book-digest` 把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
 每一批完成后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。书中的图随书进入卡片：准备阶段把书的 Markdown 中的每张图收进 ZET（见“来自 archive 的图”），并把每张图写成一行 `![图 2.C.1](artifact:…)` 交给写卡的 DeepSeek，卡片讨论这张图时原样粘贴；整理之后，`scripts/book-digest/attach-figures.ps1` 把图放进本书每一张提到它但还没显示它的卡片，并在文献卡上链接原书的 PDF 与 Markdown（模式 `figures` 只对已有的消化结果做这一步）。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
-详见 [doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md)。
+详见 [docs/zt-book-digest-workflow.md](docs/zt-book-digest-workflow.md)。
 
 ### 枢纽卡
 
-**枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。书的消化流程的枢纽阶段写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [doc/hub-cards-design.md](doc/hub-cards-design.md)。
+**枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。书的消化流程的枢纽阶段写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [docs/hub-cards-design.md](docs/hub-cards-design.md)。
 
 ## MCP 服务器
 
@@ -346,7 +347,7 @@ zt scholar pair --rotate           # 换发新密钥；`zt scholar unpair` 断�
 `zt mcp` 以五个只读工具向 agent 提供同样的读取能力：`scholar_archive_status`、`scholar_archive_read`
 （archive 的任意只读工具）、`scholar_archive_sql`、`scholar_archive_file`（Markdown 以文本返回，PDF 返回缓存路径）
 和 `scholar_archive_export`。这些工具不需要启动 ZET 服务。协议见
-[doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md)。
+[docs/scholar-archive-bridge-design.md](docs/scholar-archive-bridge-design.md)。
 
 
 ### 来自 archive 的图

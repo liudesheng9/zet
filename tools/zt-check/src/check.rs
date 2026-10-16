@@ -1,5 +1,5 @@
 //! `zt-check`: the Card language rules (R2 to R17) and the Card layer rules
-//! (I, E, L) of the book digest, run in-process on Cards read straight from
+//! (I, E, F, L) of the book digest, run in-process on Cards read straight from
 //! the archive. It is the one Card quality check of the digest workflows and
 //! the only source of truth: every agent and script calls it. It replaced the
 //! PowerShell checkers card-style-check.ps1 and self-check.ps1 (deleted on
@@ -90,7 +90,8 @@ pattern!(YEAR, r"(1[0-9]{3}|20[0-9]{2})");
 pattern!(ANCHOR_ADDRESS, r"^[^/]+/\d+$");
 pattern!(TERMS_TITLE, r"^术语表");
 pattern!(STRUCTURE_BODY, r"^本卡是《.*》的结构卡");
-pattern!(FAULT_LINE, r"^\S+ ([RIEL]\d+) ");
+pattern!(FAULT_LINE, r"^\S+ ([RIELF]\d+) ");
+pattern!(LIST_ITEM, r"^\s*([-*+]|\d+[.、)])\s+");
 pattern!(LIST_SPLIT, r"[,\s]+");
 // What ICU collation (and so a culture string comparison) skips: control and
 // format characters, and variation selectors.
@@ -132,10 +133,23 @@ static EVENT_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
         .collect()
 });
 
+/// The labels of a Finding Card (`测量：…`): what was measured, the data
+/// (sample, period, place), the method, the result, its limits, the source.
+static FINDING_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    ["测量", "数据", "方法", "结果", "局限", "来源"]
+        .into_iter()
+        .map(|label| {
+            let pattern = format!(r"^\s*[-*]?\s*(\*\*)?{label}(\*\*)?\s*[：:]");
+            (label, Regex::new(&pattern).expect("a label pattern"))
+        })
+        .collect()
+});
+
 const SECTIONS: [&str; 5] = ["思路", "起点", "步骤", "结果", "解读"];
 
 /// The rules self-check.ps1 reports by default: every hard rule but R6.
-const DEFAULT_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,I1,I2,I3,I4,L1,L2,E1,E2";
+const DEFAULT_RULES: &str =
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,I1,I2,I3,I4,L1,L2,E1,E2,F1,F2,F3";
 
 const USAGE: &str = "usage:
   zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
@@ -896,7 +910,7 @@ impl Check {
         }
     }
 
-    /// The Card layer rules (I, E, L): only for entries that name their category.
+    /// The Card layer rules (I, E, F, L): only for entries that name their category.
     fn layer(&self, cards: &[Value], prose_chars: &HashMap<String, i64>, faults: &mut Faults) {
         let layer = cards
             .iter()
@@ -907,7 +921,7 @@ impl Check {
             let address = text(prop(card, "address"));
             let category = text(prop(card, "category"));
             let is = |names: &[&str]| ps_in(&category, names);
-            if !is(&["idea", "anchor", "event"]) {
+            if !is(&["idea", "anchor", "event", "finding"]) {
                 continue;
             }
             let title = text(prop(card, "title"));
@@ -977,7 +991,7 @@ impl Check {
                     "no kinded Link to a Card other than the parent",
                 );
             }
-            if is(&["idea", "event"]) && has("inbound") {
+            if is(&["idea", "event", "finding"]) && has("inbound") {
                 let inbound = match prop(card, "inbound") {
                     None | Some(Value::Null) => Vec::new(),
                     Some(Value::Array(items)) => items.iter().collect(),
@@ -1009,6 +1023,9 @@ impl Check {
                 if has("inbound_kinded") && ps_int(prop(card, "inbound_kinded")) == 0 {
                     faults.add(&address, "E4", "no Idea Card links it with a kind word");
                 }
+            }
+            if is(&["finding"]) {
+                finding_rules(card, &address, &body, faults);
             }
             if has("links") {
                 let mut refers: Vec<String> = Vec::new();
@@ -1160,6 +1177,97 @@ impl Check {
 /// or an anchor (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
 fn book_place(target: &str) -> bool {
     BOOK_CARD.is_match(target) || BOOK_ANCHOR.is_match(target)
+}
+
+/// The Finding Card rules. F1: the fixed labels. F2: the `来源` line names its
+/// source: a Link to the book or one of its anchors when the book is known,
+/// else any text. F3: one result per Card: one `结果` label, with at most one
+/// list item under it. F4: an Idea Card links it with a kind word.
+fn finding_rules(card: &Value, address: &str, body: &str, faults: &mut Faults) {
+    let lines = body
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+    let is_label = |line: &str| {
+        FINDING_LABELS
+            .iter()
+            .any(|(_, pattern)| pattern.is_match(line))
+    };
+    let labelled = |name: &str| {
+        let pattern = &FINDING_LABELS
+            .iter()
+            .find(|(label, _)| *label == name)
+            .expect("a Finding label")
+            .1;
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| pattern.is_match(line))
+            .map(|(index, line)| (index, pattern.replace(line, "").trim().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let missing = FINDING_LABELS
+        .iter()
+        .filter(|(label, _)| labelled(label).is_empty())
+        .map(|(label, _)| *label)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        faults.add(
+            address,
+            "F1",
+            &format!("missing labels: {}", missing.join("、")),
+        );
+    }
+    let sources = labelled("来源");
+    if !sources.is_empty() {
+        if prop(card, "book").is_some_and(truthy) {
+            let book = text(prop(card, "book"));
+            let anchor = Regex::new(&format!("(?i)^{}/\\d+$", regex::escape(&book)))
+                .expect("an escaped Citation key");
+            let linked = sources.iter().any(|(_, rest)| {
+                LINK_TARGET.captures_iter(rest).any(|caps| {
+                    let target = caps[1].trim();
+                    ps_eq(target, &book) || anchor.is_match(target)
+                })
+            });
+            if !linked {
+                faults.add(
+                    address,
+                    "F2",
+                    &format!("the source line links neither [[{book}]] nor one of its anchors"),
+                );
+            }
+        } else if sources.iter().all(|(_, rest)| rest.is_empty()) {
+            faults.add(address, "F2", "the source line names no source");
+        }
+    }
+    let results = labelled("结果");
+    if results.len() > 1 {
+        faults.add(
+            address,
+            "F3",
+            &format!(
+                "({} 结果 labels) one result per Card: split it",
+                results.len()
+            ),
+        );
+    } else if let Some((index, _)) = results.first() {
+        let items = lines[index + 1..]
+            .iter()
+            .take_while(|line| !line.trim().is_empty() && !is_label(line))
+            .filter(|line| LIST_ITEM.is_match(line))
+            .count();
+        if items > 1 {
+            faults.add(
+                address,
+                "F3",
+                &format!("({items} results under 结果) one result per Card: split it"),
+            );
+        }
+    }
+    if prop(card, "inbound_kinded").is_some() && ps_int(prop(card, "inbound_kinded")) == 0 {
+        faults.add(address, "F4", "no Idea Card links it with a kind word");
+    }
 }
 
 /// A Link that 引出 announces in its sentence: it points the other way.
@@ -1336,7 +1444,8 @@ pub(crate) fn check_model(
 
 /// `--cards`: self-check.ps1. Each Card as digest-audit.ps1 sees it: a Model
 /// part or Model Card with its model (setting, level, and every Derivation
-/// part with an explanation); an Idea Card, an anchor, or an Event Card with
+/// part with an explanation); an Idea Card, an anchor, an Event Card, or a
+/// Finding Card with
 /// its layer rules; any other Card with the R rules only. Returns every line,
 /// before the rule filter.
 pub(crate) fn check_cards(
@@ -1391,6 +1500,7 @@ pub(crate) fn check_cards(
             match key(&ps_string(card.get("type"))).as_str() {
                 "hub" => "hub",
                 "event" => "event",
+                "finding" => "finding",
                 "model" if has_facet => "part",
                 "model" => "model",
                 _ if in_book && ANCHOR_ADDRESS.is_match(&address) => "anchor",
@@ -1414,7 +1524,7 @@ pub(crate) fn check_cards(
         item.insert("title".into(), json!(title));
         item.insert("body".into(), json!(body));
         item.insert("facet".into(), Value::Null);
-        if matches!(category, "idea" | "anchor" | "event") {
+        if matches!(category, "idea" | "anchor" | "event" | "finding") {
             let parent = card["parent"]["address"].as_str().unwrap_or_default().to_string();
             let links = entry
                 .and_then(|entry| entry["links"].as_array())
@@ -1891,6 +2001,54 @@ mod tests {
                 "faults: 16",
             ]
         );
+    }
+
+    /// F1 to F4: the labels, the source line, one result per Card, and a kinded Link in.
+    #[test]
+    fn the_finding_rules_read_labels_the_source_line_and_one_result() {
+        let good = "测量：企业是否因为缺少保险市场而推迟投资。\n数据：48 家企业的访谈，2024 年，美国。\n方法：半结构化访谈。\n结果：31 家企业推迟了投资。\n局限：样本不是随机样本。\n来源：[[Smith2024/3]] §3.2\n\n这一结果印证 [[5/1]] 的判断：缺少市场会压低投资。";
+        let cards = json!([
+            { "address": "5/2", "title": "31 家受访企业因为缺少保险市场推迟了投资", "body": good, "category": "finding", "links": ["Smith2024/3", "5/1"], "kinds": ["5/1"], "inbound": ["5/1"], "parent": "5/0", "inbound_kinded": 1, "book": "Smith2024" },
+            { "address": "5/3", "title": "受访企业推迟了投资", "body": "- **测量**：投资时点。\n- 数据：48 家企业。\n- 结果：\n  - 31 家推迟投资。\n  - 12 家取消投资。\n- 局限：自报原因。\n来源：见第三章", "category": "finding", "links": [], "kinds": [], "inbound": ["5/1"], "parent": "5/0", "inbound_kinded": 0, "book": "Smith2024" },
+            { "address": "5/4", "title": "两项结果写在一张卡里", "body": "测量：投资。\n数据：企业。\n方法：访谈。\n结果：推迟。\n结果：取消。\n局限：小样本。\n来源：", "category": "finding" },
+        ]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        let finding = lines
+            .iter()
+            .filter(|line| {
+                line.split(' ')
+                    .nth(1)
+                    .is_some_and(|rule| rule.starts_with('F'))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finding,
+            [
+                "5/3 F1 missing labels: 方法",
+                "5/3 F2 the source line links neither [[Smith2024]] nor one of its anchors",
+                "5/3 F3 (2 results under 结果) one result per Card: split it",
+                "5/3 F4 no Idea Card links it with a kind word",
+                "5/4 F2 the source line names no source",
+                "5/4 F3 (2 结果 labels) one result per Card: split it",
+            ]
+        );
+        // A Finding Card takes the shared layer rules too, but not I3: F2 checks its source line.
+        assert!(
+            !lines.iter().any(|line| line.starts_with("5/2 ")),
+            "{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains(" I3 ")),
+            "{lines:#?}"
+        );
+        let (kept, count) = filter_rules(&lines, DEFAULT_RULES);
+        assert!(kept.iter().any(|line| line.starts_with("5/3 F1 ")));
+        assert!(
+            !kept.iter().any(|line| line.contains(" F4 ")),
+            "F4 is not a default rule"
+        );
+        assert!(count >= 5);
     }
 
     #[test]

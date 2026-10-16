@@ -63,7 +63,7 @@ else {
     }
     if ($size[0] -notmatch 'characters > 30') { Write-Output "size check: R13 must count characters: $($size[0])"; $failed++ }
 }
-# R15 to R17: the explanation of a Derivation part (doc/derivation-explanations-proposal.md).
+# R15 to R17: the explanation of a Derivation part (docs/derivation-explanations-proposal.md).
 $steps = "**步骤**`n1. 参与约束：E 的所得高于 `$w`$，即 `$R+fy_2>w`$。`n2. 情形 `$f=1`$：`$R=c-P`$。`n   说明：不清算时，现金够还款，E 留下差额。`n3. 两边加 `$K-w`$，得 `$y_1+fy_2>K`$。"
 $good = "**思路**`nE 只在还款后所得超过 `$w`$ 时参与。先求 E 还款后剩下的现金 `$R`$。`n`n**起点**`n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 `$w`$。`n`n$steps`n`n**结果**`n`$`$y_1+fy_2>K`$`$`n`n**解读**`n`$w`$ 在两边相消，所以 E 的财富不影响参与。检验：`$f=1`$ 时它是普通的净现值条件。"
 $long = (1..17 | ForEach-Object { "第 $_ 句解释推导的一步。" }) -join ''

@@ -61,7 +61,7 @@ Prepare ─▶ Digest blocks (in parallel) ─┬─▶ Models for the block (mo
 | Hubs | `hub-compiler.ps1` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards |
 | Audit | `digest-audit.ps1`, read-only: faults per rule, orphans, models, explanations, figures, hubs. | no |
 
-Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `audit` (see `doc/zt-book-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
+Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `audit` (see `docs/zt-book-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
 
 ## 4. Protocols every variant inherits
 
@@ -84,7 +84,7 @@ zt-check --json <file> [--setting <a>] [--level concept|formal]               # 
 limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16 --max-explain-chars 600
 ```
 
-Output: one line per fault `<address> <rule> <text>`, then `faults: N`; a run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language, Card size, Derivation steps and explanation) and I, E, L (Idea Cards, Event Cards, Links). A new rule goes into `tools/zt-check/src/check.rs` with a unit test; its tests are `cargo test` in the crate and `scripts/book-digest/tests/zt-check.tests.ps1`, `card-layer.tests.ps1`.
+Output: one line per fault `<address> <rule> <text>`, then `faults: N`; a run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language, Card size, Derivation steps and explanation) and I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links; see `docs/finding-cards-design.md` for F1 to F4). A new rule goes into `tools/zt-check/src/check.rs` with a unit test; its tests are `cargo test` in the crate and `scripts/book-digest/tests/zt-check.tests.ps1`, `card-layer.tests.ps1`.
 
 The SELF-CHECK commands per task:
 
@@ -104,7 +104,7 @@ The SELF-CHECK commands per task:
 2. **A new stage is a compiler** (section 2): a `.ps1` with plan, precheck, apply, check, report; a `dsh-<name>-*.zh.md` instruction file with a 自查 section; a `SELF-CHECK:` line in every job file; JSON answers applied by the script.
 3. **New rules go into zt-check** (`tools/zt-check/src/check.rs`) with a unit test, so every agent gets them.
 4. **Tests**: a compiler test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and a workflow harness (`tests/workflow-harness.mjs`, `tests/math-workflow-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
-5. **Approvals and docs**: add the new read-only commands to the manager approval lines; document the stage in `doc/`.
+5. **Approvals and docs**: add the new read-only commands to the manager approval lines; document the stage in `docs/`.
 6. **Pilot** on one model or one chapter (`only`, `explainMax`, `cardMax`, `hubTrees`), with a database backup first, before any whole-book run.
 
 ## 7. Operating rules

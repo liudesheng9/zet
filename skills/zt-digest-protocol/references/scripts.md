@@ -11,7 +11,7 @@ All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the p
 | `hub-compiler.ps1` | Hubs | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | Build the line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `D:\zt-digest\hubs\state.json`. | yes |
 | `book-terms.ps1` | Prepare | `plan`, `apply` | The book term table (术语表) that rule R6 checks against. | the 术语表 Card |
 | `book-skeleton.ps1` | Organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index, the structure Card, and the Topic bodies. | yes, with `-Apply` |
-| `math-compiler.ps1` | math variant | see its header | Numbered statements, mathematical units, Theory Cards (`doc/math-cards-design.md`). | yes |
+| `math-compiler.ps1` | math variant | see its header | Numbered statements, mathematical units, Theory Cards (`docs/math-cards-design.md`). | yes |
 
 ## Preparation and passes
 
@@ -55,7 +55,7 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | `dsh-terms-instructions.zh.md` | Book term table | JSON |
 | `dsh-skeleton-instructions.zh.md` | Literature index, structure Card, Topic bodies | JSON |
 | `dsh-hub-instructions.zh.md` | Field and topic hubs | JSON |
-| `dsh-math-*.zh.md` | The math variant's stages | see `doc/zt-math-digest-workflow.md` |
+| `dsh-math-*.zh.md` | The math variant's stages | see `docs/zt-math-digest-workflow.md` |
 | `model-architect.md`, `model-architect-math.md` | Sonnet's planning instructions | `plan.json` |
 
 ## Workflows and generators

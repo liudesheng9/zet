@@ -95,7 +95,7 @@ impl DumpCard {
 
 /// `archive.json`: everything beyond the Card files that a dump needs to
 /// replicate the archive. `workspaces` maps every address in `mapping.json`
-/// to its Workspace, `types` maps every Event and Model Card to its Card type
+/// to its Workspace, `types` maps every Event, Finding, Model, and Hub Card to its Card type
 /// (Idea Cards are left out), `facets` maps every Model part to its Model
 /// facet, `emphasis` maps every core or aside part to its emphasis, `levels`
 /// maps every Model Card with an elaboration level to it, `forms` maps every
@@ -964,6 +964,12 @@ mod tests {
                 CardType::Event,
                 "e".to_string(),
             ),
+            DumpCard::new(
+                "1/1|b".to_string(),
+                Workspace::Agent,
+                CardType::Finding,
+                "f".to_string(),
+            ),
             DumpCard::literature(
                 "Smith2024".to_string(),
                 Workspace::Agent,
@@ -973,7 +979,7 @@ mod tests {
         ];
         assert_eq!(
             manifest(&cards, 7).unwrap(),
-            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"}}"#
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","1/1|b":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event","1/1|b":"finding"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"}}"#
         );
         assert_eq!(
             manifest(&cards[..1], 1).unwrap(),

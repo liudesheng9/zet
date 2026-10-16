@@ -1,6 +1,6 @@
 #Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1 [-Zt <zt.exe>]
-# Checks the zt helper's -SrcLog and -TopicGate (doc/digest-card-layers-proposal.md, proposal 4) on
+# Checks the zt helper's -SrcLog and -TopicGate (docs/digest-card-layers-proposal.md, proposal 4) on
 # a scratch archive with its own service: `src` never reaches zt and is logged; a Topic with the same
 # or a very similar title is refused with its address; a new title passes; two helpers that create
 # the same Topic at the same time make it once.

@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The book term table of a digest (doc/digest-card-layers-proposal.md, proposal 2). The script
+  The book term table of a digest (docs/digest-card-layers-proposal.md, proposal 2). The script
   finds the candidate terms; DeepSeek chooses the terms and the words not to use as a JSON file;
   the script writes the table. Rule R6 (one term, one meaning) then checks every Card of the book
   against it (digest-audit.ps1 reads a Card of the Literature tree whose title starts with 术语表).

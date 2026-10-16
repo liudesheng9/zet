@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The deterministic half of the zt-math-digest workflow (doc/math-cards-design.md). DeepSeek writes
+  The deterministic half of the zt-math-digest workflow (docs/math-cards-design.md). DeepSeek writes
   every Card body and every JSON answer; this script finds the book's numbered statements, builds
   the skeleton of every mathematical unit and Theory Card, writes the job files, applies the
   answers, and checks the result. It never writes Card prose except skeletons, lists, and Links.

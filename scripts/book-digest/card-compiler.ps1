@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The deterministic half of the card layer cycle (doc/digest-card-layers-proposal.md, proposals 3,
+  The deterministic half of the card layer cycle (docs/digest-card-layers-proposal.md, proposals 3,
   4, and 6): check the Idea Cards, Event Cards, and anchors of one book, hand their faults to
   DeepSeek as jobs, check what DeepSeek writes, apply it, check again, and report. DeepSeek writes
   only JSON files; this script makes every zt write. It never writes a Model Card, a Model part,

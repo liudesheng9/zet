@@ -89,8 +89,8 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
-        "ty <idea|event|model|hub> [<facet>]",
-        "make the current card an Idea, Event, Model, or Hub Card; a facet (any short label) makes it a Model part",
+        "ty <idea|event|finding|model|hub> [<facet>]",
+        "make the current card an Idea, Event, Finding, Model, or Hub Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
     (
@@ -763,7 +763,7 @@ fn execute_command(
             crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", ..] => bail!("usage: ty <idea|event|model|hub> [<facet>]"),
+        ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
             let _lock = crate::acquire_edit_lock(root)?;
@@ -1290,6 +1290,7 @@ mod tests {
         let mut state = SessionState::at("0/1");
         for (line, expected) in [
             ("ty event", crate::CardType::Event),
+            ("ty finding", crate::CardType::Finding),
             ("ty MODEL", crate::CardType::Model),
             ("ty idea", crate::CardType::Idea),
         ] {
@@ -1303,9 +1304,9 @@ mod tests {
         for (line, expected) in [
             (
                 "ty fact",
-                "unknown card type `fact`; expected idea, event, model, or hub",
+                "unknown card type `fact`; expected idea, event, finding, model, or hub",
             ),
-            ("ty", "usage: ty <idea|event|model|hub> [<facet>]"),
+            ("ty", "usage: ty <idea|event|finding|model|hub> [<facet>]"),
             (
                 "ty event model x",
                 "only Model Cards can have a Model facet",
@@ -1325,7 +1326,7 @@ mod tests {
             .expect_err("tree roots stay Idea Cards");
         assert_eq!(
             error.to_string(),
-            "only Regular Cards can be Event, Model, or Hub Cards"
+            "only Regular Cards can be Event, Finding, Model, or Hub Cards"
         );
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }
@@ -1440,7 +1441,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

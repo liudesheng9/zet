@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/tests/math-workflow-harness.mjs
-// Runs .claude/workflows/zt-math-digest.js with stand-ins for the Workflow runtime, as
+// Runs .claude/workflows-legacy/zt-math-digest.js (the hand-written one) with stand-ins for the Workflow runtime, as
 // workflow-harness.mjs does for zt-book-digest.js: every agent returns a canned answer that fits
 // its label or command. It checks that the math workflow is generated from the current book digest
 // (make-math-workflow.mjs --check), that its math stages run in order, that the shared stages
@@ -12,8 +12,9 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(here, '..', '..', '..')
-const read = (name) => fs.readFileSync(path.join(root, '.claude', 'workflows', name), 'utf8').replace(/^export /m, '')
-const sources = { math: read('zt-math-digest.js'), book: read('zt-book-digest.js') }
+const read = (folder, name) => fs.readFileSync(path.join(root, '.claude', folder, name), 'utf8').replace(/^export /m, '')
+// The hand-written math digest is in .claude/workflows-legacy (the framework-built zt-math-digest has its name).
+const sources = { math: read('workflows-legacy', 'zt-math-digest.js'), book: read('workflows', 'zt-book-digest.js') }
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 function runtime() {

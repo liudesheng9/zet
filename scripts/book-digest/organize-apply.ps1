@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Carry out the Topic merges and Card moves that Opus decided in the Organize stage
-  (doc/digest-card-layers-proposal.md, proposal 8). Opus writes decisions.json; this script makes
+  (docs/digest-card-layers-proposal.md, proposal 8). Opus writes decisions.json; this script makes
   every zt call, so the moves follow one rule and are logged.
 
 .DESCRIPTION

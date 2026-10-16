@@ -137,10 +137,12 @@
     }
   }
 
-  // Card types: most Cards hold an idea; a Regular Card may record an event or present a model.
+  // Card types: most Cards hold an idea; a Regular Card may record an event, state an empirical
+  // finding, present a model, or open a subject.
   const CARD_TYPES = {
     idea: { label: 'Idea', note: 'one idea or claim' },
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
+    finding: { label: 'Finding', note: 'one empirical result: what was measured, the data, the method, the result, its limits, and the source' },
     model: { label: 'Model', note: 'one whole model: its question and what it shows, or one part of it' },
     hub: { label: 'Hub', note: 'a way into one subject: its Cards in named groups, each with what it adds' },
   };
@@ -187,7 +189,7 @@
   };
   /** How a facet reads: a common facet by its English name, any other label as written. */
   const facetLabel = (facet) => FACETS[facet]?.label || facet || '';
-  /** The rubber stamp an Event or Model Card carries; Idea Cards carry none. A Model part's
+  /** The rubber stamp an Event, Finding, Model, or Hub Card carries; Idea Cards carry none. A Model part's
    *  stamp names its facet; a core part's stamp carries a dot; a Model Card's names its level. */
   const typeStamp = (type, title, facet, emphasis, level, form) => {
     if (!CARD_TYPES[type] || type === 'idea') return null;
@@ -296,7 +298,7 @@
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
-    ['ty <idea|event|model|hub> [<facet>]', 'make the current card an Idea, Event, Model, or Hub Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
+    ['ty <idea|event|finding|model|hub> [<facet>]', 'make the current card an Idea, Event, Finding, Model, or Hub Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['stats', 'count cards by kind', 'always'],
@@ -365,7 +367,7 @@
       }
       case 'ty':
         needCard();
-        if (rest.length < 1) throw new Error('usage: ty <idea|event|model|hub> [<facet>]');
+        if (rest.length < 1) throw new Error('usage: ty <idea|event|finding|model|hub> [<facet>]');
         // A facet is the rest of the line, so it may hold spaces.
         return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
       case 'lv': {
@@ -1107,6 +1109,7 @@
           h('span', { class: 'types' },
             h('span', { class: 'count', text: `${tree.count} card${tree.count === 1 ? '' : 's'}` }),
             tally('event', tree.events),
+            tally('finding', tree.findings),
             tally('model', tree.models),
           ),
           h('span', { class: 'gauge', title: `${tree.count} of the ${largest} cards in the largest tree` },
@@ -4306,16 +4309,16 @@
     if (address) await afterChange(address, `saved ${address}`);
   }
 
-  /** `ty <idea|event|model|hub> [<facet>]`: change only the current Regular Card's type and facet. */
+  /** `ty <idea|event|finding|model|hub> [<facet>]`: change only the current Regular Card's type and facet. */
   async function setCardType(type, facet) {
     const card = state.card;
-    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, model, or hub`);
-    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Model, or Hub Cards');
+    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, or hub`);
+    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, or Hub Cards');
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
     const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
     await afterChange(result.address, facet
       ? `${result.address} is the ${facetLabel(facet)} part of its model`
-      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'hub' ? 'a Hub' : 'a Model'} Card`);
+      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'finding' ? 'a Finding' : type === 'hub' ? 'a Hub' : 'a Model'} Card`);
   }
 
   function choosePart() {

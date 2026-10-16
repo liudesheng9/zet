@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The survey of the Organize stage (doc/digest-card-layers-proposal.md, proposal 8): everything Opus
+  The survey of the Organize stage (docs/digest-card-layers-proposal.md, proposal 8): everything Opus
   needs to decide, and nothing it must find by reading the trees. Read-only.
 
 .DESCRIPTION

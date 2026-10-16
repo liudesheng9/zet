@@ -1,0 +1,6 @@
+# Workflows built by the workflow-framework-protocol: verify compares the installed script's sha256 with its lock,
+# and the harness compares it with a fresh build (LF). Keep them LF in every checkout.
+.claude/workflows/zt-econ-digest.js text eol=lf
+.claude/workflows/zt-math-digest.js text eol=lf
+.claude/workflow-framework/** text eol=lf
+scripts/book-digest/workflow/** text eol=lf

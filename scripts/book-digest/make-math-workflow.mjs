@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/make-math-workflow.mjs
-// Writes .claude/workflows/zt-math-digest.js from .claude/workflows/zt-book-digest.js. The math
+// Writes .claude/workflows-legacy/zt-math-digest.js from .claude/workflows/zt-book-digest.js. The math
 // workflow is the book digest with math stages added: every shared stage (the DeepSeek Subagent
 // Managed Protocol, the digest and link managers, the model compiler, the card cycles, the link
 // check, Organize, Figures, Hubs, and the Audit) is the book digest's own text, so its standards
@@ -32,7 +32,7 @@ const between = (what, start, end, text) => {
 // 1. The meta block: name, description, and the math phases.
 between('meta', 'export const meta = {', '// args:', `export const meta = {
   name: 'zt-math-digest',
-  description: 'Digest a Chinese-translated mathematics textbook into ZET Cards (doc/math-cards-design.md): the zt-book-digest workflow with the same Card, Link, hub, and DeepSeek standards, plus mathematical units. A script finds every numbered definition, axiom, theorem, proposition, lemma, and corollary, builds a unit Model Card (its Math form and level) and a Theory Card per chapter, and a DeepSeek job writes the Book notation table; the digest writes each unit\\'s statement; the model compiler builds each unit with the math supplements (premises, proof plan, proof steps, Derivation parts, intuition, examples) under the attention budget; a boundary pass writes hypothesis roles, counterexamples, and contrast pairs, and a second DeepSeek job checks each supplied one; a proof review checks every proof step; after the link pass a theory pass writes each Theory Card (question, main results, objects, dependency order, tools, map); and a math check reports rules M1 to M18 beside the audit',
+  description: 'Digest a Chinese-translated mathematics textbook into ZET Cards (docs/math-cards-design.md): the zt-book-digest workflow with the same Card, Link, hub, and DeepSeek standards, plus mathematical units. A script finds every numbered definition, axiom, theorem, proposition, lemma, and corollary, builds a unit Model Card (its Math form and level) and a Theory Card per chapter, and a DeepSeek job writes the Book notation table; the digest writes each unit\\'s statement; the model compiler builds each unit with the math supplements (premises, proof plan, proof steps, Derivation parts, intuition, examples) under the attention budget; a boundary pass writes hypothesis roles, counterexamples, and contrast pairs, and a second DeepSeek job checks each supplied one; a proof review checks every proof step; after the link pass a theory pass writes each Theory Card (question, main results, objects, dependency order, tools, map); and a math check reports rules M1 to M18 beside the audit',
   whenToUse: 'Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode "math" re-runs only the boundary, proof, theory, and check stages on an existing math digest; the other modes are those of zt-book-digest.',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, anchors; then math-compiler.ps1 finds every numbered statement (index), writes the math prompt files (docs: the shared instructions with the math supplements appended), and builds the skeleton (a unit Model Card per definition, axiom, and result, a Theory Card per chapter); one DeepSeek job writes the Book notation table; then the book term table as in zt-book-digest', model: 'haiku' },
@@ -184,7 +184,9 @@ async function runTheory() {
 `)
 
 if (crlf) s = s.replace(/\n/g, '\r\n')
-const target = path.join(workflows, 'zt-math-digest.js')
+// The hand-written math digest lives in .claude/workflows-legacy since the framework-built zt-math-digest took its
+// name in .claude/workflows (docs/zt-digest-framework.md).
+const target = path.join(here, '..', '..', '.claude', 'workflows-legacy', 'zt-math-digest.js')
 // --check: compare with the file on disk instead of writing it (the harness runs this).
 if (process.argv.includes('--check')) {
   const disk = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n') : ''

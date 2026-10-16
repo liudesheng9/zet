@@ -1,0 +1,1209 @@
+export const meta = {
+  name: 'zt-math-digest',
+  description: 'Digest a Chinese-translated mathematics textbook into ZET Cards (docs/math-cards-design.md): the zt-book-digest workflow with the same Card, Link, hub, and DeepSeek standards, plus mathematical units. A script finds every numbered definition, axiom, theorem, proposition, lemma, and corollary, builds a unit Model Card (its Math form and level) and a Theory Card per chapter, and a DeepSeek job writes the Book notation table; the digest writes each unit\'s statement; the model compiler builds each unit with the math supplements (premises, proof plan, proof steps, Derivation parts, intuition, examples) under the attention budget; a boundary pass writes hypothesis roles, counterexamples, and contrast pairs, and a second DeepSeek job checks each supplied one; a proof review checks every proof step; after the link pass a theory pass writes each Theory Card (question, main results, objects, dependency order, tools, map); and a math check reports rules M1 to M18 beside the audit',
+  whenToUse: 'Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode "math" re-runs only the boundary, proof, theory, and check stages on an existing math digest; the other modes are those of zt-book-digest.',
+  phases: [
+    { title: 'Prepare', detail: 'Chinese-only book text, section groups, anchors; then math-compiler.ps1 finds every numbered statement (index), writes the math prompt files (docs: the shared instructions with the math supplements appended), and builds the skeleton (a unit Model Card per definition, axiom, and result, a Theory Card per chapter); one DeepSeek job writes the Book notation table; then the book term table as in zt-book-digest', model: 'haiku' },
+    { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs with the math prefix: each run writes its units\' statements and its Idea, Event, and Model Cards', model: 'haiku' },
+    { title: 'Models', detail: 'the model compiler builds every unit and model; the architect reads model-architect.md and model-architect-math.md, and the briefs, fills, and reviews use the math supplements', model: 'sonnet' },
+    { title: 'Cards', detail: 'the card layer cycle of zt-book-digest, unchanged', model: 'haiku' },
+    { title: 'Boundary', detail: 'math-compiler.ps1 boundary: DeepSeek writes hypothesis roles with counterexamples and contrast pairs as JSON; the script makes the parts; a second DeepSeek job checks each supplied one; the script deletes what it judged wrong', model: 'haiku' },
+    { title: 'Proof', detail: 'math-compiler.ps1 proof: a DeepSeek reviewer checks every proof plan, proof step, and conclusion; the script writes each fix that keeps its Links', model: 'haiku' },
+    { title: 'Link', detail: 'the link pass of zt-book-digest with the math link supplement', model: 'haiku' },
+    { title: 'Theory', detail: 'math-compiler.ps1 theory: DeepSeek writes each Theory Card\'s title, question, main results, and objects; the script writes the dependency order, tools, users, and the dependency map', model: 'haiku' },
+    { title: 'Cleanup', detail: 'as in zt-book-digest', model: 'haiku' },
+    { title: 'Organize', detail: 'as in zt-book-digest', model: 'opus' },
+    { title: 'Figures', detail: 'as in zt-book-digest', model: 'haiku' },
+    { title: 'Hubs', detail: 'as in zt-book-digest', model: 'haiku' },
+    { title: 'Audit', detail: 'digest-audit.ps1 as in zt-book-digest, then math-compiler.ps1 check: rules M1 to M18 on every unit and Theory Card (math-audit.json, math-audit.md)', model: 'haiku' },
+  ],
+}
+
+// zt-math-digest is generated from zt-book-digest.js by scripts/book-digest/make-math-workflow.mjs.
+// Edit zt-book-digest.js or the generator, not this file. Its args are those of zt-book-digest and:
+//   mode ('math': only Boundary, Proof, Theory, and the math check on an existing digest),
+//   boundary, proof, theory (true: run that math stage), supply ('none' | 'examples' |
+//   'examples+answers': what DeepSeek may add that the book does not give; default 'examples'),
+//   unitsPerJob (4: units per boundary or proof job), mainResults (7: main results per Theory
+//   Card), coreBudget (3: core parts per unit), notation (true: write the Book notation table).
+// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain'), source, out, citationKey, bibtex, bookTitle,
+//         fileId (the book Markdown's Scholar Archive file id; read from a source path such as
+//         ...\scholar-archive\files\83\... when not given): its figures are kept in ZET and shown in the Cards,
+//         figures (mode "full": true; false skips the Figures stage),
+//         startHeading ('导论'), endHeading ('参考'): the Chinese headings where the digested text starts and stops,
+//         skipHeadings (e.g. '参考文献,习题': headings whose units are left out, such as each chapter's references
+//         and exercises; default none),
+//         groups (modes 'link' and 'models': the existing group count), organize (modes 'link' and 'models': default false;
+//         "legacy": the old single Opus job instead of survey, decisions, apply, notes, and skeleton),
+//         perManager (5), maxChars (20000), maxUnits (3),
+//         dshSource ('auto' | 'official' | 'opencode': where DeepSeek V4.1 Flash runs; 'auto' checks the DeepSeek
+//         official source first and takes the OpenCode Go source when the official one does not answer),
+//         dshModel (a DeepSeek Harness model that overrides dshSource), dshEffort ('high': the digest, link,
+//         and fill runs; every DeepSeek effort is high or max, see atLeastHigh),
+//         models (true: run the model stage), rebuild (false: also rebuild models that already have parts;
+//         redoModels is the old name), perSonnet (6: formal models per batch, one Sonnet architect each;
+//         neighbouring models of the book share a batch), perConcept (10: concept models per batch),
+//         dshPerBatch (8: DeepSeek runs one Haiku manager keeps going at the same time; dshPerSonnet is the old name),
+//         dshManagers (8: the most Haiku managers that run the DeepSeek jobs of one compiler step in parallel;
+//         a step gets one manager per dshPerBatch jobs),
+//         linkPerManager (8: the link runs one Haiku manager starts at once),
+//         applyShare (30: the jobs one apply call of a card cycle writes; apply repeats until none is pending),
+//         only (mode "models": the Model Card addresses to work on, e.g. a pilot; default all),
+//         level ('concept' | 'formal': build every model of the run to this elaboration level; default each
+//         model's own level, which DeepSeek proposes and the Sonnet architect confirms),
+//         briefEffort ('high'), deriveEffort ('high'), reviewEffort ('high'): DeepSeek effort of the brief,
+//         the Derivation parts and their follow-ups, and the review (dshEffort is the fill's),
+//         reviewRounds (2: review, split, review again; 0 skips the review), architectEffort (Sonnet's effort),
+//         maxSentences (12), maxPartChars (400), maxSteps (6): the Card size of a formal model's part;
+//         a part over a limit splits, and a long derivation step becomes a chain of Derivation parts,
+//         hubs (mode "full": true; mode "link": false): run the hub stage after the link pass,
+//         hubWork ('D:\\zt-digest\\hubs': the hub stage's folder and DeepSeek workspace; its state.json
+//         remembers each tree's hubs, so a later run rewrites only trees that changed),
+//         hubLimits (an object that overrides the limits the Haiku hub manager chooses, e.g. { topic_min: 8 }),
+//         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
+//         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again),
+//         terms (mode "full": true; false skips the book term table at Prepare),
+//         audit (mode "full": true; false skips the Audit stage; read-only, see docs/digest-card-layers-proposal.md),
+//         cardChecks (modes "full" and "link": true; false skips the card layer cycle), ideaSample (0.1: the share
+//         of a block's Idea Cards without faults that DeepSeek reviews against the source; mode "cards": 0),
+//         cardRules (the rules the cycle fixes; default all hard rules), cardFixRounds (1: check, fix, apply again),
+//         cardMax (a pilot: at most this many Cards with faults and this many orphans),
+//         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
+//         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
+//         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
+//
+// Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
+// Model Cards in `only`). DeepSeek writes JSON; model-compiler.ps1 writes the Cards and never
+// changes 起点, a step, or 结果. It never rebuilds a model.
+//
+// How the stages hand work on:
+//   Prepare (figures kept) ─▶ Digest block 1 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 1 (model compiler, per batch) ─┐
+//           ─▶ Digest block 2 (Haiku ▸ DeepSeek ×5) ─▶ Models for block 2 (model compiler, per batch) ─┼─▶ Link ─▶ Cleanup ─▶ Organize (Opus) ─▶ Figures ─▶ Hubs
+//           ─▶ …                                                                                      ─┘
+// Blocks run in parallel; a block's models are compiled while later blocks are still digesting.
+//
+// The model compiler, per batch (model-compiler.ps1 does every step marked "script"):
+//   brief (script: context packs ▸ DeepSeek: brief.md) ─▶ plan (Sonnet: plan.json, validated by script)
+//   ─▶ fill (script: skeleton, jobs ▸ DeepSeek: Model Card, setting, parts, charts)
+//   ─▶ derive (script: jobs with filled premises ▸ DeepSeek: Derivation parts)
+//   ─▶ review ×reviewRounds (script: one job per chain ▸ DeepSeek: verdicts ▸ script: splits ▸ DeepSeek: follow-ups)
+//   ─▶ report (script) and clean-up. Haiku only relays DeepSeek jobs; Sonnet only plans.
+//
+// The hub compiler, once per run on the whole agent Workspace (hub-compiler.ps1 does every "script" step):
+//   survey (script ▸ Haiku hub manager: the limits) ─▶ plan (script: jobs ▸ DeepSeek: fields.json and
+//   hub-<tree>.json) ─▶ apply (script: Hub Cards, Topic bodies, register) ─▶ check (script: get_hub ▸
+//   DeepSeek: fixes) ─▶ apply ─▶ report (script) and clean-up: the conversations are deleted, the
+//   folder and its state.json stay for the next run.
+const A =args && typeof args === 'object' ? args : {}
+const MODE = A.mode || 'full'
+// The args are an object, never free text: without these fields the stages would run on "undefined".
+const missing = ['out', ...(MODE !== 'hubs' && MODE !== 'audit' ? ['citationKey'] : []), ...(MODE === 'full' ? ['source', 'bibtex', 'bookTitle'] : [])].filter(k => !A[k])
+if (missing.length) return { stage: 'args', error: `args must be an object with ${missing.join(', ')}; got ${typeof args === 'string' ? 'a string' : JSON.stringify(args)}` }
+const KEY = A.citationKey
+const OUT = A.out
+const DIGEST_PREFIX = `${OUT}\\math-prefix.md`
+const LINK_PREFIX = `${OUT}\\math-link-prefix.md`
+// DeepSeek Subagent Managed Protocol (~/.claude/skills/deepseek-subagent-managed-protocol): a Haiku
+// manager runs at most 8 DeepSeek conversations; at most 8 managers are alive at once in the whole run.
+const DSMP_PER_MANAGER = 8
+const DSMP_MAX_MANAGERS = 8
+const PER_MANAGER = Math.min(DSMP_PER_MANAGER, A.perManager || 5)
+// DeepSeek V4.1 Flash at the two sources DeepSeek Harness offers (deepseek_models lists them). The
+// official source is the DeepSeek platform ("DeepSeek-V41-Flash"); OpenCode Go serves the same model.
+const DSH_SOURCES = {
+  official: 'deepseek-official/deepseek-flash',
+  opencode: 'opencode-go/deepseek-v4.1-flash',
+}
+const DSH_SOURCE = A.dshModel ? 'model' : (['official', 'opencode'].includes(A.dshSource) ? A.dshSource : 'auto')
+// Set before the first DeepSeek run: the given model, the given source, or the source the probe found.
+let DSH_MODEL = A.dshModel || DSH_SOURCES[DSH_SOURCE] || DSH_SOURCES.official
+// The user wants every DeepSeek run at medium effort or more. V4.1 Flash offers off, low, high, and max at
+// both sources, with no medium, so every effort is high or max: a lower value is raised to high.
+const raised = []
+const atLeastHigh = (value, name) => {
+  if (value === 'high' || value === 'max') return value
+  if (value) raised.push(`${name} ${value} → high`)
+  return 'high'
+}
+const DSH_EFFORT = atLeastHigh(A.dshEffort, 'dshEffort')
+const SCRIPTS = 'E:\\zet\\scripts\\book-digest'
+const MODELS = A.models !== false
+const ARCH_DOC = `${SCRIPTS}\\model-architect.md`
+const COMPILER = `${SCRIPTS}\\model-compiler.ps1`
+const MODEL_WORK = `${OUT}\\models`
+const PER_SONNET = Math.max(1, A.perSonnet || 6)
+const DSH_PER_BATCH = Math.min(DSMP_PER_MANAGER, Math.max(1, A.dshPerBatch || A.dshPerSonnet || 8))
+const REBUILD = !!(A.rebuild || A.redoModels)
+// The elaboration level: a concept model (level 1) is stated in words, with no Derivation parts; a
+// formal model (level 2) is built self-sufficient. Unset: each model's own level.
+const LEVEL = ['concept', 'formal'].includes(A.level) ? A.level : null
+const PER_CONCEPT = Math.max(1, A.perConcept || 10)
+const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
+const DERIVE_EFFORT = atLeastHigh(A.deriveEffort, 'deriveEffort')
+const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
+const REVIEW_ROUNDS = Math.max(0, A.reviewRounds ?? 2)
+// Card size limits, passed to zt-check through the compilers (R13, R14): the size of a Card, not the length of
+// a derivation, decides how many Derivation parts carry a step.
+const LIMITS = `-MaxSentences ${A.maxSentences || 12} -MaxChars ${A.maxPartChars || 400} -MaxSteps ${A.maxSteps || 6} -MaxExplainSentences ${A.maxExplainSentences || 16} -MaxExplainChars ${A.maxExplainChars || 600}`
+const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
+// Skills the manager passes to DeepSeek Harness in the `skills` field of deepseek_run and deepseek_prompt.
+// Both skills are installed in DeepSeek Harness (deepseek_skills lists them). No prompt file carries a copy of a skill.
+const DSH_SKILLS = ['zettelkasten', 'asd-ste100-zh']
+const FILL_SKILLS = ['asd-ste100-zh']
+const DSH_TOOLS ='select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_delete'
+const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace`
+// One pool for the whole run: every Haiku agent that runs DeepSeek jobs (digest, link, and driver
+// managers) takes a slot, so at most DSMP_MAX_MANAGERS managers and 64 conversations run at once.
+// Only managers take a slot; a step command or a cleanup agent never waits for one.
+let dsmpBusy = 0
+const dsmpQueue = []
+const dsmpPump = () => {
+  while (dsmpBusy < DSMP_MAX_MANAGERS && dsmpQueue.length) {
+    dsmpBusy++
+    const { fn, res, rej } = dsmpQueue.shift()
+    Promise.resolve().then(fn).then(res, rej).then(() => { dsmpBusy--; dsmpPump() })
+  }
+}
+const dsmpSlot = fn => new Promise((res, rej) => { dsmpQueue.push({ fn, res, rej }); dsmpPump() })
+// The hub stage: the Haiku hub manager chooses the limits; DeepSeek plans and writes; the script builds.
+const HUBS = MODE === 'hubs' || (MODE === 'full' && A.hubs !== false) || (MODE === 'link' && A.hubs === true)
+const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
+const HUB_COMPILER = `${SCRIPTS}\\hub-compiler.ps1`
+const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
+const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
+const HUB_SKILLS = ['asd-ste100-zh']
+const AUDIT = MODE === 'audit' || (MODE === 'full' && A.audit !== false)
+// The card layer cycle (docs/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
+// writes; DeepSeek rewrites and reviews as JSON files; Haiku drivers relay the jobs.
+const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
+const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
+const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
+const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? (MODE === 'full' ? 0.1 : 0)))
+const CARD_SKILLS = ['asd-ste100-zh']
+// The jobs one apply call writes (A.applyShare): about 8 Cards each.
+const APPLY_SHARE = Math.max(1, A.applyShare || 30)
+// --- math settings (zt-math-digest only) ---------------------------------------------------------
+const MATH_COMPILER = `${SCRIPTS}\\math-compiler.ps1`
+const ARCH_MATH_DOC = `${SCRIPTS}\\model-architect-math.md`
+const MATH_WORK = `${OUT}\\math`
+const MATH_DOC_ARGS = ` -BriefDoc "${MATH_WORK}\\brief.zh.md" -FillDoc "${MATH_WORK}\\fill.zh.md" -ReviewDoc "${MATH_WORK}\\review.zh.md"`
+const SUPPLY = ['none', 'examples', 'examples+answers'].includes(A.supply) ? A.supply : 'examples'
+const UNITS_PER_JOB = Math.max(1, A.unitsPerJob || 4)
+const MAIN_RESULTS = Math.max(1, A.mainResults || 7)
+const MATH_MODE = MODE === 'full' || MODE === 'math'
+const BOUNDARY = MATH_MODE && A.boundary !== false
+const PROOF = MATH_MODE && A.proof !== false
+const THEORY = MATH_MODE && A.theory !== false
+const NOTATION = MODE === 'full' && A.notation !== false
+
+// --- Audit: a read-only report on the book's Cards (phase 1 of docs/digest-card-layers-proposal.md) --
+// A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
+async function runAudit() {
+  phase('Audit')
+  const run = await agent(
+    `Run this PowerShell command once in the foreground with timeout 600000 and wait for it (it may take several minutes); do nothing else:
+pwsh -NoProfile -File ${SCRIPTS}\\digest-audit.ps1${KEY ? ` -CitationKey ${KEY}` : ''} -Out "${OUT}"
+Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
+    { label: 'audit cards', phase: 'Audit', model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+  )
+  const summary = run && run.ok ? lastJson(run.output) : null
+  if (!summary) { log(`Audit failed: ${run && run.output}`); return { status: 'failed', error: run && run.output } }
+  for (const b of summary.books || []) log(`Audit ${b.key}: ${b.cards} Cards in ${b.topic_trees} Topic trees; ${b.style_faults} Card language faults; ${b.layer_faults ?? 0} Card layer faults (${b.layer_advisory ?? 0} advisory); ${b.orphans} orphans; ${b.no_source} with no source; ${b.unkinded} with no kinded Link; ${b.not_self_sufficient} of ${b.models} models not self-sufficient; ${b.explained ?? 0} of ${b.derivations ?? 0} Derivation parts with 思路 and 解读; ${b.figures_missing} figures named but not shown.`)
+  log(`Audit: ${summary.hubs_missing} missing hubs, ${summary.broken_links} broken Links in the Workspace. Report: ${OUT}\\audit.md`)
+  return { status: 'done', ...summary }
+}
+
+const USAGE = {
+  type: 'object',
+  properties: {
+    input_cache_miss: { type: 'number' }, cached_read: { type: 'number' },
+    output: { type: 'number' }, cost: { type: 'number' }, calls: { type: 'number' },
+  },
+  required: ['input_cache_miss', 'cached_read', 'output', 'cost', 'calls'],
+}
+const usageStep = 'Load the DeepSeek tools with ToolSearch query "select:mcp__deepseek__deepseek_usage" and call deepseek_usage with days=1. Sum each field over the rows for the last day listed.'
+
+// --- Prepare ---------------------------------------------------------------------------------
+phase('Prepare')
+if (raised.length) log(`DeepSeek efforts raised to high (the user wants at least medium; V4.1 Flash has no medium): ${raised.join(', ')}.`)
+// The DeepSeek source: with dshSource 'auto', a Haiku probe asks each source for one short answer and
+// the run uses the first that gives it, the official source before OpenCode Go.
+if (DSH_SOURCE === 'auto' && MODE !== 'figures' && MODE !== 'audit') {
+  const probeDir = `${OUT}\\dsh-probe`
+  const probe = await agent(
+    `You check which DeepSeek Harness source of DeepSeek V4.1 Flash answers now. Do exactly these steps; keep your messages short.
+Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
+1. One PowerShell call: New-Item -ItemType Directory -Force -Path "${probeDir}" | Out-Null
+2. Try the sources in this order and stop at the first that answers:
+   a. official: model "${DSH_SOURCES.official}"
+   b. opencode: model "${DSH_SOURCES.opencode}"
+   For each: deepseek_run with cwd "${probeDir}", model as given, reasoning_effort "high", prompt "只回复 ok", wait_seconds 180. If the status is "running", deepseek_wait once (wait_seconds 180). The source answers when the status is "finished" and the answer contains "ok". An error, a "running" status after the wait, or any other answer means it does not: record the error or status text for it. Then deepseek_delete that session_id.
+3. deepseek_remove_workspace with cwd "${probeDir}" and delete_conversations true. Then one PowerShell call: Remove-Item -LiteralPath "${probeDir}" -Recurse -Force -ErrorAction SilentlyContinue
+Return source ("official", "opencode", or "none") and errors (one short line per source that failed, else "").`,
+    {
+      label: 'choose DeepSeek source', phase: 'Prepare', model: 'haiku', effort: 'low',
+      schema: { type: 'object', properties: { source: { type: 'string', enum: ['official', 'opencode', 'none'] }, errors: { type: 'string' } }, required: ['source'] },
+    },
+  )
+  if (!probe || !DSH_SOURCES[probe.source]) {
+    log(`No DeepSeek source answered: ${(probe && probe.errors) || 'no report from the probe'}`)
+    return { stage: 'source', error: 'neither the DeepSeek official source nor OpenCode Go answered', probe }
+  }
+  DSH_MODEL = DSH_SOURCES[probe.source]
+  log(`DeepSeek source: ${probe.source} (${DSH_MODEL})${probe.errors ? `; ${probe.errors}` : ''}.`)
+} else {
+  log(`DeepSeek source: ${DSH_SOURCE} (${DSH_MODEL}).`)
+}
+let groupCount = A.groups || 0
+let usageBefore = null
+if (MODE === 'full') {
+  const prep = await agent(
+    `You prepare a book for a ZET digest. Do exactly these steps and nothing else.
+1. Run this PowerShell command (one call) and read its last output line, a compact JSON manifest:
+pwsh -NoProfile -File ${SCRIPTS}\\prepare-book-digest.ps1 -Source "${A.source}" -Out "${OUT}" -CitationKey ${KEY} -BibTeX '${A.bibtex}' -BookTitle '${A.bookTitle}' -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''}${A.skipHeadings ? ` -SkipHeadings '${A.skipHeadings}'` : ''}${A.fileId ? ` -FileId ${A.fileId}` : ''} -Apply
+If it fails, return ok=false with the error text; do not retry with other options and do not delete anything.
+2. ${usageStep}
+Return groups = the number of entries in manifest.groups and usage_before = the summed usage.`,
+    {
+      label: 'prepare book', phase: 'Prepare', model: 'haiku', effort: 'low',
+      schema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' }, error: { type: 'string' }, groups: { type: 'number' }, usage_before: USAGE },
+        required: ['ok', 'groups'],
+      },
+    },
+  )
+  if (!prep || !prep.ok || !prep.groups) {
+    log(`Preparation failed: ${prep && prep.error}`)
+    return { stage: 'prepare', prep }
+  }
+  groupCount = prep.groups
+  usageBefore = prep.usage_before
+}
+if (!groupCount && MODE !== 'math' && MODE !== 'models' && MODE !== 'hubs' && MODE !== 'figures' && MODE !== 'audit' && MODE !== 'cards' && MODE !== 'explain') return { stage: 'prepare', error: 'mode "link" needs args.groups' }
+
+const groups = Array.from({ length: groupCount }, (_, i) => {
+  const n = i + 1
+  const nn = String(n).padStart(2, '0')
+  return { n, nn, file: `${OUT}\\groups\\g${nn}.md`, snapshot: `${OUT}\\snapshot-g${nn}.md`, link: `${OUT}\\link-g${nn}.md` }
+})
+// Contiguous blocks in book order: managers run in parallel on different chapters (few duplicate
+// Topics), and inside a block each run starts after its predecessor and sees its new Cards.
+const toBlocks = (list, size = PER_MANAGER) => {
+  const out = []
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
+  return out
+}
+const blocks = toBlocks(groups)
+
+// --- one Haiku manager per block -----------------------------------------------------------------
+const REPORT = {
+  type: 'object',
+  properties: {
+    group: { type: 'number' }, status: { type: 'string', enum: ['done', 'failed'] },
+    cards: { type: 'number' }, models: { type: 'number' }, events: { type: 'number' }, links: { type: 'number' }, topics: { type: 'array', items: { type: 'string' } },
+    errors: { type: 'string' }, deleted: { type: 'boolean' },
+    tool_calls: { type: 'number' }, context_used: { type: 'number' },
+  },
+  required: ['group', 'status', 'errors', 'deleted'],
+}
+
+const STAGES = {
+  digest: {
+    phase: 'Digest',
+    steps: g => `Group ${g.n}:
+  a. Snapshot the slip-box (one PowerShell call): pwsh -NoProfile -File ${SCRIPTS}\\snapshot-topics.ps1 -Out "${g.snapshot}"
+  b. deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${DIGEST_PREFIX}", "${g.file}"] (the book, its index and the snapshot stay on disk; DSH reads what it needs); prompt "按以上说明完成你的组，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.`,
+    answer: '{"group","cards","models","events","topics","anchor","errors"}',
+    fields: 'cards (Cards written), models (Model Cards), events (Event Cards), topics (as "地址 主题名")',
+  },
+  link: {
+    phase: 'Link',
+    parallel: true,
+    steps: g => `Group ${g.n}:
+  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 0.
+  When it finished with status "done", mark it (one PowerShell call): Set-Content -LiteralPath "${OUT}\\linked-g${g.nn}.txt" -Value done`,
+    answer: '{"group","cards_linked","links_added","errors"}',
+    fields: 'cards (= cards_linked), links (= links_added)',
+  },
+}
+
+const manage = (block, b, stage) => {
+  const S = STAGES[stage]
+  return dsmpSlot(() => agent(
+    `You manage ${block.length} DeepSeek Harness (DSH) runs of a ZET book digest (${stage} pass), ${S.parallel ? 'all at the same time' : 'one after another'}. DSH reads the book and changes the Cards; you only start, supervise, and clean up each run. Keep your messages short.
+Load all tools with one ToolSearch call: query "${DSH_TOOLS}".
+
+${S.parallel ? 'Run the groups below at the same time: start every run in one message (all deepseek_run calls together), then follow each one until it ends. The runs do not depend on each other.' : 'For each group below, in order, finish it completely before starting the next:'}
+${block.map(S.steps).join('\n')}
+
+Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
+Then follow "status" until the run ends:
+  - "running": deepseek_wait (session_id, wait_seconds 900).
+  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+  - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
+  - "finished": parse its JSON ${S.answer}.
+  Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
+  Record tool_calls = the sum of the counts in the last turn report's tools_used, and context_used = context.used.
+
+Return reports: one entry per group in this block with group, status, ${S.fields}, errors, deleted, tool_calls, context_used.`,
+    {
+      label: `${stage} manager ${b + 1}: groups ${block[0].n}-${block[block.length - 1].n}`, phase: S.phase, model: 'haiku', effort: 'low',
+      schema: { type: 'object', properties: { reports: { type: 'array', items: REPORT } }, required: ['reports'] },
+    },
+  ))
+}
+
+// --- Models: the model compiler turns each new Model Card into a structured model ---------------------
+// Sonnet only plans (plan.json); model-compiler.ps1 does every structural step; DeepSeek writes,
+// draws, derives, and reviews; Haiku only relays DeepSeek jobs between them.
+const MODEL_LIST = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' }, error: { type: 'string' },
+    models: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, title: { type: 'string' }, level: { type: ['string', 'null'] }, parts: { type: 'number' }, issues: { type: 'number' }, faults: { type: 'number' } }, required: ['address'] } },
+  },
+  required: ['ok', 'models'],
+}
+const listModels = (selector, label) => agent(
+  `List the Model Cards of a ZET book digest. Run this one PowerShell command and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
+pwsh -NoProfile -File ${SCRIPTS}\\list-models.ps1 -Staging "${OUT}" ${selector}
+If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
+  { label, phase: 'Models', model: 'haiku', effort: 'low', schema: MODEL_LIST },
+)
+
+// One Haiku driver runs one compiler step and the DeepSeek jobs it prints. It never reads the book
+// or a Card; the step's JSON names every file, prompt, and conversation to continue.
+const DRIVE = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' }, error: { type: 'string' }, output: { type: 'string' },
+    results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, session_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'failed'] }, answer: { type: 'string' } }, required: ['id', 'status'] } },
+    deleted: { type: 'number' },
+  },
+  required: ['ok', 'results'],
+}
+// o: command, dsh (the DSH workspace), skills, effort, sessions (continued jobs), cleanup (the last
+// round: end the conversations, remove the workspace), phase ('Models'), writes (a folder whose files
+// a job may write; default: the one file its prompt names), keep (true: cleanup keeps the folder, e.g.
+// the hub stage's state). Cleanup always deletes the conversations; it never archives them.
+//
+// A step runs in up to three kinds of Haiku agent: one runs the script command; its DeepSeek jobs go
+// to one manager per DSH_PER_BATCH (8) jobs, and each manager runs all its jobs at once; one agent
+// cleans up. The user set this rule (DeepSeek Subagent Managed Protocol): 1-8 jobs need one manager,
+// 9-16 two, and so on; at most DSH_MANAGERS (8) managers of a step run at once, and at most
+// DSMP_MAX_MANAGERS in the whole run (dsmpSlot). A step with more than 64 jobs starts a new manager
+// when one ends. Conversations stay until the step's cleanup: later rounds continue them.
+const DSH_MANAGERS = Math.min(DSMP_MAX_MANAGERS, Math.max(1, A.dshManagers || 8))
+const driveAgent = (label, o, part) => {
+  const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
+  const removal = `deepseek_list with cwd "${o.dsh}"; deepseek_delete every conversation listed there that is not running, and count them in deleted; then, when none is running, deepseek_remove_workspace with cwd "${o.dsh}" and delete_conversations true. Never archive a conversation`
+  const head = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
+Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
+`
+  if (part === 'command') {
+    return agent(`${head}
+Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
+${o.command}
+Its last output line is compact JSON; it may be long (tens of kilobytes). Put that line, unchanged and whole, in output: never shorten it, summarize it, or save it to a file instead. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
+      { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+  }
+  if (part === 'cleanup') {
+    return agent(`${head}
+Clean up: ${removal}${o.keep ? '. Keep the folder and its files.' : `; then one PowerShell call: Remove-Item -LiteralPath "${o.dsh}" -Recurse -Force -ErrorAction SilentlyContinue`}
+Return ok=true, results=[], and deleted.`,
+      { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+  }
+  const jobs = o.jobs || []
+  return dsmpSlot(() => agent(`${head}
+Run every job below. A job has id, files, prompt, and sometimes continue and fallback. Other managers run the other jobs of this step at the same time; run only these.
+${JSON.stringify(jobs)}
+- No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, model "${DSH_MODEL}", reasoning_effort "${o.effort}", wait_seconds 0.
+- continue: find the session of the job id named by continue in this table (job id, then session_id):
+${table || '(empty)'}
+  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback.
+Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
+Follow "status" until each job ends:
+- "running": deepseek_wait (session_id, wait_seconds 600).
+- "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
+- "finished": answer = its final answer text, unchanged (the JSON lines).
+Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
+Return ok=true, output="", and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
+    { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE }))
+}
+// A step's jobs. A compact list (card-compiler.ps1 -Compact) names each job's file and kind and gives
+// the folder, the instruction files, and the prompts once; it expands to { id, files, prompt,
+// continue?, fallback? } here, so the step agent echoes a short line even for hundreds of jobs.
+const expandJobs = (parsed) => {
+  const list = (parsed && Array.isArray(parsed.jobs)) ? parsed.jobs : []
+  if (!parsed || !parsed.lead || !parsed.prompts) return list
+  const at = (name) => `${parsed.dir}\\${name}`
+  return list.map(j => {
+    if (j.files) return j
+    if (j.kind === 'follow') return { id: j.id, continue: j.continue, files: [at(j.file)], fallback: [parsed.lead.fix, at(j.file)], prompt: parsed.prompts.follow }
+    const lead = j.kind === 'orphans' ? parsed.lead.orphans : parsed.lead.fix
+    return { id: j.id, files: [lead, at(j.file)], prompt: parsed.prompts[j.kind] }
+  })
+}
+// Runs one compiler step: the command, its jobs spread over up to DSH_MANAGERS managers, then the
+// cleanup when o.cleanup. Returns { ok, error, output, results, deleted } like one driver did.
+const drive = async (label, o) => {
+  const step = await driveAgent(label, o, 'command')
+  if (!step || !step.ok) {
+    if (o.cleanup) await driveAgent(`${label}: clean up`, o, 'cleanup')
+    return { ok: false, error: (step && step.error) || 'no report from the step', output: (step && step.output) || '', results: [] }
+  }
+  const parsed = lastJson(step.output)
+  const jobs = expandJobs(parsed)
+  let results = []
+  if (jobs.length) {
+    // One manager per DSH_PER_BATCH jobs; at most DSH_MANAGERS of them start at once (the rest wait),
+    // and dsmpSlot keeps the whole run at DSMP_MAX_MANAGERS.
+    const shares = []
+    for (let i = 0; i < jobs.length; i += DSH_PER_BATCH) shares.push(jobs.slice(i, i + DSH_PER_BATCH))
+    const managers = shares.length
+    const done = new Array(managers)
+    let next = 0
+    const lane = async () => {
+      while (next < managers) {
+        const i = next++
+        done[i] = await driveAgent(managers > 1 ? `${label} [${i + 1}/${managers}]` : label, { ...o, jobs: shares[i] }, 'jobs')
+          .catch(error => ({ ok: false, error: String(error), results: [] }))
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(DSH_MANAGERS, managers) }, lane))
+    results = done.flatMap((d, i) => {
+      const got = (d && d.results) || []
+      // A job a manager did not report is a failed job, so a later round can retry it.
+      const missing = shares[i].filter(j => !got.some(r => r.id === j.id)).map(j => ({ id: j.id, status: 'failed', answer: '' }))
+      return [...got, ...missing]
+    })
+    const failedManagers = done.filter(d => !d || !d.ok).length
+    if (failedManagers) log(`${label}: ${failedManagers} of ${managers} managers reported a failure.`)
+  }
+  let deleted = 0
+  if (o.cleanup) {
+    const c = await driveAgent(`${label}: clean up`, o, 'cleanup')
+    deleted = (c && c.deleted) || 0
+  }
+  return { ok: true, output: step.output, results, deleted }
+}
+// The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"):
+// DeepSeek does not always put its JSON on a line of its own.
+const jsonIn = (line) => {
+  for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
+    try { const v = JSON.parse(line.slice(i).trim()); if (v && typeof v === 'object') return v } catch {}
+  }
+  return null
+}
+// The compiler's JSON line: the last line holding a JSON object. A driver may wrap it in prose
+// ("Report JSON: {…}") although it is told to pass the line unchanged.
+const lastJson = (text) => {
+  for (const line of String(text || '').trim().split('\n').reverse()) { const v = jsonIn(line); if (v) return v }
+  return null
+}
+// The JSON lines of every answer, e.g. {"address","status":"split","need":3} or {"ok":2,"split":1}.
+const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(jsonIn).filter(Boolean))
+
+const PLANS = {
+  type: 'object',
+  properties: {
+    plans: { type: 'array', items: { type: 'object', properties: {
+      model: { type: 'string' }, status: { type: 'string', enum: ['planned', 'skipped', 'failed'] }, level: { type: 'string' },
+      parts: { type: 'number' }, derivations: { type: 'number' }, chains: { type: 'number' },
+      notes: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' },
+    }, required: ['model', 'status'] } },
+  },
+  required: ['plans'],
+}
+const slug = (address) => String(address).replace(/[\/|]/g, '_')
+const managerFolders = []
+let dshJobs = 0
+const compileBatch = async (batch, kind) => {
+  const name = `m-${slug(batch[0].address)}`
+  const dsh = `${MODEL_WORK}\\${name}`
+  managerFolders.push(dsh)
+  const tag = `${kind} ${batch[0].address}${batch.length > 1 ? ` +${batch.length - 1}` : ''}`
+  const step = (s, extra = '') => `pwsh -NoProfile -File "${COMPILER}" -Step ${s} -Work "${dsh}" -Staging "${OUT}" ${LIMITS}${MATH_DOC_ARGS}${extra}`
+  const sessions = {}
+  const run = async (what, command, skills, effort, opts = {}) => {
+    const r = await drive(`${what}: ${tag}`, { command, dsh, skills, effort, sessions: opts.continues ? sessions : null, cleanup: opts.cleanup })
+    for (const x of (r && r.results) || []) {
+      dshJobs++
+      if (x.session_id) sessions[x.id] = x.session_id
+    }
+    if (!r || !r.ok) log(`${what} ${tag}: ${(r && r.error) || 'no report from its driver'}`)
+    return r
+  }
+  // A writer that cannot fit its part answers `split` with the number of Cards it needs.
+  const splitNeeds = async (driven) => {
+    const need = answerLines(driven).filter(l => l.status === 'split' && l.address && l.need > 1).map(l => `${l.address}=${l.need}`)
+    if (need.length) await run('split', step('split', ` -Need "${need.join(';')}"`), FILL_SKILLS, DERIVE_EFFORT, { continues: true })
+  }
+  const failed = (why) => batch.map(m => ({ model: m.address, status: 'failed', parts: [], charts: 0, issues: [why] }))
+
+  // 1. Brief: the script writes each context pack; DeepSeek reads the source and writes brief.md.
+  const brief = await run('brief', step('brief', ` -Models "${batch.map(m => m.address).join(',')}"${REBUILD ? ' -Rebuild' : ''}${LEVEL ? ` -Level ${LEVEL}` : ''}`), [], BRIEF_EFFORT)
+  const briefed = lastJson(brief && brief.output)
+  if (!briefed) return failed(`brief failed: ${(brief && brief.error) || 'no output'}`)
+  const skipped = new Set(briefed.skipped || [])
+  const todo = batch.filter(m => !skipped.has(m.address))
+  if (!todo.length) return batch.map(m => ({ model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }))
+
+  // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
+  const entry = (m, i) => `## Model ${i + 1}
+MODEL: ${m.address} (${m.title || ''})
+DIR: ${dsh}\\${slug(m.address)}
+LEVEL NOW: ${m.level || 'none'}`
+  const planned = await agent(
+    `You are the Sonnet architect in the Models stage of the ZET digest of 《${A.bookTitle || KEY}》. Read your instructions first: ${ARCH_DOC}, then the math supplement ${ARCH_MATH_DOC} (Read tool). Then follow them for each model in turn. These models are near each other in the book: where one part serves two of them, plan it in the first and take it in from the second (\`<model>#<id>\`).
+COMPILER: ${COMPILER}
+WORK: ${dsh}
+LIMITS: ${LIMITS}${REBUILD ? '\nREBUILD: rebuild each model even if it already has parts.' : ''}${LEVEL ? `\nLEVEL: ${LEVEL}` : ''}
+
+${todo.map(entry).join('\n\n')}
+
+Return plans: one entry per model, in this order.`,
+    { label: `plan: ${tag}`, phase: 'Models', model: 'sonnet', ...(A.architectEffort ? { effort: A.architectEffort } : {}), schema: PLANS },
+  )
+  const plans = (planned && planned.plans) || []
+  if (!plans.some(p => p.status === 'planned')) {
+    await run('clean up', step('report'), [], DSH_EFFORT, { cleanup: true })
+    return batch.map(m => skipped.has(m.address) ? { model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }
+      : { model: m.address, status: (plans.find(p => p.model === m.address) || {}).status || 'failed', parts: [], charts: 0, issues: planned ? [] : ['no plan from the architect'] })
+  }
+
+  // 3. Fill: the script builds every skeleton; DeepSeek writes the Model Card, setting, parts, charts.
+  await splitNeeds(await run('fill', step('apply'), FILL_SKILLS, DSH_EFFORT))
+  // 4. Derive and 5. review, only where the plans have Derivation parts.
+  if (plans.some(p => p.status === 'planned' && p.derivations > 0)) {
+    await splitNeeds(await run('derive', step('derive'), FILL_SKILLS, DERIVE_EFFORT))
+    for (let round = 0; round < REVIEW_ROUNDS; round++) {
+      const review = await run(`review ${round + 1}`, step('review', round ? ' -Changed' : ''), [], REVIEW_EFFORT)
+      const verdicts = answerLines(review).reduce((s, l) => ({ split: s.split + (Number(l.split) || 0), fix: s.fix + (Number(l.fix) || 0) }), { split: 0, fix: 0 })
+      log(`review ${round + 1} ${tag}: ${verdicts.split} parts to split, ${verdicts.fix} to fix`)
+      if (!verdicts.split && !verdicts.fix) break
+      await splitNeeds(await run(`split ${round + 1}`, step('split'), FILL_SKILLS, DERIVE_EFFORT, { continues: true }))
+    }
+  }
+  // 6. Report (script) and clean-up.
+  const reported = lastJson((await run('report', step('report'), [], DSH_EFFORT, { cleanup: true }) || {}).output)
+  const reports = (reported && reported.models) || []
+  return batch.map(m => {
+    const r = reports.find(x => x.model === m.address)
+    const p = plans.find(x => x.model === m.address) || {}
+    if (skipped.has(m.address)) return { model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }
+    if (!r) return { model: m.address, status: 'failed', parts: [], charts: 0, issues: ['no report from the compiler'] }
+    const faults = Object.entries(r.faults || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`)
+    return {
+      ...r,
+      issues: [...(r.issues || []), ...(r.error ? [r.error] : []), ...faults, ...((r.todo || []).length ? [`still 待写: ${r.todo.join(', ')}`] : [])],
+      notes: [...(r.notes || []), ...(p.notes || [])], summary: p.summary,
+    }
+  })
+}
+const groupNo = (m) => Number(m.group) || Number(String(m.address).split('/')[1].split('|')[0]) || 0
+const elaborateAll = async (models, label) => {
+  const only = Array.isArray(A.only) && A.only.length ? new Set(A.only) : null
+  // A model whose level the run changes is never skipped.
+  const todo = models.filter(m => m.form !== 'theory').filter(m => !only || only.has(m.address)).filter(m => REBUILD || (LEVEL && m.level !== LEVEL) || !(m.parts > 0 && !m.issues))
+    .sort((a, b) => groupNo(a) - groupNo(b) || String(a.address).localeCompare(String(b.address)))
+  if (todo.length < models.length) log(`${label}: ${models.length - todo.length} of ${models.length} models already have their parts; skipped.`)
+  // Concept models are light (no Derivation round), so one batch takes more of them. A model with no
+  // level yet goes with the formal ones: its architect decides.
+  const concept = todo.filter(m => (LEVEL || m.level) === 'concept')
+  const formal = todo.filter(m => (LEVEL || m.level) !== 'concept')
+  const batches = []
+  for (let i = 0; i < concept.length; i += PER_CONCEPT) batches.push({ kind: 'concept', models: concept.slice(i, i + PER_CONCEPT) })
+  for (let i = 0; i < formal.length; i += PER_SONNET) batches.push({ kind: 'formal', models: formal.slice(i, i + PER_SONNET) })
+  log(`${label}: ${todo.length} models (${concept.length} concept, ${formal.length} formal or undecided) in ${batches.length} batches, one Sonnet architect each; up to ${DSH_PER_BATCH} DeepSeek runs at a time per batch.`)
+  const results = (await parallel(batches.map(b => () => compileBatch(b.models, b.kind).catch(error => { log(`batch ${b.models[0].address}: ${error}`); return null })))).flatMap((r, i) => r || batches[i].models.map(() => null))
+  const ordered = batches.flatMap(b => b.models)
+  return results.map((r, i) => r || { model: ordered[i].address, status: 'failed', parts: [], charts: 0, issues: ['no report from its batch'] })
+}
+// After a digest block: the Model Cards its DeepSeek runs wrote go to the model compiler.
+const elaborateBlock = async (block, managed) => {
+  const reports = (managed && managed.reports) || []
+  const groups = block.map(g => g.n).filter(n => {
+    const r = reports.find(x => x.group === n)
+    return r && r.status === 'done' && r.models !== 0
+  })
+  if (!groups.length) return []
+  const listed = await listModels(`-Groups ${groups.join(',')}`, `find models: groups ${groups[0]}-${groups[groups.length - 1]}`)
+  if (!listed || !listed.ok) { log(`Models for groups ${groups.join(',')}: listing failed (${listed && listed.error})`); return [] }
+  const reported = reports.filter(r => groups.includes(r.group)).reduce((s, r) => s + (r.models || 0), 0)
+  if (reported && !listed.models.length) log(`Models for groups ${groups.join(',')}: the runs reported ${reported} Model Cards but the listing found none; the whole-book sweep will pick them up.`)
+  return elaborateAll(listed.models, `groups ${groups[0]}-${groups[groups.length - 1]}`)
+}
+
+// A stage runs its blocks in parallel; with `after`, each block goes on to `after` as soon as its
+// own manager returns (a pipeline, not a barrier), so later stages overlap slower blocks.
+const runStage = async (stage, stageBlocks, after) => {
+  const stages = [(block, _item, b) => manage(block, b, stage)]
+  if (after) {
+    stages.push((managed, block) => Promise.resolve(after(block, managed))
+      .catch(error => { log(`${stage}: follow-up of groups ${block[0].n}-${block[block.length - 1].n} failed: ${error}`); return [] })
+      .then(extra => ({ managed, extra })))
+  }
+  const results = await pipeline(stageBlocks, ...stages)
+  const managed = results.map(r => (after ? r && r.managed : r))
+  const extras = after ? results.flatMap(r => (r && r.extra) || []) : []
+  const reports = []
+  stageBlocks.forEach((block, b) => {
+    const got = (managed[b] && managed[b].reports) || []
+    for (const g of block) {
+      reports.push(got.find(r => r.group === g.n) ||
+        { group: g.n, status: 'failed', cards: 0, links: 0, topics: [], errors: 'no report from its manager', deleted: false })
+    }
+  })
+  const failed = reports.filter(r => r.status !== 'done').map(r => r.group)
+  const calls = reports.map(r => r.tool_calls).filter(x => typeof x === 'number')
+  log(`${stage}: ${reports.reduce((s, r) => s + (r.cards || 0), 0)} cards, ${reports.reduce((s, r) => s + (r.links || 0), 0)} links; tool calls per group ${calls.join(', ') || 'n/a'}; failed ${failed.join(', ') || 'none'}`)
+  reports.extras = extras
+  return reports
+}
+
+// How many relations of each kind the model agents wrote, e.g. "rests-on 12, illustrates 3".
+const kindTally = (reports) => {
+  const tally = {}
+  for (const r of reports) for (const [kind, n] of Object.entries(r.kinds || {})) tally[kind] = (tally[kind] || 0) + n
+  return Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([kind, n]) => `${kind} ${n}`).join(', ') || 'no kinds reported'
+}
+const logModels = (reports) => {
+  const done = reports.filter(r => r.status === 'done')
+  const sum = (field) => done.reduce((s, r) => s + (r[field] || 0), 0)
+  const deriv = (field) => done.reduce((s, r) => s + ((r.derivations && r.derivations[field]) || 0), 0)
+  log(`Build: ${deriv('total')} Derivation parts in ${deriv('chains')} chains of two or more (longest ${done.reduce((m, r) => Math.max(m, (r.derivations && r.derivations.longest) || 0), 0)}), ${sum('split')} parts split by review or for the Card size, ${done.reduce((s, r) => s + ((r.moved || []).length), 0)} Cards moved into ranges, ${sum('shared')} shared parts taken in, ${sum('tolerated')} tolerated premises, ${sum('style')} style faults left, ${done.reduce((s, r) => s + ((r.todo || []).length), 0)} parts still 待写; ${dshJobs} DeepSeek jobs.`)
+  log(`Levels: ${done.filter(r => r.level === 'concept').length} concept models (level 1), ${done.filter(r => r.level === 'formal').length} formal models (level 2), ${done.filter(r => !r.level).length} without a level.`)
+  log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(p => p.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts), ${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
+}
+
+// --- Math stages (zt-math-digest only) -------------------------------------------------------------
+// math-compiler.ps1 does every structural step; DeepSeek writes JSON files and Card bodies; Haiku
+// drivers relay the jobs under the DeepSeek Subagent Managed Protocol (drive, above). Each stage has
+// its own DeepSeek workspace under math\, and its last step's cleanup deletes the conversations.
+const mathReports = {}
+const mstep = (s, more = '') => `pwsh -NoProfile -File "${MATH_COMPILER}" -Step ${s} -Staging "${OUT}"${more}`
+async function runMathScript(what, s, extra, phaseName) {
+  const run = await agent(
+    `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
+${mstep(s, extra)}
+Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
+    { label: `math: ${what}`, phase: phaseName, model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+  )
+  const out = run && run.ok ? lastJson(run.output) : null
+  if (!out) log(`math ${what} failed: ${run && run.output}`)
+  return out
+}
+const mathOpts = (stage, phaseName) => ({ dsh: `${MATH_WORK}\\${stage}`, skills: ['asd-ste100-zh'], effort: DSH_EFFORT, phase: phaseName, writes: `${MATH_WORK}\\${stage}\\out`, remove: 'delete', keep: true })
+async function runBoundary() {
+  phase('Boundary')
+  const o = mathOpts('boundary', 'Boundary')
+  const planned = await drive('boundary: write', { ...o, command: mstep('boundary', ` -UnitsPerJob ${UNITS_PER_JOB} -Supply ${SUPPLY}`) })
+  const plan = lastJson(planned && planned.output)
+  if (!plan) { await drive('boundary: clean up', { ...o, command: mstep('boundary-settle'), cleanup: true }); return { status: 'failed', error: (planned && planned.error) || 'no output' } }
+  const applied = lastJson(((await drive('boundary: apply and review', { ...o, command: mstep('boundary-apply', ` -Supply ${SUPPLY}`) })) || {}).output)
+  const settled = lastJson(((await drive('boundary: settle', { ...o, command: mstep('boundary-settle'), cleanup: true })) || {}).output)
+  log(`Boundary: ${plan.units} units; ${applied ? `${applied.created} parts made, ${applied.skipped_supplied} supplied items skipped` : 'apply failed'}; ${settled ? `${settled.deleted} wrong parts deleted, ${settled.kept} supplied parts kept` : 'settle failed'}.`)
+  return { status: applied && settled ? 'done' : 'failed', plan: { units: plan.units, jobs: (plan.jobs || []).length }, applied, settled }
+}
+async function runProof() {
+  phase('Proof')
+  const o = mathOpts('proof', 'Proof')
+  const planned = await drive('proof: review', { ...o, command: mstep('proof', ` -UnitsPerJob ${UNITS_PER_JOB}`) })
+  const plan = lastJson(planned && planned.output)
+  const applied = lastJson(((await drive('proof: apply', { ...o, command: mstep('proof-apply'), cleanup: true })) || {}).output)
+  log(`Proof: ${plan ? plan.units : '?'} results reviewed; ${applied ? `${applied.ok} steps ok, ${applied.fixed} fixed, ${applied.refused} refused` : 'apply failed'}.`)
+  return { status: plan && applied ? 'done' : 'failed', units: plan && plan.units, applied }
+}
+async function runTheory() {
+  phase('Theory')
+  const o = mathOpts('theory', 'Theory')
+  const planned = await drive('theory: write', { ...o, command: mstep('theory', ` -MainResults ${MAIN_RESULTS}`) })
+  const plan = lastJson(planned && planned.output)
+  const applied = lastJson(((await drive('theory: apply', { ...o, command: mstep('theory-apply', ` -MainResults ${MAIN_RESULTS}`), cleanup: true })) || {}).output)
+  log(`Theory: ${applied ? `${applied.theories} Theory Cards written (${applied.answered} answered by DeepSeek)` : 'apply failed'}.`)
+  return { status: plan && applied ? 'done' : 'failed', theories: plan && plan.theories, applied }
+}
+
+// --- Cards: the card layer cycle -----------------------------------------------------------------
+// card-compiler.ps1 does every structural step; DeepSeek writes JSON files; Haiku drivers relay the
+// jobs. work is the cycle's folder and DeepSeek workspace; it keeps state.json and report.json.
+const runCards = async (label, work, extra = '', only = '') => {
+  const cstep = (s, more = '') => `pwsh -NoProfile -File "${CARD_COMPILER}" -Step ${s} -Work "${work}" -Compact${more}`
+  const sessions = {}
+  let jobs = 0
+  const crun = async (what, command, opts = {}) => {
+    const r = await drive(`cards ${label}: ${what}`, {
+      command, dsh: work, skills: CARD_SKILLS, effort: DSH_EFFORT, sessions: opts.continues ? sessions : null,
+      cleanup: opts.cleanup, phase: 'Cards', writes: `${work}\\out`, remove: 'delete', keep: true,
+    })
+    for (const x of (r && r.results) || []) {
+      jobs++
+      if (x.session_id) sessions[x.id] = x.session_id
+    }
+    if (!r || !r.ok) log(`cards ${label} ${what}: ${(r && r.error) || 'no report from its driver'}`)
+    return r
+  }
+  const rules = only ? ` -Rules "${only}"` : A.cardRules ? ` -Rules "${A.cardRules}"` : ''
+  const max = A.cardMax ? ` -MaxCards ${A.cardMax}` : ''
+  const planned = await crun('plan', cstep('plan', ` -Book ${KEY} -Staging "${OUT}"${rules}${max}${extra}`))
+  const plan = lastJson(planned && planned.output)
+  if (plan) plan.jobs = expandJobs(plan)
+  if (!plan) return { status: 'failed', label, error: `plan failed: ${(planned && planned.error) || 'no output'}` }
+  log(`Cards ${label}: ${plan.picked} Cards of the book; ${plan.with_faults} with ${plan.faults} faults, ${plan.review} for review, ${plan.orphans} orphans; ${plan.jobs.length} DeepSeek jobs.`)
+  if (!plan.jobs.length) {
+    const reported = lastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
+    return { status: 'done', label, plan, report: reported }
+  }
+  // Apply in shares of APPLY_SHARE jobs until none is pending: one call writes a few hundred Cards
+  // at most, so it ends inside the step agent's 10-minute command limit (mascolell1995microeconomic:
+  // 226 jobs in one call ran past it, and the agent's end stopped the write part way).
+  const applyAll = async (what) => {
+    let r = null
+    for (let i = 0; i < 100; i++) {
+      r = lastJson(((await crun(i ? `${what}.${i + 1}` : what, cstep('apply', ` -MaxJobs ${APPLY_SHARE}`))) || {}).output)
+      if (!r || !r.pending_jobs) return r
+    }
+    return r
+  }
+  let applied = await applyAll('apply 1')
+  for (let round = 1; round <= CARD_FIX_ROUNDS; round++) {
+    const checked = lastJson(((await crun(`check ${round}`, cstep('check'), { continues: true })) || {}).output)
+    log(`Cards ${label} check ${round}: ${checked ? `${checked.faults} faults left, ${checked.jobs.length} follow-up jobs` : 'no output'}.`)
+    if (!checked || !checked.jobs.length) break
+    applied = await applyAll(`apply ${round + 1}`)
+  }
+  const reported = lastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
+  if (!applied) log(`Cards ${label}: an apply step failed; the cycle is marked failed.`)
+  if (reported) log(`Cards ${label}: faults ${reported.faults_before} → ${reported.faults_after} on ${reported.cards} Cards; verdicts ${JSON.stringify(reported.verdicts)}; ${reported.splits} splits, ${reported.merges} merge proposals, ${reported.refused} refused; ${reported.orphan_links} orphan Links (${reported.orphans_after} orphans left); ${jobs} DeepSeek jobs.`)
+  return { status: reported && applied ? 'done' : 'failed', label, plan, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from card-compiler.ps1 -Step apply' }) }
+}
+// After a digest block: its Idea Cards, Event Cards, and anchors (orphans wait for the link pass).
+const cardBlock = async (block) => {
+  const groups = block.map(g => g.n).join(',')
+  return runCards(`groups ${block[0].n}-${block[block.length - 1].n}`, `${OUT}\\cards-g${String(block[0].n).padStart(2, '0')}`, ` -Groups "${groups}" -Sample ${IDEA_SAMPLE} -NoOrphans`)
+}
+if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
+
+// --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
+// docs/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
+// most three parts), DeepSeek writes JSON, the script writes the Cards and refuses any change to 起点,
+// a step, or 结果. A refused part goes back to the same conversation once. No model is rebuilt.
+const runExplain = async () => {
+  phase('Models')
+  const work = `${OUT}\\explain`
+  const xstep = (s, extra = '') => `pwsh -NoProfile -File "${COMPILER}" -Step ${s} -Work "${work}" -Staging "${OUT}" ${LIMITS}${extra}`
+  let models = Array.isArray(A.only) && A.only.length ? A.only : null
+  if (!models) {
+    const listed = await listModels(`-All -CitationKey ${KEY}`, 'find models: explain')
+    if (!listed || !listed.ok) return { status: 'failed', error: `listing failed: ${listed && listed.error}` }
+    models = listed.models.filter(m => m.level !== 'concept').map(m => m.address)
+  }
+  if (!models.length) return { status: 'done', models: [] }
+  const sessions = {}
+  let jobs = 0
+  const xrun = async (what, command, opts = {}) => {
+    const r = await drive(`explain: ${what}`, {
+      command, dsh: work, skills: FILL_SKILLS, effort: DSH_EFFORT, sessions: opts.continues ? sessions : null,
+      cleanup: opts.cleanup, phase: 'Models', writes: `${work}\\out`, keep: true,
+    })
+    for (const x of (r && r.results) || []) {
+      jobs++
+      if (x.session_id) sessions[x.id] = x.session_id
+    }
+    if (!r || !r.ok) log(`explain ${what}: ${(r && r.error) || 'no report from its driver'}`)
+    return r
+  }
+  const planned = lastJson(((await xrun('plan', xstep('explain', ` -Models "${models.join(',')}"${A.explainMax ? ` -MaxParts ${A.explainMax}` : ''}`))) || {}).output)
+  if (!planned) return { status: 'failed', error: 'explain plan: no output from model-compiler.ps1' }
+  log(`Explain: ${planned.parts || 0} Derivation parts of ${models.length} models in ${(planned.jobs || []).length} DeepSeek jobs.`)
+  // The first apply writes what passes and sends refused parts back once (its follow-up jobs run in
+  // the same drive); the second apply writes the follow-ups' answers.
+  const first = lastJson(((await xrun('apply 1', xstep('explain-apply'), { continues: true })) || {}).output)
+  const second = first && (first.jobs || []).length ? lastJson(((await xrun('apply 2', xstep('explain-apply'))) || {}).output) : null
+  const reported = lastJson(((await xrun('report', xstep('explain-report'), { cleanup: true })) || {}).output)
+  const rows = (reported && reported.models) || []
+  const sum = (field) => rows.reduce((s, r) => s + (Number(r[field]) || 0), 0)
+  const refused = [...((first && first.refused) || []), ...((second && second.refused) || [])]
+  log(`Explain: ${sum('explained')} of ${sum('derivations')} Derivation parts have 思路 and 解读; ${(first ? first.applied : 0) + (second ? second.applied : 0)} written now, ${refused.length} refused, ${rows.reduce((s, r) => s + (r.blocked || []).length, 0)} blocked; ${jobs} DeepSeek jobs.`)
+  return { status: reported && first ? 'done' : 'failed', parts: planned.parts, applied: [first, second].filter(Boolean), refused, report: reported }
+}
+if (MODE === 'explain') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, explain: await runExplain() }
+
+let digestReports = []
+const cardReports = []
+let modelReports = []
+// The math skeleton (zt-math-digest only): after Prepare, before the term table and the digest.
+if (MODE === 'full') {
+  for (const [what, s, extra] of [['index', 'index', ''], ['docs', 'docs', ''], ['skeleton', 'skeleton', ' -Apply']]) {
+    const done = await runMathScript(what, s, extra, 'Prepare')
+    if (!done) return { stage: `math ${what}`, error: `math-compiler.ps1 -Step ${s} failed` }
+    mathReports[what] = done
+  }
+  log(`Math: ${mathReports.index.units} units (${JSON.stringify(mathReports.index.forms)}), ${mathReports.index.examples} examples, ${mathReports.index.exercises} exercises; skeleton ${mathReports.skeleton.created} units and ${mathReports.skeleton.theories} Theory Cards.`)
+  if (NOTATION) {
+    const nopts = { dsh: `${MATH_WORK}\\notation`, skills: ['asd-ste100-zh'], effort: DSH_EFFORT, phase: 'Prepare', writes: `${MATH_WORK}\\notation\\out`, remove: 'delete', keep: true }
+    await drive('notation: plan', { ...nopts, command: mstep('notation') })
+    mathReports.notation = lastJson(((await drive('notation: apply', { ...nopts, command: mstep('notation-apply', ' -Apply'), cleanup: true })) || {}).output)
+    log(mathReports.notation && mathReports.notation.ok ? `Notation table: ${mathReports.notation.symbols} symbols in ${mathReports.notation.card}.` : 'Notation table failed; the digest goes on without it.')
+  }
+}
+// The book term table (proposal 2): book-terms.ps1 finds the candidates, one DeepSeek job chooses the
+// terms and the words not to use, the script writes terms.md and the Card 术语表 before any digest run.
+const TERMS = MODE === 'full' && A.terms !== false
+let termReport = null
+if (TERMS) {
+  const termWork = `${OUT}\\terms`
+  const tstep = (s, more = '') => `pwsh -NoProfile -File "${SCRIPTS}\\book-terms.ps1" -Step ${s} -Staging "${OUT}"${more}`
+  const opts = { dsh: termWork, skills: ['asd-ste100-zh'], effort: DSH_EFFORT, phase: 'Prepare', writes: `${termWork}\\out`, remove: 'delete', keep: true }
+  const planned = await drive('terms: plan', { ...opts, command: tstep('plan') })
+  const applied = await drive('terms: apply', { ...opts, command: tstep('apply', ' -Apply'), cleanup: true })
+  termReport = lastJson(applied && applied.output)
+  log(termReport && termReport.ok ? `Term table: ${termReport.terms} terms (${termReport.with_avoid} with words not to use) in ${termReport.card}.` : `Term table failed: ${(applied && applied.error) || (planned && planned.error) || 'no output'}; the digest goes on without it.`)
+}
+if (MODE === 'full') {
+  phase('Digest')
+  log(`${groupCount} groups in ${KEY}; ${blocks.length} Haiku managers, up to ${PER_MANAGER} DeepSeek runs each${MODELS ? '; each block\'s Model Cards go to the model compiler as soon as the block finishes' : ''}.`)
+  // A block's models and its card cycle run side by side: the cycle never writes a Model Card or part.
+  const afterBlock = (MODELS || CARD_CHECKS) ? async (block, managed) => {
+    const [models, cards] = await Promise.all([
+      MODELS ? elaborateBlock(block, managed) : [],
+      CARD_CHECKS ? cardBlock(block).catch(error => ({ status: 'failed', error: String(error) })) : null,
+    ])
+    if (cards) cardReports.push(cards)
+    return models
+  } : null
+  digestReports = await runStage('digest', blocks, afterBlock)
+  modelReports = digestReports.extras
+  // No group done means a host fault (zt not on PATH, DeepSeek Harness unable to start pwsh), not a
+  // book fault: linking, organizing, and hubs on an empty book only spend tokens.
+  if (!digestReports.some(r => r.status === 'done')) {
+    const why = [...new Set(digestReports.map(r => r.errors).filter(Boolean))].slice(0, 3).join(' | ')
+    log(`Digest: every group failed; the run stops before the link pass. ${why}`)
+    return { mode: MODE, stage: 'digest', error: `every digest group failed: ${why}`, citation_key: KEY, digest: digestReports, terms: termReport, cards: { blocks: cardReports } }
+  }
+  // Sweep the whole book before linking: a block whose listing failed or missed a Model Card
+  // would otherwise leave it unelaborated without any error.
+  if (MODELS) {
+    const listed = await listModels(`-All -CitationKey ${KEY}`, 'find models: sweep')
+    if (!listed || !listed.ok) log(`Model sweep: listing failed (${listed && listed.error})`)
+    else {
+      const covered = new Set(modelReports.filter(r => r && r.status === 'done').map(r => r.model))
+      const missed = listed.models.filter(m => !covered.has(m.address))
+      if (missed.length) modelReports = modelReports.concat(await elaborateAll(missed, 'sweep'))
+    }
+    logModels(modelReports)
+  }
+}
+if (MODE === 'models') {
+  phase('Models')
+  const listed = await listModels(`-All -CitationKey ${KEY}`, 'find models: whole book')
+  if (!listed || !listed.ok) return { stage: 'models', error: listed && listed.error }
+  log(`${listed.models.length} Model Cards in the digest of ${KEY}.`)
+  modelReports = await elaborateAll(listed.models, 'whole book')
+  logModels(modelReports)
+}
+// A batch's cleanup deletes its own DeepSeek conversations; this sweep deletes any a failed batch left.
+const modelCleanup = (MODELS || MODE === 'models') && managerFolders.length ? await agent(
+  `Clean up after the batches of a ZET model stage (a batch deletes its own conversations; this catches a batch that failed). Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
+For each folder below: deepseek_list with that cwd (a workspace that is not found needs nothing); deepseek_delete every conversation there that is not running, and count them; then, when none is running, deepseek_remove_workspace with that cwd and delete_conversations true. Never archive a conversation.
+${managerFolders.join('\n')}
+Then delete what is left of those folders with one PowerShell call: ${managerFolders.map(f => `Remove-Item -LiteralPath "${f}" -Recurse -Force -ErrorAction SilentlyContinue`).join('; ')}
+Return late_deleted (the count) and folders (how many folders you handled).`,
+  {
+    label: 'cleanup model managers', phase: 'Models', model: 'haiku', effort: 'low',
+    schema: { type: 'object', properties: { late_deleted: { type: 'number' }, folders: { type: 'number' } }, required: ['late_deleted'] },
+  },
+) : null
+if (modelCleanup) log(`Model clean-up: ${modelCleanup.late_deleted} conversations deleted late.`)
+if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, models: modelReports, model_cleanup: modelCleanup }
+
+// --- Hubs: the hub compiler builds the Hub Cards of the whole agent Workspace ------------------------
+// A Haiku hub manager reads the survey and chooses the limits; hub-compiler.ps1 does every structural
+// step; DeepSeek plans the fields and writes each hub as JSON; Haiku drivers relay the DeepSeek jobs.
+const HUB_LIMITS = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' }, error: { type: 'string' }, survey: { type: 'string' },
+    limits: { type: 'object', properties: {
+      topic_min: { type: 'number' }, line_min: { type: 'number' }, max_lines: { type: 'number' }, max_groups: { type: 'number' },
+      min_reason: { type: 'number' }, neighbour_links: { type: 'number' }, field_min: { type: 'number' }, field_max: { type: 'number' }, per_job: { type: 'number' },
+    }, required: ['topic_min', 'line_min', 'max_lines', 'max_groups', 'min_reason', 'neighbour_links', 'field_min', 'field_max', 'per_job'] },
+    reasons: { type: 'string' },
+  },
+  required: ['ok', 'limits'],
+}
+const runHubs = async () => {
+  phase('Hubs')
+  const hstep = (s, extra = '') => `pwsh -NoProfile -File "${HUB_COMPILER}" -Step ${s} -Work "${HUB_WORK}"${extra}`
+  const manager = await agent(
+    `You are the hub manager of a ZET slip-box. Hub Cards are the ways into a subject: a topic hub for each large Topic tree, a line hub for each large branch, field hubs over related Topics, and one register. A script builds them; DeepSeek writes them. You choose the limits that decide which hubs the policy requires and how large a hub may be. You read no Card.
+1. Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
+${hstep('survey')}
+   Its last output line is compact JSON: topics, tree_cards, branch_cards, and neighbour_links (each a distribution: n, min, p25, median, p75, p90, max), hubs (counts per level), legacy (Idea Cards used as hubs), register. Put that line, unchanged, in survey. If the command fails, return ok=false with the error text; do not retry with other options.
+2. Choose the limits from the distributions with these rules, and round to whole numbers:
+   - topic_min (a Topic tree with this many Cards needs a topic hub): tree_cards.p25, but at least 5 and at most 12. A tree smaller than most trees needs no map.
+   - line_min (a branch with this many Cards needs a line hub): branch_cards.p90, but at least 6, at most 20, and never below topic_min.
+   - max_lines (the most member lines of one hub): tree_cards.p75, but at least 15 and at most 25. Luhmann's collective reference cards held at most about 25 references.
+   - max_groups: 7; 5 when max_lines is below 18.
+   - min_reason (the fewest characters of a line's reason): 8.
+   - neighbour_links (two trees with this many Links between them are neighbours): neighbour_links.median, but at least 2 and at most 6; 3 when n is 0.
+   - field_min: 3. field_max (the most Topics in one field): the square root of topics, but at least 6 and at most 15.
+   - per_job (Topic trees per DeepSeek writer job): 6 when tree_cards.median is 15 or less, 4 when it is 30 or less, else 2.
+3. Return ok=true, survey, limits, and reasons: one short sentence per limit that names the number from the survey it came from.`,
+    { label: 'hub manager: survey and limits', phase: 'Hubs', model: 'haiku', effort: 'low', schema: HUB_LIMITS },
+  )
+  if (!manager || !manager.ok) {
+    log(`Hubs: the survey failed (${manager && manager.error}).`)
+    return { status: 'failed', error: (manager && manager.error) || 'no report from the hub manager' }
+  }
+  const limits = { ...manager.limits, ...(A.hubLimits && typeof A.hubLimits === 'object' ? A.hubLimits : {}) }
+  log(`Hub limits from the Haiku hub manager: ${JSON.stringify(limits)}. ${manager.reasons || ''}`)
+  const sessions = {}
+  let jobs = 0
+  const hrun = async (what, command, opts = {}) => {
+    const r = await drive(`hubs ${what}`, {
+      command, dsh: HUB_WORK, skills: HUB_SKILLS, effort: HUB_EFFORT, sessions: opts.continues ? sessions : null,
+      cleanup: opts.cleanup, phase: 'Hubs', writes: `${HUB_WORK}\\out`, remove: 'delete', keep: true,
+    })
+    for (const x of (r && r.results) || []) {
+      jobs++
+      if (x.session_id) sessions[x.id] = x.session_id
+    }
+    if (!r || !r.ok) log(`hubs ${what}: ${(r && r.error) || 'no report from its driver'}`)
+    return r
+  }
+  const limitArg = JSON.stringify(limits).replace(/'/g, "''")
+  const written = await hrun('write', hstep('plan', ` -Limits '${limitArg}'${A.hubTrees ? ` -Trees "${A.hubTrees}"` : ''}${A.hubRebuild ? ' -Rebuild' : ''}`))
+  const plan = lastJson(written && written.output)
+  if (!plan) return { status: 'failed', limits, error: `plan failed: ${(written && written.error) || 'no output'}` }
+  const failedJobs = ((written && written.results) || []).filter(x => x.status !== 'done').map(x => x.id)
+  log(`Hubs: ${plan.tree_count ?? (plan.trees || []).length} Topic trees to write in ${plan.jobs.length} DeepSeek jobs (one is the field planner)${failedJobs.length ? `; failed jobs ${failedJobs.join(', ')}` : ''}.`)
+  let applied = lastJson(((await hrun('apply 1', hstep('apply'))) || {}).output)
+  let checked = null
+  for (let round = 1; round <= HUB_FIX_ROUNDS; round++) {
+    checked = lastJson(((await hrun(`check ${round}`, hstep('check'), { continues: true })) || {}).output)
+    log(`Hubs check ${round}: ${checked ? `${checked.hubs} hubs, ${checked.faults} faults, ${checked.jobs.length} fix jobs` : 'no output'}.`)
+    if (!checked || !checked.jobs.length) break
+    applied = lastJson(((await hrun(`apply ${round + 1}`, hstep('apply'))) || {}).output)
+  }
+  const reported = lastJson(((await hrun('report', hstep('report'), { cleanup: true })) || {}).output)
+  log(`Hubs: ${JSON.stringify((reported && reported.counts) || {})}; faults ${JSON.stringify((reported && reported.faults) || {})}; ${reported ? reported.mirror : '?'} mirror hubs; ${reported ? reported.missing_count : '?'} required hubs still missing; ${jobs} DeepSeek jobs.`)
+  // A crashed apply writes no hub of this run (acemoglu2000franchise: Topics 197 and 199 got none).
+  if (!applied) log('Hubs: an apply step failed; the stage is marked failed.')
+  return { status: reported && applied ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from hub-compiler.ps1 -Step apply' }) }
+}
+// --- Figures -------------------------------------------------------------------------------------
+// The book's figures in its Cards: a script, relayed by Haiku. The digest and model writers paste the
+// figures they discuss; this puts every figure a Card names but does not show yet into that Card, and
+// links the book's documents from the Literature Card. It runs after Organize, which rewrites bodies.
+const FIGURES = MODE === 'figures' || (MODE === 'full' && A.figures !== false)
+async function runFigures() {
+  phase('Figures')
+  const run = await agent(
+    `Run this PowerShell command once and wait for it (it may take several minutes); do nothing else:
+pwsh -NoProfile -File ${SCRIPTS}\\attach-figures.ps1 -CitationKey ${KEY} -Staging "${OUT}"${A.fileId ? ` -FileId ${A.fileId}` : ''} -Report "${OUT}\\figures-report.json" -Apply
+Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
+    { label: 'show figures', phase: 'Figures', model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+  )
+  const summary = run && run.ok ? lastJson(run.output) : null
+  log(summary ? `Figures: ${summary.shown} figures shown in ${summary.cards} Cards (${summary.figures} kept, ${summary.labelled} labelled); documents ${summary.literature ? 'linked' : 'already linked'}.` : `Figures failed: ${run && run.output}`)
+  return summary ? { status: 'done', ...summary } : { status: 'failed', error: run && run.output }
+}
+if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: await runFigures() }
+if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: await runAudit() }
+
+let hubReport = null
+if (MODE === 'hubs') {
+  hubReport = await runHubs()
+  if (!A.organize) return { mode: MODE, dsh_model: DSH_MODEL, hubs: hubReport }
+}
+
+// --- Math: Boundary and Proof (zt-math-digest only) ------------------------------------------------
+if (BOUNDARY) mathReports.boundary = await runBoundary()
+if (PROOF) mathReports.proof = await runProof()
+if (MODE === 'math') {
+  if (THEORY) mathReports.theory = await runTheory()
+  mathReports.check = await runMathScript('check', 'check', ` -Out "${OUT}"`, 'Audit')
+  return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, math: mathReports }
+}
+const NO_LINK = MODE === 'models' || MODE === 'hubs'
+// --- Link ----------------------------------------------------------------------------------------
+if (!NO_LINK) phase('Link')
+const linkPrep = NO_LINK ? { ok: true, pending: [] } : await agent(
+  `Prepare the cross-part link pass of a ZET book digest. Do exactly these steps.
+1. Run this PowerShell command (one call): pwsh -NoProfile -File ${SCRIPTS}\\prepare-link-pass.ps1 -Staging "${OUT}"
+   On a large book it takes several minutes. Run it in the foreground with timeout 600000 and wait for it; never in the background. If it fails because the ZT service is not up, run \`zt up\` once and run the command again. Its last line is JSON {"pending":[n…],"groups":[{"n","owned","done"}],"unowned","cards_all"}. If it fails, return ok=false with the error.
+2. ${MODE === 'link' ? usageStep : 'Skip this step.'}
+Return ok, pending (the "pending" array exactly), owned_total (sum of owned), unowned${MODE === 'link' ? ', usage_before' : ''}.`,
+  {
+    label: 'prepare link pass', phase: 'Link', model: 'haiku', effort: 'low',
+    schema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' }, error: { type: 'string' }, pending: { type: 'array', items: { type: 'number' } },
+        owned_total: { type: 'number' }, unowned: { type: 'number' }, usage_before: USAGE,
+      },
+      required: ['ok', 'pending'],
+    },
+  },
+)
+if (!linkPrep || !linkPrep.ok) {
+  log(`Link preparation failed: ${linkPrep && linkPrep.error}`)
+  return { stage: 'link-prepare', linkPrep, digestReports }
+}
+if (MODE === 'link') usageBefore = linkPrep.usage_before
+// Groups whose anchor already states its place in the book are skipped, so a rerun links only the rest.
+const pending = groups.filter(g => linkPrep.pending.includes(g.n))
+if (!NO_LINK) log(`Link pass: ${pending.length} of ${groupCount} groups pending; ${linkPrep.owned_total} owned Cards; ${linkPrep.unowned} unowned (hubs, structure Cards, Model parts).`)
+// A link run depends on no other: each Haiku manager starts LINK_PER_MANAGER runs at once.
+const LINK_PER_MANAGER = Math.min(DSMP_PER_MANAGER, Math.max(PER_MANAGER, A.linkPerManager || 8))
+const linkReports = pending.length ? await runStage('link', toBlocks(pending, LINK_PER_MANAGER)) : []
+// The Link check and the orphan pass on the whole book (proposal 6). In mode "full" the block cycles
+// have already fixed the book, so the check runs every hard rule: the link pass can add R2, R4, and
+// I2 faults to the Cards it extends. On an older book (mode "link") it keeps to L1 and L2.
+const linkCards = !NO_LINK && CARD_CHECKS ? await runCards('link check', `${OUT}\\cards-link`, '', MODE === 'full' ? '' : (A.cardRules || 'L1,L2')) : null
+
+// --- Math: Theory (zt-math-digest only): after the link pass, so the cited premises are complete ---
+if (THEORY && !NO_LINK) mathReports.theory = await runTheory()
+
+// --- Cleanup -------------------------------------------------------------------------------------
+if (!NO_LINK) phase('Cleanup')
+const cleanup = NO_LINK ? null : await agent(
+  `Clean up after a DeepSeek Harness batch. Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace,mcp__deepseek__deepseek_usage".
+1. deepseek_list with cwd "${OUT}". The managers deleted their own conversations; deepseek_delete every conversation still listed that is not running (a manager that failed left it), and count them. Never archive a conversation.
+2. When none is running: deepseek_remove_workspace with cwd "${OUT}" and delete_conversations true (the folder and its files stay on disk); workspace_removed=true when it succeeds.
+3. Delete the per-run scratch files with one PowerShell call and report the count it prints:
+   $f = Get-ChildItem -LiteralPath "${OUT}" -File | Where-Object { $_.Name -like '*calls*.json' -or $_.Name -like 'snapshot-g*.md' -or $_.Name -like 'link-g*.md' -or $_.Name -like 'allow-g*.txt' }; $f | Remove-Item; $f.Count
+   Delete nothing else (keep the book, prefixes, manifest, cards-all.md and owned-g*.txt).
+4. deepseek_usage with days=1; sum each field over the rows for the last day listed.
+Return late_deleted, workspace_removed, files_removed, usage_after.`,
+  {
+    label: 'cleanup DeepSeek', phase: 'Cleanup', model: 'haiku', effort: 'low',
+    schema: {
+      type: 'object',
+      properties: { late_deleted: { type: 'number' }, workspace_removed: { type: 'boolean' }, files_removed: { type: 'number' }, usage_after: USAGE },
+      required: ['late_deleted', 'workspace_removed', 'files_removed'],
+    },
+  },
+)
+
+let dshUsage = null
+if (usageBefore && cleanup && cleanup.usage_after) {
+  const b = usageBefore, a = cleanup.usage_after
+  const miss = a.input_cache_miss - b.input_cache_miss, hit = a.cached_read - b.cached_read
+  const runs = Math.max(1, (MODE === 'full' ? groupCount : 0) + linkReports.length)
+  dshUsage = {
+    input_cache_miss: miss, cached_read: hit, output: a.output - b.output,
+    calls: a.calls - b.calls, cost: Math.round((a.cost - b.cost) * 10000) / 10000,
+    cache_hit_rate: miss + hit > 0 ? Math.round((hit / (miss + hit)) * 1000) / 1000 : null,
+    per_run: { input: Math.round((miss + hit) / runs), output: Math.round((a.output - b.output) / runs), calls: Math.round(((a.calls - b.calls) / runs) * 10) / 10 },
+  }
+  log(`DeepSeek usage for this batch: ${JSON.stringify(dshUsage)}`)
+}
+
+// --- Organize ------------------------------------------------------------------------------------
+let organize = null
+if (MODE === 'full' || A.organize) {
+  const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]${r.level === 'concept' ? '（概念模型）' : r.level === 'formal' ? '（形式模型）' : ''}：${r.parts.map(p => `${p.facet}${p.emphasis === 'core' ? '（核心）' : ''} [[${p.address}]]`).join('、')}${r.issues.length ? `；未解决：${r.issues.join('；')}` : ''}${r.notes && r.notes.length ? `；建议：${r.notes.join('；')}` : ''}`).join('\n')
+  phase('Organize')
+  const groupLines = (MODE === 'full' ? digestReports : linkReports).map(r => `- 第 ${r.group} 组 [[${KEY}/${r.group}]]：${r.status}${r.cards ? `，${r.cards} 张` : ''}${r.models ? `，模型卡 ${r.models}` : ''}${r.events ? `，事件卡 ${r.events}` : ''}${r.topics && r.topics.length ? `；新主题：${r.topics.join('、')}` : ''}${r.errors && r.errors !== '无' ? `；问题：${r.errors}` : ''}`).join('\n')
+  const ORG = `${OUT}\\organize`
+  if (A.organize === 'legacy') {
+    organize = await agent(
+      `You are the final coordinator of a ZET book digest. DeepSeek agents have digested 《${A.bookTitle}》 group by group into the agent Workspace of the ZET slip-box, then added reasoned cross-part Links to their own Cards. Your job is to organize the whole card structure. Use the zettelkasten and zt skills (load them with the Skill tool first). Make every zt call through the helper script, not the mcp__zt__* tools (the conversation's MCP server may be an older zt): write a JSON array of calls and run it in one PowerShell command, e.g.
+  @'
+  [{"tool":"list_trees","arguments":{"workspace":"agent"}},{"tool":"search_cards","arguments":{"type":"model","workspace":"agent"}}]
+  '@ | pwsh -NoProfile -File "${HELPER}" -
+  Each output line is "N <json>", "N ok <address>", or "N error <reason>" (then a resume line); "@@N" in an argument is the address returned by call N. Batch many reads or writes per command. delete_card and move_card return a plan first; call again with the confirm text. Write all Card text in Chinese. Change only the agent Workspace; human Cards are read-only but you may link to them.
+
+  Book: Literature Card [[${KEY}]] (agent Workspace, Literature Zone). Its Direct-successor line [[${KEY}/1]] … [[${KEY}/${groupCount}]] holds one anchor Card per group, in book order; each anchor holds that part's central claim, a section index, and its place in the whole book.
+  Group reports:
+  ${groupLines}
+  ${modelLines ? `Structured models (a Sonnet architect planned each model's parts, facets, core parts, and kinded relations, and DeepSeek wrote them with charts; act on the architect's notes for Cards outside the model and for other Model Cards that should link a part to share it):\n${modelLines}\n` : ''}
+  Work in this order, reading cheaply (list_trees, get_tree excerpts; get_card only when you need a body):
+  1. Survey every agent tree (list_trees with workspace "agent", then get_tree each).
+  2. Merge duplicate or overlapping Topics: keep the clearer Topic, move_card the other's first Card (with its subtree) to the best free slot in the kept tree (plan first, then confirm with "move"), then delete the emptied Topic root (plan, then confirm with its address). Fix clearly misplaced Cards the same way. Never delete a Card that still has content.
+  3. Rewrite every agent Topic body: 2–3 sentences on the question it pursues, then Links to its 1–3 best entry Cards. Keep a line that links a Hub Card.
+  4. Do not write, rewrite, or retype Hub Cards (type hub), and do not write an Idea Card that lists a subject's Cards: the hub stage runs after you and builds every topic, line, and field hub and the register from the trees you leave. When you merge two Topics, leave their Hub Cards where they are; the hub stage merges them.
+  5. Write the book's structure Card as a Side successor of [[${KEY}/1]]: title = the book's central thesis as one sentence; body = the argument in reading order, one line per part linking its anchor and its 1–2 key Topic Cards, each line saying what it contributes and how it follows from the previous part; then a paragraph listing the book's Model Cards (search_cards with type "model") in order, one line each on what the model shows, its level (概念模型 or 形式模型), and which later models build on it, and a paragraph listing its Event Cards (type "event") with the ideas each supports.
+  5a. Read each model's build report: run get_model on every Model Card and read \`level\` and \`build\`. Each Model Card has an elaboration level: \`concept\` (level 1: the Model Card and at most four parts in words, no Derivation parts) or \`formal\` (level 2: a self-sufficient model). A formal model is self-sufficient when \`build.closure\`, \`build.forward\`, and \`build.unanchored\` are empty; a concept model also needs an empty \`build.beyond_level\`; tolerated premises of shared parts are not faults. Do not change a model's level; report a level that looks wrong. Re-point each outside Card that a model manager named in its notes (a Card whose content a new part of the model now states): that Card links the new part, with its kind word. Check that each model with shared parts takes them in through its Model Card's 结构 list. Do not insert or move Cards inside a model's range.
+  5b. Check Model and Event Cards: each model the book sets out has exactly one Model Card (merge duplicates; set type "model" on a Card that states a whole model but is typed idea); run get_model on every Model Card and fix each reported issue (a part that belongs to no model: link it from its Model Card's 结构 list), but keep the structure the architect planned (its facets, core and aside parts, kinded relations, and loose parts). A part belongs to the Model Card it is filed under and to every Model Card that links it, so where two models of the book share a part (a correspondence, a common setting), link it from the second Model Card's 结构 list rather than writing a duplicate. Every Card that derives, interprets, applies, extends, or criticises a model links to its Model Card, or better to the Model part it concerns (a critique of an assumption links the part that states it), and the word right before the Link names the kind of relation, which ZT reads: 依赖/基于 (rests on), 例示/案例 (illustrates), 对照/区别 (contrasts), 放宽/推广 (relaxes), 对应/类比 (corresponds), 反驳/批评 (objects). Read each model's neighbours in get_model, rewrite those that read "refers" but state a real relation so the kind word stands right before the Link, then search for discussions that miss the model; every Card that uses a real-world event as evidence links to its Event Card.
+  6. Rewrite the Literature Card [[${KEY}]] body (edit_card body only) as the book's index: one line per chapter, "第N章 章名 - 讲了什么 → [[anchor]]", then a line linking the structure Card. Keep its last line "原书文档：…" (Document links such as [原书 PDF](scholar:85) that open the book's PDF and Markdown) exactly as it is.
+  6a. A line \`![图 2.C.1](artifact:<sha256>)\` in a Card shows the book's own figure; when you rewrite or merge a Card, keep each such line exactly, next to the text that discusses the figure.
+  7. Check the cross-part Links the DeepSeek agents added: keep those whose sentence states a real relationship and reason; rewrite vague ones. Add Links still missing between Topics that share a mechanism, and to related human Cards (search_cards with workspace "human"). Remove a "# 标题" line that repeats the title at the top of a body.
+  8. Check list_broken_links and fix any in the agent Workspace.
+  Return a short Chinese report: the final agent Topics (address and name), merges and moves done, the structure Card address, link counts added or rewritten, and anything left for the user.`,
+      { label: 'organize card structure', phase: 'Organize', model: 'opus' },
+    )
+  } else {
+    // 1. The survey: a script lists what Opus must decide (docs/digest-card-layers-proposal.md, proposal 8).
+    const surveyed = await agent(
+      `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
+pwsh -NoProfile -File "${SCRIPTS}\\organize-survey.ps1" -Staging "${OUT}" -Work "${ORG}"
+Return ok (true when it exits without an error) and output = its last output line exactly, or the error text. Do not retry.`,
+      { label: 'organize: survey', phase: 'Organize', model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+    )
+    const survey = surveyed && surveyed.ok ? lastJson(surveyed.output) : null
+    if (!survey) log(`Organize: the survey failed (${surveyed && surveyed.output}).`)
+    // 2. Opus decides; it writes decisions.json and nothing else.
+    const decided = survey ? await agent(
+      `You decide the structure of the ZET digest of 《${A.bookTitle}》 (Literature Card [[${KEY}]], anchors [[${KEY}/1]] … [[${KEY}/${groupCount}]]). Scripts and DeepSeek do every edit; you only decide. You make no zt write.
+Read ${ORG}\\survey.md first (Read tool). It lists the book's Topics, the duplicate candidates, small Topics, Card merge proposals, the models with faults, broken Links, and missing hubs. When a decision needs a Card's text, read it through the helper (read-only calls only: get_card, get_tree, get_model, search_cards), e.g.
+@'
+[{"tool":"get_tree","arguments":{"tree":"62"}},{"tool":"get_card","arguments":{"at":"62/1"}}]
+'@ | pwsh -NoProfile -File "${HELPER}" -
+${modelLines ? `The architect's notes on the book's models (Cards outside a model that should link a part of it):\n${modelLines}\n` : ''}
+Decide, then write ${ORG}\\decisions.json (UTF-8, Write tool) with exactly these fields:
+- "thesis": the book's central thesis as one Chinese sentence of at most 40 characters. It becomes the title of the structure Card.
+- "merges": Topic merges, [{"drop": "<n>/0", "keep": "<m>/0", "under": "<a Card of the kept Topic>", "reason": "…"}]. Merge only two agent Topics that pursue the same question. "under" is the Card under which the dropped Topic's Cards fit best (default: the kept Topic's first Card).
+- "moves": Cards that sit in the wrong place, [{"at": "<Card>", "under": "<new parent>", "reason": "…"}]. Only Idea and Event Cards of Topic trees; never a Model Card, a Model part, a Hub Card, or a Literature tree Card.
+- "notes": Card-level work for DeepSeek, [{"address": "<Card>", "note": "<one Chinese sentence: what to change>"}]: a Card that should link a model part (the architect's notes), a Card whose Link reads as a plain reference but states a real relation, a Card that should link an Event Card. Only Idea Cards, Event Cards, and anchors.
+Use empty lists where nothing needs doing. Do not plan Hub Cards: the hub stage runs after you. Do not rewrite the Literature Card, the structure Card, or Topic bodies: a script and DeepSeek write them after your decisions.
+Return thesis, merges, moves, notes (the counts), and report: a short Chinese report of what you decided and what you leave for the user.`,
+      {
+        label: 'organize: decisions', phase: 'Organize', model: 'opus',
+        schema: { type: 'object', properties: { thesis: { type: 'string' }, merges: { type: 'number' }, moves: { type: 'number' }, notes: { type: 'number' }, report: { type: 'string' } }, required: ['thesis', 'report'] },
+      },
+    ) : null
+    // 3. A script carries out the merges and moves.
+    const applied = decided ? await agent(
+      `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
+pwsh -NoProfile -File "${SCRIPTS}\\organize-apply.ps1" -Work "${ORG}"
+Return ok and output = its last output line exactly, or the error text. Do not retry.`,
+      { label: 'organize: apply', phase: 'Organize', model: 'haiku', effort: 'low', schema: { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] } },
+    ) : null
+    const moved = applied && applied.ok ? lastJson(applied.output) : null
+    if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused` : `apply failed (${applied && applied.output})`}; ${decided.notes || 0} notes.`)
+    // 4. The notes go to DeepSeek as a card cycle. In mode "full" it checks every hard rule (the script
+    // adds N1), so a note that makes a Card too long or adds a bare Link is fixed in the same cycle;
+    // on an older book it keeps to N1.
+    const notes = decided && decided.notes ? await runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
+    // 5. The skeleton: the Literature Card index, the structure Card, the Topic bodies.
+    const SK = `${OUT}\\skeleton`
+    const kstep = (s, more = '') => `pwsh -NoProfile -File "${SCRIPTS}\\book-skeleton.ps1" -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`
+    const kopts = { dsh: SK, skills: ['asd-ste100-zh'], effort: DSH_EFFORT, phase: 'Organize', writes: `${SK}\\out`, remove: 'delete', keep: true }
+    await drive('organize: skeleton', { ...kopts, command: kstep('plan') })
+    const sk = lastJson(((await drive('organize: skeleton apply', { ...kopts, command: kstep('apply', ` -Decisions "${ORG}\\decisions.json" -Apply`), cleanup: true })) || {}).output)
+    log(sk && sk.ok ? `Organize: structure Card ${sk.written && sk.written.structure} ("${sk.thesis}"), ${sk.argument} argument lines, ${sk.models} models, ${sk.events} events, ${sk.topics} Topic bodies.` : `Organize: the skeleton failed: ${JSON.stringify((sk && sk.problems) || 'no output')}`)
+    organize = { survey, decisions: decided, applied: moved, notes: notes && notes.report, skeleton: sk }
+  }
+}
+const figures = FIGURES && MODE !== 'figures' ? await runFigures() : null
+// The hub stage runs last, on the trees as Organize left them.
+if (HUBS && MODE !== 'hubs') hubReport = await runHubs()
+// The audit runs last, on the Cards as every other stage left them.
+const audit = AUDIT ? await runAudit() : null
+if (AUDIT && KEY) mathReports.check = await runMathScript('check', 'check', ` -Out "${OUT}"`, 'Audit')
+
+return {
+  mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: blocks.length,
+  digest: digestReports.map(r => ({ group: r.group, status: r.status, cards: r.cards, tool_calls: r.tool_calls ?? null })),
+  models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: r.parts.length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
+  model_cleanup: modelCleanup,
+  link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
+  terms: termReport, cards: { blocks: cardReports, link: linkCards },
+  deepseek_usage: dshUsage, cleanup, organize, figures, hubs: hubReport, audit, math: mathReports,
+}

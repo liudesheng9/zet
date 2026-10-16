@@ -9,7 +9,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
 - Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Table to lay related Cards from anywhere side by side, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
-- Mark a Regular Card as an Event Card (one real-world event) or a Model Card (one whole model); the other Cards that cite it link to it.
+- Mark a Regular Card as an Event Card (one real-world event), a Finding Card (one empirical result from a source), or a Model Card (one whole model); the other Cards that cite it link to it.
 - Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
 - Let coding agents work in the agent Workspace through the `zt mcp` server, with read-only access to yours.
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
@@ -197,7 +197,10 @@ Every Card has a **Card type**. Most Cards are **Idea Cards** (`idea`, the defau
 your own words. A Regular Card may instead be
 
 - an **Event Card** (`event`): one event that happened in the real world (what, when, where,
-  who, and the source that reports it), with no interpretation in its description; or
+  who, and the source that reports it), with no interpretation in its description;
+- a **Finding Card** (`finding`): one empirical result from a source, in six labelled lines
+  (`测量` what was measured, `数据` the sample, period, and place, `方法`, `结果` the one result with
+  its size or direction, `局限`, `来源`); see `docs/finding-cards-design.md`; or
 - a **Model Card** (`model`): one whole model (question, setup, assumptions, timing and
   one part of a model (see Model structure).
 
@@ -207,12 +210,12 @@ with the Card when it moves, when Side successors are compacted, and when a Cita
 renamed; it changes nothing else about the Card. Archives created before 0.5.0 are upgraded on
 `zt up`, with every Card an Idea Card.
 
-- **Session**: the Card view shows `[event]` or `[model]` after the Location; `ty event`,
+- **Session**: the Card view shows `[event]`, `[finding]`, or `[model]` after the Location; `ty event`, `ty finding`,
   `ty model`, or `ty idea` sets the type of the current Regular Card.
-- **GUI**: Event and Model Cards carry an EVENT or MODEL stamp on the Reader card, in the map,
+- **GUI**: Event, Finding, and Model Cards carry an EVENT, FINDING, or MODEL stamp on the Reader card, in the map,
   and in search results, and each desk stack counts them; the writing desk of a Regular Card has a
   type selector, and the command bar takes `ty`.
-- **MCP**: `create_successor` and `edit_card` take `type` (`idea`, `event`, or `model`;
+- **MCP**: `create_successor`, `insert_card`, and `edit_card` take `type` (`idea`, `event`, `finding`, `model`, or `hub`;
   `edit_card` accepts it alone), `get_card`, `get_tree`, and `search_cards` report it, and
   `search_cards` filters by `type`, with an empty `query` listing every Card of that type.
 - **Dump**: `archive.json` lists the non-Idea Cards under `types`.
@@ -243,7 +246,7 @@ structure**:
 ZT computes each model's structure from Locations, facets, and Links; nothing but the facet and
 emphasis is stored. Neither the Model Card nor its parts must link each other; `get_model` reports
 only a part that belongs to no model. A Model Card with parts cannot be retyped until its parts
-are changed, moved, or no longer linked. See `doc/open-models-design.md`.
+are changed, moved, or no longer linked. See `docs/open-models-design.md`.
 
 - **Session**: a part shows `[model · <facet>]` (and its emphasis); `ty model <facet>` makes the
   current Card a part (the facet is the rest of the line), and `ty model` alone makes it a Model
@@ -267,7 +270,7 @@ are changed, moved, or no longer linked. See `doc/open-models-design.md`.
 ### Elaboration levels
 
 Each Model Card carries its model's **elaboration level** (zt 0.13.0,
-`doc/model-elaboration-levels-design.md`):
+`docs/model-elaboration-levels-design.md`):
 
 - **Level 1, `concept`**: a **concept model**, stated in words or a diagram (a mechanism, a
   typology, a framework). Its Model Card and at most a few parts state the question, the mechanism,
@@ -284,7 +287,7 @@ Each Model Card carries its model's **elaboration level** (zt 0.13.0,
 ### Self-sufficient models
 
 A reader should be able to rebuild a formal model from nothing, reading only its own Cards in **build
-order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
+order** (zt 0.12.0, `docs/self-sufficient-models-proposal.md`):
 
 - **Build order**: the Model Card's first Side successor is the setting (agents, timing,
   information, a symbol table, and a `术语表` term table); its Direct successors are the **main
@@ -339,7 +342,7 @@ it; after Organize, `scripts/book-digest/attach-figures.ps1` puts each figure in
 book that names it but does not show it yet, and links the book's PDF and Markdown from its
 Literature Card (mode `figures` runs only this step on an earlier digest). Last, the hub stage
 builds the Hub Cards of the whole agent Workspace (see *Hub Cards*). See
-[doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
+[docs/zt-book-digest-workflow.md](docs/zt-book-digest-workflow.md).
 
 ### Hub Cards
 
@@ -354,7 +357,7 @@ still needs; `get_card` names the hubs that list a Card. The GUI draws a hub as 
 tab stands further left the wider its subject is, and shows above every Card the hubs it can climb
 to. The book digest's hub stage writes them: a Haiku hub manager chooses the limits from a survey,
 DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1` builds
-and checks the Cards. See [doc/hub-cards-design.md](doc/hub-cards-design.md).
+and checks the Cards. See [docs/hub-cards-design.md](docs/hub-cards-design.md).
 
 ## The MCP server
 
@@ -434,7 +437,7 @@ zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` dis
 `scholar_archive_read` (any of the archive's read tools), `scholar_archive_sql`,
 `scholar_archive_file` (Markdown comes back as text, PDFs as a cached path), and
 `scholar_archive_export`. They do not need the ZET service to be up. The protocol is in
-[doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md).
+[docs/scholar-archive-bridge-design.md](docs/scholar-archive-bridge-design.md).
 
 ### Figures from the archive
 

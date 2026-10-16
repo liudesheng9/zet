@@ -925,7 +925,7 @@ impl App {
         let location = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError(
-                    "only Regular Cards can be Event, Model, or Hub Cards".to_string(),
+                    "only Regular Cards can be Event, Finding, Model, or Hub Cards".to_string(),
                 ));
             }
             "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
@@ -1614,7 +1614,7 @@ fn workspace_field(body: &Value) -> Result<Workspace> {
         .map_or(Ok(Workspace::Human), Workspace::parse)
 }
 
-/// An optional Card type: `idea`, `event`, or `model`.
+/// An optional Card type: `idea`, `event`, `finding`, `model`, or `hub`.
 fn type_field(body: &Value) -> Result<Option<CardType>> {
     body.get("type")
         .and_then(Value::as_str)
