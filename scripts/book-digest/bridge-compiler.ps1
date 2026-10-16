@@ -77,7 +77,7 @@ function Read-Zt($Calls) {
         $done=@($chunks|ForEach-Object -ThrottleLimit 6 -Parallel {
             . (Join-Path $using:root 'zt-calls.ps1')
             $part=$_
-            try{$values=@(Invoke-Zt $part.calls);@{i=$part.i;values=$values;error=''}}catch{@{i=$part.i;values=@();error=$_.Exception.Message}}
+            try{$values=@(Invoke-Zt $part.calls);@{i=$part.i;values=$values;error=''}}catch{@{i=$part.i;values=@();error=$_.Exception.Message}}finally{Close-ZtServer}
         })
         $ordered=[object[]]::new($Calls.Count)
         foreach($part in $done){

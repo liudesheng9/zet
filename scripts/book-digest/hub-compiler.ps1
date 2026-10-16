@@ -477,8 +477,9 @@ function Step-Check {
     }
     foreach ($a in $State.fields.Values) { $hubs += @{ address = $a; tree = 'field' } }
     if ($State.register) { $hubs += @{ address = $State.register; tree = 'field' } }
-    $args = Get-LimitArgs $limits
-    $reports = if ($hubs.Count) { @(Invoke-Zt @($hubs | ForEach-Object { @{ tool = 'get_hub'; arguments = $args + @{ at = $_.address } } })) } else { @() }
+    # Not $args: inside ForEach-Object that name is the block's own (empty) automatic variable.
+    $limitArgs = Get-LimitArgs $limits
+    $reports = if ($hubs.Count) { @(Invoke-Zt @($hubs | ForEach-Object { @{ tool = 'get_hub'; arguments = $limitArgs + @{ at = $_.address } } })) } else { @() }
     $byTree = [ordered]@{}
     $total = 0
     for ($i = 0; $i -lt $hubs.Count; $i++) {

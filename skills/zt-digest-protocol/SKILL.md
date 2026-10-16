@@ -105,7 +105,7 @@ The SELF-CHECK commands per task:
 1. **Generate, do not copy.** Write `make-<name>-workflow.mjs` like `make-math-workflow.mjs`: read `zt-book-digest.js`, apply exact-match edits (each must match once), write `.claude/workflows/zt-<name>-digest.js`. Shared stages stay the book digest's own text. Rerun the generator after every change to the base.
 2. **A new stage is a compiler** (section 2): a `.ps1` with plan, precheck, apply, check, report; a `dsh-<name>-*.zh.md` instruction file with a 自查 section; a `SELF-CHECK:` line in every job file; JSON answers applied by the script.
 3. **New rules go into zt-check** (`tools/zt-check/src/check.rs`) with a unit test, so every agent gets them.
-4. **Tests**: a compiler test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and a workflow harness (`tests/workflow-harness.mjs`, `tests/math-workflow-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
+4. **Tests**: `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs every test file and harness in parallel. A new compiler gets a test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and a workflow harness (`tests/workflow-harness.mjs`, `tests/math-workflow-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
 5. **Approvals and docs**: add the new read-only commands to the manager approval lines; document the stage in `docs/`.
 6. **Pilot** on one model or one chapter (`only`, `explainMax`, `cardMax`, `hubTrees`), with a database backup first, before any whole-book run.
 

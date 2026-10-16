@@ -132,7 +132,7 @@ Modes: the base modes plus `models`, `explain`, `math`.
 ## Changing a digest
 
 1. Change a module (`scripts/book-digest/workflow/modules/*.js`; raise its version when its behaviour changes), a compiler script, or a blueprint (raise its version; update the `preflight` lines it touches).
-2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (`tests/event-compiler.tests.ps1`, `tests/finding-compiler.tests.ps1`).
+2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (`tests/event-compiler.tests.ps1`, `tests/finding-compiler.tests.ps1`). `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs all of them in parallel.
 3. Install (project scope) and verify, in PowerShell:
 
 ```powershell

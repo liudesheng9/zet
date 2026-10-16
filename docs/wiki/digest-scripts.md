@@ -114,7 +114,7 @@ flowchart TD
 
 Two ways reach the archive:
 
-- **Reads and simple writes** go through `Invoke-Zt` (`zt-calls.ps1`), which pipes a JSON array of calls into the helper and returns each read result as an object.
+- **Reads and simple writes** go through `Invoke-Zt` (`zt-calls.ps1`), which returns each read result as an object. A batch of only read calls (`list_trees`, `get_tree`, `get_card`, `get_model`, `get_hub`, `list_hubs`, `list_links`, `list_broken_links`, `search_cards`, `list_workspaces`) goes straight to one long-lived `zt mcp` per PowerShell process or runspace (direct reads). Any other batch pipes into the helper, which keeps the allow-list, `@@N`, the logs, and the Topic gate. Direct reads save the start of a `pwsh` and a `zt mcp` (about 0.8 s) per call. They need the line `zt-calls: direct reads` in the helper, so a test's replacement helper (the fault and race seams) still sees every call. `ZT_CALLS_DIRECT=0` turns them off. A parallel block that loads `zt-calls.ps1` calls `Close-ZtServer` at its end.
 - **Writes that need the helper's options** (`-Log`, `-SrcLog`, `-Moves`, or per-call results) pipe calls into `$script:ZtHelper` directly and parse the `N ok <address>` lines: `Invoke-Writes` in `card-compiler.ps1`, `Invoke-Write` in `model-compiler.ps1`, `hub-compiler.ps1`, `math-compiler.ps1`, `Invoke-Calls` in `organize-apply.ps1`, and the apply steps of `book-terms.ps1`, `book-skeleton.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`. `prepare-book-digest.ps1` runs the helper itself (it does not load `zt-calls.ps1`).
 
 The stage order (from [Digest workflows](digest-workflows.md)) and the script each stage runs:
@@ -623,7 +623,15 @@ Follow `event-compiler.ps1` or `finding-compiler.ps1` (about 250 lines each):
 
 ## Testing
 
-The tests are standalone PowerShell 7 scripts in `scripts/book-digest/tests/`; there is no runner and no CI. Run each one from the repository root:
+The tests are standalone PowerShell 7 scripts and Node harnesses in `scripts/book-digest/tests/`. There is no CI. Run them all, in parallel, from the repository root:
+
+```powershell
+pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1
+```
+
+`run-all.ps1` starts up to `-Throttle` files at once (default: the processor count, 2 to 8). Each file makes its own scratch archive with its own `ZT_CONFIG_DIR` and `ZT_GUI_PORT=0`, so the files do not share state. It prints one line per file (exit code, seconds, `ok` count), keeps each output in `-Logs`, and exits 1 when a file fails. `-Only bridge-compiler,digest-audit` runs a subset, `-Zt <zt.exe>` goes to every file that declares `-Zt`, and `-Sequential` runs one at a time. On 2026-10-16 the 26 files took 141 s of wall clock in parallel, against about 25 minutes one by one.
+
+Each file also runs alone:
 
 ```powershell
 pwsh -NoProfile -File scripts\book-digest\tests\zt-check.tests.ps1
@@ -714,6 +722,7 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 ## Change history
 
 
+- `2026-10-16` — Faster tests. `tests/run-all.ps1` runs every test file and harness in parallel (141 s instead of about 25 min). `zt-calls.ps1` sends batches of read calls to one long-lived `zt mcp` (direct reads), with the helper's output and stop-at-first-error rule. The digest audit, the link-pass preparation, and the Bridge compiler close the server at the end of each parallel block. `hub-compiler.ps1 -Step check` now passes the chosen hub limits to `get_hub`: it used `$args` inside `ForEach-Object`, which is that block's own empty automatic variable, so every hub was checked with the default limits. The helper had hidden this by unwrapping the one-element array.
 - `2026-10-16` — Fast Bridge apply. `bridge-compiler.ps1 -Step apply` reads the tree index once, only the trees of the carriers and targets, and the Cards in one batched `get_card`; it prepares every intent from one read, sends all guarded edits in one helper call (resuming after a failure, a target carrier first, one retry with a fresh base when only generated text changed), then reads once and verifies. The same 7 ids took 36 s on an 8,052-Card copy instead of about 7 min, with an identical result.
 - `2026-10-16` — Bridge review fixes. `bridge-compiler.ps1`: term matches per source (term-table terms in the source, a model's or unit's name); BR5 takes the kind word with or without a space; a Model Card carrier takes no evidence word; one relation per pair; R6 falls back to the book term table; apply checks the carrier for L1 and L2 as an Idea draft, compares model shape with the state just before the edit, drops a stale saved intent, and marks every id of a blocked carrier `blocked`; a compact summary line; `report.md` shows the book title, a column per Relation kind, and source titles. `digest-audit.ps1`: the `finding` category in `no_source`, `unkinded`, and the card cycle; `bridges` with `complete`, `peers`, and `island`; the Islands row and the Semantic Bridges line in `audit.md`. `card-compiler.ps1`: `finding` is writable, F4 orphans get Idea Card candidates. `book-of.ps1` breaks attribution ties as the old audit did. `tests/bridge-human.tests.ps1` seeds its scratch database with `node:sqlite` and needs no Python.
 - `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.

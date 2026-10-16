@@ -80,7 +80,7 @@ $chunks = for ($w = 0; $w -lt $workers; $w++) { , @(for ($i = $w; $i -lt $agentC
 $calls = Join-Path $PSScriptRoot 'zt-calls.ps1'
 $read = $chunks | Where-Object { $_.Count } | ForEach-Object -ThrottleLimit $workers -Parallel {
     . $using:calls
-    @(Invoke-Zt @($_ | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))
+    try { @(Invoke-Zt @($_ | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } })) } finally { Close-ZtServer }
 }
 foreach ($card in @($read)) { $bodies[$card.address] = $card }
 if ($bodies.Count -ne $agentCards.Count) { throw "read $($bodies.Count) of $($agentCards.Count) agent Cards" }

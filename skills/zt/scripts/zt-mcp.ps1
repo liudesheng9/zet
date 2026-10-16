@@ -38,6 +38,11 @@
   when a Topic has the same title (spaces and punctuation removed) or a very similar one (character
   bigram similarity of -TopicSimilarity, 0.8, or more). The refusal names that Topic, so the run
   can file its Card there instead. The lock lasts until the new Topic exists.
+
+  zt-calls: direct reads. scripts/book-digest/zt-calls.ps1 sends batches of read-only calls
+  straight to one long-lived `zt mcp` and reproduces this helper's read output (`N <compact JSON>`)
+  and its stop-at-first-error rule. Keep the two the same. A replacement helper without this line
+  (a test seam) gets every call.
 #>
 [CmdletBinding(DefaultParameterSetName = 'File')]
 param(

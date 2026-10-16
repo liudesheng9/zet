@@ -38,8 +38,7 @@ Build, install, test, and run:
 cargo install --path . --locked
 cargo test --all-targets
 cd tools/zt-check && cargo test
-pwsh -NoProfile -File scripts/book-digest/tests/zt-check.tests.ps1
-node scripts/book-digest/tests/framework-harness.mjs
+pwsh -NoProfile -File scripts/book-digest/tests/run-all.ps1
 zt config set archive_root "<data-directory>"
 zt up
 zt

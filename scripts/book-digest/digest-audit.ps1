@@ -87,6 +87,7 @@ function Read-Many($calls) {
             # One failing call stops the helper: read the chunk again call by call.
             $r = foreach ($c in $part.calls) { try { @(Invoke-Zt @($c))[0] } catch { $null } }
         }
+        Close-ZtServer
         @{ i = $part.i; r = @($r) }
     }
     $results = [object[]]::new($calls.Count)
