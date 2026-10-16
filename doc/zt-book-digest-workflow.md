@@ -41,10 +41,25 @@ flowchart LR
 | **Cards** (beside Models) | Haiku relays DeepSeek jobs of `card-compiler.ps1` | After each digest block: the script checks the block's Idea Cards, Event Cards, and anchor (Card language and the I, E, L rules); DeepSeek rewrites the Cards with faults, and reviews a sample (`ideaSample`) against the source, as JSON files; the script checks each rewrite (every Link, figure, and formula kept) and writes it, checks again, and sends what is left back once. It never writes a Model Card or part. | Cleaner Cards, `cards-gNN\report.json` |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Link check** | the same cycle on the whole book | Rules L1 and L2 on the Links of the link pass, and the orphan pass: each Card that no other Card links gets a reasoned Link from a related Card. | `cards-link\report.json` |
-| **Cleanup** | Haiku | Archives the DeepSeek conversations and removes scratch files; reports DeepSeek token use. | — |
+| **Cleanup** | Haiku | Deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files; reports DeepSeek token use. | — |
 | **Organize** | a script, Opus, scripts, DeepSeek | `organize-survey.ps1` lists what to decide: duplicate Topics, small Topics, merge proposals, model faults. Opus writes only `decisions.json`: the thesis, Topic merges, moves, and notes for single Cards. `organize-apply.ps1` carries out the merges and moves; a card cycle carries out the notes (rule N1); `book-skeleton.ps1` and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies. `organize: "legacy"` runs the old single Opus job. | A finished digest |
 | **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
 | **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`card-style-check.ps1`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
+
+## DeepSeek Subagent Managed Protocol
+
+Every DeepSeek run goes through a Haiku manager, by the protocol in
+`~/.claude/skills/deepseek-subagent-managed-protocol`:
+
+- A manager runs at most 8 DeepSeek conversations (`perManager`, `linkPerManager`, and `dshPerBatch`
+  are capped at 8). A compiler step gets one manager per 8 jobs: 1-8 jobs one manager, 9-16 two.
+- At most 8 managers are alive at once in the whole run (`dsmpSlot`), so at most 64 DeepSeek
+  conversations run at once. More managers wait for a free slot.
+- Conversations are deleted, never archived. A digest or link manager deletes each run after it has
+  the answer. A compiler step keeps its conversations until its cleanup, because later rounds
+  continue them; the cleanup deletes them.
+- When the work in a workspace is done, its cleanup removes the workspace with
+  `deepseek_remove_workspace` and `delete_conversations: true`. The folder and its files stay on disk.
 
 ## Skills for DeepSeek
 
@@ -113,8 +128,8 @@ wrote, supervised, and checked everything itself. Per batch of models:
    re-points the next member, updates the 结构 list, and sends the work back to the same writer
    conversation. The changed chains are reviewed again, up to `reviewRounds` (2).
 6. **Report and clean up.** `-Step report` reads `get_model` and the style check per model; the
-   last Haiku driver archives the batch's conversations and deletes its folder. A Haiku sweep
-   archives anything a failed batch left open.
+   last Haiku driver deletes the batch's conversations, removes its DeepSeek workspace, and
+   deletes its folder. A Haiku sweep deletes anything a failed batch left.
 
 Haiku drivers only relay DeepSeek jobs: each runs one compiler step and the jobs it prints.
 

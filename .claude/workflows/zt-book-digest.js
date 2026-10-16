@@ -5,10 +5,10 @@ export const meta = {
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors, event candidates (sentences with a year) in each group file; then the book term table: book-terms.ps1 lists the candidate terms, one DeepSeek job chooses the terms and the words not to use, the script writes terms.md and the Card 术语表', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
-    { title: 'Models', detail: 'the model compiler, per batch of models as soon as a digest block finishes: DeepSeek writes a brief of each model\'s source; one Sonnet architect writes each plan.json (level, parts in build order, premises, where Derivation parts go and how many) and nothing else; model-compiler.ps1 builds the skeleton and the job files; Haiku drivers relay DeepSeek rounds: fill (Model Card, setting, parts, charts), derive (the Derivation parts), review (a reviewer splits a jumping or dense derivation into two or more parts, the script inserts them, the writer continues); the script reports each model and the driver archives its conversations', model: 'sonnet' },
+    { title: 'Models', detail: 'the model compiler, per batch of models as soon as a digest block finishes: DeepSeek writes a brief of each model\'s source; one Sonnet architect writes each plan.json (level, parts in build order, premises, where Derivation parts go and how many) and nothing else; model-compiler.ps1 builds the skeleton and the job files; Haiku drivers relay DeepSeek rounds: fill (Model Card, setting, parts, charts), derive (the Derivation parts), review (a reviewer splits a jumping or dense derivation into two or more parts, the script inserts them, the writer continues); the script reports each model and the driver deletes its conversations', model: 'sonnet' },
     { title: 'Cards', detail: 'the card layer cycle (card-compiler.ps1): after each digest block, the script checks the block\'s Idea Cards, Event Cards, and anchor (Card language and the I, E, L rules), DeepSeek rewrites the Cards with faults and reviews a sample against the source as JSON files, the script checks each rewrite (every Link, figure, and formula kept) and writes it, checks again, and sends what is left back once; after the link pass, the same cycle checks the new Links (L1, L2) and links each orphan Card from a related Card; mode "cards" runs the whole cycle on an existing digest', model: 'haiku' },
     { title: 'Link', detail: 'each DeepSeek run gets only the Cards it owns, searches the book and the Card index on disk, and appends reasoned cross-part Links', model: 'haiku' },
-    { title: 'Cleanup', detail: 'Haiku archives conversations, removes the DeepSeek workspace and scratch files', model: 'haiku' },
+    { title: 'Cleanup', detail: 'Haiku deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files', model: 'haiku' },
     { title: 'Organize', detail: 'organize-survey.ps1 lists what to decide (duplicate Topics, small Topics, merge proposals, model faults, notes); Opus writes only decisions.json (the thesis, Topic merges, moves, Card notes); organize-apply.ps1 carries out the merges and moves; a card cycle hands the notes to DeepSeek; book-skeleton.ps1 and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies; organize "legacy" runs the old single Opus job', model: 'opus' },
     { title: 'Figures', detail: 'attach-figures.ps1 puts each book figure ZET keeps (![图 2.C.1](artifact:…)) into every Card of the book that names it but does not show it yet, and links the book\'s PDF and Markdown (scholar:<file_id>) from the Literature Card', model: 'haiku' },
     { title: 'Hubs', detail: 'the hub compiler on the whole agent Workspace: hub-compiler.ps1 surveys every Topic tree; a Haiku hub manager chooses the limits (when a tree or branch needs a hub, how large a hub may be) from the survey; Haiku drivers start DeepSeek jobs in the hub workspace: one field planner (fields and register terms) and topic writers (topic and line hubs as JSON); the script builds the Hub Cards, links them from Topic bodies and the register, checks every hub with get_hub, and sends faults back to the writer once; the last driver deletes the DeepSeek conversations', model: 'haiku' },
@@ -86,7 +86,11 @@ const KEY = A.citationKey
 const OUT = A.out
 const DIGEST_PREFIX = `${OUT}\\shared-prefix.md`
 const LINK_PREFIX = `${OUT}\\link-prefix.md`
-const PER_MANAGER = A.perManager || 5
+// DeepSeek Subagent Managed Protocol (~/.claude/skills/deepseek-subagent-managed-protocol): a Haiku
+// manager runs at most 8 DeepSeek conversations; at most 8 managers are alive at once in the whole run.
+const DSMP_PER_MANAGER = 8
+const DSMP_MAX_MANAGERS = 8
+const PER_MANAGER = Math.min(DSMP_PER_MANAGER, A.perManager || 5)
 // DeepSeek V4.1 Flash at the two sources DeepSeek Harness offers (deepseek_models lists them). The
 // official source is the DeepSeek platform ("DeepSeek-V41-Flash"); OpenCode Go serves the same model.
 const DSH_SOURCES = {
@@ -111,7 +115,7 @@ const ARCH_DOC = `${SCRIPTS}\\model-architect.md`
 const COMPILER = `${SCRIPTS}\\model-compiler.ps1`
 const MODEL_WORK = `${OUT}\\models`
 const PER_SONNET = Math.max(1, A.perSonnet || 6)
-const DSH_PER_BATCH = Math.max(1, A.dshPerBatch || A.dshPerSonnet || 8)
+const DSH_PER_BATCH = Math.min(DSMP_PER_MANAGER, Math.max(1, A.dshPerBatch || A.dshPerSonnet || 8))
 const REBUILD = !!(A.rebuild || A.redoModels)
 // The elaboration level: a concept model (level 1) is stated in words, with no Derivation parts; a
 // formal model (level 2) is built self-sufficient. Unset: each model's own level.
@@ -130,8 +134,21 @@ const HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
 // Both skills are installed in DeepSeek Harness (deepseek_skills lists them). No prompt file carries a copy of a skill.
 const DSH_SKILLS = ['zettelkasten', 'asd-ste100-zh']
 const FILL_SKILLS = ['asd-ste100-zh']
-const DSH_TOOLS ='select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_archive'
-const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace,mcp__deepseek__deepseek_delete`
+const DSH_TOOLS ='select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_delete'
+const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace`
+// One pool for the whole run: every Haiku agent that runs DeepSeek jobs (digest, link, and driver
+// managers) takes a slot, so at most DSMP_MAX_MANAGERS managers and 64 conversations run at once.
+// Only managers take a slot; a step command or a cleanup agent never waits for one.
+let dsmpBusy = 0
+const dsmpQueue = []
+const dsmpPump = () => {
+  while (dsmpBusy < DSMP_MAX_MANAGERS && dsmpQueue.length) {
+    dsmpBusy++
+    const { fn, res, rej } = dsmpQueue.shift()
+    Promise.resolve().then(fn).then(res, rej).then(() => { dsmpBusy--; dsmpPump() })
+  }
+}
+const dsmpSlot = fn => new Promise((res, rej) => { dsmpQueue.push({ fn, res, rej }); dsmpPump() })
 // The hub stage: the Haiku hub manager chooses the limits; DeepSeek plans and writes; the script builds.
 const HUBS = MODE === 'hubs' || (MODE === 'full' && A.hubs !== false) || (MODE === 'link' && A.hubs === true)
 const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
@@ -256,10 +273,10 @@ const REPORT = {
   properties: {
     group: { type: 'number' }, status: { type: 'string', enum: ['done', 'failed'] },
     cards: { type: 'number' }, models: { type: 'number' }, events: { type: 'number' }, links: { type: 'number' }, topics: { type: 'array', items: { type: 'string' } },
-    errors: { type: 'string' }, archived: { type: 'boolean' },
+    errors: { type: 'string' }, deleted: { type: 'boolean' },
     tool_calls: { type: 'number' }, context_used: { type: 'number' },
   },
-  required: ['group', 'status', 'errors', 'archived'],
+  required: ['group', 'status', 'errors', 'deleted'],
 }
 
 const STAGES = {
@@ -284,7 +301,7 @@ const STAGES = {
 
 const manage = (block, b, stage) => {
   const S = STAGES[stage]
-  return agent(
+  return dsmpSlot(() => agent(
     `You manage ${block.length} DeepSeek Harness (DSH) runs of a ZET book digest (${stage} pass), ${S.parallel ? 'all at the same time' : 'one after another'}. DSH reads the book and changes the Cards; you only start, supervise, and clean up each run. Keep your messages short.
 Load all tools with one ToolSearch call: query "${DSH_TOOLS}".
 
@@ -297,15 +314,15 @@ Then follow "status" until the run ends:
   - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
   - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
-  Then clean up: deepseek_close and deepseek_archive (session_id); archived=true when archiving succeeds.
+  Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
   Record tool_calls = the sum of the counts in the last turn report's tools_used, and context_used = context.used.
 
-Return reports: one entry per group in this block with group, status, ${S.fields}, errors, archived, tool_calls, context_used.`,
+Return reports: one entry per group in this block with group, status, ${S.fields}, errors, deleted, tool_calls, context_used.`,
     {
       label: `${stage} manager ${b + 1}: groups ${block[0].n}-${block[block.length - 1].n}`, phase: S.phase, model: 'haiku', effort: 'low',
       schema: { type: 'object', properties: { reports: { type: 'array', items: REPORT } }, required: ['reports'] },
     },
-  )
+  ))
 }
 
 // --- Models: the model compiler turns each new Model Card into a structured model ---------------------
@@ -333,26 +350,25 @@ const DRIVE = {
   properties: {
     ok: { type: 'boolean' }, error: { type: 'string' }, output: { type: 'string' },
     results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, session_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'failed'] }, answer: { type: 'string' } }, required: ['id', 'status'] } },
-    archived: { type: 'number' },
+    deleted: { type: 'number' },
   },
   required: ['ok', 'results'],
 }
 // o: command, dsh (the DSH workspace), skills, effort, sessions (continued jobs), cleanup (the last
 // round: end the conversations, remove the workspace), phase ('Models'), writes (a folder whose files
-// a job may write; default: the one file its prompt names), remove ('archive' | 'delete': what cleanup
-// does with the conversations), keep (true: cleanup keeps the folder, e.g. the hub stage's state).
+// a job may write; default: the one file its prompt names), keep (true: cleanup keeps the folder, e.g.
+// the hub stage's state). Cleanup always deletes the conversations; it never archives them.
 //
 // A step runs in up to three kinds of Haiku agent: one runs the script command; its DeepSeek jobs go
-// to one manager per DSH_PER_BATCH (8) jobs, at most DSH_MANAGERS (8), and each manager keeps
-// DSH_PER_BATCH jobs running at a time; one agent cleans up. The user set this rule: 1-8 jobs need one
-// manager, 9-16 two, and so on; from 57 jobs on, 8 managers. A manager costs Haiku tokens, and one
-// more manager does not make a DeepSeek job faster once each manager is full.
-const DSH_MANAGERS = Math.max(1, A.dshManagers || 8)
+// to one manager per DSH_PER_BATCH (8) jobs, and each manager runs all its jobs at once; one agent
+// cleans up. The user set this rule (DeepSeek Subagent Managed Protocol): 1-8 jobs need one manager,
+// 9-16 two, and so on; at most DSH_MANAGERS (8) managers of a step run at once, and at most
+// DSMP_MAX_MANAGERS in the whole run (dsmpSlot). A step with more than 64 jobs starts a new manager
+// when one ends. Conversations stay until the step's cleanup: later rounds continue them.
+const DSH_MANAGERS = Math.min(DSMP_MAX_MANAGERS, Math.max(1, A.dshManagers || 8))
 const driveAgent = (label, o, part) => {
   const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
-  const removal = o.remove === 'delete'
-    ? `deepseek_list with cwd "${o.dsh}"; deepseek_delete every conversation listed there, and count them in archived; then deepseek_remove_workspace with cwd "${o.dsh}" and delete_conversations true`
-    : `deepseek_list with cwd "${o.dsh}"; deepseek_close and deepseek_archive every conversation there that is not archived yet, and count them in archived; deepseek_remove_workspace with cwd "${o.dsh}"`
+  const removal = `deepseek_list with cwd "${o.dsh}"; deepseek_delete every conversation listed there that is not running, and count them in deleted; then, when none is running, deepseek_remove_workspace with cwd "${o.dsh}" and delete_conversations true. Never archive a conversation`
   const head = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
 Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 `
@@ -366,11 +382,11 @@ Its last output line is compact JSON; it may be long (tens of kilobytes). Put th
   if (part === 'cleanup') {
     return agent(`${head}
 Clean up: ${removal}${o.keep ? '. Keep the folder and its files.' : `; then one PowerShell call: Remove-Item -LiteralPath "${o.dsh}" -Recurse -Force -ErrorAction SilentlyContinue`}
-Return ok=true, results=[], and archived.`,
+Return ok=true, results=[], and deleted.`,
       { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
   }
   const jobs = o.jobs || []
-  return agent(`${head}
+  return dsmpSlot(() => agent(`${head}
 Run every job below. A job has id, files, prompt, and sometimes continue and fallback. Other managers run the other jobs of this step at the same time; run only these.
 ${JSON.stringify(jobs)}
 - No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, model "${DSH_MODEL}", reasoning_effort "${o.effort}", wait_seconds 0.
@@ -383,9 +399,9 @@ Follow "status" until each job ends:
 - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1 or card-style-check.ps1; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
-Do not close or archive conversations: later rounds continue them, and a cleanup agent ends them.
+Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
 Return ok=true, output="", and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
-    { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE })
+    { label, phase: o.phase || 'Models', model: 'haiku', effort: 'low', schema: DRIVE }))
 }
 // A step's jobs. A compact list (card-compiler.ps1 -Compact) names each job's file and kind and gives
 // the folder, the instruction files, and the prompts once; it expands to { id, files, prompt,
@@ -402,7 +418,7 @@ const expandJobs = (parsed) => {
   })
 }
 // Runs one compiler step: the command, its jobs spread over up to DSH_MANAGERS managers, then the
-// cleanup when o.cleanup. Returns { ok, error, output, results, archived } like one driver did.
+// cleanup when o.cleanup. Returns { ok, error, output, results, deleted } like one driver did.
 const drive = async (label, o) => {
   const step = await driveAgent(label, o, 'command')
   if (!step || !step.ok) {
@@ -413,12 +429,21 @@ const drive = async (label, o) => {
   const jobs = expandJobs(parsed)
   let results = []
   if (jobs.length) {
-    const managers = Math.min(DSH_MANAGERS, Math.ceil(jobs.length / DSH_PER_BATCH))
-    const shares = Array.from({ length: managers }, () => [])
-    jobs.forEach((job, i) => shares[i % managers].push(job))
-    const done = await parallel(shares.map((share, i) => () =>
-      driveAgent(managers > 1 ? `${label} [${i + 1}/${managers}]` : label, { ...o, jobs: share }, 'jobs')
-        .catch(error => ({ ok: false, error: String(error), results: [] }))))
+    // One manager per DSH_PER_BATCH jobs; at most DSH_MANAGERS of them start at once (the rest wait),
+    // and dsmpSlot keeps the whole run at DSMP_MAX_MANAGERS.
+    const shares = []
+    for (let i = 0; i < jobs.length; i += DSH_PER_BATCH) shares.push(jobs.slice(i, i + DSH_PER_BATCH))
+    const managers = shares.length
+    const done = new Array(managers)
+    let next = 0
+    const lane = async () => {
+      while (next < managers) {
+        const i = next++
+        done[i] = await driveAgent(managers > 1 ? `${label} [${i + 1}/${managers}]` : label, { ...o, jobs: shares[i] }, 'jobs')
+          .catch(error => ({ ok: false, error: String(error), results: [] }))
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(DSH_MANAGERS, managers) }, lane))
     results = done.flatMap((d, i) => {
       const got = (d && d.results) || []
       // A job a manager did not report is a failed job, so a later round can retry it.
@@ -428,12 +453,12 @@ const drive = async (label, o) => {
     const failedManagers = done.filter(d => !d || !d.ok).length
     if (failedManagers) log(`${label}: ${failedManagers} of ${managers} managers reported a failure.`)
   }
-  let archived = 0
+  let deleted = 0
   if (o.cleanup) {
     const c = await driveAgent(`${label}: clean up`, o, 'cleanup')
-    archived = (c && c.archived) || 0
+    deleted = (c && c.deleted) || 0
   }
-  return { ok: true, output: step.output, results, archived }
+  return { ok: true, output: step.output, results, deleted }
 }
 // The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"):
 // DeepSeek does not always put its JSON on a line of its own.
@@ -600,7 +625,7 @@ const runStage = async (stage, stageBlocks, after) => {
     const got = (managed[b] && managed[b].reports) || []
     for (const g of block) {
       reports.push(got.find(r => r.group === g.n) ||
-        { group: g.n, status: 'failed', cards: 0, links: 0, topics: [], errors: 'no report from its manager', archived: false })
+        { group: g.n, status: 'failed', cards: 0, links: 0, topics: [], errors: 'no report from its manager', deleted: false })
     }
   })
   const failed = reports.filter(r => r.status !== 'done').map(r => r.group)
@@ -743,19 +768,19 @@ if (MODE === 'models') {
   modelReports = await elaborateAll(listed.models, 'whole book')
   logModels(modelReports)
 }
-// A manager archives its own DeepSeek conversations; this sweep archives any a failed manager left open.
+// A batch's cleanup deletes its own DeepSeek conversations; this sweep deletes any a failed batch left.
 const modelCleanup = (MODELS || MODE === 'models') && managerFolders.length ? await agent(
-  `Clean up after the batches of a ZET model stage (a batch archives its own conversations; this catches a batch that failed). Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_archive,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_remove_workspace".
-For each folder below: deepseek_list with that cwd; close and archive every conversation there that is not archived yet, and count them; then deepseek_remove_workspace with that cwd (it removes only the sidebar entry).
+  `Clean up after the batches of a ZET model stage (a batch deletes its own conversations; this catches a batch that failed). Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
+For each folder below: deepseek_list with that cwd (a workspace that is not found needs nothing); deepseek_delete every conversation there that is not running, and count them; then, when none is running, deepseek_remove_workspace with that cwd and delete_conversations true. Never archive a conversation.
 ${managerFolders.join('\n')}
 Then delete what is left of those folders with one PowerShell call: ${managerFolders.map(f => `Remove-Item -LiteralPath "${f}" -Recurse -Force -ErrorAction SilentlyContinue`).join('; ')}
-Return late_archived (the count) and folders (how many folders you handled).`,
+Return late_deleted (the count) and folders (how many folders you handled).`,
   {
     label: 'cleanup model managers', phase: 'Models', model: 'haiku', effort: 'low',
-    schema: { type: 'object', properties: { late_archived: { type: 'number' }, folders: { type: 'number' } }, required: ['late_archived'] },
+    schema: { type: 'object', properties: { late_deleted: { type: 'number' }, folders: { type: 'number' } }, required: ['late_deleted'] },
   },
 ) : null
-if (modelCleanup) log(`Model clean-up: ${modelCleanup.late_archived} conversations archived late.`)
+if (modelCleanup) log(`Model clean-up: ${modelCleanup.late_deleted} conversations deleted late.`)
 if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: DSH_MODEL, book: A.bookTitle, citation_key: KEY, models: modelReports, model_cleanup: modelCleanup }
 
 // --- Hubs: the hub compiler builds the Hub Cards of the whole agent Workspace ------------------------
@@ -889,7 +914,7 @@ if (MODE === 'link') usageBefore = linkPrep.usage_before
 const pending = groups.filter(g => linkPrep.pending.includes(g.n))
 if (!NO_LINK) log(`Link pass: ${pending.length} of ${groupCount} groups pending; ${linkPrep.owned_total} owned Cards; ${linkPrep.unowned} unowned (hubs, structure Cards, Model parts).`)
 // A link run depends on no other: each Haiku manager starts LINK_PER_MANAGER runs at once.
-const LINK_PER_MANAGER = Math.max(PER_MANAGER, A.linkPerManager || 8)
+const LINK_PER_MANAGER = Math.min(DSMP_PER_MANAGER, Math.max(PER_MANAGER, A.linkPerManager || 8))
 const linkReports = pending.length ? await runStage('link', toBlocks(pending, LINK_PER_MANAGER)) : []
 // The Link check and the orphan pass on the whole book (proposal 6). In mode "full" the block cycles
 // have already fixed the book, so the check runs every hard rule: the link pass can add R2, R4, and
@@ -899,20 +924,20 @@ const linkCards = !NO_LINK && CARD_CHECKS ? await runCards('link check', `${OUT}
 // --- Cleanup -------------------------------------------------------------------------------------
 if (!NO_LINK) phase('Cleanup')
 const cleanup = NO_LINK ? null : await agent(
-  `Clean up after a DeepSeek Harness batch. Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_archive,mcp__deepseek__deepseek_close,mcp__deepseek__deepseek_remove_workspace,mcp__deepseek__deepseek_usage".
-1. deepseek_list with cwd "${OUT}". Close and archive every conversation there that is not archived yet; count them.
-2. deepseek_remove_workspace with cwd "${OUT}" (removes only the sidebar entry; history is kept).
+  `Clean up after a DeepSeek Harness batch. Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace,mcp__deepseek__deepseek_usage".
+1. deepseek_list with cwd "${OUT}". The managers deleted their own conversations; deepseek_delete every conversation still listed that is not running (a manager that failed left it), and count them. Never archive a conversation.
+2. When none is running: deepseek_remove_workspace with cwd "${OUT}" and delete_conversations true (the folder and its files stay on disk); workspace_removed=true when it succeeds.
 3. Delete the per-run scratch files with one PowerShell call and report the count it prints:
    $f = Get-ChildItem -LiteralPath "${OUT}" -File | Where-Object { $_.Name -like '*calls*.json' -or $_.Name -like 'snapshot-g*.md' -or $_.Name -like 'link-g*.md' -or $_.Name -like 'allow-g*.txt' }; $f | Remove-Item; $f.Count
    Delete nothing else (keep the book, prefixes, manifest, cards-all.md and owned-g*.txt).
 4. deepseek_usage with days=1; sum each field over the rows for the last day listed.
-Return late_archived, workspace_removed, files_removed, usage_after.`,
+Return late_deleted, workspace_removed, files_removed, usage_after.`,
   {
     label: 'cleanup DeepSeek', phase: 'Cleanup', model: 'haiku', effort: 'low',
     schema: {
       type: 'object',
-      properties: { late_archived: { type: 'number' }, workspace_removed: { type: 'boolean' }, files_removed: { type: 'number' }, usage_after: USAGE },
-      required: ['late_archived', 'workspace_removed', 'files_removed'],
+      properties: { late_deleted: { type: 'number' }, workspace_removed: { type: 'boolean' }, files_removed: { type: 'number' }, usage_after: USAGE },
+      required: ['late_deleted', 'workspace_removed', 'files_removed'],
     },
   },
 )

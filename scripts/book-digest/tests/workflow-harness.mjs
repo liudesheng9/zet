@@ -19,6 +19,7 @@ function runtime(opts0 = {}) {
   const cleanups = []
   const logs = []
   const phases = []
+  const pool = { alive: 0, peak: 0, prompts: [] }
   const commandOf = (prompt) => (String(prompt).match(/pwsh -NoProfile -File[^\n]*/) || [''])[0]
   const answer = (prompt, opts) => {
     const label = opts.label || ''
@@ -30,11 +31,11 @@ function runtime(opts0 = {}) {
     if (/^(digest|link) manager/.test(label)) {
       const groups = [...String(prompt).matchAll(/Group (\d+):/g)].map(m => Number(m[1]))
       const down = /^digest/.test(label) && opts0.digestFails
-      return { reports: groups.map(g => ({ group: g, status: down ? 'failed' : 'done', cards: down ? 0 : 3, models: 0, events: 0, links: 2, topics: [], errors: '无', archived: true })) }
+      return { reports: groups.map(g => ({ group: g, status: down ? 'failed' : 'done', cards: down ? 0 : 3, models: 0, events: 0, links: 2, topics: [], errors: '无', deleted: true })) }
     }
     if (/^find models/.test(label)) return { ok: true, models: [] }
     if (label === 'prepare link pass') return { ok: true, pending: [1, 2], owned_total: 6, unowned: 0 }
-    if (label === 'cleanup DeepSeek') return { late_archived: 0, workspace_removed: true, files_removed: 0 }
+    if (label === 'cleanup DeepSeek') return { late_deleted: 0, workspace_removed: true, files_removed: 0 }
     if (label === 'show figures') return { ok: true, output: json({ shown: 0, cards: 0, figures: 0, labelled: 0, literature: false }) }
     if (label === 'audit cards') return { ok: true, output: json({ hubs_missing: 0, broken_links: 0, books: [{ key: 'Key', cards: 9, topic_trees: 1, style_faults: 0, orphans: 0, no_source: 0, unkinded: 0, models: 0, not_self_sufficient: 0, figures_missing: 0 }] }) }
     if (label === 'organize: survey') return { ok: true, output: json({ survey: 'x', topics: 1, pairs: 0 }) }
@@ -48,7 +49,7 @@ function runtime(opts0 = {}) {
         managed.push({ label, jobs: given.map(j => j.id), given })
         return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
       }
-      if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], archived: 3 } }
+      if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], deleted: 3 } }
       // A compiler step: the JSON line the script prints, or a crash the test asks for.
       if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
       let output = json({ jobs: [] })
@@ -67,13 +68,22 @@ function runtime(opts0 = {}) {
       else if (/hub-compiler\.ps1" -Step plan/.test(cmd)) output = json({ tree_count: 1, jobs: [{ id: 'h', files: [], prompt: 'p' }] })
       else if (/hub-compiler\.ps1" -Step check/.test(cmd)) output = json({ hubs: 1, faults: 0, jobs: [] })
       else if (/hub-compiler\.ps1" -Step report/.test(cmd)) output = json({ counts: {}, faults: {}, mirror: 0, missing_count: 0 })
-      return { ok: true, output, results: [], archived: 0 }
+      return { ok: true, output, results: [], deleted: 0 }
     }
     return {}
   }
   return {
-    calls, logs, phases, managed, cleanups,
-    agent: async (prompt, opts = {}) => answer(prompt, opts),
+    calls, logs, phases, managed, cleanups, pool,
+    // A DeepSeek manager (digest, link, or job driver) stays alive a moment, so the test sees how many run at once.
+    agent: async (prompt, opts = {}) => {
+      const manager = /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
+      if (!manager) return answer(prompt, opts)
+      pool.prompts.push(String(prompt))
+      pool.alive++
+      pool.peak = Math.max(pool.peak, pool.alive)
+      await new Promise(resolve => setTimeout(resolve, 3))
+      try { return answer(prompt, opts) } finally { pool.alive-- }
+    },
     phase: (p) => phases.push(p),
     log: (m) => logs.push(m),
     parallel: async (fns) => Promise.all(fns.map(fn => fn())),
@@ -147,15 +157,23 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(follow && follow.continue === 'fix-01' && follow.files.length === 1 && follow.fallback[0] === 'D:\\x\\Key\\cards\\card.md' && follow.prompt === 'pw', `cards: a compact follow-up continues its job, with the instructions as fallback (${JSON.stringify(follow)})`)
   check(calls.filter(c => /card-compiler\.ps1/.test(c.cmd)).every(c => / -Compact/.test(c.cmd)), 'cards: every card-compiler step gets -Compact')
 }
-// the managers: one per 8 jobs, at most 8
-for (const [n, want] of [[5, 1], [16, 2], [17, 3], [70, 8]]) {
+// the managers (DeepSeek Subagent Managed Protocol): one per 8 jobs, at most 8 alive at once
+for (const [n, want] of [[5, 1], [8, 1], [16, 2], [17, 3], [64, 8], [70, 9], [200, 25]]) {
   planJobs = n
-  const { managed } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
+  const { managed, pool } = await run({ out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
   const plan = managed.filter(m => /cards whole book: plan/.test(m.label))
   const all = plan.flatMap(m => m.jobs)
   check(plan.length === want && all.length === n && new Set(all).size === n, `managers: ${n} jobs go to ${want} managers (${plan.length}), each job once`)
+  check(Math.max(...plan.map(m => m.jobs.length)) <= 8 && pool.peak <= 8, `managers: ${n} jobs: at most 8 jobs per manager, at most 8 managers at once (peak ${pool.peak})`)
 }
 planJobs = 21
+// the protocol in a full run: every DeepSeek manager deletes its conversations and none archives;
+// one manager per digest group (perManager 1) puts more managers in the queue than the cap
+{
+  const { pool } = await run({ ...base, mode: 'full', figures: false, perManager: 1 })
+  check(pool.prompts.length > 0 && pool.prompts.every(p => /deepseek_delete/.test(p) && !/deepseek_archive/.test(p)), `protocol: every DeepSeek manager deletes, none archives (${pool.prompts.length} managers)`)
+  check(pool.peak <= 8, `protocol: at most 8 DeepSeek managers at once in a full run (peak ${pool.peak})`)
+}
 // apply: repeated in shares until no job is pending
 {
   applyPending = 2
