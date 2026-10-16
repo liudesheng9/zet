@@ -9,7 +9,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
 - 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、把各处相关 Card 并排摊开的桌面（Table）、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
-- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
+- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）、Finding Card（来源中的一个实证结果）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
 - 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
 - 通过 `zt mcp` 服务器让编程 agent 在 agent Workspace 中工作，而你的 Workspace 对它只读。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
@@ -169,23 +169,24 @@ zt l --ws agent                # 在 agent Workspace 中创建 Literature Card
 在 GUI 中，卡片柜顶部的两个标签页（或快捷键 `w`、命令 `ws`）用于切换 Workspace；agent 的 Card
 带有紫色的 AI AGENT 标记，指向另一个 Workspace 的 Link 会用该 Workspace 的颜色显示。
 
-## Event Card 与 Model Card
+## Event Card、Finding Card 与 Model Card
 
 每张 Card 都有一个 **Card type**。大多数 Card 是 **Idea Card**（`idea`，默认值）：用自己的话写下一个想法。
 Regular Card 也可以是：
 
 - **Event Card**（`event`）：记录一个真实发生的事件（什么、何时、何地、谁，以及报道它的来源），描述部分不做解释；
+- **Finding Card**（`finding`）：记录来源中的一个实证结果，正文有六行标签：`测量`、`数据`（样本、时期、地点）、`方法`、`结果`（一个结果，带大小或方向）、`局限`、`来源`；见 `docs/finding-cards-design.md`；
 - **Model Card**（`model`）：一个完整模型的入口（它的问题和它说明了什么），带 facet 时则是模型的一个 part（见“模型结构”）。
 
 Idea Card 用普通的 `[[target]]` Link 引用它们，因此 Model Card 的 Reverse link 会列出所有讨论该模型的 Card。
 Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移动、Side successor 压缩编号和修改 Citation key
 都不会改变它，它也不影响 Card 的其他任何内容。0.5.0 之前创建的归档会在 `zt up` 时自动升级，所有已有 Card 都是 Idea Card。
 
-- **Session**：非 Idea Card 的视图会在 Location 后显示 `[event]` 或 `[model]`；`ty event`、`ty model` 或
+- **Session**：非 Idea Card 的视图会在 Location 后显示 `[event]`、`[finding]` 或 `[model]`；`ty event`、`ty finding`、`ty model` 或
   `ty idea` 设置当前 Regular Card 的类型。
-- **GUI**：Event 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
+- **GUI**：Event、Finding 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT、FINDING 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
   Regular Card 的写作台有类型选择器，命令栏也支持 `ty`。
-- **MCP**：`create_successor` 和 `edit_card` 接受 `type`（`idea`、`event` 或 `model`；`edit_card` 可以只传 `type`），
+- **MCP**：`create_successor`、`insert_card` 和 `edit_card` 接受 `type`（`idea`、`event`、`finding`、`model` 或 `hub`；`edit_card` 可以只传 `type`），
   `get_card`、`get_tree` 和 `search_cards` 会返回类型；`search_cards` 可按 `type` 筛选，此时 `query` 可以为空，
   用来列出该类型的全部 Card。
 - **导出**：`archive.json` 在 `types` 中列出所有非 Idea Card。

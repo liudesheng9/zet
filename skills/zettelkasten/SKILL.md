@@ -1,6 +1,6 @@
 ---
 name: zettelkasten
-description: "Compose ZT Cards and organize their relationships the way Niklas Luhmann worked his Zettelkasten: one idea per Card in your own words, claim titles, Event Cards for real-world events and Model Cards for whole models, placement under ZET's Location rules (Direct and Side successors) beside the Card it continues, Links that state their reason, hub and structure Cards, Topic entry points, and Literature Cards. Use whenever you write, file, split, place, or link a Card, take notes on a paper or conversation into the slip-box, build an outline from Cards, or review a tree's structure."
+description: "Compose ZT Cards and organize their relationships the way Niklas Luhmann worked his Zettelkasten: one idea per Card in your own words, claim titles, Event Cards for real-world events, Finding Cards for empirical results, and Model Cards for whole models, placement under ZET's Location rules (Direct and Side successors) beside the Card it continues, Links that state their reason, hub and structure Cards, Topic entry points, and Literature Cards. Use whenever you write, file, split, place, or link a Card, take notes on a paper or conversation into the slip-box, build an outline from Cards, or review a tree's structure."
 ---
 
 # Zettelkasten: composing and connecting Cards
@@ -61,9 +61,9 @@ Template:
 Source: [[Smith2024]] p. 10
 ```
 
-## Event Cards and Model Cards
+## Event, Finding, and Model Cards
 
-Every Card has a **Card type**. Most are Idea Cards (the default, everything above). Two types hold something other than an idea; set them with `type` on `create_successor` or `edit_card`. Only Regular Cards can have them.
+Every Card has a **Card type**. Most are Idea Cards (the default, everything above). Three types hold something other than an idea; set them with `type` on `create_successor` or `edit_card`. Only Regular Cards can have them.
 
 **Event Card** (`type: event`): one event that happened in the real world, recorded as fact, not argued.
 
@@ -71,6 +71,27 @@ Every Card has a **Card type**. Most are Idea Cards (the default, everything abo
 - Title: the event in one sentence with its date: `1926 年通用汽车收购费雪车身`.
 - Body: what happened; when and where; who acted; the source. Keep interpretation out of the description; end with one paragraph naming the ideas it is evidence for, with Links.
 - Place it beside the Idea Card it is first evidence for (a Side successor), or under the Literature anchor of the part that reports it. Every Idea Card that uses the event links to it: `如 [[5/3|b]] 所记，……`.
+
+**Finding Card** (`type: finding`): one empirical result from a source: what a study measured and what it found, recorded as a result, not argued.
+
+- Write one when a source reports a result of data: an interview count, a survey share, a regression estimate, an experiment's effect, a case comparison. A result is not an event (it has no single date and place) and not a model (it states no mechanism). A hypothetical number in a model is not a finding.
+- Title: the result as one claim with its scope: `31 家受访企业因为缺少保险市场推迟了投资`.
+- Body: six labelled lines in this order, then one paragraph of Links:
+
+```markdown
+测量：企业是否因为缺少保险市场而推迟投资。
+数据：48 家企业的访谈，2024 年，美国。
+方法：半结构化访谈。
+结果：48 家中 31 家推迟了投资。
+局限：样本不是随机样本。企业自己报告原因。
+来源：[[Smith2024/3]] §3.2
+
+这一结果印证 [[5/1]] 的判断：缺少市场会压低投资。
+```
+
+- **One result per Card.** A study with three results gives three Finding Cards. `结果` holds one result with its size or direction; put the interpretation in the Idea Card that links it.
+- Place it under the Literature anchor of the part that reports it (a Side successor), or beside the Idea Card it is first evidence for. Every Idea Card that rests on the result links to it with a kind word: `印证`, `依赖`, or `例示`.
+- `zt-check` checks the template (F1 the labels, F2 the source line, F3 one result, F4 an Idea Card that links it).
 
 **Model Card** (`type: model`): one whole model, stated once, completely, so that every discussion of it can rely on it.
 

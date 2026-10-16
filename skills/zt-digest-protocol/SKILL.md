@@ -84,7 +84,7 @@ zt-check --json <file> [--setting <a>] [--level concept|formal]               # 
 limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16 --max-explain-chars 600
 ```
 
-Output: one line per fault `<address> <rule> <text>`, then `faults: N`; a run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language, Card size, Derivation steps and explanation) and I, E, L (Idea Cards, Event Cards, Links). A new rule goes into `tools/zt-check/src/check.rs` with a unit test; its tests are `cargo test` in the crate and `scripts/book-digest/tests/zt-check.tests.ps1`, `card-layer.tests.ps1`.
+Output: one line per fault `<address> <rule> <text>`, then `faults: N`; a run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language, Card size, Derivation steps and explanation) and I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links; see `docs/finding-cards-design.md` for F1 to F4). A new rule goes into `tools/zt-check/src/check.rs` with a unit test; its tests are `cargo test` in the crate and `scripts/book-digest/tests/zt-check.tests.ps1`, `card-layer.tests.ps1`.
 
 The SELF-CHECK commands per task:
 

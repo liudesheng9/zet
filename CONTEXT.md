@@ -13,7 +13,7 @@ A non-root Card in a Topic tree or Literature tree.
 _Avoid_: Normal Card
 
 **Card type**:
-What a Card holds: `idea` (the default), `event`, `model`, or `hub`. Only Regular Cards can be Event, Model, or Hub Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
+What a Card holds: `idea` (the default), `event`, `finding`, `model`, or `hub`. Only Regular Cards can be Event, Finding, Model, or Hub Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
 _Avoid_: Card kind (kind means Topic, Literature, or Regular), tag, category
 
 **Idea Card**:
@@ -22,6 +22,10 @@ A Card of type `idea`: one idea or claim, in the Card's own words. Most Cards ar
 **Event Card**:
 A Regular Card of type `event`: it records one event that happened in the real world (what, when, where, who, and the source that reports it), not an idea or an argument. Idea Cards that use the event as evidence or illustration link to it.
 _Avoid_: Fact card, case
+
+**Finding Card**:
+A Regular Card of type `finding`: it states one empirical result from a source, not an idea or an event. Its body holds six labelled lines: what was measured (`测量`), the data with its sample, period, and place (`数据`), the method (`方法`), the one result with its size or direction (`结果`), its limits (`局限`), and the source line (`来源`). A study with several results gives one Finding Card per result. Idea Cards that rest on the result link to it with a kind word (`印证`, `依赖`).
+_Avoid_: Evidence card, result card, fact card, data card
 
 **Model Card**:
 A Regular Card of type `model` without a Model facet: the entry point of one whole model. It states the model's question and what the model shows; it may list the model's parts, and a Link from it to a Model part takes that part into the model. Every Card that derives, interprets, extends, or criticises the model links to it or to the part it concerns, so their Reverse links list the discussion of the model.
@@ -261,7 +265,7 @@ The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Techn
 _Avoid_: Style guide, tone
 
 **Card layer rules**:
-The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `zt-check` checks them; `digest-audit.ps1` reports them.
+The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), Finding Cards (F1–F4: the fixed labels, a source line that links the book, one result per Card, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `zt-check` checks them; `digest-audit.ps1` reports them.
 _Avoid_: Lint, quality score
 
 **Book term table**:

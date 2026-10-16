@@ -618,7 +618,8 @@ impl Snapshot {
     }
 
     /// Every tree root, with its Workspace, Zone, size, and how many Event
-    /// Cards and models (Model Cards, not counting their parts) it holds.
+    /// Cards, Finding Cards, and models (Model Cards, not counting their
+    /// parts) it holds.
     pub(crate) fn trees(&self) -> Vec<Value> {
         self.cards
             .iter()
@@ -646,6 +647,7 @@ impl Snapshot {
                     "excerpt": excerpt(&self.parsed[&card.address].body),
                     "count": members.len(),
                     "events": typed(CardType::Event),
+                    "findings": typed(CardType::Finding),
                     "models": typed(CardType::Model),
                 })
             })
@@ -1049,7 +1051,7 @@ The model"
         );
     }
 
-    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Model, or Hub Cards";
+    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, or Hub Cards";
 
     fn archive() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temp dir");

@@ -1,4 +1,4 @@
-//! Card types: Event and Model Cards are Regular Cards whose type is stored,
+//! Card types: Event, Finding, and Model Cards are Regular Cards whose type is stored,
 //! shown, searchable, kept through moves and renames, and dumped; Topic and
 //! Literature Cards stay Idea Cards.
 
@@ -15,7 +15,7 @@ use tempfile::TempDir;
 #[path = "support/host_tools.rs"]
 mod host_tools;
 
-const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Model, or Hub Cards";
+const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, or Hub Cards";
 
 struct TestHome {
     _tmp: TempDir,
@@ -325,7 +325,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
     for name in ["create_successor", "edit_card", "search_cards"] {
         assert_eq!(
             tool(name)["inputSchema"]["properties"]["type"]["enum"],
-            json!(["idea", "event", "model", "hub"])
+            json!(["idea", "event", "finding", "model", "hub"])
         );
     }
     assert_eq!(tool("search_cards")["inputSchema"]["required"], json!([]));
@@ -359,7 +359,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
             "create_successor",
             json!({ "at": "1/2", "title": "x", "type": "fact" })
         )
-        .contains("unknown card type `fact`; expected idea, event, model, or hub")
+        .contains("unknown card type `fact`; expected idea, event, finding, model, or hub")
     );
 
     // Reads report the type.
@@ -692,5 +692,152 @@ fn dump_records_event_and_model_cards_after_the_workspaces() {
     assert_eq!(
         manifest,
         r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent"},"types":{"1/1":"model","1/1|a":"event"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{}}"#
+    );
+}
+
+#[test]
+fn mcp_creates_lists_counts_and_retypes_finding_cards() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({ "title": "Missing markets" }));
+    let finding = mcp.ok(
+        "create_successor",
+        json!({
+            "at": "1/0",
+            "title": "31 of 48 firms delayed investment for want of insurance",
+            "body": "测量：投资时点。\n数据：48 家企业。\n方法：访谈。\n结果：31 家推迟投资。\n局限：自报原因。\n来源：[[1/0]]",
+            "type": "finding",
+        }),
+    );
+    assert_eq!(
+        (finding["address"].as_str(), finding["type"].as_str()),
+        (Some("1/1"), Some("finding"))
+    );
+    assert_eq!(home.card_type("1/1"), "finding");
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": "1/1" }))["type"],
+        "finding"
+    );
+    mcp.ok(
+        "create_successor",
+        json!({ "at": "1/1", "title": "Missing insurance lowers investment", "body": "印证于 [[1/1]] 的访谈结果。" }),
+    );
+    assert_eq!(
+        typed(&mcp.ok("search_cards", json!({ "type": "finding" }))["results"]),
+        pairs(&[("1/1", "finding")])
+    );
+    assert_eq!(
+        typed(&mcp.ok("get_tree", json!({ "tree": "1" }))["cards"]),
+        pairs(&[("1/0", "idea"), ("1/1", "finding"), ("1/2", "idea")])
+    );
+    let trees = mcp.ok("list_trees", json!({ "workspace": "agent" }));
+    assert_eq!(
+        (&trees["trees"][0]["findings"], &trees["trees"][0]["events"]),
+        (&json!(1), &json!(0))
+    );
+
+    // edit_card and insert_card take the type too; a tree root is refused.
+    mcp.ok("edit_card", json!({ "at": "1/2", "type": "finding" }));
+    assert_eq!(home.card_type("1/2"), "finding");
+    mcp.ok("edit_card", json!({ "at": "1/2", "type": "idea" }));
+    assert_eq!(home.card_type("1/2"), "idea");
+    let inserted = mcp.ok(
+        "insert_card",
+        json!({ "before": "1/2", "title": "12 of 48 firms cancelled investment", "type": "finding", "confirm": "insert" }),
+    );
+    assert_eq!(inserted["address"], "1/2");
+    assert_eq!(home.card_type("1/2"), "finding");
+    assert_eq!(home.card_type("1/3"), "idea", "the old 1/2 moves down");
+    assert!(
+        mcp.err("edit_card", json!({ "at": "1/0", "type": "finding" }))
+            .contains(ROOT_REFUSAL)
+    );
+    assert!(
+        mcp.err("edit_card", json!({ "at": "0/1", "type": "finding" }))
+            .contains("the human workspace is read-only for AI agents")
+    );
+}
+
+#[test]
+fn up_rebuilds_an_archive_from_before_finding_cards_once() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    home.cmd().arg("down").assert().success();
+    for _ in 0..150 {
+        if !home.archive_root.join("zt.pid").exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // The schema of zt 0.17: every column of today, but no `finding` type.
+    let db = home.db();
+    let definition: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let old = definition
+        .replace("'event', 'finding', 'model'", "'event', 'model'")
+        .replacen("CREATE TABLE cards", "CREATE TABLE cards_old", 1);
+    assert!(!old.contains("'finding'"));
+    db.execute_batch(&format!(
+        "BEGIN;
+         {old};
+         INSERT INTO cards_old SELECT * FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_old RENAME TO cards;
+         CREATE UNIQUE INDEX cards_citation_key_nocase ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;"
+    ))
+    .unwrap();
+    assert!(
+        db.execute(
+            "UPDATE cards SET card_type = 'finding' WHERE location = '0/1'",
+            []
+        )
+        .is_err(),
+        "the old schema refuses Finding Cards"
+    );
+    drop(db);
+    let before = home.text("0/1");
+
+    home.cmd().arg("up").assert().success();
+    assert_eq!(home.text("0/1"), before, "the rebuild keeps every Card");
+    assert_eq!(home.card_type("0/1"), "idea");
+    home.db()
+        .execute(
+            "UPDATE cards SET card_type = 'finding' WHERE location = '0/1'",
+            [],
+        )
+        .expect("the rebuilt schema takes Finding Cards");
+    let backups = fs::read_dir(&home.archive_root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("zt.sqlite3.pre-finding-cards-")
+        })
+        .count();
+    assert_eq!(backups, 1, "the archive is backed up before the rebuild");
+
+    home.cmd().arg("down").assert().success();
+    home.cmd().arg("up").assert().success();
+    assert_eq!(home.card_type("0/1"), "finding", "reopening keeps the type");
+    assert_eq!(
+        fs::read_to_string(home.archive_root.join("zt.log"))
+            .unwrap()
+            .matches("added finding cards")
+            .count(),
+        1,
+        "the table is rebuilt once"
     );
 }

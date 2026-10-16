@@ -41,6 +41,7 @@
   --agent: #5a4fb0;
   --agent-soft: #e9e6f8;
   --event: #b3262f;
+  --finding: #7a3a6e;
   --model: #26457d;
   --hub: #2f6b4f;
   --radius: 12px;
@@ -93,6 +94,7 @@
   --agent: #ada1f7;
   --agent-soft: #262242;
   --event: #f08c86;
+  --finding: #dc9ccf;
   --model: #94b0ee;
   --hub: #8fd1ae;
   --grain-opacity: .035;
@@ -141,6 +143,7 @@
     --agent: #ada1f7;
     --agent-soft: #262242;
     --event: #f08c86;
+    --finding: #dc9ccf;
     --model: #94b0ee;
     --grain-opacity: .035;
     color-scheme: dark;
@@ -860,11 +863,13 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
   mask-image: radial-gradient(ellipse 140% 120% at 30% 40%, #000 55%, rgba(0, 0, 0, .78) 100%);
 }
 .type-stamp.model { color: var(--model); transform: rotate(2deg); }
+.type-stamp.finding { color: var(--finding); transform: rotate(-1.5deg); }
 .card-meta .type-stamp { font-size: 11px; padding: 2px 9px; transform: rotate(-5deg); }
 .card-meta .type-stamp.model { transform: rotate(3deg); }
 .node .type-stamp { font-size: 7.5px; padding: 0 4px; letter-spacing: .14em; line-height: 1.5; }
 .node.type-event { border-color: color-mix(in srgb, var(--event) 30%, var(--stock-edge)); }
 .node.type-model { border-color: color-mix(in srgb, var(--model) 30%, var(--stock-edge)); }
+.node.type-finding { border-color: color-mix(in srgb, var(--finding) 30%, var(--stock-edge)); }
 .stack .face .types { display: flex; gap: 8px; align-items: center; }
 .stack .face .types .type-stamp { font-size: 8px; padding: 0 5px; }
 .stack .face .types .tally { display: inline-flex; align-items: center; gap: 3px; font: 500 10.5px var(--mono); }
@@ -880,6 +885,7 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
 .type-pick button.on { border-style: solid; color: var(--ink); border-color: currentColor; transform: rotate(-2deg); }
 .type-pick button.on.event { color: var(--event); }
 .type-pick button.on.model { color: var(--model); }
+.type-pick button.on.finding { color: var(--finding); }
 /* A Link into the other workspace is inked in that workspace's color. */
 .zt-link.cross.agent { background: var(--agent-soft); color: var(--agent); }
 .zt-link.cross.agent .zt-link-addr { background: var(--agent); }

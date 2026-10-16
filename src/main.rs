@@ -748,6 +748,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_model_level_column(&conn, root)?;
     ensure_hub_cards(&conn, root)?;
     ensure_math_form_column(&conn, root)?;
+    ensure_finding_cards(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)
 }
@@ -767,7 +768,7 @@ fn cards_table(name: &str) -> String {
             bibtex TEXT,
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
-            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'model', 'hub')),
+            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
@@ -857,7 +858,7 @@ fn ensure_card_type_column(conn: &Connection, root: &Path) -> Result<()> {
     }
     conn.execute_batch(
         "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'idea'
-             CHECK(card_type IN ('idea', 'event', 'model', 'hub'));",
+             CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub'));",
     )
     .context("failed to add Card types to the archive")?;
     log_event(root, "added card types; existing cards are idea cards").ok();
@@ -1006,6 +1007,55 @@ fn ensure_hub_cards(conn: &Connection, root: &Path) -> Result<()> {
     })
     .context("failed to add Hub Cards to the archive")?;
     log_event(root, "added hub cards; no card is a hub card yet").ok();
+    Ok(())
+}
+
+/// Archives written before Finding Cards existed allow only the Idea, Event,
+/// Model, and Hub types. No column is added, so the stored table definition
+/// tells whether `finding` is allowed. SQLite cannot change a CHECK, so the
+/// cards table is rebuilt in one transaction after a backup copy; every Card
+/// keeps its row id, type, facet, emphasis, levels, form, and text, and no
+/// Card is a Finding Card.
+fn ensure_finding_cards(conn: &Connection, root: &Path) -> Result<()> {
+    let definition: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+        [],
+        |row| row.get(0),
+    )?;
+    if definition.contains("'finding'") {
+        return Ok(());
+    }
+    ensure_math_form_column(conn, root)?;
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-finding-cards-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {}
+         INSERT INTO cards_findings ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_findings RENAME TO cards;
+         CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+             ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;",
+        cards_table("cards_findings")
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
+    .context("failed to add Finding Cards to the archive")?;
+    log_event(root, "added finding cards; no card is a finding card yet").ok();
     Ok(())
 }
 
@@ -2109,7 +2159,7 @@ fn insert_card(
         bail!("invalid location `{location}`");
     }
     if is_topic && card_type != CardType::Idea {
-        bail!("only Regular Cards can be Event, Model, or Hub Cards");
+        bail!("only Regular Cards can be Event, Finding, Model, or Hub Cards");
     }
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
