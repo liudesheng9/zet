@@ -203,9 +203,8 @@ pub(crate) fn parse_body(body: &str) -> Body {
         let Some(item) = list_item(trimmed) else {
             continue;
         };
-        let Ok(links) = LinkBody::parse(item) else {
-            continue;
-        };
+        // Tolerant, so a member whose Link is malformed stays a member and its check reports it.
+        let links = LinkBody::for_rendering(item);
         let Some(first) = links.occurrences().first() else {
             continue;
         };
@@ -1060,6 +1059,14 @@ mod tests {
         assert_eq!(parsed.lines[1].reason, "多重均衡一支。");
         assert_eq!(parsed.lines[2].group.as_deref(), Some("邻近"));
         assert_eq!(parsed.lines[2].kind, "contrasts");
+    }
+
+    #[test]
+    fn a_member_line_with_a_malformed_link_is_kept_for_the_checks() {
+        let parsed = parse_body("## 起点\n- [[0/1]]：第一张。\n- [[0/01]]：地址写错了。\n");
+        assert_eq!(parsed.lines.len(), 2);
+        assert_eq!(parsed.lines[1].target, "0/01");
+        assert_eq!(parsed.lines[1].reason, "地址写错了。");
     }
 
     #[test]

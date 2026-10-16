@@ -163,6 +163,7 @@ Title normalization (`normalize_title`): grouping braces `{` `}` are removed; an
 |---|---|---|
 | `LinkOccurrence<'a>` | `{ target: &'a str, macro_range: Range<usize>, target_range: Range<usize> }` | Byte ranges into the body: `[[…]]` and the target inside it. |
 | `LinkBody::parse` | `fn(&'a str) -> Result<LinkBody<'a>>` | Strict scan. Errors: `invalid link macro` (a `[[` with no `]]`, or a stray `]]` in prose after the last Link), ``invalid link macro target `<t>` `` (target is neither a valid Location nor a valid Citation key). |
+| `LinkBody::for_rendering` | `fn(&'a str) -> LinkBody<'a>` | Tolerant scan (never fails): every `[[target]]` outside code, valid or not; stops at a `[[` with no `]]`. Used by `classify_for_rendering` and by `hub::parse_body` for member lines. |
 | `LinkBody::occurrences` | `fn(&self) -> &[LinkOccurrence]` | In text order, duplicates kept. |
 | `LinkBody::rewrite_targets` | `fn(&self, &BTreeMap<String, String>) -> LinkRewrite` | Replaces only `target_range` bytes whose target is a mapping key; every other byte stays. `LinkRewrite { body, count }` counts replaced occurrences. |
 | `code_ranges` | `fn(&str) -> Vec<Range<usize>>` | Fenced code blocks plus inline code spans, sorted by start. Used by the GUI's TeX-delimiter rewrite. |
@@ -403,6 +404,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 - `2026-10-16` — Wiki doc created.
 - `2026-10-16` — The dump type test adds a line Hub Card and checks `hub_levels`.
+- `2026-10-16` — `LinkBody::for_rendering` is `pub(crate)` for `hub::parse_body`.
 - `2026-10-16` `753bd7b` — Finding Cards: `CardType::Finding`, error texts name Finding, the one-time `cards` table rebuild and its tests (zt 0.20.0).
 - `2026-10-15` `9918ba6` — Math forms on Model Cards; the type tests and dump manifest gain `forms`.
 - `2026-10-14` `82eac86` — Hub Cards: `CardType::Hub` and the Hub refusal text (zt 0.16.0).

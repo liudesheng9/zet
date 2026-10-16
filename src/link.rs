@@ -29,7 +29,8 @@ impl<'a> LinkBody<'a> {
         })
     }
 
-    fn for_rendering(text: &'a str) -> Self {
+    /// Every `[[target]]` outside code, valid or not; it never fails.
+    pub(crate) fn for_rendering(text: &'a str) -> Self {
         Self {
             text,
             occurrences: scan_occurrences(text, false)
