@@ -54,7 +54,7 @@ This block is the `zt` binary's front door and its storage base. It parses every
 - `Stale record` — a `zt.pid` whose daemon lock is free: the daemon ended without `zt down` (power cut, killed process). `clear_stale_service` removes it.
 - `Restart marker` — `zt.restart`, made with create-new by the one process that restarts a dead service (`RestartMarker`); ignored after 30 seconds (`RESTART_TIMEOUT`).
 - `Session` — an interactive terminal view ([Terminal Session](session.md)); open Sessions are listed by pid in `zt.sessions` and counted by `session::session_count`. `zt down` and `zt clear` refuse while any is open.
-- `Edit lock` — `zt.edit.lock`, made with create-new for every write (`acquire_edit_lock`, `EditLock` removes it on drop). A second writer gets `edit in progress`.
+- `Edit lock` — `zt.edit.lock`, made with create-new for every write (`acquire_edit_lock`, `EditLock` removes it on drop). Its holder writes `zt edit lock` and its pid into it and keeps the file's OS lock, which the system releases however the holder ends; the next writer removes a marked file whose OS lock is free (`remove_stale_edit_lock`) and takes the lock. A second writer gets `edit in progress`. The short-held `zt.edit.guard` OS lock orders creating, taking over, and removing the lock file.
 - `SystemEnd` — why Windows ended the daemon: `LogOff` or `Shutdown` (`src/shutdown.rs`).
 - `Login command` — the Run-key value `zt` that starts `zt-boot` at sign-in (`src/autostart.rs`).
 - `Card` (the storage row) — the private struct `Card` in `src/main.rs`: `row_id`, `address` (a Location or a Citation key), `citation_key`, `is_topic`, `is_lit`, `bibtex`, `text`, `workspace`, `card_type`, and the optional `facet`, `emphasis`, `level` (elaboration level), `hub_level`, `form` (Math form). `Card::level_id` gives a Model Card's or Hub Card's level as clients see it.
@@ -191,10 +191,10 @@ Archive and service:
 | `require_archive_root() -> Result<PathBuf>` | The configured root, or the "not configured" error. |
 | `require_service_up() -> Result<PathBuf>` | Root when `is_service_up`; then runs `ensure_markdown_cards`. |
 | `config_file() -> Result<PathBuf>` | Path of `config.toml` (see Configuration). |
-| `db_path`, `log_path`, `service_path`, `sessions_path`, `edit_lock_path`, `daemon_lock_path`, `restart_marker_path` | Archive-root file paths (see Data and storage). |
+| `db_path`, `log_path`, `service_path`, `sessions_path`, `edit_lock_path`, `edit_guard_path`, `daemon_lock_path`, `restart_marker_path` | Archive-root file paths (see Data and storage). |
 | `log_event(root, event) -> Result<()>` | Appends `<unix-seconds> <event>` to `zt.log`. |
 | `is_service_up(root) -> bool` | Up check that restarts a dead daemon. |
-| `acquire_edit_lock(root) -> Result<EditLock>` | create-new `zt.edit.lock`; `edit in progress` if it exists. |
+| `acquire_edit_lock(root) -> Result<EditLock>` | Under the `zt.edit.guard` lock: create-new `zt.edit.lock`, write the marker and pid, keep its OS lock. If the file exists, `remove_stale_edit_lock` removes it when it has the marker and its OS lock is free, and the create is tried once more; otherwise `edit in progress`. A file without the marker (from a zt before this change, or a test) always counts as held. |
 | `acquire_edit_lock_within(root, patience) -> Result<EditLock>` | Retries with backoff 20 ms → 400 ms until `patience` runs out (MCP server and GUI). |
 | `initialize_database(root) -> Result<()>` | Schema + all migrations (also used by unit tests in other modules on a temp dir). |
 | `ensure_markdown_cards(root) -> Result<()>` | Runs on every `require_service_up` and GUI snapshot read. |
@@ -411,7 +411,8 @@ archive_root=D:\zt-archive
 | `zt.daemon.lock` | `cmd_daemon` | Locked for the daemon's life. |
 | `zt.restart` | `RestartMarker` | Present only while one process restarts the service. |
 | `zt.sessions` | [Terminal Session](session.md) | Open Session pids, one per line, pruned by `session_count`. |
-| `zt.edit.lock` | `acquire_edit_lock` | Present while a write is in progress. |
+| `zt.edit.lock` | `acquire_edit_lock` | Present while a write is in progress: `zt edit lock`, then `pid <n>`; the holder keeps its OS lock. A marked file whose OS lock is free is stale. |
+| `zt.edit.guard` | `lock_edit_guard` | Empty and kept; its OS lock is held only while a process creates, takes over, or removes `zt.edit.lock`. |
 | `zt.gui` | [GUI](gui.md) | The GUI URL, `http://127.0.0.1:<port>/`. |
 | `artifacts/` | [Scholar bridge](scholar-bridge.md) | `<sha256>.<ext>` images and `<sha256>.json` records. |
 | `dump/zt-archive-<s>.<ext>`, `dump/.tmp/` | `dump::run` | Dumps and their temporary staging. |
@@ -598,7 +599,7 @@ Gaps:
 
 - `tests/cli_service.rs` needs `powershell` for its editor, so it runs only where PowerShell is installed (in practice Windows); the dump format tests skip silently when the host lacks a backend.
 - No test covers `ensure_open_model_parts`, `ensure_hub_cards`, `ensure_math_form_column`, or `ensure_finding_cards` on an archive of exactly the previous generation, nor the `unsupported cards schema` refusal.
-- No test covers a stale `zt.edit.lock`, `zt ins` from the shell, `zt mv --alone` / `--before` from the shell (covered in [Card operations](card-operations.md) tests), `zt ws`, or Unix daemon behaviour.
+- No test covers `zt ins` from the shell, `zt mv --alone` / `--before` from the shell (covered in [Card operations](card-operations.md) tests), `zt ws`, or Unix daemon behaviour.
 
 ## Decisions and pitfalls
 
@@ -616,7 +617,8 @@ Gaps:
 ### Pitfalls
 
 - **Upgrading the binary while the service is up does not migrate.** `zt up` returns `service already running` before `initialize_database`. Other commands run `ensure_markdown_cards`, which runs only some steps (not `ensure_math_form_column` or `ensure_finding_cards`). Run `zt down` and `zt up` after installing a new zt, or a missing column fails `load_cards` and a missing `'finding'` CHECK refuses Finding Cards. On Windows the running daemon also locks `zt.exe` (see the user's deploy notes).
-- **The edit lock has no stale recovery.** A `zt` process killed while it holds `zt.edit.lock` (for example while `EDITOR` is open) leaves every later write failing `edit in progress` until the file is deleted by hand.
+- **A lock file without the marker is never taken over.** zt binaries from before the OS-locked edit lock write an empty `zt.edit.lock` and keep no OS lock, so such a file counts as held until it is removed by its holder or by hand. While an old `zt mcp` process still runs after an upgrade, both versions still exclude each other.
+- **Remove the lock file only under the guard.** `EditLock::drop` removes `zt.edit.lock` before it releases the file's OS lock, under `zt.edit.guard`; releasing first would let another process take the free file for stale and then lose its new lock file to the late removal.
 - **`zt dp` and `zt clear` hold the edit lock while waiting for stdin.** A dump prompt left open blocks the MCP server and the GUI (they wait only their `patience`).
 - **`zt status` and `zt help` may start the service.** They call `is_service_up`, which restarts a daemon that ended without `zt down`. Only `zt up`, `zt down`, and `zt config set` never restart.
 - **`zt down` does not wait for the daemon to exit.** A `zt up` right after it starts a new daemon that blocks on the daemon lock until the old one releases it; `zt up` waits up to 15 s for the record.
@@ -632,6 +634,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — The edit lock keeps an OS lock on `zt.edit.lock` with a marker, so a writer killed while holding it (for example a Session with its editor open) no longer blocks every later write; `zt.edit.guard` orders take-over and removal (test `a_killed_session_does_not_leave_its_edit_lock_holding_every_write`).
 - `2026-10-16` — `DeletePlan` holds the side compaction; `DeletePlan::compaction` keeps later Side successors in place when a breaking Link would land on a renamed one.
 - `2026-10-16` — Dumps keep Hub levels: `DumpCard::with_hub_level`, `archive.json` key `hub_levels` after `forms`.
 - `2026-10-16` `753bd7b` — Finding Cards (zt 0.20.0): `finding` in the `card_type` CHECK, `ensure_finding_cards` rebuild with a `pre-finding-cards` backup, dumps list `finding` in `types`.

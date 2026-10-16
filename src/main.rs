@@ -288,6 +288,10 @@ fn edit_lock_path(root: &Path) -> PathBuf {
     root.join("zt.edit.lock")
 }
 
+fn edit_guard_path(root: &Path) -> PathBuf {
+    root.join("zt.edit.guard")
+}
+
 fn log_event(root: &Path, event: &str) -> Result<()> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1881,27 +1885,96 @@ fn insert_literature_card(
     Ok(())
 }
 
+/// The first line of an edit lock file whose holder also keeps the file's OS lock.
+const EDIT_LOCK_MARKER: &str = "zt edit lock";
+
+/// The edit lock: `zt.edit.lock`, created new by its holder and removed when the holder is done.
+/// The holder also keeps the file's OS lock, which the system releases however the holder ends,
+/// so the file of a holder that was killed is found stale and taken over. A lock file without
+/// the marker comes from an older zt, which keeps no OS lock; it counts as held. The short-lived
+/// `zt.edit.guard` lock orders taking over and removing, so no two processes hold the edit lock.
 struct EditLock {
-    path: PathBuf,
+    root: PathBuf,
+    file: Option<fs::File>,
 }
 
 impl Drop for EditLock {
     fn drop(&mut self) {
-        fs::remove_file(&self.path).ok();
+        // Remove the file before its OS lock is released, under the guard, so no process can
+        // find it free and take it over in between.
+        let guard = lock_edit_guard(&self.root).ok();
+        fs::remove_file(edit_lock_path(&self.root)).ok();
+        drop(self.file.take());
+        drop(guard);
     }
+}
+
+fn lock_edit_guard(root: &Path) -> Result<fs::File> {
+    let path = edit_guard_path(root);
+    let guard = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    guard
+        .lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    Ok(guard)
 }
 
 fn acquire_edit_lock(root: &Path) -> Result<EditLock> {
     let path = edit_lock_path(root);
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path);
-    match file {
-        Ok(_) => Ok(EditLock { path }),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => bail!("edit in progress"),
-        Err(err) => Err(err).with_context(|| format!("failed to create {}", path.display())),
+    let _guard = lock_edit_guard(root)?;
+    // A second try follows only after a stale lock file was removed.
+    for _ in 0..2 {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        match file {
+            Ok(mut file) => {
+                writeln!(file, "{EDIT_LOCK_MARKER}\npid {}", std::process::id())
+                    .and_then(|()| file.lock())
+                    .with_context(|| format!("failed to lock {}", path.display()))?;
+                return Ok(EditLock {
+                    root: root.to_path_buf(),
+                    file: Some(file),
+                });
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if !remove_stale_edit_lock(&path)? {
+                    break;
+                }
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to create {}", path.display()));
+            }
+        }
     }
+    bail!("edit in progress")
+}
+
+/// Removes the lock file of a holder that ended without removing it: the file has the marker
+/// and nobody keeps its OS lock. Returns whether the lock file is gone. The caller holds the guard.
+fn remove_stale_edit_lock(path: &Path) -> Result<bool> {
+    let mut file = match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(_) => return Ok(false),
+    };
+    if file.try_lock().is_err() {
+        return Ok(false);
+    }
+    let mut text = String::new();
+    io::Read::read_to_string(&mut file, &mut text).ok();
+    if !text.starts_with(EDIT_LOCK_MARKER) {
+        return Ok(false);
+    }
+    fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    Ok(true)
 }
 
 /// The edit lock for clients that make many short writes at once (the MCP server and the GUI):

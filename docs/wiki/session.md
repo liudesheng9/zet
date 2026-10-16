@@ -426,7 +426,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 
 ### Pitfalls
 
-- A killed Session (closed terminal window, `taskkill`) runs no destructor: if it was editing, `zt.edit.lock` stays and every writer reports `edit in progress` until the file is deleted by hand. Nothing in the code clears a stale edit lock. Its pid in `zt.sessions` is pruned later by `process_exists`.
+- A killed Session (closed terminal window, `taskkill`) runs no destructor: if it was editing, `zt.edit.lock` stays, but the system releases the file's OS lock, so the next writer takes the stale lock over ([Service, CLI and storage](service-and-cli.md)). Its pid in `zt.sessions` is pruned later by `process_exists`.
 - `register_session`/`unregister_session` read, change and write `zt.sessions` without a lock; two Sessions starting or quitting at the same moment can lose an entry. `session_count` also rewrites the file, so `status` has a write side effect.
 - On Windows `process_exists` runs `tasklist` once per recorded pid, so `status`, `zt status` and `zt down` get slower with many recorded pids.
 - `char_display_width` treats every non-ASCII character as 2 cells. Accented Latin letters, dashes and similar 1-cell characters make Link spans, wrapping, clicks and selections drift on lines that hold them. `tui_line_height` also divides the width simply, while `RenderedScreen` wraps a wide character that does not fit to the next row; with CJK text at a wrap boundary the two can disagree by a row.

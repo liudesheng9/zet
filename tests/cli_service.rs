@@ -1526,6 +1526,47 @@ fn delete_side_successor_compacts_later_sides_and_rewrites_links() {
 }
 
 #[test]
+fn a_killed_session_does_not_leave_its_edit_lock_holding_every_write() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    // A Session holds the edit lock while its editor is open; then the process is killed.
+    let mut editing = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn editing session");
+    editing
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"go 0/1\ne\n")
+        .expect("enter edit");
+    home.wait_until(|| home.archive_root.join("zt.edit.lock").exists());
+    home.cmd_with_editor("# Blocked\n\nblocked\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("edit in progress"));
+    editing.kill().expect("kill session");
+    editing.wait().expect("session ends");
+
+    home.cmd_with_editor("# After\n\nafter\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .success();
+    assert!(home.card_text("0/2").starts_with("# After"));
+    // The next writer finds the lock free again.
+    home.cmd_with_editor("# Again\n\nagain\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/2"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn deleting_a_linked_side_successor_keeps_its_link_broken_instead_of_renaming_a_sibling_onto_it() {
     let home = TestHome::new();
     home.configure_and_up();
