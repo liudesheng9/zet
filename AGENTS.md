@@ -11,3 +11,7 @@ Use the canonical triage label vocabulary configured for this repository. See `d
 ### Domain docs
 
 This is a single-context repository with one root `CONTEXT.md`. See `docs/agents/domain.md`.
+
+## Wiki
+
+The developer wiki is `docs/wiki/`: one doc per functional block, listed in `docs/wiki/README.md`. Read the block doc before you change a block. When you change code, update its block doc in the same commit (project-wiki skill); `node ~/.claude/skills/project-wiki/scripts/wiki.mjs check` lists stale blocks.

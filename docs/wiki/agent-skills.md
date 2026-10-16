@@ -1,0 +1,448 @@
+---
+block: agent-skills
+title: Agent skills and integrations
+paths:
+  - "skills/**"
+  - "scripts/install-agent-integrations.ps1"
+synced: fe5d77864def
+updated: 2026-10-16
+---
+
+# Agent skills and integrations
+
+## Purpose
+
+This block holds what AI agents get to know about ZT, and the means to put it in front of them. It has three agent skills: `zt` teaches the slip-box's Workspaces, the `zt` MCP server's tools, and the Access rules. `zettelkasten` teaches how to compose, place, and link a Card the way Luhmann worked. `zt-digest-protocol` teaches the building blocks of the book-digest workflows. It also holds the shell helper `zt-mcp.ps1`, which lets an agent with no MCP tools (DeepSeek Harness) call the same server, and the installer `scripts/install-agent-integrations.ps1`. The installer copies the skills into Claude Code, Codex, and DeepSeek Harness and registers `zt mcp` as an MCP server. The block exists because the server only enforces the rules (agent Access, Card rules, confirm plans). The conventions that make Cards good (one idea, claim titles, kinded Links, model structure) live in skill text, and every agent harness must load that text from one source.
+
+**Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the shell helper `skills/zt/scripts/zt-mcp.ps1` (batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, the helper-only `append_card` call); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
+
+**Does not own:** the MCP server, its tool schemas and its `INSTRUCTIONS` text ([MCP server](mcp-server.md), `src/mcp.rs`); the Card operations and confirm plans behind the tools ([Card operations](card-operations.md)); the Card checker that enforces the Card language ([zt-check](zt-check.md)); the digest scripts that call the helper, including `zt-calls.ps1` ([Digest scripts](digest-scripts.md)); the DeepSeek instruction files ([Digest prompts](digest-prompts.md)); the Workflow scripts and the framework that builds them ([Digest workflows](digest-workflows.md)); the service that `zt mcp` needs ([Service, CLI and storage](service-and-cli.md)).
+
+## At a glance
+
+| | |
+|---|---|
+| Entry points | A harness loads a skill when its `description` matches the task (Claude Code from `~/.claude/skills/<name>/SKILL.md`, Codex from `~/.codex/skills/<name>`, DeepSeek Harness from `~/.dsh/skills/<name>` or the `skills` field of `deepseek_run`). `pwsh -File scripts/install-agent-integrations.ps1 [-ZtPath <zt.exe>]` installs everything. `pwsh -NoProfile -File <skill dir>/scripts/zt-mcp.ps1 <calls.json or ->` calls the server from a shell. |
+| Key files | `skills/zt/SKILL.md` — the slip-box and the MCP tools: what to call, the Access rules, the helper, how to develop zt. |
+| | `skills/zt/agents/openai.yaml` — display name and short description of the `zt` skill for Codex. |
+| | `skills/zt/scripts/zt-mcp.ps1` — the shell helper: starts `zt mcp`, runs a batch of tool calls, prints one line per call. |
+| | `skills/zettelkasten/SKILL.md` — how to compose, place, and link a Card: filing steps, Card language, Event, Finding, and Model Cards, model structure, charts, figures, addresses, placement, Links, hubs, maintenance. |
+| | `skills/zettelkasten/agents/openai.yaml` — display name and short description of the `zettelkasten` skill for Codex. |
+| | `skills/zettelkasten/references/luhmann-and-practice.md` — the research behind each zettelkasten rule, with sources, and the mapping of Luhmann's box to ZET. |
+| | `skills/zt-digest-protocol/SKILL.md` — the base protocol of the digest workflows: roles, the compiler cycle, stages, inherited protocols, quality checks, how to build a variant, operating rules. |
+| | `skills/zt-digest-protocol/references/scripts.md` — a table of every digest script, instruction file, workflow, and test. |
+| | `scripts/install-agent-integrations.ps1` — copies and links the skills, registers the server in Claude Code and Codex, checks the handshake. |
+| Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); external: PowerShell 7 (7.5 for the installer), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
+| Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1`, `model-compiler.ps1`, `organize-apply.ps1`, `card-compiler.ps1`, `math-compiler.ps1`, and the job files of `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` call the helper); [Digest prompts](digest-prompts.md) (`dsh-fill-instructions.zh.md`, `dsh-link-instructions.zh.md` show helper commands); [Digest workflows](digest-workflows.md) (`HELPER`/`ZD_HELPER` in `.claude/workflows/*.js`, and the `zettelkasten` skill sent to digest and link runs); every Claude Code, Codex, and DeepSeek Harness conversation that touches the slip-box. |
+| Tests | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` (helper `-SrcLog`, `-TopicGate`), `scripts/book-digest/tests/zt-calls.tests.ps1` (helper output under a GBK console), `scripts/book-digest/tests/card-compiler.tests.ps1` (uses `append_card`). The skills and the installer have no tests. |
+
+## Concepts
+
+- `Skill` — a folder with a `SKILL.md` whose YAML frontmatter has `name` and `description`; the harness reads the description to decide when to load the body. Here: `skills/zt`, `skills/zettelkasten`, `skills/zt-digest-protocol`.
+- `Workspace` — the `human` or `agent` half of the archive (`CONTEXT.md`). The `zt` skill tells the agent that `human` is read-only and `agent` is its own.
+- `Access` — which Workspaces a client may change (`CONTEXT.md`). The MCP server and therefore the helper act with agent Access (`const ACCESS: Access = Access::Agent` in `src/mcp.rs`). The `zt` shell commands act with human Access, so `skills/zt/SKILL.md` forbids writing with them.
+- `MCP server` — `zt mcp`, JSON-RPC 2.0 over stdio (`CONTEXT.md`, `src/mcp.rs`). Registered under the name `zt`; Claude Code exposes its tools as `mcp__zt__*`.
+- `Card language` — the plain-text rules for titles and bodies (ASD-STE100 adapted for Chinese; `CONTEXT.md`). `skills/zettelkasten/SKILL.md` states them as a 12-row table; `zt-check` checks most of them.
+- `Card type` — `idea` (default), `event`, `finding`, `model`, `hub`. The `zt` skill names the tool arguments; the `zettelkasten` skill gives the body templates (Event Card, Finding Card with six labelled lines, Model Card).
+- `Model part`, `Model facet`, `Emphasis`, `Relation kind`, `Elaboration level`, `Math form`, `Derivation part`, `Derivation chain`, `Building block`, `Self-sufficient model` — the model vocabulary of `CONTEXT.md`. `skills/zettelkasten/SKILL.md` (*Model structure*) teaches how to design them; `skills/zt/SKILL.md` names the arguments and the `get_model` report fields.
+- `Hub Card`, `Hub level`, `Register`, `Structure Card` — entry points (`CONTEXT.md`); the zettelkasten skill (*Entry points, hubs, and structure Cards*) says when to write one by hand.
+- `Insert` — putting a new Card in another Card's place (`CONTEXT.md`); `insert_card` in the `zt` skill.
+- `Topic gate` — the lock the helper takes before `create_topic` (`-TopicGate`), so parallel digest runs do not make the same Topic twice (`CONTEXT.md`, `skills/zt/scripts/zt-mcp.ps1`).
+- `Call batch` — the helper's input: one JSON object `{"tool","arguments"}` or an array of them; `@@N` in a string argument is the address returned by call `N` (0-based) (`skills/zt/scripts/zt-mcp.ps1`).
+- `Allow list` — the file passed with `-Allow`: one address per line; the run may change only those Cards and the Cards it creates (`skills/zt/scripts/zt-mcp.ps1`).
+- `Compiler cycle` — survey, plan, DeepSeek writes, SELF-CHECK, apply, check, one fix round, report, cleanup: the basic block of every digest stage (`skills/zt-digest-protocol/SKILL.md`, section 2).
+- `SELF-CHECK line` — the exact read-only check command in each job file; the DeepSeek writer runs it until `faults: 0` (`skills/zt-digest-protocol/SKILL.md`, section 5).
+
+## Architecture
+
+The block has four parts. The three skills are text only. The helper and the installer are PowerShell. The installer is the only bridge from the repository to the harnesses. Nothing reads `skills/` in place except the digest scripts' `zt-calls.ps1` and the tests, which call the repository copy of the helper.
+
+```mermaid
+flowchart LR
+  subgraph repo[Repository]
+    S1[skills/zt]
+    S2[skills/zettelkasten]
+    S3[skills/zt-digest-protocol]
+    H[skills/zt/scripts/zt-mcp.ps1]
+    I[scripts/install-agent-integrations.ps1]
+    ZC[scripts/book-digest/zt-calls.ps1]
+  end
+  subgraph home[User home]
+    CS[~/.claude/skills/&lt;name&gt; copy]
+    XS[~/.codex/skills/&lt;name&gt; copy]
+    DS[~/.dsh/skills/&lt;name&gt; junction]
+    CJ[~/.claude.json mcpServers.zt]
+    ST[~/.claude/settings.json allow mcp__zt]
+    CT[~/.codex/config.toml via codex mcp add]
+  end
+  I -->|Copy-Item| CS
+  I -->|Copy-Item| XS
+  I -->|junction to Codex copy| DS
+  DS --> XS
+  I --> CJ
+  I --> ST
+  I --> CT
+  I -->|handshake: initialize, tools/list| MCP[zt mcp - src/mcp.rs]
+  CC[Claude Code] --> CS
+  CC --> CJ --> MCP
+  CX[Codex] --> XS
+  CX --> CT --> MCP
+  DSH[DeepSeek Harness run] --> DS
+  DSH -->|pwsh installed helper| XH[~/.codex/skills/zt/scripts/zt-mcp.ps1]
+  XH -->|spawns, stdio| MCP
+  ZC -->|pwsh repo helper| H -->|spawns, stdio| MCP
+  WF[.claude/workflows/*.js and job files] --> XH
+```
+
+### Skills
+
+- `skills/zt/SKILL.md` is the tool manual. It restates, in agent-facing prose, what `src/mcp.rs` exposes: the tool names, their arguments, the report fields of `get_model`, `get_hub`, `list_hubs`, the confirm flow, the Scholar Archive tools, and the fallback through the helper.
+- `skills/zettelkasten/SKILL.md` is the writing manual. It owns the conventions the server does not check: the body templates, placement rules, Link wording, model design, chart palette, entry points, maintenance. It sends the reader to `references/luhmann-and-practice.md` for the reasons, and to the `zt` skill for the mechanics.
+- `skills/zt-digest-protocol/SKILL.md` is the operator's manual for the digest workflows. It names the roles, the compiler cycle, the stages, the checks, and the operating rules; `references/scripts.md` lists every script.
+- `skills/zt/agents/openai.yaml` and `skills/zettelkasten/agents/openai.yaml` hold an `interface` map with `display_name` and `short_description`, the names Codex shows for the skill. `skills/zt-digest-protocol` has no such file.
+
+### The helper (`skills/zt/scripts/zt-mcp.ps1`)
+
+One process per run. It parses the input, starts `zt mcp` as a child with redirected UTF-8 stdin and stdout, sends `initialize` (protocol `2025-06-18`) and `notifications/initialized`, then sends one `tools/call` per call, in order, and waits for the reply with the matching `id`. Between calls it resolves `@@N`, applies the allow list, strips `src`, takes the Topic gate, and writes the logs. In its `finally` block it closes the child's stdin and kills the child after 5 seconds.
+
+### The installer (`scripts/install-agent-integrations.ps1`)
+
+Four sections in this order: skills, Claude Code, Codex, check. Each config file is backed up (`Backup`), rewritten through a temp file that is parsed again before it replaces the original (`Write-JsonAtomically`), and members are added or replaced with `Set-Member`.
+
+## Interfaces
+
+### Skill frontmatter (when each skill triggers)
+
+| Skill | `name` | Triggers on (from `description`) | Body sections |
+|---|---|---|---|
+| `skills/zt/SKILL.md` | `zt` | The user mentions zt, ZET, the slip-box, zettelkasten, Cards, Topic or Literature trees; asks to record, file, look up, or connect notes, ideas, or papers; or works on the zt project itself. | Use the MCP server; Read the Scholar Archive; Rules; When the server is unavailable; Developing zt itself |
+| `skills/zettelkasten/SKILL.md` | `zettelkasten` | Writing, filing, splitting, placing, or linking a Card; taking notes on a paper or conversation into the slip-box; building an outline from Cards; reviewing a tree's structure. | Filing a thought: the steps; Composing one Card (with the Card language table); Event, Finding, and Model Cards (Model structure, HTML charts, The source's own figures); ZET addresses; Placement; Links; Entry points, hubs, and structure Cards; Collector's fallacy; Maintenance |
+| `skills/zt-digest-protocol/SKILL.md` | `zt-digest-protocol` | Running or changing a digest workflow, debugging a stage, building a new digest variant. | 1 Roles; 2 The basic block: the compiler cycle; 3 Stage logistics; 4 Protocols every variant inherits; 5 Quality checks; 6 Building a new digest variant; 7 Operating rules |
+
+The frontmatter holds only `name` and `description`. The descriptions of `zt` and `zettelkasten` are double-quoted YAML strings; the `zt-digest-protocol` description is a plain scalar, so it must not contain `: ` or a leading special character.
+
+### What each skill teaches
+
+**`zt`** (`skills/zt/SKILL.md`):
+
+1. Read before writing: `list_workspaces`, `list_trees` (filter `workspace`, `zone`), `get_tree` or `get_card`, `search_cards` before creating, `list_links` with `cross_workspace_only`.
+2. Writing tools and their arguments: `create_topic`, `create_literature` (one BibTeX entry with a `title`), `create_successor` (`at`, `title`, `body`, `kind` `direct` or `side`), `edit_card`, `edit_literature_metadata`, `insert_card` (`before`), `move_card` (`to` or `before`, `alone`), `delete_card` (`into`).
+3. Card types (`type`), Model parts (`facet` up to 32 characters, `emphasis` `core` or `aside`), Relation kinds by the word before the Link, the elaboration `level` (`concept`/`formal`, also `1`/`2`), the Math `form`, and the `get_model` report: `models`, `relations`, `loose`, `neighbours`, `issues`, `build` (`setting`, `order` with `line` `main`/`side`/`off`/`shared`, `chains`, `closure`, `forward`, `unanchored`, `tolerated`, `beyond_level`, `self_sufficient`), and `math` for units and Theory Cards.
+4. Bodies: `![caption](artifact:<sha256>)` figures, TeX, ```` ```chart ```` fences with `--zt-*` palette variables and `data-zt` clicks; never write a Reverse links section.
+5. The confirm flow: `delete_card`, `move_card`, `insert_card`, and Citation key renames return a plan; call again with the `confirm` text (`delete`, the tree root's address, `move`, `insert`).
+6. The Scholar Archive tools: `scholar_archive_status`, `scholar_archive_read`, `scholar_archive_sql`, `scholar_archive_file` (its `link` is a Document link `[name](scholar:<file_id>)`), `scholar_archive_export`, `scholar_archive_artifact`.
+7. Rules: never change the human Workspace by any route (not by shell commands, the GUI API, or SQLite); write only through the MCP server; cite Cards by address.
+8. Fallbacks: if the service is down, `zt status` then `zt up`; if the harness has no `zt` tools, use the helper.
+9. Developing zt: `cargo test` from PowerShell (dump tests fail under Git Bash because of PATH), the deploy sequence (`zt down`, back up `zt.sqlite3` on a schema change, `cargo install --path . --locked`, `zt up`, `zt version`, `zt status`), and re-running the installer after a skill or registration change.
+
+**`zettelkasten`** (`skills/zettelkasten/SKILL.md`):
+
+1. The seven filing steps: converse first (search both Workspaces), decide whether a Card is needed, compose, place, link (at least one Link besides the parent), update entry points, report.
+2. One Card: one idea, a claim title (a Topic title names the subject), own words, standalone, about 50 to 250 words, the source line `来源：[[Key]] 第10页`, the tree's language, no generated parts.
+3. The Card language table (rules 1 to 12: one statement per sentence; at most 40 characters per description sentence and 30 per derivation step; no `；`; active voice; a verb for an action; one term per meaning; at most two `的`; keep modality; no hedges or praise; lists for three or more items; a sentence for each display formula; a one-claim title of at most 40 characters). It says `zt-check` checks rules 2–7, 9, and 12.
+4. Event Cards (title with date; what, when, where, who, source), Finding Cards (six labelled lines 测量, 数据, 方法, 结果, 局限, 来源; one result per Card; F1–F4 checked by `zt-check`), Model Cards (title with name and claim; level `concept` or `formal`; every discussing Card links it).
+5. Model structure: membership by filing or by the Model Card's Link, facets, kinded relations, shape, loose parts, emphasis, mathematical units and Theory Cards, self-sufficiency, build order (setting `…|a` with symbol and term tables, main line of Direct successors, examples as Side successors, Derivation parts and chains, building blocks), the Model Card's 问题, 概要, 结构 list, 关联, 来源.
+6. HTML charts (palette variables, `viewBox` width up to about 440, `data-zt`), and the source's own figures (`list_work_artifacts`, `scholar_archive_artifact`, Document links with `#page=`).
+7. ZET addresses (shape, roots, Direct and Side successors, Topic numbers never reused) and where ZET differs from Luhmann's box.
+8. Placement (four rules in order), Literature Zone roles, Links with a reason (a table of relationships), entry points (Topic body, findable titles, Hub Card levels, Structure Card), the Collector's fallacy, and maintenance (split, merge, move, fix broken Links).
+
+**`zt-digest-protocol`** (`skills/zt-digest-protocol/SKILL.md`):
+
+1. Roles: Scripts do every structural step and every zt write of a JSON answer; DeepSeek (V4.1 Flash, effort high) writes text; Haiku manages DeepSeek runs; Sonnet writes one `plan.json` per model; Opus writes only `decisions.json`.
+2. The compiler cycle and the compilers that follow it (`model-compiler.ps1`, `card-compiler.ps1`, `hub-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `math-compiler.ps1`).
+3. The stages of `zt-book-digest` mode `full` (Prepare, Digest, Models, Cards, Link, Cleanup, Organize, Figures, Hubs, Audit) and the single-stage modes.
+4. Inherited protocols: the DeepSeek Subagent Managed Protocol, self-checks, the manager approval list, `state.json` per compiler, compact JSON last lines, the installed helper and its flags, source fidelity marks `（补：书中略去）`.
+5. `zt-check` as the only checker, its command forms, its output (`faults: N`), and the SELF-CHECK command per task.
+6. How to build a variant, and operating rules (back up with `VACUUM INTO`, run edited workflows by `scriptPath`, never rerun finished models, do not deploy zt during a run, the `CARGO_TARGET_DIR` locations, script traps).
+
+### `zt-mcp.ps1` command line
+
+```powershell
+pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 <File|-> [-From N] [-Addresses a0,a1,...] [-Log <file>] [-Allow <file>] [-Moves <file>] [-SrcLog <file>] [-TopicGate <file>] [-TopicSimilarity 0.8]
+pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 -Tool <name> [-Json '<arguments object>']
+```
+
+| Parameter | Set | Default | Effect |
+|---|---|---|---|
+| `File` (position 0) | File | required | UTF-8 JSON file with one call or an array of calls; `-` reads the same JSON from stdin. |
+| `-From` | File | `0` | Skip calls before `N`; used to resume after a failure. |
+| `-Addresses` | File | `''` | Comma-separated addresses of the skipped calls, so `@@N` still resolves after `-From`. |
+| `-Log` | File | `''` | Append the address of every Card a `create*` call makes, one per line. |
+| `-Allow` | File | `''` | Allow-list file. Refuses `create_topic`, `move_card`, `insert_card`, `delete_card`, `create_literature`, `edit_literature_metadata`. `edit_card`, `append_card`, and `create_successor` must target a listed address or a Card created earlier in the run. Read tools pass. |
+| `-Moves` | File | `''` | Append `{"i":N,"moved":{"old":"new",...}}` for each call whose result has a non-empty `moved` map. |
+| `-SrcLog` | File | `''` | Append `<address><TAB><src>` for each created Card whose call carried `src`. |
+| `-TopicGate` | File | `''` | Lock file for the Topic gate (see Behaviour). |
+| `-TopicSimilarity` | File | `0.8` | Bigram similarity at or above which a Topic title counts as the same. |
+| `-Tool` | Inline | required | One tool name. |
+| `-Json` | Inline | `'{}'` | That tool's arguments as a JSON object. |
+
+The inline set has no `-Log`, `-Allow`, or other options.
+
+Call objects:
+
+```json
+[{"tool": "create_successor", "arguments": {"at": "Key", "title": "...", "body": "...", "src": "sections/s05.md:120-160"}},
+ {"tool": "create_successor", "arguments": {"at": "@@0", "kind": "side", "title": "...", "body": "... [[@@0]] ..."}},
+ {"tool": "append_card", "arguments": {"at": "3/2", "text": "对照 [[5/1]]：……"}}]
+```
+
+- `tool`: any tool `zt mcp` lists, or the helper-only `append_card` (`at`, `text`): the helper reads the Card with `get_card`, then calls `edit_card` with `body` = the old body (trailing space trimmed), a blank line, and the trimmed `text`.
+- `arguments.src`: a create call's source lines; removed before the call reaches zt. The server's input schemas set `additionalProperties: false` (`src/mcp.rs`, `fn tool`), so a stray key would be refused.
+
+Output, one line per call, on stdout:
+
+| Line | When |
+|---|---|
+| `N ok <address>` | The result has an `address` and the tool name starts with `create`, `edit`, `append`, `move`, `insert`, or `delete`. |
+| `N <compact json>` | Any other result (reads, and plans that still need `confirm`). |
+| `N error <message>` | A JSON-RPC error, an `isError` result (its `error` field), an unresolved `@@N`, or an allow-list or Topic-gate refusal. Newlines in the message become spaces. |
+| `resume: -From N -Addresses a0,a1,...` | After an error line; the exit code is 1. |
+
+### Installer
+
+```powershell
+pwsh -File scripts/install-agent-integrations.ps1 [-ZtPath <path to zt.exe>]
+```
+
+- `-ZtPath`: defaults to `(Get-Command zt).Source`. The script throws `zt is not installed; run cargo install --path . --locked ...` when it is missing, then resolves it to a full path and prints `zt binary: <path> (<zt version>)`.
+- It needs PowerShell 7.5 (`#Requires -Version 7.5`).
+- Errors: `<link> is a real directory, not a link; move it aside and re-run.` (a non-link `~/.dsh/skills/<name>`); `codex mcp add failed`; `zt mcp did not answer the handshake`.
+- Warnings, not errors: `~/.dsh does not exist; skipped the DeepSeek Harness skills.`, `codex is not on PATH; skipped the Codex registration.`
+
+## Behaviour
+
+### Installing the integrations (`scripts/install-agent-integrations.ps1`)
+
+1. Resolve `$repo` (the parent of `scripts/`), `$skillsSource = <repo>/skills`, and `$ZtPath`.
+2. **Skills.** For each directory under `skills/` (today `zt`, `zettelkasten`, and `zt-digest-protocol`):
+   1. For `~/.claude/skills` and `~/.codex/skills`: create the folder, delete `<folder>/<name>` recursively if it exists, and `Copy-Item -Recurse` the repository folder there.
+   2. If `~/.dsh` exists: create `~/.dsh/skills`; if `~/.dsh/skills/<name>` exists and is not a link, throw; otherwise delete the old link and create a directory junction `~/.dsh/skills/<name>` → `~/.codex/skills/<name>`.
+3. **Claude Code, user scope.** Back up `~/.claude.json` to `~/.claude.json.zt-backup` (if it exists), read it, and set `mcpServers.zt` to `{"type":"stdio","command":"<ZtPath>","args":["mcp"],"env":{}}`. If `projects` has an entry whose key equals the repository path with forward slashes (case-insensitive), add `zt` to its `enabledMcpjsonServers` and remove it from `disabledMcpjsonServers`. That approves the repository's own `.mcp.json`, which names the same server with `"command": "zt"`. Write the file atomically.
+4. **Claude Code permissions.** Back up `~/.claude/settings.json`, add `mcp__zt` to `permissions.allow` (once), and write it atomically. `mcp__zt` allows every tool of the server without a prompt; the server itself limits writes to the agent Workspace.
+5. **Codex.** If `codex` is on PATH: back up `~/.codex/config.toml`, run `codex mcp remove zt` (output discarded), then `codex mcp add zt -- <ZtPath> mcp`; throw on a non-zero exit.
+6. **Handshake check.** Pipe three lines into `<ZtPath> mcp`: `initialize` (id 1, protocol `2025-06-18`), `notifications/initialized`, and `tools/list` (id 2). Parse every reply line; throw unless the reply with id 2 has tool names. Print `zt mcp answers with <count> tools: <names>`.
+7. Print `Done. Start a new Claude Code or Codex conversation to use the server.`
+
+DeepSeek Harness gets the skills only (through the junctions); it gets no MCP registration, so DeepSeek runs reach zt through the helper.
+
+### Running a call batch (`zt-mcp.ps1`)
+
+1. Parse the input: the file, stdin (`-`), or `-Tool`/`-Json`, with `ConvertFrom-Json -AsHashtable -DateKind String`. Load the allow list if `-Allow` is set.
+2. Find `zt` on PATH and start `zt mcp` with UTF-8 stdin and stdout.
+3. Send `initialize` (id 0), wait for its reply, send `notifications/initialized`.
+4. Fill the resolved-address list for the skipped calls from `-Addresses`.
+5. For each call from `-From` on:
+   1. `Resolve-Refs` replaces every `@@N` in every string, recursively through objects and arrays. A reference to a call with no address fails the call.
+   2. With `-Allow`: refuse the structural tools; refuse `edit_card`, `append_card`, or `create_successor` whose `at` is not allowed.
+   3. `append_card`: `get_card` (id `read<i>`), then rewrite the call as `edit_card` with the appended body.
+   4. Remove `src` from the arguments and keep it for `-SrcLog`.
+   5. With `-TopicGate` and `create_topic`: open the gate file exclusively (`FileShare.None`), retrying every 200 ms for up to 120 s. Call `list_trees` with `workspace: agent`. Compare the new title's key (spaces, punctuation, and symbols removed, lower-cased) with each agent Topic's key. Refuse if a key is equal or the Dice similarity of their character bigrams is at least `-TopicSimilarity`; the refusal reads ``topic exists: `<root>` <title>. File the Card under that Topic instead of creating one.``
+   6. Send `tools/call` with id `i + 1` and wait for that reply. Release the gate.
+   7. On an error, print the error and resume lines and exit 1.
+   8. Record the result's `address` (or null). For a `create*` call with an address: add it to the allow list, append it to `-Log`, and append `address<TAB>src` to `-SrcLog`. Append a non-empty `moved` map to `-Moves`.
+   9. Print the `ok` line or the compact JSON line.
+6. Close the child's stdin; kill it if it does not exit within 5 s.
+
+### Rules the code keeps
+
+- **One server per run.** Each helper run starts its own `zt mcp` child, so calls within a run share nothing but the archive. The server checks that the service is up on each call (`archive_root` in `src/mcp.rs`), so the service must be running (`zt up`).
+- **Stop at the first error.** Calls after a failed call never run. The resume line lets a caller fix call `N` in the same input and continue; earlier addresses still resolve.
+- **A plan is not an error.** `delete_card`, `move_card`, `insert_card`, and `edit_literature_metadata` without `confirm` return `{"applied": false, "confirm": ..., "plan": [...]}` (`plan_or_done` in `src/mcp.rs`); the helper prints it as `N <json>` and goes on. A batch that must change something carries the `confirm` text.
+- **Created Cards join the allow list**, so a run under `-Allow` may grow and edit the Cards it made. An allow file that lists no Card makes a run read-only, because every create and edit then needs a listed `at`; `model-compiler.ps1` gives its brief jobs `read-only.allow.txt` for this.
+- **The Topic gate serializes `create_topic` across processes** by the exclusive file lock, and holds it until the new Topic exists. Without `-TopicGate` the helper does not check titles.
+- **Addresses move.** After `insert_card`, `move_card`, or a `delete_card` that shifts siblings, an address read before may name another Card. The helper does not rewrite later calls; callers use `-Moves` or read again.
+- **The installer replaces only what it owns**: the `<name>` folders it copies, the junctions it made, `mcpServers.zt`, the `zt` entries in the two `*McpjsonServers` lists, `mcp__zt` in `permissions.allow`, and Codex's `zt` server. It refuses to delete a real directory under `~/.dsh/skills`.
+- **Open conversations keep their old server.** A new MCP tool or a changed skill reaches only conversations started after the installer runs (`skills/zt/SKILL.md`, the installer's help text).
+
+## Data and storage
+
+The skills keep no data. The helper and the installer read and write these files.
+
+### Installed copies and links
+
+| Path | Kind | Written by |
+|---|---|---|
+| `~/.claude/skills/<name>/` | full copy of `skills/<name>/` | installer, replaced on each run |
+| `~/.codex/skills/<name>/` | full copy of `skills/<name>/` | installer, replaced on each run |
+| `~/.dsh/skills/<name>` | directory junction to `~/.codex/skills/<name>` | installer, if `~/.dsh` exists |
+
+### Config entries
+
+`~/.claude.json` after the installer:
+
+```json
+{
+  "mcpServers": {
+    "zt": { "type": "stdio", "command": "C:\\Users\\<you>\\.cargo\\bin\\zt.exe", "args": ["mcp"], "env": {} }
+  },
+  "projects": {
+    "E:/zet": { "enabledMcpjsonServers": ["zt"], "disabledMcpjsonServers": [] }
+  }
+}
+```
+
+`~/.claude/settings.json`: `"permissions": { "allow": [..., "mcp__zt"] }`. `~/.codex/config.toml`: whatever `codex mcp add zt -- <ZtPath> mcp` writes. The repository's `.mcp.json` declares the same server for the project scope: `{"mcpServers":{"zt":{"type":"stdio","command":"zt","args":["mcp"]}}}`.
+
+Backups: `<file>.zt-backup` next to `~/.claude.json`, `~/.claude/settings.json`, and `~/.codex/config.toml`. Temp files: `<file>.zt-tmp` (moved over the file after a parse check). The JSON is rewritten by `ConvertTo-Json -Depth 100`, so the installer reformats `~/.claude.json` and `~/.claude/settings.json`.
+
+### Helper files
+
+| File | Format | Example line |
+|---|---|---|
+| input (`File` or stdin) | UTF-8 JSON, one call object or an array | `[{"tool":"get_card","arguments":{"at":"3/1"}}]` |
+| `-Allow` | one address per line, trimmed, blank lines ignored | `Smith2024/1\|a` |
+| `-Log` | one created address per line | `3/2\|a` |
+| `-SrcLog` | `address<TAB>src` per created Card | `3/2\|a<TAB>sections/s02.md:10-20` |
+| `-Moves` | one compact JSON object per renumbering call | `{"i":2,"moved":{"3/2":"3/3","3/2\|a":"3/3\|a"}}` |
+| `-TopicGate` | any file; used only as a lock, content unused | (empty) |
+
+All appends use UTF-8 without a BOM.
+
+### MCP wire format the helper uses
+
+Requests are one compact JSON-RPC 2.0 line each (`ConvertTo-Json -Depth 50 -Compress`):
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_successor","arguments":{"at":"3/1","title":"...","body":"..."}}}
+```
+
+A reply's `result.content[0].text` holds pretty JSON; `result.structuredContent` holds the same object, from which the helper reads `address` and `moved`; `result.isError` marks a tool failure whose text is `{"error": "..."}` (`tool_result` in `src/mcp.rs`).
+
+## Configuration
+
+| Setting | Where | Default | Effect |
+|---|---|---|---|
+| `-ZtPath` | installer parameter | `zt` on PATH | The binary registered in Claude Code and Codex and used for the handshake. Re-run the installer after moving the binary. |
+| `~/.dsh` exists | file system | — | Enables the DeepSeek Harness junctions. |
+| `codex` on PATH | environment | — | Enables the Codex registration. |
+| `zt` on PATH | environment | — | The helper starts `zt mcp` from it; the tests prepend a scratch `bin` to PATH to test another `zt.exe`. |
+| `ZT_CONFIG_DIR` | environment, read by `zt` | the user's config | Points the `zt mcp` child (and `zt up`) at another archive; the helper tests use a scratch one. |
+| `ZT_GUI_PORT` | environment, read by `zt` | — | The helper-gate test sets `0`, so its scratch service does not take the live GUI port. |
+| `-TopicSimilarity` | helper parameter | `0.8` | Threshold of the Topic gate. |
+| Skill trigger text | `description` in each `SKILL.md` | — | Decides when a harness loads the skill. |
+| Codex display names | `skills/*/agents/openai.yaml` | — | `display_name` and `short_description` shown by Codex. |
+
+## Usage
+
+### Install or update the integrations
+
+```powershell
+cargo install --path . --locked     # zt must be installed first
+pwsh -File scripts/install-agent-integrations.ps1
+```
+
+Re-run it after any change under `skills/`, after a change to the server's tools, or after moving `zt.exe`. Then start a new conversation.
+
+### Call the server from a shell (DeepSeek Harness, or any harness without `zt` tools)
+
+```powershell
+# one read inline
+pwsh -NoProfile -File ~/.codex/skills/zt/scripts/zt-mcp.ps1 -Tool get_card -Json '{"at":"3/1"}'
+
+# a chain of writes from stdin, with logs and the Topic gate (as prepare-book-digest.ps1 writes into job files)
+@'
+[{"tool":"create_topic","arguments":{"title":"剩余控制权","body":"本主题追问：谁决定契约没写的事。"}},
+ {"tool":"create_successor","arguments":{"at":"@@0","title":"所有者决定空白处的用法","body":"正文。","src":"sections/s02.md:10-20"}}]
+'@ | pwsh -NoProfile -File ~/.codex/skills/zt/scripts/zt-mcp.ps1 - -Log owned.txt -SrcLog src.txt -TopicGate gate.lock
+```
+
+Output:
+
+```text
+0 ok 7/0
+1 ok 7/1
+```
+
+After `1 error <reason>` and `resume: -From 1 -Addresses 7/0`, fix call 1 in the same input and run again with `-From 1 -Addresses 7/0`.
+
+### Call it from a digest script
+
+Digest scripts dot-source `scripts/book-digest/zt-calls.ps1` and call `Invoke-Zt`, which pipes the calls to the repository copy of the helper and returns each read result as an object (it ignores `ok` lines and throws on `error` lines). See [Digest scripts](digest-scripts.md).
+
+```powershell
+. (Join-Path $PSScriptRoot 'zt-calls.ps1')
+$card = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = '3/1' } })
+```
+
+### Add a skill
+
+1. Create `skills/<name>/SKILL.md` with frontmatter `name` and a `description` that says what it teaches and when to use it; quote the description if it contains `: `.
+2. Optionally add `skills/<name>/agents/openai.yaml` with `interface.display_name` and `interface.short_description`, and `references/*.md` for long material the body links.
+3. Run the installer; it installs every directory under `skills/` with no list to edit.
+
+### Change a tool, then the skills
+
+When `src/mcp.rs` gains or changes a tool or argument, change in the same commit: the tool's description and schema and `INSTRUCTIONS` in `src/mcp.rs`, the tool list in `skills/zt/SKILL.md`, the writing rules in `skills/zettelkasten/SKILL.md` if the convention changes, `CONTEXT.md`, and the READMEs. Commits `753bd7b` (Finding Cards), `82eac86` (Hub Cards), and `7a878da` (insert, build report) change all of these together. Then rebuild and deploy zt, and re-run the installer.
+
+## Testing
+
+No test reads the skill texts or runs the installer. The helper is tested through scratch archives (each test sets `ZT_CONFIG_DIR`, runs its own `zt up`, and stops it); `zt` must be installed and on PATH. Run from PowerShell:
+
+```powershell
+pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1 [-Zt <zt.exe>]
+pwsh -NoProfile -File scripts\book-digest\tests\zt-calls.tests.ps1
+pwsh -NoProfile -File scripts\book-digest\tests\card-compiler.tests.ps1
+cargo test mcp::tests
+```
+
+| Test | Covers |
+|---|---|
+| `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `src` never reaches zt and goes to `-SrcLog`; the Topic gate refuses the same title (with spaces and punctuation changed) and a near title, with a resume line; a different title passes; without `-TopicGate` nothing is checked; two helpers at once create one Topic. `-Zt` tests another binary. |
+| `scripts/book-digest/tests/zt-calls.tests.ps1` | A batch of `create_topic`, `create_literature`, and `create_successor` with `@@` chaining through the helper; `list-models.ps1` reads the helper's UTF-8 output under a GBK (936) console. |
+| `scripts/book-digest/tests/card-compiler.tests.ps1` | The card compiler, whose orphan Links use `append_card`. |
+| `cargo test mcp::tests` (`src/mcp.rs`) | The server side the helper relies on: the handshake and protocol fallback, error codes, unique tool names with object schemas, no new trees in the human Workspace. |
+
+Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`; nothing checks that the skill texts name only tools and arguments that `tool_definitions()` has; the installer is checked only by its own handshake step when run.
+
+## Decisions and pitfalls
+
+### Decisions
+
+- **The server enforces, the skills teach.** The MCP server limits writes to the agent Workspace and keeps every Card rule (`src/mcp.rs` module comment; `docs/workspaces-and-mcp-design.md`). Body conventions are not validated by ZT: the skills teach them and `zt-check` checks them (`docs/event-and-model-cards-design.md`, `docs/finding-cards-design.md`). The hub rules live in `skills/zettelkasten/SKILL.md` (`docs/hub-cards-design.md`).
+- **One source, copied out.** The repository is the only source of the skills; the installer copies them rather than linking, so a harness never sees a half-edited working tree. DeepSeek Harness links to the Codex copy, so one copy serves both.
+- **A shell helper instead of a second server.** DeepSeek Harness has no `zt` tools, so `zt-mcp.ps1` speaks MCP to the same `zt mcp` with the same agent Access. The `zt` shell commands are never a fallback because they act with human Access (`skills/zt/SKILL.md`).
+- **Ownership by allow list, not by trust.** Parallel digest runs get `-Allow` so a DeepSeek run can change only its own Cards; `-Log` records what each run made, and `-TopicGate` stops two runs making one Topic (`docs/digest-card-layers-proposal.md`, the Topic gate row).
+- **Skills are sent, not pasted.** Digest managers pass `zettelkasten` and `asd-ste100-zh` in the `skills` field of `deepseek_run` and every `deepseek_prompt`; no prompt file carries skill text. Where an instruction file's limits differ from a skill, the instruction file wins, because `zt-check` checks those numbers (`docs/zt-book-digest-workflow.md`, *Skills for DeepSeek*).
+
+### Keeping the skill text consistent
+
+- `src/mcp.rs` holds three descriptions of the same behaviour: `INSTRUCTIONS` (sent on `initialize`), each tool's `description` and schema in `tool_definitions()`, and the skill `skills/zt/SKILL.md`. Change all three in one commit, together with `CONTEXT.md`, as the feature commits do. Nothing tests that they agree.
+- `skills/zettelkasten/SKILL.md` states rules that `zt-check` checks (the Card language table, F1–F4). A new or changed check rule changes the skill text in the same commit; [zt-check](zt-check.md) owns the rule code.
+- `skills/zt-digest-protocol/SKILL.md` and `references/scripts.md` restate the digest scripts, their steps, and the SELF-CHECK commands. A new script, step, or flag in `scripts/book-digest/` changes these tables.
+- `skills/zt/scripts/zt-mcp.ps1` exists twice at run time: the repository copy (used by `zt-calls.ps1` and the tests) and the installed copy at `~/.codex/skills/zt/scripts/zt-mcp.ps1` (hard-coded as `HELPER`/`ZD_HELPER` in `.claude/workflows/*.js`, and as `$installedHelper` in `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`). A helper change reaches DeepSeek runs only after the installer runs; until then scripts and DeepSeek runs use different helpers.
+- After any of these changes, re-run the installer and start a new conversation.
+
+### Pitfalls
+
+- **The installer deletes the installed folders.** Each run removes `~/.claude/skills/<name>` and `~/.codex/skills/<name>` before copying, so local edits there are lost. It never removes a skill that was deleted from `skills/`.
+- **One backup slot.** `Backup` overwrites `<file>.zt-backup` on every run, so a second run replaces the original with the first run's output.
+- **The project approval needs an existing entry.** The `.mcp.json` approval is written only when `~/.claude.json` already has a `projects` key for this repository (the repository path with `/`); on a fresh machine open the project in Claude Code once and re-run.
+- **All three skills are installed.** The loop takes every directory under `skills/`, but the installer's help text and `README.md` name only `zt` and `zettelkasten`, and `skills/zt/SKILL.md` asks for a re-run only after changes to `skills/zt/` and `skills/zettelkasten/`.
+- **PowerShell version.** `zt-mcp.ps1` declares `#Requires -Version 7` but calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added (the installer requires 7.5 for the same call). On 7.0–7.4 the helper fails on its first parse.
+- **`-Allow` refuses more than its help text says.** The code also refuses `create_literature` and `edit_literature_metadata`; the comment lists only `create_topic`, `move_card`, `insert_card`, and `delete_card`.
+- **`@@N` counts calls, not writes.** A read call takes an index too; `@@N` of a call whose result has no `address` throws `@@N has no address yet`.
+- **Inline mode has no options.** `-Tool`/`-Json` is its own parameter set; use a file or stdin for `-Allow`, `-Log`, and the rest.
+- **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
+- **Stale text found while reading** (fix in the skills, not in this doc):
+  - `skills/zt-digest-protocol/SKILL.md` points to the docs folder as `E:\zet\doc`; the folder is `docs` since `63d77d1`.
+  - `skills/zt-digest-protocol/SKILL.md` names only `zt-book-digest` and `zt-math-digest` in its description and says `make-math-workflow.mjs` generates `zt-math-digest.js`. Today `.claude/workflows/zt-math-digest.js` and `.claude/workflows/zt-econ-digest.js` are built by the Workflow Framework Protocol (`docs/zt-digest-framework.md`), and `make-math-workflow.mjs` writes `.claude/workflows-legacy/zt-math-digest.js`. `references/scripts.md` repeats this, says the rules are "R2 to R17, I, E, L" (no F), and lists no `event-compiler.ps1` or `finding-compiler.ps1`.
+  - `skills/zettelkasten/SKILL.md` (*ZET addresses*, "No insertion") says nothing goes between `3/2` and `3/3`, and `references/luhmann-and-practice.md` says ZET cannot insert into a line. `insert_card` does exactly that (`skills/zt/SKILL.md`, `CONTEXT.md` **Insert**), and the same skill's model section tells agents to use it.
+
+## Change history
+
+- `2026-10-16` `753bd7b` — Finding Cards: `finding` type in the `zt` skill, the Finding Card template and F1–F4 in the `zettelkasten` skill, F rules in the digest protocol.
+- `2026-10-16` `63d77d1` — Paths in the skills changed from `doc/` to `docs/` (one in `zt-digest-protocol/SKILL.md` was missed).
+- `2026-10-15` `02499c0` — `zt-digest-protocol` skill and its script reference added; the `zettelkasten` skill names `zt-check` (not `card-style-check.ps1`) as the checker of the Card language.
+- `2026-10-15` `298d4db` — Math forms, units, and Theory Cards in the `zt` and `zettelkasten` skills.
+- `2026-10-15` `caf2cdc` — Helper gains `-SrcLog`, `src` stripping, and the Topic gate (`-TopicGate`, `-TopicSimilarity`).
+- `2026-10-15` `6b36918` — Document links (`scholar:<file_id>`) and the book's own figures in the skills.
+- `2026-10-14` `82eac86` — Hub Cards and hub levels in both skills.
+- `2026-10-14` `67b80a9` — Helper gains `-Moves` (the `moved` map of each renumbering call) for the model compiler.
+- `2026-10-13` `1bec685`, `7d636e4`, `b61f2c4` — Derivation chains, elaboration levels, and `delete_card` `into` in the skills; one UTF-8 helper call.
+- `2026-10-13` `4f0414d`, `2026-10-11` `daea37b` — Deploy notes in the `zt` skill: GUI inside the service, `zt-boot` and autostart.
+- `2026-10-12` `7a878da`, `d92f367` — Self-sufficient models, `insert_card`, `move_card` `before`/`alone`, build report, the Card language table (`7a878da`); open models whose parts join by Link and Links that state their kind; `-Allow` refuses `insert_card`, and `insert` results print as `ok` lines.
+- `2026-10-11` `ea9a8f0`, `2b05ba6`, `eec0940` — Figures by `artifact:`, author-designed model structure, Model parts, TeX, and HTML charts in the skills.
+- `2026-10-10` `fcc5226` — `zettelkasten` skill with its research reference; the shell helper `zt-mcp.ps1` (batches, `@@N`, resume with `-From`/`-Addresses`, `-Log`, `-Allow`, `append_card`); the installer installs every skill folder and adds DeepSeek Harness junctions.
+- `2026-10-10` `4e990a0` — Scholar Archive tools in the `zt` skill.
+- `2026-10-10` `f3eec44` — `zt` skill, its `agents/openai.yaml`, and the Claude Code and Codex installer.
+- `2026-10-16` — Wiki doc created.
