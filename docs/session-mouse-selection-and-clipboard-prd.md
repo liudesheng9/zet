@@ -126,7 +126,7 @@ Keep the implementation KISS. Use one synchronous text-only clipboard adapter on
 
 ## Further Notes
 
-- The locked source design is `doc/session-mouse-selection-and-clipboard-design.md`.
+- The locked source design is `docs/session-mouse-selection-and-clipboard-design.md`.
 - Project vocabulary remains `Session`, `Pointer`, `Edit caret`, `Card`, and `Link`; selection is an editor/terminal interaction, not a new domain term.
 - Explicit locked behavior takes precedence over GNU nano inside edit mode; GNU nano-like behavior then guides unspecified editor details. Conventional terminal behavior guides other TUI views.
 - All implementation slices are AFK-ready and carry the `ready-for-agent` label.

@@ -5,7 +5,7 @@ Status: implemented in zt 0.11.0.
 ## Source Authority
 
 - `CONTEXT.md` defines **Table** and **Spread**. This document adds a GUI view and one archive record; it changes no Card rule.
-- `doc/markdown-cards-and-gui-design.md` remains authoritative for the Map, the Constellation, the Reader, and the writing desk.
+- `docs/markdown-cards-and-gui-design.md` remains authoritative for the Map, the Constellation, the Reader, and the writing desk.
 
 ## Why
 

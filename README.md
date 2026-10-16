@@ -243,7 +243,7 @@ structure**:
 ZT computes each model's structure from Locations, facets, and Links; nothing but the facet and
 emphasis is stored. Neither the Model Card nor its parts must link each other; `get_model` reports
 only a part that belongs to no model. A Model Card with parts cannot be retyped until its parts
-are changed, moved, or no longer linked. See `doc/open-models-design.md`.
+are changed, moved, or no longer linked. See `docs/open-models-design.md`.
 
 - **Session**: a part shows `[model · <facet>]` (and its emphasis); `ty model <facet>` makes the
   current Card a part (the facet is the rest of the line), and `ty model` alone makes it a Model
@@ -267,7 +267,7 @@ are changed, moved, or no longer linked. See `doc/open-models-design.md`.
 ### Elaboration levels
 
 Each Model Card carries its model's **elaboration level** (zt 0.13.0,
-`doc/model-elaboration-levels-design.md`):
+`docs/model-elaboration-levels-design.md`):
 
 - **Level 1, `concept`**: a **concept model**, stated in words or a diagram (a mechanism, a
   typology, a framework). Its Model Card and at most a few parts state the question, the mechanism,
@@ -284,7 +284,7 @@ Each Model Card carries its model's **elaboration level** (zt 0.13.0,
 ### Self-sufficient models
 
 A reader should be able to rebuild a formal model from nothing, reading only its own Cards in **build
-order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
+order** (zt 0.12.0, `docs/self-sufficient-models-proposal.md`):
 
 - **Build order**: the Model Card's first Side successor is the setting (agents, timing,
   information, a symbol table, and a `术语表` term table); its Direct successors are the **main
@@ -339,7 +339,7 @@ it; after Organize, `scripts/book-digest/attach-figures.ps1` puts each figure in
 book that names it but does not show it yet, and links the book's PDF and Markdown from its
 Literature Card (mode `figures` runs only this step on an earlier digest). Last, the hub stage
 builds the Hub Cards of the whole agent Workspace (see *Hub Cards*). See
-[doc/zt-book-digest-workflow.md](doc/zt-book-digest-workflow.md).
+[docs/zt-book-digest-workflow.md](docs/zt-book-digest-workflow.md).
 
 ### Hub Cards
 
@@ -354,7 +354,7 @@ still needs; `get_card` names the hubs that list a Card. The GUI draws a hub as 
 tab stands further left the wider its subject is, and shows above every Card the hubs it can climb
 to. The book digest's hub stage writes them: a Haiku hub manager chooses the limits from a survey,
 DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1` builds
-and checks the Cards. See [doc/hub-cards-design.md](doc/hub-cards-design.md).
+and checks the Cards. See [docs/hub-cards-design.md](docs/hub-cards-design.md).
 
 ## The MCP server
 
@@ -434,7 +434,7 @@ zt scholar pair --rotate           # issue a new secret; `zt scholar unpair` dis
 `scholar_archive_read` (any of the archive's read tools), `scholar_archive_sql`,
 `scholar_archive_file` (Markdown comes back as text, PDFs as a cached path), and
 `scholar_archive_export`. They do not need the ZET service to be up. The protocol is in
-[doc/scholar-archive-bridge-design.md](doc/scholar-archive-bridge-design.md).
+[docs/scholar-archive-bridge-design.md](docs/scholar-archive-bridge-design.md).
 
 ### Figures from the archive
 

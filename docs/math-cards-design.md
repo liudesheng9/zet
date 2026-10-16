@@ -54,7 +54,7 @@ The user asked that the math workflow keep the book digest's standards for Card 
 
 ### Derivation explanations
 
-The branch merges `model-compiler` at `fc7dfba` (doc/derivation-explanations-proposal.md). A Derivation part of a unit has the five sections 思路, 起点, 步骤, 结果, and 解读, as in every other model. R15 to R17 check them. The math fill supplement gives a proof step (`证明：…`) the same order: 思路, 起点, 论证 with 说明 lines, and 结果. The crux step adds 解读. Mode `explain` of the book digest is also a mode of the math workflow.
+The branch merges `model-compiler` at `fc7dfba` (docs/derivation-explanations-proposal.md). A Derivation part of a unit has the five sections 思路, 起点, 步骤, 结果, and 解读, as in every other model. R15 to R17 check them. The math fill supplement gives a proof step (`证明：…`) the same order: 思路, 起点, 论证 with 说明 lines, and 结果. The crux step adds 解读. Mode `explain` of the book digest is also a mode of the math workflow.
 
 ## Differences from the proposal
 

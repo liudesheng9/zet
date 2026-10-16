@@ -174,7 +174,7 @@ Dump archives retain hashed Markdown output and add exact `<citation-key>.bib` f
 ## Further Notes
 
 - The project glossary terms are `Regular Card`, `Literature Card`, `Citation key`, `Location`, `Link`, `Broken link`, `Reverse link`, `Pointer`, and `Session`.
-- The locked source design is `doc/literature-card-design.md`.
+- The locked source design is `docs/literature-card-design.md`.
 - This PRD supersedes older contracts only for the explicitly listed Literature-specific schema, target, Topic-Link, count, and dump behavior.
 - All implementation issues are AFK-ready and must carry the `ready-for-agent` label.
 - The coding agent, not the user, performs the one-time migration of the currently configured SQLite database after implementation is ready.

@@ -53,13 +53,13 @@ export const meta = {
 //         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
 //         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again),
 //         terms (mode "full": true; false skips the book term table at Prepare),
-//         audit (mode "full": true; false skips the Audit stage; read-only, see doc/digest-card-layers-proposal.md),
+//         audit (mode "full": true; false skips the Audit stage; read-only, see docs/digest-card-layers-proposal.md),
 //         cardChecks (modes "full" and "link": true; false skips the card layer cycle), ideaSample (0.1: the share
 //         of a block's Idea Cards without faults that DeepSeek reviews against the source; mode "cards": 0),
 //         cardRules (the rules the cycle fixes; default all hard rules), cardFixRounds (1: check, fix, apply again),
 //         cardMax (a pilot: at most this many Cards with faults and this many orphans),
 //         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
-//         (思路, 说明, and 解读 together; doc/derivation-explanations-proposal.md),
+//         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
 //         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
 //
 // Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
@@ -163,7 +163,7 @@ const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
 const AUDIT = MODE === 'audit' || (MODE === 'full' && A.audit !== false)
-// The card layer cycle (doc/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
+// The card layer cycle (docs/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
 // writes; DeepSeek rewrites and reviews as JSON files; Haiku drivers relay the jobs.
 const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
 const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
@@ -173,7 +173,7 @@ const CARD_SKILLS = ['asd-ste100-zh']
 // The jobs one apply call writes (A.applyShare): about 8 Cards each.
 const APPLY_SHARE = Math.max(1, A.applyShare || 30)
 
-// --- Audit: a read-only report on the book's Cards (phase 1 of doc/digest-card-layers-proposal.md) --
+// --- Audit: a read-only report on the book's Cards (phase 1 of docs/digest-card-layers-proposal.md) --
 // A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
 async function runAudit() {
   phase('Audit')
@@ -717,7 +717,7 @@ const cardBlock = async (block) => {
 if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
 
 // --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
-// doc/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
+// docs/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
 // most three parts), DeepSeek writes JSON, the script writes the Cards and refuses any change to 起点,
 // a step, or 结果. A refused part goes back to the same conversation once. No model is rebuilt.
 const runExplain = async () => {
@@ -1042,7 +1042,7 @@ if (MODE === 'full' || A.organize) {
       { label: 'organize card structure', phase: 'Organize', model: 'opus' },
     )
   } else {
-    // 1. The survey: a script lists what Opus must decide (doc/digest-card-layers-proposal.md, proposal 8).
+    // 1. The survey: a script lists what Opus must decide (docs/digest-card-layers-proposal.md, proposal 8).
     const surveyed = await agent(
       `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
 pwsh -NoProfile -File "${SCRIPTS}\\organize-survey.ps1" -Staging "${OUT}" -Work "${ORG}"

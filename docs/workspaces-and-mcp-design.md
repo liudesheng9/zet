@@ -50,14 +50,14 @@ Regenerating a human Card's Reverse link section is not a change to it: the sect
 
 ## Dump
 
-A dump must hold everything needed to replicate the archive. Besides Card text and BibTeX, the archive holds two facts: each Card's Workspace, and `metadata.next_topic_id` (deleted Topic numbers are never reused, so it can exceed the largest existing Topic number). `zt dp` records both in one new entry. This supersedes the rule in `doc/dump-and-clear-design.md` that `mapping.json` is the only JSON file; `mapping.json` itself is unchanged and still maps addresses to Markdown filenames only.
+A dump must hold everything needed to replicate the archive. Besides Card text and BibTeX, the archive holds two facts: each Card's Workspace, and `metadata.next_topic_id` (deleted Topic numbers are never reused, so it can exceed the largest existing Topic number). `zt dp` records both in one new entry. This supersedes the rule in `docs/dump-and-clear-design.md` that `mapping.json` is the only JSON file; `mapping.json` itself is unchanged and still maps addresses to Markdown filenames only.
 
 - The new entry is `archive.json`, compact JSON with keys in this order: `{"next_topic_id":<integer>,"workspaces":{"<address>":"human"|"agent",...}}`.
 - `workspaces` has exactly the keys of `mapping.json`, in the same order.
 - Archive entries are ordered `mapping.json`, `archive.json`, the hashed Markdown files in address order, then the `<citation-key>.bib` files.
-- A new or cleared archive dumps `{"next_topic_id":0,"workspaces":{},"types":{}}` (the `types` key since zt 0.5.0; see `doc/event-and-model-cards-design.md`).
+- A new or cleared archive dumps `{"next_topic_id":0,"workspaces":{},"types":{}}` (the `types` key since zt 0.5.0; see `docs/event-and-model-cards-design.md`).
 - Markdown files, their hashes, and `.bib` files are unchanged, so a Card's kind (Topic `<n>/0`, Literature front matter, otherwise Regular), Workspace, BibTeX, and exact text can all be rebuilt from a dump.
-- Since zt 0.5.0 `archive.json` has a third key, `types`, after `workspaces`; see `doc/event-and-model-cards-design.md`.
+- Since zt 0.5.0 `archive.json` has a third key, `types`, after `workspaces`; see `docs/event-and-model-cards-design.md`.
 
 ## Session and GUI
 

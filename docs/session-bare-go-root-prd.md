@@ -80,7 +80,7 @@ Keep the implementation narrow. Do not change shell parsing, Session startup, ta
 
 ## Further Notes
 
-- The locked source authority is `doc/session-bare-go-root-design.md`.
+- The locked source authority is `docs/session-bare-go-root-design.md`.
 - Use the canonical terms `Session`, `Pointer`, `ROOT`, `Location`, `Citation key`, and `target` throughout implementation and verification.
 - The work is intentionally KISS and is split into exactly two AFK-ready implementation slices.
 - Every locked behavior and exclusion is assigned to at least one implementation issue; there is no separate horizontal testing issue.

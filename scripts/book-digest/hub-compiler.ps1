@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The deterministic half of the book digest's hub stage (doc/hub-cards-design.md). A Haiku hub
+  The deterministic half of the book digest's hub stage (docs/hub-cards-design.md). A Haiku hub
   manager chooses the limits from the survey; DeepSeek plans the fields and writes every hub as a
   JSON file; this script does everything between them without a model: it surveys the agent
   Workspace, writes the job files, builds and updates the Hub Cards, checks them with get_hub, and

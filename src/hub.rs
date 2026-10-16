@@ -6,7 +6,7 @@
 //! `topic` (one Topic tree), `field` (several Topic trees), or `register`
 //! (the Workspace). ZT computes each hub's members, range, upper and lower
 //! hubs, and faults from the stored Cards; it reports faults and never
-//! enforces them. See `doc/hub-cards-design.md`.
+//! enforces them. See `docs/hub-cards-design.md`.
 
 use anyhow::{Result, bail};
 use rusqlite::{Connection, params};

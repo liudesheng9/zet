@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  The book's skeleton (doc/digest-card-layers-proposal.md, proposal 7): the Literature Card index,
+  The book's skeleton (docs/digest-card-layers-proposal.md, proposal 7): the Literature Card index,
   the structure Card, and the bodies of the book's Topics. The script builds each frame from the
   manifest and the trees; one DeepSeek job writes the short texts as JSON; Opus gives only the
   thesis (the structure Card's title).

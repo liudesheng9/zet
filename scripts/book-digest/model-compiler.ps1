@@ -36,7 +36,7 @@
                                 build faults, style faults, parts still `待写`, and how many
                                 Derivation parts have both 思路 and 解读 (explained).
 
-  Explain (doc/derivation-explanations-proposal.md): adds 思路, 说明 lines, and 解读 to finished
+  Explain (docs/derivation-explanations-proposal.md): adds 思路, 说明 lines, and 解读 to finished
   Derivation parts. DeepSeek writes JSON; this script writes the Cards and never changes 起点, a
   step, or 结果. It never runs the brief, plan, fill, derive, or review of a finished model.
     explain -Models a,b,...     one job per chain (at most three parts) of each model's own

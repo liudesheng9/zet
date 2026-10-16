@@ -5,9 +5,9 @@ Status: design locked and implemented.
 ## Source Authority
 
 - `CONTEXT.md` defines `Session`, `Pointer`, `ROOT`, `Location`, and `Citation key`.
-- `doc/zt-note-system-design.md` is the current main product contract.
-- `doc/session-bare-subcommands-design.md` defines bare Session command syntax.
-- `doc/literature-card-design.md` defines a navigation `target` as either a Location or Citation key.
+- `docs/zt-note-system-design.md` is the current main product contract.
+- `docs/session-bare-subcommands-design.md` defines bare Session command syntax.
+- `docs/literature-card-design.md` defines a navigation `target` as either a Location or Citation key.
 - `src/session.rs` owns both TUI and piped Session navigation and Session help.
 - `src/main.rs` owns shell command parsing and is outside this feature's implementation boundary.
 
@@ -41,7 +41,7 @@ Status: design locked and implemented.
 - Keep the feature narrow: do not change shell parsing, Session startup, Card storage, Link resolution, editing, creation, deletion, moving, or service lifecycle behavior.
 - Reuse the existing Pointer-to-`ROOT` behavior rather than introducing a second root-navigation path.
 - Cover both the TUI Session and piped Session paths because both are supported Session implementations.
-- Do not revise closed issue archive files under `doc/github-issues/`.
+- Do not revise closed issue archive files under `docs/github-issues/`.
 
 ## Acceptance Contract
 

@@ -5,7 +5,7 @@
   script makes only zt read calls and changes no Card.
 
 .DESCRIPTION
-  Phase 1 of doc/digest-card-layers-proposal.md. For each book (an agent Literature tree), the
+  Phase 1 of docs/digest-card-layers-proposal.md. For each book (an agent Literature tree), the
   script counts and lists:
     cards        the Cards of the book by category (root, anchor, idea, event, model, part, hub)
                  and Zone. A Card in a Topic tree is of the book whose Literature tree it links most.
@@ -325,7 +325,7 @@ foreach ($key in $books) {
         $b = $m.build
         $n = [ordered]@{ closure = @($b.closure).Count; forward = @($b.forward).Count; unanchored = @($b.unanchored).Count; beyond_level = @($b.beyond_level).Count }
         $open = $n.closure + $n.forward + $n.unanchored + $(if ($m.level -eq 'concept') { $n.beyond_level } else { 0 })
-        # Derivation parts, and those with both explanation sections (doc/derivation-explanations-proposal.md).
+        # Derivation parts, and those with both explanation sections (docs/derivation-explanations-proposal.md).
         $derived = @($m.parts | Where-Object { ([string]$_.facet).StartsWith('推导') })
         $explained = @($derived | Where-Object { [string]$_.body -match '(?m)^\s*\*\*思路\*\*\s*$' -and [string]$_.body -match '(?m)^\s*\*\*解读\*\*\s*$' })
         $modelRows += [ordered]@{ address = [string]$heads[$i].address; title = [string]$heads[$i].title; level = $m.level; parts = @($m.parts).Count; issues = @($m.issues).Count; faults = $n; self_sufficient = ($open -eq 0); derivations = $derived.Count; explained = $explained.Count }

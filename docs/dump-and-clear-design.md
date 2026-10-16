@@ -5,7 +5,7 @@ Status: locked and complete.
 ## Source Authority
 
 - `CONTEXT.md` defines the project language. This document uses `Location` for the persisted card address rather than `zt id string`.
-- `doc/zt-note-system-design.md` and `doc/zt-note-system-prd.md` are the current locked product contract.
+- `docs/zt-note-system-design.md` and `docs/zt-note-system-prd.md` are the current locked product contract.
 - `src/main.rs` owns shell command dispatch, configuration, service state checks, SQLite initialization, card storage helpers, and Topic ID allocation; `cmd_dump` loads every Card and hands it to `src/dump.rs`.
 - `src/dump.rs` owns the dump payload, the archive manifest, compression detection, and archive cleanup.
 - `src/session.rs` owns interactive Session command dispatch. Shell-only commands should not be added to Session help or Session command handling.

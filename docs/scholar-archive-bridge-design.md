@@ -1,6 +1,6 @@
 # The ZET bridge
 
-This specification is shared: Scholar Archive keeps it as `docs/zet-bridge.md` and ZET as `doc/scholar-archive-bridge-design.md`. Keep the two copies identical.
+This specification is shared: Scholar Archive keeps it as `docs/zet-bridge.md` and ZET as `docs/scholar-archive-bridge-design.md`. Keep the two copies identical.
 
 The ZET bridge is the one connection between Scholar Archive and ZET (`zt`, github.com/liudesheng9/zet).
 Through it, ZET reads everything the archive holds: scholars, Works and their sources, versions and

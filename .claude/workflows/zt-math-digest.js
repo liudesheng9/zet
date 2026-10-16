@@ -1,6 +1,6 @@
 export const meta = {
   name: 'zt-math-digest',
-  description: 'Digest a Chinese-translated mathematics textbook into ZET Cards (doc/math-cards-design.md): the zt-book-digest workflow with the same Card, Link, hub, and DeepSeek standards, plus mathematical units. A script finds every numbered definition, axiom, theorem, proposition, lemma, and corollary, builds a unit Model Card (its Math form and level) and a Theory Card per chapter, and a DeepSeek job writes the Book notation table; the digest writes each unit\'s statement; the model compiler builds each unit with the math supplements (premises, proof plan, proof steps, Derivation parts, intuition, examples) under the attention budget; a boundary pass writes hypothesis roles, counterexamples, and contrast pairs, and a second DeepSeek job checks each supplied one; a proof review checks every proof step; after the link pass a theory pass writes each Theory Card (question, main results, objects, dependency order, tools, map); and a math check reports rules M1 to M18 beside the audit',
+  description: 'Digest a Chinese-translated mathematics textbook into ZET Cards (docs/math-cards-design.md): the zt-book-digest workflow with the same Card, Link, hub, and DeepSeek standards, plus mathematical units. A script finds every numbered definition, axiom, theorem, proposition, lemma, and corollary, builds a unit Model Card (its Math form and level) and a Theory Card per chapter, and a DeepSeek job writes the Book notation table; the digest writes each unit\'s statement; the model compiler builds each unit with the math supplements (premises, proof plan, proof steps, Derivation parts, intuition, examples) under the attention budget; a boundary pass writes hypothesis roles, counterexamples, and contrast pairs, and a second DeepSeek job checks each supplied one; a proof review checks every proof step; after the link pass a theory pass writes each Theory Card (question, main results, objects, dependency order, tools, map); and a math check reports rules M1 to M18 beside the audit',
   whenToUse: 'Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode "math" re-runs only the boundary, proof, theory, and check stages on an existing math digest; the other modes are those of zt-book-digest.',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, anchors; then math-compiler.ps1 finds every numbered statement (index), writes the math prompt files (docs: the shared instructions with the math supplements appended), and builds the skeleton (a unit Model Card per definition, axiom, and result, a Theory Card per chapter); one DeepSeek job writes the Book notation table; then the book term table as in zt-book-digest', model: 'haiku' },
@@ -63,13 +63,13 @@ export const meta = {
 //         hubTrees ('130,122': only these Topic trees, e.g. a pilot), hubRebuild (false: rewrite every hub),
 //         hubEffort ('high': DeepSeek effort of the hub writers and the field planner; the user wants at least medium), hubFixRounds (1: check, fix, apply again),
 //         terms (mode "full": true; false skips the book term table at Prepare),
-//         audit (mode "full": true; false skips the Audit stage; read-only, see doc/digest-card-layers-proposal.md),
+//         audit (mode "full": true; false skips the Audit stage; read-only, see docs/digest-card-layers-proposal.md),
 //         cardChecks (modes "full" and "link": true; false skips the card layer cycle), ideaSample (0.1: the share
 //         of a block's Idea Cards without faults that DeepSeek reviews against the source; mode "cards": 0),
 //         cardRules (the rules the cycle fixes; default all hard rules), cardFixRounds (1: check, fix, apply again),
 //         cardMax (a pilot: at most this many Cards with faults and this many orphans),
 //         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
-//         (思路, 说明, and 解读 together; doc/derivation-explanations-proposal.md),
+//         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
 //         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
 //
 // Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
@@ -173,7 +173,7 @@ const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
 const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
 const HUB_SKILLS = ['asd-ste100-zh']
 const AUDIT = MODE === 'audit' || (MODE === 'full' && A.audit !== false)
-// The card layer cycle (doc/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
+// The card layer cycle (docs/digest-card-layers-proposal.md, phases 3 and 4): the script checks and
 // writes; DeepSeek rewrites and reviews as JSON files; Haiku drivers relay the jobs.
 const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
 const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
@@ -196,7 +196,7 @@ const PROOF = MATH_MODE && A.proof !== false
 const THEORY = MATH_MODE && A.theory !== false
 const NOTATION = MODE === 'full' && A.notation !== false
 
-// --- Audit: a read-only report on the book's Cards (phase 1 of doc/digest-card-layers-proposal.md) --
+// --- Audit: a read-only report on the book's Cards (phase 1 of docs/digest-card-layers-proposal.md) --
 // A script, relayed by Haiku. It changes no Card. Mode "audit" runs only this stage.
 async function runAudit() {
   phase('Audit')
@@ -788,7 +788,7 @@ const cardBlock = async (block) => {
 if (MODE === 'cards') return { mode: MODE, dsh_model: DSH_MODEL, citation_key: KEY, cards: await runCards('whole book', `${OUT}\\cards`, IDEA_SAMPLE ? ` -Sample ${IDEA_SAMPLE}` : '') }
 
 // --- Explain: 思路, 说明, and 解读 for finished Derivation parts ---------------------------------------
-// doc/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
+// docs/derivation-explanations-proposal.md, phase 3. model-compiler.ps1 plans one job per chain (at
 // most three parts), DeepSeek writes JSON, the script writes the Cards and refuses any change to 起点,
 // a step, or 结果. A refused part goes back to the same conversation once. No model is rebuilt.
 const runExplain = async () => {
@@ -1139,7 +1139,7 @@ if (MODE === 'full' || A.organize) {
       { label: 'organize card structure', phase: 'Organize', model: 'opus' },
     )
   } else {
-    // 1. The survey: a script lists what Opus must decide (doc/digest-card-layers-proposal.md, proposal 8).
+    // 1. The survey: a script lists what Opus must decide (docs/digest-card-layers-proposal.md, proposal 8).
     const surveyed = await agent(
       `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
 pwsh -NoProfile -File "${SCRIPTS}\\organize-survey.ps1" -Staging "${OUT}" -Work "${ORG}"

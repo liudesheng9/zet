@@ -37,14 +37,14 @@ flowchart LR
 | **Prepare** | Haiku runs a script | Extracts the Chinese text, cuts it into section groups (about 20,000 characters each), and creates the agent Literature Card with one anchor Card per group. | `<out>\groups`, `<out>\sections`, the Literature tree `[[Key]]` → `[[Key/1]]` … |
 | **Terms** (end of Prepare) | Haiku relays one DeepSeek job | `book-terms.ps1` lists candidate terms (headings, bold terms, definitions, terms with their English original, frequent word groups); DeepSeek chooses the terms and the words not to use; the script writes `terms.md` and the Card 术语表 (a Side successor of `<key>/1`). Each group file names the table, and the audit checks rule R6 against it. | `terms.md`, the term table Card |
 | **Digest** | one Haiku manager per block of up to 5 groups; one DeepSeek run per group | Each DeepSeek run gets only its own sections, searches the rest of the book on disk, and writes 6–12 Cards: Idea Cards placed in Topic trees or under its anchor, Event Cards, and **one whole Model Card per model**. Blocks run in parallel. | Cards, and `owned-gNN.txt` (which Cards each group wrote) |
-| **Models** | Haiku lists, then the **model compiler** per batch (`perConcept` concept models or `perSonnet` formal models): DeepSeek briefs, one Sonnet architect plans, `model-compiler.ps1` builds, Haiku drivers relay DeepSeek rounds | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. DeepSeek writes a brief of each model's source; the Sonnet architect writes only `plan.json` (level, parts in build order, premises, where Derivation parts go and how many); the script builds the skeleton; DeepSeek writes the Model Card, setting, parts and charts, then the Derivation parts; a DeepSeek reviewer splits any derivation that jumps or is too dense, and the script inserts the new parts. See `doc/model-compiler-design.md`. | Concept models and self-sufficient formal models; a report per model |
+| **Models** | Haiku lists, then the **model compiler** per batch (`perConcept` concept models or `perSonnet` formal models): DeepSeek briefs, one Sonnet architect plans, `model-compiler.ps1` builds, Haiku drivers relay DeepSeek rounds | Starts for a block as soon as that block's DeepSeek runs finish, while other blocks are still digesting. DeepSeek writes a brief of each model's source; the Sonnet architect writes only `plan.json` (level, parts in build order, premises, where Derivation parts go and how many); the script builds the skeleton; DeepSeek writes the Model Card, setting, parts and charts, then the Derivation parts; a DeepSeek reviewer splits any derivation that jumps or is too dense, and the script inserts the new parts. See `docs/model-compiler-design.md`. | Concept models and self-sufficient formal models; a report per model |
 | **Cards** (beside Models) | Haiku relays DeepSeek jobs of `card-compiler.ps1` | After each digest block: the script checks the block's Idea Cards, Event Cards, and anchor (Card language and the I, E, L rules); DeepSeek rewrites the Cards with faults, and reviews a sample (`ideaSample`) against the source, as JSON files; the script checks each rewrite (every Link, figure, and formula kept) and writes it, checks again, and sends what is left back once. It never writes a Model Card or part. | Cleaner Cards, `cards-gNN\report.json` |
 | **Link** | Haiku drives DeepSeek again | Each group's run appends reasoned Links from its own Cards to the rest of the book, including to the Model part a Card concerns. | Cross-part Links |
 | **Link check** | the same cycle on the whole book | Rules L1 and L2 on the Links of the link pass, and the orphan pass: each Card that no other Card links gets a reasoned Link from a related Card. | `cards-link\report.json` |
 | **Cleanup** | Haiku | Deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files; reports DeepSeek token use. | — |
 | **Organize** | a script, Opus, scripts, DeepSeek | `organize-survey.ps1` lists what to decide: duplicate Topics, small Topics, merge proposals, model faults. Opus writes only `decisions.json`: the thesis, Topic merges, moves, and notes for single Cards. `organize-apply.ps1` carries out the merges and moves; a card cycle carries out the notes (rule N1); `book-skeleton.ps1` and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies. `organize: "legacy"` runs the old single Opus job. | A finished digest |
-| **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `doc/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
-| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`zt-check`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `doc/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
+| **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `docs/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
+| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`zt-check`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `docs/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
 
 ## DeepSeek Subagent Managed Protocol
 
@@ -81,7 +81,7 @@ manager stops and reports; it does not start the run without the skill.
 
 ## Elaboration levels (zt 0.13.0)
 
-Not every model needs the full build (`doc/model-elaboration-levels-design.md`). Each Model Card
+Not every model needs the full build (`docs/model-elaboration-levels-design.md`). Each Model Card
 carries an **elaboration level**:
 
 | Level | When | What the Models stage builds |
@@ -104,8 +104,8 @@ carries an **elaboration level**:
 ## The model compiler (2026-10-14)
 
 A reader must be able to build each formal model from nothing, reading only its own Cards in build
-order (`doc/self-sufficient-models-proposal.md`). Since 2026-10-14 the **model compiler** builds it
-(`doc/model-compiler-design.md`); it replaced the Sonnet manager of zt 0.12.0–0.15.0, which planned,
+order (`docs/self-sufficient-models-proposal.md`). Since 2026-10-14 the **model compiler** builds it
+(`docs/model-compiler-design.md`); it replaced the Sonnet manager of zt 0.12.0–0.15.0, which planned,
 wrote, supervised, and checked everything itself. Per batch of models:
 
 1. **Brief (DeepSeek).** `model-compiler.ps1 -Step brief` writes each context pack; a DeepSeek run
@@ -135,7 +135,7 @@ Haiku drivers only relay DeepSeek jobs: each runs one compiler step and the jobs
 
 ## Derivation explanations (2026-10-15)
 
-A Derivation part has five sections: **思路**, **起点**, **步骤**, **结果**, **解读** (`doc/derivation-explanations-proposal.md`). 思路 says what the part shows and the route it takes. A `说明：` line under a step explains a step that a reader may not see at once. 解读 says what the result means, with at least one check. In a chain, the first line of 思路 is the part's position, which the compiler writes. The explanation has its own budget (R17), outside R13. The brief records the book's own intuition (直觉), and the writer marks its own words `（补：书中未写）`. The reviewer checks the explanation as its fifth question.
+A Derivation part has five sections: **思路**, **起点**, **步骤**, **结果**, **解读** (`docs/derivation-explanations-proposal.md`). 思路 says what the part shows and the route it takes. A `说明：` line under a step explains a step that a reader may not see at once. 解读 says what the result means, with at least one check. In a chain, the first line of 思路 is the part's position, which the compiler writes. The explanation has its own budget (R17), outside R13. The brief records the book's own intuition (直觉), and the writer marks its own words `（补：书中未写）`. The reviewer checks the explanation as its fifth question.
 
 Mode `explain` adds the sections to Derivation parts that a digest wrote before 2026-10-15. `model-compiler.ps1 -Step explain` plans one job per chain, DeepSeek writes JSON (`dsh-explain-instructions.zh.md`) and checks it with `explain-check`, and `explain-apply` writes the Cards. It refuses any change to 起点, a step, or 结果.
 
@@ -212,7 +212,7 @@ Key/5|b|a|2    对应 GHM (shared)            对应：剩余控制权即资产�
 ```
 
 - A part belongs to the Model Card it is filed under and to every Model Card that links it
-  (zt 0.10, `doc/open-models-design.md`): new parts are filed under their Model Card, and a part
+  (zt 0.10, `docs/open-models-design.md`): new parts are filed under their Model Card, and a part
   two models of the book share stays where it is and is linked from the second Model Card's 结构
   list. The order of that list is the order of the divider tabs.
 - Parts need not open with `本卡是模型 [[…]] 的X` nor link their Model Card; each links the parts
@@ -248,7 +248,7 @@ Add `-CitationKey <key>` for one book. The workflow runs it last in mode `full`,
 
 ## The card layers (2026-10-15)
 
-`doc/digest-card-layers-proposal.md` gives the Idea Cards, Event Cards, anchors, Topics, and Links the same shape as the models and hubs: a script checks, DeepSeek writes JSON, a script checks that and writes the Cards, and a report counts the faults before and after. The parts:
+`docs/digest-card-layers-proposal.md` gives the Idea Cards, Event Cards, anchors, Topics, and Links the same shape as the models and hubs: a script checks, DeepSeek writes JSON, a script checks that and writes the Cards, and a report counts the faults before and after. The parts:
 
 - `zt-check` checks the I, E, and L rules for entries that name their category. The model compiler's checks do not change.
 - `card-compiler.ps1` (plan, apply, check, report) is the fix cycle. `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md` are DeepSeek's instructions. A rewrite must keep every Link (an Organize note may replace one), every figure line, and every formula, and the Card must be unchanged since the plan. A split becomes a Side successor and joins its group's `owned-gNN.txt`.

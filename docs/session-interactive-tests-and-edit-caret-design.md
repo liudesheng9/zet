@@ -16,7 +16,7 @@ Status: design locked for implementation.
 ## Locked Decisions
 
 - The work targets Session behavior, especially the interactive terminal path and TUI edit mode.
-- Tests should preserve the existing public Session contract from `doc/zt-note-system-design.md` and the issue notes under `doc/github-issues/`.
+- Tests should preserve the existing public Session contract from `docs/zt-note-system-design.md` and the issue notes under `docs/github-issues/`.
 - The direction-key feature is about the TUI edit caret, not the Session Pointer.
 - Interactive Session testing must include both real PTY-backed tests and model-level tests.
 - PTY-backed tests should be the majority of the new interactive Session coverage, because the raw-mode crossterm path is the path currently not covered by existing piped-stdin tests.
@@ -98,7 +98,7 @@ Status: design locked for implementation.
 - Model-level editor actions should use intent names such as `MoveLeft` and `Save`, not raw key names, so terminal-event translation stays separate from editor behavior.
 - PTY test helpers should live in `tests/support/pty.rs` so multiple PTY workflow tests can share spawn, read, write, and wait helpers.
 - PTY workflow tests that write card data should assert both terminal output and SQLite persistence.
-- The archived issue documents under `doc/github-issues/` should not be updated for this work. They are closed archive text; the new locked design document is the implementation authority.
+- The archived issue documents under `docs/github-issues/` should not be updated for this work. They are closed archive text; the new locked design document is the implementation authority.
 - PTY helper APIs should hide ANSI escape noise behind helpers such as `wait_for_text`.
 - PTY write helpers should send named key sequences such as `send_key(Key::Left)` instead of raw escape strings in each test.
 - The editor model should store text as `Vec<String>` lines plus line and character-column caret state, converting to and from a single `String` only at boundaries.

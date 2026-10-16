@@ -4,7 +4,7 @@ Parent PRD: [#12](https://github.com/liudesheng9/zet/issues/12)
 
 Source design: [session-interactive-tests-and-edit-caret-design.md](session-interactive-tests-and-edit-caret-design.md)
 
-This breakdown is published to GitHub with the `enhancement` and `ready-for-agent` labels. The closed issue archive files under `doc/github-issues/` are intentionally unchanged.
+This breakdown is published to GitHub with the `enhancement` and `ready-for-agent` labels. The closed issue archive files under `docs/github-issues/` are intentionally unchanged.
 
 ## Published Issues
 

@@ -115,6 +115,6 @@ TUI edit mode will support nano-like first-pass editing: direction-key movement,
 
 ## Further Notes
 
-- This PRD is based on the locked design in `doc/session-interactive-tests-and-edit-caret-design.md`.
+- This PRD is based on the locked design in `docs/session-interactive-tests-and-edit-caret-design.md`.
 - The project glossary term is `Edit caret`, not edit cursor, and it is distinct from the Session `Pointer`.
 - The implementation should stay KISS: small public Session entrypoint, narrow visibility changes, representative PTY workflows, exhaustive model tests, and no unrelated feature expansion.

@@ -5,7 +5,7 @@ Status: design locked for implementation.
 ## Source Authority
 
 - `CONTEXT.md` defines the project language. This document adds `Topic tree`, `Literature tree`, and `Tree root`.
-- `doc/zt-note-system-design.md`, `doc/literature-card-design.md`, and `doc/session-bare-subcommands-design.md` remain authoritative except where this document explicitly changes them.
+- `docs/zt-note-system-design.md`, `docs/literature-card-design.md`, and `docs/session-bare-subcommands-design.md` remain authoritative except where this document explicitly changes them.
 - This document supersedes the Literature Card rules that a Literature Card has no successors, that `n` is refused on a Literature Card, that deleting a Literature Card requires typing `delete`, that `ls` on a Literature Card lists the whole Literature collection, and that the automatic ROOT view shows Topic Cards only.
 
 ## Goals

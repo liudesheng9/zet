@@ -49,7 +49,7 @@ Status: implemented; user-visible command syntax remains active.
 - Tests should also prove that a typed Session command beginning with `zt`, such as `zt e`, is refused rather than accepted as `e`.
 - Acceptance requires both PTY-backed TUI coverage and piped line-session coverage for bare Session subcommands and `zt e` refusal.
 - The active main design and PRD should be updated so they describe bare Session subcommands instead of the superseded full-prefix Session syntax.
-- Session input uses the shared command execution entry point defined by `doc/link-lifecycle-and-session-command-policy-deepening-design.md`; a synthetic executable prefix is not required internally.
+- Session input uses the shared command execution entry point defined by `docs/link-lifecycle-and-session-command-policy-deepening-design.md`; a synthetic executable prefix is not required internally.
 - That later architecture design supersedes only the earlier instruction to keep the two command execution handlers close to their duplicated structure. All bare-input behavior in this document remains unchanged.
 - Shell `zt help` keeps showing shell syntax only.
 - Session `help` keeps showing bare Session syntax only.

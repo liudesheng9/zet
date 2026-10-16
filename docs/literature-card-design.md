@@ -5,9 +5,9 @@ Status: design locked for implementation.
 ## Source Authority
 
 - `CONTEXT.md` defines the project language. This document uses `Regular Card`, not "normal card", and reserves `Location` for the existing Topic-tree address system.
-- `doc/zt-note-system-design.md` and `doc/zt-note-system-prd.md` are the current Card, Topic, Link, Reverse link, storage, and Session contract.
-- `doc/dump-and-clear-design.md` is the current dump and destructive-clear contract.
-- `doc/session-bare-subcommands-design.md` is the current Session command syntax contract.
+- `docs/zt-note-system-design.md` and `docs/zt-note-system-prd.md` are the current Card, Topic, Link, Reverse link, storage, and Session contract.
+- `docs/dump-and-clear-design.md` is the current dump and destructive-clear contract.
+- `docs/session-bare-subcommands-design.md` is the current Session command syntax contract.
 - `src/main.rs`, `src/session.rs`, and `src/dump.rs` are the current implementation authority where older documentation and live behavior differ.
 
 ## Conflict Precedence

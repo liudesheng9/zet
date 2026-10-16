@@ -166,7 +166,7 @@ The work is a zero-observable-behavior-change refactor. The Link module is compl
 
 ## Further Notes
 
-- The locked source design is `doc/link-lifecycle-and-session-command-policy-deepening-design.md`.
+- The locked source design is `docs/link-lifecycle-and-session-command-policy-deepening-design.md`.
 - The canonical project terms are Card, Literature Card, Citation key, Location, Pointer, Session, Link, Broken link, and Reverse link.
 - This PRD supersedes only the old internal instruction to retain two duplicated Session command handlers. It preserves every user-visible Session contract.
 - The approved implementation plan uses six AFK tracer-bullet issues in dependency order: three Link slices followed by three Session slices.

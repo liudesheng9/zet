@@ -121,4 +121,4 @@ Add two shell-only commands.
 
 ## Further Notes
 
-This PRD is based on the locked decisions in `doc/dump-and-clear-design.md`. The four approved AFK slices are: a complete ZIP-backed dump path, the full supported compression matrix and selector, dump lifecycle and concurrency hardening, and atomic storage clear.
+This PRD is based on the locked decisions in `docs/dump-and-clear-design.md`. The four approved AFK slices are: a complete ZIP-backed dump path, the full supported compression matrix and selector, dump lifecycle and concurrency hardening, and atomic storage clear.

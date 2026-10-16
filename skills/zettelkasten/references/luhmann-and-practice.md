@@ -41,7 +41,7 @@ Sources: Schmidt, "Niklas Luhmann's Card Index: Thinking Tool, Communication Par
 
 ## Mapping to ZET
 
-The rules in `SKILL.md` follow ZET's actual Location scheme (`doc/zt-note-system-design.md`, `src/main.rs`), not Luhmann's.
+The rules in `SKILL.md` follow ZET's actual Location scheme (`docs/zt-note-system-design.md`, `src/main.rs`), not Luhmann's.
 
 - **Fixed slip number → Location**, with a different grammar. Luhmann alternated digits and letters inside one token (`21/3d7a7`); ZET joins segments with `|` (`3/2|c|4`), and every letter segment is a branch, every number a step.
 - **Continue a sequence (57/12 → 57/13) → Direct successor**, but only one per Card. Luhmann could still file 57/12a *between* 57/12 and 57/13; ZET cannot insert into a line, so a mid-line thought becomes a Side successor that names its place.

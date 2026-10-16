@@ -14,11 +14,11 @@ This document records the architecture. Implementation was later authorized thro
 ## Source Authority
 
 - `CONTEXT.md` defines Card, Literature Card, Citation key, Location, Pointer, Session, Link, Broken link, Reverse link, Direct successor, and Side successor.
-- `doc/zt-note-system-design.md` defines the active Card, Link, Reverse link, Broken link, Session, and Pointer behavior.
-- `doc/literature-card-design.md` defines Link behavior shared by Location and Citation key targets.
-- `doc/session-interactive-tests-and-edit-caret-design.md` defines the separate TUI and piped Session paths and the TUI editor model.
-- `doc/session-mouse-selection-and-clipboard-design.md` defines TUI-only mouse and clipboard behavior.
-- `doc/session-bare-subcommands-design.md` and `doc/session-bare-go-root-design.md` define bare Session syntax and navigation behavior.
+- `docs/zt-note-system-design.md` defines the active Card, Link, Reverse link, Broken link, Session, and Pointer behavior.
+- `docs/literature-card-design.md` defines Link behavior shared by Location and Citation key targets.
+- `docs/session-interactive-tests-and-edit-caret-design.md` defines the separate TUI and piped Session paths and the TUI editor model.
+- `docs/session-mouse-selection-and-clipboard-design.md` defines TUI-only mouse and clipboard behavior.
+- `docs/session-bare-subcommands-design.md` and `docs/session-bare-go-root-design.md` define bare Session syntax and navigation behavior.
 - `src/main.rs` and `src/session.rs` are the current implementation authority.
 
 ## Precedence
@@ -26,7 +26,7 @@ This document records the architecture. Implementation was later authorized thro
 This design changes internal ownership only.
 
 - It does not supersede any user-visible behavior in the source documents above.
-- It supersedes only the internal instruction in `doc/session-bare-subcommands-design.md` that the two command handlers should remain close to their current duplicated structure.
+- It supersedes only the internal instruction in `docs/session-bare-subcommands-design.md` that the two command handlers should remain close to their current duplicated structure.
 - It does not require the internal synthetic `zt` prefix to survive. Bare Session input and exact errors must survive; the internal token shape is not observable behavior.
 - If implementation exposes an undocumented behavior difference, implementation stops and the difference is resolved explicitly before code proceeds.
 
