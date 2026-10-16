@@ -311,7 +311,7 @@ order** (zt 0.12.0, `doc/self-sufficient-models-proposal.md`):
   is shown first, and every Link follows.
 - **Card language**: Card text follows ASD-STE100 adapted for Chinese (one statement per sentence,
   short sentences, no `；`, active voice, one term per meaning);
-  `scripts/book-digest/card-style-check.ps1` checks it.
+  `zt-check` (`tools/zt-check`) checks it.
 
 ### Math and HTML charts
 

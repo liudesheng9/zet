@@ -30,7 +30,7 @@ The user decided (2026-10-14):
 | Compiler | `model-compiler.ps1` (no model) | context packs; plan checks; skeletons and tree operations; setting tables and 结构 lists; job files with source lines and premise bodies copied in; applying splits; reports | write prose |
 | Driver | Haiku, one call per round | runs one compiler step, starts the DeepSeek jobs it prints, waits, approves, retries once, returns the answers; the last driver archives and deletes | read the book or a Card, decide anything |
 | Briefer | DeepSeek (`briefEffort`, high) | reads the context pack and the source passages; writes `brief.md`: equations in book order with numbers and lines, which steps the book skips and how many lines each needs, examples, diagrams, outside premises, reusable building blocks | write Cards |
-| Writer | DeepSeek (`dshEffort`, high; `deriveEffort`, high for derivations) | writes the Model Card prose, the setting, each part, each chart, then each Derivation part; runs `card-style-check.ps1` on its own Cards; answers `split` when a part will not fit | create, move, or delete Cards |
+| Writer | DeepSeek (`dshEffort`, high; `deriveEffort`, high for derivations) | writes the Model Card prose, the setting, each part, each chart, then each Derivation part; runs `zt-check` on its own Cards; answers `split` when a part will not fit | create, move, or delete Cards |
 | Reviewer | DeepSeek (`reviewEffort`, high) | redoes every step of a chain; judges each Derivation part `ok`, `fix`, or `split` into N parts with the cut results; writes `review-NN.json` | change Cards |
 
 ## The flow of one batch
@@ -65,7 +65,7 @@ in any round sends the part to the compiler's `split` step before the next round
 | 4 derive | `derive`: one job per three neighbouring parts of a chain, with each premise's filled body copied in | write 步骤 between the fixed 起点 and 结果 | same | Derivation parts |
 | 5 review | `review` (`-Changed` after the first round): one job per chain of up to six parts, with the bodies of the chain and of the members before and after it | judge each part | `dsh-review-instructions.zh.md`, then `setting.md` | `<model>\review-NN.json` |
 | 5′ split | `split [-Need a=N;…]`: inserts N−1 parts after the part (`insert_card` before the next member), writes their 起点 and 结果 from the cuts, ends the part at the first cut, re-points the next member to the last new part, adds them to the 结构 list and to the writer's allow file | the same writer conversation continues (`continue`); a fresh one gets `fallback` files | the writer's cached conversation | split and fixed Cards |
-| 6 report | `report`: `get_model` and `card-style-check.ps1` per model | none | — | one report per model |
+| 6 report | `report`: `get_model` and `zt-check` per model | none | — | one report per model |
 
 ## Files and state
 
@@ -116,7 +116,7 @@ Writers address Cards by today's addresses, which only change between rounds.
 - A model whose filed parts are not all in its plan fails validation; the architect lists each one.
 - A shared part (`take`) belongs to its home model: the review skips its chain, a verdict or a
   writer's `need` on it is an orphan, and the report's style faults and Derivation count leave it
-  out (`card-style-check.ps1 -SkipShared`).
+  out (`zt-check --model … --skip-shared`).
 - A rebuild keeps what an earlier build wrote: the Model Card job carries the card's current body,
   and a refilled part's job carries the body the skeleton replaced.
 - The compiler is tested on a scratch archive (`scripts/book-digest/tests/model-compiler.tests.ps1`:

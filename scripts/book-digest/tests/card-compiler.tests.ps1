@@ -77,6 +77,46 @@ try {
     $jobText = Get-Content $state.jobs[$fix[0].id].file -Raw -Encoding utf8
     Assert ($jobText -match "卡片 ``$([regex]::Escape($b))``" -and $jobText -match 'R4') 'plan: the job file lists the Card and its faults'
     Assert ((Test-Path (Join-Path $work 'dsh-card-instructions.zh.md')) -and (Get-Content (Join-Path $work 'dsh-card-instructions.zh.md') -Raw -Encoding utf8) -match "\[\[$key\]\]") 'plan: the instruction file names the book'
+    $selfCheck = "(?m)^SELF-CHECK: pwsh -NoProfile -File ""$([regex]::Escape($compiler))"" -Step precheck -Work ""$([regex]::Escape((Resolve-Path $work).Path))"" -Job "
+    Assert ($jobText -match ($selfCheck + [regex]::Escape($fix[0].id) + '\s*$')) 'plan: the fix job file names its precheck command'
+    Assert ((Get-Content $state.jobs[$orph[0].id].file -Raw -Encoding utf8) -match ($selfCheck + [regex]::Escape($orph[0].id) + '\s*$')) 'plan: the orphan job file names its precheck command'
+
+    # --- precheck: DeepSeek checks a draft before it replies; nothing is written ---
+    $drafts = Join-Path $scratch 'drafts'
+    New-Item -ItemType Directory -Force $drafts | Out-Null
+    function Precheck($id, $draft) {
+        $path = Join-Path $drafts "$id-$([guid]::NewGuid().ToString('N')).json"
+        if ($null -ne $draft) { Save-Json $path $draft }
+        , @(pwsh -NoProfile -File $compiler -Step precheck -Work $work -Job $id -File $path 2>&1 | ForEach-Object { [string]$_ })
+    }
+    $stateBefore = Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8
+    $fixId = $fix[0].id
+    $okRest = @(@($state.jobs[$fixId].cards) | Where-Object { $_ -ne $b } | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '问题是误报。' } })
+    $cleanB = "剩余控制权提高所有者在事后谈判中的地位。依赖 [[$a]] 的论证：所有者可以拒绝合作并带走资产。对照 [[$c]]：那里讨论事前投资，这里讨论事后谈判。`n`n来源：[[$key]] §1.1"
+    $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = $cleanB }) + $okRest }
+    Assert ($pre[-1] -eq 'faults: 0') "precheck: a clean draft gives faults: 0 ($($pre -join ' | '))"
+    $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = '剩余控制权提高所有者在事后谈判中的地位，所有者可以拒绝合作并带走资产。' }) + $okRest }
+    Assert (@($pre | Where-Object { $_ -like "$b refuse lost Links*" }).Count -eq 1 -and $pre[-1] -match '^faults: [1-9]') "precheck: a draft that loses a Link is a refuse line ($($pre -join ' | '))"
+    $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = $cleanB.Replace('地位。依赖', '地位；依赖') }) + $okRest }
+    Assert (@($pre | Where-Object { $_ -like "$b R3 *" }).Count -ge 1 -and @($pre | Where-Object { $_ -like '* refuse *' }).Count -eq 0) "precheck: a semicolon is R3 ($($pre -join ' | '))"
+    $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'split'; title = '剩余控制权给所有者谈判地位'; body = $cleanB
+                split = @(@{ title = '拒绝合作的权利来自所有权'; body = "依赖 [[$b]] 的结论：所有者可以拒绝合作，这个权利来自所有权本身。`n`n来源：[[$key]] §1.1" }) }) + $okRest }
+    Assert (@($pre | Where-Object { $_ -like "$b+split1 I4 *" }).Count -eq 1) "precheck: a split Card that links only its origin is I4 ($($pre -join ' | '))"
+    $pre = Precheck $fixId $null
+    Assert ($pre.Count -eq 2 -and $pre[0] -like "$fixId json *" -and $pre[-1] -eq 'faults: 1') "precheck: a missing JSON file is one fault line ($($pre -join ' | '))"
+    $orphId = $orph[0].id
+    $orphanState = $state.jobs[$orphId]
+    $withCands = @(@($orphanState.cards) | Where-Object { @($orphanState.candidates[$_]).Count })
+    if ($withCands.Count) {
+        $o = $withCands[0]
+        $from = @($orphanState.candidates[$o])[0]
+        $pre = Precheck $orphId @{ links = @(@{ to = $o; from = $from; text = "[[$o]] 讨论所有权的配置怎样影响事前的专用性投资。" }); none = @() }
+        Assert (@($pre | Where-Object { $_ -like "$o<-$from refuse no kind word*" }).Count -eq 1) "precheck: an orphan Link with no kind word is a refuse line ($($pre -join ' | '))"
+        $none = @(@($orphanState.cards) | Where-Object { $_ -ne $o } | ForEach-Object { @{ orphan = $_; note = '候选卡片都不合适。' } })
+        $pre = Precheck $orphId @{ links = @(@{ to = $o; from = $from; text = "对照 [[$o]]：那里讨论事前的专用性投资，这里讨论谈判地位的来源。" }); none = $none }
+        Assert ($pre[-1] -eq 'faults: 0') "precheck: a clean orphan draft gives faults: 0 ($($pre -join ' | '))"
+    }
+    Assert ((Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8) -eq $stateBefore) 'precheck: state.json is unchanged'
 
     # --- DeepSeek stand-in: the fix job ---
     # b: a good rewrite. d: a rewrite that loses a Link (refused). e: the event template.
@@ -145,6 +185,7 @@ try {
     $state = Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $fjob = $state.jobs[$follow[0].id]
     Assert ($d -in @($fjob.cards)) 'check: the follow-up holds the refused Card'
+    Assert ((Get-Content $fjob.file -Raw -Encoding utf8) -match ($selfCheck + [regex]::Escape($follow[0].id) + '\s*$')) 'check: the follow-up job file names its own precheck command'
     Assert ($s1 -in @($fjob.cards)) 'check: the follow-up holds the split Card with its fault'
     Assert ($newOrphans.Count -eq 1 -and $s1 -in @($state.jobs[$newOrphans[0].id].cards)) 'check: the split Card gets an orphan job'
     if (@($cands[$c]).Count) { Assert ($freshFix.Count -eq 1 -and @($cands[$c])[0] -in @($state.jobs[$freshFix[0].id].cards)) 'check: the Card that took a long orphan Link gets a fresh fix job' }

@@ -257,7 +257,7 @@ ZT 根据 Location、facet 和 Link 计算每个模型的结构，除 facet 和 
   那张卡及其子树下移一位，成为新卡的直接后继。`move_card` / `mv` 也接受 `before`（占用另一张卡的位置）和 `alone`
   （只移动这张卡，它的直接后继上移补位）。所有改名的地址先列出确认，所有 Link 随之改写。
 - **卡片语言**：卡片文字遵守按中文改写的 ASD-STE100（一句一事、短句、不用 `；`、主动语态、一个术语一个意思）；
-  `scripts/book-digest/card-style-check.ps1` 负责检查。
+  `zt-check` (`tools/zt-check`) 负责检查。
 
 ### 数学公式与 HTML 图表
 

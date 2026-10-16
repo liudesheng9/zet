@@ -150,6 +150,8 @@ foreach ($group in $manifest.groups) {
     [void]$text.AppendLine("- 你这一部分的原文：$sectionList")
     [void]$text.AppendLine("- 全书索引：``$($manifest.index)``；全部卡片索引：``$(Join-Path $Staging 'cards-all.md')``")
     [void]$text.AppendLine("- 写入命令：``... | pwsh -NoProfile -File `"$installedHelper`" - -Allow `"$allow`"``")
+    # The link writer answers for its new Links and their sentences, not for the rest of the Card.
+    [void]$text.AppendLine("- SELF-CHECK: ``zt-check --log `"$allow`" --cards `"`" --book $key --rules L1,L2,R2,R3,R4,R5,R7,R9``")
     [void]$text.AppendLine("- 你负责的卡片（$($mine.Count) 张）：").AppendLine()
     foreach ($address in $mine) {
         $card = $bodies[$address]

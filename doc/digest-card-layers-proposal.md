@@ -1,5 +1,7 @@
 # Digest Card Layers: Proposal
 
+Note (2026-10-15): `card-style-check.ps1` and `self-check.ps1` no longer exist. The one Card quality check is now `zt-check` (crate `tools/zt-check`, installed by `scripts/install-zt-check.ps1`), with the same rules.
+
 Status (2026-10-15): all five phases are built and tested. Phases 1 to 3 and the Organize part of phase 5 ran on an existing book (`grossman2002integration`). Phase 4 ran end to end in a full digest of a new paper (`acemoglu2000franchise`). That digest found four faults in the scripts, which are fixed and tested. Its hubs were written afterwards by the fixed apply step. See "As built" and "Verification" below.
 
 The `zt-book-digest` workflow builds models and hubs with care. A compiler plans each model or hub, a script builds and checks it, DeepSeek writes it, and a fix round fixes the faults. The other Cards of a digest do not get this care. One DeepSeek run writes the Idea Cards, Event Cards, new Topics, and the anchor Card of a group in four commands. No step checks them, reviews them, or reports their faults. Opus then fixes the structure in one long free-text job.

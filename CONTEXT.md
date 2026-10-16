@@ -261,7 +261,7 @@ The plain-text rules Card titles and bodies follow: ASD-STE100 (Simplified Techn
 _Avoid_: Style guide, tone
 
 **Card layer rules**:
-The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `card-style-check.ps1` checks them; `digest-audit.ps1` reports them.
+The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `zt-check` checks them; `digest-audit.ps1` reports them.
 _Avoid_: Lint, quality score
 
 **Book term table**:

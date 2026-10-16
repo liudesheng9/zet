@@ -1,12 +1,12 @@
 #Requires -Version 7
-# Run: pwsh -NoProfile -File scripts\book-digest\tests\card-style-check.tests.ps1
-# Checks card-style-check.ps1 against a fixture with one fault for each rule it checks, and
+# Run: pwsh -NoProfile -File scripts\book-digest\tests\zt-check.tests.ps1
+# Checks zt-check (the one Card quality check) against a fixture with one fault for each rule it checks, and
 # text it must leave alone (formulas, Links, tables, quotations, charts).
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$script = Join-Path $PSScriptRoot '..\card-style-check.ps1'
+. (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $fixture = Join-Path $PSScriptRoot 'card-style-fixture.json'
-$lines = @(pwsh -NoProfile -File $script -Json $fixture -Setting 'K/1|a|a')
+$lines = @(Invoke-ZtCheck -Json $fixture -Setting 'K/1|a|a')
 $expected = @(
     'K/1|a|a|1 R12 (49 characters > 40) 清算比例：E 付不出 P 时'
     'K/1|a|a|1 R3 E 在时点 1 付不出去；E 能部分付出。'
@@ -46,9 +46,9 @@ $small = Join-Path ([IO.Path]::GetTempPath()) "card-style-size-$PID.json"
     [pscustomobject]@{ address = 'S/1|a|a'; facet = '设定'; title = '设定'; body = 'E 有一个项目，项目在时点 2 产生收益。C 出资，换取时点 1 的还款。E 可以挪用一部分收益。' }
     [pscustomobject]@{ address = 'S/1|a|a|1'; facet = '推导'; title = '推导'; body = "1. E 在时点 1 还款以后，手里剩下项目的收益。`n2. E 在时点 2 挪用一部分收益，留下其余部分。`n3. 两边加上初始财富，得到参与约束。" }
 ) | ConvertTo-Json | Set-Content -LiteralPath $small -Encoding utf8
-$size = @(pwsh -NoProfile -File $script -Json $small -MaxChars 30 -MaxSteps 2)
+$size = @(Invoke-ZtCheck -Json $small -MaxChars 30 -MaxSteps 2)
 # A concept model keeps its few parts whole: no size faults.
-$concept = @(pwsh -NoProfile -File $script -Json $small -MaxChars 30 -MaxSteps 2 -Level concept)
+$concept = @(Invoke-ZtCheck -Json $small -MaxChars 30 -MaxSteps 2 -Level concept)
 Remove-Item -LiteralPath $small
 if ($concept[-1] -ne 'faults: 0') { Write-Output "a concept model must raise no size fault:"; $concept | ForEach-Object { Write-Output "  $_" }; $failed++ }
 $expectedSize = @(
@@ -76,10 +76,10 @@ $explainCards = @(
 )
 $explainFile = Join-Path ([IO.Path]::GetTempPath()) "card-style-explain-$PID.json"
 $explainCards | ConvertTo-Json | Set-Content -LiteralPath $explainFile -Encoding utf8
-$plainRun = @(pwsh -NoProfile -File $script -Json $explainFile)
-$strictRun = @(pwsh -NoProfile -File $script -Json $explainFile -RequireExplain)
+$plainRun = @(Invoke-ZtCheck -Json $explainFile)
+$strictRun = @(Invoke-ZtCheck -Json $explainFile -RequireExplain)
 # The explanation does not count under R13: 12 sentences of 思路 and 解读 fit a -MaxSentences 3 part.
-$r13Run = @(pwsh -NoProfile -File $script -Json $explainFile -MaxSentences 3 -MaxExplainSentences 40 -MaxExplainChars 2000)
+$r13Run = @(Invoke-ZtCheck -Json $explainFile -MaxSentences 3 -MaxExplainSentences 40 -MaxExplainChars 2000)
 Remove-Item -LiteralPath $explainFile
 $expectedExplain = @(
     'X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读'
@@ -101,4 +101,4 @@ if (@($r13Run | Where-Object { $_ -match '^X/1\|a\|a\|[1-4] R13 ' }).Count) {
     Write-Output "explain check: R13 must not count the explanation:"; $r13Run | ForEach-Object { Write-Output "  $_" }; $failed++
 }
 if ($failed) { Write-Output "FAILED: $failed"; exit 1 }
-Write-Output 'card-style-check: all checks passed'
+Write-Output 'zt-check: all checks passed'
