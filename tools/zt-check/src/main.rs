@@ -6,15 +6,12 @@
 //!
 //! Output: one line per fault `<address> <rule> <text>`, then `faults: N`.
 //! It is the one Card quality check and the only source of truth: Claude
-//! sessions, workflow agents, DeepSeek runs, and the digest scripts (through
-//! Invoke-ZtCheck in zt-calls.ps1) all call it.
-
-mod check;
-mod mcp;
+//! sessions, workflow agents, DeepSeek runs, and the digest tools (zt-digest,
+//! which runs it in-process) all call it.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Err(error) = check::run_cli(&args) {
+    if let Err(error) = zt_check::check::run_cli(&args) {
         eprintln!("zt-check: {error:#}");
         std::process::exit(1);
     }

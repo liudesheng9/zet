@@ -14,7 +14,7 @@ updated: 2026-10-16
 
 `zt-check` is the Card quality check of the book digest, built as one fast Rust binary. It reads Cards (from a JSON file of drafts, or from the live archive through `zt mcp`) and prints one line per fault against the Card language rules (R2 to R17) and the Card layer rules (I, E, F, L). Every agent that writes digest Cards calls it: Claude sessions, workflow agents, Haiku managers, DeepSeek Harness runs, and the digest scripts through `Invoke-ZtCheck`. It is the only source of truth for Card quality (`tools/zt-check/src/main.rs`, `tools/zt-check/src/check.rs`). It exists as a crate of its own so that it builds and installs without building zt or stopping the ZT service (`tools/zt-check/Cargo.toml`, `scripts/install-zt-check.ps1`).
 
-**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the `zt mcp` client in `tools/zt-check/src/mcp.rs`, and the build and install of `zt-check.exe`.
+**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the library entry points (`tools/zt-check/src/lib.rs`: `check::run_lines`, `mcp::Zt`), and the build and install of `zt-check.exe`.
 
 **Does not own:** the MCP tools it calls (`get_card`, `get_model`, `get_tree`, `list_trees`; see [MCP server](mcp-server.md)), the ZT service that `zt mcp` needs (see [Service, CLI and storage](service-and-cli.md)), Relation kinds and Link parsing inside zt (see [Cards, Workspaces and Links](cards-and-links.md)), the build report and Elaboration level (see [Models and math](models-and-math.md)), the PowerShell wrapper `Invoke-ZtCheck` and the compilers and audit that build its input (see [Digest scripts](digest-scripts.md)), the SELF-CHECK lines in the agent prompts (see [Digest prompts](digest-prompts.md)), the approval rules in the workflows (see [Digest workflows](digest-workflows.md)), and the `zt-digest-protocol` skill that documents it for agents (see [Agent skills](agent-skills.md)).
 
@@ -22,15 +22,16 @@ updated: 2026-10-16
 
 | | |
 |---|---|
-| Entry points | `zt-check` command line (`main` in `tools/zt-check/src/main.rs` → `check::run_cli`); `scripts/install-zt-check.ps1` (build and install) |
+| Entry points | `zt-check` command line (`main` in `tools/zt-check/src/main.rs` → `check::run_cli`); the library (`zt_check::check::run_lines(args, Some(&mut zt))`, `zt_check::mcp::Zt`), which [zt-digest](zt-digest.md) runs in-process; `scripts/install-zt-check.ps1` (build and install) |
 | Key files | `tools/zt-check/Cargo.toml` — a crate with its own `[workspace]`, so it never builds zt; three dependencies (`anyhow`, `regex`, `serde_json`) |
 | | `tools/zt-check/Cargo.lock` — pinned versions (regex 1.13.1, anyhow 1.0.104, serde_json) |
-| | `tools/zt-check/src/main.rs` — collects the arguments, calls `check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
+| | `tools/zt-check/src/lib.rs` — the library: `pub mod check; pub mod mcp;` |
+| | `tools/zt-check/src/main.rs` — collects the arguments, calls `zt_check::check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
 | | `tools/zt-check/src/check.rs` — the rules, the PowerShell text semantics, the four input modes, the option parser, the output, and the unit tests |
 | | `tools/zt-check/src/mcp.rs` — `Zt`, a minimal JSON-RPC client that starts `zt mcp` and makes `tools/call` requests |
 | | `scripts/install-zt-check.ps1` — `cargo build --release` into `D:\zt-check-target`, then copies `zt-check.exe` beside `zt.exe` |
 | Depends on | [MCP server](mcp-server.md) (`zt mcp`, read tools only); [Service, CLI and storage](service-and-cli.md) (the service must be up for `zt mcp` tool calls); the answer shapes of [Models and math](models-and-math.md) (`get_model` `head`, `parts`, `level`, `build.setting`, `build.order`) and [Cards, Workspaces and Links](cards-and-links.md) (`get_tree` `links`, `kinds`); Rust crates `regex`, `serde_json`, `anyhow` |
-| Used by | [Digest scripts](digest-scripts.md) (`Invoke-ZtCheck` in `scripts/book-digest/zt-calls.ps1`, used by `card-compiler.ps1`, `model-compiler.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`, `hub-compiler.ps1`, `digest-audit.ps1`); [Digest prompts](digest-prompts.md) (DeepSeek SELF-CHECK commands); [Digest workflows](digest-workflows.md) (managers approve `zt-check` as read-only); [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zettelkasten/SKILL.md`) |
+| Used by | [zt-digest](zt-digest.md) (a path dependency: `Check::run` calls `run_lines` on the step's own `zt mcp`); [Digest scripts](digest-scripts.md) (`Invoke-ZtCheck` in `scripts/book-digest/zt-calls.ps1`, used by `card-compiler.ps1`, `model-compiler.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`, `hub-compiler.ps1`, `digest-audit.ps1`); [Digest prompts](digest-prompts.md) (DeepSeek SELF-CHECK commands); [Digest workflows](digest-workflows.md) (managers approve `zt-check` as read-only); [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zettelkasten/SKILL.md`) |
 | Tests | `mod tests` in `tools/zt-check/src/check.rs`; `scripts/book-digest/tests/zt-check.tests.ps1` with `card-style-fixture.json`; `scripts/book-digest/tests/card-layer.tests.ps1` with `card-layer-fixture.json` |
 
 ## Concepts
@@ -50,7 +51,7 @@ updated: 2026-10-16
 
 ## Architecture
 
-The binary has three parts: the command (`main.rs`), the checker (`check.rs`), and the zt client (`mcp.rs`). `check.rs` is itself layered: input readers build a list of entries, `Check::run` applies the language rules per Card and then the layer rules across Cards, and `run_cli` filters and prints.
+The crate has a library (`lib.rs`: the checker `check.rs` and the zt client `mcp.rs`) and a binary (`main.rs`). `check.rs` is itself layered: input readers build a list of entries, `Check::run` applies the language rules per Card and then the layer rules across Cards, `run_lines` filters and returns the lines with `faults: N` last, and `run_cli` prints them. `run_lines(args, zt)` takes an open `Zt` or, given `None`, starts one only when the mode reads the archive (`--json` and an empty `--cards` start none).
 
 ```mermaid
 flowchart TD
@@ -171,7 +172,7 @@ Rules R1, R8, R10, R11, and E3 exist in the design docs but zt-check does not ch
 
 ### `zt mcp` client (`tools/zt-check/src/mcp.rs`)
 
-zt-check has no MCP server mode of its own. It is an MCP client: `Zt::start()` runs `zt mcp` (the program in `ZT_CHECK_ZT`, default `zt` on PATH) with piped stdin and stdout and stderr discarded, sends `initialize` (`protocolVersion` `2025-06-18`), waits for the reply with id 0, and sends `notifications/initialized`. `Zt::call(tool, arguments)` sends one `tools/call` per line with a rising id, skips reply lines that are not JSON or have another id, joins the `text` parts of `result.content`, and parses them as JSON. A JSON-RPC `error` or `result.isError: true` becomes `zt: <message>` (the `error` field of a JSON message when there is one). Dropping `Zt` closes stdin, which ends the server, and waits for it. It mirrors the protocol of `skills/zt/scripts/zt-mcp.ps1`.
+zt-check has no MCP server mode of its own. It is an MCP client: `Zt::start()` runs `zt mcp` (the program in `ZT_CHECK_ZT`, default `zt` on PATH) with piped stdin and stdout and stderr discarded, sends `initialize` (`protocolVersion` `2025-06-18`), waits for the reply with id 0, and sends `notifications/initialized`. `Zt::call(tool, arguments)` sends one `tools/call` per line with a rising id, skips reply lines that are not JSON or have another id, joins the `text` parts of `result.content`, and parses them as JSON. A JSON-RPC `error` or `result.isError: true` becomes `zt: <message>` (the `error` field of a JSON message when there is one). `Zt::request(tool, arguments)` returns the whole reply instead, an error reply included; `reply_text` and `reply_error` read it (the zt-digest helper uses them). Dropping `Zt` closes stdin, which ends the server, and waits for it. It mirrors the protocol of `skills/zt/scripts/zt-mcp.ps1`.
 
 | Tool called | Arguments | Used by | Fields read |
 |---|---|---|---|
@@ -375,6 +376,7 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 
 ## Change history
 
+- `2026-10-16` — zt-check becomes a library too (`src/lib.rs`): `check::run_lines` returns the lines on a given `Zt`, `Zt::request` returns a raw reply, and `reply_text`/`reply_error` read it, for zt-digest.
 - `2026-10-16` `753bd7b` — Finding Cards: the F1 to F4 rules (`finding_rules`), category `finding` in `--cards` (from the Card type), F1–F3 added to `DEFAULT_RULES`, I5 also on Finding Cards.
 - `2026-10-15` `02499c0` — zt-check created: the Rust crate replaces `card-style-check.ps1` and `self-check.ps1` with the same rules R2–R17, I, E, L; modes `--json`, `--model`, `--addresses`, `--cards`; the `zt mcp` client; `scripts/install-zt-check.ps1`; DeepSeek writers run it on their own Cards.
 - `2026-10-16` — Wiki doc created.

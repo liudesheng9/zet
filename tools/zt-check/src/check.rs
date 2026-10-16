@@ -1720,7 +1720,20 @@ pub(crate) fn check_addresses(
 }
 
 /// `zt-check …`.
-pub(crate) fn run_cli(args: &[String]) -> Result<()> {
+pub fn run_cli(args: &[String]) -> Result<()> {
+    write_lines(&run_lines(args, None)?)
+}
+
+/// The lines `zt-check …` prints: one per fault, then `faults: N`. With `zt`,
+/// the reads go to that `zt mcp`; without it, a new one starts when needed.
+pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
+    fn server<'a>(shared: Option<&'a mut Zt>, own: &'a mut Option<Zt>) -> Result<&'a mut Zt> {
+        match shared {
+            Some(zt) => Ok(zt),
+            None => Ok(own.insert(Zt::start()?)),
+        }
+    }
+    let mut own: Option<Zt> = None;
     let options = Options::parse(args)?;
     let setting = options.setting.clone().unwrap_or_default();
     let level = options.level.clone().unwrap_or_default();
@@ -1738,14 +1751,14 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
         (lines, count)
     } else if let Some(list) = &options.addresses {
         let list = LIST_SPLIT.split(list).filter(|at| !at.is_empty()).map(str::to_string).collect::<Vec<_>>();
-        let mut zt = Zt::start()?;
-        let lines = check_addresses(&mut zt, &list, &setting, &level, options.limits.clone(), options.require_explain)?;
+        let zt = server(zt, &mut own)?;
+        let lines = check_addresses(zt, &list, &setting, &level, options.limits.clone(), options.require_explain)?;
         let count = lines.len();
         (lines, count)
     } else if let Some(at) = &options.model {
-        let mut zt = Zt::start()?;
+        let zt = server(zt, &mut own)?;
         let lines = check_model(
-            &mut zt,
+            zt,
             at,
             &setting,
             &level,
@@ -1782,9 +1795,9 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
         if unique.is_empty() {
             (vec!["no Cards to check".to_string()], 0)
         } else {
-            let mut zt = Zt::start()?;
+            let zt = server(zt, &mut own)?;
             let lines = check_cards(
-                &mut zt,
+                zt,
                 &unique,
                 options.book.as_deref().unwrap_or_default(),
                 options.limits.clone(),
@@ -1793,7 +1806,7 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
         }
     };
     out.push(format!("faults: {count}"));
-    write_lines(&out)
+    Ok(out)
 }
 
 /// One line each, UTF-8 whatever the console code page, with the line ends

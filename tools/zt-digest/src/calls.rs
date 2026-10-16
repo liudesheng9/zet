@@ -1,0 +1,392 @@
+//! The zt helper (`zt-digest call`), the Rust form of `skills/zt/scripts/zt-mcp.ps1`.
+//!
+//! It runs a JSON array of calls (or one call) through one `zt mcp` in order
+//! and prints one compact line per call: `N ok <address>` for writes,
+//! `N <json>` for reads, `N error <message>` on failure, after which the last
+//! line is `resume: -From N -Addresses a0,a1,...` and the exit code is 1.
+//!
+//!   `@@N`      in any string argument: the address call N returned (0-based).
+//!   -From N -Addresses a0,...   skip the calls before N; their addresses still resolve `@@`.
+//!   -Log f     append the address of every Card a create call makes.
+//!   -Allow f   only those Cards (one per line) and Cards made in this run may change;
+//!              create_topic, move_card, insert_card, delete_card, create_literature,
+//!              and edit_literature_metadata are refused.
+//!   -Moves f   append {"i":N,"moved":{...}} per call that renumbered Cards.
+//!   -SrcLog f  append `<address>\t<src>` per Card made from a call with a `src` field
+//!              (the helper removes `src` before the call reaches zt).
+//!   -TopicGate f   lock f around create_topic and refuse a Topic whose title equals or
+//!              resembles (character bigrams, -TopicSimilarity 0.8) an agent Topic.
+//!   append_card {at, text}: add a paragraph to the end of a Card (helper-only call).
+//!
+//! The digest tools run the same code in-process through `run` and `invoke`.
+
+use crate::args::Args;
+use crate::util;
+use crate::zt::Zt;
+use anyhow::{Context, Result, bail};
+use regex::Regex;
+use serde_json::{Map, Value, json};
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+use zt_check::mcp::{reply_error, reply_text};
+
+/// The read-only tools: a batch of only these needs no allow-list or log.
+pub const READ_TOOLS: &[&str] = &[
+    "list_workspaces", "list_trees", "get_tree", "get_card", "get_model", "get_hub", "list_hubs", "list_links",
+    "list_broken_links", "search_cards",
+];
+
+#[derive(Default)]
+pub struct Options {
+    pub from: usize,
+    pub addresses: Vec<String>,
+    pub log: String,
+    pub allow: Option<HashSet<String>>,
+    pub moves: String,
+    pub src_log: String,
+    pub topic_gate: String,
+    pub topic_similarity: f64,
+}
+
+impl Options {
+    pub fn new() -> Self {
+        Self { topic_similarity: 0.8, ..Self::default() }
+    }
+
+    /// Loads the allow-list file: one address per line.
+    pub fn allow_file(mut self, path: &str) -> Result<Self> {
+        if !path.is_empty() {
+            let text = util::read_text(path)?;
+            self.allow = Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect());
+        }
+        Ok(self)
+    }
+}
+
+/// One call that succeeded.
+pub struct Done {
+    pub index: usize,
+    /// The line the helper prints for it.
+    pub line: String,
+    /// A read's answer (the reply text as JSON), or None for a write or a non-JSON answer.
+    pub value: Option<Value>,
+}
+
+/// The call that failed: its index, the message, and the addresses so far.
+pub struct Failure {
+    pub index: usize,
+    pub message: String,
+    pub resolved: Vec<String>,
+}
+
+impl Failure {
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            format!("{} error {}", self.index, one_line(&self.message)),
+            format!("resume: -From {} -Addresses {}", self.index, self.resolved.join(",")),
+        ]
+    }
+}
+
+static WS_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\r?\n\s*").unwrap());
+static REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@@(\d+)").unwrap());
+static TITLE_DROP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\s\p{P}\p{S}]").unwrap());
+
+fn one_line(message: &str) -> String {
+    WS_NEWLINE.replace_all(message, " ").into_owned()
+}
+
+/// `@@N` in every string of a value: the address of call N.
+fn resolve_refs(value: &Value, resolved: &[String]) -> Result<Value> {
+    Ok(match value {
+        Value::String(text) => {
+            let mut error = None;
+            let out = REF.replace_all(text, |c: &regex::Captures| {
+                let n: usize = c[1].parse().unwrap_or(usize::MAX);
+                match resolved.get(n).filter(|a| !a.is_empty()) {
+                    Some(a) => a.clone(),
+                    None => {
+                        error.get_or_insert(format!("@@{} has no address yet", &c[1]));
+                        String::new()
+                    }
+                }
+            });
+            if let Some(error) = error {
+                bail!(error);
+            }
+            Value::String(out.into_owned())
+        }
+        Value::Object(map) => {
+            let mut copy = Map::new();
+            for (k, v) in map {
+                copy.insert(k.clone(), resolve_refs(v, resolved)?);
+            }
+            Value::Object(copy)
+        }
+        Value::Array(list) => Value::Array(list.iter().map(|v| resolve_refs(v, resolved)).collect::<Result<_>>()?),
+        other => other.clone(),
+    })
+}
+
+/// A title without spaces and punctuation, in lower case: the Topic gate compares them.
+pub fn title_key(title: &str) -> String {
+    TITLE_DROP.replace_all(title, "").to_lowercase()
+}
+
+/// The Dice coefficient of the character bigrams of two keys.
+pub fn similarity(a: &str, b: &str) -> f64 {
+    let grams = |t: &str| {
+        let chars: Vec<char> = t.chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect::<HashSet<_>>()
+    };
+    let (x, y) = (grams(a), grams(b));
+    if x.is_empty() || y.is_empty() {
+        return if a == b { 1.0 } else { 0.0 };
+    }
+    let common = x.iter().filter(|g| y.contains(g)).count();
+    2.0 * common as f64 / (x.len() + y.len()) as f64
+}
+
+/// The Topic gate's lock: the file opened with no sharing, for at most 120 seconds of waiting.
+struct Gate(#[allow(dead_code)] std::fs::File);
+
+fn lock_gate(path: &str) -> Result<Gate> {
+    let full = std::path::absolute(path)?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(0);
+        }
+        match options.open(&full) {
+            Ok(file) => return Ok(Gate(file)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error.into()),
+            Err(_) => {
+                if Instant::now() > deadline {
+                    bail!("the Topic gate `{path}` stayed locked for 120 seconds");
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+fn arg_str(arguments: &Value, key: &str) -> String {
+    match &arguments[key] {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Runs the calls in order and stops at the first failure. Err only when
+/// zt mcp itself fails (it closed, or wrote no reply).
+pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<Done>, Option<Failure>)> {
+    let mut done = Vec::new();
+    let mut resolved: Vec<String> = (0..options.from).map(|i| options.addresses.get(i).cloned().unwrap_or_default()).collect();
+    macro_rules! fail {
+        ($i:expr, $message:expr) => {
+            return Ok((done, Some(Failure { index: $i, message: $message.to_string(), resolved })))
+        };
+    }
+    for (i, call) in calls.iter().enumerate().skip(options.from) {
+        let call_tool = call["tool"].as_str().unwrap_or_default().to_string();
+        let mut arguments = match resolve_refs(call.get("arguments").filter(|a| !a.is_null()).unwrap_or(&json!({})), &resolved) {
+            Ok(a) => a,
+            Err(error) => fail!(i, error),
+        };
+        if let Some(allowed) = &options.allow {
+            if ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"]
+                .contains(&call_tool.as_str())
+            {
+                fail!(i, format!("{call_tool} is not allowed in this run"));
+            }
+            if ["edit_card", "append_card", "create_successor"].contains(&call_tool.as_str())
+                && !allowed.contains(&arg_str(&arguments, "at"))
+            {
+                fail!(i, format!("`{}` is not one of your Cards; you may only change your own Cards", arg_str(&arguments, "at")));
+            }
+        }
+        let mut tool = call_tool.clone();
+        if tool == "append_card" {
+            let at = arg_str(&arguments, "at");
+            let current = zt.request("get_card", json!({ "at": at }))?;
+            if reply_error(&current).is_some() {
+                fail!(i, format!("cannot read `{at}`"));
+            }
+            let body = arg_str(&current["result"]["structuredContent"], "body");
+            let text = arg_str(&arguments, "text");
+            arguments = json!({ "at": at, "body": format!("{}\n\n{}", body.trim_end(), text.trim()) });
+            tool = "edit_card".to_string();
+        }
+        // `src` is for the source log only; zt never sees it.
+        let mut src = String::new();
+        if let Some(map) = arguments.as_object_mut()
+            && let Some(value) = map.remove("src")
+        {
+            src = match value {
+                Value::String(s) => s,
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+        }
+        let mut gate = None;
+        if !options.topic_gate.is_empty() && tool == "create_topic" {
+            let lock = match lock_gate(&options.topic_gate) {
+                Ok(lock) => lock,
+                Err(error) => fail!(i, error),
+            };
+            let listed = zt.request("list_trees", json!({ "workspace": "agent" }))?;
+            let key = title_key(&arg_str(&arguments, "title"));
+            let trees = listed["result"]["structuredContent"]["trees"].as_array().cloned().unwrap_or_default();
+            let same = trees.iter().filter(|t| t["kind"] == "topic").find(|t| {
+                let other = title_key(&arg_str(t, "title"));
+                other == key || similarity(&other, &key) >= options.topic_similarity
+            });
+            if let Some(same) = same {
+                drop(lock);
+                fail!(
+                    i,
+                    format!(
+                        "topic exists: `{}` {}. File the Card under that Topic instead of creating one.",
+                        arg_str(same, "root"),
+                        arg_str(same, "title")
+                    )
+                );
+            }
+            gate = Some(lock);
+        }
+        let reply = zt.request(&tool, arguments)?;
+        drop(gate);
+        let text = reply_text(&reply);
+        if let Some(message) = reply_error(&reply) {
+            fail!(i, message);
+        }
+        let structured = &reply["result"]["structuredContent"];
+        let address = structured["address"].as_str().map(str::to_string);
+        resolved.push(address.clone().unwrap_or_default());
+        if let Some(address) = &address
+            && call_tool.starts_with("create")
+        {
+            if let Some(allowed) = options.allow.as_mut() {
+                allowed.insert(address.clone());
+            }
+            if !options.log.is_empty() {
+                util::append_text(&options.log, &format!("{address}\n"))?;
+            }
+            if !options.src_log.is_empty() && !src.is_empty() {
+                util::append_text(&options.src_log, &format!("{address}\t{src}\n"))?;
+            }
+        }
+        if !options.moves.is_empty()
+            && let Some(moved) = structured["moved"].as_object().filter(|m| !m.is_empty())
+        {
+            util::append_text(&options.moves, &format!("{}\n", util::compact(&json!({ "i": i, "moved": moved }))))?;
+        }
+        let write = ["create", "edit", "append", "move", "insert", "delete"].iter().any(|p| call_tool.starts_with(p));
+        match address.filter(|_| write) {
+            Some(address) => done.push(Done { index: i, line: format!("{i} ok {address}"), value: None }),
+            None => {
+                let value = serde_json::from_str::<Value>(&text).ok();
+                let shown = value.as_ref().map(util::compact).unwrap_or_else(|| text.clone());
+                let value = value.filter(|_| text.trim_start().starts_with('{'));
+                done.push(Done { index: i, line: format!("{i} {shown}"), value });
+            }
+        }
+    }
+    Ok((done, None))
+}
+
+/// `Invoke-Zt`: runs the calls and returns the answers of the reads (objects
+/// only), in order. A failed call is an error `zt: <message>`.
+pub fn invoke(zt: &mut Zt, calls: &[Value]) -> Result<Vec<Value>> {
+    let (done, failure) = run(zt, calls, &mut Options::new())?;
+    if let Some(failure) = failure {
+        bail!("zt: {}", one_line(&failure.message));
+    }
+    Ok(done.into_iter().filter_map(|d| d.value).collect())
+}
+
+/// One read call; its answer.
+pub fn read(zt: &mut Zt, tool: &str, arguments: Value) -> Result<Value> {
+    invoke(zt, &[json!({ "tool": tool, "arguments": arguments })])?
+        .into_iter()
+        .next()
+        .with_context(|| format!("{tool}: no answer"))
+}
+
+/// `zt-digest call`.
+pub fn cli(argv: &[String]) -> Result<i32> {
+    let a = Args::parse(
+        argv,
+        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json"],
+        &[],
+    )?;
+    let calls: Vec<Value> = if a.has("Tool") {
+        let arguments: Value = serde_json::from_str(&a.str_or("Json", "{}")).context("-Json is not JSON")?;
+        vec![json!({ "tool": a.str("Tool"), "arguments": arguments })]
+    } else {
+        let file = if a.has("File") { a.str("File") } else { a.positional.first().cloned().context("give a file, or - for stdin")? };
+        let source = if file == "-" {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            text.strip_prefix('\u{FEFF}').map(str::to_string).unwrap_or(text)
+        } else {
+            util::read_text(&file)?
+        };
+        match serde_json::from_str::<Value>(&source).context("the calls are not JSON")? {
+            Value::Array(list) => list,
+            one => vec![one],
+        }
+    };
+    let mut options = Options::new().allow_file(&a.str("Allow"))?;
+    options.from = a.int_or("From", 0)?.max(0) as usize;
+    options.addresses = a.str("Addresses").split(',').map(|s| s.trim().to_string()).collect();
+    options.log = a.str("Log");
+    options.moves = a.str("Moves");
+    options.src_log = a.str("SrcLog");
+    options.topic_gate = a.str("TopicGate");
+    options.topic_similarity = a.float_or("TopicSimilarity", 0.8)?;
+    let mut zt = Zt::start()?;
+    let (done, failure) = run(&mut zt, &calls, &mut options)?;
+    let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
+    let code = match &failure {
+        Some(failure) => {
+            lines.extend(failure.lines());
+            1
+        }
+        None => 0,
+    };
+    util::print_lines(&lines)?;
+    Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refs_resolve_and_fail_without_address() {
+        let resolved = vec!["3/1".to_string(), String::new()];
+        let v = resolve_refs(&json!({ "at": "@@0", "body": ["see [[@@0]]"] }), &resolved).unwrap();
+        assert_eq!(v, json!({ "at": "3/1", "body": ["see [[3/1]]"] }));
+        assert_eq!(resolve_refs(&json!("@@1"), &resolved).unwrap_err().to_string(), "@@1 has no address yet");
+        assert!(resolve_refs(&json!("@@7"), &resolved).is_err());
+    }
+
+    #[test]
+    fn titles_compare_without_punctuation() {
+        assert_eq!(title_key("Price, Theory!"), "pricetheory");
+        assert_eq!(title_key("价格 理论：导论"), "价格理论导论");
+        assert!(similarity("价格理论导论", "价格理论导引") >= 0.8);
+        assert!(similarity("价格理论", "货币银行") < 0.8);
+        assert_eq!(similarity("a", "a"), 1.0);
+    }
+}

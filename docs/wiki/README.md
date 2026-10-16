@@ -27,7 +27,7 @@ ZT is a local note system of addressable Markdown Cards for one person and one A
 |---|---|---|
 | `zt` and `zt-boot` binaries | Rust 2024 edition, Cargo; SQLite (`rusqlite`, bundled), `tiny_http`, `crossterm`, `pulldown-cmark` (`Cargo.toml`) | `src/`, `tests/` |
 | GUI front end | Plain JavaScript, CSS and HTML embedded in the binary; vendored KaTeX | `src/gui/` |
-| `zt-check` | A separate Rust crate | `tools/zt-check/` |
+| `zt-check`, `zt-digest` | Separate Rust crates (zt-digest takes zt-check as a library) | `tools/zt-check/`, `tools/zt-digest/` |
 | Digest tooling | PowerShell 7.5 scripts, Node ESM Workflow scripts and harnesses, Chinese prompt files | `scripts/book-digest/`, `.claude/workflows/`, `.claude/workflow-framework/` |
 | Agent skills | Markdown skills, installed by a PowerShell script | `skills/`, `scripts/install-agent-integrations.ps1` |
 
@@ -37,6 +37,7 @@ Build, install, test, and run:
 cargo install --path . --locked
 cargo test --all-targets
 cd tools/zt-check && cargo test
+cd tools/zt-digest && cargo test
 pwsh -NoProfile -File scripts/book-digest/tests/run-all.ps1
 zt config set archive_root "<data-directory>"
 zt up
@@ -59,6 +60,7 @@ Each block doc's **Testing** section names its own suites.
 | [GUI](gui.md) | The loopback HTTP server inside the daemon and the browser front end: cabinet, map, Table and Spreads, Constellation, writing desk, charts, source documents | `src/gui.rs`, `src/gui/`, `src/spread.rs` |
 | [Scholar Archive bridge and artifacts](scholar-bridge.md) | The signed, read-only connection to the Scholar Archive and the content-addressed artifact store for Card images | `src/scholar.rs`, `src/artifact.rs` |
 | [zt-check](zt-check.md) | The standalone Card quality checker (rules R, I, E, F, L) used by every digest stage | `tools/zt-check/` |
+| [zt-digest](zt-digest.md) | The digest tools as one Rust binary: the zt helper (`call`) and the ported compilers, with zt-check in-process | `tools/zt-digest/`, `skills/zt/scripts/zt-mcp.ps1` |
 | [Agent skills and integrations](agent-skills.md) | The `zt`, `zettelkasten`, and `zt-digest-protocol` skills, the `zt-mcp.ps1` helper, and the installer for Claude Code, Codex, and DeepSeek Harness | `skills/`, `scripts/install-agent-integrations.ps1` |
 | [Digest workflows](digest-workflows.md) | The book, econ, and math digest Workflows: stages, modes, modules, blueprints, and the frozen install | `scripts/book-digest/workflow/`, `.claude/workflows/`, `.claude/workflow-framework/` |
 | [Digest scripts](digest-scripts.md) | The PowerShell stage scripts and compilers (card, model, event, finding, math, hub, organize, figures, audit) and their tests | `scripts/book-digest/*.ps1`, `scripts/book-digest/tests/` |

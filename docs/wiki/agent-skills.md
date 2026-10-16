@@ -14,7 +14,7 @@ updated: 2026-10-16
 
 This block holds what AI agents get to know about ZT, and the means to put it in front of them. It has three agent skills: `zt` teaches the slip-box's Workspaces, the `zt` MCP server's tools, and the Access rules. `zettelkasten` teaches how to compose, place, and link a Card the way Luhmann worked. `zt-digest-protocol` teaches the building blocks of the book-digest workflows. It also holds the shell helper `zt-mcp.ps1`, which lets an agent with no MCP tools (DeepSeek Harness) call the same server, and the installer `scripts/install-agent-integrations.ps1`. The installer copies the skills into Claude Code, Codex, and DeepSeek Harness and registers `zt mcp` as an MCP server. The block exists because the server only enforces the rules (agent Access, Card rules, confirm plans). The conventions that make Cards good (one idea, claim titles, kinded Links, model structure) live in skill text, and every agent harness must load that text from one source.
 
-**Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the shell helper `skills/zt/scripts/zt-mcp.ps1` (batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, the helper-only `append_card` call); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
+**Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the helper path `skills/zt/scripts/zt-mcp.ps1`, now a forwarder to `zt-digest call` (the helper itself, with batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, and `append_card`, is owned by [zt-digest](zt-digest.md)); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
 
 **Does not own:** the MCP server, its tool schemas and its `INSTRUCTIONS` text ([MCP server](mcp-server.md), `src/mcp.rs`); the Card operations and confirm plans behind the tools ([Card operations](card-operations.md)); the Card checker that enforces the Card language ([zt-check](zt-check.md)); the digest scripts that call the helper, including `zt-calls.ps1` ([Digest scripts](digest-scripts.md)); the DeepSeek instruction files ([Digest prompts](digest-prompts.md)); the Workflow scripts and the framework that builds them ([Digest workflows](digest-workflows.md)); the service that `zt mcp` needs ([Service, CLI and storage](service-and-cli.md)).
 
@@ -25,14 +25,14 @@ This block holds what AI agents get to know about ZT, and the means to put it in
 | Entry points | A harness loads a skill when its `description` matches the task (Claude Code from `~/.claude/skills/<name>/SKILL.md`, Codex from `~/.codex/skills/<name>`, DeepSeek Harness from `~/.dsh/skills/<name>` or the `skills` field of `deepseek_run`). `pwsh -File scripts/install-agent-integrations.ps1 [-ZtPath <zt.exe>]` installs everything. `pwsh -NoProfile -File <skill dir>/scripts/zt-mcp.ps1 <calls.json or ->` calls the server from a shell. |
 | Key files | `skills/zt/SKILL.md` — the slip-box and the MCP tools: what to call, the Access rules, the helper, how to develop zt. |
 | | `skills/zt/agents/openai.yaml` — display name and short description of the `zt` skill for Codex. |
-| | `skills/zt/scripts/zt-mcp.ps1` — the shell helper: starts `zt mcp`, runs a batch of tool calls, prints one line per call. |
+| | `skills/zt/scripts/zt-mcp.ps1` — the helper path: forwards its arguments and stdin to `zt-digest call`, which runs a batch of tool calls on one `zt mcp` and prints one line per call. |
 | | `skills/zettelkasten/SKILL.md` — how to compose, place, and link a Card: filing steps, Card language, Event, Finding, and Model Cards, model structure, charts, figures, addresses, placement, Links, hubs, maintenance. |
 | | `skills/zettelkasten/agents/openai.yaml` — display name and short description of the `zettelkasten` skill for Codex. |
 | | `skills/zettelkasten/references/luhmann-and-practice.md` — the research behind each zettelkasten rule, with sources, and the mapping of Luhmann's box to ZET. |
 | | `skills/zt-digest-protocol/SKILL.md` — the base protocol of the digest workflows: roles, the compiler cycle, stages, inherited protocols, quality checks, how to build a variant, operating rules. |
 | | `skills/zt-digest-protocol/references/scripts.md` — a table of every digest script, instruction file, workflow, and test. |
 | | `scripts/install-agent-integrations.ps1` — copies and links the skills, registers the server in Claude Code and Codex, checks the handshake. |
-| Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); external: PowerShell 7.5 (the installer and `zt-mcp.ps1` both call `ConvertFrom-Json -DateKind`), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
+| Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); [zt-digest](zt-digest.md) (`zt-digest call`, which the helper path forwards to); external: PowerShell 7.5 (the installer calls `ConvertFrom-Json -DateKind`; `zt-mcp.ps1` declares 7.5 too), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
 | Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1`, `model-compiler.ps1`, `organize-apply.ps1`, `card-compiler.ps1`, `math-compiler.ps1`, and the job files of `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` call the helper); [Digest prompts](digest-prompts.md) (`dsh-fill-instructions.zh.md`, `dsh-link-instructions.zh.md` show helper commands); [Digest workflows](digest-workflows.md) (`HELPER`/`ZD_HELPER` in `.claude/workflows/*.js`, and the `zettelkasten` skill sent to digest and link runs); every Claude Code, Codex, and DeepSeek Harness conversation that touches the slip-box. |
 | Tests | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` (helper `-SrcLog`, `-TopicGate`), `scripts/book-digest/tests/zt-calls.tests.ps1` (helper output under a GBK console), `scripts/book-digest/tests/card-compiler.tests.ps1` (uses `append_card`). The skills and the installer have no tests. |
 
@@ -103,7 +103,7 @@ flowchart LR
 
 ### The helper (`skills/zt/scripts/zt-mcp.ps1`)
 
-One process per run. It parses the input, starts `zt mcp` as a child with redirected UTF-8 stdin and stdout, sends `initialize` (protocol `2025-06-18`) and `notifications/initialized`, then sends one `tools/call` per call, in order, and waits for the reply with the matching `id`. Between calls it resolves `@@N`, applies the allow list, strips `src`, takes the Topic gate, and writes the logs. In its `finally` block it closes the child's stdin and kills the child after 5 seconds.
+The script forwards. It sets the console input and output to UTF-8, takes `zt-digest` from `ZT_DIGEST` or PATH (and fails with `zt-digest is not installed` when neither has it), pipes stdin through when its arguments contain `-`, runs `zt-digest call` with the same arguments, and exits with that exit code. `zt-digest call` (`tools/zt-digest/src/calls.rs`) is one process per run: it starts `zt mcp`, sends `initialize` (protocol `2025-06-18`) and `notifications/initialized`, then sends one `tools/call` per call, in order, and waits for the reply with the matching `id`. Between calls it resolves `@@N`, applies the allow list, strips `src`, takes the Topic gate, and writes the logs. At the end it closes the server's stdin and waits for it. The script keeps the line `zt-calls: direct reads`.
 
 ### The installer (`scripts/install-agent-integrations.ps1`)
 
@@ -225,23 +225,23 @@ pwsh -File scripts/install-agent-integrations.ps1 [-ZtPath <path to zt.exe>]
 
 DeepSeek Harness gets the skills only (through the junctions); it gets no MCP registration, so DeepSeek runs reach zt through the helper.
 
-### Running a call batch (`zt-mcp.ps1`)
+### Running a call batch (`zt-digest call`, through `zt-mcp.ps1`)
 
-1. Parse the input: the file, stdin (`-`), or `-Tool`/`-Json`, with `ConvertFrom-Json -AsHashtable -DateKind String`. Load the allow list if `-Allow` is set.
+1. Parse the input: the file, stdin (`-`), or `-Tool`/`-Json`, as JSON (a BOM is ignored). Load the allow list if `-Allow` is set.
 2. Find `zt` on PATH and start `zt mcp` with UTF-8 stdin and stdout.
 3. Send `initialize` (id 0), wait for its reply, send `notifications/initialized`.
 4. Fill the resolved-address list for the skipped calls from `-Addresses`.
 5. For each call from `-From` on:
    1. `Resolve-Refs` replaces every `@@N` in every string, recursively through objects and arrays. A reference to a call with no address fails the call.
    2. With `-Allow`: refuse the structural tools; refuse `edit_card`, `append_card`, or `create_successor` whose `at` is not allowed.
-   3. `append_card`: `get_card` (id `read<i>`), then rewrite the call as `edit_card` with the appended body.
+   3. `append_card`: `get_card`, then rewrite the call as `edit_card` with the appended body.
    4. Remove `src` from the arguments and keep it for `-SrcLog`.
    5. With `-TopicGate` and `create_topic`: open the gate file exclusively (`FileShare.None`), retrying every 200 ms for up to 120 s. Call `list_trees` with `workspace: agent`. Compare the new title's key (spaces, punctuation, and symbols removed, lower-cased) with each agent Topic's key. Refuse if a key is equal or the Dice similarity of their character bigrams is at least `-TopicSimilarity`; the refusal reads ``topic exists: `<root>` <title>. File the Card under that Topic instead of creating one.``
-   6. Send `tools/call` with id `i + 1` and wait for that reply. Release the gate.
+   6. Send `tools/call` with the next id and wait for that reply. Release the gate.
    7. On an error, print the error and resume lines and exit 1.
    8. Record the result's `address` (or null). For a `create*` call with an address: add it to the allow list, append it to `-Log`, and append `address<TAB>src` to `-SrcLog`. Append a non-empty `moved` map to `-Moves`.
    9. Print the `ok` line or the compact JSON line.
-6. Close the child's stdin; kill it if it does not exit within 5 s.
+6. Close the server's stdin and wait for it to exit.
 
 ### Rules the code keeps
 
@@ -300,7 +300,7 @@ All appends use UTF-8 without a BOM.
 
 ### MCP wire format the helper uses
 
-Requests are one compact JSON-RPC 2.0 line each (`ConvertTo-Json -Depth 50 -Compress`):
+Requests are one compact JSON-RPC 2.0 line each:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_successor","arguments":{"at":"3/1","title":"...","body":"..."}}}
@@ -401,7 +401,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 
 - **The server enforces, the skills teach.** The MCP server limits writes to the agent Workspace and keeps every Card rule (`src/mcp.rs` module comment; `docs/workspaces-and-mcp-design.md`). Body conventions are not validated by ZT: the skills teach them and `zt-check` checks them (`docs/event-and-model-cards-design.md`, `docs/finding-cards-design.md`). The hub rules live in `skills/zettelkasten/SKILL.md` (`docs/hub-cards-design.md`).
 - **One source, copied out.** The repository is the only source of the skills; the installer copies them rather than linking, so a harness never sees a half-edited working tree. DeepSeek Harness links to the Codex copy, so one copy serves both.
-- **A shell helper instead of a second server.** DeepSeek Harness has no `zt` tools, so `zt-mcp.ps1` speaks MCP to the same `zt mcp` with the same agent Access. The `zt` shell commands are never a fallback because they act with human Access (`skills/zt/SKILL.md`).
+- **A shell helper instead of a second server.** DeepSeek Harness has no `zt` tools, so the helper (`zt-digest call`, also reached through `zt-mcp.ps1`) speaks MCP to the same `zt mcp` with the same agent Access. The `zt` shell commands are never a fallback because they act with human Access (`skills/zt/SKILL.md`).
 - **Ownership by allow list, not by trust.** Parallel digest runs get `-Allow` so a DeepSeek run can change only its own Cards; `-Log` records what each run made, and `-TopicGate` stops two runs making one Topic (`docs/digest-card-layers-proposal.md`, the Topic gate row).
 - **Skills are sent, not pasted.** Digest managers pass `zettelkasten` and `asd-ste100-zh` in the `skills` field of `deepseek_run` and every `deepseek_prompt`; no prompt file carries skill text. Where an instruction file's limits differ from a skill, the instruction file wins, because `zt-check` checks those numbers (`docs/zt-digest-workflow.md`, *Skills for DeepSeek*).
 
@@ -419,7 +419,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **One backup slot.** `Backup` overwrites `<file>.zt-backup` on every run, so a second run replaces the original with the first run's output.
 - **The project approval needs an existing entry.** The `.mcp.json` approval is written only when `~/.claude.json` already has a `projects` key for this repository (the repository path with `/`); on a fresh machine open the project in Claude Code once and re-run.
 - **All three skills are installed.** The loop takes every directory under `skills/`, but the installer's help text and `README.md` name only `zt` and `zettelkasten`, and `skills/zt/SKILL.md` asks for a re-run only after changes to `skills/zt/` and `skills/zettelkasten/`.
-- **PowerShell version.** `zt-mcp.ps1` calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added, so it declares `#Requires -Version 7.5` like the installer; an older pwsh refuses it at the start. `scripts/book-digest/tests/requires-version.tests.ps1` checks every script that needs 7.5.
+- **PowerShell version.** The installer calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added, so it declares `#Requires -Version 7.5`; `zt-mcp.ps1` keeps the same declaration although it now only forwards; an older pwsh refuses them at the start. `scripts/book-digest/tests/requires-version.tests.ps1` checks every script that needs 7.5.
 - **`-Allow` refuses more than its help text says.** The code also refuses `create_literature` and `edit_literature_metadata`; the comment lists only `create_topic`, `move_card`, `insert_card`, and `delete_card`.
 - **`@@N` counts calls, not writes.** A read call takes an index too; `@@N` of a call whose result has no `address` throws `@@N has no address yet`.
 - **Inline mode has no options.** `-Tool`/`-Json` is its own parameter set; use a file or stdin for `-Allow`, `-Log`, and the rest.
@@ -429,6 +429,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 
 ## Change history
 
+- `2026-10-16` — `zt-mcp.ps1` forwards to `zt-digest call` ([zt-digest](zt-digest.md)): the helper runs in Rust with the same parameters and output lines; `ZT_DIGEST` names another build.
 - `2026-10-16` — `zt-mcp.ps1` carries the line `zt-calls: direct reads`: `scripts/book-digest/zt-calls.ps1` sends batches of read calls straight to one long-lived `zt mcp` and must keep this helper's read output and stop-at-first-error rule. A replacement helper without the line (a test seam) gets every call.
 
 - `2026-10-16` — Review fixes: `zt-digest-protocol` shows Bridge between Figures and Hubs in the stage diagram, adds Bridge counts and islands to the Audit row, and states that a Bridge report is published only when every judge job answered and that the cleanup always runs. `zettelkasten/references/luhmann-and-practice.md` cites repository paths instead of github.com URLs and adds Luhmann's 57/12a and `insert_card before`.

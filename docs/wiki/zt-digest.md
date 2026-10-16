@@ -1,0 +1,149 @@
+---
+block: zt-digest
+title: zt-digest
+paths:
+  - "tools/zt-digest/**"
+  - "scripts/install-zt-digest.ps1"
+synced: e4c48f5
+updated: 2026-10-16
+---
+
+# zt-digest
+
+## Purpose
+
+`zt-digest` is the book digest's tool set as one Rust binary. It replaces the PowerShell scripts that the digest workflows run, tool by tool, with the same parameters and the same output, so that a step starts no pwsh, no helper process per call, and no checker process. One `zt-digest` process holds one `zt mcp` for all its reads and writes and runs [zt-check](zt-check.md) in-process (`tools/zt-digest/src/main.rs`). The first tool is `call`, the zt helper that DeepSeek runs and the scripts write through (`tools/zt-digest/src/calls.rs`). It exists as a crate of its own, like zt-check, so that it builds and installs without building zt or stopping the ZT service (`tools/zt-digest/Cargo.toml`, `scripts/install-zt-digest.ps1`).
+
+**Owns:** the `zt-digest` command line and its tools, the PowerShell-style parameter parser, the helper semantics (`@@N`, the allow-list, the logs, the Topic gate, `append_card`, the output lines and the resume line), `Invoke-Zt` semantics in Rust (`calls::invoke`, `calls::read`), `Invoke-ZtCheck` semantics in Rust (`check::Check`), and the build and install of `zt-digest.exe`.
+
+**Does not own:** the Card check itself and the `zt mcp` client (see [zt-check](zt-check.md)); the MCP tools it calls (see [MCP server](mcp-server.md)); the PowerShell scripts not ported yet, their tests, and `zt-calls.ps1` (see [Digest scripts](digest-scripts.md)); the commands the workflow modules run (see [Digest workflows](digest-workflows.md)); the helper instructions in the DeepSeek prompts (see [Digest prompts](digest-prompts.md)); the helper path `skills/zt/scripts/zt-mcp.ps1`, which forwards to `call`, and the `zt` skill text that tells agents to use the helper (see [Agent skills](agent-skills.md)).
+
+## At a glance
+
+| | |
+|---|---|
+| Entry points | `zt-digest <tool> [-Name value ...]` (`main` in `tools/zt-digest/src/main.rs`); `skills/zt/scripts/zt-mcp.ps1` (forwards to `zt-digest call`); `scripts/install-zt-digest.ps1` (build and install) |
+| Key files | `tools/zt-digest/Cargo.toml` — a crate with its own `[workspace]`; depends on `zt-check` (path), `anyhow`, `regex`, `serde_json` with `preserve_order` |
+| | `tools/zt-digest/src/main.rs` — the tool dispatch; prints `zt-digest <tool>: <error>` and exits 1 on an error |
+| | `tools/zt-digest/src/args.rs` — `Args`: `-Name value`, `-Name:value`, switches, positional values |
+| | `tools/zt-digest/src/calls.rs` — the helper (`run`, `cli`) and `invoke`/`read` for the other tools |
+| | `tools/zt-digest/src/check.rs` — `Check`: Invoke-ZtCheck's parameters and defaults, run in-process |
+| | `tools/zt-digest/src/util.rs` — UTF-8 files without a BOM, CRLF console lines, compact JSON, `print_last` |
+| | `tools/zt-digest/src/zt.rs` — re-exports `zt_check::mcp::Zt` |
+| | `tools/zt-digest/src/audit.rs`, `card.rs`, `model.rs` — the tools being ported (`audit`, `card`, `model`, `model-context`, `list-models`) |
+| | `scripts/install-zt-digest.ps1` — `cargo build --release` into `D:\zt-digest-target`, then copies `zt-digest.exe` beside `zt.exe` |
+| Depends on | [zt-check](zt-check.md) (library: `check::run_lines`, `mcp::Zt`, `reply_text`, `reply_error`); [MCP server](mcp-server.md) (`zt mcp`); [Service, CLI and storage](service-and-cli.md) (the service must be up) |
+| Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1` and the compilers write through the helper path); [Digest prompts](digest-prompts.md) (DeepSeek runs the helper); [Agent skills](agent-skills.md) (`skills/zt/SKILL.md` names the helper) |
+| Tests | `cargo test` in `tools/zt-digest` (`args`, `calls` unit tests); `scripts/book-digest/tests/zt-helper-gate.tests.ps1`, `zt-calls.tests.ps1`, and every compiler test, which write through the helper path |
+
+## Concepts
+
+- `Tool` — one subcommand of `zt-digest`, named after the script it replaces: `call` (`zt-mcp.ps1`), `audit` (`digest-audit.ps1`), `card` (`card-compiler.ps1`), `model` (`model-compiler.ps1`), `model-context` (`model-context.ps1`), `list-models` (`list-models.ps1`). A tool not ported yet fails with `not ported yet`.
+- `Forwarder` — a PowerShell script whose body is replaced by a call of its tool (`& $exe <tool> @args`), kept so that callers and tests that name the script still work. `ZT_DIGEST` names the binary to use; otherwise it is `zt-digest` on PATH.
+- `Call` — one `{ "tool", "arguments" }` object of a helper batch; `@@N` in a string argument is the address of call N.
+- `Done` / `Failure` — what `calls::run` returns: the lines of the calls that succeeded, and the call that failed with its message and the addresses so far.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  WF["workflow modules / DeepSeek / scripts"] -->|"zt-digest call -"| CALL["calls::cli"]
+  PS["zt-mcp.ps1 (forwarder)"] --> CALL
+  CALL --> RUN["calls::run"]
+  TOOLS["audit, card, model ..."] -->|"calls::invoke / read"| RUN
+  TOOLS -->|"check::Check::run"| CHK["zt_check::check::run_lines"]
+  RUN --> ZT["zt_check::mcp::Zt (one zt mcp)"]
+  CHK --> ZT
+```
+
+A tool parses its parameters with `Args`, opens one `Zt`, and passes it to every read, write, and check. Nothing else starts a process.
+
+## Interfaces
+
+### Command line
+
+```text
+zt-digest call <file|-> [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Moves f] [-SrcLog f] [-TopicGate f] [-TopicSimilarity 0.8]
+zt-digest call -Tool <tool> [-Json '{...}']
+zt-digest version
+```
+
+Parameter names ignore case. `-Name:value` works. A switch is `-Name` alone (or `-Name:$false`). An unknown name fails, as in PowerShell. A value that does not follow a name is positional (the file of `call`).
+
+### `call`
+
+Input: a UTF-8 JSON file, or `-` for stdin, holding one call or an array of calls (a BOM is ignored). Output, one line per call in order: `N ok <address>` for a create, edit, append, move, insert, or delete call that returned an address; `N <compact JSON>` for any other call (the reply text as is when it is not JSON). On the first failure: `N error <message>` (white space around line breaks collapsed), then `resume: -From N -Addresses a0,a1,...`, and exit code 1.
+
+| Option | Effect |
+|---|---|
+| `-From N -Addresses a0,...` | skip the calls before N; their addresses still resolve `@@` |
+| `-Log f` | append the address of every Card a `create*` call makes |
+| `-Allow f` | only these Cards (one per line) and Cards made in this run may be the `at` of `edit_card`, `append_card`, `create_successor`; `create_topic`, `move_card`, `insert_card`, `delete_card`, `create_literature`, `edit_literature_metadata` fail |
+| `-Moves f` | append `{"i":N,"moved":{...}}` per call whose answer has a non-empty `moved` map |
+| `-SrcLog f` | append `<address>\t<src>` per Card made from a call with `src`; `src` never reaches zt |
+| `-TopicGate f` | lock `f` (no sharing; wait up to 120 s) around `create_topic`; refuse a title equal to or similar to (character-bigram Dice ≥ `-TopicSimilarity`) an agent Topic, naming it: ``topic exists: `<root>` <title>. File the Card under that Topic instead of creating one.`` |
+
+`append_card { at, text }` reads the Card and sends `edit_card { at, body: <body without trailing space> + "\n\n" + <text trimmed> }`.
+
+### Library functions for the tools
+
+| Function | Does |
+|---|---|
+| `calls::run(zt, calls, options)` | the helper, returning `Done` lines and an optional `Failure` |
+| `calls::invoke(zt, calls)` | `Invoke-Zt`: the answers of the calls whose reply text is a JSON object, in order; a failure is `zt: <message>` |
+| `calls::read(zt, tool, arguments)` | one read; its answer |
+| `check::Check { .. }.run(zt)` | `Invoke-ZtCheck`: zt-check's lines; fails with `zt-check did not run: …` when no `faults: N` line comes back |
+| `util::print_last(value)` | the last line of a compiler step |
+
+## Behaviour
+
+### A tool run
+
+1. `main` takes the tool name (case ignored) and hands the rest of the arguments to the tool.
+2. The tool parses them with `Args`; an unknown name or a missing value ends the run with `zt-digest <tool>: <error>` and exit code 1.
+3. The tool starts one `Zt` when it needs the archive, and passes it to every `calls::invoke`, `calls::run`, and `Check::run`.
+4. It prints its lines; a compiler step prints compact JSON last (`util::print_last`).
+5. Dropping the `Zt` closes the server's stdin and waits for it.
+
+### A helper batch (`calls::run`)
+
+For each call from `-From` on: resolve `@@N`; apply the allow list; turn `append_card` into `get_card` and `edit_card`; remove `src`; with `-TopicGate` and `create_topic`, lock the gate file and compare the title with the agent Topics (`list_trees`); send the call; release the gate; on an error stop with a `Failure`; record the address; log `create*` addresses, `src`, and `moved` maps; keep the output line. A transport failure (`zt mcp` closed) is an error of the whole run, not a `Failure`.
+
+## Data and storage
+
+zt-digest keeps no state of its own. The helper appends to the files its options name (`-Log`, `-SrcLog`, `-Moves`: UTF-8 without a BOM, one entry per line) and uses `-TopicGate` only as a lock. The ported compilers keep the work folders, `state.json`, job files, and reports of the scripts they replace (see [Digest scripts](digest-scripts.md)).
+
+## Configuration
+
+| Setting | Default | Effect |
+|---|---|---|
+| `ZT_CHECK_ZT` | `zt` on PATH | the program `Zt::start` runs as `<program> mcp` |
+| `ZT_DIGEST` | `zt-digest` on PATH | the binary a forwarder script runs (a test of an unreleased build) |
+| `-TargetDir` of the install script | `D:\zt-digest-target` | the Cargo target folder (E: is nearly full) |
+
+## Usage
+
+```bash
+pwsh -NoProfile -File scripts/install-zt-digest.ps1
+cd tools/zt-digest && CARGO_TARGET_DIR=D:/zt-digest-target cargo test --release
+```
+
+A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` with the batch on stdin.
+
+## Testing
+
+- `cargo test` in `tools/zt-digest`: the parameter parser and the helper's `@@N` and Topic-gate title rules.
+- `scripts/book-digest/tests/zt-helper-gate.tests.ps1`: `-SrcLog`, `-TopicGate`, and two helpers at once, through the forwarder.
+- Every compiler test of [Digest scripts](digest-scripts.md) writes through the forwarder, so `pwsh -NoProfile -File scripts/book-digest/tests/run-all.ps1` checks the helper on scratch archives.
+
+## Decisions and pitfalls
+
+- **Same parameters, same output.** A tool keeps the PowerShell script's parameter names and output lines, so the workflows, the prompts, and the tests change only the program they start.
+- **One process, one `zt mcp`.** The helper used to cost a pwsh and a `zt mcp` per batch (about 0.8 s); a tool now reuses one server for every call and check.
+- **zt-check as a library.** The check runs on the tool's own `Zt`, and its rules stay in one crate.
+- **Key order.** `serde_json` has `preserve_order`, so compact JSON keeps the order zt and the tools wrote, as `ConvertTo-Json` did.
+- **The forwarder must read stdin as UTF-8.** It sets `[Console]::InputEncoding`; without it a GBK console garbles the batch.
+
+## Change history
+
+- `2026-10-16` — zt-digest created: the crate, the `call` tool (the zt helper in Rust), `Invoke-Zt` and `Invoke-ZtCheck` in Rust, `zt-mcp.ps1` as a forwarder, `scripts/install-zt-digest.ps1`.

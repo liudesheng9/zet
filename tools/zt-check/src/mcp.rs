@@ -58,29 +58,49 @@ impl Zt {
         }
     }
 
-    /// One tool call; its result is the JSON text of the reply's content.
-    pub fn call(&mut self, tool: &str, arguments: Value) -> Result<Value> {
+    /// One tool call; the whole JSON-RPC reply, an error reply included.
+    pub fn request(&mut self, tool: &str, arguments: Value) -> Result<Value> {
         let id = json!(self.next);
         self.next += 1;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": tool, "arguments": arguments } }))?;
-        let reply = self.receive(&id)?;
-        let text = reply["result"]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|part| part["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if reply.get("error").is_some_and(|e| !e.is_null()) || reply["result"]["isError"].as_bool() == Some(true) {
-            let message = reply["error"]["message"].as_str().map(str::to_string).unwrap_or(text);
-            let message = serde_json::from_str::<Value>(&message)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-                .unwrap_or(message);
+        self.receive(&id)
+    }
+
+    /// One tool call; its result is the JSON text of the reply's content.
+    pub fn call(&mut self, tool: &str, arguments: Value) -> Result<Value> {
+        let reply = self.request(tool, arguments)?;
+        let text = reply_text(&reply);
+        if let Some(message) = reply_error(&reply) {
             bail!("zt: {message}");
         }
         serde_json::from_str(&text).with_context(|| format!("{tool}: the answer is not JSON"))
     }
+}
+
+/// The text parts of a reply's content, joined by newlines.
+pub fn reply_text(reply: &Value) -> String {
+    reply["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The message of an error reply (`error`, or `isError` with the text, whose
+/// JSON `error` field wins), or None for a reply that succeeded.
+pub fn reply_error(reply: &Value) -> Option<String> {
+    if !(reply.get("error").is_some_and(|e| !e.is_null()) || reply["result"]["isError"].as_bool() == Some(true)) {
+        return None;
+    }
+    let message = reply["error"]["message"].as_str().map(str::to_string).unwrap_or_else(|| reply_text(reply));
+    Some(
+        serde_json::from_str::<Value>(&message)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or(message),
+    )
 }
 
 impl Drop for Zt {
