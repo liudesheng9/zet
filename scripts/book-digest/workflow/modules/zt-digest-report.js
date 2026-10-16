@@ -1,10 +1,10 @@
-// ==== module zt-digest-report v1 ====
+// ==== module zt-digest-report v2 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
 // other modes the extra reports join the whole report (e.g. math: {...}).
 defineModule({
-  id: 'zt-digest-report', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },

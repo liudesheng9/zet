@@ -1,11 +1,11 @@
-// ==== module zt-digest-blocks v1 ====
+// ==== module zt-digest-blocks v2 ====
 // The Digest stage (mode full). One Haiku manager per block of perManager groups drives the DeepSeek digest runs
 // (the profile's digest prefix plus the group file). As each block finishes, its Idea Cards and anchors go to
 // the card layer cycle (a pipeline, not a barrier). Model Cards, Event Cards, and other layers are a book type's
 // own stages after this one (docs/zt-digest-framework.md). Fails the stage when no group is done (a host fault:
 // zt or DeepSeek Harness down).
 defineModule({
-  id: 'zt-digest-blocks', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-digest-blocks', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the digest blocks, each block\'s card cycle as soon as it finishes (mode full).',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },

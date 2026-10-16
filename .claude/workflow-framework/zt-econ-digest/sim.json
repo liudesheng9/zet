@@ -251,6 +251,30 @@
         "output": "{\"jobs\":0,\"created\":0,\"merged\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",
         "results": []
       }
+    },
+    {
+      "prompt": "finding-compiler\\.ps1\" -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"candidates\":3,\"groups\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "finding-compiler\\.ps1\" -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"applied_jobs\":0,\"created\":0,\"linked\":0,\"refused\":[],\"pending_jobs\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "finding-compiler\\.ps1\" -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"jobs\":0,\"created\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",
+        "results": []
+      }
     }
   ]
 }

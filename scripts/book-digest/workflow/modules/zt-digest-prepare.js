@@ -1,9 +1,9 @@
-// ==== module zt-digest-prepare v1 ====
+// ==== module zt-digest-prepare v2 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes; the Haiku agent also reads the DeepSeek
 // usage ledger. Other modes take the group count from args.groups. A mode in needGroups fails without groups.
 defineModule({
-  id: 'zt-digest-prepare', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full) or take args.groups; output {groups, usage_before}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },

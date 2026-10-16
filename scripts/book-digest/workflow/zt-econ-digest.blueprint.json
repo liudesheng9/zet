@@ -2,19 +2,19 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-econ-digest",
-  "version": "2.0.0",
-  "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), and the economics prompts",
+  "version": "3.0.0",
+  "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest, as in zt-book-digest.",
   "preflight": {
-    "P1": "Goal and result: the book digest of zt-book-digest.js for economics books, on the framework, with the economics layers as its own module set. The result is the base result with the model reports and events: {...}.",
-    "P2": "Inputs: the base args plus events (false skips the event layer).",
-    "P3": "Units of work: as the base, plus the Model Cards of the book (model layer) and the dated sentences per group (event layer, GroupsPerJob 3 groups per DeepSeek job).",
+    "P1": "Goal and result: the book digest of zt-book-digest.js for economics books, on the framework, with the economics layers as its own module set. The result is the base result with the model reports, events: {...}, and findings: {...}.",
+    "P2": "Inputs: the base args plus events and findings (false skips that layer).",
+    "P3": "Units of work: as the base, plus the Model Cards of the book (model layer), the dated sentences per group (event layer), and the sentences that report data with a number per group (empirical-results layer; 3 groups per DeepSeek job each).",
     "P4": "Roles: as the base (manager Haiku low, architect Sonnet, organizer Opus).",
-    "P5": "Stage graph: the base chain; after-digest: models (the model layer), explain (mode explain), events (the event layer), side by side after the digest and before the link pass.",
-    "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards, no Event Card; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md). The empirical-results layer (Finding Cards) joins after the finding Card type is in zt.",
-    "P7": "Checks: as the base; each event job runs its SELF-CHECK (event-compiler.ps1 precheck: fields, supported Cards, zt-check E1, E2 and the Card language on the drafts); the link check card cycle then checks every Event Card (E rules) in mode full.",
-    "P8": "Failure policy: as the base; the model layer halts only in mode models (its listing is the input); the event layer reports refused events and goes on. Modes: the base modes plus models, explain, events.",
-    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of workflow-harness.mjs, the layer order, the instructions and event candidates of prepare) and tests/event-compiler.tests.ps1 (on a scratch archive). Pilot: one chapter after a database backup."
+    "P5": "Stage graph: the base chain; after-digest: models (the model layer), explain (mode explain), events (the event layer), findings (the empirical-results layer), side by side after the digest and before the link pass.",
+    "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md), zt-finding-layer (finding-compiler.ps1, dsh-finding-instructions.zh.md; the Card type finding of zt 0.20.0).",
+    "P7": "Checks: as the base; each event and finding job runs its SELF-CHECK (precheck: fields, supported Cards, and zt-check on the drafts: E1, E2 or F1 to F3, and the Card language); apply refuses what the precheck reports; in mode full the link check card cycle then checks every Card of the book.",
+    "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings.",
+    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of workflow-harness.mjs and the layer order), tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 (scratch archives; the finding test needs zt 0.20.0). Run with zt 0.20.0 deployed: the finding layer creates Cards of type finding. Pilot: one chapter after a database backup."
   },
   "consts": {
     "profile": {
@@ -32,6 +32,10 @@
     "events": {
       "type": "boolean",
       "description": "mode full: false skips the event layer"
+    },
+    "findings": {
+      "type": "boolean",
+      "description": "mode full: false skips the empirical-results layer"
     }
   },
   "fill": {
@@ -121,6 +125,31 @@
             "$ref": "stages.source.output.model"
           }
         }
+      },
+      {
+        "id": "findings",
+        "title": "Findings",
+        "detail": "the empirical-results layer: finding-compiler.ps1 lists the sentences that report data with a number and each group's Idea Cards; DeepSeek writes one Finding Card per result as JSON with its SELF-CHECK (F1 to F3); the script creates them beside the group anchors and links them with 印证",
+        "module": "zt-finding-layer",
+        "when": [
+          {
+            "path": "mode",
+            "op": "matches",
+            "value": "^(full|findings)$"
+          },
+          {
+            "path": "args.findings",
+            "op": "!=",
+            "value": false
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          }
+        }
       }
     ]
   },
@@ -140,6 +169,9 @@
       "extra": {
         "events": {
           "$ref": "stages.events.output"
+        },
+        "findings": {
+          "$ref": "stages.findings.output"
         }
       }
     }
@@ -165,6 +197,13 @@
       "source",
       "prepare",
       "events",
+      "report"
+    ],
+    "findings": [
+      "args",
+      "source",
+      "prepare",
+      "findings",
       "report"
     ]
   }

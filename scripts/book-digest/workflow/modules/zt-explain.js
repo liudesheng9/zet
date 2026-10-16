@@ -1,9 +1,9 @@
-// ==== module zt-explain v1 ====
+// ==== module zt-explain v2 ====
 // Mode "explain": 思路, 说明, and 解读 for the finished Derivation parts of a book (or of the Model Cards in
 // args.only). model-compiler.ps1 plans one job per chain, DeepSeek writes JSON, the script writes the Cards and
 // refuses any change to 起点, a step, or 结果. A refused part goes back to the same conversation once.
 defineModule({
-  id: 'zt-explain', version: '1', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '2', requires: ['zt-model-lib'],
   summary: 'ZT digest: explanations of finished Derivation parts (mode explain).',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },

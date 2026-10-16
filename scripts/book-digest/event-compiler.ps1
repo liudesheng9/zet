@@ -16,7 +16,8 @@
               Prints {"candidates","groups","jobs":[{"id","files","prompt"}]}.
     precheck  read-only: checks out\<Job>.json as apply would (fields, supports, role Link, existing Event
               Card) and runs zt-check on the new Event Cards as drafts. One line per fault, then faults: N.
-    apply     for each answered job not yet applied: refuses an event with a fault, adds the book's source
+    apply     for each answered job not yet applied: refuses an event with a fault (the precheck's faults,
+              zt-check on the drafts included), adds the book's source
               and evidence role to an existing Event Card (existing), or creates the Event Card as a Side
               successor of its first supported Idea Card (type event), then links it from every supported
               Idea Card ("案例 [[event]]：title。"). Without -Apply it only validates.
@@ -94,6 +95,22 @@ function Test-Events($events, [switch]$Lookup) {
     }
     , $faults
 }
+# zt-check on the new Event Cards as drafts: the Card language rules and E1, E2 on what apply would write.
+# A draft needs "category": zt-check applies the Card layer rules only to entries that carry one.
+function Get-DraftFaults($events, $tag) {
+    $drafts = @()
+    $i = 0
+    foreach ($e in @($events)) {
+        $i++
+        if ($e -is [Collections.IDictionary] -and -not (Get-Field $e 'existing').Trim()) {
+            $drafts += [ordered]@{ address = "event:$i"; title = (Get-Field $e 'title'); body = (Get-EventBody $e); type = 'event'; category = 'event'; book = $key }
+        }
+    }
+    if (-not $drafts.Count) { return , @() }
+    $draftFile = Join-Path $Work "drafts-$tag.json"
+    [IO.File]::WriteAllText($draftFile, (ConvertTo-Json -InputObject @($drafts) -Depth 5), $utf8)
+    , @(Invoke-ZtCheck -Json $draftFile | Where-Object { $_ -notmatch '^faults: \d+$' })
+}
 function Read-Answer($file) {
     $raw = Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     @($raw.events)
@@ -154,16 +171,7 @@ if ($Step -eq 'precheck') {
     if (-not (Test-Path -LiteralPath $file)) { "$Job EV0 no answer file $file"; 'faults: 1'; return }
     try { $events = Read-Answer $file } catch { "$Job EV0 the answer is not JSON: $($_.Exception.Message)"; 'faults: 1'; return }
     $faults = Test-Events $events -Lookup
-    # The new Event Cards as drafts: the Card language rules and E1, E2 on what apply would write.
-    $drafts = @()
-    $i = 0
-    foreach ($e in $events) { $i++; if ($e -is [Collections.IDictionary] -and -not (Get-Field $e 'existing').Trim()) { $drafts += [ordered]@{ address = "event:$i"; title = (Get-Field $e 'title'); body = (Get-EventBody $e); type = 'event' } } }
-    $checked = @()
-    if ($drafts.Count) {
-        $draftFile = Join-Path $Work "precheck-$Job.json"
-        [IO.File]::WriteAllText($draftFile, (ConvertTo-Json -InputObject @($drafts) -Depth 5), $utf8)
-        $checked = @(Invoke-ZtCheck -Json $draftFile | Where-Object { $_ -notmatch '^faults: \d+$' })
-    }
+    $checked = Get-DraftFaults $events $Job
     foreach ($f in $faults) { $f }
     foreach ($c in $checked) { $c }
     "faults: $($faults.Count + $checked.Count)"
@@ -186,9 +194,10 @@ foreach ($file in @(Get-ChildItem -LiteralPath $out -Filter 'ev-*.json' -File | 
     $id = $file.BaseName
     if ($state.applied.ContainsKey($id)) { continue }
     try { $events = Read-Answer $file.FullName } catch { $summary.refused += "${id}: the answer is not JSON"; continue }
-    $faults = Test-Events $events -Lookup
+    # Refuse what the self-check would report: the structure, and zt-check on the drafts (no unchecked text is written).
+    $faults = @((Test-Events $events -Lookup) | ForEach-Object { $_ }) + @((Get-DraftFaults $events $id) | ForEach-Object { $_ })
     $bad = @{}
-    foreach ($f in $faults) { if ($f -match '^event:(\d+) ') { $bad[[int]$Matches[1]] = $f } }
+    foreach ($f in $faults) { if ($f -match '^event:(\d+) ' -and -not $bad.ContainsKey([int]$Matches[1])) { $bad[[int]$Matches[1]] = $f } }
     foreach ($b in $bad.Values) { $summary.refused += "${id} $b" }
     if (-not $Apply) { continue }
     $calls = @()

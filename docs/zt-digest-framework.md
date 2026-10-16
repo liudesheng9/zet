@@ -46,9 +46,11 @@ The book profile (`consts.profile`) is the base's one open const: `instructions`
 | Prompts | `dsh-digest-base.zh.md` + `dsh-model-cards.zh.md` (the digest writes Idea Cards and Model Cards, no Event Card; no event candidates in the group files); `shared-prefix.md`, `link-prefix.md` |
 | Model layer | `models` (`zt-model-layer`, `zt-model-lib`): after the digest, the model compiler on every Model Card of the book with the economic architect `model-architect.md` (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split). `explain` (`zt-explain`): mode explain |
 | Event layer | `events` (`zt-event-layer`, `event-compiler.ps1`, `dsh-event-instructions.zh.md`): see below |
-| Empirical results | to come: Finding Cards (the `finding` Card type, zt 0.20.0, on branch `claude/trusting-jepsen-4e77dd`; the layer is built when it is merged and deployed) |
+| Empirical results | `findings` (`zt-finding-layer`, `finding-compiler.ps1`, `dsh-finding-instructions.zh.md`): see below. Needs zt 0.20.0 deployed (the Card type `finding`, docs/finding-cards-design.md) |
 
-Modes: the base modes plus `models`, `explain`, `events` (the event layer alone on an existing digest). Args: the base args plus `events` (false skips the event layer).
+Modes: the base modes plus `models`, `explain`, `events`, `findings` (each layer alone on an existing digest). Args: the base args plus `events` and `findings` (false skips that layer).
+
+**Before a real run:** the live zt must be 0.20.0 or later and zt-check must have the F rules; until then the findings stage fails to create its Cards (run with `findings: false`). Deploying zt is a separate step (it restarts the service; never during a digest run).
 
 ### The event layer
 
@@ -61,6 +63,20 @@ Modes: the base modes plus `models`, `explain`, `events` (the event layer alone 
 5. **report**; the last step deletes the DeepSeek conversations. In mode full the link check card cycle then checks every Event Card (E rules).
 
 Test: `pwsh -NoProfile -File scripts\book-digest\tests\event-compiler.tests.ps1` (a scratch archive).
+
+The self-check gives each draft `category` and `book`: zt-check applies the Card layer rules (E1, E2; F1 to F3) to a `--json` draft only when it carries a category.
+
+### The empirical-results layer
+
+`finding-compiler.ps1` follows the same cycle, for Finding Cards (one empirical result each, docs/finding-cards-design.md):
+
+1. **plan**: finds each group's result candidates in its section files: lines that name a number and a cue of empirical work (数据, 样本, 调查, 访谈, 回归, 实验, 统计, 显著, 系数, %, …), at most 16 per group; lists the group's own Idea Cards and its anchor; one job per 3 groups with its `SELF-CHECK:` line.
+2. **DeepSeek** writes `findings\out\<job>.json`: per result its title (the result as a claim with its scope), 测量, 数据, 方法, 结果 (one result, with its size or direction), 局限, the section, the Idea Cards it is evidence for, and the role (`这一结果印证 [[…]] …`).
+3. **precheck**: the fields, the supported Cards, the role Link, and zt-check on the drafts (F1 labels, F2 the source line links the group's anchor, F3 one result, the Card language).
+4. **apply**: refuses a finding with a fault; creates the Finding Card (type `finding`) as a Side successor of its group's anchor (body: the six labels, then the role); every supported Idea Card links it: `印证 [[finding]]：<title>。` (F4).
+5. **report**; the last step deletes the DeepSeek conversations.
+
+Test: `pwsh -NoProfile -File scripts\book-digest\tests\finding-compiler.tests.ps1` (a scratch archive; by default it uses the zt and zt-check debug builds in `D:\zt-target` and `D:\zt-check-target`, which must be 0.20.0 or later).
 
 ## The mathematics module set (`zt-math-digest`)
 
@@ -78,7 +94,7 @@ Modes: the base modes plus `models`, `explain`, `math`.
 ## Changing a digest
 
 1. Change a module (`scripts/book-digest/workflow/modules/*.js`; raise its version when its behaviour changes), a compiler script, or a blueprint (raise its version; update the `preflight` lines it touches).
-2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (e.g. `tests/event-compiler.tests.ps1`).
+2. Run the fixture: `node scripts/book-digest/tests/framework-harness.mjs` (every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts; the layers of each book type; frozen structure; installed = built), and the compiler tests you touched (`tests/event-compiler.tests.ps1`, `tests/finding-compiler.tests.ps1`).
 3. Install (project scope) and verify, in PowerShell:
 
 ```powershell

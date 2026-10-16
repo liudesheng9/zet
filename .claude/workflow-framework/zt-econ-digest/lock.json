@@ -1,28 +1,29 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "5beca41cfd5c1b0b34e8cd2226c09ed0f41321ccb690c8cc79700d11cc21e6ed",
-  "fingerprint": "b5f4f05eea8c1425",
-  "blueprintSha256": "abde8f4fb251ccd6901be9f477efd17be50ad4ac9dada679c1986008207185b8",
+  "sha256": "e9a0b9943e057ad5c28c5b579887ce83a1d32d85bb1e28a8ff227114dd612e04",
+  "fingerprint": "421596fda65691f4",
+  "blueprintSha256": "6084645e4a861c8867b9dd6c516bde4b4c18236741ce2bf6df25f96be328ec35",
   "modules": {
     "gate": "1",
-    "zt-digest-lib": "1",
+    "zt-digest-lib": "2",
     "zt-audit": "1",
     "zt-book-terms": "1",
     "zt-cards-book": "1",
-    "zt-digest-blocks": "1",
-    "zt-digest-prepare": "1",
-    "zt-digest-report": "1",
+    "zt-digest-blocks": "2",
+    "zt-digest-prepare": "2",
+    "zt-digest-report": "2",
     "zt-dsh-cleanup": "1",
     "zt-dsh-source": "1",
     "zt-event-layer": "1",
     "zt-model-lib": "1",
-    "zt-explain": "1",
+    "zt-explain": "2",
     "zt-figures": "1",
+    "zt-finding-layer": "1",
     "zt-hubs": "1",
     "zt-link-check": "1",
     "zt-link-pass": "1",
@@ -37,7 +38,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "2b45c93be5da5b31cdf4c7f39d337c301569529878515774691a6d80a00b8152"
+      "sha256": "0de75711587c555c7419d71eccb072522e5458f66fc56274534bd2de77c93000"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -53,15 +54,15 @@
     },
     "zt-digest-blocks": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-blocks.js",
-      "sha256": "767c014f382648c2270545733c1d8a3dd6f3bb56e6f00346b3a37f86735ba2de"
+      "sha256": "66ed9b0b53ce79bdc7ebfa5f7d88b1ca2c43c2193efe974c0f3f359ebce11854"
     },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
-      "sha256": "4226130e00f9caac3d7d93d1249f4e480d7bef5d59544b5d8ffc586219fdb84b"
+      "sha256": "3ecbe3c19e466001671c52fb3cfe2d51fb84232c4619f7913361927df4ed8126"
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "fa1838257cf533e17ed5dae4b764bd07481249692a4365738e9bf1dc12c49f2e"
+      "sha256": "8368b4d3bcf81238e4c2239f675635e12a16869d19c3acdc085f35bd88674065"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -81,11 +82,15 @@
     },
     "zt-explain": {
       "file": "scripts/book-digest/workflow/modules/zt-explain.js",
-      "sha256": "d1f7ecf5b2da716627e2f76b796c966fbb8c6366c5986006d142445f93c332ed"
+      "sha256": "0f7d3b1f8cd3255502b86b67345b1280e18e903685950c207476a76438aa76a7"
     },
     "zt-figures": {
       "file": "scripts/book-digest/workflow/modules/zt-figures.js",
       "sha256": "4fd2924cc7c5d34d39a8e02a599ae4fc9a96db512a7834256dff9eb5b76263cc"
+    },
+    "zt-finding-layer": {
+      "file": "scripts/book-digest/workflow/modules/zt-finding-layer.js",
+      "sha256": "7366a245f631c78461541a4710ff69af04f76b5aee9de4af643e1a9f2ec6b652"
     },
     "zt-hubs": {
       "file": "scripts/book-digest/workflow/modules/zt-hubs.js",
@@ -115,7 +120,7 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "cea53c7d2947700dcb3324b72e6fff2edc9021fa9f38b213f5dd17dfc13df4f3"
+      "sha256": "515ae7e9d0952c79be8e0c99ef5b9da695b29ef2fe79acb85082dd4bbae981ff"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
@@ -123,9 +128,9 @@
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-16T06:50:42.679Z",
+  "installedAt": "2026-10-16T06:59:53.152Z",
   "dryRun": {
-    "agents": 34,
+    "agents": 38,
     "order": [
       "args",
       "source",
@@ -136,6 +141,7 @@
       "explain",
       "models",
       "events",
+      "findings",
       "hubs-first",
       "link-prepare",
       "link",

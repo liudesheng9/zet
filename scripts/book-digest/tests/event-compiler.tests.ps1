@@ -74,13 +74,17 @@ try {
     )
     $wrong = @{ group = 2; src = 'sections/s02.md:5'; title = '1930 年某事'; time = '1930 年'; place = '原书未写明'; actors = '原书未写明'; course = '发生了一件事。'
         section = '§2'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点。"; existing = '' }
-    @{ events = @($good + $wrong) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $answer -Encoding utf8
+    # Right structure, but its title names no year: zt-check E1 on the draft.
+    $noYear = @{ group = 1; src = 'sections/s01.md:3'; title = '通用汽车买下费雪车身公司'; time = '原书未写明'; place = '美国'; actors = '通用汽车、费雪车身公司'
+        course = '通用汽车买下费雪车身公司。'; section = '§1'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点。"; existing = '' }
+    @{ events = @($good + $wrong + $noYear) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $answer -Encoding utf8
     $pre = @(pwsh -NoProfile -File $compiler -Step precheck -Staging $staging -Job ev-01 2>&1 | ForEach-Object { [string]$_ })
     Assert ($pre[-1] -match '^faults: [1-9]' -and @($pre | Where-Object { $_ -match '^event:3 EV2 .* is not a Card of group 2' }).Count -eq 1) "precheck: an event naming another group's Card is a fault ($($pre -join ' | '))"
+    Assert (@($pre | Where-Object { $_ -match '^event:4 E1 ' }).Count -eq 1) "precheck: zt-check E1 catches a draft title with no year ($($pre -join ' | '))"
     Assert (-not @($pre | Where-Object { $_ -match '^event:[12] ' }).Count) "precheck: the two good events pass ($($pre -join ' | '))"
 
     $applied = Last @(pwsh -NoProfile -File $compiler -Step apply -Staging $staging -Apply 2>&1)
-    Assert ($applied.ok -and $applied.created -eq 1 -and $applied.merged -eq 1 -and $applied.linked -eq 2 -and @($applied.refused).Count -eq 1) "apply: one created, one merged, two links, one refused ($($applied | ConvertTo-Json -Compress))"
+    Assert ($applied.ok -and $applied.created -eq 1 -and $applied.merged -eq 1 -and $applied.linked -eq 2 -and @($applied.refused).Count -eq 2) "apply: one created, one merged, two links, two refused (one by zt-check) ($($applied | ConvertTo-Json -Compress))"
     $state = Get-Content (Join-Path $staging 'events\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $made = @($state.applied['ev-01'].created)[0]
     $event = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $made } }))[0]
@@ -99,7 +103,7 @@ try {
     $replan = Last @(pwsh -NoProfile -File $compiler -Step plan -Staging $staging 2>&1)
     Assert (@($replan.jobs).Count -eq 0) 'plan: a rerun plans no applied job'
     $report = Last @(pwsh -NoProfile -File $compiler -Step report -Staging $staging 2>&1)
-    Assert ($report.jobs -eq 1 -and $report.created -eq 1 -and $report.merged -eq 1 -and $report.linked -eq 2 -and $report.refused -eq 1) "report: the counts ($($report | ConvertTo-Json -Compress))"
+    Assert ($report.jobs -eq 1 -and $report.created -eq 1 -and $report.merged -eq 1 -and $report.linked -eq 2 -and $report.refused -eq 2) "report: the counts ($($report | ConvertTo-Json -Compress))"
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

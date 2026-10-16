@@ -113,6 +113,9 @@ function runtime(kind, opts0 = {}) {
       else if (/event-compiler\.ps1" -Step plan/.test(cmd)) output = json({ candidates: 2, groups: 2, jobs: [job('ev-01')] })
       else if (/event-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, applied_jobs: 1, created: 1, merged: 0, linked: 1, refused: [], pending_jobs: 0 })
       else if (/event-compiler\.ps1" -Step report/.test(cmd)) output = json({ jobs: 1, created: 1, merged: 0, linked: 1, refused: 0, errors: [] })
+      else if (/finding-compiler\.ps1" -Step plan/.test(cmd)) output = json({ candidates: 3, groups: 2, jobs: [job('fd-01')] })
+      else if (/finding-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, applied_jobs: 1, created: 2, linked: 2, refused: [], pending_jobs: 0 })
+      else if (/finding-compiler\.ps1" -Step report/.test(cmd)) output = json({ jobs: 1, created: 2, linked: 2, refused: 0, errors: [] })
       return { ok: true, output, results: [], deleted: 0 }
     }
     return {}
@@ -162,7 +165,8 @@ const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${messa
   const same = baseIds.filter(id => id !== 'report').every(id => JSON.stringify(pick(e, id)) === JSON.stringify(pick(m, id).after ? pick(m, id) : pick(m, id)) || JSON.stringify({ ...pick(e, id), after: null }) === JSON.stringify({ ...pick(m, id), after: null }))
   check(baseIds.every(id => pick(e, id) && pick(m, id)) && same, `base: both variants hold every base stage with the same module and params (${baseIds.length} stages)`)
   const own = (bp) => bp.stages.map(s => s.id).filter(id => !baseIds.includes(id)).join(',')
-  check(own(e) === 'models,explain,events', `base: the economics set adds the model layer, explain, and the event layer (${own(e)})`)
+  check(own(e) === 'models,explain,events,findings', `base: the economics set adds the model layer, explain, the event layer, and the empirical-results layer (${own(e)})`)
+  check(Object.keys(e.installed.modules).includes('zt-finding-layer') && !Object.keys(m.installed.modules).includes('zt-finding-layer'), 'modules: the empirical-results layer is installed only in the economics workflow')
   check(own(m) === 'math-skeleton,models,explain,math-boundary,math-proof,math-theory,math-check', `base: the mathematics set adds the model layer, explain, and its five math stages (${own(m)})`)
   check(!baseIds.some(id => /^(models|explain|events)$/.test(id)), 'base: no model, explain, or event layer in the shared base')
   check(Object.keys(e.installed.modules).includes('zt-event-layer') && !Object.keys(m.installed.modules).includes('zt-event-layer'), 'modules: the event layer is installed only in the economics workflow')
@@ -315,7 +319,25 @@ planJobs = 21
 }
 {
   const { calls } = await run('econ', { ...base, mode: 'full', figures: false, events: false, models: false })
-  check(!calls.some(c => /^(events:|find models)/.test(c.label)), 'econ full: events false and models false skip their layers')
+  check(!calls.some(c => /^(events:|find models)/.test(c.label)) && calls.some(c => /^findings:/.test(c.label)), 'econ full: events false and models false skip their layers (findings still runs)')
+}
+{
+  const { result, calls } = await run('econ', { ...base, mode: 'full', figures: false })
+  const labels = calls.map(c => c.label)
+  const cmds = calls.map(c => c.cmd).filter(Boolean)
+  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
+  check(labels.indexOf('findings: write') > lastDigest && labels.indexOf('findings: report') < labels.indexOf('prepare link pass'), 'econ full: the empirical-results layer runs after the digest and before the link pass')
+  check(cmds.some(c => /finding-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.findings && result.findings.status === 'done' && result.findings.applied.created === 2, 'econ full: the empirical-results layer applies and reports its Finding Cards')
+  check(calls.filter(c => /^findings:/.test(c.label)).every(c => c.model === 'haiku'), 'econ full: Haiku relays every finding step and manager')
+}
+{
+  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'findings' })
+  const labels = calls.map(c => c.label)
+  check(result && result.mode === 'findings' && result.findings && result.findings.status === 'done' && !labels.some(l => /^(digest|link) manager|^find models|^events:/.test(l)), 'econ findings: only the empirical-results layer on an existing digest')
+}
+{
+  const { calls } = await run('econ', { ...base, mode: 'full', figures: false, findings: false })
+  check(!calls.some(c => /^findings:/.test(c.label)), 'econ full: findings false skips the empirical-results layer')
 }
 
 // ================================================================================================================
@@ -344,7 +366,7 @@ const mbase = { ...base, hubs: true, figures: false }
   check(pool.prompts.every(p => /deepseek_delete/.test(p) && !/deepseek_archive/.test(p)), `math protocol: every DeepSeek manager deletes, none archives (${pool.prompts.length} managers)`)
   check(pool.peak <= 8 && managed.every(m => m.jobs.length <= 8), `math protocol: at most 8 managers at once and 8 jobs per manager (peak ${pool.peak})`)
   check(calls.filter(c => /^(boundary|proof|theory|notation):/.test(c.label)).every(c => c.model === 'haiku'), 'math protocol: Haiku runs every math step and manager')
-  check(!labels.some(l => /^events:/.test(l)) && !cmds.some(c => /event-compiler/.test(c)), 'math full: no event layer (Event Cards are the economics set\'s)')
+  check(!labels.some(l => /^(events|findings):/.test(l)) && !cmds.some(c => /(event|finding)-compiler/.test(c)), 'math full: no event or empirical-results layer (the economics set\'s)')
   check(cmds.some(c => /prepare-book-digest\.ps1 .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'math full: Prepare builds the base prompt with the model-card supplement (the math supplement follows in math-prefix.md)')
   check(!logs.some(l => /failed(?! none)/.test(l)), `math full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
 }
