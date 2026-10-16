@@ -2268,12 +2268,13 @@ struct DeleteResult {
 struct DeletePlan {
     delete_set: BTreeSet<String>,
     confirmation: String,
-    is_tree_root: bool,
     /// Links from Cards that stay to Cards that go, as (source, target): each breaks unless the
     /// plan re-points it with `into`.
     inbound: Vec<(String, String)>,
     /// The Card that takes over those Links: a deleted part's content now lives there.
     into: Option<String>,
+    /// The later Side successors of the same parent, each one letter down (`side_compaction_mapping`).
+    side_compaction: BTreeMap<String, String>,
 }
 
 impl DeletePlan {
@@ -2298,6 +2299,25 @@ impl DeletePlan {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The renames the delete applies: the side compaction, unless a Link that breaks targets an
+    /// address a renamed Card would take. Then every Card keeps its Location and the Link stays
+    /// broken (new Side successors take the next label after the highest, so the gap stays).
+    fn compaction(&self) -> BTreeMap<String, String> {
+        if self.compaction_kept_out() {
+            BTreeMap::new()
+        } else {
+            self.side_compaction.clone()
+        }
+    }
+
+    fn compaction_kept_out(&self) -> bool {
+        self.into.is_none()
+            && self
+                .inbound
+                .iter()
+                .any(|(_, target)| self.side_compaction.values().any(|new| new == target))
     }
 }
 
@@ -2339,12 +2359,17 @@ fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
         "delete".to_string()
     };
     let inbound = links_into(conn, &delete_set)?;
+    let side_compaction = if is_tree_root {
+        BTreeMap::new()
+    } else {
+        side_compaction_mapping(conn, &card.address, &delete_set)?
+    };
     Ok(DeletePlan {
         delete_set,
         confirmation,
-        is_tree_root,
         inbound,
         into: None,
+        side_compaction,
     })
 }
 
@@ -2370,6 +2395,12 @@ fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
                 for (source, target) in &plan.inbound {
                     lines.push(format!("{source} -> {target}"));
                 }
+                if plan.compaction_kept_out() {
+                    lines.push(
+                        "later side successors keep their locations, so no card takes over a broken link"
+                            .to_string(),
+                    );
+                }
             }
         }
     }
@@ -2382,12 +2413,8 @@ fn print_delete_verification(plan: &DeletePlan) {
     }
 }
 
-fn apply_delete_plan(conn: &mut Connection, at: &str, plan: DeletePlan) -> Result<DeleteResult> {
-    let compaction = if plan.is_tree_root {
-        BTreeMap::new()
-    } else {
-        side_compaction_mapping(conn, at, &plan.delete_set)?
-    };
+fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteResult> {
+    let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
     let tx = conn.transaction()?;
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
@@ -2428,7 +2455,7 @@ where
     let plan = delete_plan(conn, at)?;
     print_delete_verification(&plan);
     confirm(&plan.confirmation)?;
-    apply_delete_plan(conn, at, plan)
+    apply_delete_plan(conn, plan)
 }
 
 fn read_confirmation<R: BufRead>(input: &mut R, expected: &str) -> Result<()> {

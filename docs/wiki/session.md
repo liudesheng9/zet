@@ -443,6 +443,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 
 ## Change history
 
+- `2026-10-16` — `del` calls `apply_delete_plan(conn, plan)`; a delete keeps later Side successors in place when a breaking Link would land on a renamed one ([Card operations](card-operations.md)).
 - `2026-10-16` `753bd7b` — `ty finding`: the Session can make Finding Cards.
 - `2026-10-15` `9918ba6` — `mf <form|none>` sets a Model Card's Math form; the view shows `[model · <form> · <level>]`.
 - `2026-10-15` `1220aec` — `back` and `fwd`: a file-browser history of up to 100 places that skips deleted Cards.

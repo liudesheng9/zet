@@ -336,17 +336,14 @@ pub(crate) fn delete(
         plan = plan.into(&conn, into)?;
         access.ensure_link_rewrites_allowed(&conn, &plan.repoint_mapping())?;
     }
-    if !plan.is_tree_root {
-        let compaction = crate::side_compaction_mapping(&conn, at, &plan.delete_set)?;
-        access.ensure_link_rewrites_allowed(&conn, &compaction)?;
-    }
+    access.ensure_link_rewrites_allowed(&conn, &plan.compaction())?;
     if confirm != Some(plan.confirmation.as_str()) {
         return Ok(Outcome::Confirm {
             confirm: plan.confirmation.clone(),
             lines: crate::delete_verification_lines(&plan),
         });
     }
-    let result = crate::apply_delete_plan(&mut conn, at, plan)?;
+    let result = crate::apply_delete_plan(&mut conn, plan)?;
     let next = crate::parent_location(at)
         .filter(|parent| crate::target_exists(&conn, parent).unwrap_or(false));
     Ok(Outcome::Done(json!({

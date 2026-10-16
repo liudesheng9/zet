@@ -211,7 +211,7 @@ Card storage:
 | `insert_literature_card(conn, key, workspace, bibtex, text)` | Validates the key, case-insensitive uniqueness, and the text. |
 | `update_card_text`, `update_literature_text`, `update_literature_metadata` | Text updates; metadata may rename the whole Literature tree (`citation_rename_mapping`). |
 | `validate_card_text(conn, location, text, old_text)` | `parse_card_text` + `LinkLifecycle::validate_edit` (new Links must target existing Cards; old Broken links may stay). |
-| `delete_plan(conn, at) -> Result<DeletePlan>`, `DeletePlan::into(conn, into)`, `delete_verification_lines`, `apply_delete_plan` | Delete a subtree, or a whole tree from its root; optional re-pointing of inbound Links to `into`; Side successor compaction. |
+| `delete_plan(conn, at) -> Result<DeletePlan>`, `DeletePlan::into(conn, into)`, `DeletePlan::compaction()`, `delete_verification_lines`, `apply_delete_plan(conn, plan)` | Delete a subtree, or a whole tree from its root; optional re-pointing of inbound Links to `into`; Side successor compaction, left out when it would make a breaking Link resolve to a renamed Card. |
 | `move_plan(conn, at, new_location) -> Result<MovePlan>`, `move_verification_lines`, `apply_move_plan` | Plain subtree move to a free Location (the base case of `place::move_plan`). |
 | `apply_location_mapping_tx(conn, mapping)` | Renames rows through a `__moving__` prefix, rewrites Links, and calls `spread::follow`. |
 | `regenerate_reverse_links_tx(conn)` | Recomputes and rewrites the Reverse link section of every Card. |
@@ -339,7 +339,7 @@ Each rebuild runs `BEGIN IMMEDIATE; CREATE TABLE cards_<x> …; INSERT … SELEC
 
 1. A Tree root's delete set is its whole tree (confirmation: its own address); any other Card's set is `descendant_locations` (confirmation: `delete`).
 2. `links_into` lists Links from staying Cards into the set. Without `into`, `delete_verification_lines` lists them as `links that will break`; with `into`, they are rewritten first.
-3. For a deleted Side successor, `side_compaction_mapping` shifts later sibling labels down one (`0/1|c → 0/1|b`, with their subtrees). Tree-root deletes never compact.
+3. For a deleted Side successor, `delete_plan` stores `side_compaction_mapping`: later sibling labels shift down one (`0/1|c → 0/1|b`, with their subtrees). Tree-root deletes never compact. `DeletePlan::compaction` returns no mapping when, without `into`, a Link that breaks targets an address a renamed Card would take; the plan then ends with `later side successors keep their locations, so no card takes over a broken link`, and the gap stays (new Side successors take the label after the highest).
 4. One transaction: re-point, delete rows, `spread::follow` (drop deleted Cards from Spreads), apply the compaction mapping (renames and Link rewrites), regenerate Reverse links.
 
 The shell `zt del` never re-points; the `into` path is used by [Card operations](card-operations.md).
@@ -632,6 +632,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — `DeletePlan` holds the side compaction; `DeletePlan::compaction` keeps later Side successors in place when a breaking Link would land on a renamed one.
 - `2026-10-16` — Dumps keep Hub levels: `DumpCard::with_hub_level`, `archive.json` key `hub_levels` after `forms`.
 - `2026-10-16` `753bd7b` — Finding Cards (zt 0.20.0): `finding` in the `card_type` CHECK, `ensure_finding_cards` rebuild with a `pre-finding-cards` backup, dumps list `finding` in `types`.
 - `2026-10-15` `9918ba6` — Math forms: `math_form` column and `ensure_math_form_column`; dumps add `forms`.

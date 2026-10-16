@@ -39,7 +39,7 @@ This block is the one write path that the GUI and the MCP server share. It also 
 - `Target` (`src/place.rs`, re-exported as `ops::Target`): where a moving Card goes. `To(loc)` is a free Location (the next Direct or Side successor slot of a Card). `Before(loc)` is the place of an existing Regular Card, which moves down.
 - `InsertPlan` (`src/place.rs`): `location` (the new Card's address, the old address of `before`), `mapping` (old to new Locations of the Cards that move down), and `rewritten_links` (how many `[[...]]` macros the mapping rewrites).
 - `MovePlan` (`src/main.rs`): `mapping` and `rewritten_links`. `place::move_plan` returns it for every kind of move.
-- `DeletePlan` (`src/main.rs`): the delete set, the confirmation word, whether the Card is a Tree root, the inbound Links that would break, and the optional `into` Card that takes them over.
+- `DeletePlan` (`src/main.rs`): the delete set, the confirmation word, the inbound Links that would break, the optional `into` Card that takes them over, and the side compaction mapping. `DeletePlan::compaction` is the mapping the delete applies (empty when a breaking Link would land on a renamed Card).
 - Insert: putting a new Card in the place of a Regular Card. That Card and its subtree move down one place, and it becomes the new Card's Direct successor (CONTEXT.md, **Insert**).
 - Subtree (in `place.rs`): a Card and every Location whose parent chain reaches it. `parent_location` of `3/3` is `3/2`, so the subtree of `3/2` holds its later Direct successors (`3/3`, `3/4`, ...) and every Side successor below them, not only its Side successors.
 - `Snapshot` (`src/ops.rs`): every Card loaded once, with `by_address`, `parsed` (title, body, and Reverse links of each Card), `lifecycle` (the `LinkLifecycle` for Broken links), and `inbound` (address to the set of Cards that link it). A lazy lower-case copy (`folded`) serves search.
@@ -129,7 +129,7 @@ Free functions: `kind(card)` (`"literature"`, `"topic"`, or `"regular"`), `zone(
 | `insert_verification_lines` | `(&InsertPlan) -> Vec<String>` | `insert verification:`, `new card -> <loc>`, one `old -> new` line per moved Card, `moved cards: N`, `link macros rewritten: N` |
 | `apply_insert_plan` | `(conn, &InsertPlan, CardType, Option<&Part>, text) -> Result<()>` | checks the type and text again, rewrites the Links in `text` through the mapping, then in one transaction applies the mapping, inserts the Card, and regenerates Reverse links |
 
-The plan lines of the other operations come from `src/main.rs`. `move_verification_lines` gives `move verification:`, the `old -> new` lines, `moved cards: N`, and `link macros rewritten: N`. `delete_verification_lines` gives `delete verification:`, `delete <loc>` for each Card, `successors: N`, then either `links that will break: N` with `source -> target` lines, or `links re-pointed to <into>: N` with `source: [[target]] -> [[into]]` lines. `citation_rename_lines` gives `citation key rename:`, the `old -> new` lines, `renamed cards: N`, and `link macros rewritten: N`.
+The plan lines of the other operations come from `src/main.rs`. `move_verification_lines` gives `move verification:`, the `old -> new` lines, `moved cards: N`, and `link macros rewritten: N`. `delete_verification_lines` gives `delete verification:`, `delete <loc>` for each Card, `successors: N`, then either `links that will break: N` with `source -> target` lines (and, when the compaction is dropped, `later side successors keep their locations, so no card takes over a broken link`), or `links re-pointed to <into>: N` with `source: [[target]] -> [[into]]` lines. `citation_rename_lines` gives `citation key rename:`, the `old -> new` lines, `renamed cards: N`, and `link macros rewritten: N`.
 
 ### Move and insert errors
 
@@ -227,9 +227,9 @@ The second call computes the plan again from the current Cards. The word does no
 
 1. `crate::delete_plan`: a Tree root deletes every member of its tree and is confirmed with its address. A Regular Card deletes `descendant_locations` (its later Direct successors and all its branches) and is confirmed with `delete`. The plan lists the Links from staying Cards into the delete set.
 2. With `into`: `DeletePlan::into` requires a Card outside the delete set. `repoint_mapping` (each linked deleted Card -> `into`) is checked against Access.
-3. A Regular Card: `side_compaction_mapping` renames the later Side successors of the same parent one letter down (`P|c` -> `P|b`, and their subtrees). This mapping is checked against Access too.
+3. A Regular Card: `side_compaction_mapping` renames the later Side successors of the same parent one letter down (`P|c` -> `P|b`, and their subtrees). `DeletePlan::compaction` drops the whole compaction when, without `into`, a Link that breaks targets an address a renamed Card would take (`[[P|b]]` while `P|c` exists): every Card keeps its Location and the plan adds `later side successors keep their locations, so no card takes over a broken link`. The applied mapping is checked against Access too.
 4. Without the confirmation word, return `delete_verification_lines`.
-5. `apply_delete_plan` (one transaction): re-point the Links first (so a compaction that renames `into` carries the new Links along), delete the rows, drop them from Spreads, apply the compaction mapping, and regenerate Reverse links.
+5. `apply_delete_plan(conn, plan)` (one transaction): re-point the Links first (so a compaction that renames `into` carries the new Links along), delete the rows, drop them from Spreads, apply the compaction mapping, and regenerate Reverse links.
 6. Return the count, the compaction mapping, and the parent address if it still exists (the GUI opens it).
 
 ### Move with successors to a free slot (`Target::To`, `alone = false`)
@@ -399,7 +399,7 @@ cargo test --test card_types --test model_structure --test model_levels --test h
 | `tests/cli_service.rs` `delete_side_successor_compacts_later_sides_and_rewrites_links`, `move_subtree_validates_target_and_rewrites_links`, `citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind`, `literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary` | the `src/main.rs` plans that `ops` reuses, through the shell |
 | `tests/card_types.rs`, `tests/model_structure.rs`, `tests/model_levels.rs`, `tests/hub_cards.rs`, `tests/math_units.rs` | type, facet, level, hub level, and form through `create_successor` + `edit` from MCP and the GUI |
 
-The integration tests start a real service from the built binary (`tests/support`). Gaps: no test confirms a Link into a deleted Side successor that has later siblings (see below). No test covers a plan that changes between the plan call and the confirmed call. No test covers a failure of the second `ops::edit` after `create_successor`. `TypeChange::resolve` has no table-driven unit test of its own.
+The integration tests start a real service from the built binary (`tests/support`). Gaps: no test covers a plan that changes between the plan call and the confirmed call. No test covers a failure of the second `ops::edit` after `create_successor`. `TypeChange::resolve` has no table-driven unit test of its own.
 
 ## Decisions and pitfalls
 
@@ -412,7 +412,7 @@ Decisions:
 - **GUI/MCP writes wait for the lock, Session/shell writes do not.** Agents make many short writes, so a short wait is better than a refusal. A Session holds the lock while its editor is open, so the refusal still comes after 20 s.
 
 Pitfalls:
-- **A Link into a deleted Side successor can silently change its target.** When `P|b` is deleted and `P|c` exists, the plan reports the Link `[[P|b]]` under `links that will break`. Then `apply_delete_plan` deletes `P|b` and the compaction renames `P|c` to `P|b`. The compaction mapping does not contain `P|b`, so the old `[[P|b]]` is left as it is and now resolves to the former `P|c`. Use `into` when the Card has later siblings. This comes from reading `apply_delete_plan` and `side_compaction_mapping` in `src/main.rs`. No test checks it.
+- **A breaking Link into a deleted Side successor stops the side compaction.** If `P|c` were renamed to `P|b` while a staying Card links `[[P|b]]`, that Link would silently resolve to the former `P|c`. So the delete keeps every Location and leaves a gap; `next_side_successor` takes the label after the highest, so the gap is never refilled and the Link stays broken. With `into`, the Links are re-pointed first and the compaction runs (tests `deleting_a_linked_side_successor_keeps_its_link_broken_instead_of_renaming_a_sibling_onto_it` in `tests/cli_service.rs`, `a_delete_names_the_links_it_breaks_and_into_re_points_them` in `tests/self_sufficient_models.rs`).
 - **The confirmation word is not a plan id.** The confirmed call plans again. If another client changed the Cards in between, the applied mapping can differ from the lines that were shown.
 - **"With its successors" means the whole later chain.** The subtree of `3/2` holds `3/3`, `3/4`, ..., because `parent_location("3/3") == "3/2"`. A move without `alone` takes the rest of the line, and `delete` of `3/2` deletes it too.
 - **All addresses in a request are today's addresses**, including `before`, `to` with `alone`, and the Links in an inserted Card's text. `insert_card` text that links `[[0/1]]` (the Card being pushed down) ends up as `[[0/2]]`. A new Card cannot link its own future address.
@@ -427,6 +427,7 @@ Pitfalls:
 
 ## Change history
 
+- `2026-10-16` — `ops::delete` checks `DeletePlan::compaction`: a delete keeps the later Side successors in place when a breaking Link would land on a renamed Card.
 - `2026-10-16` `753bd7b` — Finding Cards: `trees()` counts `findings`. The type refusal names Finding Cards.
 - `2026-10-15` `9918ba6` — Math form: `TypeChange.form`, `resolve_form`, `search_in` with a form filter, form in summaries, search, and fingerprint.
 - `2026-10-15` `33ecec2` — `Snapshot` keeps a lazy lower-case copy (`folded`) so a Snapshot kept by the GUI folds case once.

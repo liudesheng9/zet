@@ -524,6 +524,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 
 ## Change history
 
+- `2026-10-16` — `a_delete_names_the_links_it_breaks_and_into_re_points_them` expects the plan line that keeps later Side successors in place when Links to the deleted part break.
 - `2026-10-15` `639a5a4` — A theory's study path follows only a lemma's statement premises; the theory report adds `statement_cites`.
 - `2026-10-15` `9918ba6` — Math forms on Model Cards (`src/math.rs`): units and Theory Cards, cited premises, `reach_in`, the `specializes` kind, new rests-on cues (`按定义`, `cites`, `by …`), the unit and theory reports in `math`.
 - `2026-10-15` `9cf4097` — `印证` reads as illustrates and `参照` as corresponds; `引出` stays a plain reference and stops a shared kind (zt 0.18.1).

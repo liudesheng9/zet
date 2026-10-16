@@ -998,7 +998,8 @@ fn a_delete_names_the_links_it_breaks_and_into_re_points_them() {
             "successors: 0",
             "links that will break: 2",
             "0/2 -> 0/1|b",
-            "0/3 -> 0/1|b"
+            "0/3 -> 0/1|b",
+            "later side successors keep their locations, so no card takes over a broken link"
         ])
     );
     // `into` must stay.

@@ -1526,6 +1526,45 @@ fn delete_side_successor_compacts_later_sides_and_rewrites_links() {
 }
 
 #[test]
+fn deleting_a_linked_side_successor_keeps_its_link_broken_instead_of_renaming_a_sibling_onto_it() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    for title in ["Side A", "Side B", "Side C"] {
+        home.cmd_with_editor(&format!("# {title}\n\nx\n\n<!-- zt:reverse-links -->\n"))
+            .args(["b", "--at", "0/1"])
+            .assert()
+            .success();
+    }
+    home.cmd_with_editor(
+        "# Source\n\nlinks [[0/1|b]] and [[0/1|c]]\n\n<!-- zt:reverse-links -->\n",
+    )
+    .args(["n", "--at", "0/1"])
+    .assert()
+    .success();
+
+    home.cmd()
+        .args(["del", "--at", "0/1|b"])
+        .write_stdin("delete\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("links that will break: 1"))
+        .stdout(predicate::str::contains("0/2 -> 0/1|b"));
+
+    // The Link to the deleted Card stays broken; Side C keeps its Location and its Link.
+    assert!(!home.location_exists("0/1|b"));
+    assert!(home.card_text("0/1|c").starts_with("# Side C"));
+    let source = home.card_text("0/2");
+    assert!(source.contains("links [[0/1|b]] and [[0/1|c]]"), "{source}");
+    home.cmd()
+        .arg("lsbk")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0/2 Source -> 0/1|b"));
+}
+
+#[test]
 fn move_subtree_validates_target_and_rewrites_links() {
     let home = TestHome::new();
     home.configure_and_up();

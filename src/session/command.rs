@@ -701,7 +701,7 @@ fn execute_command(
             let mut conn = crate::open_db(root)?;
             let plan = crate::delete_plan(&conn, &at)?;
             interaction.confirm(&plan.confirmation, &crate::delete_verification_lines(&plan))?;
-            crate::apply_delete_plan(&mut conn, &at, plan)?;
+            crate::apply_delete_plan(&mut conn, plan)?;
             state.pointer = crate::parent_location(&at)
                 .map(Pointer::Card)
                 .unwrap_or(Pointer::Root);
