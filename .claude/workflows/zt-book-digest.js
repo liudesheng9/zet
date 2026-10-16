@@ -1,7 +1,7 @@
 export const meta = {
   name: 'zt-book-digest',
   description: 'Digest a Chinese-translated book into ZET Cards: Haiku managers drive DeepSeek Harness runs that write idea, event, and Model Cards for their sections; as each block finishes, the model compiler builds every new model to its elaboration level: DeepSeek briefs the source, a Sonnet architect only plans each model (level, parts in build order, where Derivation parts go and how many), a script builds the skeleton, DeepSeek writes the Cards and charts, then the Derivation parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense; a link pass ties the parts of the book together, Opus organizes the structure, attach-figures.ps1 shows the book\'s own figures (kept from the Scholar Archive) in every Card that names one and links the book\'s PDF and Markdown from its Literature Card, the hub stage builds the Hub Cards of the whole agent Workspace (a Haiku hub manager chooses the limits from a survey, DeepSeek plans the fields and writes every hub, hub-compiler.ps1 builds and checks them), and last digest-audit.ps1 writes a read-only audit of the book\'s Cards',
-  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the model stage on its Model Cards (with rebuild: true, also on models that already have parts); mode "hubs" runs only the hub stage on the whole agent Workspace (needs only out); mode "figures" only shows the book\'s figures in the Cards that name them and links its documents (needs citationKey and out, the digest\'s staging folder); mode "audit" only writes the read-only audit (audit.json, audit.md) of one book (citationKey) or of every book in the agent Workspace (no citationKey) into out.',
+  whenToUse: 'Turn a Scholar Archive book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees in the ZET slip-box; mode "link" re-runs only the cross-part link pass on an existing digest; mode "models" re-runs only the model stage on its Model Cards (with rebuild: true, also on models that already have parts); mode "hubs" runs only the hub stage on the whole agent Workspace (needs only out); mode "figures" only shows the book\'s figures in the Cards that name them and links its documents (needs citationKey and out, the digest\'s staging folder); mode "audit" only writes the read-only audit (audit.json, audit.md) of one book (citationKey) or of every book in the agent Workspace (no citationKey) into out.; mode "bridge" plans, judges, and publishes a read-only Bridge report of Links to other books (needs citationKey and out), and with bridgeReport plus bridgeApply or bridgeApplyEarlier applies only the proposals the user accepted',
   phases: [
     { title: 'Prepare', detail: 'Chinese-only book text, section groups, agent Literature tree with anchors, event candidates (sentences with a year) in each group file; then the book term table: book-terms.ps1 lists the candidate terms, one DeepSeek job chooses the terms and the words not to use, the script writes terms.md and the Card 术语表', model: 'haiku' },
     { title: 'Digest', detail: 'each Haiku manager drives its block of DeepSeek runs; each run gets its own sections inline, searches the rest of the book on disk, and writes Cards for its sections, one whole Model Card per model', model: 'haiku' },
@@ -11,12 +11,13 @@ export const meta = {
     { title: 'Cleanup', detail: 'Haiku deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files', model: 'haiku' },
     { title: 'Organize', detail: 'organize-survey.ps1 lists what to decide (duplicate Topics, small Topics, merge proposals, model faults, notes); Opus writes only decisions.json (the thesis, Topic merges, moves, Card notes); organize-apply.ps1 carries out the merges and moves; a card cycle hands the notes to DeepSeek; book-skeleton.ps1 and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies; organize "legacy" runs the old single Opus job', model: 'opus' },
     { title: 'Figures', detail: 'attach-figures.ps1 puts each book figure ZET keeps (![图 2.C.1](artifact:…)) into every Card of the book that names it but does not show it yet, and links the book\'s PDF and Markdown (scholar:<file_id>) from the Literature Card', model: 'haiku' },
+    { title: 'Bridge', detail: 'bridge-compiler.ps1: plan the book\'s source Cards and their candidates in other books; DeepSeek judges (read-only) propose at most two reasoned Links per source; the script checks them and publishes report.md for the user. Mode full never applies; mode bridge with bridgeReport and bridgeApply / bridgeApplyEarlier applies only the accepted proposals with guarded edits', model: 'haiku' },
     { title: 'Hubs', detail: 'the hub compiler on the whole agent Workspace: hub-compiler.ps1 surveys every Topic tree; a Haiku hub manager chooses the limits (when a tree or branch needs a hub, how large a hub may be) from the survey; Haiku drivers start DeepSeek jobs in the hub workspace: one field planner (fields and register terms) and topic writers (topic and line hubs as JSON); the script builds the Hub Cards, links them from Topic bodies and the register, checks every hub with get_hub, and sends faults back to the writer once; the last driver deletes the DeepSeek conversations', model: 'haiku' },
     { title: 'Audit', detail: 'digest-audit.ps1, read-only: per book, the Cards by category, the Topic trees, the Card language faults per rule (zt-check), orphans, Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown; for the Workspace, missing hubs and broken Links. It writes audit.json, audit.md, and audit-faults.txt in out', model: 'haiku' },
   ],
 }
 
-// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain'), source, out, citationKey, bibtex, bookTitle,
+// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain' | 'bridge'), source, out, citationKey, bibtex, bookTitle,
 //         fileId (the book Markdown's Scholar Archive file id; read from a source path such as
 //         ...\scholar-archive\files\83\... when not given): its figures are kept in ZET and shown in the Cards,
 //         figures (mode "full": true; false skips the Figures stage),
@@ -60,7 +61,15 @@ export const meta = {
 //         cardMax (a pilot: at most this many Cards with faults and this many orphans),
 //         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
 //         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
-//         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
+//         explainMax (mode "explain", a pilot: at most this many Derivation parts),
+//         bridge (mode "full": true; false skips the Bridge stage), bridgeMax (60, 1..120: source Cards),
+//         bridgeCandidates (5, 1..8: candidates per source), bridgeBooks ('Key1,Key2': only these target books),
+//         bridgeReport (the report_id of report.md), bridgeApply / bridgeApplyEarlier ('all' or ['b001', …]:
+//         the proposals the user accepted; mode "bridge" only, with bridgeReport) }
+//
+// Mode "bridge" (docs/slip-box-luhmann-design.md, C2): without a selection it plans, judges, and publishes
+// <out>\bridge\report.md and changes no Card; with bridgeReport and a selection it applies only those
+// proposals. A failed judge job leaves the report unpublished; rerun mode bridge with the same out.
 //
 // Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
 // Model Cards in `only`). DeepSeek writes JSON; model-compiler.ps1 writes the Cards and never
@@ -417,7 +426,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only bridge-compiler.ps1 with -Step precheck (never -Apply), zt-check, and frozen snapshot reads; refuse every zt write or other compiler step` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only)`}; a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: bridge-compiler.ps1 with -Step precheck (never -Apply); the check zt-check (read-only); a pwsh command that runs zt-mcp.ps1 with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -931,6 +940,7 @@ ${hstep('survey')}
 // links the book's documents from the Literature Card. It runs after Organize, which rewrites bodies.
 const FIGURES = MODE === 'figures' || (MODE === 'full' && A.figures !== false)
 async function runBridge() {
+  phase('Bridge')
   const work=`${OUT}\\bridge`, q=v=>`'${String(v).replace(/'/g,"''")}'`
   const step=(s,more='')=>`pwsh -NoProfile -File "${SCRIPTS}\\bridge-compiler.ps1" -Step ${s} -Staging ${q(OUT)} -CitationKey ${q(KEY)} -Work ${q(work)}${more}`
   if(BRIDGE_APPLY){
@@ -939,16 +949,23 @@ async function runBridge() {
     return (run&&run.ok&&lastJson(run.output))||{status:'failed',error:run&&run.output}
   }
   const opts={dsh:work,skills:['zettelkasten','asd-ste100-zh'],effort:DSH_EFFORT,phase:'Bridge',writes:`${work}\\out`,readOnly:true,remove:'delete',keep:true}
+  // A report freezes its plan and proposals: publish only after a plan whose jobs all answered, so a
+  // rerun of mode bridge on the same out resumes. The cleanup always runs, even after a throw.
   let planned,reported,error
   try{
     planned=await drive('bridge: plan',{...opts,command:step('plan',` -Profile 'book' -MaxSources ${q(A.bridgeMax??60)} -Candidates ${q(A.bridgeCandidates??5)}${A.bridgeBooks?` -Books ${q(A.bridgeBooks)}`:''}`)})
-    if(!planned||!planned.ok)error=(planned&&planned.output)||'Bridge planning failed.'
-  }catch(e){error=String(e)}finally{
-    try{reported=await drive('bridge: report',{...opts,command:step('report'),cleanup:true})}catch(e){error=error||String(e)}
+    const plan=planned&&planned.ok?lastJson(planned.output):null
+    const failedJobs=((planned&&planned.results)||[]).filter(r=>r.status!=='done').map(r=>r.id)
+    if(!plan||plan.ok===false)error=`Bridge planning failed: ${(plan&&(plan.errors||plan.error))?JSON.stringify(plan.errors||plan.error):((planned&&(planned.error||planned.output))||'no output')}`
+    else if(failedJobs.length)error=`Bridge judge jobs failed: ${failedJobs.join(', ')}. The report is not published; rerun mode bridge with the same out to resume.`
+    else reported=await drive('bridge: report',{...opts,command:step('report')})
+  }catch(e){error=error||String(e)}finally{
+    try{await driveAgent('bridge: clean up',opts,'cleanup')}catch(e){log(`bridge: clean up failed: ${e}`)}
   }
   const summary=lastJson((reported&&reported.output)||'')
-  if(error)return {status:'failed',error,...(summary?{report:summary.report,counts:summary.counts}:{} )}
-  return summary||{status:'failed',error:'No Bridge report output.'}
+  if(error)return {status:'failed',error}
+  if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}
+  return summary
 }
 async function runFigures() {
   phase('Figures')

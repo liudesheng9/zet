@@ -97,6 +97,8 @@ These corrections make the conceptual design implementable. They preserve the ac
 | Offline checker filtering differs from Card mode. | `tools/zt-check/src/check.rs::run_cli` does not apply `--rules` to `--json` output. | Filter offline fault codes in the compiler. Do not assume `-Rules` filters JSON drafts. |
 | The model category skips Link-layer rules. | `zt-check` applies its layer checks according to `category`. | Check a Bridge sentence as a small synthetic `idea` draft, even for a Model Card carrier. |
 | Full-mode addresses can change after the report. | Hubs runs after Bridge and can create Cards. Other maintenance can also renumber them. | The report is a snapshot. Apply revalidates it. It does not guess new addresses. |
+| The first implementation widened the C2.5 kind words for a Model Card carrier. | Section 9.2 let a Model Card take every non-dependency word, so `印证` and `案例` passed. C2.7 of the design does not allow them for a Model Card. | Narrowed back on 2026-10-16: a Model Card carrier takes no evidence word (`印证`, `案例`). The precheck refuses it (BR4). |
+| Proposal ids differ from the design. | The design writes `b1`, `b2`, …. The compiler and the workflows accept only `b` with three digits. | Proposal ids are `b001`, `b002`, …. A selection uses these ids. |
 
 Two statements in the conceptual principles also need precise limits:
 

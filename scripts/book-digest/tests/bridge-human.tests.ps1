@@ -1,5 +1,6 @@
 #Requires -Version 7.5
-param([Parameter(Mandatory)][string]$Python)
+# -Python is accepted for old command lines and not used: the seed runs on node:sqlite.
+param([string]$Python = '')
 # Human Cards are seeded only into a newly created, stopped, isolated fixture database.
 # All behavior under test then uses the public agent MCP/compiler interfaces.
 $ErrorActionPreference='Stop'
@@ -15,17 +16,21 @@ function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$
 function Audit($out){$lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $out -SkipModels);if($LASTEXITCODE){throw "$lines"};Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String}
 try{
  zt config set archive_root $archive|Out-Null;zt up|Out-Null;zt down|Out-Null
- @'
-import sqlite3,sys,pathlib,tempfile
-p=pathlib.Path(sys.argv[1]).resolve()
-assert p.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()) and p.parent.parent.name.startswith('bridge-human-test-')
-c=sqlite3.connect(p)
-assert c.execute('select count(*) from cards').fetchone()[0]==0
-for at,root,text in [('99990/0',1,'# 人类主题\n\n控制权'),('99990/1',0,'# 人类卡片讨论控制权\n\n控制权决定投资的激励。'),('99990/2',0,'# 人类卡片比较控制权\n\n对应 [[0/2]]：两处都讨论控制权决定投资的激励。')]:
- c.execute('insert into cards(location,is_topic,is_lit,text,workspace,card_type) values(?,?,0,?,"human","idea")',(at,root,text))
-c.execute('insert or replace into metadata(key,value) values("next_topic_id","0")')
-c.commit();c.close()
-'@ | & $Python - (Join-Path $archive 'zt.sqlite3')
+ # node:sqlite (Node 22.5+) seeds the stopped scratch database: this machine has no Python.
+ $seed=@'
+const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os')
+const p=path.resolve(process.argv[2])
+if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('bridge-human-test-'))throw new Error('not a scratch archive: '+p)
+const c=new DatabaseSync(p)
+if(c.prepare('select count(*) as n from cards').get().n!==0)throw new Error('scratch archive is not empty')
+const add=c.prepare("insert into cards(location,is_topic,is_lit,text,workspace,card_type) values(?,?,0,?,'human','idea')")
+const nn=String.fromCharCode(10).repeat(2)
+for(const [at,root,text] of [['99990/0',1,'# 人类主题'+nn+'控制权'],['99990/1',0,'# 人类卡片讨论控制权'+nn+'控制权决定投资的激励。'],['99990/2',0,'# 人类卡片比较控制权'+nn+'对应 [[0/2]]：两处都讨论控制权决定投资的激励。']])add.run(at,root,text)
+c.prepare("insert or replace into metadata(key,value) values('next_topic_id','0')").run()
+c.close()
+'@
+ $seedFile=Join-Path $scratch 'seed.cjs';[IO.File]::WriteAllText($seedFile,$seed,[Text.UTF8Encoding]::new($false))
+ & node $seedFile (Join-Path $archive 'zt.sqlite3')
  if($LASTEXITCODE){throw 'human fixture seed failed'}
  zt up|Out-Null
  $made=Calls @(

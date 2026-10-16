@@ -1,23 +1,23 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "3.1.2",
+  "version": "3.1.3",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "742068612b01e7b00984c34def7f59bbab77a93e38b0b43e68cd02a38df53769",
-  "fingerprint": "4ae602b1c446c9dc",
-  "blueprintSha256": "b420b9a9d23c52ec2a4f8fdd44f056b432c5999e119fa08bcb4f54c4590b5c21",
+  "sha256": "939b828946e27bc463a35ce6ed0cb079e6566d3df2696bfa73d3896f9c88c46f",
+  "fingerprint": "f58e668a16054da5",
+  "blueprintSha256": "e960717dfae3e5cfecf25f44c01318c0c56deeb522e84639dac1bdd151e2075c",
   "modules": {
     "gate": "1",
-    "zt-digest-lib": "3",
+    "zt-digest-lib": "4",
     "zt-audit": "1",
     "zt-book-terms": "1",
-    "zt-bridge": "3",
+    "zt-bridge": "4",
     "zt-cards-book": "1",
     "zt-digest-blocks": "2",
     "zt-digest-prepare": "2",
-    "zt-digest-report": "4",
+    "zt-digest-report": "5",
     "zt-dsh-cleanup": "1",
     "zt-dsh-source": "1",
     "zt-event-layer": "1",
@@ -39,7 +39,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "7f129d330c62d5c52845aa8ee3dc54fd43388f1963b53f1f2ee6bcd719d709ce"
+      "sha256": "9b6add93651fb6021472e235fe3ebd7b1da0d8c4ec80de39dd415a7dde126b2e"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -51,7 +51,7 @@
     },
     "zt-bridge": {
       "file": "scripts/book-digest/workflow/modules/zt-bridge.js",
-      "sha256": "a79abac191302e3302d942ba75ece5221e1ebfdd6e6a6ea4b4ae72f7df05a837"
+      "sha256": "e31a4760ce127d0492bf5fbec3d886cbab3bf3f20e4e35151a4e8271e26be731"
     },
     "zt-cards-book": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
@@ -67,7 +67,7 @@
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "1abf8d5243494eb4740bf022985628728b16e4d26f74b56dd26ee50f848d68ba"
+      "sha256": "5377641cedf875da8ee38ccec4a8962a8654b601ed7e8cec35d5bcd9483c4ba3"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -125,15 +125,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "2b4ab9d33e25b6a2b2a77f92b45fffa1ec499de693a156a09e7c3159539c061c"
+      "sha256": "71b949bb410c9e66c5c0bcf1ce848a6c610515a4b383e25d4c6900c69a5956ff"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "221f24b0e9c993550af7a02d8f6f9486424730affdcad15f348f3a2d3beef414"
+      "sha256": "0661955e1416cc33876935dd5d61d83ec28cd3f974dc0173b8ce216f4db57a8a"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-16T21:03:25.073Z",
+  "installedAt": "2026-10-16T21:54:08.608Z",
   "dryRun": {
     "agents": 42,
     "order": [

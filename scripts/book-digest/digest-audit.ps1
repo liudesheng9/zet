@@ -7,7 +7,8 @@
 .DESCRIPTION
   Phase 1 of docs/digest-card-layers-proposal.md. For each book (an agent Literature tree), the
   script counts and lists:
-    cards        the Cards of the book by category (root, anchor, idea, event, model, part, hub)
+    cards        the Cards of the book by category (root, anchor, idea, event, finding, model,
+                 part, hub, terms, structure)
                  and Zone. A Card in a Topic tree is of the book whose Literature tree it links most.
                  A Link to the Literature Card or an anchor (a source line) counts 10, a Link to
                  another Card of that tree counts 1. A Topic-tree Card that links no book is
@@ -22,9 +23,9 @@
                  advisory rules (I1, I6, E5, L3) counted apart. The script gives the checker each
                  Card's category, Links, kinded Links, parent, and inbound Links.
     orphans      Regular Cards that no Card links to (inbound 0).
-    no_source    idea and event Cards with no source line: no Link to the book's Literature Card or
+    no_source    idea, event, and finding Cards with no source line: no Link to the book's Literature Card or
                  to one of its anchors.
-    unkinded     idea and event Cards with no kinded Link to a Card other than their parent, and
+    unkinded     idea, event, and finding Cards with no kinded Link to a Card other than their parent, and
                  the count of Links that ZT reads as "refers" (Links to a Literature Card or an
                  anchor are source lines and do not count).
     models       each Model Card's level, parts, and build faults. A formal model is
@@ -33,7 +34,14 @@
     figures      Cards that name a figure (`图 2.C.1`) but do not show it (`![图 2.C.1](artifact:…)`).
                  "known" means another Card of the book shows that figure, so ZET holds it.
                  "unknown" means no Card of the book shows it.
-  For the Workspace it adds the hub counts, the missing hubs (list_hubs), and the broken Links.
+    bridges      semantic Bridges: kinded Links (not "refers") between substantive Cards (idea,
+                 finding, event, model, part) of this book and of another book, an unattributed
+                 Topic-tree Card, or a human Card, out and in, by bucket (book-of.ps1 attribution).
+                 island is true when there are none, null when a tree could not be read or no
+                 substantive Card outside the book exists.
+  It reads the trees of both Workspaces: human Cards are Bridge endpoints, never part of a book.
+  For the Workspace it adds the hub counts, the missing hubs (list_hubs), the broken Links, and
+  the islands.
   Writes audit.json, audit.md, audit-faults.txt (every Card language and Card layer fault), and
   audit-cards.json (every Card checked outside a model, with its body and Links) in -Out, and
   prints one compact JSON summary line last.
@@ -155,7 +163,11 @@ function Bridge-Counts([string]$Key) {
             }
         }
     }
-    if ($graphComplete) {
+    # A book can be an island only when some substantive Card outside it exists (another book, an
+    # unattributed Topic-tree Card, or a human Card). Without one, island stays null.
+    $peers=@($graphCards | Where-Object { (Bridge-Endpoint $_) -and (Bridge-Bucket $_) -cne $Key }).Count
+    $counts.peers=$peers
+    if ($graphComplete -and $peers) {
         $total=0
         foreach($direction in @('out','in')) { $total += $counts[$direction].human+$counts[$direction].unattributed;foreach($n in $counts[$direction].books.Values){$total+=$n} }
         $counts.island=$total -eq 0
@@ -225,7 +237,9 @@ foreach ($c in $cards) {
         $t = [string]$l
         if (-not $inboundFrom.ContainsKey($t)) { $inboundFrom[$t] = [Collections.Generic.List[string]]::new() }
         $inboundFrom[$t].Add([string]$c.address)
-        if ($c.category -eq 'idea' -and $t -in $kinded) { $kindedFrom[$t] = 1 + [int]$kindedFrom[$t] }
+        # A Finding Card's kinded Link counts too (it was an Idea Card before the Finding category),
+        # but never toward another Finding Card: F4 asks for an Idea Card that links the result.
+        if ($t -in $kinded -and ($c.category -eq 'idea' -or ($c.category -eq 'finding' -and $bookIndex.Category[$t] -ne 'finding'))) { $kindedFrom[$t] = 1 + [int]$kindedFrom[$t] }
     }
 }
 # A book's term table: a Card of its Literature tree whose title starts with 术语表 (proposal 2).
@@ -287,7 +301,7 @@ foreach ($key in $books) {
     $mineSet = @{}
     foreach ($c in $mine) { $mineSet[[string]$c.address] = $c }
     $regular = @($mine | Where-Object { $_.category -ne 'root' })
-    $writing = @($mine | Where-Object { $_.category -in @('idea', 'event') })
+    $writing = @($mine | Where-Object { $_.category -in @('idea', 'event', 'finding') })
 
     # Topic trees with Cards of the book.
     $treeRows = @($mine | Where-Object { [string]$_.tree -in $topicTrees } | Group-Object { [string]$_.tree } | ForEach-Object {
@@ -416,6 +430,9 @@ $q = $w.topic_tree_sizes
 [void]$md.AppendLine("| Topic tree size | median $($q.median), 25th percentile $($q.p25), 75th percentile $($q.p75), min $($q.min), max $($q.max) |")
 [void]$md.AppendLine("| Hub Cards | $(& $tally $w.hubs.counts). Missing hubs $($w.hubs.missing). Hubs with faults $($w.hubs.with_faults). |")
 [void]$md.AppendLine("| Broken Links | $($w.broken_links) |")
+$islandKeys = @($report.books | Where-Object { $_.bridges.island -eq $true } | ForEach-Object key)
+$unknownKeys = @($report.books | Where-Object { $null -eq $_.bridges.island } | ForEach-Object key)
+[void]$md.AppendLine("| Islands (books with no semantic Bridge in or out) | $(if ($islandKeys.Count) { ($islandKeys | ForEach-Object { '`' + $_ + '`' }) -join ', ' } else { 'none' })$(if ($unknownKeys.Count) { ". Not known (incomplete read or no Card outside the book): $(($unknownKeys | ForEach-Object { '`' + $_ + '`' }) -join ', ')" }) |")
 [void]$md.AppendLine("| Topic-tree Cards that link no book | $($w.unattributed.count): $(& $tally $w.unattributed.by_category) |")
 if ($w.unattributed.style) {
     $us = $w.unattributed.style
@@ -443,7 +460,10 @@ foreach ($b in $report.books) {
     [void]$md.AppendLine("- **No kinded Link** to a Card other than the parent: $($b.unkinded.count) of $($b.unkinded.of). Links read as ""refers"": $($b.unkinded.refers_links). $(& $cut $b.unkinded.list)")
     [void]$md.AppendLine("- **Models**: $($b.models.count) ($(& $tally $b.models.levels)). Not self-sufficient: $($b.models.not_self_sufficient). With get_model issues: $($b.models.with_issues). Derivation parts with 思路 and 解读: $($b.models.explained) of $($b.models.derivations). $(& $cut @($b.models.list | Where-Object { -not $_.self_sufficient } | ForEach-Object address))")
     [void]$md.AppendLine("- **Figures**: $($b.figures.shown_labels) figures shown. Named but not shown: $($b.figures.missing_known) known, $($b.figures.missing_unknown) unknown. $(& $cut @($b.figures.list | Where-Object known | ForEach-Object { "$($_.address) 图 $($_.figure)" }))")
-    [void]$md.AppendLine("- **Semantic Bridges** (actual directed pairs; inferred book attribution): $(ConvertTo-Json -InputObject $b.bridges -Depth 5 -Compress)")
+    $bb = $b.bridges
+    $bridgeText = { param($side) $parts = @($side.books.Keys | ForEach-Object { "``$_`` $($side.books[$_])" }); if ($side.human) { $parts += "human $($side.human)" }; if ($side.unattributed) { $parts += "unattributed $($side.unattributed)" }; if ($parts.Count) { $parts -join ', ' } else { 'none' } }
+    $islandText = if ($bb.island -eq $true) { ' **Island.**' } elseif ($null -eq $bb.island) { $(if (-not $bb.complete) { ' Island: not known (a tree could not be read).' } else { ' Island: not known (no Card outside the book).' }) } else { '' }
+    [void]$md.AppendLine("- **Semantic Bridges** (kinded Links between substantive Cards of different books; inferred attribution): out $(& $bridgeText $bb.out). In $(& $bridgeText $bb.in).$islandText")
     [void]$md.AppendLine("- **Broken Links** from the book's Cards: $($b.broken_links)").AppendLine()
 }
 [IO.File]::WriteAllText((Join-Path $Out 'audit.md'), $md.ToString(), $utf8)

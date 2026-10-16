@@ -50,16 +50,18 @@ try {
     Assert ($before[0].body -ceq $after[0].body -and $before[1].body -ceq $after[1].body) 'planning changes no Card body'
 
     $termCards = Write-Cards @(
-        @{tool='create_successor'; arguments=@{at='New2026/1';kind='side';title='术语表：本书';body="术语表`n`n| 术语 | 不使用的词 |`n| --- | --- |`n| 不动点定理 | 不动点法则 |"}},
-        @{tool='create_successor'; arguments=@{at='Old2020/1';kind='side';title='不动点定理保证均衡存在';body="连续映射有不动点。均衡可以由不动点构造。`n`n来源：[[Old2020]] §2"}}
+        @{tool='create_successor'; arguments=@{at='New2026/1';kind='side';title='术语表：本书';body="术语表`n`n| 术语 | 不使用的词 |`n| --- | --- |`n| 事后议价 | 事后谈判 |`n| 不动点定理 | 不动点法则 |"}},
+        @{tool='create_successor'; arguments=@{at='Old2020/1';kind='side';title='事后议价压低专用性投资';body="专用性投资在事后被敲竹杠。投资方预期这一点，于是少投资。`n`n来源：[[Old2020]] §2"}},
+        @{tool='create_successor'; arguments=@{at='Old2020/1';kind='side';title='不动点定理保证均衡存在';body="连续映射有不动点。均衡可以由不动点构造。`n`n来源：[[Old2020]] §3"}}
     )
     $termWork = Join-Path $staging 'term-bridge'
     $result = Compile @('-Step','plan','-Staging',$staging,'-Work',$termWork,'-CitationKey','New2026','-MaxSources',1,'-Candidates',1)
     $termPlan = Get-Content -LiteralPath (Join-Path $termWork 'plan.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
-    Assert (@($termPlan.sources[0].candidates | Where-Object { $_.address -ceq $termCards[1] -and 'term' -cin $_.via }).Count -eq 1) 'preferred book terms add a theorem-name target beyond the similarity candidate'
+    Assert (@($termPlan.sources[0].candidates | Where-Object { $_.address -ceq $termCards[1] -and 'term' -cin $_.via }).Count -eq 1) 'a book term in the source adds a target beyond the similarity candidate'
+    Assert (-not @($termPlan.sources[0].candidates | Where-Object { $_.address -ceq $termCards[2] }).Count) 'a book term that the source does not use offers no target (term matches are per source)'
     $termAnswer=@{schema=1;plan_id=$termPlan.plan_id;job='br-001';sources=@(@{source=$source;none='';bridges=@(
         @{carrier=$source;target=$target;word='对应';sentence="对应 [[$target]]：两处都由控制权决定事后议价。";why='两张卡讨论相同的控制权机制。'},
-        @{carrier=$source;target=$termCards[1];word='对照';sentence="对照 [[$($termCards[1])]]：议价机制与不动点存在性使用不同的推理前提。";why='一个讨论议价分配，一个讨论均衡存在。'}
+        @{carrier=$source;target=$termCards[1];word='对照';sentence="对照 [[$($termCards[1])]]：本卡讨论控制权的配置，那张卡讨论事后议价对投资的影响。";why='一个讨论控制权配置，一个讨论事后议价的投资后果。'}
     )})}
     [IO.File]::WriteAllText((Join-Path $termWork 'out\br-001.json'),(ConvertTo-Json -InputObject $termAnswer -Depth 20),[Text.UTF8Encoding]::new($false))
     $termReport=Compile @('-Step','report','-Staging',$staging,'-Work',$termWork,'-CitationKey','New2026')

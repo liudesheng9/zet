@@ -12,12 +12,12 @@ async function run(kind,args,options={}){
  const agent=async(prompt,opts)=>{
   const cmd=(String(prompt).match(/pwsh -NoProfile -File[^\n]*/)||[''])[0];calls.push({prompt:String(prompt),...opts,cmd})
   if(opts.label==='choose DeepSeek source')return {source:'official',errors:''}
-  if(/Run every job below/.test(prompt))return {ok:true,results:[{id:'br-001',session_id:'judge-1',status:'done',answer:'{}'}]}
+  if(/Run every job below/.test(prompt))return {ok:true,results:[{id:'br-001',session_id:'judge-1',status:options.failJudge?'failed':'done',answer:'{}'}]}
   if(/^Clean up:/m.test(prompt))return {ok:true,results:[],deleted:1}
   if(/bridge-compiler/.test(cmd)){
    const plan=/-Step plan/.test(cmd)
    if(options.failPlan&&plan)return {ok:false,output:'read failure',results:[]}
-   return {ok:true,output:JSON.stringify({ok:true,status:'done',citation_key:'Key',plan_id:'p-frozen',report_id:'r-frozen',counts:{selected:1,new:1,earlier:0},jobs:plan?[{id:'br-001',files:['prompt','job'],prompt:'judge'}]:[],outcomes:[],report:'D:\\work\\bridge\\report.md'}),results:[]}
+   return {ok:true,output:JSON.stringify({ok:true,step:plan?'plan':(/-Apply\b/.test(cmd)?'apply':'report'),status:'done',citation_key:'Key',plan_id:'p-frozen',report_id:'r-frozen',counts:{selected:1,new:1,earlier:0},jobs:plan?[{id:'br-001',files:['prompt','job'],prompt:'judge'}]:[],outcomes:[],report:'D:\\work\\bridge\\report.md'}),results:[]}
   }
   throw Error(`unexpected stage ${opts.label}: ${cmd}`)
  }
@@ -53,6 +53,12 @@ for(const kind of ['econ','math','book']){
  }
  assert(discovery.calls.filter(c=>/Run every job below/.test(c.prompt)).every(c=>/zettelkasten/.test(c.prompt)&&/never -Apply/.test(c.prompt)),`${kind} judges load the skills and have read-only approvals`)
  assert(discovery.calls.some(c=>/^Clean up:/m.test(c.prompt)&&/Keep the folder and its files/.test(c.prompt)),`${kind} retains review artifacts during cleanup`)
+ const judged=await run(kind,args,{failJudge:true})
+ assert.equal(judged.result?.bridge?.status,'failed',`${kind} fails the stage when a judge job fails`)
+ assert(!judged.calls.some(c=>/-Step report/.test(c.cmd)),`${kind} publishes no report after a failed judge job`)
+ assert(judged.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} cleans judge conversations after a failed judge job`)
+ const failedPlan=await run(kind,args,{failPlan:true})
+ assert(!failedPlan.calls.some(c=>/-Step report/.test(c.cmd))&&failedPlan.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} publishes no report after failed planning and still cleans up`)
  const missing=await run(kind,{...args,bridgeApply:'all'})
  assert(missing.error||missing.halted||missing.result?.stage==='args'||missing.result?.bridge?.status==='failed',`${kind} refuses acceptance without report: ${JSON.stringify(missing.result)}`)
  console.log(`ok: ${kind} discovery and explicit apply are separate, bounded paths`)

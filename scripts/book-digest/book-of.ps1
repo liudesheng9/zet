@@ -55,11 +55,9 @@ function Get-BookIndex {
             $book = Get-LinkBook -Target $target -Books $books
             if ($book) { $votes[$book] = $(if ($votes.ContainsKey($book)) { $votes[$book] } else { 0 }) + $(if (Test-SourceTarget -Target $target -Books $books) { 10 } else { 1 }) }
         }
-        $keys = [string[]]@($votes.Keys)
-        [Array]::Sort($keys, [StringComparer]::Ordinal)
-        $best = ''; $score = 0
-        foreach ($key in $keys) { if ($votes[$key] -gt $score) { $best = $key; $score = $votes[$key] } }
-        if ($best) { $bookOf[[string]$card.address] = $best }
+        # The highest vote wins. A tie goes to the first key in Sort-Object order (case-insensitive),
+        # as the audit decided before this helper existed. Citation keys never differ only by case.
+        if ($votes.Count) { $bookOf[[string]$card.address] = [string]@($votes.GetEnumerator() | Sort-Object { -$_.Value }, Key)[0].Key }
     }
     $orderedBooks = [string[]]@($books)
     [Array]::Sort($orderedBooks, [StringComparer]::Ordinal)

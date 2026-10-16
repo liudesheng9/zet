@@ -175,7 +175,9 @@ function Sentence-Faults($Bridge, $Plan) {
     $draft = @{address='bridge-draft';title='跨书关联';body=$Bridge.sentence;category='idea';parent='';links=@($Bridge.target);kinds=@($Bridge.target)}
     $entries = @($draft); $setting = ''
     $carrier = $Plan.cards[$Bridge.carrier]
+    # The model's setting when it holds a term table, else the carrier book's term table.
     $at = [string]$carrier.model.build.setting
+    if (-not ($at -and $Plan.cards.ContainsKey($at) -and ([string]$Plan.cards[$at].body).Contains('术语表'))) { $at = '' }
     if (-not $at -and $carrier.book -and $Plan.term_tables.ContainsKey($carrier.book)) { $at = [string]$Plan.term_tables[$carrier.book] }
     if ($at -and $Plan.cards.ContainsKey($at) -and ([string]$Plan.cards[$at].body).Contains('术语表')) {
         $setting = $at; $entries += @{address=$at;title=$Plan.cards[$at].title;body=$Plan.cards[$at].body;category='terms'}
@@ -230,12 +232,14 @@ function Test-BridgeAnswer($Answer, $Plan, $Assignment) {
             $bridge.kind = if ($kindWords.ContainsKey($bridge.word)) { $kindWords[$bridge.word] } else { '' }
             if (-not $bridge.kind) { $faults.Add("BR4 $source unknown kind word") }
             if ($carrier.type -ceq 'model' -and $target.facet) { $faults.Add("BR4 $source a Model Card cannot take in a Model part through a Bridge") }
+            if ($carrier.type -ceq 'model' -and $bridge.word -cin @('印证','案例')) { $faults.Add("BR4 $source a Model Card carrier takes no evidence word (印证, 案例)") }
             if ($bridge.kind -ceq 'rests-on' -and ($target.facet -or ($carrier.type -ceq 'model' -and -not (Unit-Head $target)))) { $faults.Add("BR4 $source invalid rests-on boundary") }
             if ($bridge.kind -ceq 'specializes' -and ($carrier.form -cne 'definition' -or $target.form -cne 'definition')) { $faults.Add("BR4 $source specialization requires two Definition heads") }
             if ($earlier -and (-not (Unit-Head $target) -or $carrier.type -cnotin @('idea','model') -or -not $carrier.book -or $carrier.book -ceq $Plan.citation_key -or $bridge.word -cnotin @('依赖','基于'))) { $faults.Add("BR4 $source invalid earlier-carrier exception") }
             $links = @([regex]::Matches($bridge.sentence, '\[\[([^\]\r\n]+)\]\]'))
-            if ($links.Count -ne 1 -or $links[0].Groups[1].Value -cne $bridge.target -or $bridge.sentence -cnotmatch ([regex]::Escape($bridge.word) + '\s+\[\[' + [regex]::Escape($bridge.target) + '\]\]')) { $faults.Add("BR5 $source needs exactly one correctly targeted Link immediately after its kind word") }
+            if ($links.Count -ne 1 -or $links[0].Groups[1].Value -cne $bridge.target -or $bridge.sentence -cnotmatch ([regex]::Escape($bridge.word) + '\s*\[\[' + [regex]::Escape($bridge.target) + '\]\]')) { $faults.Add("BR5 $source needs exactly one correctly targeted Link immediately after its kind word") }
             $pair = $bridge.carrier + "`0" + $bridge.target
+            if ($pairs.Contains($bridge.target + "`0" + $bridge.carrier)) { $faults.Add("BR6 $source the reverse pair is already proposed: one relation per pair of Cards") }
             if (-not $pairs.Add($pair)) {
                 $faults.Add("BR6 $source repeated directed pair")
                 # A conflicting second sentence cannot silently leave the first executable.
@@ -308,7 +312,7 @@ function Publish-Report($Plan) {
     $counts = [ordered]@{eligible=$Plan.counts.eligible;selected=$Plan.counts.selected;omitted=$Plan.counts.omitted;with_candidates=(@($Plan.sources).Count-@($Plan.no_candidates).Count);proposals=$published.Count;new=@($published | Where-Object section -CEQ 'new').Count;earlier=@($published | Where-Object section -CEQ 'earlier').Count;refused=$refused.Count}
     foreach ($class in @('proposed','none','no_candidates','refused','failed')) { $counts["${class}_sources"] = @($sourceOutcomes.Values | Where-Object { $_.outcome -ceq $class }).Count }
     $status = if (@($Plan.jobs).Count -and -not $completedJobs) { 'failed' } elseif ($refused.Count) { 'partial' } else { 'done' }
-    $payload = [ordered]@{schema=1;plan_id=$Plan.plan_id;citation_key=$CitationKey;profile=$Plan.profile;options=$Plan.options;read_coverage=$Plan.read_coverage;empty_reason=$Plan.empty_reason;cards=$Plan.cards;term_tables=$Plan.term_tables;plan_sources=$Plan.sources;proposals=$published;sources=@($sourceOutcomes.Values);omitted_sources=@($Plan.omitted_sources);refused=@($refused.ToArray());counts=$counts;status=$status}
+    $payload = [ordered]@{schema=1;plan_id=$Plan.plan_id;citation_key=$CitationKey;book_title=[string]$Plan['book_title'];profile=$Plan.profile;options=$Plan.options;read_coverage=$Plan.read_coverage;empty_reason=$Plan.empty_reason;cards=$Plan.cards;term_tables=$Plan.term_tables;plan_sources=$Plan.sources;proposals=$published;sources=@($sourceOutcomes.Values);omitted_sources=@($Plan.omitted_sources);refused=@($refused.ToArray());counts=$counts;status=$status}
     $payload.report_id = 'r-' + (Content-Hash $payload @('report_id','created_at'))
     $payload.created_at = [DateTime]::UtcNow.ToString('o')
     Save-Json $proposalFile $payload
@@ -324,7 +328,8 @@ function Get-State($Published) {
 function Markdown-Cell($Value) { ([string]$Value).Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('|','\|').Replace("`r",' ').Replace("`n",' ') }
 function Render-Report($Published, $State) {
     $lines = [Collections.Generic.List[string]]::new()
-    $lines.Add("# 跨书桥接报告：$($Published.citation_key)")
+    $bookTitle = if ($Published['book_title']) { "$($Published.book_title)（$($Published.citation_key)）" } else { $Published.citation_key }
+    $lines.Add("# 跨书桥接报告：$bookTitle")
     $lines.Add(''); $lines.Add("Plan: $($Published.plan_id)"); $lines.Add("Report: $($Published.report_id)")
     $lines.Add("Generated: $($Published.created_at). Profile: $($Published.profile). Source limit: $($Published.options.max_sources). Similarity candidates: $($Published.options.candidates), plus at most two term matches.")
     $lines.Add('Retrieval uses title twice plus excerpt, existing 80-term TF-IDF, and literal preferred terms. This is a bounded search, not an exhaustive semantic search. Attribution is inferred at planning time.')
@@ -332,22 +337,28 @@ function Render-Report($Published, $State) {
     $lines.Add("Read coverage: $(ConvertTo-Json -InputObject $Published.read_coverage -Compress).")
     if($Published.empty_reason){$lines.Add([string]$Published.empty_reason)}
     $lines.Add('Acceptance is for these exact sentences and this report id. New and earlier carriers require separate selections. No acceptance is inferred from this report or a timer.')
-    $lines.Add(''); $lines.Add('## 按目标书'); $lines.Add(''); $lines.Add('| Target book or bucket | Proposals |'); $lines.Add('| --- | --- |')
-    $groups = @{}
-    foreach ($bridge in $Published.proposals) { $target=$Published.cards[$bridge.target]; $bucket=if($target.workspace -ceq 'human'){'human'}elseif($target.book){$target.book}else{'unattributed'}; $groups[$bucket]=1+[int]$groups[$bucket] }
-    foreach ($key in @($groups.Keys | Sort-Object)) { $lines.Add("| $(Markdown-Cell $key) | $($groups[$key]) |") }
+    $kindOrder = @('corresponds','contrasts','illustrates','relaxes','objects','rests-on','specializes')
+    $lines.Add(''); $lines.Add('## 按目标书'); $lines.Add(''); $lines.Add('| Target book or bucket | Proposals | ' + ($kindOrder -join ' | ') + ' |'); $lines.Add('| --- | --- |' + (' --- |' * $kindOrder.Count))
+    $groups = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($bridge in $Published.proposals) {
+        $other = if ($bridge.section -ceq 'earlier') { $Published.cards[$bridge.carrier] } else { $Published.cards[$bridge.target] }
+        $bucket = if ($other.workspace -ceq 'human') { 'human' } elseif ($other.book) { $other.book } else { 'unattributed' }
+        if (-not $groups.ContainsKey($bucket)) { $groups[$bucket] = @{total=0} }
+        $groups[$bucket].total++; $groups[$bucket][[string]$bridge.kind] = 1 + [int]$groups[$bucket][[string]$bridge.kind]
+    }
+    foreach ($key in $groups.Keys) { $g = $groups[$key]; $lines.Add("| $(Markdown-Cell $key) | $($g.total) | " + (($kindOrder | ForEach-Object { [int]$g[$_] }) -join ' | ') + ' |') }
     foreach ($section in @('new','earlier')) {
         $lines.Add(''); $lines.Add($(if($section -ceq 'new'){'## 写入新书卡片的提议'}else{'## 写入旧书卡片的提议（需要单独同意）'})); $lines.Add('')
         $lines.Add('| id | Source | Carrier | Relation | Target | Exact sentence | Reason | State |'); $lines.Add('| --- | --- | --- | --- | --- | --- | --- | --- |')
         foreach ($bridge in @($Published.proposals | Where-Object { $_.section -ceq $section })) {
             $carrier=$Published.cards[$bridge.carrier];$target=$Published.cards[$bridge.target]
             $status=if($State.outcomes.ContainsKey($bridge.id)){$State.outcomes[$bridge.id].status}else{'open'}
-            $cells=@($bridge.id,$bridge.source,"$($bridge.carrier) $($carrier.title)",$bridge.word,"$($bridge.target) $($target.title)",$bridge.sentence,$bridge.why,$status)
+            $cells=@($bridge.id,"$($bridge.source) $($Published.cards[$bridge.source].title)","$($bridge.carrier) $($carrier.title)",$bridge.word,"$($bridge.target) $($target.title)",$bridge.sentence,$bridge.why,$status)
             $lines.Add('| '+(($cells|ForEach-Object{Markdown-Cell $_}) -join ' | ')+' |')
         }
     }
     $lines.Add('');$lines.Add('## 没有桥接的源卡');$lines.Add('');$lines.Add('| Source | Outcome | Reason |');$lines.Add('| --- | --- | --- |')
-    foreach($entry in $Published.sources){if($entry.outcome -cne 'proposed'){$lines.Add('| '+((@($entry.source,$entry.outcome,$entry.why)|ForEach-Object{Markdown-Cell $_})-join ' | ')+' |')}}
+    foreach($entry in $Published.sources){if($entry.outcome -cne 'proposed'){$sourceTitle=if($Published.cards.ContainsKey($entry.source)){$Published.cards[$entry.source].title}else{''};$lines.Add('| '+((@("$($entry.source) $sourceTitle",$entry.outcome,$entry.why)|ForEach-Object{Markdown-Cell $_})-join ' | ')+' |')}}
     $lines.Add('');$lines.Add('## 因上限而未选的源卡');$lines.Add('');$lines.Add('| Source | Title | Reason |');$lines.Add('| --- | --- | --- |')
     foreach($entry in $Published.omitted_sources){if($entry){$lines.Add("| $(Markdown-Cell $entry.address) | $(Markdown-Cell $entry.title) | Source cap |")}}
     $lines.Add('');$lines.Add('## 拒绝和失败');$lines.Add('');$lines.Add('| Job | Fault |');$lines.Add('| --- | --- |')
@@ -359,7 +370,9 @@ function Render-Report($Published, $State) {
 function Report-Summary($Published, $State, [string]$What = 'report') {
     $status = if ($Published.status -ceq 'done') { $State.status } else { $Published.status }
     $outcomes=@(foreach($bridge in $Published.proposals){if($State.outcomes.ContainsKey($bridge.id)){$State.outcomes[$bridge.id]}else{@{id=$bridge.id;carrier=$bridge.carrier;target=$bridge.target;status='open';detail='Not accepted or applied.'}}})
-    [ordered]@{ok=($status -cin @('done','skipped'));step=$What;status=$status;citation_key=$CitationKey;plan_id=$Published.plan_id;report_id=$Published.report_id;counts=$Published.counts;outcomes=$outcomes;changed_carriers=@($State.attempts|Where-Object{$_.status -cin @('verified','written_unverified')}|ForEach-Object carrier|Sort-Object -Unique -CaseSensitive);report=(Join-Path $Work 'report.md')}
+    $byStatus = [ordered]@{}; foreach ($o in $outcomes) { $byStatus[[string]$o.status] = 1 + [int]$byStatus[[string]$o.status] }
+    $shown = @(if ($outcomes.Count -le 30) { $outcomes })
+    [ordered]@{ok=($status -cin @('done','skipped'));step=$What;status=$status;citation_key=$CitationKey;plan_id=$Published.plan_id;report_id=$Published.report_id;counts=$Published.counts;outcome_counts=$byStatus;outcomes=$shown;outcomes_in=$(if ($outcomes.Count -le 30) { '' } else { 'report.md and state.json' });changed_carriers=@($State.attempts|Where-Object{$_.status -cin @('verified','written_unverified')}|ForEach-Object carrier|Sort-Object -Unique -CaseSensitive);report=(Join-Path $Work 'report.md')}
 }
 function Select-Proposals($Published) {
     if (($Accept -or $AcceptEarlier -or $Apply) -and $ReportId -cne $Published.report_id) { throw [ArgumentException]::new('acceptance must name this exact published report id') }
@@ -428,7 +441,7 @@ function Selection-States($Chosen, $Published, $State, $Context) {
         $journal = $State.outcomes.ContainsKey($bridge.id) -and $State.outcomes[$bridge.id].status -ceq 'verified'
         $knownPair=@($Published.proposals|Where-Object{
             $State.outcomes.ContainsKey($_.id) -and $State.outcomes[$_.id].status -ceq 'verified' -and
-            (($_.carrier -ceq $bridge.carrier -and $_.target -ceq $bridge.target) -or ($_.carrier -ceq $bridge.target -and $_.target -ceq $bridge.carrier))
+            $_.carrier -ceq $bridge.carrier -and $_.target -ceq $bridge.target
         }).Count -gt 0
         $linked = $bridge.target -cin @($actual[$bridge.carrier].links) -or $bridge.carrier -cin @($actual[$bridge.target].links)
         if ($linked -and -not $journal -and -not $knownPair) { $outcome.status='already_linked';$outcome.detail='An existing Link is preserved; this is not evidence of an applied explanation.' }
@@ -463,8 +476,8 @@ function Verify-Attempt($Attempt, $Published, $State, $Context) {
     if ($current.fingerprint -cne $Attempt.intended_fingerprint) { throw 'persisted carrier differs from saved intent' }
     $before=$Published.cards[$Attempt.carrier]
     $drafts=@(
-        @{address='before';title=$before.title;body=$before.body;category=$before.category;parent='';links=@($before.links);kinds=@($before.kinds.Keys)},
-        @{address='after';title=$current.title;body=$current.body;category=$current.category;parent='';links=@($current.links);kinds=@($Context.summaries[$Attempt.carrier].kinds.PSObject.Properties|ForEach-Object Name)}
+        @{address='before';title=$before.title;body=$before.body;category='idea';parent='';links=@($before.links);kinds=@($before.kinds.Keys)},
+        @{address='after';title=$current.title;body=$current.body;category='idea';parent='';links=@($current.links);kinds=@($Context.summaries[$Attempt.carrier].kinds.PSObject.Properties|ForEach-Object Name)}
     )
     $draftFile=Join-Path $Work "tmp\changed-card-$PID.json";Save-Json $draftFile $drafts
     $checks=@(Invoke-ZtCheck -Json $draftFile)
@@ -481,7 +494,7 @@ function Verify-Attempt($Attempt, $Published, $State, $Context) {
         if (@(Sentence-Faults $bridge $view).Count) { throw 'accepted sentence no longer passes the Card checks' }
     }
     foreach ($address in @($Attempt.carrier) + @($Attempt.targets)) {
-        $baseline = Model-Shape $Published.cards[$address].model
+        $baseline = if ($Attempt.ContainsKey('model_before') -and $Attempt.model_before.ContainsKey($address)) { $Attempt.model_before[$address] } else { Model-Shape $Published.cards[$address].model }
         $actual = Model-Shape $Context.cards[$address].model
         if ((Canonical-Json $baseline.members) -cne (Canonical-Json $actual.members)) { throw "model membership changed at $address" }
         foreach ($fault in $actual.faults) { if ($fault -cnotin $baseline.faults) { throw "new model fault at ${address}: $fault" } }
@@ -509,12 +522,21 @@ function Apply-Selected($Chosen, $Published) {
         foreach ($bridge in $Chosen) { [void]$addresses.Add($bridge.carrier);[void]$addresses.Add($bridge.target) }
         $context = Current-Context $addresses
         # Reconcile saved intents before considering another paragraph on the same carrier.
-        foreach ($attempt in @($state.attempts | Where-Object { $_.status -cne 'verified' })) {
+        foreach ($attempt in @($state.attempts | Where-Object { $_.status -cnotin @('verified','abandoned') })) {
             if ($attempt.carrier -cnotin @($Chosen | ForEach-Object carrier)) { continue }
-            if (@($attempt.ids | Where-Object { $_ -cnotin @($Chosen | ForEach-Object id) }).Count) {
-                Set-Outcomes $state $attempt 'conflict' 'Resume the saved accepted selection before adding other ids.'; continue
-            }
             $now = if ($context.cards.ContainsKey($attempt.carrier)) { Endpoint $context.cards[$attempt.carrier] $context.index } else { $null }
+            if (@($attempt.ids | Where-Object { $_ -cnotin @($Chosen | ForEach-Object id) }).Count) {
+                if ($now -and $now.fingerprint -ceq $attempt.expected_fingerprint) {
+                    $attempt.status = 'abandoned'
+                    Set-Outcomes $state $attempt 'open' 'A saved intent was never written and the new selection differs; it was dropped.'
+                } elseif ($now -and $now.fingerprint -ceq $attempt.intended_fingerprint) {
+                    try { Verify-Attempt $attempt $Published $state $context; $attempt.status='verified';Set-Outcomes $state $attempt 'verified' 'Recovered persisted accepted paragraph.' }
+                    catch { $attempt.status='written_unverified';Set-Outcomes $state $attempt 'written_unverified' $_.Exception.Message }
+                } else {
+                    $attempt.status = 'conflict'; Set-Outcomes $state $attempt 'conflict' 'A saved intent holds ids outside this selection, and the carrier changed.'
+                }
+                continue
+            }
             if ($now -and $now.fingerprint -ceq $attempt.intended_fingerprint) {
                 try { Verify-Attempt $attempt $Published $state $context; $attempt.status='verified';Set-Outcomes $state $attempt 'verified' 'Recovered persisted accepted paragraph.' }
                 catch { $attempt.status='written_unverified';Set-Outcomes $state $attempt 'written_unverified' $_.Exception.Message }
@@ -528,8 +550,15 @@ function Apply-Selected($Chosen, $Published) {
             $group = @($Chosen | Where-Object carrier -CEQ $carrier | Sort-Object id -CaseSensitive)
             $context = Current-Context $addresses
             $outcomes = Selection-States $group $Published $state $context
-            $pending = @($state.attempts | Where-Object { $_.carrier -ceq $carrier -and $_.status -cne 'verified' })
-            if (@($pending | Where-Object { $_.status -cin @('conflict','written_unverified') }).Count) { continue }
+            $pending = @($state.attempts | Where-Object { $_.carrier -ceq $carrier -and $_.status -cnotin @('verified','abandoned') })
+            if (@($pending | Where-Object { $_.status -cin @('conflict','written_unverified') }).Count) {
+                # C9. Every accepted id gets an outcome: a blocked carrier names the reason.
+                foreach ($bridge in $group) {
+                    $known = $state.outcomes.ContainsKey($bridge.id) -and $state.outcomes[$bridge.id].status -cin @('verified','conflict','written_unverified')
+                    if (-not $known) { $state.outcomes[$bridge.id] = @{id=$bridge.id;carrier=$carrier;target=$bridge.target;status='blocked';detail='The carrier has an earlier conflict or unverified write; resolve it first.'} }
+                }
+                continue
+            }
             foreach ($outcome in $outcomes) { $state.outcomes[$outcome.id]=$outcome }
             $ready = @($group | Where-Object { $state.outcomes[$_.id].status -ceq 'ready' })
             if($pending.Count){
@@ -543,7 +572,12 @@ function Apply-Selected($Chosen, $Published) {
             $attempt = if ($pending.Count) { $pending[-1] } else {
                 @{carrier=$carrier;ids=@($ready | ForEach-Object id);targets=@($ready | ForEach-Object target);expected_fingerprint=(Endpoint $current $context.index).fingerprint;intended_body=$body;intended_fingerprint=(Body-Fingerprint $Published.cards[$carrier] $body);status='prepared'}
             }
-            if (-not $pending.Count) { $state.attempts += $attempt }
+            if (-not $pending.Count) {
+                # The model shape of the carrier and targets just before the edit: verification compares with it.
+                $attempt.model_before = @{}
+                foreach ($address in @($carrier) + @($attempt.targets)) { if ($context.cards.ContainsKey($address)) { $attempt.model_before[$address] = Model-Shape $context.cards[$address].model } }
+                $state.attempts += $attempt
+            }
             Set-Outcomes $state $attempt 'prepared' 'Saved intent; no write verified yet.'
             Save-State $state
             # Pass the raw reread as base. No metadata, title, or address mutation is possible here.
@@ -564,7 +598,7 @@ function Apply-Selected($Chosen, $Published) {
             }
             Save-State $state
         }
-        $state.status = if (@($state.outcomes.Values | Where-Object { $_.status -cin @('stale','conflict','prepared','written_unverified','open') }).Count) { 'partial' } else { 'done' }
+        $state.status = if (@($state.outcomes.Values | Where-Object { $_.status -cin @('stale','conflict','prepared','written_unverified','open','blocked') }).Count) { 'partial' } else { 'done' }
         Save-State $state
         Render-Report $Published $state
         $state
@@ -680,7 +714,26 @@ try {
             }
         }
     }
-    foreach ($source in $sources) { if ($source.type -ceq 'model') { [void]$terms.Add([string]$source.title) } }
+    $termHits = New-Map
+    function Term-Hits([string]$Term) {
+        if (-not $termHits.ContainsKey($Term)) {
+            $hits = New-Set
+            foreach ($card in $summaries) { if (("$($card.title) $($card.excerpt)").IndexOf($Term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { [void]$hits.Add([string]$card.address) } }
+            $termHits[$Term] = $hits
+        }
+        , $termHits[$Term]
+    }
+    function Source-Terms($Source) {
+        $own = New-Set
+        $text = "$($Source.title) $($Source.excerpt)"
+        foreach ($term in $terms) { if ($term.Length -ge 2 -and $text.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { [void]$own.Add($term) } }
+        if ($Source.type -ceq 'model') {
+            # The model's or unit's name: its title up to the first colon.
+            $name = ([string]$Source.title -split '[：:]', 2)[0].Trim()
+            if ($name.Length -ge 2) { [void]$own.Add($name) }
+        }
+        , $own
+    }
     $documents = @($summaries | ForEach-Object { @{ id = [string]$_.address; text = "$($_.title) $($_.title) $($_.excerpt)" } })
     $relatedness = New-Relatedness $documents 80
     $selected = @(); $none = @(); $wanted = New-Set
@@ -697,10 +750,12 @@ try {
         $targets = @(Find-Related $relatedness ([string]$source.address) $Candidates { param($id) -not $allowed.Contains($id) })
         $candidatesForSource = @($targets | ForEach-Object { @{ address = $_; via = @('relatedness') } })
         $termMatches = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
-        foreach ($address in $allowed) {
-            $termCount = 0
-            foreach ($term in $terms) { if (([string]$byAddress[$address].title).IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $termCount++ } }
-            if (-not $termCount) { continue }
+        $termCounts = New-Map
+        foreach ($term in (Source-Terms $source)) {
+            foreach ($address in (Term-Hits $term)) { if ($allowed.Contains($address)) { $termCounts[$address] = 1 + $(if ($termCounts.ContainsKey($address)) { $termCounts[$address] } else { 0 }) } }
+        }
+        foreach ($address in @($termCounts.Keys)) {
+            $termCount = $termCounts[$address]
             if ($address -cin $targets) {
                 foreach ($candidate in $candidatesForSource) { if ($candidate.address -ceq $address) { $candidate.via += 'term' } }
             } else { $termMatches.Add(('{0:D10}|{1}' -f ([int]::MaxValue-$termCount),$address),$address) }
@@ -729,6 +784,7 @@ try {
         $jobs += @{ id = ('br-{0:D3}' -f (1 + [int]($i / 12))); sources = @($withCandidates[$i..([Math]::Min($i+11,$withCandidates.Count-1))] | ForEach-Object address) }
     }
     $plan = [ordered]@{ schema=1; citation_key=$CitationKey; profile=$Profile; options=$options; counts=@{eligible=$ordered.Count;selected=$sources.Count;omitted=$ordered.Count-$sources.Count}; cards=$cards; book_of=$index.BookOf; term_tables=$termTables; sources=$selected; jobs=$jobs; no_candidates=$none; omitted_sources=@($ordered.Values | Select-Object -Skip $MaxSources | ForEach-Object { @{address=$_.address;title=$_.title} }) }
+    $plan.book_title = [string]@($summaries | Where-Object { [string]$_.address -ceq $CitationKey })[0].title
     $plan.read_coverage=@{trees=$trees.Count;summaries=$summaries.Count;endpoints=$wanted.Count;term_tables=$termReads.Count;model_settings=$settings.Count;complete=$true}
     $plan.empty_reason=if(-not $sources.Count){if($Profile -ceq 'math'){'No qualifying mathematical unit head: theory main results/objects, definitions, or units with load at least two.'}else{'No eligible substantive source Card for this book.'}}else{''}
     $plan.plan_id = 'p-' + (Hash-Value $plan)

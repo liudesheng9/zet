@@ -26,7 +26,7 @@ export const meta = {
 //   'examples+answers': what DeepSeek may add that the book does not give; default 'examples'),
 //   unitsPerJob (4: units per boundary or proof job), mainResults (7: main results per Theory
 //   Card), coreBudget (3: core parts per unit), notation (true: write the Book notation table).
-// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain'), source, out, citationKey, bibtex, bookTitle,
+// args: { mode ('full' | 'link' | 'models' | 'hubs' | 'figures' | 'audit' | 'cards' | 'explain' | 'bridge'), source, out, citationKey, bibtex, bookTitle,
 //         fileId (the book Markdown's Scholar Archive file id; read from a source path such as
 //         ...\scholar-archive\files\83\... when not given): its figures are kept in ZET and shown in the Cards,
 //         figures (mode "full": true; false skips the Figures stage),
@@ -70,7 +70,15 @@ export const meta = {
 //         cardMax (a pilot: at most this many Cards with faults and this many orphans),
 //         maxExplainSentences (16), maxExplainChars (600): the explanation budget of a Derivation part
 //         (思路, 说明, and 解读 together; docs/derivation-explanations-proposal.md),
-//         explainMax (mode "explain", a pilot: at most this many Derivation parts) }
+//         explainMax (mode "explain", a pilot: at most this many Derivation parts),
+//         bridge (mode "full": true; false skips the Bridge stage), bridgeMax (60, 1..120: source Cards),
+//         bridgeCandidates (5, 1..8: candidates per source), bridgeBooks ('Key1,Key2': only these target books),
+//         bridgeReport (the report_id of report.md), bridgeApply / bridgeApplyEarlier ('all' or ['b001', …]:
+//         the proposals the user accepted; mode "bridge" only, with bridgeReport) }
+//
+// Mode "bridge" (docs/slip-box-luhmann-design.md, C2): without a selection it plans, judges, and publishes
+// <out>\bridge\report.md and changes no Card; with bridgeReport and a selection it applies only those
+// proposals. A failed judge job leaves the report unpublished; rerun mode bridge with the same out.
 //
 // Mode "explain" adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (or of the
 // Model Cards in `only`). DeepSeek writes JSON; model-compiler.ps1 writes the Cards and never
@@ -440,7 +448,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only bridge-compiler.ps1 with -Step precheck (never -Apply), zt-check, and frozen snapshot reads; refuse every zt write or other compiler step` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only)`}; a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: bridge-compiler.ps1 with -Step precheck (never -Apply); the check zt-check (read-only); a pwsh command that runs zt-mcp.ps1 with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1 or hub-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -1017,6 +1025,7 @@ ${hstep('survey')}
 // links the book's documents from the Literature Card. It runs after Organize, which rewrites bodies.
 const FIGURES = MODE === 'figures' || (MODE === 'full' && A.figures !== false)
 async function runBridge() {
+  phase('Bridge')
   const work=`${OUT}\\bridge`, q=v=>`'${String(v).replace(/'/g,"''")}'`
   const step=(s,more='')=>`pwsh -NoProfile -File "${SCRIPTS}\\bridge-compiler.ps1" -Step ${s} -Staging ${q(OUT)} -CitationKey ${q(KEY)} -Work ${q(work)}${more}`
   if(BRIDGE_APPLY){
@@ -1025,16 +1034,23 @@ async function runBridge() {
     return (run&&run.ok&&lastJson(run.output))||{status:'failed',error:run&&run.output}
   }
   const opts={dsh:work,skills:['zettelkasten','asd-ste100-zh'],effort:DSH_EFFORT,phase:'Bridge',writes:`${work}\\out`,readOnly:true,remove:'delete',keep:true}
+  // A report freezes its plan and proposals: publish only after a plan whose jobs all answered, so a
+  // rerun of mode bridge on the same out resumes. The cleanup always runs, even after a throw.
   let planned,reported,error
   try{
     planned=await drive('bridge: plan',{...opts,command:step('plan',` -Profile 'math' -MaxSources ${q(A.bridgeMax??60)} -Candidates ${q(A.bridgeCandidates??5)}${A.bridgeBooks?` -Books ${q(A.bridgeBooks)}`:''}`)})
-    if(!planned||!planned.ok)error=(planned&&planned.output)||'Bridge planning failed.'
-  }catch(e){error=String(e)}finally{
-    try{reported=await drive('bridge: report',{...opts,command:step('report'),cleanup:true})}catch(e){error=error||String(e)}
+    const plan=planned&&planned.ok?lastJson(planned.output):null
+    const failedJobs=((planned&&planned.results)||[]).filter(r=>r.status!=='done').map(r=>r.id)
+    if(!plan||plan.ok===false)error=`Bridge planning failed: ${(plan&&(plan.errors||plan.error))?JSON.stringify(plan.errors||plan.error):((planned&&(planned.error||planned.output))||'no output')}`
+    else if(failedJobs.length)error=`Bridge judge jobs failed: ${failedJobs.join(', ')}. The report is not published; rerun mode bridge with the same out to resume.`
+    else reported=await drive('bridge: report',{...opts,command:step('report')})
+  }catch(e){error=error||String(e)}finally{
+    try{await driveAgent('bridge: clean up',opts,'cleanup')}catch(e){log(`bridge: clean up failed: ${e}`)}
   }
   const summary=lastJson((reported&&reported.output)||'')
-  if(error)return {status:'failed',error,...(summary?{report:summary.report,counts:summary.counts}:{} )}
-  return summary||{status:'failed',error:'No Bridge report output.'}
+  if(error)return {status:'failed',error}
+  if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}
+  return summary
 }
 async function runFigures() {
   phase('Figures')

@@ -9,6 +9,22 @@
   "answers": [
     {
       "label": "^bridge: plan$",
+      "prompt": "Run every job below",
+      "answer": {
+        "ok": true,
+        "output": "",
+        "results": [
+          {
+            "id": "br-001",
+            "session_id": "s-sim",
+            "status": "done",
+            "answer": "{\"job\":\"br-001\",\"proposals\":1,\"faults\":0}"
+          }
+        ]
+      }
+    },
+    {
+      "label": "^bridge: plan$",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true,\"status\":\"done\",\"plan_id\":\"p-sim\",\"selected\":1,\"jobs\":[{\"id\":\"br-001\",\"files\":[\"prompt.md\",\"job.md\"],\"prompt\":\"judge\"}]}",
@@ -19,7 +35,7 @@
       "label": "^bridge: report$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"status\":\"done\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"report\":\"report.md\"}",
+        "output": "{\"ok\":true,\"status\":\"done\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"report\":\"report.md\",\"step\":\"report\",\"plan_id\":\"p-sim\"}",
         "results": []
       }
     },

@@ -90,7 +90,8 @@ $CuesEn = @('substitut', 'rests on', 'builds on', 'depends on', 'relies on', 'de
     'illustrat', 'example of', 'instance of', 'for example', 'e.g.', 'contrast', 'unlike', 'compared with', 'compare', 'versus',
     'differs from', 'relax', 'extend', 'generaliz', 'correspond', 'maps onto', 'analog', 'equivalent', 'mirrors',
     'objection', 'objects to', 'critici', 'refut', 'counterexample', 'challeng', 'special case', 'specializ')
-$Writable = @('idea', 'event', 'anchor')
+# A Finding Card is writable as before the audit gave it its own category (it was read as an Idea Card).
+$Writable = @('idea', 'event', 'finding', 'anchor')
 
 function Read-Json($path) { Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String }
 function Save-Text($path, $text) {
@@ -309,7 +310,7 @@ function New-OrphanJobs($audit, $orphans) {
     $made = @()
     if (-not @($orphans).Count) { return }
     . (Join-Path $PSScriptRoot 'relatedness.ps1')
-    $docs = @($audit.cards.Values | Where-Object { $_.category -in @('idea', 'event', 'anchor') } | ForEach-Object {
+    $docs = @($audit.cards.Values | Where-Object { $_.category -in @('idea', 'event', 'finding', 'anchor') } | ForEach-Object {
             @{ id = [string]$_.address; text = "$($_.title) $($_.title) $($_.body)" } })
     $model = New-Relatedness $docs 80
     for ($i = 0; $i -lt $orphans.Count; $i += 2 * $PerJob) {
@@ -323,7 +324,8 @@ function New-OrphanJobs($audit, $orphans) {
         $candidates = [ordered]@{}
         foreach ($o in $chunk) {
             $a = [string]$o.address
-            $isEvent = $o.category -eq 'event'
+            # An Event or Finding Card is linked from Idea Cards only (E4, F4).
+            $isEvent = $o.category -in @('event', 'finding')
             $linking = @($audit.cards.Values | Where-Object { @($_.links) -contains $a } | ForEach-Object { [string]$_.address })
             $cands = @(Find-Related $model $a 5 {
                     param($id)
@@ -403,7 +405,7 @@ function Step-Plan {
     }
     $orphans = @()
     if (-not $NoOrphans) {
-        $orphans = @($picked | Where-Object { $_.category -in @('idea', 'event') -and @($(if ($audit.faults.ContainsKey([string]$_.address)) { $audit.faults[[string]$_.address] } else { @() }) | Where-Object { $_.rule -in @('I5', 'E4') }).Count })
+        $orphans = @($picked | Where-Object { $_.category -in @('idea', 'event', 'finding') -and @($(if ($audit.faults.ContainsKey([string]$_.address)) { $audit.faults[[string]$_.address] } else { @() }) | Where-Object { $_.rule -in @('I5', 'E4', 'F4') }).Count })
         if ($MaxCards -gt 0) { $orphans = @($orphans | Select-Object -First $MaxCards) }
     }
     foreach ($c in @($withFaults + $review + $orphans)) {
@@ -663,8 +665,8 @@ function Step-Check {
         $scope = [Collections.Generic.HashSet[string]]::new()
         foreach ($a in @(@($State.picked) + @($State.splits | ForEach-Object { [string]$_.address }))) { [void]$scope.Add([string]$a) }
         $orphans = @($audit.cards.Values | Where-Object {
-                $scope.Contains([string]$_.address) -and -not $handled.Contains([string]$_.address) -and $_.category -in @('idea', 'event') -and
-                @($(if ($audit.faults.ContainsKey([string]$_.address)) { $audit.faults[[string]$_.address] } else { @() }) | Where-Object { $_.rule -in @('I5', 'E4') }).Count
+                $scope.Contains([string]$_.address) -and -not $handled.Contains([string]$_.address) -and $_.category -in @('idea', 'event', 'finding') -and
+                @($(if ($audit.faults.ContainsKey([string]$_.address)) { $audit.faults[[string]$_.address] } else { @() }) | Where-Object { $_.rule -in @('I5', 'E4', 'F4') }).Count
             } | Sort-Object { [string]$_.address })
         foreach ($o in $orphans) { if (-not $State.before.Contains([string]$o.address)) { $State.before[[string]$o.address] = @() } }
         $jobs += @(New-OrphanJobs $audit $orphans)

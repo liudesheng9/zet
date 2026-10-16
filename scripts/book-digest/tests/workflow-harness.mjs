@@ -54,7 +54,7 @@ function runtime(opts0 = {}) {
       // A compiler step: the JSON line the script prints, or a crash the test asks for.
       if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
       let output = json({ jobs: [] })
-      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,status:'done',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[{id:'br-001',files:['a','b'],prompt:'p'}]:[]}), results: [] }
+      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,step:/-Step plan/.test(cmd)?'plan':'report',status:'done',plan_id:'p-fixture',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[{id:'br-001',files:['a','b'],prompt:'p'}]:[]}), results: [] }
       const compact = / -Compact/.test(cmd)
       const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
       if (compact && /card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 1, ...head, jobs: [...Array.from({ length: planJobs - 1 }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, kind: 'fix', file: `fix-${String(i + 1).padStart(2, '0')}.md` })), { id: 'orphans-99', kind: 'orphans', file: 'orphans-99.md' }] })
@@ -247,7 +247,8 @@ planJobs = 21
 {
  const {result,calls}=await run( {...base,mode:'full'}, {failStep:/bridge-compiler\.ps1.*-Step plan/})
  check(result.bridge?.status==='failed'&&result.audit?.status==='done', 'full: Bridge failure survives successful later stages')
- check(calls.some(c=>c.label==='bridge: report: clean up'), 'full: failed planning still cleans stage conversations')
+ check(calls.some(c=>c.label==='bridge: clean up'), 'full: failed planning still cleans stage conversations')
+ check(!calls.some(c=>/bridge-compiler\.ps1.*-Step report/.test(c.cmd)), 'full: failed planning publishes no report')
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)

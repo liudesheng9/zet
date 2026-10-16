@@ -47,9 +47,9 @@ $planFile=Join-Path $work 'plan.json';Save $planFile $plan
 node -e 'const f=require("fs"),c=require("crypto"),p=process.argv[1],v=JSON.parse(f.readFileSync(p));const sort=x=>Array.isArray(x)?x.map(sort):x&&typeof x==="object"?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sort(x[k])])):x;v.plan_id="p-"+c.createHash("sha256").update(JSON.stringify(sort(v))).digest("hex");v.created_at="2026-10-16T00:00:00Z";f.writeFileSync(p,JSON.stringify(v))' $planFile
 if($LASTEXITCODE){throw 'fixture hash failed'}
 $plan=Get-Content -LiteralPath $planFile -Raw|ConvertFrom-Json -AsHashtable -DateKind String
-function Check($name,$source,$carrier,$target,$word,$expected,$suffix='两张卡讨论相同的决策机制。'){
+function Check($name,$source,$carrier,$target,$word,$expected,$suffix='两张卡讨论相同的决策机制。',$gap=' '){
  $job=$plan.jobs[[Array]::IndexOf($sourceIds,$source)].id
- $a=@{schema=1;plan_id=$plan.plan_id;job=$job;sources=@(@{source=$source;none='';bridges=@(@{carrier=$carrier;target=$target;word=$word;sentence="$word [[$target]]：$suffix";why='说明两张卡片的具体关系。'})})}
+ $a=@{schema=1;plan_id=$plan.plan_id;job=$job;sources=@(@{source=$source;none='';bridges=@(@{carrier=$carrier;target=$target;word=$word;sentence="$word$gap[[$target]]：$suffix";why='说明两张卡片的具体关系。'})})}
  Save (Join-Path $work "out\$job.json") $a
  $r=Compile @('-Step','precheck','-Staging',$scratch,'-CitationKey','New2026','-Job',$job)
  if($expected){Assert ($Code -eq 1 -and @($Lines|Where-Object{$_ -match "^$expected\b"}).Count) "$name is refused by $expected ($($Lines -join ' | '))"}
@@ -81,6 +81,17 @@ Check 'unplanned target' '0/1' '0/1' '3/1' '对应' 'BR2'
 Check 'an existing reverse Link' '0/1' '0/1' 'Old2020/1|z' '对应' 'BR7'
 Check 'chart markup' '0/1' '0/1' 'Old2020/1|a' '对应' 'BR8' '<div>两张卡讨论相同的决策机制。</div>'
 Check 'human target before publication' '0/1' '0/1' '1/1' '对应' ''
+# Review fixes (2026-10-16).
+Check 'a kind word right before the Link, with no space' '0/1' '0/1' 'Old2020/1|a' '对应' '' '两张卡讨论相同的决策机制。' ''
+Check 'a Model Card carrier with an evidence word' '0/2' '0/2' 'Old2020/1|a' '印证' 'BR4'
+Check 'a Model Card carrier with a correspondence' '0/2' '0/2' 'Old2020/1|a' '对应' ''
+$both=@{schema=1;plan_id=$plan.plan_id;job='br-001';sources=@(@{source='New2026/1|a';none='';bridges=@(
+ @{carrier='New2026/1|a';target='Old2020/1|a';word='对应';sentence='对应 [[Old2020/1|a]]：两张卡讨论相同的决策机制。';why='两张卡讨论相同的机制。'},
+ @{carrier='Old2020/1|a';target='New2026/1|a';word='依赖';sentence='依赖 [[New2026/1|a]]：这张卡使用这个定理的结论。';why='旧书观点使用这个定理。'}
+)})}
+Save (Join-Path $work 'out\br-001.json') $both
+$null=Compile @('-Step','precheck','-Staging',$scratch,'-CitationKey','New2026','-Job','br-001')
+Assert ($Code -eq 1 -and @($Lines|Where-Object{$_ -match '^BR6 .*reverse pair'}).Count) "both directions of one pair are refused ($($Lines -join ' | '))"
 $conflictWork=Join-Path $scratch 'conflicts'
 New-Item -ItemType Directory -Force $conflictWork,(Join-Path $conflictWork 'out')|Out-Null
 Copy-Item -LiteralPath $planFile -Destination (Join-Path $conflictWork 'plan.json')

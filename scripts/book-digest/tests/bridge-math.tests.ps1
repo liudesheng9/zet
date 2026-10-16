@@ -22,7 +22,8 @@ try{
   @{tool='create_literature';arguments=@{bibtex='@book{Econ2020,title={Econ},year={2020}}'}},
   @{tool='create_successor';arguments=@{at='Econ2020';title='第一组';body='§1 均衡'}},
   @{tool='create_successor';arguments=@{at='Econ2020/1';kind='side';title='不动点定理保证经济均衡存在';body='经济模型把均衡表示成连续映射的不动点。'}},
-  @{tool='create_successor';arguments=@{at='Math2026/1';kind='side';title='普通想法不属于数学单元';body='这是本书的普通想法。'}}
+  @{tool='create_successor';arguments=@{at='Math2026/1';kind='side';title='普通想法不属于数学单元';body='这是本书的普通想法。'}},
+  @{tool='create_successor';arguments=@{at='Econ2020/1';kind='side';title='不动点定理也给出博弈均衡';body='博弈的最优反应是连续映射，它的不动点是均衡。'}}
  )
  Calls @(
   @{tool='edit_card';arguments=@{at=$made[8];type='model';level='concept'}},
@@ -36,7 +37,7 @@ try{
  foreach($source in $plan.jobs[0].sources){
   $bridges=@(if($source -ceq $made[2]){
     @{carrier=$made[8];target=$source;word='依赖';sentence="依赖 [[$source]]：连续映射在紧凸集上的不动点保证经济均衡存在。";why='经济均衡的存在性使用该数学定理。'}
-    @{carrier=$source;target=$made[8];word='对应';sentence="对应 [[$($made[8])]]：数学存在性与经济均衡使用同一个不动点结构。";why='两处的固定点结构相同，应用的对象不同。'}
+    @{carrier=$source;target=$made[10];word='对应';sentence="对应 [[$($made[10])]]：博弈均衡的存在性使用同一个不动点结构。";why='两处的不动点结构相同，应用的对象不同。'}
   })
   $answer.sources+=@{source=$source;bridges=@($bridges);none=$(if($bridges.Count){''}else{'没有独立可说明的跨书关系。'})}
  }

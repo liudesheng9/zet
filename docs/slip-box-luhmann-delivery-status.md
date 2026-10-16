@@ -130,3 +130,9 @@ For the later Claude Code test, follow [the operator contract](zt-digest-framewo
 5. Record persisted paragraphs, Relation kinds, Reverse links, old/new faults, Model membership, relevant unit load, idempotent repeat and the actual-Link audit. Retain partial/unverified results.
 
 A stale report needs a fresh folder and review. Optional later Hubs and any archive restore are separate user decisions. Apply has no automatic rollback, model repair or maintenance.
+
+## Review and fixes (2026-10-16, Claude Code)
+
+A review of commit `3e066aa` found faults in the Bridge stage, the audit, and the docs. [The review and its fixes](slip-box-luhmann-review-and-fixes.md) lists each finding and its fix. The installed versions after the fixes are `zt-econ-digest` 3.1.3, `zt-math-digest` 2.2.3, and base 2.1.3. The gates above stay open.
+
+`tests/bridge-human.tests.ps1` now seeds its scratch database with `node:sqlite`, so it needs no Python. It accepts `-Python` and ignores it. The command in the verification table above is the one that ran before the fix. Run it now without `-Python`.

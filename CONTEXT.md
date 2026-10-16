@@ -305,8 +305,8 @@ A semantic Link between substantive Cards attributed to different books, or betw
 _Avoid_: External edge, cross-link
 
 **Bridge proposal**:
-An exact proposed Bridge sentence in an immutable local review report. Its id (`b001`, ...) is meaningful only together with that report's `report_id`. A candidate is an endpoint offered to the judge; it is not yet a proposal or an existing Link.
-_Avoid_: Pending Link, approval token
+An exact proposed Bridge sentence in an immutable local review report. Its id (`b001`, `b002`, …: the letter b and three digits) is meaningful only together with that report's `report_id`. A candidate is an endpoint offered to the judge; it is not yet a proposal or an existing Link.
+_Avoid_: Pending Link, approval token, suggestion
 
 **Bridge report**:
 The local, content-identified review of one frozen Bridge plan: endpoint snapshots, exact proposals, limits, missing work, and a rendered view of apply outcomes. Discovery changes no Card. Explicit new-carrier and earlier-carrier selections are separate.

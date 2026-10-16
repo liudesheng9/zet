@@ -1,10 +1,10 @@
-// ==== module zt-digest-report v4 ====
+// ==== module zt-digest-report v5 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
 // other modes the extra reports join the whole report (e.g. math: {...}).
 defineModule({
-  id: 'zt-digest-report', version: '4', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '5', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -53,7 +53,7 @@ defineModule({
       link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
       terms: (p.terms && p.terms.report) || null, cards: { blocks: (p.digest && p.digest.cards) || [], link: or(p.linkCheck, null) },
       deepseek_usage: (p.cleanup && p.cleanup.usage) || null, cleanup: (p.cleanup && p.cleanup.cleanup) || null,
-      organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE==='full'&&A.bridge===false?{status:'skipped'}:null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null),
+      organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE==='full'?(A.bridge===false?{status:'skipped'}:{status:'failed',error:'Bridge stage produced no summary'}):null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null),
       ...extra,
     }
   },

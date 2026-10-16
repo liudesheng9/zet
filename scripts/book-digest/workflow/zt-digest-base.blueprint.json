@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "The shared base of the ZT digest workflows: Prepare, Digest with per-block card cycles, Link, Cleanup, Organize, Figures, Hubs, Audit, with slots where a book type installs its own layers (models, events, math stages), and report-first cross-book Bridges after Figures",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -16,7 +16,7 @@
     "P5": "Stage graph: args → source → prepare → [after-prepare] → terms → cards-book → digest → [after-digest] → hubs-first → link-prepare → link → link-check → [after-link] → cleanup → organize → figures → bridge → hubs → audit → [after-audit] → report. The base holds no model, event, or finding layer: each book type installs its own layers in the slots (after-digest: the model layer, explain, the event layer, the math Boundary and Proof). Inside digest the blocks run as a pipeline: each block's card cycle starts when its own manager returns.",
     "P6": "Modules: gate (args), zt-dsh-source, zt-digest-prepare, zt-book-terms, zt-cards-book, zt-digest-blocks, zt-hubs (hubs-first and hubs), zt-link-prepare, zt-link-pass, zt-link-check, zt-dsh-cleanup, zt-organize, zt-figures, zt-audit, zt-digest-report; all share zt-digest-lib. The book type's prompt files come from consts.profile: instructions (the base prompt dsh-digest-base.zh.md plus the type's supplements), noEventCandidates, the prefixes, the compiler and architect supplements. zt-bridge v3 calls bridge-compiler.ps1 with profile.bridgeProfile.",
     "P7": "Checks: every DeepSeek job runs its SELF-CHECK (in the job files the scripts write); zt-check is the only checker; the args stage checks the required args per mode; apply steps refuse unchecked text; the report keeps each stage's status. BR1–BR9 and Card checks gate reports and accepted edits; fingerprint/base/journal checks protect apply.",
-    "P8": "Failure policy: args, source, prepare, digest (no group done), and link-prepare halt the run, as zt-book-digest.js returned early there. terms and organize continue on a failure. Switches map to when-conditions: terms, cardChecks, organize, figures, hubs, audit. Modes: link, cards, hubs, figures, audit (each the stages that mode ran before); a book type adds its own (models, explain, events, math). Checkpoint: digest (stop before the book type's layers and the link pass). Bridge failures remain visible and nonfatal in full mode. Mode bridge applies without a source probe, judges, Organize, Hubs, or math stages.",
+    "P8": "Failure policy: args, source, prepare, digest (no group done), and link-prepare halt the run, as zt-book-digest.js returned early there. terms and organize continue on a failure. Switches map to when-conditions: terms, cardChecks, organize, figures, hubs, audit. Modes: link, cards, hubs, figures, audit (each the stages that mode ran before); a book type adds its own (models, explain, events, math). Checkpoint: digest (stop before the book type's layers and the link pass). Bridge failures remain visible and nonfatal in full mode. Mode bridge applies without a source probe, judges, Organize, Hubs, or math stages. Bridge failure is visible: the stage expects status != failed, continues on a failure, and the report keeps {status: failed} in full and bridge modes. A Bridge report is published only after every judge job answered; cleanup always deletes the judge conversations.",
     "P9": "Dry run: zt-econ-digest.sim.json and zt-math-digest.sim.json take mode full through every stage. Fixture: tests/framework-harness.mjs runs every check of workflow-harness.mjs and math-workflow-harness.mjs on the built scripts. Pilot: one chapter with cardMax, explainMax, hubTrees, after a database backup. bridge-workflow-harness.mjs exercises discovery, acceptance, cleanup and probe-free apply; compiler tests use scratch archives; actual user acceptance gates the live apply pilot."
   },
   "roles": {
@@ -416,6 +416,36 @@
               }
             ],
             "message": "Bridge acceptance requires mode bridge, a report id, and a nonempty selection"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "args.bridgeMax",
+                "op": "empty"
+              },
+              {
+                "path": "args.bridgeMax",
+                "op": "matches",
+                "value": "^(?:[1-9][0-9]{0,2})$"
+              }
+            ],
+            "message": "bridgeMax must be a whole number in 1..120"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "args.bridgeCandidates",
+                "op": "empty"
+              },
+              {
+                "path": "args.bridgeCandidates",
+                "op": "matches",
+                "value": "^(?:[1-9][0-9]{0,2})$"
+              }
+            ],
+            "message": "bridgeCandidates must be a whole number in 1..8"
           }
         ]
       }
@@ -784,7 +814,14 @@
           "$ref": "stages.source.output.model"
         },
         "profile": "{{consts.profile.bridgeProfile}}"
-      }
+      },
+      "expect": [
+        {
+          "path": "status",
+          "op": "!=",
+          "value": "failed"
+        }
+      ]
     },
     {
       "id": "hubs",

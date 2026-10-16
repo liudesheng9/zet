@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "3.1.2",
+  "version": "3.1.3",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest, as in zt-book-digest.",
   "preflight": {
@@ -430,6 +430,36 @@
               }
             ],
             "message": "Bridge acceptance requires mode bridge, a report id, and a nonempty selection"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "args.bridgeMax",
+                "op": "empty"
+              },
+              {
+                "path": "args.bridgeMax",
+                "op": "matches",
+                "value": "^(?:[1-9][0-9]{0,2})$"
+              }
+            ],
+            "message": "bridgeMax must be a whole number in 1..120"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "args.bridgeCandidates",
+                "op": "empty"
+              },
+              {
+                "path": "args.bridgeCandidates",
+                "op": "matches",
+                "value": "^(?:[1-9][0-9]{0,2})$"
+              }
+            ],
+            "message": "bridgeCandidates must be a whole number in 1..8"
           }
         ]
       }
@@ -909,7 +939,14 @@
           "$ref": "stages.source.output.model"
         },
         "profile": "{{consts.profile.bridgeProfile}}"
-      }
+      },
+      "expect": [
+        {
+          "path": "status",
+          "op": "!=",
+          "value": "failed"
+        }
+      ]
     },
     {
       "id": "hubs",
@@ -1145,6 +1182,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "2.1.2"
+    "version": "2.1.3"
   }
 }

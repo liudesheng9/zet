@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v3 ====
+// ==== module zt-digest-lib v4 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), ported from
 // .claude/workflows/zt-book-digest.js: the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), and the card layer cycle (runCards). The model compiler is zt-model-lib (the
@@ -248,7 +248,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only bridge-compiler.ps1 with -Step precheck (never -Apply), zt-check, and frozen snapshot reads; refuse every zt write or other compiler step` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only)`}; a read-only self-check of a draft: card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, or finding-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: bridge-compiler.ps1 with -Step precheck (never -Apply); the check zt-check (read-only); a pwsh command that runs zt-mcp.ps1 with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, or finding-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -367,13 +367,15 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
     HUB_WORK, HUB_COMPILER, HUB_EFFORT, HUB_FIX_ROUNDS, HUB_SKILLS, PER_MANAGER, LINK_PER_MANAGER, raised,
     zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
+    // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
+    cleanupDsh: (label, o) => driveAgent(label, o, 'cleanup'),
     runCards, cardBlock, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '3', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '4', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, drive, model compiler, card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

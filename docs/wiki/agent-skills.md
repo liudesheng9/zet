@@ -12,11 +12,6 @@ updated: 2026-10-16
 
 ## Purpose
 
-### Bridge delivery contract (2026-10-16)
-
-Source guidance now describes insertion before occupied steps and whole-Card Links, with writable-only splitting and human read-only Access. Rollout runs `scripts/install-agent-integrations.ps1`, compares repository/Claude/Codex/DeepSeek skill hashes, and checks guidance in a new client conversation. Existing conversations can retain their old instructions. The shared digest protocol also documents report-bound Bridge discovery and apply.
-
-
 This block holds what AI agents get to know about ZT, and the means to put it in front of them. It has three agent skills: `zt` teaches the slip-box's Workspaces, the `zt` MCP server's tools, and the Access rules. `zettelkasten` teaches how to compose, place, and link a Card the way Luhmann worked. `zt-digest-protocol` teaches the building blocks of the book-digest workflows. It also holds the shell helper `zt-mcp.ps1`, which lets an agent with no MCP tools (DeepSeek Harness) call the same server, and the installer `scripts/install-agent-integrations.ps1`. The installer copies the skills into Claude Code, Codex, and DeepSeek Harness and registers `zt mcp` as an MCP server. The block exists because the server only enforces the rules (agent Access, Card rules, confirm plans). The conventions that make Cards good (one idea, claim titles, kinded Links, model structure) live in skill text, and every agent harness must load that text from one source.
 
 **Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the shell helper `skills/zt/scripts/zt-mcp.ps1` (batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, the helper-only `append_card` call); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
@@ -149,13 +144,13 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 5. Model structure: membership by filing or by the Model Card's Link, facets, kinded relations, shape, loose parts, emphasis, mathematical units and Theory Cards, self-sufficiency, build order (setting `…|a` with symbol and term tables, main line of Direct successors, examples as Side successors, Derivation parts and chains, building blocks), the Model Card's 问题, 概要, 结构 list, 关联, 来源.
 6. HTML charts (palette variables, `viewBox` width up to about 440, `data-zt`), and the source's own figures (`list_work_artifacts`, `scholar_archive_artifact`, Document links with `#page=`).
 7. ZET addresses (shape, roots, Direct and Side successors, Topic numbers never reused) and where ZET differs from Luhmann's box.
-8. Placement (four rules in order), Literature Zone roles, Links with a reason (a table of relationships), entry points (Topic body, findable titles, Hub Card levels, Structure Card), the Collector's fallacy, and maintenance (split, merge, move, fix broken Links).
+8. Placement (four rules in order), Literature Zone roles, Links with a reason (a table of relationships), entry points (Topic body, findable titles, Hub Card levels, Structure Card), the Collector's fallacy, and maintenance (split, merge, move, fix broken Links). A missing step goes in with `insert_card before` an occupied step, and a Link names a whole Card. Only agent Cards are split; the human Workspace stays read-only. `references/luhmann-and-practice.md` compares this with Luhmann's own box (57/12a filed between 57/12 and 57/13).
 
 **`zt-digest-protocol`** (`skills/zt-digest-protocol/SKILL.md`):
 
 1. Roles: Scripts do every structural step and every zt write of a JSON answer; DeepSeek (V4.1 Flash, effort high) writes text; Haiku manages DeepSeek runs; Sonnet writes one `plan.json` per model; Opus writes only `decisions.json`.
 2. The compiler cycle and the compilers that follow it (`model-compiler.ps1`, `card-compiler.ps1`, `hub-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `math-compiler.ps1`).
-3. The stages of `zt-book-digest` mode `full` (Prepare, Digest, Models, Cards, Link, Cleanup, Organize, Figures, Hubs, Audit) and the single-stage modes.
+3. The stages of `zt-book-digest` mode `full` (Prepare, Digest, Models, Cards, Link, Cleanup, Organize, Figures, Bridge, Hubs, Audit) and the single-stage modes. The cross-book Bridge contract: report-only discovery, a report published only after every judge job answered, a cleanup that always runs, and apply only of proposals the user accepted from one report.
 4. Inherited protocols: the DeepSeek Subagent Managed Protocol, self-checks, the manager approval list, `state.json` per compiler, compact JSON last lines, the installed helper and its flags, source fidelity marks `（补：书中略去）`.
 5. `zt-check` as the only checker, its command forms, its output (`faults: N`), and the SELF-CHECK command per task.
 6. How to build a variant, and operating rules (back up with `VACUUM INTO`, run edited workflows by `scriptPath`, never rerun finished models, do not deploy zt during a run, the `CARGO_TARGET_DIR` locations, script traps).
@@ -336,7 +331,7 @@ cargo install --path . --locked     # zt must be installed first
 pwsh -File scripts/install-agent-integrations.ps1
 ```
 
-Re-run it after any change under `skills/`, after a change to the server's tools, or after moving `zt.exe`. Then start a new conversation.
+Re-run it after any change under `skills/`, after a change to the server's tools, or after moving `zt.exe`. Then start a new conversation. To verify a rollout, compare the skill hashes of the repository, Claude Code, Codex, and DeepSeek Harness copies, and check the guidance in a new conversation. A conversation that existed before can keep its old instructions.
 
 ### Call the server from a shell (DeepSeek Harness, or any harness without `zt` tools)
 
@@ -436,6 +431,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 ## Change history
 
 
+- `2026-10-16` — Review fixes: `zt-digest-protocol` shows Bridge between Figures and Hubs in the stage diagram, adds Bridge counts and islands to the Audit row, and states that a Bridge report is published only when every judge job answered and that the cleanup always runs. `zettelkasten/references/luhmann-and-practice.md` cites repository paths instead of github.com URLs and adds Luhmann's 57/12a and `insert_card before`.
 - `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
 - `2026-10-16` — C1: insertion, Placement, and Maintenance agree with `insert_card before`; whole-Card Links and human read-only splitting are explicit. Rollout verifies installed hashes and freshly loaded client guidance.
 

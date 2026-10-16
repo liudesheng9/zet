@@ -10,7 +10,7 @@ final organization.
 
 ## Bridge mode
 
-Full mode runs report-only Bridge discovery after Figures and before Hubs. Use `mode: "bridge"` with a fresh `out` and an existing `citationKey` for a bounded report; `bridgeMax`, `bridgeCandidates` and optional `bridgeBooks` control coverage. After actual review, use the same folder with `bridgeReport` and `bridgeApply` / `bridgeApplyEarlier` (each `"all"` or a unique array of report ids). Apply uses no source probe, judge, model compiler, Organize or Hubs. See [the shared operator contract](zt-digest-framework.md#bridge-discovery-and-apply) for limits, backup, quiet filing, retries and stale-report handling.
+Full mode runs report-only Bridge discovery after Figures and before Hubs. Use `mode: "bridge"` with a fresh `out` and an existing `citationKey` for a bounded report; `bridgeMax`, `bridgeCandidates` and optional `bridgeBooks` control coverage. The workflow publishes `<out>\bridge\report.md` only after every judge job answered. When planning or a judge job fails, it publishes nothing, and the result tells you to run mode `bridge` again with the same `out` to resume. The cleanup always deletes every DeepSeek judge conversation and the DeepSeek workspace, also after a failure. After actual review, use the same folder with `bridgeReport` and `bridgeApply` / `bridgeApplyEarlier` (each `"all"` or a unique array of report ids such as `"b001"`). Apply uses no source probe, judge, model compiler, Organize or Hubs. See [the shared operator contract](zt-digest-framework.md#bridge-discovery-and-apply) for limits, backup, quiet filing, retries and stale-report handling.
 
 ## What happens
 
@@ -32,7 +32,9 @@ flowchart LR
   L --> LK[Link check and orphan pass<br/>card-compiler.ps1 ▸ DeepSeek]
   LK --> C[Cleanup<br/>Haiku]
   C --> O[Organize<br/>script survey, Opus decides,<br/>scripts and DeepSeek apply]
-  O --> H[Hubs<br/>Haiku hub manager, DeepSeek writes,<br/>hub-compiler.ps1 builds]
+  O --> F[Figures<br/>attach-figures.ps1]
+  F --> B[Bridge<br/>bridge-compiler.ps1 plans,<br/>DeepSeek judges, report only]
+  B --> H[Hubs<br/>Haiku hub manager, DeepSeek writes,<br/>hub-compiler.ps1 builds]
   H --> A[Audit<br/>digest-audit.ps1, read-only]
 ```
 
@@ -47,8 +49,10 @@ flowchart LR
 | **Link check** | the same cycle on the whole book | Rules L1 and L2 on the Links of the link pass, and the orphan pass: each Card that no other Card links gets a reasoned Link from a related Card. | `cards-link\report.json` |
 | **Cleanup** | Haiku | Deletes any DeepSeek conversation a manager left, removes the DeepSeek workspace and scratch files; reports DeepSeek token use. | — |
 | **Organize** | a script, Opus, scripts, DeepSeek | `organize-survey.ps1` lists what to decide: duplicate Topics, small Topics, merge proposals, model faults. Opus writes only `decisions.json`: the thesis, Topic merges, moves, and notes for single Cards. `organize-apply.ps1` carries out the merges and moves; a card cycle carries out the notes (rule N1); `book-skeleton.ps1` and one DeepSeek job write the Literature Card index, the structure Card, and the Topic bodies. `organize: "legacy"` runs the old single Opus job. | A finished digest |
+| **Figures** | a script | `attach-figures.ps1` shows the book's own figures in every Card that names one, and links the book's PDF and Markdown from the Literature Card. See "The book's figures and documents" below. | Cards that show their figures |
+| **Bridge** | `bridge-compiler.ps1`; Haiku drivers relay DeepSeek judge jobs | `plan` finds candidate Cards in other books for each source Card of this book: up to `bridgeCandidates`, plus at most two term matches. DeepSeek judges each pair as JSON (`dsh-bridge-instructions.zh.md`). `precheck` checks each answer, and `report` writes the proposals. Mode `full` never applies a proposal. The report is published only when every judge job answered. A failed stage shows `status: failed` and the run continues. | `<out>\bridge\report.md`, `state.json` |
 | **Hubs** | a Haiku hub manager chooses the limits; Haiku drivers relay DeepSeek jobs; `hub-compiler.ps1` builds | Runs on the whole agent Workspace. The script surveys every Topic tree; the hub manager chooses from the survey when a tree or branch needs a hub and how large a hub may be; DeepSeek plans the fields and register terms and writes each topic and line hub as JSON; the script builds the Hub Cards, links them from Topic bodies and the register (Topic `索引`), checks each with `get_hub`, and sends faults back once; the conversations are deleted at the end. Only trees that changed are rewritten on a later run. See `docs/hub-cards-design.md`. | Hub Cards at four levels: line, topic, field, register |
-| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`zt-check`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, and figures named but not shown. For the Workspace it adds missing hubs and broken Links. See `docs/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
+| **Audit** | Haiku runs a script | `digest-audit.ps1` reads the book's Cards and changes none. Per book it counts the Cards by category, the Topic trees, the Card language faults per rule (`zt-check`, R2 to R14), orphans, Idea and Event Cards with no source line or no kinded Link, models that are not self-sufficient, figures named but not shown, and its semantic Bridges out and in by book. It reads the trees of both Workspaces, because a human Card is a Bridge endpoint. For the Workspace it adds missing hubs, broken Links, and the islands (books with no semantic Bridge in or out). See `docs/digest-card-layers-proposal.md` (phase 1). | `audit.md`, `audit.json`, `audit-faults.txt` in `out` |
 
 ## DeepSeek Subagent Managed Protocol
 
@@ -242,10 +246,12 @@ A book's own figures reach its Cards in three places, and every one is the same 
 
 ## The audit (phase 1 of the card layers proposal, 2026-10-15)
 
-`scripts/book-digest/digest-audit.ps1` measures the Cards that the model and hub stages do not check: Idea Cards, Event Cards, anchors, Topics, and Links. It makes only zt read calls (a guard refuses any other tool), so it is safe on any digest at any time. It reads every agent tree, attributes each Topic-tree Card to the book it cites (a source line or an anchor counts 10, a Link to another Card of the book counts 1), reads the bodies in parallel helper processes (`-Throttle`, default 6), and runs `zt-check -Json` in its own process: each model with its own term table and level, the other Cards without a term table. A run on the whole agent Workspace takes a few minutes.
+`scripts/book-digest/digest-audit.ps1` measures the Cards that the model and hub stages do not check: Idea Cards, Event Cards, Finding Cards, anchors, Topics, and Links. It makes only zt read calls (a guard refuses any other tool), so it is safe on any digest at any time. It reads the trees of both Workspaces. It attributes each agent Topic-tree Card to the book it cites with `book-of.ps1` (a source line or an anchor counts 10, a Link to another Card of the book counts 1). A human Card is a Bridge endpoint, never part of a book. It reads the bodies in parallel helper processes (`-Throttle`, default 6), and runs `zt-check -Json` in its own process: each model with its own term table and level, the other Cards without a term table. A run on the whole agent Workspace takes a few minutes.
+
+Per book, `bridges` counts the semantic Bridges: kinded Links (not "refers") between substantive Cards of this book and of another book, out and in. It counts them by book, and adds `human` and `unattributed`. `island` is true when a book has no semantic Bridge in or out. It is null when a tree could not be read (`complete` false) or when no substantive Card outside the book exists (`peers` 0). `audit.md` lists the islands in the Agent Workspace table, and gives a "Semantic Bridges" line per book.
 
 ```bash
-pwsh -NoProfile -File scripts/book-digest/digest-audit.ps1 -Out D:zt-digestaudit
+pwsh -NoProfile -File scripts/book-digest/digest-audit.ps1 -Out 'D:\zt-digest\audit'
 ```
 
 Add `-CitationKey <key>` for one book. The workflow runs it last in mode `full`, or alone in mode `audit`. Run it before and after a change to a digest stage: the difference measures the change.
@@ -267,7 +273,7 @@ Arguments (`args`):
 
 | Argument | Meaning |
 | --- | --- |
-| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. `explain`: only adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (`citationKey`, or the Model Cards in `only`); it changes no step and rebuilds no model. |
+| `mode` | `full` (default): everything. `cards`: only the card cycle (all hard rules but R6, with the orphan pass) on an existing digest (needs `citationKey` and `out`). `link`: only the link pass (and Organize with `organize: true`) on an existing digest. `models`: only the Models stage on an existing digest's Model Cards. `hubs`: only the hub stage on the whole agent Workspace (needs only `out`). `figures`: only the Figures stage on an existing digest (needs `citationKey` and `out`). `audit`: only the read-only audit, of one book (`citationKey`) or of every book in the agent Workspace (no `citationKey`), written to `out`. `explain`: only adds 思路, 说明 lines, and 解读 to the finished Derivation parts of a book (`citationKey`, or the Model Cards in `only`); it changes no step and rebuilds no model. `bridge`: without a selection, only the Bridge stage on an existing digest (needs `citationKey` and `out`): plan, judge, and publish the report. With `bridgeReport` and `bridgeApply` or `bridgeApplyEarlier`, it applies only those proposals with guarded `edit_card` calls. |
 | `source`, `out`, `citationKey`, `bibtex`, `bookTitle` | the bilingual Markdown in the Scholar Archive, the staging folder, and the book's BibTeX |
 | `fileId` | the book Markdown's Scholar Archive file id; read from a source path such as `...\scholar-archive\files\83\...` when not given |
 | `figures` | `false` skips the Figures stage in a full run |
@@ -291,6 +297,13 @@ Arguments (`args`):
 | `hubLimits` | an object that overrides the limits the Haiku hub manager chooses, e.g. `{ "topic_min": 8 }` |
 | `hubTrees`, `hubRebuild` | only these Topic trees (`"130,122"`, a pilot); rewrite every hub |
 | `hubEffort`, `hubFixRounds` | DeepSeek effort of the hub writers and the field planner (high); check, fix, and apply again (1) |
+| `bridge` | `false` skips the Bridge stage in a full run (default `true`) |
+| `bridgeMax` | the most source Cards of the book that the Bridge stage plans (a whole number, 1 to 120, default 60) |
+| `bridgeCandidates` | candidate Cards per source Card (a whole number, 1 to 8, default 5), plus at most two term matches |
+| `bridgeBooks` | only these other books, as comma-separated Citation keys; default every other book |
+| `bridgeReport` | mode `bridge`: the `report_id` of the report to apply from |
+| `bridgeApply` | mode `bridge`: `"all"` or an array of proposal ids (`"b001"`) of the report's new carriers (Cards of this book) to apply |
+| `bridgeApplyEarlier` | mode `bridge`: `"all"` or an array of proposal ids of the report's earlier carriers (Cards of another book that gets the Link). It is a separate selection. |
 | `audit` | `false` skips the Audit stage in a full run (default `true`) |
 | `terms` | `false` skips the term table in a full run |
 | `cardChecks` | `false` skips the card cycles in modes `full` and `link` |

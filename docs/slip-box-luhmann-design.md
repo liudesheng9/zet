@@ -413,7 +413,7 @@ L6 (math) asks for the same pass between a math book and the economics books. C2
 Add these terms to `CONTEXT.md`:
 
 - **Bridge**: a Link from a Card of one book to a Card of another book or to a human Card. It has a kind word and a reason. A Card of a book is a Card of its Literature tree, or a Topic-tree Card that the audit gives to that book. The audit gives a Topic-tree Card to the book whose Literature tree it links most. _Avoid_: cross-link, external link.
-- **Bridge proposal**: one Bridge that the bridge stage proposes and no Card holds yet. It has an id (`b1`, `b2`, …), a source Card, a target Card, a kind word, a sentence, and a one-line reason for the user. _Avoid_: suggestion, candidate (a candidate is a Card offered to the judge).
+- **Bridge proposal**: one Bridge that the bridge stage proposes and no Card holds yet. It has an id (`b001`, `b002`, …), a source Card, a target Card, a kind word, a sentence, and a one-line reason for the user. _Avoid_: suggestion, candidate (a candidate is a Card offered to the judge).
 - **Bridge report**: the read-only list of the Bridge proposals of one book, for the user's go-ahead. _Avoid_: bridge log.
 
 ### Principles of the stage
@@ -607,7 +607,7 @@ One case needs the other direction. An earlier economics Card uses a theorem of 
 
 | id | 源卡 | 关系 | 目标卡（书） | 句子 | 理由 |
 | --- | --- | --- | --- | --- | --- |
-| b1 | `130/2|f` 破产重新配置控制权 | 对应 | `hart1995firms/7|a` 剩余控制权（hart1995firms） | 对应 [[…]]：…… | 同一机制…… |
+| b001 | `130/2|f` 破产重新配置控制权 | 对应 | `hart1995firms/7|a` 剩余控制权（hart1995firms） | 对应 [[…]]：…… | 同一机制…… |
 
 ## 写入旧书卡片的提议（需要单独同意）
 

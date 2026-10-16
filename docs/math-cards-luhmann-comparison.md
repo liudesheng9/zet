@@ -156,7 +156,7 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 
 **What it changes.** The architect supplement, the skeleton step, and the study station code for one-Card units. The pilot (Q4) measures how many units this affects before the user decides.
 
-### L6. Bridges for surprise
+### L6. Bridges for surprise (carried out by C2 of slip-box-luhmann-design.md, math profile)
 
 **Logic.** Luhmann valued the box for its surprises: the same mechanism found in two distant regions. Schmidt calls the box a generator of serendipity. In the math design, the most surprising Links are the ones between mathematics and the economics books (D18, Q6) and between theories of different books. The proposal leaves them to a later, separate run.
 
@@ -190,7 +190,7 @@ The difference in goal is legitimate. A mathematics textbook has a correct deduc
 | 1 | L4: the test that shows the fault, then the fix in `src/math.rs`. | No |
 | 2 | L5 and L7: rules in the architect supplement and the skeleton. Measure in the pilot. | Only in the pilot |
 | 3 | L1 and L2: the Topic pass and its prompt, tried in the pilot. | A new pilot tree and its Topic Cards |
-| 4 | L6: the bridge pass, report only, then the user's go-ahead. | Only after the go-ahead |
+| 4 | L6: the bridge pass, report only, then the user's go-ahead (carried out by C2 of slip-box-luhmann-design.md, math profile). | Only after the go-ahead |
 
 Step 1 is built (`639a5a4`). Steps 2 to 4 are kept and wait for the user to ask for them. L3 is not applied, so it has no step.
 

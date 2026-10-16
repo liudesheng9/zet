@@ -1,6 +1,6 @@
-// ==== module zt-bridge v3 ====
+// ==== module zt-bridge v4 ====
 defineModule({
-  id: 'zt-bridge', version: '3', requires: ['zt-digest-lib'],
+  id: 'zt-bridge', version: '4', requires: ['zt-digest-lib'],
   summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
   params: {
     args: { type: 'object', required: true, description: 'run arguments' },
@@ -31,16 +31,24 @@ defineModule({
       return result.json||{status:'failed',error:result.run&&result.run.output}
     }
     const opts={dsh:work,skills:['zettelkasten','asd-ste100-zh'],effort:Z.DSH_EFFORT,phase:'Bridge',writes:`${work}\\out`,readOnly:true,remove:'delete',keep:true}
+    // A report freezes its plan and proposals. So publish only after a plan whose jobs all answered;
+    // otherwise keep the folder unpublished, so a rerun of mode bridge on the same out resumes it.
+    // The cleanup (delete every judge conversation and the DSH workspace) always runs, even after a throw.
     let planned,reported,error
     try{
       planned=await Z.drive('bridge: plan',{...opts,command:step('plan',` -Profile ${q(p.profile)} -MaxSources ${q(A.bridgeMax??60)} -Candidates ${q(A.bridgeCandidates??5)}${A.bridgeBooks?` -Books ${q(A.bridgeBooks)}`:''}`)})
-      if(!planned||!planned.ok)error=(planned&&planned.output)||'Bridge planning failed.'
-    }catch(e){error=String(e)}finally{
-      try{reported=await Z.drive('bridge: report',{...opts,command:step('report'),cleanup:true})}catch(e){error=error||String(e)}
+      const plan=planned&&planned.ok?zdLastJson(planned.output):null
+      const failedJobs=((planned&&planned.results)||[]).filter(r=>r.status!=='done').map(r=>r.id)
+      if(!plan||plan.ok===false)error=`Bridge planning failed: ${(plan&&(plan.errors||plan.error))?JSON.stringify(plan.errors||plan.error):((planned&&(planned.error||planned.output))||'no output')}`
+      else if(failedJobs.length)error=`Bridge judge jobs failed: ${failedJobs.join(', ')}. The report is not published; rerun mode bridge with the same out to resume.`
+      else reported=await Z.drive('bridge: report',{...opts,command:step('report')})
+    }catch(e){error=error||String(e)}finally{
+      try{await Z.cleanupDsh('bridge: clean up',opts)}catch(e){log(`bridge: clean up failed: ${e}`)}
     }
     const summary=zdLastJson((reported&&reported.output)||'')
-    if(error)return {status:'failed',error,...(summary?{report:summary.report,counts:summary.counts}:{} )}
-    return summary||{status:'failed',error:'No Bridge report output.'}
+    if(error)return {status:'failed',error}
+    if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}
+    return summary
   },
 })
 // ==== end module zt-bridge ====

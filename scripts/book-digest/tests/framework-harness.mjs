@@ -70,12 +70,12 @@ function runtime(kind, opts0 = {}) {
       if (/Run every job below/.test(prompt)) {
         const given = JSON.parse(String(prompt).split('\n').find(l => l.startsWith('[{')) || '[]')
         managed.push({ label, jobs: given.map(j => j.id), given })
-        return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
+        return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: opts0.failJudge && /^bridge/.test(label) ? 'failed' : 'done', answer: '{}' })) }
       }
       if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], deleted: 2 } }
       if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
       let output = json({ jobs: [] })
-      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,status:'done',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[job('br-001')]:[]}), results: [] }
+      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,step:/-Step plan/.test(cmd)?'plan':'report',status:'done',plan_id:'p-fixture',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[job('br-001')]:[]}), results: [] }
       const compact = / -Compact/.test(cmd)
       const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
       if (/model-compiler\.ps1" -Step brief/.test(cmd)) output = json({ jobs: [job('brief')], skipped: [] })
@@ -410,7 +410,13 @@ for(const kind of ['econ','math']) {
 {
  const {result,calls}=await run(kind, {...base,mode:'full'}, {failStep:/bridge-compiler\.ps1.*-Step plan/})
  check(result.bridge?.status==='failed'&&result.audit?.status==='done', 'full: Bridge failure survives successful later stages')
- check(calls.some(c=>c.label==='bridge: report: clean up'), 'full: failed planning still cleans stage conversations')
+ check(calls.some(c=>c.label==='bridge: clean up'), 'full: failed planning still cleans stage conversations')
+ check(!calls.some(c=>/bridge-compiler\.ps1.*-Step report/.test(c.cmd)), 'full: failed planning publishes no report')
+}
+{
+ const {result,calls}=await run(kind, {...base,mode:'full'}, {failJudge:true})
+ check(result.bridge?.status==='failed'&&/rerun mode bridge/.test(result.bridge?.error||''), 'full: a failed judge job fails the stage and says how to resume')
+ check(!calls.some(c=>/bridge-compiler\.ps1.*-Step report/.test(c.cmd))&&calls.some(c=>c.label==='bridge: clean up'), 'full: a failed judge job publishes no report and still cleans up')
 }
 }
 console.log(`failed: ${failed}`)

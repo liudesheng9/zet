@@ -45,7 +45,7 @@ Compilers that follow it: `model-compiler.ps1` (brief, plan, apply, derive, revi
 
 ```
 Prepare ─▶ Digest blocks (in parallel) ─┬─▶ Models for the block (model compiler)  ─┐
-                                        └─▶ Card cycle for the block (card compiler) ┴─▶ model sweep ─▶ Link ─▶ Link check ─▶ Cleanup ─▶ Organize ─▶ Figures ─▶ Hubs ─▶ Audit
+                                        └─▶ Card cycle for the block (card compiler) ┴─▶ model sweep ─▶ Link ─▶ Link check ─▶ Cleanup ─▶ Organize ─▶ Figures ─▶ Bridge ─▶ Hubs ─▶ Audit
 ```
 
 | Stage | Steps | Writes Cards? |
@@ -58,9 +58,9 @@ Prepare ─▶ Digest blocks (in parallel) ─┬─▶ Models for the block (mo
 | Cleanup | Delete leftover DeepSeek conversations, remove the workspace, delete scratch files, read the usage ledger. | no |
 | Organize | `organize-survey.ps1` → Opus `decisions.json` → `organize-apply.ps1` → a notes card cycle → `book-skeleton.ps1` (Literature index, structure Card, Topic bodies). | yes |
 | Figures | `attach-figures.ps1`: show the book's own figures in the Cards that name them. | yes |
-| Bridge | `bridge-compiler.ps1`: bounded plan → judge SELF-CHECK → immutable report; explicit report-id-bound apply only in mode bridge. | no in discovery; accepted agent carriers only in apply |
+| Bridge | `bridge-compiler.ps1`: bounded plan → judge SELF-CHECK → immutable report, published only when every judge job answered; the cleanup always runs. Explicit report-id-bound apply only in mode bridge. A failure shows as `status: failed`, and the run continues. | no in discovery; accepted agent carriers only in apply |
 | Hubs | `hub-compiler.ps1` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards |
-| Audit | `digest-audit.ps1`, read-only: faults per rule, orphans, models, explanations, figures, hubs. | no |
+| Audit | `digest-audit.ps1`, read-only, over both Workspaces: faults per rule, orphans, models, explanations, figures, hubs, semantic Bridge counts in and out per book, and islands (books with no Bridge). | no |
 
 Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `bridge`, `audit` (see `docs/zt-book-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
 
@@ -98,6 +98,7 @@ The SELF-CHECK commands per task:
 | Card cycle fix and orphan | `card-compiler.ps1 -Step precheck -Job <id>` |
 | Hubs | `hub-compiler.ps1 -Step precheck -File <hub json>` |
 | Skeleton | `book-skeleton.ps1 -Step apply` without `-Apply` |
+| Bridge judge | `bridge-compiler.ps1 -Step precheck -Job <id>` |
 
 ## 6. Building a new digest variant
 
@@ -121,8 +122,8 @@ The SELF-CHECK commands per task:
 
 The shared stage runs after Figures and before Hubs. Full mode discovers and reports; `bridge: false` returns skipped. Mode `bridge` needs only `out` and `citationKey`. `bridgeMax` defaults to 60 (integer 1–120), `bridgeCandidates` to 5 (integer 1–8, plus at most two literal term matches), and `bridgeBooks` optionally filters exact agent book keys. Math selects theory main results/objects, definitions, and other units with load at least two. Retrieval is bounded and can miss relationships expressed deep in a body.
 
-Report-only: use a fresh output folder, inspect `bridge/report.md` and immutable `bridge/proposals.json`. Apply: use that same output folder with `mode: "bridge"`, `bridgeReport: "<actual report_id>"`, and `bridgeApply: ["<actual bNNN>"]` or `"all"`. `bridgeApplyEarlier` independently selects earlier carriers; earlier-only is valid. Example ids and hashes are placeholders. Empty arrays grant no edits; booleans, mixed arrays, duplicates, wrong sections and unknown ids fail. Apply has no model source probe, judge, planning, Organize, or Hubs.
+Report-only: use a fresh output folder, inspect `bridge/report.md` and immutable `bridge/proposals.json`. The workflow publishes the report only after every judge job answered. When the plan or a judge job fails, nothing is published: run mode `bridge` again with the same `out` to resume. The cleanup deletes every DeepSeek judge conversation and the DeepSeek workspace, never archives, and always runs, also after a throw. Proposal ids are `b001`, `b002`, and so on. Apply: use that same output folder with `mode: "bridge"`, `bridgeReport: "<actual report_id>"`, and `bridgeApply: ["<actual bNNN>"]` or `"all"`. `bridgeApplyEarlier` independently selects earlier carriers; earlier-only is valid. Example ids and hashes are placeholders. Empty arrays grant no edits; booleans, mixed arrays, duplicates, wrong sections and unknown ids fail. Apply has no model source probe, judge, planning, Organize, or Hubs.
 
-A judge loads zettelkasten and asd-ste100-zh, reads only frozen candidates, writes its assigned answer, and runs its exact precheck up to three times. It never writes/splits/moves Cards or grants acceptance. One source has at most two proposals. A Link names a whole Card. Human Cards are read-only. No Model head may Bridge to a Model part; rests-on cannot target a part. Model heads can cite outside math unit heads. Earlier carriers are agent Idea/Model heads from another attributed book and can only use 依赖/基于 to cite a new unit. 特例 is restricted to Definition heads, narrower to broader.
+A judge loads zettelkasten and asd-ste100-zh, reads only frozen candidates, writes its assigned answer, and runs its exact precheck up to three times. Its manager approves only the Bridge precheck, `zt-check`, the zt helper with the empty `read-only.allow.txt`, reads under `out`, and JSON writes under `bridge\out`. It never writes/splits/moves Cards or grants acceptance. One source has at most two proposals, and one pair of Cards has at most one relation (the reverse of a proposed pair is refused). A Model Card carrier takes no evidence word (印证, 案例). A Link names a whole Card. Human Cards are read-only. No Model head may Bridge to a Model part; rests-on cannot target a part. Model heads can cite outside math unit heads. Earlier carriers are agent Idea/Model heads from another attributed book and can only use 依赖/基于 to cite a new unit. 特例 is restricted to Definition heads, narrower to broader.
 
 Before the first live mutation obtain actual user selections and make a consistent archive backup through the supported procedure (`zt dp`, or the established SQLite VACUUM INTO backup with integrity verification). Keep filing quiet: no insert/move/delete/key rename/retype or Organize alongside apply. The compiler uses raw `edit_card` base, per-report locking and durable per-carrier intents. Reverse links update on ordinary saves. A stale report needs a fresh folder and new review. Retries preserve accepted text, verify persisted effects, and never automatically restore an archive. Hubs may run later as separately requested maintenance. Keep old frozen workflow versions and reports.
