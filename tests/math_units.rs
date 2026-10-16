@@ -554,13 +554,57 @@ fn a_theory_orders_its_units_by_dependency_and_names_its_tools() {
     assert_eq!(addresses(&math["tools"]), vec![c.axiom.clone()]);
     assert_eq!(math["cycle"], json!([]));
     assert_eq!(math["faults"], json!([]));
-    // The prerequisite path of the main result leaves the lemma for just in time.
+    // The prerequisite path of the main result leaves the lemma for just in time,
+    // and with it the definition that only the lemma's proof cites.
     let path = &math["study"][1]["results"][0];
     assert_eq!(path["result"], c.theorem.as_str());
-    assert_eq!(path["path"], json!([c.definition]));
+    assert_eq!(path["path"], json!([]));
     // The axiom is a building block: its own theory and this one use it.
     let axiom = mcp.ok("get_model", json!({ "at": c.axiom }))["math"].clone();
     assert_eq!(axiom["building_block"], true);
+}
+
+#[test]
+fn a_prerequisite_path_follows_statements_and_leaves_a_lemmas_proof_for_just_in_time() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let c = chapter(&mut mcp);
+    let theory = |mcp: &mut Mcp| mcp.ok("get_model", json!({ "at": c.theory }))["math"].clone();
+    let entry = |math: &Value, unit: &str| {
+        math["order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["address"] == unit)
+            .unwrap()
+            .clone()
+    };
+    // Only the lemma's proof cites the definition: a proof premise, not a statement premise.
+    let math = theory(&mut mcp);
+    let lemma = entry(&math, &c.lemma);
+    assert_eq!(lemma["cites"], json!([c.definition]));
+    assert_eq!(lemma["statement_cites"], json!([]));
+    assert_eq!(math["study"][1]["results"][0]["path"], json!([]));
+    // The dependency order still counts every premise.
+    assert_eq!(
+        addresses(&math["order"])[..2],
+        [c.definition.clone(), c.lemma.clone()]
+    );
+    // When the lemma's statement cites the definition, the reader needs the
+    // definition to read the lemma at its step, so the path holds it.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": c.lemma, "body": format!("(H1) $f$ 在 $x_0$ 连续，$f(x_0)<c$。\n\n基于 [[{}]] 的连续。", c.definition) }),
+    );
+    let math = theory(&mut mcp);
+    assert_eq!(
+        entry(&math, &c.lemma)["statement_cites"],
+        json!([c.definition])
+    );
+    assert_eq!(
+        math["study"][1]["results"][0]["path"],
+        json!([c.definition])
+    );
 }
 
 #[test]

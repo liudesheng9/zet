@@ -839,9 +839,26 @@ pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
         );
         cards
     };
+    // The Cards of a unit's statement: its Model Card and its `前提` parts.
+    let statement_of = |unit: &str| {
+        let mut cards = vec![unit.to_string()];
+        cards.extend(
+            model::parts_of(unit, view.by_address, view.parsed)
+                .into_iter()
+                .filter(|part| part.facet.as_ref().and_then(role) == Some(Role::Premises))
+                .map(|part| part.address.clone()),
+        );
+        cards
+    };
+    // All premises (statement and proof) decide the order; the statement
+    // premises alone are what a reader needs to read a unit at a step.
     let premises = units
         .iter()
         .map(|unit| (unit.clone(), view.premises_of(&cards_of(unit), unit)))
+        .collect::<BTreeMap<_, _>>();
+    let statement_premises = units
+        .iter()
+        .map(|unit| (unit.clone(), view.premises_of(&statement_of(unit), unit)))
         .collect::<BTreeMap<_, _>>();
     // Dependency order: each unit after the units it cites; book order breaks ties.
     let mut placed = Vec::new();
@@ -984,6 +1001,12 @@ pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
                     .filter(|premise| member_set.contains(*premise))
                     .collect::<Vec<_>>()
             );
+            value["statement_cites"] = json!(
+                statement_premises[unit]
+                    .iter()
+                    .filter(|premise| member_set.contains(*premise))
+                    .collect::<Vec<_>>()
+            );
             if main_results.contains(unit) {
                 value["main"] = json!(true);
             }
@@ -1006,7 +1029,9 @@ pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
             "fix": format!("`{head}` takes in no unit: list its units in its 结构 section"),
         }));
     }
-    // Study passes: orient, then each main result's prerequisite path (lemmas come just in time).
+    // Study passes: orient, then each main result's prerequisite path. A lemma
+    // comes just in time, at its step, by its statement only, so the path
+    // follows a lemma's statement premises and leaves its proof premises.
     let position = placed
         .iter()
         .enumerate()
@@ -1020,7 +1045,12 @@ pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
         let mut needed = BTreeSet::new();
         let mut stack = vec![main.clone()];
         while let Some(at) = stack.pop() {
-            for premise in premises.get(&at).into_iter().flatten() {
+            let followed = if at != *main && view.form(&at) == Some(MathForm::Lemma) {
+                &statement_premises
+            } else {
+                &premises
+            };
+            for premise in followed.get(&at).into_iter().flatten() {
                 if member_set.contains(premise) && needed.insert(premise.clone()) {
                     stack.push(premise.clone());
                 }
