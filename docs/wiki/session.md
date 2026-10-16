@@ -90,7 +90,7 @@ flowchart TD
 | `tui_select_literature_edit_part`, `tui_read_confirmation` | `src/session.rs` | TUI modal prompts (with screen selection and copy) |
 | `COMMANDS`, `help_for`, `pointer_context` | `src/session/command.rs` | the command table, availability, help |
 | `SessionState`, `execute`, `execute_command`, `recover_missing_pointer` | `src/session/command.rs` | command semantics and Pointer moves |
-| `register_session`, `session_count`, `process_exists` | `src/session.rs` | the open-Session record `zt.sessions` |
+| `register_session`, `session_count`, `update_session_pids`, `process_exists` | `src/session.rs` | the open-Session record `zt.sessions`, changed only under the `zt.sessions.lock` OS lock |
 
 ## Interfaces
 
@@ -99,8 +99,9 @@ flowchart TD
 | Item | Signature | Behaviour |
 |---|---|---|
 | `run_session` | `pub(crate) fn run_session(root: PathBuf) -> Result<()>` | Starts the TUI if `io::stdin().is_terminal() && io::stdout().is_terminal()`, else the line Session. Returns when the human quits or the service goes down. Errors: terminal setup failures, `register_session` I/O errors, database errors while drawing. |
-| `session_count` | `pub(crate) fn session_count(root: &Path) -> i64` | Reads `zt.sessions`, keeps only pids for which `process_exists` is true, writes the pruned list back (side effect), returns the count. Never fails (errors are ignored). |
-| `register_session` | `pub(crate) fn register_session(root: &Path) -> Result<()>` | Adds this process's pid to `zt.sessions` (after pruning dead pids). |
+| `session_count` | `pub(crate) fn session_count(root: &Path) -> i64` | Under the `zt.sessions.lock` OS lock (`update_session_pids`): reads `zt.sessions`, keeps only pids for which `process_exists` is true, writes the pruned list back (side effect), returns the count. Never fails: if the lock cannot be taken it counts the file without writing. |
+| `register_session` | `pub(crate) fn register_session(root: &Path) -> Result<()>` | Adds this process's pid to `zt.sessions` (after pruning dead pids), under the lock. |
+| `update_session_pids` | `fn update_session_pids(root, alive: impl Fn(u32) -> bool, change: impl FnOnce(&mut Vec<u32>)) -> Result<Vec<u32>>` | The one read-change-write of `zt.sessions`: takes the `zt.sessions.lock` OS lock (blocking), keeps the pids that are `alive`, applies `change`, writes the file, returns the list. `register_session`, `unregister_session`, and `session_count` all go through it. |
 | `process_exists` | `pub(crate) fn process_exists(pid: u32) -> bool` | Windows: runs `tasklist /FI "PID eq <pid>" /NH` and looks for the pid in its output. Elsewhere: `sh -c "kill -0 <pid>"`. Also used by `src/main.rs` to detect a stale legacy service record. |
 | `SessionGuard` | `pub(crate) struct SessionGuard { pub(crate) root: PathBuf }` | Unregisters the pid on drop (line Session). |
 
@@ -207,7 +208,7 @@ n
 
 1. `src/main.rs` matches no arguments, calls `require_service_up()` (the archive root must be set and the service up; Cards are converted to Markdown if needed), then `session::run_session(root)`.
 2. `run_session` checks `IsTerminal` on stdin and stdout. Both terminals: `cmd_tui_session`; otherwise `cmd_line_session`.
-3. Both call `register_session(&root)`: read `zt.sessions`, drop pids whose process is gone, add `std::process::id()`, write the file.
+3. Both call `register_session(&root)`: under the `zt.sessions.lock` OS lock, read `zt.sessions`, drop pids whose process is gone, add `std::process::id()`, write the file.
 4. The TUI enables raw mode, enters the alternate screen, enables mouse capture, and creates a `TuiGuard`. The line Session creates a `SessionGuard`.
 5. The state starts as `SessionState::root()`: Pointer ROOT, Workspace `human`, no history. The TUI creates one `SessionClipboard` for its whole life and draws the first frame; the line Session prints the ROOT view.
 6. On exit (`q`, plain `Ctrl+C` in the TUI, end of input in the line Session, or service disconnect) the guard drops: `TuiGuard` disables mouse capture, leaves the alternate screen, then disables raw mode (ConPTY needs cooked input restored after the alternate screen is left), then unregisters the pid. `SessionGuard` only unregisters.
@@ -314,7 +315,8 @@ The Session keeps no data of its own beyond the run; Pointer, Workspace and hist
 
 | Item | Path | Format | Written by this block |
 |---|---|---|---|
-| Open-Session record | `<archive_root>/zt.sessions` | pids, one per line, `\n`-separated, no trailing newline | yes: `register_session`, `unregister_session`, `session_count` (prunes) |
+| Open-Session record | `<archive_root>/zt.sessions` | pids, one per line, `\n`-separated, no trailing newline | yes: `register_session`, `unregister_session`, `session_count` (prunes), each through `update_session_pids` |
+| Open-Session record lock | `<archive_root>/zt.sessions.lock` | empty, kept; only its OS lock matters | created on first use |
 | Edit lock | `<archive_root>/zt.edit.lock` | empty file created with `create_new`; removed when the guard drops | through `acquire_edit_lock` (service-and-cli) |
 | Service record | `<archive_root>/zt.pid` | the daemon pid | read only (`status`) |
 | Card store | `<archive_root>/zt.sqlite3` | the `cards` table (see [Service, CLI and storage](service-and-cli.md)) | through crate functions only; this block runs no SQL itself |
@@ -410,7 +412,7 @@ How the PTY tests work (helper `tests/support/pty.rs`, owned by [Service, CLI an
 - Input: `send_text`, `send_enter` (`\r`), `send_key(Key::…)` (ANSI sequences; `CtrlShiftC` = `0x1c`, `CtrlShiftV` = `0x1d`), SGR mouse reports for press, drag and release (`send_left_click`, `send_left_drag`, …, 0-based row/column), and `resize`.
 - Output: the buffer holds every frame ever drawn. `wait_for_text(_count)` polls for 5 s for plain text (ANSI stripped; each full-screen clear starts a new line) and answers cursor-position queries (`ESC[6n`) with `ESC[1;1R`, which ConPTY needs. Tests detect a redraw by waiting for one more occurrence of a string than before (`wait_for_text_count("ROOT", n + 1)`). `wait_for_raw_text` looks for raw escapes such as reverse video `ESC[7m`. `wait_for_exit` waits 5 s for the child.
 
-Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is effectively Windows-only; `--release` builds compile out the fake clipboard, so the clipboard PTY tests fail or touch the real clipboard; `ws`, `back`/`fwd`, `ins`, `ty`, `lv` and `mf` have no PTY test (unit tests only); `lv`, `mf` and `ws` have no unit test in `command.rs`; there is no test of two Sessions at once or of `zt.sessions` races; the wheel and modal-prompt paste paths are not exercised.
+Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is effectively Windows-only; `--release` builds compile out the fake clipboard, so the clipboard PTY tests fail or touch the real clipboard; `ws`, `back`/`fwd`, `ins`, `ty`, `lv` and `mf` have no PTY test (unit tests only); `lv`, `mf` and `ws` have no unit test in `command.rs`; there is no PTY test of two Sessions at once (the unit test `sessions_that_register_at_the_same_moment_all_stay_registered` covers concurrent registration); the wheel and modal-prompt paste paths are not exercised.
 
 ## Decisions and pitfalls
 
@@ -427,7 +429,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 ### Pitfalls
 
 - A killed Session (closed terminal window, `taskkill`) runs no destructor: if it was editing, `zt.edit.lock` stays, but the system releases the file's OS lock, so the next writer takes the stale lock over ([Service, CLI and storage](service-and-cli.md)). Its pid in `zt.sessions` is pruned later by `process_exists`.
-- `register_session`/`unregister_session` read, change and write `zt.sessions` without a lock; two Sessions starting or quitting at the same moment can lose an entry. `session_count` also rewrites the file, so `status` has a write side effect.
+- `session_count` rewrites `zt.sessions`, so `status` has a write side effect. Every change to the file goes through `update_session_pids` and its OS lock; a new writer of `zt.sessions` must too, or two Sessions starting at once lose a pid (the lock is held across `process_exists`, which spawns `tasklist` on Windows, so it is held for about 100 ms per pid).
 - On Windows `process_exists` runs `tasklist` once per recorded pid, so `status`, `zt status` and `zt down` get slower with many recorded pids.
 - `char_display_width` treats every non-ASCII character as 2 cells. Accented Latin letters, dashes and similar 1-cell characters make Link spans, wrapping, clicks and selections drift on lines that hold them. `tui_line_height` also divides the width simply, while `RenderedScreen` wraps a wide character that does not fit to the next row; with CJK text at a wrap boundary the two can disagree by a row.
 - Every redraw opens the database; the ROOT view and `side_successors` load all Cards (`load_cards`) and the ROOT view parses every Topic and Literature Card. Large archives make each keystroke redraw cost more.
@@ -443,6 +445,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 
 ## Change history
 
+- `2026-10-16` — `zt.sessions` is read, changed, and written only under the `zt.sessions.lock` OS lock (`update_session_pids`), so Sessions that start or quit together keep each other's pid.
 - `2026-10-16` — `del` calls `apply_delete_plan(conn, plan)`; a delete keeps later Side successors in place when a breaking Link would land on a renamed one ([Card operations](card-operations.md)).
 - `2026-10-16` `753bd7b` — `ty finding`: the Session can make Finding Cards.
 - `2026-10-15` `9918ba6` — `mf <form|none>` sets a Model Card's Math form; the view shows `[model · <form> · <level>]`.

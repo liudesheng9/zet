@@ -191,7 +191,7 @@ Archive and service:
 | `require_archive_root() -> Result<PathBuf>` | The configured root, or the "not configured" error. |
 | `require_service_up() -> Result<PathBuf>` | Root when `is_service_up`; then runs `ensure_markdown_cards`. |
 | `config_file() -> Result<PathBuf>` | Path of `config.toml` (see Configuration). |
-| `db_path`, `log_path`, `service_path`, `sessions_path`, `edit_lock_path`, `edit_guard_path`, `daemon_lock_path`, `restart_marker_path` | Archive-root file paths (see Data and storage). |
+| `db_path`, `log_path`, `service_path`, `sessions_path`, `sessions_lock_path`, `edit_lock_path`, `edit_guard_path`, `daemon_lock_path`, `restart_marker_path` | Archive-root file paths (see Data and storage). |
 | `log_event(root, event) -> Result<()>` | Appends `<unix-seconds> <event>` to `zt.log`. |
 | `is_service_up(root) -> bool` | Up check that restarts a dead daemon. |
 | `acquire_edit_lock(root) -> Result<EditLock>` | Under the `zt.edit.guard` lock: create-new `zt.edit.lock`, write the marker and pid, keep its OS lock. If the file exists, `remove_stale_edit_lock` removes it when it has the marker and its OS lock is free, and the create is tried once more; otherwise `edit in progress`. A file without the marker (from a zt before this change, or a test) always counts as held. |
@@ -253,7 +253,7 @@ Location helpers (all pure except where a `conn` is taken):
 
 1. Open `zt.daemon.lock` and block on `lock()` (a daemon still stopping holds it a moment longer). Log `daemon started`.
 2. `gui::start(root)`; on failure clear `zt.gui` and log `gui did not start: …`. The GUI comes up before the record, so an "up" service already names its GUI.
-3. Write `zt.pid` = own pid; create an empty `zt.sessions` if missing.
+3. Write `zt.pid` = own pid; create `zt.sessions` if missing (append mode, so a file a Session wrote meanwhile is not truncated).
 4. `shutdown::watch(|| owns_service(root, pid), |end| stop_for_system(root, pid, end))`. `owns_service` is true while `zt.pid` holds this pid.
 5. After `watch` returns: stop the GUI (`Running::stop` clears `zt.gui`, logs `gui stopped`); log `daemon stopped` only when the end was not a system end; drop the lock.
 
@@ -411,6 +411,7 @@ archive_root=D:\zt-archive
 | `zt.daemon.lock` | `cmd_daemon` | Locked for the daemon's life. |
 | `zt.restart` | `RestartMarker` | Present only while one process restarts the service. |
 | `zt.sessions` | [Terminal Session](session.md) | Open Session pids, one per line, pruned by `session_count`. |
+| `zt.sessions.lock` | [Terminal Session](session.md) | Empty; its OS lock serializes every change to `zt.sessions`. |
 | `zt.edit.lock` | `acquire_edit_lock` | Present while a write is in progress: `zt edit lock`, then `pid <n>`; the holder keeps its OS lock. A marked file whose OS lock is free is stale. |
 | `zt.edit.guard` | `lock_edit_guard` | Empty and kept; its OS lock is held only while a process creates, takes over, or removes `zt.edit.lock`. |
 | `zt.gui` | [GUI](gui.md) | The GUI URL, `http://127.0.0.1:<port>/`. |
@@ -634,6 +635,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — `sessions_lock_path` (`zt.sessions.lock`); the daemon creates `zt.sessions` in append mode instead of an exists-then-write.
 - `2026-10-16` — The edit lock keeps an OS lock on `zt.edit.lock` with a marker, so a writer killed while holding it (for example a Session with its editor open) no longer blocks every later write; `zt.edit.guard` orders take-over and removal (test `a_killed_session_does_not_leave_its_edit_lock_holding_every_write`).
 - `2026-10-16` — `DeletePlan` holds the side compaction; `DeletePlan::compaction` keeps later Side successors in place when a breaking Link would land on a renamed one.
 - `2026-10-16` — Dumps keep Hub levels: `DumpCard::with_hub_level`, `archive.json` key `hub_levels` after `forms`.

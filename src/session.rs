@@ -453,45 +453,64 @@ impl Drop for SessionGuard {
 }
 
 pub(crate) fn session_count(root: &Path) -> i64 {
-    let active = active_session_pids(root);
-    let body = active
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(sessions_path(root), body).ok();
-    active.len() as i64
+    update_session_pids(root, process_exists, |_| {})
+        .map(|active| active.len())
+        .unwrap_or_else(|_| active_session_pids(root, process_exists).len()) as i64
 }
 
-fn active_session_pids(root: &Path) -> Vec<u32> {
+fn active_session_pids(root: &Path, alive: impl Fn(u32) -> bool) -> Vec<u32> {
     fs::read_to_string(sessions_path(root))
         .ok()
         .map(|value| {
             value
                 .lines()
                 .filter_map(|line| line.trim().parse::<u32>().ok())
-                .filter(|pid| process_exists(*pid))
+                .filter(|pid| alive(*pid))
                 .collect()
         })
         .unwrap_or_default()
 }
 
+/// Reads `zt.sessions`, keeps the pids that are `alive`, applies `change`, and writes it back,
+/// all under the `zt.sessions.lock` OS lock, so Sessions that start or end at the same moment
+/// never drop each other's pid.
+fn update_session_pids(
+    root: &Path,
+    alive: impl Fn(u32) -> bool,
+    change: impl FnOnce(&mut Vec<u32>),
+) -> Result<Vec<u32>> {
+    let path = sessions_lock_path(root);
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    lock.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    let mut active = active_session_pids(root, alive);
+    change(&mut active);
+    write_session_pids(root, &active)?;
+    Ok(active)
+}
+
 pub(crate) fn register_session(root: &Path) -> Result<()> {
     let pid = std::process::id();
-    let mut active = active_session_pids(root);
-    if !active.contains(&pid) {
-        active.push(pid);
-    }
-    write_session_pids(root, &active)
+    update_session_pids(root, process_exists, |active| {
+        if !active.contains(&pid) {
+            active.push(pid);
+        }
+    })
+    .map(drop)
 }
 
 fn unregister_session(root: &Path) -> Result<()> {
     let pid = std::process::id();
-    let active = active_session_pids(root)
-        .into_iter()
-        .filter(|active_pid| *active_pid != pid)
-        .collect::<Vec<_>>();
-    write_session_pids(root, &active)
+    update_session_pids(root, process_exists, |active| {
+        active.retain(|active_pid| *active_pid != pid);
+    })
+    .map(drop)
 }
 
 fn write_session_pids(root: &Path, pids: &[u32]) -> Result<()> {
@@ -2538,6 +2557,30 @@ fn side_successors(conn: &Connection, parent: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_that_register_at_the_same_moment_all_stay_registered() {
+        let root = tempfile::tempdir().unwrap();
+        // A slow liveness check, like `tasklist`, widens the window between read and write.
+        let alive = |_pid: u32| {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            true
+        };
+        let threads = (1..=12u32)
+            .map(|pid| {
+                let root = root.path().to_path_buf();
+                std::thread::spawn(move || {
+                    update_session_pids(&root, alive, |active| active.push(pid)).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let mut registered = active_session_pids(root.path(), |_| true);
+        registered.sort_unstable();
+        assert_eq!(registered, (1..=12).collect::<Vec<_>>());
+    }
 
     #[test]
     fn scripted_tui_and_line_adapters_present_shared_results_differently() {

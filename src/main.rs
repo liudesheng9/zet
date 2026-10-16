@@ -284,6 +284,10 @@ fn sessions_path(root: &Path) -> PathBuf {
     root.join("zt.sessions")
 }
 
+fn sessions_lock_path(root: &Path) -> PathBuf {
+    root.join("zt.sessions.lock")
+}
+
 fn edit_lock_path(root: &Path) -> PathBuf {
     root.join("zt.edit.lock")
 }
@@ -642,9 +646,12 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
     let pid = std::process::id().to_string();
     fs::write(service_path(&root), &pid)
         .with_context(|| format!("failed to write {}", service_path(&root).display()))?;
-    if !sessions_path(&root).exists() {
-        fs::write(sessions_path(&root), "").ok();
-    }
+    // Create the file if it is missing, without truncating one a Session wrote meanwhile.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(sessions_path(&root))
+        .ok();
     let ended = shutdown::watch(
         {
             let (root, pid) = (root.clone(), pid.clone());
