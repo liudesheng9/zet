@@ -354,7 +354,7 @@ Refuses Literature Cards (`Literature Card cannot be moved; edit metadata to cha
 
 ### Dump (`zt dp`)
 
-1. `cmd_dump`: `require_service_up`, edit lock (Sessions may be open), load every Card into `DumpCard`s (Literature Cards must have BibTeX), `next_topic_id`.
+1. `cmd_dump`: `require_service_up`, edit lock (Sessions may be open), load every Card into `DumpCard`s with its facet, emphasis, elaboration level, Math form, and Hub level (Literature Cards must have BibTeX), `next_topic_id`.
 2. `detect_compression_options`: `compression_candidates(platform)` → `expand_with(…, locate_on_path)` (one candidate per executable of that name on PATH, in PATH order) → `detect_with(…, probe_candidate)` (first candidate per format whose probe archive carries the format signature, checked by `written_as`). None → fail before creating anything.
 3. Print `compression options:` / `  1. zip` …; read one line; only an exact listed number is accepted.
 4. Name everything from one timestamp: staging `dump/.tmp/zt-archive-<s>/`, archive `dump/zt-archive-<s><ext>`; fail if the archive exists.
@@ -481,10 +481,10 @@ bibtex: |+
 - `archive.json` (`manifest`), keys in this order:
 
 ```json
-{"next_topic_id":7,"workspaces":{"0/0":"human","Smith2024":"agent"},"types":{"0/1":"model","1/1|a":"event","1/1|b":"finding"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"}}
+{"next_topic_id":7,"workspaces":{"0/0":"human","Smith2024":"agent"},"types":{"0/1":"model","1/1|a":"event","1/1|b":"finding","1/1|c":"hub"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"},"hub_levels":{"1/1|c":"topic"}}
 ```
 
-`types` leaves out Idea Cards. There is no key for hub levels (see Decisions and pitfalls).
+`types` leaves out Idea Cards. `levels` holds elaboration levels of Model Cards; `hub_levels` holds the Hub level of every Hub Card that has one.
 
 ## Configuration
 
@@ -599,7 +599,6 @@ Gaps:
 - `tests/cli_service.rs` needs `powershell` for its editor, so it runs only where PowerShell is installed (in practice Windows); the dump format tests skip silently when the host lacks a backend.
 - No test covers `ensure_open_model_parts`, `ensure_hub_cards`, `ensure_math_form_column`, or `ensure_finding_cards` on an archive of exactly the previous generation, nor the `unsupported cards schema` refusal.
 - No test covers a stale `zt.edit.lock`, `zt ins` from the shell, `zt mv --alone` / `--before` from the shell (covered in [Card operations](card-operations.md) tests), `zt ws`, or Unix daemon behaviour.
-- No test checks that a dump keeps hub levels (it does not).
 
 ## Decisions and pitfalls
 
@@ -626,7 +625,6 @@ Gaps:
 - **`EDITOR` is split on whitespace**, so an editor path with spaces needs a wrapper or a path without spaces.
 - **Every write rewrites every Card.** `regenerate_reverse_links_tx` and `apply_location_mapping_tx` load all Cards and update each row; cost grows with the archive.
 - **Two `move_plan`s.** `crate::move_plan` (plain move to a free Location) is the base case; the shell calls `place::move_plan`, which delegates to it only for `To` without `--alone`.
-- **A dump loses hub levels.** `cmd_dump` passes `card.level` (elaboration level) but never `card.hub_level`, and `manifest` has no hub-level key, so Hub Cards come back from a dump without `line`/`topic`/`field`/`register`.
 - **`zt clear` deletes only `cards` and resets `next_topic_id`.** `metadata.gui_spreads`, `card_format`, `artifacts/`, and `dump/` stay; Spreads keep addresses of deleted Cards.
 - **On Unix the daemon is a plain child process** (no `setsid`), and `shutdown::watch` handles no signals; a daemon that dies with its terminal is repaired by the next command through the stale-record path.
 - **`card_counts` opens the database without migrations** and turns query errors into 0, so `zt status` can report `cards: 0` on an unreadable database.
@@ -634,6 +632,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — Dumps keep Hub levels: `DumpCard::with_hub_level`, `archive.json` key `hub_levels` after `forms`.
 - `2026-10-16` `753bd7b` — Finding Cards (zt 0.20.0): `finding` in the `card_type` CHECK, `ensure_finding_cards` rebuild with a `pre-finding-cards` backup, dumps list `finding` in `types`.
 - `2026-10-15` `9918ba6` — Math forms: `math_form` column and `ensure_math_form_column`; dumps add `forms`.
 - `2026-10-15` `d3d07e0` — Any service check restarts a daemon that ended without `zt down`: `zt.restart` marker, `restart_service`, `wait_for_service`, restart log lines (zt 0.18.2).

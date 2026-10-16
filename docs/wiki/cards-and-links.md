@@ -281,7 +281,7 @@ The table definition and its migrations are in `cards_table`, `ensure_card_type_
 `archive.json` in a `zt dp` dump lists every Card's Workspace and every non-Idea Card's type (from `tests/card_types.rs`):
 
 ```json
-{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent"},"types":{"1/1":"model","1/1|a":"event"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{}}
+{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent","1/1|b":"agent"},"types":{"1/1":"model","1/1|a":"event","1/1|b":"hub"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{},"hub_levels":{"1/1|b":"line"}}
 ```
 
 ## Configuration
@@ -402,6 +402,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 ## Change history
 
 - `2026-10-16` — Wiki doc created.
+- `2026-10-16` — The dump type test adds a line Hub Card and checks `hub_levels`.
 - `2026-10-16` `753bd7b` — Finding Cards: `CardType::Finding`, error texts name Finding, the one-time `cards` table rebuild and its tests (zt 0.20.0).
 - `2026-10-15` `9918ba6` — Math forms on Model Cards; the type tests and dump manifest gain `forms`.
 - `2026-10-14` `82eac86` — Hub Cards: `CardType::Hub` and the Hub refusal text (zt 0.16.0).

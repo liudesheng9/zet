@@ -2144,7 +2144,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
     assert_eq!(
         body,
-        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{}}"#
+        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
     );
 }
 

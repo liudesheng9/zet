@@ -665,6 +665,10 @@ fn dump_records_event_and_model_cards_after_the_workspaces() {
             "create_successor",
             json!({ "at": "1/1", "kind": "side", "title": "An event", "type": "event" }),
         );
+        mcp.ok(
+            "create_successor",
+            json!({ "at": "1/1", "kind": "side", "title": "A way in", "type": "hub", "level": "line", "body": "## Start\n- [[1/1]]：the model.\n" }),
+        );
     }
 
     home.cmd().arg("dp").write_stdin("1\n").assert().success();
@@ -691,7 +695,7 @@ fn dump_records_event_and_model_cards_after_the_workspaces() {
     .unwrap();
     assert_eq!(
         manifest,
-        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent"},"types":{"1/1":"model","1/1|a":"event"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{}}"#
+        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent","1/1|b":"agent"},"types":{"1/1":"model","1/1|a":"event","1/1|b":"hub"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{},"hub_levels":{"1/1|b":"line"}}"#
     );
 }
 

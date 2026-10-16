@@ -1229,7 +1229,8 @@ fn cmd_dump() -> Result<()> {
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
                         .with_part(card.facet, card.emphasis)
                         .with_level(card.level)
-                        .with_form(card.form),
+                        .with_form(card.form)
+                        .with_hub_level(card.hub_level),
                 )
             }
         })
