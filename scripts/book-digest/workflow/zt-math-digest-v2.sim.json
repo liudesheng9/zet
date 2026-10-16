@@ -1,0 +1,324 @@
+{
+  "args": {
+    "out": "D:/x/Key",
+    "citationKey": "Key",
+    "source": "S.md",
+    "bibtex": "@book{Key}",
+    "bookTitle": "书"
+  },
+  "answers": [
+    {
+      "label": "^math: index$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"units\":5,\"forms\":{\"theorem\":1},\"examples\":1,\"exercises\":1}"
+      }
+    },
+    {
+      "label": "^math: docs$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"files\":[]}"
+      }
+    },
+    {
+      "label": "^math: skeleton$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"units\":5,\"created\":5,\"theories\":2}"
+      }
+    },
+    {
+      "label": "^math: check$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"units\":5,\"theories\":2,\"faults\":0,\"by_rule\":{}}"
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step notation-apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"symbols\":3,\"card\":\"Key/1|c\"}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step boundary -",
+      "answer": {
+        "ok": true,
+        "output": "{\"units\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step boundary-apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"created\":3,\"skipped_supplied\":0,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step boundary-settle",
+      "answer": {
+        "ok": true,
+        "output": "{\"kept\":1,\"deleted\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step proof -",
+      "answer": {
+        "ok": true,
+        "output": "{\"units\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step proof-apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":3,\"fixed\":1,\"refused\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step theory -",
+      "answer": {
+        "ok": true,
+        "output": "{\"theories\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "math-compiler.ps1\" -Step theory-apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"theories\":2,\"answered\":2}",
+        "results": []
+      }
+    },
+    {
+      "label": "^choose DeepSeek source$",
+      "answer": {
+        "source": "official",
+        "errors": ""
+      }
+    },
+    {
+      "label": "^prepare book$",
+      "answer": {
+        "ok": true,
+        "groups": 2,
+        "usage_before": {
+          "input_cache_miss": 0,
+          "cached_read": 0,
+          "output": 0,
+          "cost": 0,
+          "calls": 0
+        }
+      }
+    },
+    {
+      "label": "^digest manager",
+      "answer": {
+        "reports": [
+          {
+            "group": 1,
+            "status": "done",
+            "cards": 3,
+            "models": 0,
+            "events": 0,
+            "links": 0,
+            "topics": [],
+            "errors": "无",
+            "deleted": true
+          },
+          {
+            "group": 2,
+            "status": "done",
+            "cards": 3,
+            "models": 0,
+            "events": 0,
+            "links": 0,
+            "topics": [],
+            "errors": "无",
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "^find models",
+      "answer": {
+        "ok": true,
+        "models": []
+      }
+    },
+    {
+      "label": "^prepare link pass$",
+      "answer": {
+        "ok": true,
+        "pending": [
+          1,
+          2
+        ],
+        "owned_total": 6,
+        "unowned": 0
+      }
+    },
+    {
+      "label": "^link manager",
+      "answer": {
+        "reports": [
+          {
+            "group": 1,
+            "status": "done",
+            "cards": 2,
+            "links": 2,
+            "errors": "无",
+            "deleted": true
+          },
+          {
+            "group": 2,
+            "status": "done",
+            "cards": 2,
+            "links": 2,
+            "errors": "无",
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "^cleanup DeepSeek$",
+      "answer": {
+        "late_deleted": 0,
+        "workspace_removed": true,
+        "files_removed": 0
+      }
+    },
+    {
+      "label": "^organize: survey$",
+      "answer": {
+        "ok": true,
+        "output": "{\"survey\":\"x\",\"topics\":1}"
+      }
+    },
+    {
+      "label": "^organize: decisions$",
+      "answer": {
+        "thesis": "论点",
+        "merges": 0,
+        "moves": 0,
+        "notes": 0,
+        "report": "无"
+      }
+    },
+    {
+      "label": "^organize: apply$",
+      "answer": {
+        "ok": true,
+        "output": "{\"merges\":0,\"moves\":0,\"refused\":0}"
+      }
+    },
+    {
+      "label": "^show figures$",
+      "answer": {
+        "ok": true,
+        "output": "{\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":false}"
+      }
+    },
+    {
+      "label": "^hub manager",
+      "answer": {
+        "ok": true,
+        "survey": "{}",
+        "limits": {
+          "topic_min": 8,
+          "line_min": 10,
+          "max_lines": 20,
+          "max_groups": 7,
+          "min_reason": 8,
+          "neighbour_links": 3,
+          "field_min": 3,
+          "field_max": 8,
+          "per_job": 4
+        },
+        "reasons": ""
+      }
+    },
+    {
+      "label": "^audit cards$",
+      "answer": {
+        "ok": true,
+        "output": "{\"hubs_missing\":0,\"broken_links\":0,\"books\":[]}"
+      }
+    },
+    {
+      "prompt": "card-compiler\\.ps1\" -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"picked\":0,\"with_faults\":0,\"faults\":0,\"review\":0,\"orphans\":0,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "card-compiler\\.ps1\" -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"cards\":0,\"faults_before\":0,\"faults_after\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "book-terms\\.ps1\" -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"terms\":2,\"with_avoid\":1,\"card\":\"Key/1|a\"}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "book-skeleton\\.ps1\" -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0,\"topics\":1,\"written\":{\"structure\":\"Key/1|b\"}}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "hub-compiler\\.ps1\" -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"tree_count\":0,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "hub-compiler\\.ps1\" -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "hub-compiler\\.ps1\" -Step check",
+      "answer": {
+        "ok": true,
+        "output": "{\"hubs\":0,\"faults\":0,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "hub-compiler\\.ps1\" -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"counts\":{},\"faults\":{},\"mirror\":0,\"missing_count\":0}",
+        "results": []
+      }
+    }
+  ]
+}
