@@ -79,6 +79,10 @@ Control is synchronous and single-threaded: one line is answered completely befo
 
 ## Interfaces
 
+`apply_batch` accepts `items` with `op_key`, `client_ref`, `tool` and `arguments`. Supported tools are `create_topic`, `create_literature`, `create_successor` and `edit_card`. A batch has 1–64 items and at most 1,048,576 UTF-8 bytes across authored title/body/text/BibTeX/base inputs. `@@name` resolves an earlier result in placement or authored input; forward/unknown references fail. Agent Access, artifacts, Link validation, base guards and model/type constraints use the ordinary write validators inside the evolving transaction.
+
+The response has ordered `results`, each retaining its operation key, client reference, exact write result and `replayed` flag. The write result also carries before/after authored fingerprints (a create has no before fingerprint). Replays supply their original addresses to later items. A changed payload or changed resolved binding under an existing key fails. Any failed unseen item rolls back all unseen writes and receipts; previously committed receipts survive. The batch publishes one Link-index/Reverse-link update over the affected union and one Card revision. Each ordinary MCP create/edit uses the same `write_card_tx` parser and transaction writers. This implements the archive portion of #68; compiler/crash qualification is still pending.
+
 ### Indexed and bulk read views
 
 `src/read.rs` owns per-request SQLite read transactions for `get_card`, `get_cards`, `get_tree`, `get_model`, `list_trees`, `list_links`, `list_broken_links`, `list_workspaces`, `get_hub` and `list_hubs`. The module has no persistent cache. It supplies a selected context to `Snapshot::from_cards`, reusing the existing model/build/math calculations; the GUI and Session keep their full Snapshot lifecycle and remain the independent oracle.

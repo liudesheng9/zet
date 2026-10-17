@@ -147,35 +147,44 @@ pub(crate) fn source_changed(conn: &Connection, at: &str) -> Result<()> {
 
 /// A batch/edit owns the revision boundary and calls this before its commit.
 pub(crate) fn sync_source(conn: &Connection, at: &str) -> Result<()> {
+    sync_sources(conn, &BTreeSet::from([at.to_string()]))
+}
+
+/// Refresh the union of old/new targets once for one transaction's sources.
+pub(crate) fn sync_sources(conn: &Connection, sources: &BTreeSet<String>) -> Result<()> {
     if !ready(conn) {
         return crate::regenerate_reverse_links_tx(conn);
     }
-    let card = crate::load_card(conn, at)?;
-    let mut query = conn
-        .prepare_cached("SELECT source,ord,target,kind FROM links WHERE source=?1 ORDER BY ord")?;
-    let old = query
-        .query_map([at], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let new = rows(&card)?;
-    let mut affected: BTreeSet<String> = old.iter().chain(&new).map(|r| r.2.clone()).collect();
-    affected.insert(at.to_string());
-    if old != new {
-        conn.execute("DELETE FROM links WHERE source=?1", [at])?;
-        let mut insert =
-            conn.prepare_cached("INSERT INTO links(source,ord,target,kind) VALUES(?1,?2,?3,?4)")?;
-        for (source, ord, target, kind) in &new {
-            insert.execute(params![source, ord, target, kind])?;
+    let mut affected = BTreeSet::new();
+    for at in sources {
+        let card = crate::load_card(conn, at)?;
+        let mut query = conn.prepare_cached(
+            "SELECT source,ord,target,kind FROM links WHERE source=?1 ORDER BY ord",
+        )?;
+        let old = query
+            .query_map([at], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let new = rows(&card)?;
+        affected.extend(old.iter().chain(&new).map(|r| r.2.clone()));
+        affected.insert(at.to_string());
+        if old != new {
+            conn.execute("DELETE FROM links WHERE source=?1", [at])?;
+            let mut insert = conn
+                .prepare_cached("INSERT INTO links(source,ord,target,kind) VALUES(?1,?2,?3,?4)")?;
+            for (source, ord, target, kind) in &new {
+                insert.execute(params![source, ord, target, kind])?;
+            }
         }
     }
     let changed = refresh_reverse(conn, &affected)?;
-    write_stats(conn, 1, affected.len(), changed)
+    write_stats(conn, sources.len(), affected.len(), changed)
 }
 
 /// Validate only the referenced targets; generated text is never authoritative.

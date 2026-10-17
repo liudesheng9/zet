@@ -67,28 +67,56 @@ pub(crate) fn create_successor(
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
-    let parent = crate::load_card(&conn, at)?;
+    let tx = conn.transaction()?;
+    let address = create_successor_tx(&tx, access, kind, at, card_type, part.as_ref(), text)?;
+    crate::link_index::source_changed(&tx, &address)?;
+    tx.commit()?;
+    Ok(address)
+}
+
+pub(crate) fn create_topic_tx(
+    conn: &Connection,
+    access: Access,
+    workspace: Workspace,
+    text: &str,
+) -> Result<String> {
+    access.ensure_writable(workspace)?;
+    let address = crate::next_topic_location(conn)?;
+    crate::insert_card_tx(conn, &address, true, workspace, CardType::Idea, None, text)?;
+    Ok(address)
+}
+
+pub(crate) fn create_successor_tx(
+    conn: &Connection,
+    access: Access,
+    kind: Successor,
+    at: &str,
+    card_type: CardType,
+    part: Option<&Part>,
+    text: &str,
+) -> Result<String> {
+    let parent = crate::load_card(conn, at)?;
     access.ensure_writable(parent.workspace)?;
     let location = match kind {
         Successor::Direct => {
             let location = crate::direct_successor(&parent.address)?;
-            if crate::location_exists(&conn, &location)? {
+            if crate::location_exists(conn, &location)? {
                 bail!("direct successor already exists: {location}");
             }
             location
         }
         Successor::Side => {
             crate::ensure_side_parent(&parent)?;
-            crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?
+            crate::next_side_successor(conn, &parent.address, &BTreeSet::new())?
         }
     };
-    crate::insert_card(
-        &mut conn,
+    crate::insert_card_tx(
+        conn,
         &location,
         false,
         parent.workspace,
         card_type,
-        part.as_ref(),
+        part,
         text,
     )?;
     Ok(location)
@@ -106,10 +134,25 @@ pub(crate) fn create_literature(
     access.ensure_writable(workspace)?;
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let address = create_literature_tx(&tx, access, workspace, bibtex, text)?;
+    crate::link_index::source_changed(&tx, &address)?;
+    tx.commit()?;
+    Ok(address)
+}
+
+pub(crate) fn create_literature_tx(
+    conn: &Connection,
+    access: Access,
+    workspace: Workspace,
+    bibtex: &str,
+    text: &str,
+) -> Result<String> {
+    access.ensure_writable(workspace)?;
     let metadata = crate::literature::parse_metadata(bibtex)?;
     let parsed = crate::parse_literature_edit_text(text)?;
     let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-    crate::insert_literature_card(&mut conn, &metadata.citation_key, workspace, bibtex, &text)?;
+    crate::insert_literature_card_tx(conn, &metadata.citation_key, workspace, bibtex, &text)?;
     Ok(metadata.citation_key)
 }
 
@@ -234,7 +277,24 @@ pub(crate) fn edit(
 ) -> Result<String> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
     let mut conn = crate::open_db(root)?;
-    let card = unchanged_card(&conn, at, base)?;
+    let tx = conn.transaction()?;
+    let (address, changed) = edit_tx(&tx, access, at, text, change, base)?;
+    if changed {
+        crate::link_index::source_changed(&tx, &address)?;
+    }
+    tx.commit()?;
+    Ok(address)
+}
+
+pub(crate) fn edit_tx(
+    conn: &Connection,
+    access: Access,
+    at: &str,
+    text: Option<&str>,
+    change: TypeChange,
+    base: Option<&str>,
+) -> Result<(String, bool)> {
+    let card = unchanged_card(conn, at, base)?;
     access.ensure_writable(card.workspace)?;
     let (card_type, facet, emphasis) = change.resolve(&card);
     let level = change.resolve_level(&card)?;
@@ -243,9 +303,8 @@ pub(crate) fn edit(
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
-        crate::model::ensure_allowed(&conn, Some(&card), card_type, facet.as_ref(), emphasis)?;
+        crate::model::ensure_allowed(conn, Some(&card), card_type, facet.as_ref(), emphasis)?;
     }
-    let tx = conn.transaction()?;
     let mut changed =
         retyped || level != card.level || hub_level != card.hub_level || form != card.form;
     if let Some(text) = text {
@@ -260,35 +319,30 @@ pub(crate) fn edit(
         }
         if parsed.title != old.title || parsed.body != old.body {
             let text = crate::compose_card_text(&parsed.title, &parsed.body, &old.reverse);
-            crate::validate_card_text(&tx, &card.address, &text, Some(&card.text))?;
-            tx.execute(
+            crate::validate_card_text(conn, &card.address, &text, Some(&card.text))?;
+            conn.execute(
                 "UPDATE cards SET text=?1 WHERE row_id=?2",
                 rusqlite::params![text, card.row_id],
             )?;
-            crate::link_index::sync_source(&tx, &card.address)?;
             changed = true;
         }
     }
     if retyped {
-        crate::model::set(&tx, &card, card_type, facet.as_ref(), emphasis)?;
+        crate::model::set(conn, &card, card_type, facet.as_ref(), emphasis)?;
     }
     if level != card.level {
-        let card = crate::load_card(&tx, &card.address)?;
-        crate::model::set_level(&tx, &card, level)?;
+        let card = crate::load_card(conn, &card.address)?;
+        crate::model::set_level(conn, &card, level)?;
     }
     if hub_level != card.hub_level {
-        let card = crate::load_card(&tx, &card.address)?;
-        crate::hub::set_level(&tx, &card, hub_level)?;
+        let card = crate::load_card(conn, &card.address)?;
+        crate::hub::set_level(conn, &card, hub_level)?;
     }
     if form != card.form {
-        let card = crate::load_card(&tx, &card.address)?;
-        crate::math::set_form(&tx, &card, form)?;
+        let card = crate::load_card(conn, &card.address)?;
+        crate::math::set_form(conn, &card, form)?;
     }
-    if changed && crate::link_index::ready(&tx) {
-        crate::link_index::bump_revision(&tx)?;
-    }
-    tx.commit()?;
-    Ok(card.address)
+    Ok((card.address, changed))
 }
 
 /// Replace a Literature Card's BibTeX. A new Citation key renames the whole

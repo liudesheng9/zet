@@ -71,11 +71,9 @@ All 80 digest unit tests pass. The final caller validation passes Card compiler 
 
 Preparation of the retained-data timing comparison found one remaining full-view assumption: structure/index ownership inference still tested `outbound.length`, which the lean view does not expose. A public regression reproduced the resulting false group ownership. The lean view now supplies the same distinct-target count, including Broken targets but excluding repeated/fenced occurrences, from its existing index query; preparation requires that count. A public MCP test verifies parity after a confirmed target deletion, and the real preparation test retains the eight-target exclusion. All 27 affected Workspace/MCP tests, 28 preparation assertions and 80 digest unit tests pass. Logs: `D:/zt-target/qualification/issue67-outbound-count-*.log`, `issue67-structure-owner-*.log` and `issue67-structure-owner-unit.log`. This is a source/behavior correction required before timing qualification, not a claim that the timing target has passed.
 
-### Executable testing and host incidents
-
-The retained-data command comparison exposed an ordering regression in the title adapter: the title API's numeric Topic order changed the former digest rendering order. The public preparation test first failed for multi-digit Topic ids, then passed after the adapter restored binary tree/address input order before the existing rendering/ranking sorts (29 preparation assertions). The API's numeric ZET order is unchanged. On the 10,895-Card fixture, the corrected 1,193,031-byte snapshot matches the legacy SHA-256 exactly. Initial whole-book planning also matches the 1,445 picked Cards, complete planned state and 83 fault lines. These are intermediate qualification results; the complete command comparison is still running.
-
 ### Retained-data command qualification
+
+The comparison exposed an ordering regression in the title adapter: the title API's numeric Topic order changed the former digest rendering order. The public preparation test first failed for multi-digit Topic ids, then passed after the adapter restored binary tree/address input order before the existing rendering/ranking sorts (29 preparation assertions). The API's numeric ZET order is unchanged.
 
 The completed [command evidence](digest-bulk-command-benchmark.json) records the matching installed baseline client/server and candidate builds, hashes, request counts, payload-row counts and preserved artifacts under `D:/zt-target/qualification/issue67-command-bulk/`. Each release pair reads a separate consistent copy of the same 10,895 Cards, including the 1,565-Card `stiglitz2014learning` Literature tree. The 171 group ownership manifests are synthetic inputs over those retained Cards; no source extraction, provider call, apply or actual workflow runs. Both isolated services have been stopped, and both Card row hashes, revisions and the original fixture file hash remain unchanged.
 
@@ -93,6 +91,8 @@ The snapshot matches byte for byte. All Card steps match the selected 1,445-Card
 
 T32 is qualified for these commands. #67 remains open for its T22 gate: the shared orphan predicate and exact revision-scoped sets assigned to #76 are not established by this timing comparison.
 
+### Executable testing and host incidents
+
 Windows Defender quarantined the temporary test copy and subsequently blocked the debug build itself as `Trojan:Win32/Bearfoos.A!ml`. The [investigation](windows-defender-build-investigation.md) records the events, source/build review, artifact hashes and limits of the diagnosis. The leading explanation is a development-build false positive; the classifier's exact cause is not established.
 
 The unnecessary hidden PowerShell/`ExecutionPolicy Bypass` daemon launcher has been replaced with direct Windows process creation, explicit path arguments and no inherited handles. The public no-shell/path regression failed before the change and passes afterward. The full root regression passes: 338 tests, zero failures, one deliberately ignored real-clipboard test. Both final debug and release binaries pass Defender custom scans; real-time protection and behavior monitoring remain enabled. No exclusions or security settings were changed.
@@ -102,6 +102,16 @@ The interrupted scoped integration test was rerun through the executable boundar
 Defender later recorded another detection at 16:47 on a temporary copy whose SHA-256 matches the rebuilt debug executable exactly. That copy and the current build were readable at 16:55. The launcher change and clean scans are not a proven permanent antivirus fix; the decisive classifier/context signal remains unknown. Protection remains enabled. The separate host memory incident and successful sequential retries are described above and in the investigation document.
 
 The installed service was last checked up at PID 77700, archive `D:/zt`, 10,895 Cards, zero Sessions. It has not yet been upgraded; final deployment remains part of the unfinished delivery.
+
+## #68: atomic batch archive boundary (in progress)
+
+The MCP `apply_batch` path supports Topic/Literature/successor creation and content/type/model/math metadata edits through the same transaction-level validators/writers as ordinary writes. One edit lock/transaction covers all unseen items, the combined Link/Reverse-link update, one Card revision and authoritative `applied_ops` receipts. Limits are 64 items and 1 MiB of authored inputs, including base text. Destructive operations retain their separate confirmed path.
+
+Each receipt keeps the required stable key, canonical request hash, UTC commit time and exact result with before/after authored fingerprints. Canonical creation defaults use the same MCP argument parsers, including empty/direct successor kinds and absent/null metadata; JSON object order and CRLF/LF transport changes do not create new operations. Hashes cover local references and their resolved bindings. A matching retry supplies original addresses to later items; a rebound reference or changed payload conflicts. Receipts do not expire, and replays do not recreate outputs that someone subsequently changed or deleted. A compiler must reread and verify those outputs before completion.
+
+Ten public MCP regression scenarios demonstrate rollback of earlier creates/Topic allocation, new-client replay, changed-key payload refusal, local-reference binding integrity and replay-prefix extension, canonical defaults, Literature creation, guarded text/type edits and fingerprints, model level/math form, limits/identity/Access/destructive refusal, and all 64 sources in a combined refresh with one revision. Each new behavior failed before its fix. The full root regression passes 348 tests, zero failures, with one intentionally ignored manual clipboard test (`D:/zt-target/qualification/issue68-root-regression.log`). After the final metadata-default refinement, all 37 Workspace/MCP tests pass again (`issue68-mcp-final.log`); focused RED/GREEN evidence is `issue68-*.log`.
+
+This is the archive boundary, not completed #68 delivery. Compiler adoption, deterministic multi-chunk application and process-loss qualification remain unfinished. No live installation or production archive migration has been performed.
 
 ## Remaining slices
 

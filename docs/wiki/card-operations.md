@@ -3,6 +3,7 @@ block: card-operations
 title: Card operations
 paths:
   - "src/ops.rs"
+  - "src/batch.rs"
   - "src/place.rs"
 synced: fe5d77864def
 updated: 2026-10-17
@@ -77,6 +78,10 @@ flowchart LR
 - `src/place.rs`: `move_plan` and `insert_plan` validate the request against the database, then compute the mapping with the pure helpers `subtree`, `shift`, `make_room`, `through`, `layout`, and `next_side_label`. `apply_insert_plan` writes in one transaction. A move plan is applied by `crate::apply_move_plan` in `src/main.rs`.
 
 ## Interfaces
+
+`src/batch.rs` applies bounded identified writes in one caller-owned transaction. The ordinary GUI wrappers and MCP paths share the transaction-level Topic, Literature, successor and edit writers in `ops.rs`/`main.rs`; batch application never invokes a public writer that would acquire another lock or commit independently. Ordinary MCP writes use `mcp::write_card_tx` for the same argument interpretation as identified writes. Destructive operations retain their separate confirmation path.
+
+`apply_batch` currently provides the archive transaction and receipt boundary under #68. Each unseen item stores its canonical request hash, exact allocated result and before/after authored fingerprints in `applied_ops`, atomically with its Card changes. Fingerprints include authored title/body and type/model/math/BibTeX metadata, excluding generated Reverse links. A matching receipt replays the original result; a changed payload or rebound local reference conflicts. No-op/replayed writes do not advance the Card revision. Keys have run/unit/positive-plan-revision/step/stable-item components; client references name earlier results only. Compiler adoption and process-failure qualification remain unfinished, so this is not yet a completed reliability slice.
 
 `Snapshot::from_cards(cards)` factors the existing pure read calculations out of `Snapshot::load`. Full GUI/Session loading remains unchanged; `src/read.rs` supplies a complete selected request context for MCP projections. No cross-request cache or new invalidation mechanism is introduced.
 

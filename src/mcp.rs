@@ -278,6 +278,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
     }
     let root = archive_root()?;
     match name {
+        "apply_batch" => crate::batch::apply(&root, args),
         "list_workspaces" => crate::read::workspaces(&root),
         "list_trees" => crate::read::trees(&root, optional_workspace(args)?, optional_zone(args)?),
         "get_tree" => {
@@ -359,121 +360,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 .unwrap_or(false),
         ),
         "list_broken_links" => crate::read::broken(&root, optional_workspace(args)?),
-        "create_topic" => {
-            let workspace = target_workspace(args)?;
-            let title = title_arg(args)?;
-            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
-            crate::artifact::require_present(&root, &text)?;
-            let address = ops::create_topic(&root, ACCESS, workspace, &text)?;
-            Ok(json!({ "address": address, "workspace": workspace.id() }))
-        }
-        "create_literature" => {
-            let workspace = target_workspace(args)?;
-            let bibtex = string_arg(args, "bibtex")?;
-            let body = optional_string(args, "body")?;
-            crate::artifact::require_present(&root, &body)?;
-            let address = ops::create_literature(&root, ACCESS, workspace, &bibtex, &body)?;
-            Ok(json!({ "address": address, "workspace": workspace.id() }))
-        }
-        "create_successor" => {
-            let at = string_arg(args, "at")?;
-            let kind = match optional_string(args, "kind")?.as_str() {
-                "" | "direct" => Successor::Direct,
-                "side" => Successor::Side,
-                other => bail!("unknown successor kind `{other}`; expected direct or side"),
-            };
-            let part = crate::model::Part::from_args(
-                optional_facet(args)?.flatten(),
-                optional_emphasis(args)?.flatten(),
-            )?;
-            let card_type = match (optional_card_type(args)?, &part) {
-                (Some(card_type), Some(_)) if card_type != CardType::Model => {
-                    bail!("only Model Cards can have a Model facet")
-                }
-                (_, Some(_)) => CardType::Model,
-                (card_type, None) => card_type.unwrap_or_default(),
-            };
-            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
-            let (level, hub_level) = (level.flatten(), hub_level.flatten());
-            if level.is_some() && (card_type != CardType::Model || part.is_some()) {
-                bail!(crate::model::LEVEL_NEEDS_MODEL_CARD);
-            }
-            let form = optional_form(args)?.flatten();
-            if form.is_some() && (card_type != CardType::Model || part.is_some()) {
-                bail!(crate::math::FORM_NEEDS_MODEL_CARD);
-            }
-            if hub_level.is_some() && card_type != CardType::Hub {
-                bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
-            }
-            let title = title_arg(args)?;
-            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
-            crate::artifact::require_present(&root, &text)?;
-            let address =
-                ops::create_successor(&root, ACCESS, kind, &at, card_type, part.clone(), &text)?;
-            if level.is_some() || hub_level.is_some() || form.is_some() {
-                let change = ops::TypeChange {
-                    level: level.map(Some),
-                    hub_level: hub_level.map(Some),
-                    form: form.map(Some),
-                    ..ops::TypeChange::default()
-                };
-                ops::edit(&root, ACCESS, &address, None, change, None)?;
-            }
-            Ok(json!({
-                "address": address,
-                "type": card_type.id(),
-                "facet": part.as_ref().map(|part| part.facet.id()),
-                "emphasis": part.and_then(|part| part.emphasis).map(Emphasis::id),
-                "level": level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),
-                "form": form.map(crate::math::MathForm::id),
-            }))
-        }
-        "edit_card" => {
-            let at = string_arg(args, "at")?;
-            let conn = crate::open_db(&root)?;
-            let card = crate::load_card(&conn, &at)?;
-            drop(conn);
-            ACCESS.ensure_writable(card.workspace)?;
-            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
-            let change = ops::TypeChange {
-                card_type: optional_card_type(args)?,
-                facet: optional_facet(args)?,
-                emphasis: optional_emphasis(args)?,
-                level,
-                hub_level,
-                form: optional_form(args)?,
-            };
-            let parsed = crate::parse_card_text(&card.text)?;
-            let text_given = ["text", "title", "body"]
-                .iter()
-                .any(|name| args.get(name).is_some());
-            let text = match args.get("text").and_then(Value::as_str) {
-                // A type or facet alone changes only the type.
-                _ if !change.is_empty() && !text_given => None,
-                Some(text) => Some(text.to_string()),
-                None => {
-                    if card.is_lit && args.get("title").is_some() {
-                        bail!(
-                            "a Literature Card takes its title from BibTeX; change it with edit_literature_metadata"
-                        );
-                    }
-                    let title = match args.get("title") {
-                        Some(_) => title_arg(args)?,
-                        None => parsed.title.clone(),
-                    };
-                    let body = match args.get("body") {
-                        Some(_) => optional_string(args, "body")?,
-                        None => parsed.body.clone(),
-                    };
-                    Some(crate::compose_card_text(&title, &body, ""))
-                }
-            };
-            if let Some(text) = &text {
-                crate::artifact::require_present(&root, text)?;
-            }
-            let base = args.get("base").and_then(Value::as_str);
-            let address = ops::edit(&root, ACCESS, &at, text.as_deref(), change, base)?;
-            Ok(json!({ "address": address }))
+        "create_topic" | "create_literature" | "create_successor" | "edit_card" => {
+            let _lock=crate::acquire_edit_lock_within(&root,std::time::Duration::from_secs(20))?;
+            let mut conn=crate::open_db(&root)?;
+            let tx=conn.transaction()?;
+            let (result,changed)=write_card_tx(&root,&tx,name,args)?;
+            if changed {crate::link_index::source_changed(&tx,result["address"].as_str().context("write result missing address")?)?;}
+            tx.commit()?;
+            Ok(result)
         }
         "edit_literature_metadata" => {
             let outcome = ops::edit_metadata(
@@ -569,6 +463,195 @@ fn plan_or_done(outcome: Outcome) -> Value {
             value
         }
     }
+}
+
+pub(crate) fn write_card_tx(
+    root: &std::path::Path,
+    conn: &rusqlite::Connection,
+    name: &str,
+    args: &Value,
+) -> Result<(Value, bool)> {
+    if name == "edit_card" {
+        let at = string_arg(args, "at")?;
+        let card = crate::load_card(conn, &at)?;
+        ACCESS.ensure_writable(card.workspace)?;
+        let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
+        let change = ops::TypeChange {
+            card_type: optional_card_type(args)?,
+            facet: optional_facet(args)?,
+            emphasis: optional_emphasis(args)?,
+            level,
+            hub_level,
+            form: optional_form(args)?,
+        };
+        let parsed = crate::parse_card_text(&card.text)?;
+        let text_given = ["text", "title", "body"]
+            .iter()
+            .any(|name| args.get(name).is_some());
+        let text = match args.get("text").and_then(Value::as_str) {
+            _ if !change.is_empty() && !text_given => None,
+            Some(text) => Some(text.to_string()),
+            None => {
+                if card.is_lit && args.get("title").is_some() {
+                    bail!(
+                        "a Literature Card takes its title from BibTeX; change it with edit_literature_metadata"
+                    );
+                }
+                let title = if args.get("title").is_some() {
+                    title_arg(args)?
+                } else {
+                    parsed.title
+                };
+                let body = if args.get("body").is_some() {
+                    optional_string(args, "body")?
+                } else {
+                    parsed.body
+                };
+                Some(crate::compose_card_text(&title, &body, ""))
+            }
+        };
+        if let Some(text) = &text {
+            crate::artifact::require_present(root, text)?;
+        }
+        let (address, changed) = ops::edit_tx(
+            conn,
+            ACCESS,
+            &at,
+            text.as_deref(),
+            change,
+            args.get("base").and_then(Value::as_str),
+        )?;
+        return Ok((json!({"address":address}), changed));
+    }
+    if name == "create_literature" {
+        let body = optional_string(args, "body")?;
+        crate::artifact::require_present(root, &body)?;
+        let workspace = target_workspace(args)?;
+        let address = ops::create_literature_tx(
+            conn,
+            ACCESS,
+            workspace,
+            &string_arg(args, "bibtex")?,
+            &body,
+        )?;
+        return Ok((json!({"address":address,"workspace":workspace.id()}), true));
+    }
+    let text = crate::compose_card_text(&title_arg(args)?, &optional_string(args, "body")?, "");
+    crate::artifact::require_present(root, &text)?;
+    let result = match name {
+        "create_topic" => {
+            let workspace = target_workspace(args)?;
+            let address = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
+            json!({"address":address,"workspace":workspace.id()})
+        }
+        "create_successor" => {
+            let kind = successor_kind(args)?;
+            let (part, card_type) = successor_part_type(args)?;
+            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
+            let (level, hub_level) = (level.flatten(), hub_level.flatten());
+            let form = optional_form(args)?.flatten();
+            if level.is_some() && (card_type != CardType::Model || part.is_some()) {
+                bail!(crate::model::LEVEL_NEEDS_MODEL_CARD);
+            }
+            if form.is_some() && (card_type != CardType::Model || part.is_some()) {
+                bail!(crate::math::FORM_NEEDS_MODEL_CARD);
+            }
+            if hub_level.is_some() && card_type != CardType::Hub {
+                bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
+            }
+            let address = ops::create_successor_tx(
+                conn,
+                ACCESS,
+                kind,
+                &string_arg(args, "at")?,
+                card_type,
+                part.as_ref(),
+                &text,
+            )?;
+            let card = crate::load_card(conn, &address)?;
+            if level.is_some() {
+                crate::model::set_level(conn, &card, level)?;
+            }
+            if hub_level.is_some() {
+                crate::hub::set_level(conn, &card, hub_level)?;
+            }
+            if form.is_some() {
+                crate::math::set_form(conn, &card, form)?;
+            }
+            json!({"address":address,"type":card_type.id(),"facet":part.as_ref().map(|p|p.facet.id()),"emphasis":part.and_then(|p|p.emphasis).map(Emphasis::id),"level":level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),"form":form.map(crate::math::MathForm::id)})
+        }
+        other => bail!("unsupported batch tool `{other}`"),
+    };
+    Ok((result, true))
+}
+
+fn successor_kind(args: &Value) -> Result<Successor> {
+    match optional_string(args, "kind")?.as_str() {
+        "" | "direct" => Ok(Successor::Direct),
+        "side" => Ok(Successor::Side),
+        other => bail!("unknown successor kind `{other}`; expected direct or side"),
+    }
+}
+
+fn successor_part_type(args: &Value) -> Result<(Option<crate::model::Part>, CardType)> {
+    let part = crate::model::Part::from_args(
+        optional_facet(args)?.flatten(),
+        optional_emphasis(args)?.flatten(),
+    )?;
+    let card_type = match (optional_card_type(args)?, &part) {
+        (Some(t), Some(_)) if t != CardType::Model => {
+            bail!("only Model Cards can have a Model facet")
+        }
+        (_, Some(_)) => CardType::Model,
+        (t, None) => t.unwrap_or_default(),
+    };
+    Ok((part, card_type))
+}
+
+/// Canonical explicit creation defaults use the ordinary MCP argument parsers.
+/// Edit omissions remain omissions: an omitted field leaves stored content alone.
+pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
+    let mut canonical = args.clone();
+    canonical
+        .as_object()
+        .context("item arguments must be an object")?;
+    match name {
+        "create_topic" | "create_literature" => {
+            canonical["workspace"] = json!(target_workspace(args)?.id());
+            canonical["body"] = json!(optional_string(args, "body")?);
+            if name == "create_topic" {
+                canonical["title"] = json!(title_arg(args)?);
+            }
+        }
+        "create_successor" => {
+            let (part, card_type) = successor_part_type(args)?;
+            canonical["kind"] = json!(if successor_kind(args)? == Successor::Side {
+                "side"
+            } else {
+                "direct"
+            });
+            canonical["type"] = json!(card_type.id());
+            canonical["facet"] = json!(part.as_ref().map(|p| p.facet.id()));
+            canonical["emphasis"] = json!(part.and_then(|p| p.emphasis).map(Emphasis::id));
+            let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
+            canonical["level"] = json!(
+                level
+                    .flatten()
+                    .map(Level::id)
+                    .or(hub_level.flatten().map(crate::hub::HubLevel::id))
+            );
+            canonical["form"] = json!(
+                optional_form(args)?
+                    .flatten()
+                    .map(crate::math::MathForm::id)
+            );
+            canonical["title"] = json!(title_arg(args)?);
+            canonical["body"] = json!(optional_string(args, "body")?);
+        }
+        "edit_card" => {}
+        other => bail!("unsupported batch tool `{other}`"),
+    }
+    Ok(canonical)
 }
 
 fn string_arg(args: &Value, name: &str) -> Result<String> {
@@ -684,7 +767,7 @@ fn tool(
             "title": title,
             "readOnlyHint": read_only,
             "destructiveHint": destructive,
-            "idempotentHint": read_only,
+            "idempotentHint": read_only || name == "apply_batch",
             "openWorldHint": false,
         },
     })
@@ -883,6 +966,15 @@ fn tool_definitions() -> Vec<Value> {
             json!({ "workspace": workspace_filter }),
             &[],
             true,
+            false,
+        ),
+        tool(
+            "apply_batch",
+            "Apply identified Card writes",
+            "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. Agent Access and ordinary Card/base/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
+            json!({"items":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false}}}),
+            &["items"],
+            false,
             false,
         ),
         tool(

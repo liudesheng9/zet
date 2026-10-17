@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod artifact;
 mod autostart;
+mod batch;
 mod card;
 mod card_type;
 mod dump;
@@ -1909,13 +1910,26 @@ fn insert_literature_card(
     bibtex: &str,
     text: &str,
 ) -> Result<()> {
+    let tx = conn.transaction()?;
+    insert_literature_card_tx(&tx, citation_key, workspace, bibtex, text)?;
+    link_index::source_changed(&tx, citation_key)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn insert_literature_card_tx(
+    conn: &Connection,
+    citation_key: &str,
+    workspace: Workspace,
+    bibtex: &str,
+    text: &str,
+) -> Result<()> {
     literature::validate_citation_key(citation_key)?;
     if citation_key_exists_case_insensitive(conn, citation_key)? {
         bail!("Literature Card `{citation_key}` already exists");
     }
     validate_card_text(conn, citation_key, text, None)?;
-    let tx = conn.transaction()?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
          VALUES(NULL, ?1, 0, 1, ?2, ?3, ?4, ?5)",
         params![
@@ -1926,8 +1940,6 @@ fn insert_literature_card(
             CardType::Idea.id()
         ],
     )?;
-    link_index::source_changed(&tx, citation_key)?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -2310,6 +2322,24 @@ fn insert_card(
     part: Option<&model::Part>,
     text: &str,
 ) -> Result<()> {
+    let tx = conn.transaction()?;
+    insert_card_tx(&tx, location, is_topic, workspace, card_type, part, text)?;
+    link_index::source_changed(&tx, location)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Validate and insert within a caller-owned transaction. The caller finalizes
+/// indexed sources, generated sections and the revision once before commit.
+fn insert_card_tx(
+    conn: &Connection,
+    location: &str,
+    is_topic: bool,
+    workspace: Workspace,
+    card_type: CardType,
+    part: Option<&model::Part>,
+    text: &str,
+) -> Result<()> {
     if !is_valid_location(location) {
         bail!("invalid location `{location}`");
     }
@@ -2331,8 +2361,7 @@ fn insert_card(
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     validate_card_text(conn, location, text, None)?;
-    let tx = conn.transaction()?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis)
          VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6, ?7)",
         params![
@@ -2345,11 +2374,9 @@ fn insert_card(
             emphasis.map(model::Emphasis::id)
         ],
     )?;
-    link_index::source_changed(&tx, location)?;
     if is_topic {
-        bump_next_topic_id(&tx, location)?;
+        bump_next_topic_id(conn, location)?;
     }
-    tx.commit()?;
     Ok(())
 }
 

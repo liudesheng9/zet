@@ -23,6 +23,263 @@ struct TestHome {
 }
 
 #[test]
+fn a_maximum_batch_publishes_one_revision_and_one_combined_link_refresh() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let before = mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"]
+        .as_u64()
+        .unwrap();
+    let items:Vec<Value>=(0..64).map(|i|json!({"op_key":format!("run-maximum/group-1/1/build/item-{i}"),"client_ref":format!("item-{i}"),"tool":"create_topic","arguments":{"title":format!("Topic {i}")}})).collect();
+    mcp.ok("apply_batch", json!({"items":items}));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        before + 1
+    );
+    let output = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["last_write"]["indexed_cards"], 64);
+    assert_eq!(report["last_write"]["refreshed_cards"], 64);
+}
+
+#[test]
+fn batch_identity_and_access_failures_leave_no_partial_writes() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let valid = json!({"op_key":"run-identity/group-1/1/apply/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Guarded"}});
+    for key in ["ad-hoc", "run/group/1/apply/item/attempt-2"] {
+        let mut item = valid.clone();
+        item["op_key"] = json!(key);
+        assert!(
+            mcp.err("apply_batch", json!({"items":[item]}))
+                .contains("op_key must have")
+        );
+    }
+    let mut bad_ref = valid.clone();
+    bad_ref["client_ref"] = json!("bad/ref");
+    assert!(
+        mcp.err("apply_batch", json!({"items":[bad_ref]}))
+            .contains("client_ref")
+    );
+    let mut human = valid.clone();
+    human["arguments"]["workspace"] = json!("human");
+    assert!(
+        mcp.err("apply_batch", json!({"items":[human]}))
+            .contains("read-only")
+    );
+    let destructive = json!({"op_key":"run-identity/group-1/1/apply/delete","client_ref":"delete","tool":"delete_card","arguments":{"at":"@@topic","confirm":"delete"}});
+    assert!(
+        mcp.err("apply_batch", json!({"items":[valid,destructive]}))
+            .contains("unsupported batch tool")
+    );
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+}
+
+#[test]
+fn a_receipt_binds_local_references_to_their_original_allocated_addresses() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let topic = json!({"op_key":"run-bind/group-1/1/build/topic-a","client_ref":"root","tool":"create_topic","arguments":{"title":"Original root"}});
+    let claim = json!({"op_key":"run-bind/group-1/1/build/claim","client_ref":"claim","tool":"create_successor","arguments":{"at":"@@root","title":"Claim"}});
+    mcp.ok(
+        "apply_batch",
+        json!({"items":[topic.clone(),claim.clone()]}),
+    );
+    let replacement = json!({"op_key":"run-bind/group-1/1/build/topic-b","client_ref":"root","tool":"create_topic","arguments":{"title":"Different root"}});
+    assert!(
+        mcp.err("apply_batch", json!({"items":[replacement,claim.clone()]}))
+            .contains("operation key conflict")
+    );
+    assert_eq!(
+        mcp.ok("list_trees", json!({}))["trees"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let next = json!({"op_key":"run-bind/group-1/1/build/next","client_ref":"next","tool":"create_successor","arguments":{"at":"@@claim","title":"Next claim","body":"依赖 [[@@claim]]。"}});
+    let extended = mcp.ok("apply_batch", json!({"items":[topic,claim,next]}));
+    assert_eq!(extended["results"][0]["replayed"], true);
+    assert_eq!(extended["results"][1]["replayed"], true);
+    assert_eq!(extended["results"][2]["result"]["address"], "0/2");
+}
+
+#[test]
+fn batch_edits_use_the_existing_base_guard_and_keep_authored_fingerprints() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Edits"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","title":"Original title","body":"Old body."}),
+    );
+    let before = mcp.ok("get_card", json!({"at":"0/1"}));
+    let batch = json!({"items":[{"op_key":"run-edit/card-1/1/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base":before["text"],"body":"A real event happened in 2026.","type":"event"}}]});
+    let receipt = mcp.ok("apply_batch", batch.clone());
+    let result = &receipt["results"][0]["result"];
+    assert!(result["before_fingerprint"].as_str().is_some());
+    assert_ne!(result["before_fingerprint"], result["after_fingerprint"]);
+    let card = mcp.ok("get_card", json!({"at":"0/1"}));
+    assert_eq!(card["body"], "A real event happened in 2026.");
+    assert_eq!(card["title"], "Original title");
+    assert_eq!(card["type"], "event");
+    assert_eq!(
+        mcp.ok("apply_batch", batch)["results"][0]["result"],
+        *result
+    );
+    let stale = json!({"items":[{"op_key":"run-edit/card-1/2/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base":before["text"],"body":"Stale overwrite."}}]});
+    assert!(mcp.err("apply_batch", stale).contains("changed since"));
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        card["body"]
+    );
+}
+
+#[test]
+fn batch_successor_creation_preserves_model_level_and_math_form() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let result=mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-model/model-1/1/build/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Models"}},
+        {"op_key":"run-model/model-1/1/build/model","client_ref":"model","tool":"create_successor","arguments":{"at":"@@topic","title":"Theorem","type":"model","level":"formal","form":"theorem"}}
+    ]}));
+    let address = result["results"][1]["result"]["address"].clone();
+    let model = mcp.ok("get_card", json!({"at":address}));
+    assert_eq!(model["level"], "formal");
+    assert_eq!(model["form"], "theorem");
+}
+
+#[test]
+fn a_batch_creates_a_literature_tree_and_resolves_its_local_reference() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let result=mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-book/group-1/1/apply/book","client_ref":"book","tool":"create_literature","arguments":{"bibtex":"@book{BatchBook,title={Atomic book},year={2026}}","body":"Book introduction."}},
+        {"op_key":"run-book/group-1/1/apply/claim","client_ref":"claim","tool":"create_successor","arguments":{"at":"@@book","title":"Claim","body":"来源 [[@@book]]。"}}
+    ]}));
+    assert_eq!(result["results"][0]["result"]["address"], "BatchBook");
+    assert_eq!(result["results"][1]["result"]["address"], "BatchBook/1");
+    let book = mcp.ok("get_card", json!({"at":"BatchBook"}));
+    assert_eq!(book["title"], "Atomic book");
+    assert_eq!(book["body"], "Book introduction.");
+    assert_eq!(book["inbound"][0]["address"], "BatchBook/1");
+}
+
+#[test]
+fn batch_limits_refuse_oversized_requests_before_any_card_is_created() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let items:Vec<Value>=(0..65).map(|i|json!({"op_key":format!("run-limits/group-1/1/apply/item-{i}"),"client_ref":format!("item-{i}"),"tool":"create_topic","arguments":{"title":"Bounded"}})).collect();
+    assert!(
+        mcp.err("apply_batch", json!({"items":items}))
+            .contains("64 items")
+    );
+    assert!(mcp.err("apply_batch",json!({"items":[{"op_key":"run-limits/group-1/1/apply/large","client_ref":"large","tool":"create_topic","arguments":{"title":"Bounded","body":"x".repeat(1024*1024)}}]})).contains("1048576 authored bytes"));
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+}
+
+#[test]
+fn batch_receipts_canonicalize_defaults_object_order_and_transport_line_endings() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let first=mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-canonical/group-1/1/apply/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Canonical Topic","body":"First line.\r\n\r\nSecond line."}},
+        {"op_key":"run-canonical/group-1/1/apply/claim","client_ref":"claim","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim"}}
+    ]}));
+    let again=mcp.ok("apply_batch",json!({"items":[
+        {"tool":"create_topic","arguments":{"workspace":"agent","body":"First line.\n\nSecond line.","title":"Canonical Topic"},"client_ref":"topic","op_key":"run-canonical/group-1/1/apply/topic"},
+        {"arguments":{"kind":"","type":"idea","facet":null,"emphasis":null,"level":null,"form":null,"body":"","title":"Claim","at":"@@topic"},"tool":"create_successor","client_ref":"claim","op_key":"run-canonical/group-1/1/apply/claim"}
+    ]}));
+    for i in 0..2 {
+        assert_eq!(again["results"][i]["result"], first["results"][i]["result"]);
+        assert_eq!(again["results"][i]["replayed"], true);
+    }
+}
+
+#[test]
+fn a_committed_batch_replays_original_addresses_after_the_client_loses_its_answer() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let batch = json!({"items":[
+        {"op_key":"run-replay/group-1/1/apply/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Replay Topic"}},
+        {"op_key":"run-replay/group-1/1/apply/claim","client_ref":"claim","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":"来源 [[@@topic]]。"}}
+    ]});
+    let mut mcp = home.mcp();
+    let first = mcp.ok("apply_batch", batch.clone());
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    drop(mcp); // A retry has no process-local address map or result.
+    let mut retry = home.mcp();
+    let replay = retry.ok("apply_batch", batch.clone());
+    for i in 0..2 {
+        assert_eq!(
+            replay["results"][i]["result"],
+            first["results"][i]["result"]
+        );
+        assert_eq!(replay["results"][i]["replayed"], true);
+    }
+    assert_eq!(
+        retry.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert_eq!(
+        retry.ok("list_trees", json!({}))["trees"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut conflict = batch;
+    conflict["items"][0]["arguments"]["title"] = json!("Changed accepted plan");
+    assert!(
+        retry
+            .err("apply_batch", conflict)
+            .contains("operation key conflict")
+    );
+    assert_eq!(
+        retry.ok("get_card", json!({"at":"0/0"}))["title"],
+        "Replay Topic"
+    );
+}
+
+#[test]
+fn a_failed_batch_rolls_back_earlier_creates_and_topic_allocation() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let before = mcp.ok("get_cards", json!({"addresses":[],"view":"text"}));
+    let error=mcp.err("apply_batch",json!({"items":[
+        {"op_key":"run-atomic/group-1/1/apply/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Rolled back"}},
+        {"op_key":"run-atomic/group-1/1/apply/claim","client_ref":"claim","tool":"create_successor","arguments":{"at":"@@topic","title":"Invalid final claim","body":"参照 [[MissingBook]]。"}}
+    ]}));
+    assert!(
+        error.contains("link target `MissingBook` does not exist"),
+        "{error}"
+    );
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        before["archive_revision"]
+    );
+    assert_eq!(
+        mcp.ok("create_topic", json!({"title":"First committed Topic"}))["address"],
+        "0/0"
+    );
+}
+
+#[test]
 fn bulk_text_has_the_summary_facts_needed_by_scoped_digest_checks() {
     let home = TestHome::new();
     home.configure_and_up();
