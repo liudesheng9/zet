@@ -100,6 +100,8 @@ try {
     if ($LASTEXITCODE) { Write-Output ($planLines -join "`n") }
     $plan = Last $planLines
     Assert ($plan.groups -eq 2 -and $plan.models -eq 1 -and $plan.events -eq 1 -and $plan.topics -eq 1) "skeleton plan: 2 groups, 1 model, 1 event, 1 Topic ($($plan.groups), $($plan.models), $($plan.events), $($plan.topics))"
+    $jobText = Get-Content (Join-Path $sw 'job.md') -Raw -Encoding utf8
+    Assert ($jobText.Contains("SELF-CHECK: ``zt-digest skeleton -Step apply -Staging `"$staging`" -Work `"$sw`"``（不要加 -Apply）")) 'skeleton plan: the SELF-CHECK line names zt-digest skeleton, without -Apply'
     $entry = @($tree.cards | Where-Object { $_.address -eq $aCards[0] })[0].address
     Save-Json (Join-Path $sw 'out\skeleton.json') @{
         chapters = @(@{ anchor = "$key/1"; says = '所有权决定剩余控制权。' }, @{ anchor = "$key/2"; says = '债务在违约时转移控制权。' })
