@@ -1,4 +1,4 @@
-//! The pure helpers of the Bridge compiler: the canonical JSON and SHA-256 fingerprints
+//! Shared pure helpers: canonical JSON and SHA-256 fingerprints
 //! (`Canonical-Json`, `Hash-Value`), `Read-Json` (strict JSON, no repeated key), the option
 //! bounds (`Integer-Option`), ordinal and case-sensitive culture order, and the UTC time stamp.
 

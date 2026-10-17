@@ -594,7 +594,7 @@ When a script gains a `zt-digest` tool ([zt-digest](zt-digest.md)), no stage mod
 
 ## Testing
 
-`scripts/book-digest/tests/seam-zt-mcp.mjs` forwards to a real isolated `zt mcp` for compiler tests. It traces requested tools/processes and can inject bulk limits/missing rows, a required model-read failure, or an actual agent-Card edit after a bulk reply (`ZT_RACE_AFTER_READ` with the existing race target/flag/line). These seams test completeness and revision guards without running a digest workflow. Production stage modules and frozen workflow scripts do not use them.
+`scripts/book-digest/tests/seam-zt-mcp.mjs` forwards to a real isolated `zt mcp` for compiler tests. It traces requested tools/processes and batch item counts, and can inject bulk limits/missing rows, a required model-read failure, or an actual agent-Card edit after a bulk reply (`ZT_RACE_AFTER_READ` with the existing race target/flag/line). `ZT_DROP_BATCH_REPLY_FLAG` terminates the MCP child once after a successful `apply_batch` reply reaches the seam but before it reaches the compiler, testing recovery from a committed write with a lost answer. These seams test completeness, receipt replay and revision guards without running a digest workflow. Production stage modules and frozen workflow scripts do not use them.
 
 Both harnesses build each variant in memory and run the workflow script body as an `AsyncFunction(args, agent, phase, log, parallel, pipeline)` with a stand-in runtime: every agent returns a canned answer chosen by its label or by the command in its prompt. In `framework-harness.mjs` managers stay alive 3 ms so the harness can measure the peak number of managers alive. No model, DeepSeek, or zt call runs.
 

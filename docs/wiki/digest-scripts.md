@@ -606,6 +606,8 @@ A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-diges
 
 The preparation suite also checks the fresh snapshot's legacy rendering order for multi-digit Topic ids. The bulk title API's numeric order must not change digest rendering or the input order of equal-score ranking candidates.
 
+`identified-batch.tests.ps1` drives the public helper through a 69-operation, two-chunk build of a 66-part model. Its real MCP child exits after the first 64 operations commit, before delivering the reply. A new process recovers the prefix and cross-chunk references, verifies every final authored output and completes without duplicates; another replay changes no revision. Independent output changes fail completion and remain intact. The same test exercises `terms` compiler create/replay, retained accepted plans, guarded edits under a new plan revision and changed-input refusal. It is auto-discovered by `run-all.ps1` and respects `ZT_DIGEST`/`-Zt` candidate builds; no provider or actual workflow runs.
+
 The tests are standalone PowerShell 7 scripts and Node harnesses in `scripts/book-digest/tests/`. There is no CI. Run them all, in parallel, from the repository root:
 
 ```powershell

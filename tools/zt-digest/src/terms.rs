@@ -22,7 +22,8 @@ use crate::organize::common::{self, Sb, prop, pstr};
 use crate::ps::{self, CiMap};
 use crate::util;
 use crate::zt::Zt;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use std::io::Write;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -52,10 +53,11 @@ struct Params {
     max_terms: i64,
     max_candidates: i64,
     apply: bool,
+    operation_prefix: String,
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let names = ["Step", "Staging", "MaxTerms", "MaxCandidates"];
+    let names = ["Step", "Staging", "MaxTerms", "MaxCandidates", "OperationPrefix"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
     let step = a.choice("Step", &["plan", "apply"])?;
     let p = Params {
@@ -64,6 +66,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         max_terms: a.int_or("MaxTerms", 60)?,
         max_candidates: a.int_or("MaxCandidates", 160)?,
         apply: a.flag("Apply"),
+        operation_prefix: a.str("OperationPrefix"),
     };
     let manifest = common::manifest(&p.staging)?;
     let key = pstr(&manifest, "citation_key");
@@ -303,7 +306,9 @@ fn table(book_title: &str, key: &str, terms: &[Term]) -> String {
 fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
     let file = ps::join(out, "terms.json");
     if !ps::exists(&file) {
-        util::print_line(&ps::json_compact(&json!({ "ok": false, "error": "no terms.json" })))?;
+        util::print_line(&ps::json_compact(
+            &json!({ "ok": false, "error": "no terms.json" }),
+        ))?;
         return Ok(0);
     }
     let raw = common::read_json(&file)?;
@@ -314,23 +319,87 @@ fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
     util::write_text(&terms_md, &body)?;
     let title = format!("术语表：《{book_title}》的 {} 个术语", terms.len());
     let mut address = Value::Null;
+    let mut receipt_keys = Vec::new();
     if p.apply {
         let mut zt = Zt::start()?;
-        let tree = common::read_first(&mut zt, "get_tree", json!({ "tree": key }))?;
-        let existing = ps::each(prop(&tree, "cards")).into_iter().find(|c| TERM_TABLE.is_match(&pstr(c, "title")));
-        let call = match existing {
-            Some(c) => json!({ "tool": "edit_card", "arguments": { "at": pstr(c, "address"), "title": title, "body": body } }),
-            None => json!({ "tool": "create_successor", "arguments": { "at": format!("{key}/1"), "kind": "side", "title": title, "body": body } }),
-        };
-        let lines = common::write_all(&mut zt, &[call])?;
-        address = Value::String(common::first_ok(&lines));
+        if p.operation_prefix.is_empty() {
+            let call = term_call(&mut zt, key, &title, &body, false)?;
+            let lines = common::write_all(&mut zt, &[call])?;
+            address = Value::String(common::first_ok(&lines));
+        } else {
+            let input = json!({"book":key,"title":title,"body":body});
+            let work = ps::join(&p.staging, "terms");
+            let plan_file = ps::join(
+                &work,
+                &format!(
+                    "accepted-{}.json",
+                    crate::canon::hash_value(&json!(p.operation_prefix))
+                ),
+            );
+            let accepted = if ps::exists(&plan_file) {
+                util::read_json(&plan_file)?
+            } else {
+                let call = term_call(&mut zt, key, &title, &body, true)?;
+                let plan =
+                    json!({"operation_prefix":p.operation_prefix,"input":input,"calls":[call]});
+                let mut pending = tempfile::NamedTempFile::new_in(&work)?;
+                pending.write_all(serde_json::to_string_pretty(&plan)?.as_bytes())?;
+                pending.as_file().sync_all()?;
+                match pending.persist_noclobber(&plan_file) {
+                    Ok(_) => plan,
+                    Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        util::read_json(&plan_file)?
+                    }
+                    Err(error) => {
+                        return Err(error.error).context("retain accepted terms write plan");
+                    }
+                }
+            };
+            if accepted["operation_prefix"] != p.operation_prefix || accepted["input"] != input {
+                bail!(
+                    "OperationPrefix already binds another accepted terms plan; use a newly accepted plan revision"
+                );
+            }
+            let calls = accepted["calls"]
+                .as_array()
+                .filter(|calls| calls.len() == 1)
+                .context("incomplete accepted terms write plan")?;
+            let receipts = crate::calls::invoke_identified(&mut zt, calls, &p.operation_prefix)?;
+            address = receipts[0]["result"]["address"].clone();
+            receipt_keys = receipts.iter().map(|r| r["op_key"].clone()).collect();
+        }
     }
-    let last = json!({
+    let mut last = json!({
         "ok": true, "terms": terms.len(), "with_avoid": terms.iter().filter(|t| !t.avoid.is_empty()).count(),
         "card": address, "file": terms_md
     });
+    if !p.operation_prefix.is_empty() && p.apply {
+        last["operation_prefix"] = json!(p.operation_prefix);
+        last["receipt_keys"] = json!(receipt_keys);
+    }
     util::print_line(&ps::json_compact(&last))?;
     Ok(0)
+}
+
+fn term_call(zt: &mut Zt, key: &str, title: &str, body: &str, guarded: bool) -> Result<Value> {
+    let tree = common::read_first(zt, "get_tree", json!({"tree":key}))?;
+    let existing = ps::each(prop(&tree, "cards"))
+        .into_iter()
+        .find(|c| TERM_TABLE.is_match(&pstr(c, "title")));
+    Ok(match existing {
+        Some(card) => {
+            let address = pstr(card, "address");
+            let mut args = json!({"at":address,"title":title,"body":body});
+            if guarded {
+                let read = zt.cards(&[address], "text")?;
+                args["base"] = read.cards[0]["text"].clone();
+            }
+            json!({"tool":"edit_card","arguments":args})
+        }
+        None => {
+            json!({"tool":"create_successor","arguments":{"at":format!("{key}/1"),"kind":"side","title":title,"body":body}})
+        }
+    })
 }
 
 #[cfg(test)]

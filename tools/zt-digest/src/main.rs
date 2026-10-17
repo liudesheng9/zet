@@ -17,6 +17,7 @@ mod args;
 mod audit;
 mod bridge;
 mod calls;
+mod canon;
 mod card;
 mod check;
 mod event;

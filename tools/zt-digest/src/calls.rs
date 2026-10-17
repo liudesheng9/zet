@@ -26,7 +26,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use zt_check::mcp::{reply_error, reply_text};
@@ -318,11 +318,184 @@ pub fn read(zt: &mut Zt, tool: &str, arguments: Value) -> Result<Value> {
         .with_context(|| format!("{tool}: no answer"))
 }
 
+/// Apply an immutable accepted call list with archive receipts. Retrying starts
+/// at the beginning and recovers each original address from its receipt. Each
+/// chunk is atomic; the full list is not. The caller still verifies its outputs.
+pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> Result<Vec<Value>> {
+    let segments: Vec<_> = prefix.split('/').collect();
+    if segments.len() != 4
+        || segments.iter().any(|s| s.is_empty())
+        || segments[2].parse::<u64>().ok().filter(|n| *n > 0).is_none()
+    {
+        bail!(
+            "OperationPrefix must be run/unit/positive-plan-revision/step, without an attempt component"
+        );
+    }
+    fn arguments(value: &Value, resolved: &[String], index: usize, start: usize) -> Result<Value> {
+        Ok(match value {
+            Value::String(text) => {
+                let mut error = None;
+                let replaced = REF.replace_all(text, |capture: &regex::Captures| {
+                    let n = capture[1].parse::<usize>().unwrap_or(usize::MAX);
+                    if n >= index {
+                        error = Some(format!("call {index}: @@{n} is not an earlier result"));
+                        String::new()
+                    } else if n < start {
+                        match resolved.get(n) {
+                            Some(address) => address.clone(),
+                            None => {
+                                error =
+                                    Some(format!("call {index}: @@{n} has no committed address"));
+                                String::new()
+                            }
+                        }
+                    } else {
+                        format!("@@{n}")
+                    }
+                });
+                if let Some(error) = error {
+                    bail!(error);
+                }
+                json!(replaced.into_owned())
+            }
+            Value::Array(values) => Value::Array(
+                values
+                    .iter()
+                    .map(|v| arguments(v, resolved, index, start))
+                    .collect::<Result<_>>()?,
+            ),
+            Value::Object(values) => Value::Object(
+                values
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), arguments(v, resolved, index, start)?)))
+                    .collect::<Result<_>>()?,
+            ),
+            other => other.clone(),
+        })
+    }
+    fn authored_bytes(arguments: &Value) -> usize {
+        ["title", "body", "text", "bibtex", "base"]
+            .iter()
+            .map(|key| arguments[key].as_str().map(str::len).unwrap_or(0))
+            .sum()
+    }
+    // Reject unsupported operations, forward dependencies and oversized single
+    // items before committing any chunk. No placeholder makes a target exist.
+    for (index, call) in calls.iter().enumerate() {
+        if !matches!(
+            call["tool"].as_str(),
+            Some("create_topic" | "create_literature" | "create_successor" | "edit_card")
+        ) {
+            bail!("identified call {index}: unsupported write tool");
+        }
+        if !call["arguments"].is_object() {
+            bail!("identified call {index}: arguments must be an object");
+        }
+        arguments(&call["arguments"], &[], index, 0)?;
+        if authored_bytes(&call["arguments"]) > 1024 * 1024 {
+            bail!("identified call {index}: exceeds 1048576 authored bytes");
+        }
+    }
+    let mut resolved = Vec::new();
+    let mut done = Vec::new();
+    while done.len() < calls.len() {
+        let start = done.len();
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        for index in start..calls.len().min(start + 64) {
+            let args = arguments(&calls[index]["arguments"], &resolved, index, start)?;
+            let size = authored_bytes(&args);
+            if bytes + size > 1024 * 1024 {
+                if items.is_empty() {
+                    bail!("identified call {index}: resolved input exceeds 1048576 authored bytes");
+                }
+                break;
+            }
+            bytes += size;
+            items.push(json!({"op_key":format!("{prefix}/item-{index:06}"),"client_ref":index.to_string(),"tool":calls[index]["tool"],"arguments":args}));
+        }
+        let count = items.len();
+        let reply=zt.call("apply_batch",json!({"items":items})).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
+        let results = reply["results"]
+            .as_array()
+            .context("incomplete identified batch: missing results")?;
+        if results.len() != count {
+            bail!(
+                "incomplete identified batch: {} of {count} results",
+                results.len()
+            );
+        }
+        for (offset, result) in results.iter().enumerate() {
+            let index = start + offset;
+            if result["client_ref"].as_str() != Some(index.to_string().as_str())
+                || result["op_key"].as_str() != Some(format!("{prefix}/item-{index:06}").as_str())
+                || !result["replayed"].is_boolean()
+            {
+                bail!(
+                    "incomplete identified batch: result identity/order mismatch at call {index}"
+                );
+            }
+            let address = result["result"]["address"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .context("incomplete identified batch: no allocated address")?;
+            resolved.push(address.to_string());
+            done.push(result.clone());
+        }
+    }
+    verify_identified(zt, &done)?;
+    Ok(done)
+}
+
+/// A receipt proves a historical commit. Completion additionally needs current
+/// authored outputs to match the final accepted write for each address.
+fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
+    let mut expected = BTreeMap::new();
+    for receipt in receipts {
+        let result = &receipt["result"];
+        expected.insert(
+            result["address"]
+                .as_str()
+                .context("receipt missing address")?
+                .to_string(),
+            result["after_fingerprint"]
+                .as_str()
+                .context("receipt missing authored fingerprint")?
+                .to_string(),
+        );
+    }
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let read = zt.cards(&expected.keys().cloned().collect::<Vec<_>>(), "text")?;
+    for card in read.cards {
+        let address = card["address"]
+            .as_str()
+            .context("incomplete identified output address")?;
+        let model = card["type"] == "model";
+        let hub = card["type"] == "hub";
+        let authored = json!({"title":card["title"],"body":card["body"],"bibtex":card["bibtex"],"type":card["type"],"facet":card["facet"],"emphasis":card["emphasis"],"level":if model{card["level"].clone()}else{Value::Null},"hub_level":if hub{card["level"].clone()}else{Value::Null},"form":card["form"]});
+        // Archive receipts hash standard serde JSON, not the PowerShell JSON
+        // renderer kept for legacy file/output compatibility.
+        let fingerprint =
+            crate::canon::sha256_hex(crate::canon::canonical(&authored).to_string().as_bytes());
+        if card["workspace"] != "agent" || expected.get(address) != Some(&fingerprint) {
+            bail!(
+                "identified output changed: `{address}` no longer matches its accepted receipt; keep the current Card and use a newly accepted plan revision for a correction"
+            );
+        }
+    }
+    if zt.cards(&[], "text")?.archive_revision != read.archive_revision {
+        bail!("incomplete identified output verification: archive revision changed");
+    }
+    Ok(())
+}
+
 /// `zt-digest call`.
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(
         argv,
-        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json"],
+        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix"],
         &[],
     )?;
     let calls: Vec<Value> = if a.has("Tool") {
@@ -342,6 +515,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             one => vec![one],
         }
     };
+    if a.has("OperationPrefix") {
+        if ["From","Addresses","Log","Allow","Moves","SrcLog","TopicGate","TopicSimilarity"].iter().any(|name|a.has(name)) {
+            bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs, allow-list, moves or Topic-gate options");
+        }
+        let mut zt=Zt::start()?;
+        let results=invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?)?;
+        let lines:Vec<_>=results.iter().enumerate().map(|(index,result)|format!("{index} ok {}",result["result"]["address"].as_str().unwrap())).collect();
+        util::print_lines(&lines)?;
+        return Ok(0);
+    }
     let mut options = Options::new().allow_file(&a.str("Allow"))?;
     options.from = a.int_or("From", 0)?.max(0) as usize;
     options.addresses = a.str("Addresses").split(',').map(|s| s.trim().to_string()).collect();

@@ -20,7 +20,7 @@
 
 mod answer;
 mod apply;
-mod canon;
+use crate::canon;
 mod report;
 
 use crate::args::Args;

@@ -39,7 +39,7 @@ async function handle(line) {
   if (message.id === undefined) { real.stdin.write(line + '\n'); return }
   const tool = message.method === 'tools/call' ? message.params.name : ''
   const at = (message.params && message.params.arguments) || {}
-  if (tool && env.ZT_TRACE_TOOLS) fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify({ tool, process_id: process.pid, address_count: at.addresses?.length }) + '\n')
+  if (tool && env.ZT_TRACE_TOOLS) fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify({ tool, process_id: process.pid, address_count: at.addresses?.length, item_count: at.items?.length }) + '\n')
   if (tool === 'get_cards' && env.ZT_BULK_LIMIT && at.addresses.length > Number(env.ZT_BULK_LIMIT)) {
     const data = { error: 'simulated reply limit', code: 'read_limit', limit_kind: 'reply_bytes', limit: 1024, actual: 2048, complete: false }
     return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: true } })
@@ -54,6 +54,11 @@ async function handle(line) {
     await call('edit_card', { at: at.at, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   const reply = await ask(message)
+  if (tool === 'apply_batch' && env.ZT_DROP_BATCH_REPLY_FLAG && !flag(env.ZT_DROP_BATCH_REPLY_FLAG) && !failed(reply)) {
+    fs.writeFileSync(env.ZT_DROP_BATCH_REPLY_FLAG, 'committed; reply not delivered\n')
+    real.stdin.end()
+    process.exit(86)
+  }
   if (tool === 'get_cards' && env.ZT_BULK_MISSING && at.addresses.includes(env.ZT_BULK_MISSING) && !failed(reply)) {
     const value = reply.result.structuredContent
     value.cards = value.cards.filter(card => card.address !== env.ZT_BULK_MISSING)
