@@ -1,18 +1,45 @@
 //! `zt-digest snapshot-topics`: the port of `scripts/book-digest/snapshot-topics.ps1`. Writes a
 //! compact snapshot of every tree (address and title of each Card) for a DeepSeek digest run, so
 //! it can place and link Cards without spending turns on searches. Read-only calls through one
-//! `zt mcp`: `list_trees`, then `get_tree` per tree. Agent trees first, then human trees (marked
+//! `zt mcp`: one fresh `export_titles`. Agent trees first, then human trees (marked
 //! read-only); titles are cut to -TitleChars characters. Prints `<N> cards -> <Out>`.
 //!
 //! `cut` and `mark` serve `prepare-link` (prepare-link-pass.ps1) too, which wrote the same lines.
 
 use crate::args::Args;
-use crate::model::read_calls;
 use crate::ps::{self, CiMap, NL, eq, s};
 use crate::util;
 use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+/// A fresh title export per invocation. Keep the existing rendering helpers
+/// and group shape so preparation can use the same compact title catalogue.
+pub(crate) fn read_title_trees(zt:&mut Zt)->Result<Vec<Value>> {
+    let export=zt.call("export_titles",json!({}))?;
+    let titles=export["titles"].as_array().context("incomplete title export: missing titles array")?;
+    if export["complete"]!=true || export["count"].as_u64()!=Some(titles.len() as u64) || !export["archive_revision"].is_u64() {
+        bail!("incomplete title export: completeness, count or archive revision is missing");
+    }
+    let mut indices=BTreeMap::new();let mut trees:Vec<Value>=Vec::new();
+    for card in titles {
+        let at=card["address"].as_str().context("incomplete title export: missing address")?;
+        let tree=card["tree"].as_str().context("incomplete title export: missing tree")?;
+        let workspace=card["workspace"].as_str().context("incomplete title export: missing Workspace")?;
+        let index=*indices.entry(tree.to_string()).or_insert_with(||{
+            let index=trees.len();trees.push(json!({"tree":tree,"workspace":workspace,"cards":[]}));index
+        });
+        let mut row=card.clone();
+        let root=at==tree || at==format!("{tree}/0");
+        row["edge"]=json!(if root{"root"}else{"direct"});
+        row["kind"]=json!(if at==tree{"literature"}else if root{"topic"}else{"regular"});
+        trees[index]["archive_revision"]=export["archive_revision"].clone();
+        if root {trees[index]["zone"]=json!(if at==tree{"literature"}else{"topic"});}
+        trees[index]["cards"].as_array_mut().unwrap().push(row);
+    }
+    Ok(trees)
+}
 
 /// `Cut`: a title of at most `chars` UTF-16 units, else cut and `…` added.
 pub(crate) fn cut(text: &str, chars: usize) -> String {
@@ -50,16 +77,6 @@ pub(crate) fn mark(card: &Value) -> String {
     }
 }
 
-/// The trees of both Workspaces: `list_trees`, then `get_tree` per tree, in list order.
-pub(crate) fn read_trees(zt: &mut Zt) -> Result<Vec<Value>> {
-    let listed = read_calls(zt, &[("list_trees", json!({}))])?.into_iter().next().unwrap_or(Value::Null);
-    let reads: Vec<(&str, Value)> = ps::each(&listed["trees"]).iter().map(|t| ("get_tree", json!({ "tree": t["tree"] }))).collect();
-    if reads.is_empty() {
-        return Ok(Vec::new());
-    }
-    read_calls(zt, &reads)
-}
-
 /// One snapshot line: `- `<address>`<mark> <title>` (a root), else indented.
 pub(crate) fn card_line(card: &Value, title_chars: usize) -> String {
     let indent = if eq(&s(&card["edge"]), "root") { "- " } else { "  - " };
@@ -83,7 +100,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
     let title_chars = a.int_or("TitleChars", 40)?.max(0) as usize;
     let mut zt = Zt::start()?;
-    let details = read_trees(&mut zt)?;
+    let details = read_title_trees(&mut zt)?;
 
     let mut text = String::new();
     text.push_str("# 现有卡片快照（本组启动时生成；之后其他组可能新增卡片；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");

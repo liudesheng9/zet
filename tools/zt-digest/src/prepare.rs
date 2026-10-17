@@ -20,7 +20,6 @@ use crate::args::Args;
 use crate::calls;
 use crate::card::relatedness::Relatedness;
 use crate::figures::{self, Figure};
-use crate::model::read_calls;
 use crate::ps::{self, CiMap, NL, culture_cmp, eq, is_in, join_path, key as ci, len16, s};
 use crate::snapshot;
 use crate::util;
@@ -552,38 +551,6 @@ impl<V> ByAddress<V> {
     }
 }
 
-/// `get_card` for every address, `workers` chunks at once, each on its own `zt mcp` (the script
-/// ran one zt helper per chunk in parallel): the answers, in chunk order.
-fn read_cards(zt: &mut Zt, addresses: &[String], workers: usize) -> Result<Vec<Value>> {
-    let chunks: Vec<Vec<String>> = (0..workers).map(|w| addresses.iter().skip(w).step_by(workers).cloned().collect()).filter(|c: &Vec<String>| !c.is_empty()).collect();
-    let read = |zt: &mut Zt, chunk: &[String]| -> Result<Vec<Value>> {
-        let reads: Vec<(&str, Value)> = chunk.iter().map(|a| ("get_card", json!({ "at": a }))).collect();
-        read_calls(zt, &reads)
-    };
-    let Some((first, rest)) = chunks.split_first() else { return Ok(Vec::new()) };
-    let results: Vec<Result<Vec<Value>>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = rest
-            .iter()
-            .map(|chunk| {
-                scope.spawn(move || {
-                    let mut own = Zt::start()?;
-                    read(&mut own, chunk)
-                })
-            })
-            .collect();
-        let mut results = vec![read(zt, first)];
-        for h in handles {
-            results.push(h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a read worker panicked"))));
-        }
-        results
-    });
-    let mut out = Vec::new();
-    for r in results {
-        out.extend(r?);
-    }
-    Ok(out)
-}
-
 /// `Group-OfSection`: the group of a section id (`2.3.1` falls back to `2.3`, then `2`).
 fn group_of_section(section_group: &CiMap<i64>, id: &str) -> Option<i64> {
     if let Some(&n) = section_group.get(id) {
@@ -627,7 +594,7 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
 
     // --- every tree, both Workspaces ---
     let mut zt = Zt::start()?;
-    let details = snapshot::read_trees(&mut zt)?;
+    let details = snapshot::read_title_trees(&mut zt)?;
     let mut text = String::new();
     text.push_str("# 全部卡片快照（地址与标题；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");
     text.push_str(NL);
@@ -667,16 +634,19 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         .flat_map(|t| ps::ps_items(&t["cards"]))
         .filter(|c| !eq(&s(&c["kind"]), "topic"))
         .collect();
-    let addresses: Vec<String> = agent_cards.iter().map(|c| s(&c["address"])).collect();
-    // A Model part's get_card also builds its whole model, so the Cards are read by several
-    // `zt mcp` at once.
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 12);
+    // Ranking uses complete agent bodies, but the previous compact excerpts
+    // for human Cards and Topic roots. All are bulk inputs to the same process.
+    let addresses: Vec<String> = details.iter().flat_map(|tree|ps::ps_items(&tree["cards"]))
+        .map(|c|s(&c["address"])).collect();
+    let read=zt.cards(&addresses,"text")?;
+    let title_revision=details.first().and_then(|tree|tree["archive_revision"].as_u64());
+    if title_revision!=Some(read.archive_revision) {bail!("incomplete prepare-link input: changing view between titles and Card bodies");}
     let mut bodies: ByAddress<Value> = ByAddress::new();
-    for card in read_cards(&mut zt, &addresses, workers)? {
-        bodies.set(&s(&card["address"]), card);
+    for card in read.cards {
+        bodies.set(&s(&card["address"]),card);
     }
-    if bodies.0.len() != agent_cards.len() {
-        bail!("read {} of {} agent Cards", bodies.0.len(), agent_cards.len());
+    if bodies.0.len() != addresses.len() {
+        bail!("read {} of {} required Cards", bodies.0.len(), addresses.len());
     }
     let mut owner: ByAddress<i64> = ByAddress::new();
     let mut owner_keys: Vec<String> = Vec::new();
@@ -745,10 +715,9 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
             let address = s(&card["address"]);
             let title = s(&card["title"]);
             titles.set(&address, title.clone());
-            let text = match bodies.get(&address) {
-                Some(full) => format!("{title} {title} {}", s(&full["body"])),
-                None => format!("{title} {title} {}", s(&card["excerpt"])),
-            };
+            let full=bodies.get(&address).with_context(||format!("incomplete candidate input: missing `{address}`"))?;
+            let content=if eq(&s(&card["workspace"]),"agent") && !eq(&s(&card["kind"]),"topic") {s(&full["body"])} else {s(&full["excerpt"])};
+            let text=format!("{title} {title} {content}");
             cards_by_address.set(&address, card);
             documents.push((address, text));
         }
@@ -757,8 +726,8 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let candidates_of = |address: &str, n: i64| -> Vec<String> {
         let mut linked: HashSet<String> = HashSet::new();
         if let Some(full) = bodies.get(address) {
-            for out in ps::each(&full["outbound"]) {
-                linked.insert(ci(&s(&out["address"])));
+            for target in ps::each(&full["links"]) {
+                linked.insert(ci(&s(&target)));
             }
         }
         card_model.find(address, 5, |id| owner.get(id) == Some(&n) || linked.contains(&ci(id)) || ps::like(id, "*/0"))

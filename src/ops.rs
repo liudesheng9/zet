@@ -600,13 +600,6 @@ impl Snapshot {
 
     pub(crate) fn summary(&self, card: &Card) -> Value {
         let parent = crate::parent_location(&card.address);
-        let edge = if crate::is_tree_root(card) {
-            "root"
-        } else if crate::valid_side_label(crate::last_segment(&card.address)) {
-            "side"
-        } else {
-            "direct"
-        };
         let links = self
             .outbound(&card.address)
             .into_iter()
@@ -634,7 +627,7 @@ impl Snapshot {
             "level": card.level_id(),
             "form": card.form.map(crate::math::MathForm::id),
             "head": self.model_head(card),
-            "edge": edge,
+            "edge": edge(card),
             "parent": parent,
             "excerpt": excerpt(&self.parsed[&card.address].body),
             "links": links,
@@ -950,6 +943,16 @@ impl Snapshot {
                 })
             })
             .collect())
+    }
+}
+
+pub(crate) fn edge(card: &Card) -> &'static str {
+    if crate::is_tree_root(card) {
+        "root"
+    } else if crate::valid_side_label(crate::last_segment(&card.address)) {
+        "side"
+    } else {
+        "direct"
     }
 }
 

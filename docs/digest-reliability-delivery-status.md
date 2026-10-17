@@ -47,6 +47,14 @@ The [release-to-release isolated measurement](digest-indexed-read-final-benchmar
 
 The global Link result is still 7.7 MB of structured JSON, so its cost remains substantial. Complete title export of all 10,895 Cards was observed at 249 ms, and a two-Card text read at 2.45 ms; these are single observations, not percentile estimates. [Hub parity](digest-indexed-hub-parity.json) additionally matches the full baseline hashes for `get_hub` and `list_hubs`; their single measured observations after warm-up were 302 → 161 ms and 20.2 → 3.01 seconds. No live Card writes or actual digest workflows were run.
 
+## #67: bulk digest clients (in progress)
+
+The first implementation step switches `snapshot-topics` to one fresh title export per group and `prepare-link` to one title export plus bounded text batches through one MCP process. Existing rendering, ownership, compact excerpts and existing-Link exclusion are preserved. The ranking corpus still requires one bulk text pass over the candidate catalogue. The lean MCP text view now provides the existing excerpt/edge/Link/kind/parent facts; it does not calculate models or hubs.
+
+The shared checker client chunks at 200 addresses, reduces chunks after a structured reply-limit error, and rejects missing, reordered or changing-view inputs. Public preparation tests observed each old failure before its fix (per-tree snapshot reads, per-Card link reads, loss of linked-target exclusion, and lack of chunk adaptation). The latest preparation suite also verifies missing input fails explicitly. All 27 Workspace/MCP, 80 digest unit and ten checker unit tests pass for this step. Logs are under `D:/zt-target/qualification/issue67-*.log`.
+
+This slice remains open. Group/offline checks, whole-book/audit input migration, complete fault-coverage comparisons and command timing qualification still remain. It does not yet satisfy all #67 acceptance criteria.
+
 ## Remaining slices
 
 #67–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.

@@ -39,6 +39,11 @@ async function handle(line) {
   if (message.id === undefined) { real.stdin.write(line + '\n'); return }
   const tool = message.method === 'tools/call' ? message.params.name : ''
   const at = (message.params && message.params.arguments) || {}
+  if (tool && env.ZT_TRACE_TOOLS) fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify({ tool, process_id: process.pid, address_count: at.addresses?.length }) + '\n')
+  if (tool === 'get_cards' && env.ZT_BULK_LIMIT && at.addresses.length > Number(env.ZT_BULK_LIMIT)) {
+    const data = { error: 'simulated reply limit', code: 'read_limit', limit_kind: 'reply_bytes', limit: 1024, actual: 2048, complete: false }
+    return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: true } })
+  }
   if (tool === 'get_tree' && env.ZT_FAIL_TREE && at.tree === env.ZT_FAIL_TREE) return send(fault(message.id, 'simulated unavailable tree'))
   if (tool === 'get_card' && flag(env.ZT_FAIL_FLAG) && at.at === env.ZT_FAIL_CARD) return send(fault(message.id, 'simulated unavailable target after persistence'))
   if (tool === 'edit_card' && env.ZT_RACE_TARGET && at.at === env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG)) {
@@ -48,6 +53,13 @@ async function handle(line) {
     await call('edit_card', { at: at.at, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   const reply = await ask(message)
+  if (tool === 'get_cards' && env.ZT_BULK_MISSING && at.addresses.includes(env.ZT_BULK_MISSING) && !failed(reply)) {
+    const value = reply.result.structuredContent
+    value.cards = value.cards.filter(card => card.address !== env.ZT_BULK_MISSING)
+    value.missing = [env.ZT_BULK_MISSING]
+    value.complete = false
+    reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
+  }
   if (tool === 'edit_card' && env.ZT_FAIL_AFTER_EDIT && at.at === env.ZT_FAIL_AFTER_EDIT && env.ZT_FAIL_FLAG && !failed(reply)) fs.writeFileSync(env.ZT_FAIL_FLAG, '')
   send(reply)
 }

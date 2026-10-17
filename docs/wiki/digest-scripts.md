@@ -703,6 +703,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 ## Change history
 
+- `2026-10-17` — Extend the real temporary-archive preparation test with MCP call/process traces, fresh per-group title exports, bulk link inputs, existing-target exclusion, chunk reduction and missing-input failure; verify its cleanup path stays under the intended test temp root.
+
 - `2026-10-16` — Stage 2 of zt-digest: every remaining script forwards to its tool (`hub-compiler.ps1` → `hub`, `bridge-compiler.ps1` → `bridge`, `math-compiler.ps1` → `math`, `event-compiler.ps1` → `event`, `finding-compiler.ps1` → `finding`, `book-terms.ps1` → `terms`, `book-skeleton.ps1` → `skeleton`, `organize-survey.ps1`, `organize-apply.ps1`, `attach-figures.ps1` → `figures`, `prepare-book-digest.ps1` → `prepare`, `prepare-link-pass.ps1` → `prepare-link`, `snapshot-topics.ps1`). `figures.ps1` is removed; `racing-zt-mcp.ps1` and `faulting-zt-mcp.ps1` give way to the `ZT_RACE_*` seam of `event`/`finding` and `tests/seam-zt-mcp.mjs`; `prepare.tests.ps1` is new. Job files name `zt-digest <tool> -Step precheck …` (hub, Bridge, event, finding) and `zt-digest skeleton -Step apply …` in their SELF-CHECK lines.
 - `2026-10-16` — The group files of `prepare-book-digest.ps1` and `prepare-link-pass.ps1` name the write command as `… | zt-digest call - …`. `card-compiler.tests.ps1` and `model-compiler.tests.ps1` expect the `SELF-CHECK: zt-digest card …` and `SELF-CHECK: zt-digest model …` lines.
 - `2026-10-16` — `model-compiler.ps1`, `model-context.ps1`, and `list-models.ps1` forward to `zt-digest model`, `model-context`, and `list-models` (same parameters, files, and output; the 19 steps of `model-compiler.tests.ps1` take 1.3 s in the tool instead of 34 s).

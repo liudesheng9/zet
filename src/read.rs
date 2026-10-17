@@ -66,6 +66,40 @@ fn existing(conn: &Connection, at: &str) -> Result<bool> {
     )?)
 }
 
+/// Cheap authored-body/index facts for scoped clients, without model or hub
+/// projections and without fetching a whole tree to recover its summaries.
+fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
+    let mut value = text_value(card)?;
+    value["excerpt"] = json!(crate::ops::excerpt(
+        value["body"].as_str().unwrap_or_default()
+    ));
+    let mut query=conn.prepare_cached("SELECT l.target,l.kind FROM links l JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE l.source=?1 ORDER BY l.ord")?;
+    let rows = query.query_map([&card.address], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut links = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut kinds = serde_json::Map::new();
+    for row in rows {
+        let (target, kind) = row?;
+        if seen.insert(target.clone()) {
+            links.push(target.clone());
+        }
+        if let Some(kind) = kind {
+            kinds.entry(target).or_insert(json!(kind));
+        }
+    }
+    value["links"] = json!(links);
+    value["kinds"] = json!(kinds);
+    value["edge"] = json!(crate::ops::edge(card));
+    let parent = match crate::parent_location(&card.address) {
+        Some(at) if existing(conn, &at)? => Some(at),
+        _ => None,
+    };
+    value["parent_address"] = json!(parent);
+    Ok(value)
+}
+
 /// Request-local input collector. Only requested models/theory units expand
 /// into parts. Boundary models supply ownership, citation and title context.
 struct Scope<'a> {
@@ -407,7 +441,7 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
         values.push(if let Some(snapshot) = &snapshot {
             card_value(snapshot, at)?
         } else {
-            text_value(&crate::load_card(&tx, at)?)?
+            text_facts(&tx, &crate::load_card(&tx, at)?)?
         });
     }
     let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?});

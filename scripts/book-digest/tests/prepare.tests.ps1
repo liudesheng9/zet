@@ -12,6 +12,9 @@ param([string]$Zt = '')
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "prepare-test-$PID"
+$scratch = [IO.Path]::GetFullPath($scratch)
+$testTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+if (-not $scratch.StartsWith($testTempRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'scratch path escaped the intended test temp directory' }
 $archive = Join-Path $scratch 'archive'
 New-Item -ItemType Directory -Force $archive | Out-Null
 if ($Zt) {
@@ -113,15 +116,58 @@ try {
 
     # --- snapshot-topics ------------------------------------------------------------------------------
     $snapshotFile = Join-Path $staging 'snapshot-g01.md'
+    $snapshotTrace = Join-Path $scratch 'snapshot-tools.jsonl'
+    $savedCheckZt = $env:ZT_CHECK_ZT
+    $savedTrace = $env:ZT_TRACE_TOOLS
+    $savedFailTree = $env:ZT_FAIL_TREE
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_TRACE_TOOLS = $snapshotTrace
+    $env:ZT_FAIL_TREE = 'Test2021'
+    try {
     $snap = Invoke-Script 'snapshot-topics.ps1' @('-Out', $snapshotFile)
     Assert ($snap.code -eq 0 -and $snap.last -eq "8 cards -> $snapshotFile") "snapshot-topics counts every Card: $($snap.lines -join ' | ')"
     $snapText = Get-Content -LiteralPath $snapshotFile -Raw -Encoding utf8
     Assert ($snapText.Contains("- ``Test2021`` ") -and $snapText.Contains("  - ``Test2021/2|a`` 契约不完全留下剩余控制权") -and $snapText.Contains('## 人类工作区（只读，可链接）')) 'the snapshot lists each Card under its Workspace'
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = 'Test2021/2|a'; title = '契约不完全使未来条款留下空缺' } })
+    $snapshot2 = Join-Path $staging 'snapshot-g02.md'
+    $snap2 = Invoke-Script 'snapshot-topics.ps1' @('-Out', $snapshot2)
+    $snapText2 = Get-Content -LiteralPath $snapshot2 -Raw -Encoding utf8
+    Assert ($snap2.code -eq 0 -and $snapText2.Contains('契约不完全使未来条款留下空缺') -and $snapText.Contains('契约不完全留下剩余控制权')) 'each group gets its own fresh title export after another group changes a Card'
+    $trace = @(Get-Content -LiteralPath $snapshotTrace -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert (@($trace | Where-Object tool -eq 'export_titles').Count -eq 2 -and @($trace | Where-Object tool -in @('get_card', 'get_tree', 'list_trees')).Count -eq 0) 'snapshot uses exactly one export per group and no per-tree or per-Card reads'
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = 'Test2021/2|a'; title = '契约不完全留下剩余控制权' } })
+    } finally {
+        $env:ZT_CHECK_ZT = $savedCheckZt
+        $env:ZT_TRACE_TOOLS = $savedTrace
+        $env:ZT_FAIL_TREE = $savedFailTree
+    }
 
     # --- prepare-link-pass ----------------------------------------------------------------------------
-    $link = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = 'Test2021/2|a'; body = "剩余控制权归所有者。`n`n参照 [[0/1]]，敲竹杠使专用性投资不足，两个问题都依赖未来履约。`n`n来源：[[Test2021]] §1.1" } })
+    $linkTrace = Join-Path $scratch 'link-tools.jsonl'
+    $savedCheckZt = $env:ZT_CHECK_ZT
+    $savedTrace = $env:ZT_TRACE_TOOLS
+    $savedFailTree = $env:ZT_FAIL_TREE
+    $savedFailCard = $env:ZT_FAIL_CARD
+    $savedFailFlag = $env:ZT_FAIL_FLAG
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_TRACE_TOOLS = $linkTrace
+    $env:ZT_FAIL_TREE = '0'
+    $env:ZT_FAIL_CARD = 'Test2021/1|a'
+    $env:ZT_FAIL_FLAG = Join-Path $scratch 'bulk-only.flag'
+    [IO.File]::WriteAllText($env:ZT_FAIL_FLAG, '', $utf8)
+    try { $link = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging) }
+    finally {
+        $env:ZT_CHECK_ZT = $savedCheckZt
+        $env:ZT_TRACE_TOOLS = $savedTrace
+        $env:ZT_FAIL_TREE = $savedFailTree
+        $env:ZT_FAIL_CARD = $savedFailCard
+        $env:ZT_FAIL_FLAG = $savedFailFlag
+    }
     Assert ($link.code -eq 0) "prepare-link-pass runs: $($link.lines -join ' | ')"
     $summary = $link.last | ConvertFrom-Json
+    $trace = @(Get-Content -LiteralPath $linkTrace -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert (@($trace | Where-Object tool -eq 'export_titles').Count -eq 1 -and @($trace | Where-Object tool -eq 'get_cards').Count -eq 1 -and @($trace | Where-Object tool -in @('get_card', 'get_tree', 'list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'prepare-link uses one title export and one scoped bulk read through one MCP process'
     Assert (($summary.pending -join ',') -eq '1,2,3' -and ($summary.groups.owned -join ',') -eq '2,2,2' -and $summary.unowned -eq 1) "each group owns its anchor and one Card: $($link.last)"
     $allow3 = Get-Content -LiteralPath (Join-Path $staging 'allow-g03.txt') -Encoding utf8
     Assert ($allow3.Count -eq 2 -and $allow3[0] -eq '0/1' -and $allow3[1] -eq 'Test2021/3') "a section reference gives a Topic Card to its group: $($allow3 -join ',')"
@@ -129,14 +175,30 @@ try {
     $allow2 = Join-Path $staging 'allow-g02.txt'
     Assert ($l2.Contains("- 写入命令：``... | zt-digest call - -Allow `"$allow2`"``") -and $l2.Contains("- SELF-CHECK: ``zt-check --log `"$allow2`" --cards `"`" --book Test2021 --rules L1,L2,R2,R3,R4,R5,R7,R9``")) 'the link file names the helper and keeps its SELF-CHECK line'
     Assert ($l2.Contains("### ``Test2021/2|a`` 契约不完全留下剩余控制权") -and $l2.Contains('剩余控制权归所有者。')) 'the link file shows each owned Card with its body'
+    $candidateLines = @($l2 -split "`n" | Where-Object { $_ -match '^> 候选目标' }) -join "`n"
+    Assert (-not $candidateLines.Contains('`0/1`')) 'bulk preparation preserves the exclusion of already-linked candidate targets'
     $all = Get-Content -LiteralPath $summary.cards_all -Raw -Encoding utf8
     Assert ($all.Contains("  - ``0/1`` 敲竹杠使专用性投资不足")) 'cards-all.md lists every Card'
+    $savedCheckZt = $env:ZT_CHECK_ZT
+    $savedBulkLimit = $env:ZT_BULK_LIMIT
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_BULK_LIMIT = '3'
+    try { $limited = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging) }
+    finally { $env:ZT_CHECK_ZT = $savedCheckZt; $env:ZT_BULK_LIMIT = $savedBulkLimit }
+    Assert ($limited.code -eq 0 -and (($limited.last | ConvertFrom-Json).groups.owned -join ',') -eq '2,2,2') 'a bulk reply limit reduces chunks without losing any required Cards'
+    $savedCheckZt = $env:ZT_CHECK_ZT
+    $savedMissing = $env:ZT_BULK_MISSING
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_BULK_MISSING = 'Test2021/1|a'
+    try { $missing = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging) }
+    finally { $env:ZT_CHECK_ZT = $savedCheckZt; $env:ZT_BULK_MISSING = $savedMissing }
+    Assert ($missing.code -ne 0 -and ($missing.lines -join ' ').Contains('incomplete Card read') -and ($missing.lines -join ' ').Contains('Test2021/1|a')) 'a missing required bulk read fails explicitly instead of producing an empty successful dataset'
     [IO.File]::WriteAllText((Join-Path $staging 'linked-g01.txt'), "done`n", $utf8)
     $rerun = (Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)).last | ConvertFrom-Json
     Assert (($rerun.pending -join ',') -eq '2,3' -and $rerun.groups[0].done) 'linked-gNN.txt takes a group off the pending list'
 } finally {
     zt down 2>&1 | Out-Null
-    Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 if ($failed) { Write-Output "$failed failed"; exit 1 }
 Write-Output 'all passed'

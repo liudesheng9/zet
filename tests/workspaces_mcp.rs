@@ -23,6 +23,34 @@ struct TestHome {
 }
 
 #[test]
+fn bulk_text_has_the_summary_facts_needed_by_scoped_digest_checks() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Facts"}));
+    mcp.ok("create_successor", json!({"at":"0/0","title":"Premise"}));
+    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","title":"Claim","body":"## 说明\n\n依赖 [[0/1]]，也参照 [[0/1]]。\n\n```text\n[[MissingBook]]\n```"}));
+    let full = mcp.ok("get_card", json!({"at":"0/1|a"}));
+    let tree = mcp.ok("get_tree", json!({"tree":"0"}));
+    let summary = tree["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["address"] == "0/1|a")
+        .unwrap();
+    let text =
+        mcp.ok("get_cards", json!({"addresses":["0/1|a"],"view":"text"}))["cards"][0].clone();
+    for key in ["excerpt", "links", "kinds", "edge"] {
+        assert_eq!(
+            text[key], summary[key],
+            "bulk text preserves the existing summary fact {key}"
+        );
+    }
+    assert_eq!(text["parent_address"], full["parent"]["address"]);
+    assert!(text.get("model").is_none() && text.get("hubs").is_none());
+}
+
+#[test]
 fn a_model_neighbours_own_unrelated_model_does_not_expand_the_read_scope() {
     let home = TestHome::new();
     home.configure_and_up();

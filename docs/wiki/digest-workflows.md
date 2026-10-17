@@ -8,7 +8,7 @@ paths:
   - ".claude/workflow-framework/**"
   - "!.claude/workflow-framework/*/history/**"
 synced: b1953a1
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Digest workflows
@@ -649,6 +649,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-17` — Extend the MCP stand-in with tool/process tracing, bounded-reply faults and incomplete bulk responses for compiler tests. No installed workflow or actual book run changes in this step.
 
 - `2026-10-16` — Every digest script runs as its `zt-digest` tool (`zt-econ-digest` 3.3.0, `zt-math-digest` 2.4.0, base 2.3.0; `zt-digest-lib` v6). `ZD_TOOLS` now also maps `hub-compiler`, `bridge-compiler`, `math-compiler`, `event-compiler`, `finding-compiler`, `book-terms`, `book-skeleton`, `organize-survey`, `organize-apply`, `attach-figures`, `prepare-book-digest`, `prepare-link-pass`, and `snapshot-topics` to `zt-digest hub`, `bridge`, `math`, `event`, `finding`, `terms`, `skeleton`, `organize-survey`, `organize-apply`, `figures`, `prepare`, `prepare-link`, and `snapshot-topics`; no stage module changed. The manager approvals name the Bridge, hub, event, finding, and skeleton tools beside their scripts, because the job files' SELF-CHECK lines now run the tools. The sim files match `zt-digest <tool> -Step …`; `framework-harness.mjs` builds its tool patterns from `ZT_DIGEST_TOOLS`, and `bridge-workflow-harness.mjs` reads `zt-digest bridge` commands.
 - `2026-10-16` — The ported scripts run as `zt-digest` tools (`zt-econ-digest` 3.2.0, `zt-math-digest` 2.3.0, base 2.2.0; `zt-digest-lib` v5 with `ZD_DIGEST`, `ZD_TOOLS`, `ZD_CALL`, `zdTool`, and `tool`; `zt-audit` v2, `zt-book-terms` v2, `zt-bridge` v5, `zt-digest-prepare` v3, `zt-event-layer` v2, `zt-finding-layer` v2, `zt-explain` v3, `zt-figures` v2, `zt-hubs` v2, `zt-link-prepare` v2, `zt-math-lib` v2, `zt-model-lib` v2, `zt-organize` v2). Every stage builds its commands with `Z.tool('<script>')`. `ZD_TOOLS` maps `digest-audit`, `card-compiler`, `model-compiler`, `model-context`, and `list-models` to `zt-digest audit`, `card`, `model`, `model-context`, and `list-models`; the stages run the audit, the card cycle, the model compiler, explain, and the model listing through them. The other scripts still run through pwsh. The helper is `zt-digest call`: Organize's Opus pipes to it, and the manager approvals name it beside pwsh with `zt-mcp.ps1`. `framework-harness.mjs` rewrites tool commands to the canonical pwsh form and gains two checks (131 checks).
