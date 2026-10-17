@@ -9,8 +9,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 static ANCHOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^/]+/\d+$").unwrap());
-static TERMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
-static STRUCTURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^本卡是《.*》的结构卡").unwrap());
 
 /// `Get-LinkBook`: the book a Link target is in (its tree), or None.
 pub fn link_book<'a>(target: &'a str, books: &HashSet<String>) -> Option<&'a str> {
@@ -25,42 +23,6 @@ pub fn source_target(target: &str, books: &HashSet<String>) -> bool {
 
 fn links(card: &Value) -> Vec<String> {
     crate::ps::ps_items(&card["links"]).iter().map(crate::ps::s).collect()
-}
-
-/// `Get-Category`.
-fn category(card: &Value, literature: &HashSet<String>, anchor_count: &HashMap<String, usize>) -> String {
-    let kind = field(card, "kind");
-    if kind == "topic" || kind == "literature" {
-        return "root".into();
-    }
-    match field(card, "type").as_str() {
-        "finding" => return "finding".into(),
-        "hub" => return "hub".into(),
-        "event" => return "event".into(),
-        "model" => return if crate::ps::truthy(&card["facet"]) { "part" } else { "model" }.into(),
-        _ => {}
-    }
-    let tree = field(card, "tree");
-    let in_book = literature.contains(&tree);
-    if in_book && ANCHOR.is_match(&field(card, "address")) {
-        return "anchor".into();
-    }
-    if in_book && TERMS.is_match(&field(card, "title")) {
-        return "terms".into();
-    }
-    if in_book && STRUCTURE.is_match(&field(card, "excerpt")) {
-        return "structure".into();
-    }
-    if in_book && field(card, "parent") == format!("{tree}/1") && field(card, "edge") == "side" && field(card, "type") == "idea" {
-        let own = Regex::new(&format!("^{}/\\d+$", regex::escape(&tree))).unwrap();
-        let anchors: HashSet<String> = links(card).into_iter().filter(|t| own.is_match(t)).collect();
-        // A missing count reads as $null, and any count is -ge $null.
-        let enough = anchor_count.get(&tree).is_none_or(|&n| anchors.len() * 2 >= n);
-        if anchors.len() >= 3 && enough {
-            return "structure".into();
-        }
-    }
-    "idea".into()
 }
 
 pub struct BookIndex {
@@ -96,7 +58,7 @@ pub fn book_index(trees: &[Value], cards: &[Value]) -> BookIndex {
     let mut book_of = HashMap::new();
     for card in cards {
         let address = field(card, "address");
-        category_of.insert(address.clone(), category(card, &literature, &anchors));
+        category_of.insert(address.clone(), zt_check::graph::category(card, &literature, &anchors));
         if field(card, "workspace") != "agent" {
             continue;
         }

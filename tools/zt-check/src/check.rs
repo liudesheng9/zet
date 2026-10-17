@@ -87,9 +87,6 @@ pattern!(
 );
 pattern!(YEAR, r"(1[0-9]{3}|20[0-9]{2})");
 // self-check.ps1.
-pattern!(ANCHOR_ADDRESS, r"^[^/]+/\d+$");
-pattern!(TERMS_TITLE, r"^术语表");
-pattern!(STRUCTURE_BODY, r"^本卡是《.*》的结构卡");
 pattern!(FAULT_LINE, r"^\S+ ([RIELF]\d+) ");
 pattern!(LIST_ITEM, r"^\s*([-*+]|\d+[.、)])\s+");
 pattern!(LIST_SPLIT, r"[,\s]+");
@@ -991,17 +988,16 @@ impl Check {
                     "no kinded Link to a Card other than the parent",
                 );
             }
-            if is(&["idea", "event", "finding"]) && has("inbound") {
-                let inbound = match prop(card, "inbound") {
-                    None | Some(Value::Null) => Vec::new(),
-                    Some(Value::Array(items)) => items.iter().collect(),
-                    Some(other) => vec![other],
-                };
-                if !inbound
-                    .iter()
-                    .any(|from| truthy(from) && !ps_eq(&text(Some(from)), &parent))
-                {
-                    faults.add(&address, "I5", "no Card other than the parent links here");
+            if has("inbound") {
+                let inbound = prop(card, "inbound")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                if crate::graph::is_orphan(&address, &text(prop(card, "category")), &inbound) {
+                    faults.add(&address, "I5", "no other Card has an authored Link here");
                 }
             }
             if is(&["event"]) {
@@ -1458,6 +1454,38 @@ pub(crate) fn check_cards(
     limits: Limits,
 ) -> Result<Vec<String>> {
     let batch = zt.cards(addresses, "text")?;
+    let catalogue = zt.call("export_titles", json!({}))?;
+    let titles = catalogue["titles"]
+        .as_array()
+        .context("incomplete checker classification catalogue")?;
+    if catalogue["complete"] != true
+        || catalogue["count"].as_u64() != Some(titles.len() as u64)
+        || catalogue["archive_revision"].as_u64() != Some(batch.archive_revision)
+    {
+        bail!("incomplete checker classification: changing or partial title view");
+    }
+    let literature: HashSet<String> = titles
+        .iter()
+        .filter_map(|card| card["tree"].as_str())
+        .filter(|tree| BOOK_CARD.is_match(tree))
+        .map(str::to_string)
+        .collect();
+    let mut anchors: HashMap<String, usize> = HashMap::new();
+    for title in titles {
+        let address = title["address"]
+            .as_str()
+            .context("incomplete checker classification address")?;
+        if BOOK_ANCHOR.is_match(address) {
+            *anchors
+                .entry(
+                    title["tree"]
+                        .as_str()
+                        .context("incomplete checker classification tree")?
+                        .to_string(),
+                )
+                .or_default() += 1;
+        }
+    }
     let mut cards = batch.cards;
     let mut owners: HashMap<String, Option<String>> = HashMap::new();
     let mut models: HashMap<String, Value> = HashMap::new();
@@ -1495,23 +1523,8 @@ pub(crate) fn check_cards(
         let body = ps_string(card.get("body"));
         // Valid Topic tree ids are numeric; Literature Citation keys start with a letter.
         let in_book = card["workspace"] == "agent" && BOOK_CARD.is_match(&tree);
-        // The same categories as digest-audit.ps1 (Get-Category).
-        let has_facet = !ps_string(card.get("facet")).is_empty();
-        let category = if ps_in(&ps_string(card.get("kind")), &["topic", "literature"]) {
-            "root"
-        } else {
-            match key(&ps_string(card.get("type"))).as_str() {
-                "hub" => "hub",
-                "event" => "event",
-                "finding" => "finding",
-                "model" if has_facet => "part",
-                "model" => "model",
-                _ if in_book && ANCHOR_ADDRESS.is_match(&address) => "anchor",
-                _ if in_book && TERMS_TITLE.is_match(&title) => "terms",
-                _ if in_book && STRUCTURE_BODY.is_match(&body) => "structure",
-                _ => "idea",
-            }
-        };
+        let category = crate::graph::category(card, &literature, &anchors);
+        let category = category.as_str();
         let head = card["model"]["head"]["address"]
             .as_str()
             .map(str::to_string);
@@ -1582,7 +1595,6 @@ pub(crate) fn check_cards(
     }
     Ok(lines)
 }
-
 /// The lines of the rules asked for; advisory lines are shown but not counted.
 fn filter_rules(lines: &[String], rules: &str) -> (Vec<String>, usize) {
     let allowed = LIST_SPLIT
@@ -2038,17 +2050,16 @@ mod tests {
                 "5/1 L2 (2 characters < 8) a Link with no reason: 引出 [[5/2]]。",
                 "5/1 L2 (2 characters < 8) a Link with no reason: 参见 [[5/3]]。",
                 "5/1 L3 (advisory) [[5/3]] is linked in 2 paragraphs",
-                "5/2 I5 no Card other than the parent links here",
                 "5/2 E2 missing labels: 参与者、经过、来源",
                 "5/2 E4 no Idea Card links it with a kind word",
-                "5/3 I5 no Card other than the parent links here",
+                "5/3 I5 no other Card has an authored Link here",
                 "5/4 I2 (26 characters < 40) merge candidate",
                 "5/4 I4 no kinded Link to a Card other than the parent",
                 "5/5 I2 (3 characters < 40) merge candidate",
                 "5/5 I4 no kinded Link to a Card other than the parent",
                 "5/5 I6 (advisory) a title very similar to [[5/4]]",
                 "5/3 E5 (advisory) the same event as [[5/2]]?",
-                "faults: 16",
+                "faults: 15",
             ]
         );
     }

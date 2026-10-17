@@ -62,9 +62,13 @@ try {
     $report=Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw -Encoding utf8|ConvertFrom-Json -AsHashtable -DateKind String
     $md = Get-Content -LiteralPath (Join-Path $out 'audit.md') -Raw -Encoding utf8
     Assert ($report.books[0].bridges.island -eq $true -and $report.books[0].bridges.peers -gt 0 -and $md -match '\| Islands \(books with no semantic Bridge in or out\) \| `Lone2030`') 'a book with peers and no Bridge is an island that audit.md names'
-    # Frozen from the public pre-migration audit on this exact fixture (fda5cf1).
+    # Retain the fda5cf1 report. Adapt only #76's explicit semantic changes:
+    # notation is excluded by classification; anchors are not orphan targets.
     $baselineFaults = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'audit-bulk-faults-fixture.txt'))
     $baselineReport = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'audit-bulk-report-fixture.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
+    $baselineReport.workspace.cards_by_category = [ordered]@{root=4;anchor=3;idea=3;finding=1;hub=1;model=1;notation=1;part=1}
+    $baselineReport.books[0].orphans = [ordered]@{count=1;by_category=[ordered]@{idea=1};list=@('Lone2030/1|a')}
+    $baselineFaults = $baselineFaults.Replace('I5 no Card other than the parent links here','I5 no other Card has an authored Link here')
     $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'bulk-audit-tools.jsonl'
     $env:ZT_FAIL_TREE = 'Earlier2020'
@@ -78,8 +82,8 @@ try {
     Assert (@($trace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'global audit uses one client without per-Card or per-tree projections'
     $bulkReport = Get-Content -LiteralPath (Join-Path $bulkOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     Assert ($bulkReport.complete -and $bulkReport.archive_revision -is [long]) 'the completed audit records its consistent graph revision'
-    foreach ($key in @('generated','seconds','complete','archive_revision')) { $report.Remove($key); $bulkReport.Remove($key) }
-    Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'bulk and pre-migration reports preserve every existing graph, Bridge, orphan and quality field'
+    foreach ($key in @('generated','seconds','complete','archive_revision','orphan_check')) { $report.Remove($key); $bulkReport.Remove($key) }
+    Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'the bulk audit preserves the frozen graph, Bridge and quality fields after the named shared orphan/classification changes'
     Assert ($baselineFaults -ceq [IO.File]::ReadAllText((Join-Path $bulkOut 'audit-faults.txt'))) 'bulk and pre-migration audit fault lines match exactly'
     $modelOut = Join-Path $scratch 'model-audit'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'model-audit-tools.jsonl'

@@ -78,6 +78,7 @@ struct AuditView {
     faults: HashMap<String, Vec<(String, String)>>,
     cards: Vec<Value>,
     by: HashMap<String, usize>,
+    orphan_check: Value,
 }
 
 impl AuditView {
@@ -324,6 +325,7 @@ impl Compiler {
                 .context("incomplete book relationship read")?;
             for card in &mut metadata {
                 card["links"] = json!([]);
+                card["kinds"] = json!({});
             }
             for link in graph["links"]
                 .as_array()
@@ -349,6 +351,9 @@ impl Compiler {
                         .as_array_mut()
                         .unwrap()
                         .push(json!(target));
+                    if let Some(kind) = link["kind"].as_str() {
+                        metadata[source_index]["kinds"][target] = json!(kind);
+                    }
                 }
             }
         }
@@ -437,11 +442,10 @@ impl Compiler {
         }
         if !group_only {
             for card in &metadata {
-                if field(card, "workspace") == "agent"
-                    && catalogue_index
-                        .category
-                        .get(&field(card, "address"))
-                        .is_some_and(|category| is_in(category, &["idea", "finding"]))
+                if catalogue_index
+                    .category
+                    .get(&field(card, "address"))
+                    .is_some_and(|category| category == "idea")
                     && ps_items(&card["links"])
                         .iter()
                         .any(|target| selected.contains(&s(target)))
@@ -486,10 +490,7 @@ impl Compiler {
         let mut inbound: HashMap<String, Vec<String>> = HashMap::new();
         let mut kinded: HashMap<String, i64> = HashMap::new();
         if !group_only {
-            for card in graph
-                .iter()
-                .filter(|card| field(card, "workspace") == "agent")
-            {
+            for card in &graph {
                 let source = field(card, "address");
                 let category = index
                     .category
@@ -505,12 +506,7 @@ impl Compiler {
                         .entry(target.clone())
                         .or_default()
                         .push(source.clone());
-                    if is_in(&target, &kinds)
-                        && (category == "idea"
-                            || (category == "finding"
-                                && index.category.get(&target).map(String::as_str)
-                                    != Some("finding")))
-                    {
+                    if target != source && is_in(&target, &kinds) && category == "idea" {
                         *kinded.entry(target).or_default() += 1;
                     }
                 }
@@ -548,6 +544,53 @@ impl Compiler {
             by.insert(ci(&at), cards.len());
             cards.push(card);
         }
+        let orphan_check = if group_only {
+            json!({"complete":false,"status":"not_run","archive_revision":revision})
+        } else {
+            let primary: Vec<_> = cards
+                .iter()
+                .filter(|card| selected.contains(&field(card, "address")))
+                .cloned()
+                .collect();
+            let baseline = join_path(&self.p.work, "before/audit-cards.json");
+            let mut changed = BTreeSet::new();
+            let mut since = "command_start";
+            if dir != join_path(&self.p.work, "before") && Path::new(&baseline).is_file() {
+                let old = util::read_json(&baseline)?;
+                let old: BTreeMap<_, _> = ps_items(&old)
+                    .into_iter()
+                    .filter(|card| field(card, "category") != "context")
+                    .map(|card| {
+                        (
+                            field(&card, "address"),
+                            crate::calls::authored_fingerprint(&card),
+                        )
+                    })
+                    .collect();
+                let current: BTreeMap<_, _> = primary
+                    .iter()
+                    .map(|card| {
+                        (
+                            field(card, "address"),
+                            crate::calls::authored_fingerprint(card),
+                        )
+                    })
+                    .collect();
+                for at in old.keys().chain(current.keys()) {
+                    if old.get(at) != current.get(at) {
+                        changed.insert(at.clone());
+                    }
+                }
+                since = "before";
+            }
+            let mut report = zt_check::graph::orphan_report(
+                &primary,
+                revision,
+                &changed.into_iter().collect::<Vec<_>>(),
+            )?;
+            report["changes_since"] = json!(since);
+            report
+        };
         let term_card = term
             .as_ref()
             .and_then(|at| by.get(&ci(at)).map(|&i| &cards[i]));
@@ -575,6 +618,8 @@ impl Compiler {
         util::write_text(join_path(dir, "audit-addresses.txt"), &known.join(NL))?;
         let scope = if group_only { "groups" } else { "book" };
         let coverage = json!({"complete":true,"scope":{"kind":scope,"groups":self.state["groups"],"addresses":addresses,"checked_addresses":entries.iter().map(|card|field(card,"address")).collect::<Vec<_>>()},"archive_revision":revision,"global_checks":"not_run","relationship_checks":if group_only{"not_run"}else{"book"},"faults":lines.len()});
+        let mut coverage = coverage;
+        coverage["orphan_check"] = orphan_check.clone();
         util::write_text(join_path(dir, "audit.json"), &ps::json_pretty(&coverage))?;
         util::write_text(
             join_path(dir, "audit.md"),
@@ -582,7 +627,12 @@ impl Compiler {
                 "# {scope} Card quality{NL}{NL}Required reads complete at archive revision {revision}. Global archive checks were not run.{NL}"
             ),
         )?;
-        Ok(AuditView { cards, by, faults })
+        Ok(AuditView {
+            cards,
+            by,
+            faults,
+            orphan_check,
+        })
     }
 
     fn invoke_audit(&mut self, dir: &str) -> Result<AuditView> {
@@ -1022,7 +1072,7 @@ impl Compiler {
         let faults: usize = with_faults.iter().map(|c| self.hard_faults(&audit, &field(c, "address")).len()).sum();
         let mut out = json!({
             "book": self.p.book, "picked": picked.len(), "with_faults": with_faults.len(), "review": review.len(),
-            "orphans": orphans.len(), "faults": faults, "jobs": jobs
+            "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len(), "faults": faults, "jobs": jobs
         });
         self.add_compact(&mut out, &jobs);
         Self::print_last(&out)
@@ -1441,7 +1491,7 @@ impl Compiler {
             jobs.extend(self.orphan_jobs(&audit, &orphans)?);
         }
         self.save_state()?;
-        let mut out = json!({ "jobs": jobs, "faults": total, "orphans": orphans.len() });
+        let mut out = json!({ "jobs": jobs, "faults": total, "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len() });
         self.add_compact(&mut out, &jobs);
         Self::print_last(&out)
     }
@@ -1469,7 +1519,7 @@ impl Compiler {
                 add(&mut after, &rule);
             }
         }
-        let orphans_after = before_keys.iter().filter(|a| Self::has_orphan_fault(&audit, a, &["I5", "E4"])).count();
+        let orphans_after = audit.orphan_check["count"].clone();
         let mut verdicts: Vec<(String, i64)> = Vec::new();
         if let Some(m) = self.state["applied"].as_object() {
             for v in m.values() {
@@ -1493,6 +1543,7 @@ impl Compiler {
             "refused": refused,
             "orphan_links": ps_items(&self.state["orphan_links"]).len(), "orphan_none": ps_items(&self.state["orphan_none"]).len(),
             "orphans_after": orphans_after,
+            "orphan_check": audit.orphan_check,
             "job_count": ps::keys(&self.state["jobs"]).len()
         });
         util::write_text(join_path(&self.p.work, "report.json"), &ps::json_pretty(&report))?;

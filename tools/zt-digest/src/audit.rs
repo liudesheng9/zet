@@ -23,6 +23,7 @@ use std::time::Instant;
 
 pub struct Params {
     pub citation_key: String,
+    pub orphan_targets: String,
     pub out: String,
     pub max_sentences: i64,
     pub max_chars: i64,
@@ -223,7 +224,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let mut incoming: HashMap<String,usize> = HashMap::new();
     for card in &graph_cards {
         for target in ps::select_unique(str_list(&card["links"])) {
-            *incoming.entry(target).or_default() += 1;
+            if target != field(card, "address") {
+                *incoming.entry(target).or_default() += 1;
+            }
         }
     }
     for card in &mut graph_cards {
@@ -330,17 +333,81 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     // The link graph of the Workspace: who links each Card, and how many Idea Cards link it with a kind word.
     let mut inbound_from: HashMap<String, Vec<String>> = HashMap::new();
     let mut kinded_from: HashMap<String, i64> = HashMap::new();
-    for c in &cards {
+    for c in &graph_cards {
         let kinded = ps::keys(&c["kinds"]);
         let cat = category(c);
         for t in ps::select_unique(str_list(&c["links"])) {
-            inbound_from.entry(ci(&t)).or_default().push(field(c, "address"));
-            let target_cat = index.category.get(&t).map(String::as_str);
-            if is_in(&t, &kinded) && (eq(&cat, "idea") || (eq(&cat, "finding") && !target_cat.is_some_and(|x| eq(x, "finding")))) {
+            inbound_from
+                .entry(ci(&t))
+                .or_default()
+                .push(field(c, "address"));
+            if t != field(c, "address") && is_in(&t, &kinded) && eq(&cat, "idea") {
                 *kinded_from.entry(ci(&t)).or_default() += 1;
             }
         }
     }
+    let orphaned = |c: &Value| {
+        zt_check::graph::is_orphan(
+            &field(c, "address"),
+            &category(c),
+            inbound_from
+                .get(&ci(&field(c, "address")))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        )
+    };
+    let orphan_targets = if p.orphan_targets.is_empty() {
+        scope.clone()
+    } else {
+        if p.citation_key.is_empty() {
+            bail!("OrphanTargets requires one CitationKey");
+        }
+        let text = util::read_text(&p.orphan_targets)
+            .context("incomplete declared orphan target scope")?;
+        let mut targets = std::collections::BTreeSet::new();
+        for at in text.lines().map(str::trim).filter(|at| !at.is_empty()) {
+            targets.insert(at.to_string());
+        }
+        targets
+            .into_iter()
+            .map(|at| {
+                let card = graph_cards
+                    .iter()
+                    .find(|c| field(c, "address") == at)
+                    .with_context(|| format!("incomplete orphan target `{at}`"))?;
+                if field(card, "workspace") != "agent" {
+                    bail!("orphan target `{at}` must be an agent Card");
+                }
+                let tree = field(card, "tree");
+                if index.book_set.contains(&tree) && tree != p.citation_key {
+                    bail!("orphan target `{at}` belongs to another Literature tree");
+                }
+                Ok(card)
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let orphan_entries: Vec<_> = orphan_targets
+        .iter()
+        .map(|c| {
+            let mut card = (*c).clone();
+            card["category"] = json!(category(c));
+            card["inbound"] = json!(
+                inbound_from
+                    .get(&ci(&field(c, "address")))
+                    .cloned()
+                    .unwrap_or_default()
+            );
+            card["inbound_kinded"] = json!(
+                kinded_from
+                    .get(&ci(&field(c, "address")))
+                    .copied()
+                    .unwrap_or(0)
+            );
+            card
+        })
+        .collect();
+    let mut orphan_check = zt_check::graph::orphan_report(&orphan_entries, revision, &[])?;
+    orphan_check["changes_since"] = json!("command_start");
     // A book's term table: a Card of its Literature tree whose title starts with 术语表.
     let mut term_card: HashMap<String, String> = HashMap::new();
     for c in &cards {
@@ -445,7 +512,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "unattributed": {
             "count": unattributed.len(),
             "by_category": tally(&unattributed.iter().map(|c| category(c)).collect::<Vec<_>>()),
-            "orphans": unattributed.iter().filter(|c| !eq(&category(c), "root") && c["inbound"].as_i64().unwrap_or(0) == 0).map(|c| field(c, "address")).collect::<Vec<_>>(),
+            "orphans": unattributed.iter().filter(|c| orphaned(c)).map(|c| field(c, "address")).collect::<Vec<_>>(),
             "style": unattributed_style,
             "list": unattributed.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
         }
@@ -478,7 +545,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         }
 
         // Orphans, source lines, kinded Links.
-        let orphans: Vec<&Value> = regular.iter().copied().filter(|c| c["inbound"].as_i64().unwrap_or(0) == 0).collect();
+        let orphan_scope=if p.orphan_targets.is_empty() {regular.clone()} else {orphan_targets.clone()};
+        let orphans: Vec<&Value> = orphan_scope.iter().copied().filter(|c| orphaned(c)).collect();
         let no_source: Vec<&Value> = writing
             .iter()
             .copied()
@@ -627,6 +695,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "complete": true,
         "archive_revision": revision,
         "scope": scope_name,
+        "orphan_check": orphan_check,
         "limits": limits,
         "seconds": seconds,
         "workspace": workspace,
@@ -661,13 +730,14 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
 
 /// `zt-digest audit`.
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk", "Sample"];
+    let params = ["CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk", "Sample", "OrphanTargets"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["SkipModels"])?;
     // Accept existing wrappers' integer options. The bulk path owns its
     // server-limited chunk size and always uses this command's one client.
     let _legacy_read_options = (a.int_or("Throttle",1)?,a.int_or("Chunk",200)?);
     let p = Params {
         citation_key: a.str("CitationKey"),
+        orphan_targets: a.str("OrphanTargets"),
         out: a.required("Out")?,
         max_sentences: a.int_or("MaxSentences", 12)?,
         max_chars: a.int_or("MaxChars", 400)?,

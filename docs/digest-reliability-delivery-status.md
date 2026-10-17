@@ -47,17 +47,17 @@ The [release-to-release isolated measurement](digest-indexed-read-final-benchmar
 
 The global Link result is still 7.7 MB of structured JSON, so its cost remains substantial. Complete title export of all 10,895 Cards was observed at 249 ms, and a two-Card text read at 2.45 ms; these are single observations, not percentile estimates. [Hub parity](digest-indexed-hub-parity.json) additionally matches the full baseline hashes for `get_hub` and `list_hubs`; their single measured observations after warm-up were 302 → 161 ms and 20.2 → 3.01 seconds. No live Card writes or actual digest workflows were run.
 
-## #67: bulk digest clients (in progress)
+## #67: bulk digest clients
 
 The first implementation step switches `snapshot-topics` to one fresh title export per group and `prepare-link` to one title export plus bounded text batches through one MCP process. Existing rendering, ownership, compact excerpts and existing-Link exclusion are preserved. The ranking corpus still requires one bulk text pass over the candidate catalogue. The lean MCP text view now provides the existing excerpt/edge/Link/kind/parent facts; it does not calculate models or hubs.
 
 The shared checker client chunks at 200 addresses, reduces chunks after a structured reply-limit error, and rejects missing, reordered or changing-view inputs. Public preparation tests observed each old failure before its fix (per-tree snapshot reads, per-Card link reads, loss of linked-target exclusion, and lack of chunk adaptation). The latest preparation suite also verifies missing input fails explicitly. All 27 Workspace/MCP, 80 digest unit and ten checker unit tests pass for this step. Logs are under `D:/zt-target/qualification/issue67-*.log`.
 
-This slice remains open for retained-archive command timing qualification. The fixture checks below do not establish the final shared orphan-definition gate assigned to #76. It does not yet satisfy all #67 acceptance criteria.
+The initial client step below did not yet qualify command timings or the shared orphan predicate. The retained-data comparison and #76 section record the later evidence for those gates.
 
 The next implementation step adds owned-manifest group checks for the normal `-NoOrphans` group cycle, using required parents and the book term table and labelling global checks `not_run`. Public tests pass for identical requested R4/R6/L1/L2 fault lines against the full-book path, one MCP process, no unrelated tree reads, and missing Card/manifest refusal. Every standalone live checker mode now uses lean batches or its complete model context, preserves its fault rules and checks revision consistency. Filed members share one primary model read; unfiled shared members are resolved independently.
 
-After each observed pre-fix failure, the public group/checker tests pass. The final relevant regression run passes all six suites: preparation (27 assertions), scoped inputs (17, then 18 after adding nonzero Link-fault parity), Card compiler (57), model compiler (59), and both language/layer fixture suites. Ten checker and 80 digest unit tests also pass. Logs: `D:/zt-target/qualification/issue67-group-checker-suites/` and `issue67-check-*-red/green.log`. These verify the delivered partial changes; #67 stays open for its remaining whole-book scope and timing requirements.
+After each observed pre-fix failure, the public group/checker tests pass. The final relevant regression run passes all six suites: preparation (27 assertions), scoped inputs (17, then 18 after adding nonzero Link-fault parity), Card compiler (57), model compiler (59), and both language/layer fixture suites. Ten checker and 80 digest unit tests also pass. Logs: `D:/zt-target/qualification/issue67-group-checker-suites/` and `issue67-check-*-red/green.log`. These verified the delivered group/checker changes; whole-book scope, retained timings and shared orphan sets were qualified in the later steps below.
 
 The global audit now reads its required complete graph through a fresh title export and bounded lean batches, reuses those bodies, and reads model contexts only for the selected report scope. It computes inbound facts from the indexed links in those complete rows, retains both Workspaces' Bridge endpoints, and uses one MCP client. The worker/null-fallback path is removed; legacy worker flags remain accepted for wrapper compatibility. Successful reports record completeness and their checked revision. Missing graph/model input or an actual edit between graph and relationship reads fails explicitly before publishing a completed report.
 
@@ -89,7 +89,7 @@ Each candidate command has one warm-up and three measured samples. The baseline 
 
 The snapshot matches byte for byte. All Card steps match the selected 1,445-Card state, complete jobs and 83 fault lines; the complete report JSON also matches. All 343 link-preparation files (3,991,649 bytes) match byte for byte, including candidate ranking and ownership. The initial attempt to run the old client against the new server failed on a 9.9 MB tree reply exceeding the new 8 MiB limit; that failure and the earlier ordering mismatch remain retained rather than being counted as successful measurements.
 
-T32 is qualified for these commands. #67 remains open for its T22 gate: the shared orphan predicate and exact revision-scoped sets assigned to #76 are not established by this timing comparison.
+T32 is qualified for these commands. This timing comparison does not itself establish T22; the exact shared orphan-set gate is qualified separately in the #76 section below.
 
 ### Executable testing and host incidents
 
@@ -145,6 +145,22 @@ All 356 root tests pass with zero failures and one intentionally ignored real-cl
 
 #69 remains open for the R222 unit-completion evidence alongside the later ledger/workflow adaptation. The paragraph ownership and bounded draft-check contracts are implemented and tested; no actual digest workflow or live archive migration has been performed.
 
+## #76: shared orphan scope and predicate
+
+`tools/zt-check/src/graph.rs` now owns shared purpose classification, the orphan predicate and complete revision-scoped report assembly. Audit, the Card cycle and standalone Card checks use that classification. Standalone checks read one complete fresh title catalogue for the anchor denominator rather than mistaking three links for a whole-book majority in a requested subset.
+
+An orphan is an in-scope substantive Regular Card without a valid authored inbound Link from another Card. Eligible purposes are Idea, Event, Finding, Model and Model part. Roots, anchors, structure, term/notation tables and Hubs are explicitly excluded. Self-Links, the target's own source citation, filing/navigation and generated Reverse text do not rescue it. An actual authored parent Link does. Sources span both Workspaces, while repair targets remain agent Cards. Idea-kinded inbound counts remain a separate stronger statistic, using either Workspace and excluding self-Links.
+
+Both commands publish actual sorted `orphan_check.list`, target/eligible/excluded sets, the definition, source Workspaces, completeness and graph revision. The Card cycle compares authored fingerprints to its before view and names scoped changes; Reverse-only changes are excluded. Read-only audit labels its empty change set as since command start. `audit -CitationKey ... -OrphanTargets <file>` can receive the Card cycle's exact target set, including declared Topic work that lacks source attribution. It refuses missing/human/foreign-Literature targets. Other audit quality/Bridge scopes retain their existing attribution rules. Group checks without relationship coverage report orphan checking `not_run`, and summary counts are unknown rather than fabricated zeroes.
+
+Public plan/check/report orphan counts come from this shared set, including Models/parts that are not writable Card-fix jobs. The existing incoming-Link repair job family can also address stronger layer faults; its queue size is separately named `inbound_repair_cards` and is no longer a second definition/count of orphans. Actual unresolved addresses remain visible in the report.
+
+The actual command/MCP suite `orphan-scope.tests.ps1` passes 21 assertions: identical complete sets at equal revisions, every excluded purpose, self/outbound/generated/navigation/filing cases, authored parent and human Links, stronger human Idea-kinded evidence, an independently changed later graph and changed-target list, exact declared ownership scope, missing human source/carrier refusal, and complete standalone classification. The initial public tests failed before the new report, human evidence, explicit-scope option and full anchor denominator were implemented. Logs: `D:/zt-target/qualification/issue76-*-red/green.log`.
+
+All ten affected public suites pass sequentially: Bridge planning (17 assertions), Card compiler (57), language/layer fixtures (both pass), audit (17), model compiler (59), Organize/skeleton (19), orphan scope (21), preparation (29) and scoped inputs (31). Final logs: `issue76-public-final/` and `issue76-public-final-summary.log`. All ten checker and 80 digest unit tests pass after source formatting (`issue76-checker-unit-final.log`, `issue76-digest-unit-final.log`). The initial regression runner started installed old servers in three suites and failed on unsupported `get_cards`; those logs remain in `issue76-public-suites/`. The final run puts every candidate binary on PATH and has zero failures.
+
+The original pre-migration audit fixtures are retained. Their comparison adapts only the deliberate #76 differences: notation classification, removal of anchors from orphan eligibility, and I5 wording. Every other graph/Bridge/quality report field and fault remains checked. The new complete sets are checked independently by the public scope suite. This qualifies #76 and #67's T22 gate alongside the retained T06/T32 evidence. It does not run a digest workflow or claim that all real archive orphans have been repaired.
+
 ## Remaining slices
 
-#67–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.
+#68–#75 and #77–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.

@@ -25,7 +25,7 @@ updated: 2026-10-17
 | Entry points | `zt-check` command line (`main` in `tools/zt-check/src/main.rs` → `check::run_cli`); the library (`zt_check::check::run_lines(args, Some(&mut zt))`, `zt_check::mcp::Zt`), which [zt-digest](zt-digest.md) runs in-process; `scripts/install-zt-check.ps1` (build and install) |
 | Key files | `tools/zt-check/Cargo.toml` — a crate with its own `[workspace]`, so it never builds zt; three dependencies (`anyhow`, `regex`, `serde_json`) |
 | | `tools/zt-check/Cargo.lock` — pinned versions (regex 1.13.1, anyhow 1.0.104, serde_json) |
-| | `tools/zt-check/src/lib.rs` — the library: `pub mod check; pub mod mcp;` |
+| | `tools/zt-check/src/lib.rs` — the library: `pub mod check; pub mod graph; pub mod mcp;` |
 | | `tools/zt-check/src/main.rs` — collects the arguments, calls `zt_check::check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
 | | `tools/zt-check/src/check.rs` — the rules, the PowerShell text semantics, the four input modes, the option parser, the output, and the unit tests |
 | | `tools/zt-check/src/mcp.rs` — `Zt`, a minimal JSON-RPC client that starts `zt mcp` and makes `tools/call` requests |
@@ -83,6 +83,15 @@ flowchart TD
 | `Zt` (`start`, `call`, `Drop`) | `tools/zt-check/src/mcp.rs` | The `zt mcp` client |
 
 ## Interfaces
+
+### Shared graph classification and orphan evidence
+
+`tools/zt-check/src/graph.rs` is the pure shared graph contract. `category(card, literature, anchor_counts)` replaces separate audit/compiler/standalone classification code. It retains typed Finding/Event/Model/part/Hub distinctions and Literature anchors, term tables and structure inference; notation tables are explicit `notation`. Callers supply the complete anchor counts needed by structure inference. `check::check_cards` obtains those counts from one fresh, complete `export_titles` at the same revision as its selected body reads; it does not infer a whole-book denominator from a requested subset.
+
+`graph::is_orphan(address, category, inbound)` defines one orphan: an eligible substantive Regular Card without a valid authored inbound Link from another Card. Eligible categories are `idea,event,finding,model,part`; excluded purposes are `root,anchor,structure,terms,notation,hub`. A self-Link does not help. Filing, a navigation parent, outbound citations and generated Reverse text are not authored inbound evidence. An actual authored Link from the parent does count. Inbound sources span both Workspaces; repair targets stay in the agent Workspace.
+
+`graph::orphan_report(cards, revision, changed_cards)` requires explicit classification and complete inbound/Idea-kinded facts. It returns sorted target/eligible/excluded/orphan addresses, count, source Workspaces, revision and a separate `inbound_from_idea_with_kind` map. Missing facts, unknown categories, duplicate targets and human repair targets are errors. `changed_cards` describes authored target changes; callers label the baseline with `changes_since`. No stronger layer statistic is used to define orphanhood. I5 uses the same predicate; E4/F4 continue to report the stronger Idea-kinded evidence separately.
+
 
 `mcp::Zt::cards(addresses, view)` returns `CardRead { cards, archive_revision }` through that command's existing MCP process. It chunks at 200 addresses, halves a chunk after a structured byte/address limit error, and fails when a single Card still cannot fit. It verifies complete/missing/count/address order and a common revision across chunks. Missing input or a changing read view fails explicitly; it cannot become an empty successful dataset.
 
@@ -160,7 +169,7 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 | I2 | Prose size: over `max-idea-chars` is a split candidate, under `min-idea-chars` a merge candidate | `idea` | yes | `(N characters > 300) split candidate` |
 | I3 | A Link to the book's Literature Card or one of its anchors (`<key>/<n>`) | `idea`, `event` with `book` and `links` | yes | `no source line: no Link to [[key]] or one of its anchors` |
 | I4 | A kinded Link to a Card other than the parent | `idea` with `kinds` | yes | `no kinded Link to a Card other than the parent` |
-| I5 | A Card other than the parent links here | `idea`, `event`, `finding` with `inbound` | no | `no Card other than the parent links here` |
+| I5 | Another Card has a valid authored inbound Link here; a self-Link does not count | substantive categories with `inbound` | no | `no other Card has an authored Link here` |
 | I6 | Advisory: no title in the same tree with bigram (Dice) similarity of 0.8 or more | `idea` with `tree` | no | `(advisory) a title very similar to [[a]]` |
 | E1 | A date in the title (a year 1000–2099, or a number + `年`/`世纪`) | `event` | yes | `no date in the title: <title>` |
 | E2 | The labels `时间`, `地点`, `参与者`, `经过`, `来源` at line starts (list marker and bold allowed) | `event` | yes | `missing labels: 参与者、经过、来源` |

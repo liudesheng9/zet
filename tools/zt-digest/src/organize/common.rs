@@ -86,6 +86,7 @@ pub fn scripts_dir() -> String {
 /// `pwsh digest-audit.ps1 -CitationKey <key> -Out <out>` in-process, with the script's defaults.
 pub fn run_audit(zt: &mut Zt, key: &str, out: &str) -> Result<()> {
     let params = audit::Params {
+        orphan_targets: String::new(),
         citation_key: key.to_string(),
         out: out.to_string(),
         max_sentences: 12,

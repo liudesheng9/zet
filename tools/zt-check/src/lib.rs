@@ -3,4 +3,5 @@
 //! digest step runs the check in its own process, on its own `zt mcp`.
 
 pub mod check;
+pub mod graph;
 pub mod mcp;

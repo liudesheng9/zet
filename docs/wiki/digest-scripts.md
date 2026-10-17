@@ -604,6 +604,11 @@ A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-diges
 
 ## Testing
 
+`tests/orphan-scope.tests.ps1` compares the actual `audit` and `card` commands on identical revisions and target sets. It covers self-Links, outbound source citations, generated Reverse/navigation/filing, authored parent Links, human inbound sources, separate Idea-kinded evidence from a human carrier, every excluded purpose, substantive models/parts, an authored later revision and changed-target facts. It also compares an explicit audit target file with the Card cycle's owned Topic manifest, injects missing human graph/carrier inputs, and checks that standalone classification uses the full anchor denominator.
+
+The original `audit-bulk-report-fixture.json` and fault fixture remain retained. `digest-audit.tests.ps1` adapts only the documented #76 changes before comparing: notation gets its own classification, anchors leave the orphan target set, and I5's wording names another authored source. The new explicit `orphan_check` is verified by the dedicated public suite; all other historical graph/Bridge/quality fields remain compared to the original fixture.
+
+
 `tests/owned-paragraph.tests.ps1` exercises the actual identified helper and MCP against a temporary archive: append/correct through exact receipts, preservation of independent prose/formulas/figure references, source allow-list refusal before earlier writes, exact-result scope, nested-byte chunking, no-write Link SELF-CHECK, malformed/incomplete preview refusal, then persisted apply of the checked paragraph. The checker tests deliberately retain unrelated English prose so the paragraph check cannot silently turn into a whole-Card language rewrite. It runs through `run-all.ps1` as `owned-paragraph`; `ZT_DIGEST` selects the candidate compiler.
 
 
