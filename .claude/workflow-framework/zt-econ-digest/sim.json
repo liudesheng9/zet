@@ -213,7 +213,7 @@
       }
     },
     {
-      "prompt": "book-terms\\.ps1\" -Step apply",
+      "prompt": "zt-digest terms -Step apply",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true,\"terms\":2,\"with_avoid\":1,\"card\":\"Key/1|a\"}",
@@ -221,7 +221,7 @@
       }
     },
     {
-      "prompt": "book-skeleton\\.ps1\" -Step apply",
+      "prompt": "zt-digest skeleton -Step apply",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true,\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0,\"topics\":1,\"written\":{\"structure\":\"Key/1|b\"}}",
@@ -229,7 +229,7 @@
       }
     },
     {
-      "prompt": "hub-compiler\\.ps1\" -Step plan",
+      "prompt": "zt-digest hub -Step plan",
       "answer": {
         "ok": true,
         "output": "{\"tree_count\":0,\"jobs\":[]}",
@@ -237,7 +237,7 @@
       }
     },
     {
-      "prompt": "hub-compiler\\.ps1\" -Step apply",
+      "prompt": "zt-digest hub -Step apply",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true}",
@@ -245,7 +245,7 @@
       }
     },
     {
-      "prompt": "hub-compiler\\.ps1\" -Step check",
+      "prompt": "zt-digest hub -Step check",
       "answer": {
         "ok": true,
         "output": "{\"hubs\":0,\"faults\":0,\"jobs\":[]}",
@@ -253,7 +253,7 @@
       }
     },
     {
-      "prompt": "hub-compiler\\.ps1\" -Step report",
+      "prompt": "zt-digest hub -Step report",
       "answer": {
         "ok": true,
         "output": "{\"counts\":{},\"faults\":{},\"mirror\":0,\"missing_count\":0}",
@@ -261,7 +261,7 @@
       }
     },
     {
-      "prompt": "event-compiler.ps1\" -Step plan",
+      "prompt": "zt-digest event -Step plan",
       "answer": {
         "ok": true,
         "output": "{\"candidates\":2,\"groups\":2,\"jobs\":[]}",
@@ -269,7 +269,7 @@
       }
     },
     {
-      "prompt": "event-compiler.ps1\" -Step apply",
+      "prompt": "zt-digest event -Step apply",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true,\"applied_jobs\":0,\"created\":0,\"merged\":0,\"linked\":0,\"refused\":[],\"pending_jobs\":0}",
@@ -277,7 +277,7 @@
       }
     },
     {
-      "prompt": "event-compiler.ps1\" -Step report",
+      "prompt": "zt-digest event -Step report",
       "answer": {
         "ok": true,
         "output": "{\"jobs\":0,\"created\":0,\"merged\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",
@@ -285,7 +285,7 @@
       }
     },
     {
-      "prompt": "finding-compiler\\.ps1\" -Step plan",
+      "prompt": "zt-digest finding -Step plan",
       "answer": {
         "ok": true,
         "output": "{\"candidates\":3,\"groups\":2,\"jobs\":[]}",
@@ -293,7 +293,7 @@
       }
     },
     {
-      "prompt": "finding-compiler\\.ps1\" -Step apply",
+      "prompt": "zt-digest finding -Step apply",
       "answer": {
         "ok": true,
         "output": "{\"ok\":true,\"applied_jobs\":0,\"created\":0,\"linked\":0,\"refused\":[],\"pending_jobs\":0}",
@@ -301,7 +301,7 @@
       }
     },
     {
-      "prompt": "finding-compiler\\.ps1\" -Step report",
+      "prompt": "zt-digest finding -Step report",
       "answer": {
         "ok": true,
         "output": "{\"jobs\":0,\"created\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",

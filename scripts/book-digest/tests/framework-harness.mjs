@@ -29,10 +29,17 @@ let planJobs = 21
 let applyPending = 0
 let explainApplies = 0
 // The scripts ported to zt-digest (ZD_TOOLS in zt-digest-lib.js): tool → script.
-const ZT_DIGEST_TOOLS = { audit: 'digest-audit', card: 'card-compiler', model: 'model-compiler', 'model-context': 'model-context', 'list-models': 'list-models' }
+const ZT_DIGEST_TOOLS = {
+  audit: 'digest-audit', card: 'card-compiler', model: 'model-compiler', 'model-context': 'model-context', 'list-models': 'list-models',
+  hub: 'hub-compiler', bridge: 'bridge-compiler', math: 'math-compiler', event: 'event-compiler', finding: 'finding-compiler',
+  terms: 'book-terms', skeleton: 'book-skeleton', 'organize-survey': 'organize-survey', 'organize-apply': 'organize-apply',
+  figures: 'attach-figures', prepare: 'prepare-book-digest', 'prepare-link': 'prepare-link-pass', 'snapshot-topics': 'snapshot-topics',
+}
+// The tool names, longest first, so that `model-context` is not read as `model`, nor `prepare-link` as `prepare`.
+const ZT_DIGEST_NAMES = Object.keys(ZT_DIGEST_TOOLS).sort((a, b) => b.length - a.length).join('|')
 // A tool command has a parameter after the tool name; the approval lines name tools without one.
-const ZT_DIGEST_COMMAND = /zt-digest (?:audit|card|model-context|list-models|model) -[A-Za-z][^\n]*/
-const canonical = (cmd) => cmd.replace(/^zt-digest (audit|card|model-context|list-models|model)\b/, (m, tool) => `pwsh -NoProfile -File "E:\\zet\\scripts\\book-digest\\${ZT_DIGEST_TOOLS[tool]}.ps1"`)
+const ZT_DIGEST_COMMAND = new RegExp(`zt-digest (?:${ZT_DIGEST_NAMES}) -[A-Za-z][^\\n]*`)
+const canonical = (cmd) => cmd.replace(new RegExp(`^zt-digest (${ZT_DIGEST_NAMES})(?= )`), (m, tool) => `pwsh -NoProfile -File "E:\\zet\\scripts\\book-digest\\${ZT_DIGEST_TOOLS[tool]}.ps1"`)
 function runtime(kind, opts0 = {}) {
   const calls = []
   const managed = []
@@ -217,8 +224,8 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   const labels = calls.map(c => c.label)
   const cmds = calls.map(c => c.cmd).filter(Boolean)
   check(result && result.mode === 'full', 'econ full: runs to its end')
-  const ported = /(card-compiler|model-compiler|digest-audit|list-models|model-context)\.ps1/
-  check(cmds.some(c => ported.test(c)) && calls.filter(c => ported.test(c.cmd)).every(c => /^zt-digest (card|model|audit|list-models|model-context) -/.test(c.raw)),
+  const ported = new RegExp(`(${Object.values(ZT_DIGEST_TOOLS).join('|')})\\.ps1`)
+  check(cmds.some(c => ported.test(c)) && calls.filter(c => ported.test(c.cmd)).every(c => new RegExp(`^zt-digest (${ZT_DIGEST_NAMES}) -`).test(c.raw)),
     'econ full: the ported scripts run as zt-digest tools, never through pwsh')
   check(calls.filter(c => /^(digest|link) manager/.test(c.label)).every(c => /zt-digest call/.test(c.prompt)), 'econ full: digest and link managers approve the zt-digest helper')
   check(labels.indexOf('terms: plan') > labels.indexOf('prepare book') && labels.indexOf('terms: plan') < labels.findIndex(l => /^digest manager/.test(l)), 'econ full: the term table runs after Prepare and before the digest')

@@ -13,9 +13,9 @@ updated: 2026-10-16
 
 ## Purpose
 
-The digest scripts are the deterministic half of the book digest workflows (`zt-econ-digest`, `zt-math-digest`), which turn a Scholar Archive book into agent Literature trees, Topic trees, Idea, Event, Finding, Model, and Hub Cards. Every stage follows one pattern: a script plans the work and writes job files, a DeepSeek Harness run (or a Sonnet architect, or Opus) writes only JSON or Card prose, a script checks that output (the writer's own `SELF-CHECK:` command), applies it through the zt helper, checks the result, and reports. The scripts exist so that structure (Locations, Links, moves, tables, skeletons, ownership, retries) is done by code that costs no model tokens and follows one rule, and so that a model's text is checked by `zt-check` before it reaches a Card. They are PowerShell 7 scripts, run by the workflow's Haiku drivers as one `pwsh -NoProfile -File …` command per step, and by developers by hand. Some of them are now forwarders to [zt-digest](zt-digest.md): `model-compiler.ps1`, `model-context.ps1`, and `list-models.ps1` keep their parameters, files, and output, but run `zt-digest model`, `zt-digest model-context`, and `zt-digest list-models`. New callers should call the tool directly.
+The digest scripts are the deterministic half of the book digest workflows (`zt-econ-digest`, `zt-math-digest`), which turn a Scholar Archive book into agent Literature trees, Topic trees, Idea, Event, Finding, Model, and Hub Cards. Every stage follows one pattern: a script plans the work and writes job files, a DeepSeek Harness run (or a Sonnet architect, or Opus) writes only JSON or Card prose, a script checks that output (the writer's own `SELF-CHECK:` command), applies it through the zt helper, checks the result, and reports. The scripts exist so that structure (Locations, Links, moves, tables, skeletons, ownership, retries) is done by code that costs no model tokens and follows one rule, and so that a model's text is checked by `zt-check` before it reaches a Card. Their code now lives in [zt-digest](zt-digest.md): each script is a PowerShell 7 forwarder to its `zt-digest` tool (one Rust process per step, one `zt mcp`, zt-check in-process), with the same parameters, files, and output. The workflow's Haiku drivers run the tools directly (`zt-digest <tool> …`, one command per step), and so does every `SELF-CHECK:` line; the scripts stay for developers and old commands. This doc describes what each step does; [zt-digest](zt-digest.md) describes the code and what the port changed.
 
-**Owns:** the PowerShell scripts in `scripts/book-digest/` (preparation of the staging folder, the compiler cycles of every layer, the read-only audit and surveys, figure attachment), the job, plan, answer, and state JSON formats they read and write, the `zt-calls.ps1` bridge from scripts to the zt helper and to `zt-check`, and the PowerShell tests and fixtures in `scripts/book-digest/tests/`.
+**Owns:** the scripts in `scripts/book-digest/` (forwarders to the `zt-digest` tools) and what each step does (preparation of the staging folder, the compiler cycles of every layer, the read-only audit and surveys, figure attachment), the job, plan, answer, and state JSON formats they read and write, the `zt-calls.ps1` bridge from a PowerShell caller to the zt helper and to `zt-check`, `book-of.ps1` and `relatedness.ps1` (kept as PowerShell), and the tests and fixtures in `scripts/book-digest/tests/`.
 
 **Does not own:** the stage order, roles, retries, and modes that call these scripts ([Digest workflows](digest-workflows.md), which also owns `framework-harness.mjs` and `bridge-workflow-harness.mjs`); the DeepSeek instruction files `dsh-*.zh.md` and the architect files `model-architect*.md` that the job files open with ([Digest prompts](digest-prompts.md)); the zt helper `skills/zt/scripts/zt-mcp.ps1` and the installed skills ([Agent skills](agent-skills.md)); the code of the forwarded scripts, which lives in `tools/zt-digest` ([zt-digest](zt-digest.md)); the Card language and Card layer rules themselves ([zt-check](zt-check.md)); the MCP tools the helper calls ([MCP server](mcp-server.md)); how ZT computes models, build reports, units, and theories ([Models and math](models-and-math.md)); hub faults and `list_hubs` ([Hub Cards](hub-cards.md)); the Scholar Archive bridge behind `zt scholar …` ([Scholar bridge](scholar-bridge.md)).
 
@@ -23,8 +23,9 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 
 | | |
 |---|---|
-| Entry points | One `pwsh -NoProfile -File scripts/book-digest/<script>.ps1 [-Step <step>] …` per stage step; dot-sourced libraries `zt-calls.ps1`, `relatedness.ps1`, `figures.ps1`; the tests `scripts/book-digest/tests/*.tests.ps1` |
-| Key files | `prepare-book-digest.ps1` — Chinese-only text, section groups, group files, shared prefixes, manifest, and (`-Apply`) the Literature tree with its anchors |
+| Entry points | One `zt-digest <tool> [-Step <step>] …` per stage step, or the same arguments to `pwsh -NoProfile -File scripts/book-digest/<script>.ps1` (a forwarder; the tool of each script is in [zt-digest](zt-digest.md)); dot-sourced libraries `zt-calls.ps1`, `relatedness.ps1`, `book-of.ps1` for PowerShell callers; the tests `scripts/book-digest/tests/*.tests.ps1` |
+| Key files | Every script below forwards to its `zt-digest` tool, except `book-of.ps1`, `relatedness.ps1`, and `zt-calls.ps1` |
+| | `prepare-book-digest.ps1` — Chinese-only text, section groups, group files, shared prefixes, manifest, and (`-Apply`) the Literature tree with its anchors |
 | | `snapshot-topics.ps1` — a compact list of every tree for one digest run |
 | | `book-terms.ps1` — the Book term table (术语表) |
 | | `card-compiler.ps1` — the card layer cycle: fix, review, orphan Links, Organize notes. A forwarder to `zt-digest card` (`tools/zt-digest/src/card.rs`, [zt-digest](zt-digest.md)) |
@@ -41,13 +42,12 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 | | `hub-compiler.ps1` — the Hub Cards of the whole agent Workspace |
 | | `math-compiler.ps1` — units, Theory Cards, notation, boundary, proof review, rules M1 to M18 |
 | | `digest-audit.ps1` — read-only audit of a book or of the Workspace. A forwarder to `zt-digest audit` (`tools/zt-digest/src/audit.rs`) |
-| | `book-of.ps1` — pure `Get-BookIndex -Trees -Cards`, shared Card categories and inferred book attribution; `bridge-compiler.ps1` loads it, and `zt-digest audit` has a Rust copy (`tools/zt-digest/src/audit/book_of.rs`) |
+| | `book-of.ps1` — pure `Get-BookIndex -Trees -Cards`, shared Card categories and inferred book attribution; only its own test loads it now, and the tools use the Rust copy (`tools/zt-digest/src/audit/book_of.rs`) |
 | | `bridge-compiler.ps1` — frozen candidate plans, checked judge output, immutable review reports, and guarded apply of accepted proposals |
-| | `zt-calls.ps1` — `Invoke-Zt` (zt MCP tools through the helper) and `Invoke-ZtCheck` (`zt-check`) |
-| | `relatedness.ps1` — TF-IDF over Chinese character bigrams, compiled ranking; `zt-digest card` has a Rust copy (`tools/zt-digest/src/card/relatedness.rs`) |
-| | `figures.ps1` — a book's figures and its Document links |
+| | `zt-calls.ps1` — `Invoke-Zt` (zt MCP tools through the helper) and `Invoke-ZtCheck` (`zt-check`), for PowerShell callers and the tests; no digest script loads it any more |
+| | `relatedness.ps1` — TF-IDF over Chinese character bigrams, compiled ranking; no script loads it any more, and the tools use the Rust copy (`tools/zt-digest/src/card/relatedness.rs`) |
 | | `scripts/book-digest/tests/*.tests.ps1`, `scripts/book-digest/tests/card-layer-fixture.json`, `scripts/book-digest/tests/card-style-fixture.json` — tests and fixtures |
-| Depends on | `skills/zt/scripts/zt-mcp.ps1` (the zt helper, [Agent skills](agent-skills.md)) which starts `zt mcp` ([MCP server](mcp-server.md)); `zt-check` on PATH ([zt-check](zt-check.md)); `zt scholar keep-figures`, `zt scholar sql`, `zt scholar file` ([Scholar bridge](scholar-bridge.md)); `get_model`, `get_hub`, `list_hubs` reports ([Models and math](models-and-math.md), [Hub Cards](hub-cards.md)); the instruction files in `scripts/book-digest/*.md` ([Digest prompts](digest-prompts.md)); `zt-digest` on PATH or in `ZT_DIGEST` for the forwarders ([zt-digest](zt-digest.md)); PowerShell 7 (`ForEach-Object -Parallel`, `Add-Type`, `Start-ThreadJob` in a test) |
+| Depends on | [zt-digest](zt-digest.md) (the tools every script forwards to, on PATH or in `ZT_DIGEST`), which starts `zt mcp` ([MCP server](mcp-server.md)); `skills/zt/scripts/zt-mcp.ps1` (the zt helper path, [Agent skills](agent-skills.md)); `zt-check` on PATH ([zt-check](zt-check.md)); `zt scholar keep-figures`, `zt scholar sql`, `zt scholar file` ([Scholar bridge](scholar-bridge.md)); `get_model`, `get_hub`, `list_hubs` reports ([Models and math](models-and-math.md), [Hub Cards](hub-cards.md)); the instruction files in `scripts/book-digest/*.md` ([Digest prompts](digest-prompts.md)); `zt-digest` on PATH or in `ZT_DIGEST` for the forwarders ([zt-digest](zt-digest.md)); PowerShell 7 (`ForEach-Object -Parallel`, `Add-Type`, `Start-ThreadJob` in a test) |
 | Used by | [Digest workflows](digest-workflows.md) (the modules in `scripts/book-digest/workflow/modules/`); the DeepSeek writers, through the `SELF-CHECK:` lines of their job files; [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/references/scripts.md` describes them) |
 | Tests | `scripts/book-digest/tests/*.tests.ps1` (one per script or helper, run one by one) |
 
@@ -61,7 +61,7 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 - `Category` — how `digest-audit.ps1` (`Get-Category`) classifies a Card: `root`, `anchor`, `idea`, `event`, `model` (a Model Card), `part` (a Model part), `hub`, `terms` (the Book term table), `structure` (the Structure Card). zt-check applies the Card layer rules only to entries that carry a category.
 - `Book of a Card` — a Literature tree Card belongs to its tree; a Topic tree Card belongs to the book whose Literature tree it links most (a Link to the Literature Card or an anchor counts 10, to another Card of the tree 1); a Card that links no book is unattributed (`digest-audit.ps1`).
 - `Job` — one DeepSeek task: `{"id","files":[…],"prompt","continue"?,"fallback"?}`. `files` are opened in order (the instruction file first, so DeepSeek caches it); `continue` names the earlier job whose conversation continues; `fallback` lists the files a fresh conversation needs when that one is gone.
-- `SELF-CHECK line` — a line in a job file naming the read-only command the writer runs on its own JSON before it replies (`card-compiler.ps1 -Step precheck`, `hub-compiler.ps1 -Step precheck`, `event-compiler.ps1 -Step precheck`, `finding-compiler.ps1 -Step precheck`, `model-compiler.ps1 -Step explain-check`, `book-skeleton.ps1 -Step apply` without `-Apply`, or `zt-check --cards … --log …` in a group file).
+- `SELF-CHECK line` — a line in a job file naming the read-only command the writer runs on its own JSON before it replies (`zt-digest card -Step precheck`, `zt-digest hub -Step precheck`, `zt-digest event -Step precheck`, `zt-digest finding -Step precheck`, `zt-digest bridge -Step precheck`, `zt-digest model -Step explain-check`, `zt-digest skeleton -Step apply` without `-Apply`, or `zt-check --cards … --log …` in a group file). No SELF-CHECK line starts a pwsh.
 - `Fault line` — `<address> <rule or check> <text>`, one per fault, with `faults: N` as the last line. Same format from zt-check and from every precheck.
 - `Allow file` — a list of addresses (one per line) passed to the helper's `-Allow`: a writer may only edit or extend those Cards (and Cards it makes in the same run).
 - `Model` terms — Model Card, Model part, Model facet, Emphasis, Derivation part, Derivation chain, Build order, Elaboration level (`concept`, `formal`), Self-sufficient model, as in `CONTEXT.md`. The model compiler's plan names parts by a plan `id`; `state.json` maps each id to its address.
@@ -71,52 +71,24 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 
 ## Architecture
 
-Every script is a standalone process. `card-compiler.ps1` and `digest-audit.ps1` are forwarders: they run `zt-digest card` and `zt-digest audit`, which run the audit and zt-check in-process on one `zt mcp`. The other scripts share code only by dot-sourcing three libraries, and they share data only through files in the staging folder (and through the archive). No script calls a model: each step that needs one prints jobs, and the workflow runs them.
+Every step is one `zt-digest` process: the script, when it is called at all, only starts it. A tool opens one `zt mcp` for all its reads and writes (a few read on worker threads, one `zt mcp` each), runs zt-check and the audit in-process, and shares data with the other steps only through files in the staging folder (and through the archive). No step calls a model: each step that needs one prints jobs, and the workflow runs them.
 
 ```mermaid
 flowchart TD
-  subgraph libs[Dot-sourced libraries]
-    ZC[zt-calls.ps1<br/>Invoke-Zt, Invoke-ZtCheck]
-    REL[relatedness.ps1<br/>New-Relatedness, Find-Related]
-    FIG[figures.ps1<br/>Get-BookFigures, Get-BookDocumentLine]
-  end
-  HELPER[skills/zt/scripts/zt-mcp.ps1<br/>zt helper] --> MCP[zt mcp]
-  ZCHK[zt-check]
-  ZC --> HELPER
-  ZC --> ZCHK
-  PREP[prepare-book-digest.ps1] --> FIG
-  PREP --> REL
-  PREP -->|-Apply| HELPER
-  SNAP[snapshot-topics.ps1] --> ZC
-  TERMS[book-terms.ps1] --> ZC
-  CARD[card-compiler.ps1] -->|forwards| ZDC[zt-digest card]
-  ZDC --> ZDA[zt-digest audit]
-  AUD[digest-audit.ps1] -->|forwards| ZDA
-  ZDA --> MCP
-  ZDC --> MCP
-  LM[list-models.ps1] -->|forwards| ZD[zt-digest model tools]
-  MC[model-compiler.ps1] -->|forwards| ZD
-  CTX[model-context.ps1] -->|forwards| ZD
-  ZD --> MCP
-  EV[event-compiler.ps1] --> ZC
-  FD[finding-compiler.ps1] --> ZC
-  LINK[prepare-link-pass.ps1] --> ZC
-  LINK --> REL
-  OS[organize-survey.ps1] --> AUD
-  OA[organize-apply.ps1] --> ZC
-  SK[book-skeleton.ps1] --> AUD
-  SK --> ZC
-  AF[attach-figures.ps1] --> FIG
-  AF --> ZC
-  HUB[hub-compiler.ps1] --> ZC
-  MATH[math-compiler.ps1] --> ZC
-  FIG -->|zt scholar| ZT[zt CLI]
+  WF[workflow modules<br/>zdTool] --> ZD[zt-digest tool]
+  PS[scripts/book-digest/*.ps1<br/>forwarders] --> ZD
+  DSH[DeepSeek SELF-CHECK lines] --> ZD
+  ZD -->|reads, calls::run writes| MCP[zt mcp]
+  ZD -->|in-process| ZCHK[zt-check rules]
+  ZD -->|figures, prepare| ZT[zt scholar CLI]
+  OLD[zt-calls.ps1<br/>PowerShell callers, tests] --> HELPER[zt-digest call<br/>zt-mcp.ps1] --> MCP
 ```
 
-Two ways reach the archive:
+How a tool reaches the archive:
 
-- **Reads and simple writes** go through `Invoke-Zt` (`zt-calls.ps1`), which returns each read result as an object. A batch of only read calls (`list_trees`, `get_tree`, `get_card`, `get_model`, `get_hub`, `list_hubs`, `list_links`, `list_broken_links`, `search_cards`, `list_workspaces`) goes straight to one long-lived `zt mcp` per PowerShell process or runspace (direct reads). Any other batch pipes into the helper, which keeps the allow-list, `@@N`, the logs, and the Topic gate. Direct reads save the start of a `pwsh` and a `zt mcp` (about 0.8 s) per call. They need the line `zt-calls: direct reads` in the helper, so a test's replacement helper (the fault and race seams) still sees every call. `ZT_CALLS_DIRECT=0` turns them off. A parallel block that loads `zt-calls.ps1` calls `Close-ZtServer` at its end.
-- **Writes that need the helper's options** (`-Log`, `-SrcLog`, `-Moves`, or per-call results) pipe calls into `$script:ZtHelper` directly and parse the `N ok <address>` lines: `Invoke-Writes` in `hub-compiler.ps1`, `math-compiler.ps1`, `Invoke-Calls` in `organize-apply.ps1`, and the apply steps of `book-terms.ps1`, `book-skeleton.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`. `prepare-book-digest.ps1` runs the helper itself (it does not load `zt-calls.ps1`).
+- **Reads** go to the tool's one `zt mcp` (`calls::invoke`, `model::read_calls`); a failed read fails the step with `zt-mcp failed: <i> error <message>`, the text `Invoke-Zt` used. `audit`, `bridge`, and `prepare-link` read large batches on worker threads, each with its own `zt mcp`.
+- **Writes** go through `calls::run`, the helper in-process, with the options the scripts gave the helper (`-Log`, `-SrcLog`, `-Allow`, `-Moves`); the per-call `N ok <address>` lines and the stop at the first failed call are the helper's. `model` and `organize-apply` send renumbering calls one at a time and follow each `moved` map.
+- **A PowerShell caller** (a test, a script of your own) dot-sources `zt-calls.ps1`: `Invoke-Zt` sends read batches straight to one long-lived `zt mcp` (direct reads; `ZT_CALLS_DIRECT=0` turns them off) and any other batch to the helper.
 
 The stage order (from [Digest workflows](digest-workflows.md)) and the script each stage runs:
 
@@ -141,7 +113,7 @@ The stage order (from [Digest workflows](digest-workflows.md)) and the script ea
 | audit (`zt-audit`) | `digest-audit.ps1 [-CitationKey <key>] -Out <out>` |
 | math-check (`zt-math-check`) | `math-compiler.ps1 -Step check` |
 
-`zt-digest card` runs the audit in-process (every `plan`, `check`, `report`, with `-SkipModels`). `organize-survey.ps1` and `book-skeleton.ps1` (when no `-Audit` is given) run `digest-audit.ps1`, which forwards to `zt-digest audit`. `zt-digest model` builds the context pack of `model-context` in its own process (`brief`, and `explain` when `-Staging` is given).
+The workflows run each script of this table as its tool (`zt-digest prepare`, `math`, `terms`, `snapshot-topics`, `card`, `list-models`, `model`, `event`, `finding`, `prepare-link`, `organize-survey`, `organize-apply`, `skeleton`, `figures`, `hub`, `audit`, `bridge`). `zt-digest card` runs the audit in-process (every `plan`, `check`, `report`, with `-SkipModels`); so do `organize-survey` and `skeleton` (when no `-Audit` is given). `zt-digest model` builds the context pack of `model-context` in its own process (`brief`, and `explain` when `-Staging` is given).
 
 ## Interfaces
 
@@ -172,13 +144,12 @@ All paths are relative to `scripts/book-digest/`. "Writes" means changes to Card
 | `book-of.ps1` | dot-sourced | `Get-BookIndex -Trees -Cards` | the Cards it is given | — | no |
 | `zt-calls.ps1` | dot-sourced | — | — | — | as called |
 | `relatedness.ps1` | dot-sourced | — | — | — | no |
-| `figures.ps1` | dot-sourced | — | — | — | no (it adds bytes to ZET's artifact store through `zt scholar keep-figures`) |
 
-`*` marks a mandatory parameter. `card-compiler.ps1` and `digest-audit.ps1` forward every argument to their `zt-digest` tool, which takes the same parameters (names ignore case; a value with no name binds to the next parameter in table order, as in PowerShell). Every step prints compact JSON as its last line, except the precheck steps, `model-compiler.ps1 -Step validate`, and `explain-check`, which print fault lines and `faults: N`, and `snapshot-topics.ps1`, which prints `<count> cards -> <file>`.
+`*` marks a mandatory parameter. Every script in the table above `book-of.ps1` forwards every argument to its `zt-digest` tool, which takes the same parameters (names ignore case; a value with no name binds to the next parameter in table order, as in PowerShell). `attach-figures.ps1` runs `zt-digest figures`, which also holds the functions of the removed `figures.ps1` (they add bytes to ZET's artifact store through `zt scholar keep-figures`). Every step prints compact JSON as its last line, except the precheck steps, `model-compiler.ps1 -Step validate`, and `explain-check`, which print fault lines and `faults: N`, and `snapshot-topics.ps1`, which prints `<count> cards -> <file>`.
 
 ### zt-calls.ps1: how scripts call zt and zt-check
 
-Dot-source it: `. (Join-Path $PSScriptRoot 'zt-calls.ps1')`. Loading it has two side effects: it sets `[Console]::OutputEncoding` to UTF-8 (the helper writes UTF-8; under the default GBK code page a Chinese excerpt can swallow a quote and break the JSON), and it resolves `$script:ZtCheck` (`zt-check` on PATH) and `$script:ZtHelper` (`skills/zt/scripts/zt-mcp.ps1`, relative to the script folder).
+No digest script loads it any more: the tools do the same in Rust ([zt-digest](zt-digest.md), `calls::invoke`, `check::Check`). It stays for PowerShell callers and the tests. Dot-source it: `. (Join-Path $PSScriptRoot 'zt-calls.ps1')`. Loading it has two side effects: it sets `[Console]::OutputEncoding` to UTF-8 (the helper writes UTF-8; under the default GBK code page a Chinese excerpt can swallow a quote and break the JSON), and it resolves `$script:ZtCheck` (`zt-check` on PATH) and `$script:ZtHelper` (`skills/zt/scripts/zt-mcp.ps1`, relative to the script folder).
 
 ```powershell
 Invoke-Zt $calls
@@ -224,11 +195,8 @@ Output lines: `N ok <address>` for create, edit, append, move, insert, delete; `
 | `Get-Terms` | `relatedness.ps1` | `Get-Terms [string]$text` | hashtable term → count: Chinese character bigrams and Latin words of 4+ letters; formulas, Links, and code are removed |
 | `New-Relatedness` | `relatedness.ps1` | `New-Relatedness $documents [int]$keep = 150` (`$documents`: `@{ id; text }`) | `{ Vectors; Postings }`: TF-IDF vectors (top `$keep` terms each, L2-normalised); a term in every document is dropped |
 | `Find-Related` | `relatedness.ps1` | `Find-Related $model [string]$id [int]$top = 5 [scriptblock]$exclude` | up to `$top` ids, most similar first, skipping ids for which `$exclude` is true; ranking is the compiled C# `BookDigestRelatedness.Rank` (`Add-Type`, once per process) |
-| `Get-BookFigures` | `figures.ps1` | `-Text <markdown> -FileId <n> [-MinBytes 3000] [-Zt zt]` | hashtable image file name → `{sha256, markdown, path, labels, alt, line}`; runs `zt scholar keep-figures <id> --min-bytes <n> --out <tmp>`, then reads labels from caption lines in the image block and up to 7 following short blocks (skips `<details>`) |
-| `Get-FigureImageName` | `figures.ps1` | `[string]$line` | the file name of an image line, or `$null` |
-| `Get-FigureLabels` | `figures.ps1` | `[string]$line` | labels of a caption (`Figure 2.C.1`, `FIGURE IV`, `图四`), with the other spelling of a Roman or Chinese numeral (I–XX) |
-| `Get-FigureMentionPattern` | `figures.ps1` | `[string]$label` | regex for `图 2.C.1`, `图2.C.1`, `Figure 2.C.1`, never a longer number |
-| `Get-BookDocumentLine` | `figures.ps1` | `-FileId <n> [-Zt zt]` | `原书文档：[原书 PDF](scholar:85) · [中英对照 Markdown](scholar:83) · …` from `zt scholar sql` on `work_files`, or `''` |
+
+The figure functions of the removed `figures.ps1` live in `tools/zt-digest/src/figures.rs` (`book_figures`, `image_name`, `labels`, `Mention`, `document_line`): `zt scholar keep-figures <id> --min-bytes <n> --out <tmp>`, labels from caption lines in the image block and up to 7 following short blocks, the other spelling of a Roman or Chinese numeral (I–XX), mentions such as `图 2.C.1` but never a longer number, and the `原书文档：…` line from `zt scholar sql` on `work_files`.
 
 ### Job output shapes
 
@@ -276,7 +244,7 @@ Every layer script implements the same cycle (`docs/digest-card-layers-proposal.
 5. Clears and writes `sections/sNN.md` (one per unit), `book.zh.md`, and `sections/index.md` (file, characters, group, anchor, chapter, headings).
 6. Builds a relatedness model over the units and lists for each group up to four related sections of other groups.
 7. Finds event candidates: lines of the group with CJK that name a year `1500`–`2029` followed by `年` (not `年代`), after removing citation years (`[… 1991]`, `(1979)`); at most `-MaxEventCandidates` per group.
-8. Writes `groups/gNN.md`: a head with the anchor, chapter, headings, related sections, the write command (`… | pwsh -NoProfile -File "<installed helper>" - -Log owned-gNN.txt -SrcLog src-gNN.txt -TopicGate topic-gate.lock`), the `SELF-CHECK: zt-check --cards "<anchor>" --log "owned-gNN.txt" --book <key>` line, the snapshot path, the index, the term table path, the event candidates (unless `-NoEventCandidates`), then the group's text.
+8. Writes `groups/gNN.md`: a head with the anchor, chapter, headings, related sections, the write command (`… | zt-digest call - -Log owned-gNN.txt -SrcLog src-gNN.txt -TopicGate topic-gate.lock`), the `SELF-CHECK: zt-check --cards "<anchor>" --log "owned-gNN.txt" --book <key>` line, the snapshot path, the index, the term table path, the event candidates (unless `-NoEventCandidates`), then the group's text.
 9. Builds `shared-prefix.md` from `-Instructions` (the first file is the template; each further file goes in before its `\n## 回复` section, or at the end) and `link-prefix.md` from `dsh-link-instructions.zh.md`, replacing `{{KEY}}`, `{{TITLE}}`, `{{HELPER}}`, `{{STAGING}}`, `{{INDEX}}`, `{{SOURCE}}`, `{{OUTLINE}}`.
 10. With `-Apply`: probes `get_card <key>` (throws unless it fails), then `create_literature` (agent Workspace, the BibTeX, body `（全书索引待整理。）` plus the document line) and one Direct successor per group (`第 n 组：<headings>`), saved as `setup-calls.json` and run through the helper.
 11. Writes `manifest.json` and prints it compactly.
@@ -554,14 +522,14 @@ Other plan fields: `status: "skip"`; `title` (renames the Model Card); per part 
 
 | Setting | Where | Default | Effect |
 | --- | --- | --- | --- |
-| `zt` on PATH | environment | the installed `zt.exe` | the helper starts `zt mcp`; `figures.ps1` runs `zt scholar …` (`-Zt` overrides) |
+| `zt` on PATH | environment | the installed `zt.exe` | the tools and the helper start `zt mcp`; `zt-digest figures` and `prepare` run `zt scholar …` |
 | `zt-check` on PATH | environment | installed by `scripts/install-zt-check.ps1` | `Invoke-ZtCheck` and every SELF-CHECK; missing → every check throws |
 | `ZT_CONFIG_DIR` | environment | the user's config | which archive the helper's `zt mcp` opens; every test sets a scratch one |
 | `ZT_GUI_PORT` | environment | the service default | tests set `0` so a scratch service does not take the live GUI port |
-| `ZT_DIGEST` | environment | `zt-digest` on PATH | the binary that `card-compiler.ps1`, `digest-audit.ps1`, and the helper forward to (a test of an unreleased build) |
-| `ZT_DIGEST_SCRIPTS` | set by `card-compiler.ps1` | the `scripts/book-digest` folder of the repository `zt-digest` was built from | where `zt-digest card` reads `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md`, and the folder of the script its `SELF-CHECK:` lines name |
-| `[Console]::OutputEncoding` | set by `zt-calls.ps1`, `prepare-book-digest.ps1`, `model-context.ps1` | UTF-8 | reading the helper's output without GBK corruption |
-| Installed helper path | hard-coded `$HOME\.codex\skills\zt\scripts\zt-mcp.ps1` in `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` | — | the write command and `{{HELPER}}` that DeepSeek sees; the scripts themselves use the repository copy |
+| `ZT_DIGEST` | environment | `zt-digest` on PATH | the binary that every forwarder and the helper run (a test of an unreleased build) |
+| `ZT_DIGEST_SCRIPTS` | set by the forwarders of `card`, `math`, `bridge`, `event`, `finding`, `terms`, `skeleton`, `prepare` | the `scripts/book-digest` folder of the repository `zt-digest` was built from | where those tools read their instruction files (`dsh-*.zh.md`) and the folder their job files name for them |
+| `[Console]::OutputEncoding` | set by `zt-calls.ps1` and every forwarder | UTF-8 | reading the tools' and the helper's output without GBK corruption |
+| Helper command | `zt-digest call` in the group files, link files, and instruction copies (`{{HELPER}}`) | — | the write command DeepSeek sees; `~\.codex\skills\zt\scripts\zt-mcp.ps1` forwards to it |
 | Card size limits | `-MaxSentences`, `-MaxChars`, `-MaxSteps`, `-MaxExplainSentences`, `-MaxExplainChars` (`model-compiler.ps1`, `digest-audit.ps1`, `Invoke-ZtCheck`) | 12, 400, 6, 16, 600 | R13, R14, R16, R17; the workflow passes `maxSentences`, `maxPartChars`, `maxSteps`, `maxExplainSentences`, `maxExplainChars` |
 | Idea Card size and reason | `-MinIdeaChars`, `-MaxIdeaChars`, `-MinReason` of `Invoke-ZtCheck` | 40, 300, 8 | I2 and L2 (no script passes other values; the test passes `-MaxIdeaChars 250`) |
 | Card cycle rules | `card-compiler.ps1 -Rules` | `R2,R3,R4,R5,R7,R9,R12,I1,I2,I3,I4,L1,L2,E1,E2` | which faults become jobs; R6 is left out on purpose (D13) |
@@ -620,14 +588,14 @@ $tree = @(Invoke-Zt @(@{ tool = 'get_tree'; arguments = @{ tree = 'key2020' } })
 $lines = @(Invoke-ZtCheck -Json $draftFile -Setting 'key2020/3|a|a')   # fault lines, then "faults: N"
 ```
 
-### Adding a new layer script
+### Adding a new layer
 
-Follow `event-compiler.ps1` or `finding-compiler.ps1` (about 250 lines each):
+A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-digest/src/event.rs`, `finding.rs`, the shared cycle `event/layer.rs`):
 
-1. Steps `plan`, `precheck`, `apply`, `report`; `-Staging` mandatory, `-Work` defaulting to a folder under it; dot-source `zt-calls.ps1`; end every step with one compact JSON line (`Out-Last`).
-2. `plan`: read `manifest.json` and the owned files; copy the instruction file into `-Work` with `{{KEY}}`, `{{STAGING}}`, `{{HELPER}}` replaced; write one job file per batch with the answer path and a `SELF-CHECK: pwsh -NoProfile -File "<script>" -Step precheck … -Job <id>` line; skip applied jobs.
-3. One test function used by both `precheck` and `apply`, plus zt-check on drafts (give each draft `category` and `book`, or the layer rules do not apply).
-4. `apply` writes only through the helper and records each job in `state.json`.
+1. Steps `plan`, `precheck`, `apply`, `report`; `-Staging` mandatory, `-Work` defaulting to a folder under it; one `zt mcp` per run (reads `model::read_calls`, writes `calls::run`); end every step with one compact JSON line (`util::print_last`). Add a forwarding `.ps1` only if something names a script.
+2. `plan`: read `manifest.json` and the owned files; copy the instruction file into `-Work` with `{{KEY}}`, `{{STAGING}}`, `{{HELPER}}` replaced; write one job file per batch with the answer path and a `SELF-CHECK: zt-digest <tool> -Step precheck … -Job <id>` line; skip applied jobs.
+3. One test function used by both `precheck` and `apply`, plus zt-check on drafts in-process (`check::Check`; give each draft `category` and `book`, or the layer rules do not apply).
+4. `apply` writes only through `calls::run` and records each job in `state.json`.
 5. Add a scratch-archive test in `tests/` (copy the setup of `scripts/book-digest/tests/event-compiler.tests.ps1`), the workflow module ([Digest workflows](digest-workflows.md)), the instruction file ([Digest prompts](digest-prompts.md)), and a row in `skills/zt-digest-protocol/references/scripts.md` ([Agent skills](agent-skills.md)).
 
 ## Testing
@@ -638,7 +606,7 @@ The tests are standalone PowerShell 7 scripts and Node harnesses in `scripts/boo
 pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1
 ```
 
-`run-all.ps1` starts up to `-Throttle` files at once (default: the processor count, 2 to 8). Each file makes its own scratch archive with its own `ZT_CONFIG_DIR` and `ZT_GUI_PORT=0`, so the files do not share state. It prints one line per file (exit code, seconds, `ok` count), keeps each output in `-Logs`, and exits 1 when a file fails. `-Only bridge-compiler,digest-audit` runs a subset, `-Zt <zt.exe>` goes to every file that declares `-Zt`, and `-Sequential` runs one at a time. On 2026-10-16 the 26 files took 141 s of wall clock in parallel, against about 25 minutes one by one.
+`run-all.ps1` starts up to `-Throttle` files at once (default: the processor count, 2 to 8; use `-Throttle 4` while other builds run, or the machine runs out of memory). Every test runs its tool through the forwarder, so `$env:ZT_DIGEST = '<build>\zt-digest.exe'` tests an unreleased build. Each file makes its own scratch archive with its own `ZT_CONFIG_DIR` and `ZT_GUI_PORT=0`, so the files do not share state. It prints one line per file (exit code, seconds, `ok` count), keeps each output in `-Logs`, and exits 1 when a file fails. `-Only bridge-compiler,digest-audit` runs a subset, `-Zt <zt.exe>` goes to every file that declares `-Zt`, and `-Sequential` runs one at a time. On 2026-10-16 the 26 files took 141 s of wall clock in parallel, against about 25 minutes one by one.
 
 Each file also runs alone:
 
@@ -654,6 +622,7 @@ pwsh -NoProfile -File scripts\book-digest\tests\finding-compiler.tests.ps1 [-Zt 
 pwsh -NoProfile -File scripts\book-digest\tests\book-terms.tests.ps1 [-Zt <zt.exe>]
 pwsh -NoProfile -File scripts\book-digest\tests\organize.tests.ps1 [-Zt <zt.exe>]
 pwsh -NoProfile -File scripts\book-digest\tests\attach-figures.tests.ps1 [-Zt <zt.exe>]
+pwsh -NoProfile -File scripts\book-digest\tests\prepare.tests.ps1
 pwsh -NoProfile -File scripts\book-digest\tests\zt-calls.tests.ps1 [-Script <list-models.ps1>]
 pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1 [-Zt <zt.exe>]
 pwsh -NoProfile -File scripts\book-digest\tests\book-of.tests.ps1
@@ -678,17 +647,18 @@ Each test prints `ok:`/`FAIL:` lines (or only failures) and exits 1 on a failure
 | `model-compiler.tests.ps1` | brief, validate (no `card`, forward premise), apply (build order, no build faults, 结构, setting tables, job contents), derive (premise bodies, chain start), Derivation skeleton and position lines, review (shared part excluded), split by verdict and by `-Need`, re-point, 结构, allow file, review `-Changed`, report, explain, explain-check (faults, blocked, kept), explain-apply (follow-up, 来源 last, core unchanged), explain-report |
 | `hub-compiler.tests.ps1` | survey (legacy hub, sizes), plan (limits, picked trees, jobs, SELF-CHECK), precheck (clean, bare, oversize, broken, R3, isolated, unlisted, register), apply (legacy hub rewritten, line hub slot, Topic body Link, Register), check, fix job, report, a new Topic's topic hub under `<n>/1` |
 | `math-compiler.tests.ps1` | index, docs, skeleton and rerun, a unit plan that cites another unit in `model-compiler.ps1 validate`, notation, boundary, boundary-apply, boundary-settle (no broken Link), proof, proof-apply, theory, theory-apply (order, tools, users, chart), check M1, M5, M8 |
-| `event-compiler.tests.ps1` | plan, precheck (EV2, zt-check E1), apply (new, existing, refused, `案例` Link), zt-check E1/E2 on the new Card, rerun, report; a parallel edit between read and write (`racing-zt-mcp.ps1`): refused by `base`, job pending, rerun reuses the Event Card and writes the Link |
+| `event-compiler.tests.ps1` | plan, precheck (EV2, zt-check E1), apply (new, existing, refused, `案例` Link), zt-check E1/E2 on the new Card, rerun, report; a parallel edit between read and write (the tool's `ZT_RACE_*` seam): refused by `base`, job pending, rerun reuses the Event Card and writes the Link |
 | `finding-compiler.tests.ps1` | plan (candidates, no model assumption), precheck (FD1, FD2, R rules), apply (Side successor of the anchor, `印证` Link), F1 to F4, `search_cards type finding`, rerun, report; the same parallel-edit case as the event test |
 | `requires-version.tests.ps1` | static: every script under `scripts/` and `skills/` that uses `-DateKind` or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5` |
-| `racing-zt-mcp.ps1` | not a test: a stand-in for the zt helper that the two compiler tests copy into a copy of the scripts tree; once, before the first run that edits `$env:ZT_RACE_TARGET`, it appends `$env:ZT_RACE_LINE` to that Card through the real helper (`$env:ZT_REAL_HELPER`) |
+| `seam-zt-mcp.mjs`, `seam-zt-mcp.cmd` | not a test: a stand-in for `zt mcp` (`ZT_CHECK_ZT`) that the Bridge tests put in front of the real server; it injects a failed tree read (`ZT_FAIL_TREE`), a failure after an edit (`ZT_FAIL_AFTER_*`), and a parallel edit (`ZT_RACE_*`), because the tools no longer call a helper that a test could replace |
 | `book-terms.tests.ps1` | plan candidates, apply filtering, rerun rewrites the same Card, audit R6 against the table, `terms` category |
 | `organize.tests.ps1` | survey pair, apply merge, move, three refusals, note translation; skeleton plan and apply (Structure Card, Literature index with document line, Topic body keeps its hub line), rerun, `structure` category |
-| `attach-figures.tests.ps1` | caption labels, image names, mention patterns; placement after a paragraph and after a table; longer numbers, other books, anchors left alone; Chinese numeral to Roman label; rerun changes nothing |
+| `prepare.tests.ps1` | `prepare` (`-NoFigures -Apply`, a refused second `-Apply`), `snapshot-topics`, `prepare-link` (ownership from `owned-gNN.txt`, an anchor's Side successor, a `§` reference, allow files, `linked-gNN.txt`), through the forwarders |
+| `attach-figures.tests.ps1` | placement after a paragraph and after a table; longer numbers, other books, anchors left alone; Chinese numeral to Roman label; rerun changes nothing |
 | `zt-calls.tests.ps1` | `list-models.ps1` reads UTF-8 under a GBK (936) console |
 | `zt-helper-gate.tests.ps1` | the helper's `-SrcLog` and `-TopicGate`, including two helpers racing |
 
-Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-link-pass.ps1`, `model-context.ps1` (only through `brief`), `digest-audit.ps1` beyond the categories and R6 the other tests check, `organize-apply.ps1 -DryRun`, `math-compiler.ps1 -Supply none`, or `hub-compiler.ps1 -Trees`/`-Rebuild`; `model-compiler.tests.ps1` and `zt-calls.tests.ps1` do not set `ZT_GUI_PORT=0` and take no `-Zt`. The workflow harnesses (`*.mjs`) are covered in [Digest workflows](digest-workflows.md).
+Caption labels, image names, and mention patterns are Rust unit tests of `src/figures.rs`. Gaps: no test covers `prepare` with figures (the side-by-side runs did), `model-context.ps1` (only through `brief`), `digest-audit.ps1` beyond the categories and R6 the other tests check, `organize-apply.ps1 -DryRun`, `math-compiler.ps1 -Supply none`, or `hub-compiler.ps1 -Trees`/`-Rebuild`; `model-compiler.tests.ps1` and `zt-calls.tests.ps1` do not set `ZT_GUI_PORT=0` and take no `-Zt`. The workflow harnesses (`*.mjs`) are covered in [Digest workflows](digest-workflows.md).
 
 ## Decisions and pitfalls
 
@@ -714,11 +684,11 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 - **The helper stops at the first failed call.** `Invoke-Zt` throws and the rest of the batch never ran; `zt-digest card` (`invoke_writes`) resumes after the failure, and `event-compiler.ps1` and `finding-compiler.ps1` keep the job pending under `partial` for the next `apply`.
 - **`base` and Reverse links.** The stored text holds generated Reverse links, so a create or edit whose body links a Card changes that Card's stored text. A `base` edit must read its Card after every such write in the same job, which is why the event and finding compilers make their Link edits in a second helper run.
 - **Jobs applied with an error by an older compiler stay applied.** Before the `partial` state, a job whose run failed was recorded in `applied` with its `error` (`report` still lists these under `errors`). To retry one, remove it from `applied` by hand; the new run will not know which Cards it already made.
-- **Two helper copies.** Job files and group heads name the installed copy `$HOME\.codex\skills\zt\scripts\zt-mcp.ps1` (and `hub-compiler.ps1`, `model-compiler.ps1` the repository copy); the scripts run the repository copy. After changing the helper, reinstall it ([Agent skills](agent-skills.md)).
-- **`Invoke-ZtCheck` always passes every limit**, so a changed default in `zt-check` has no effect on the scripts: change the defaults in `zt-calls.ps1` too.
+- **One helper.** Job files, group heads, and instruction copies name `zt-digest call`; `skills/zt/scripts/zt-mcp.ps1` and its installed copy forward to it. (Before stage 2: **two helper copies.**) Job files and group heads name the installed copy `$HOME\.codex\skills\zt\scripts\zt-mcp.ps1` (and `hub-compiler.ps1`, `model-compiler.ps1` the repository copy); the scripts run the repository copy. After changing the helper, reinstall it ([Agent skills](agent-skills.md)).
+- **`Invoke-ZtCheck` and `check::Check` always pass every limit**, so a changed default in `zt-check` has no effect on the tools: change the defaults in `tools/zt-digest/src/check.rs` (and `zt-calls.ps1`) too.
 - **Card layer rules need `category`.** A `--json` draft without it gets the R rules only (`scripts/book-digest/tests/card-layer.tests.ps1`).
 - **`link_kinds` and `CUES` copy ZT's Relation kind table** (`src/model.rs`); when ZT adds a cue, update `tools/zt-digest/src/card/text.rs`, or precheck and apply disagree with the audit.
-- **Two copies of the attribution and the ranking.** `book-of.ps1` and `relatedness.ps1` serve `bridge-compiler.ps1` and the prepare scripts; `tools/zt-digest/src/audit/book_of.rs` and `card/relatedness.rs` serve the audit and the card cycle. Change both, or the Bridge plan and the audit attribute Cards differently.
+- **Two copies of the attribution and the ranking.** `book-of.ps1` and `relatedness.ps1` are kept as PowerShell, but no script loads them; every tool uses `tools/zt-digest/src/audit/book_of.rs` and `card/relatedness.rs`. Change the Rust copies; the PowerShell ones are for old callers and `book-of.tests.ps1`.
 - **`plan` of `hub-compiler.ps1` deletes `out/`**: a new plan starts clean, so DeepSeek files of an earlier plan are not applied again.
 - **`digest-audit.ps1 -SkipModels`** leaves Model Cards and parts out of `audit-cards.json`; `zt-digest card` relies on that.
 - **`search_cards` stops at 200 results.** Read whole trees for anything complete (`list-models.ps1`, `model-context.ps1`).
@@ -732,6 +702,7 @@ Gaps: no test covers `prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-
 
 ## Change history
 
+- `2026-10-16` — Stage 2 of zt-digest: every remaining script forwards to its tool (`hub-compiler.ps1` → `hub`, `bridge-compiler.ps1` → `bridge`, `math-compiler.ps1` → `math`, `event-compiler.ps1` → `event`, `finding-compiler.ps1` → `finding`, `book-terms.ps1` → `terms`, `book-skeleton.ps1` → `skeleton`, `organize-survey.ps1`, `organize-apply.ps1`, `attach-figures.ps1` → `figures`, `prepare-book-digest.ps1` → `prepare`, `prepare-link-pass.ps1` → `prepare-link`, `snapshot-topics.ps1`). `figures.ps1` is removed; `racing-zt-mcp.ps1` and `faulting-zt-mcp.ps1` give way to the `ZT_RACE_*` seam of `event`/`finding` and `tests/seam-zt-mcp.mjs`; `prepare.tests.ps1` is new. Job files name `zt-digest <tool> -Step precheck …` (hub, Bridge, event, finding) and `zt-digest skeleton -Step apply …` in their SELF-CHECK lines.
 - `2026-10-16` — The group files of `prepare-book-digest.ps1` and `prepare-link-pass.ps1` name the write command as `… | zt-digest call - …`. `card-compiler.tests.ps1` and `model-compiler.tests.ps1` expect the `SELF-CHECK: zt-digest card …` and `SELF-CHECK: zt-digest model …` lines.
 - `2026-10-16` — `model-compiler.ps1`, `model-context.ps1`, and `list-models.ps1` forward to `zt-digest model`, `model-context`, and `list-models` (same parameters, files, and output; the 19 steps of `model-compiler.tests.ps1` take 1.3 s in the tool instead of 34 s).
 - `2026-10-16` — `digest-audit.ps1` and `card-compiler.ps1` are forwarders to `zt-digest audit` and `zt-digest card` (Rust: one process, one `zt mcp`, the audit and zt-check in-process). `relatedness.ps1` and the audit's part of `book-of.ps1` are ported with them; both files stay for their other callers. Same parameters, output lines, and files. A card plan on a 635-Card scratch archive took 1.8 s instead of 12.3 s, and the audit 2.1 s instead of 6.4 s. `bridge-planning.tests.ps1` moves its incomplete-read audit assertion to a Rust test.

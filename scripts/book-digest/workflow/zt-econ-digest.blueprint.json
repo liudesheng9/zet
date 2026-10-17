@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-econ-digest",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -14,7 +14,7 @@
     "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md), zt-finding-layer (finding-compiler.ps1, dsh-finding-instructions.zh.md; the Card type finding of zt 0.20.0). zt-bridge v3.",
     "P7": "Checks: as the base; each event and finding job runs its SELF-CHECK (precheck: fields, supported Cards, and zt-check on the drafts: E1, E2 or F1 to F3, and the Card language); apply refuses what the precheck reports; in mode full the link check card cycle then checks every Card of the book. Bridge BR1–BR9, exact report acceptance and guarded edits.",
     "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
-    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of the removed workflow-harness.mjs and the layer order; 3.2.0: base 2.2.0, the ported scripts run as zt-digest tools), tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 (scratch archives; the finding test needs zt 0.20.0). Run with zt 0.20.0 deployed: the finding layer creates Cards of type finding. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
+    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of the removed workflow-harness.mjs and the layer order; 3.2.0: base 2.2.0, the ported scripts run as zt-digest tools; 3.3.0: base 2.3.0, every digest script runs as its zt-digest tool, the event and finding layers too), tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 (scratch archives; the finding test needs zt 0.20.0). Run with zt 0.20.0 deployed: the finding layer creates Cards of type finding. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
   },
   "consts": {
     "profile": {

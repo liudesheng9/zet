@@ -10,11 +10,11 @@ async function run(kind,args,options={}){
  const calls=[]
  const l=lib.loadBlueprint(path.join(folder,`zt-${kind}-digest.blueprint.json`)), source=lib.build(l.bp,lib.loadModules(l.dirs)).script
  const agent=async(prompt,opts)=>{
-  const cmd=(String(prompt).match(/pwsh -NoProfile -File[^\n]*/)||[''])[0];calls.push({prompt:String(prompt),...opts,cmd})
+  const cmd=(String(prompt).match(/pwsh -NoProfile -File[^\n]*|zt-digest bridge -[^\n]*/)||[''])[0];calls.push({prompt:String(prompt),...opts,cmd})
   if(opts.label==='choose DeepSeek source')return {source:'official',errors:''}
   if(/Run every job below/.test(prompt))return {ok:true,results:[{id:'br-001',session_id:'judge-1',status:options.failJudge?'failed':'done',answer:'{}'}]}
   if(/^Clean up:/m.test(prompt))return {ok:true,results:[],deleted:1}
-  if(/bridge-compiler/.test(cmd)){
+  if(/bridge-compiler|zt-digest bridge/.test(cmd)){
    const plan=/-Step plan/.test(cmd)
    if(options.failPlan&&plan)return {ok:false,output:'read failure',results:[]}
    return {ok:true,output:JSON.stringify({ok:true,step:plan?'plan':(/-Apply\b/.test(cmd)?'apply':'report'),status:'done',citation_key:'Key',plan_id:'p-frozen',report_id:'r-frozen',counts:{selected:1,new:1,earlier:0},jobs:plan?[{id:'br-001',files:['prompt','job'],prompt:'judge'}]:[],outcomes:[],report:'D:\\work\\bridge\\report.md'}),results:[]}

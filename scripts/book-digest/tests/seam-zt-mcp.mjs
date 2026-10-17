@@ -2,7 +2,7 @@
 // real `zt mcp` (zt on PATH) and injects one archive event. A test points zt-digest at it with
 // ZT_CHECK_ZT=<this folder>\seam-zt-mcp.cmd (zt-digest starts `<ZT_CHECK_ZT> mcp`), so a tool that
 // reads and writes in-process meets the same faults and races as the scripts met through the
-// helper stand-ins faulting-zt-mcp.ps1 and racing-zt-mcp.ps1, with the same variables:
+// helper stand-ins faulting-zt-mcp.ps1 and racing-zt-mcp.ps1 (removed), with the same variables:
 //
 //   ZT_RACE_TARGET, ZT_RACE_FLAG, ZT_RACE_LINE   once (no flag file yet), before the first edit_card
 //       of the Card ZT_RACE_TARGET, append ZT_RACE_LINE to that Card, as a parallel digest stage would

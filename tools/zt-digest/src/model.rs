@@ -72,7 +72,8 @@ pub(crate) fn get_model(zt: &mut Zt, at: &Value) -> Result<Value> {
 /// scripts by these paths, as the scripts named themselves.
 pub(crate) struct Scripts {
     pub dir: String,
-    /// `skills\zt\scripts\zt-mcp.ps1`: the helper path job files name.
+    /// The helper command job files name on their `HELPER:` line: `zt-digest call`
+    /// (the old path `skills\zt\scripts\zt-mcp.ps1` forwards to it).
     pub helper: String,
 }
 
@@ -84,7 +85,7 @@ impl Scripts {
         };
         let repo = repo.replace('/', "\\");
         let repo = repo.trim_end_matches('\\');
-        Self { dir: format!("{repo}\\scripts\\book-digest"), helper: format!("{repo}\\skills\\zt\\scripts\\zt-mcp.ps1") }
+        Self { dir: format!("{repo}\\scripts\\book-digest"), helper: "zt-digest call".to_string() }
     }
 
     pub fn file(&self, name: &str) -> String {

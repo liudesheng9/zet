@@ -139,7 +139,7 @@ Which digest prompt a book gets depends on its workflow:
 | `{{INDEX}}` | the book index file (`manifest.index`) | digest and link files | `prepare-book-digest.ps1` (`-Step docs` sets it to `math\index.md`, but no math supplement uses it) |
 | `{{STAGING}}` | the staging folder | digest, link, terms, event, finding, `dsh-math-instructions`, notation | `prepare-book-digest.ps1`, `book-terms.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`, `math-compiler.ps1` |
 | `{{SOURCE}}` | the bilingual source Markdown | digest and link files | `prepare-book-digest.ps1` |
-| `{{HELPER}}` | the installed helper path `~\.codex\skills\zt\scripts\zt-mcp.ps1` | none at present: the digest, link, event, and fill prompts write `zt-digest call` instead | `prepare-book-digest.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` (still rendered, unused) |
+| `{{HELPER}}` | `zt-digest call` (until stage 2 the installed helper path `~\.codex\skills\zt\scripts\zt-mcp.ps1`) | none at present: the digest, link, event, and fill prompts write `zt-digest call` instead | `prepare-book-digest.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` (still rendered, unused) |
 | `{{OUTLINE}}` | the group outline | none at present | `prepare-book-digest.ps1` (supported, unused) |
 
 ### Job-file lines the prompts rely on
@@ -150,12 +150,12 @@ A prompt names these lines and the compiler writes them into the job file. A cha
 | --- | --- | --- |
 | `写入命令：… -Log … -SrcLog … -TopicGate …`, `SELF-CHECK: zt-check --cards <anchor> --log <owned> --book <key>`, `本书术语表`, `事件候选` | `prepare-book-digest.ps1` (group file header) | digest prompts ("照抄组信息中的 `-Log` 参数") |
 | `写入命令：… -Allow …`, `SELF-CHECK: zt-check --log <allow> --cards "" --book <key> --rules L1,L2,R2,R3,R4,R5,R7,R9`, `> 候选目标…` | `prepare-link-pass.ps1` | `dsh-link-instructions.zh.md` |
-| `HELPER:`, `CHECK:`, `ALLOW:`, `LIMITS:` (`--max-sentences … --require-explain`), `模型卡:` | `model-compiler.ps1` (fill and derive jobs) | `dsh-fill-instructions.zh.md` |
-| `结果文件:`, `SELF-CHECK:` (`-Step explain-check`), `上下文包:` | `model-compiler.ps1` (explain jobs) | `dsh-explain-instructions.zh.md` |
+| `HELPER: zt-digest call`, `CHECK:`, `ALLOW:`, `LIMITS:` (`--max-sentences … --require-explain`), `模型卡:` | `zt-digest model` (fill and derive jobs; the brief job has `HELPER: zt-digest call（只读：…-Allow …）`) | `dsh-fill-instructions.zh.md` |
+| `结果文件:`, `SELF-CHECK: zt-digest model -Step explain-check …`, `上下文包:` | `zt-digest model` (explain jobs) | `dsh-explain-instructions.zh.md` |
 | `SELF-CHECK: zt-digest card -Step precheck -Work … -Job <id>` | `zt-digest card` (`card-compiler.ps1` forwards) | card and orphan prompts |
-| `HELPER:`, `ALLOW:` (none.allow.txt), `OUT:`, `LIMITS:` (`max_groups`, `max_lines`, `min_reason`, `field_min`, `field_max`), `SELF-CHECK:` | `hub-compiler.ps1` | `dsh-hub-instructions.zh.md` |
-| `SELF-CHECK: … -Step precheck -Staging … -Work … -Job <id>` | `event-compiler.ps1`, `finding-compiler.ps1` | event and finding prompts |
-| `SELF-CHECK: pwsh … book-skeleton.ps1 -Step apply …（不要加 -Apply）` | `book-skeleton.ps1` | skeleton prompt |
+| `HELPER: zt-digest call`, `ALLOW:` (none.allow.txt), `OUT:`, `LIMITS:` (`max_groups`, `max_lines`, `min_reason`, `field_min`, `field_max`), `SELF-CHECK: zt-digest hub -Step precheck -Work … -File …` | `zt-digest hub` (`hub-compiler.ps1` forwards) | `dsh-hub-instructions.zh.md` |
+| `SELF-CHECK: zt-digest event -Step precheck …` or `zt-digest finding -Step precheck …` (`-Staging … -Work … -Job <id>`) | `zt-digest event`, `zt-digest finding` (their scripts forward) | event and finding prompts |
+| `SELF-CHECK: zt-digest skeleton -Step apply -Staging … -Work …（不要加 -Apply）` | `zt-digest skeleton` (`book-skeleton.ps1` forwards) | skeleton prompt |
 
 ## Behaviour
 
@@ -335,6 +335,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 
 ## Change history
 
+- `2026-10-16` — Stage 2 of zt-digest: every loader of these files is a `zt-digest` tool (the scripts named above forward to them). The job files' lines that a prompt reads name the tools: `HELPER: zt-digest call` (hub and model jobs), `SELF-CHECK: zt-digest <hub, event, finding, or bridge> -Step precheck …`, `zt-digest skeleton -Step apply …`. `{{HELPER}}` renders as `zt-digest call`; no prompt uses it. No prompt text changed.
 - `2026-10-16` — The prompts name the helper `zt-digest call`: `dsh-digest-base.zh.md`, `dsh-instructions.zh.md`, `dsh-link-instructions.zh.md`, `dsh-fill-instructions.zh.md`, and `dsh-event-instructions.zh.md` pipe the here-string to `zt-digest call -` instead of `pwsh -NoProfile -File "{{HELPER}}"` (or `"<HELPER>"`), so no prompt uses `{{HELPER}}` now. `model-architect.md` runs `<COMPILER> -Step validate …`, where `COMPILER` is the command `zt-digest model`.
 - `2026-10-16` — Review fixes: `dsh-bridge-instructions.zh.md` names the five questions (same mechanism, same concept, evidence, tension, use for math only), gives an example sentence, and allows one space between the kind word and the Link. `dsh-card-instructions.zh.md` gets fix recipes for F1 to F3 (Finding Cards).
 - `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.

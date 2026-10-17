@@ -55,7 +55,7 @@ This block holds the Claude Code Workflow scripts that turn a book from the Scho
 - `Frozen install` — an installed script whose embedded blueprint matches the `FINGERPRINT` stamped at install; any change makes it refuse to run. Its record is `lock.json` in `.claude/workflow-framework/<name>/`.
 - `Checkpoint` — a stage at which `args.until` stops the run; the base declares `digest` (stop before the layers and the link pass).
 - `DeepSeek Subagent Managed Protocol (DSMP)` — the run-wide rule: a Haiku manager runs at most 8 DeepSeek conversations, at most 8 managers are alive at once (64 conversations), conversations are deleted and never archived, and a workspace is removed when its work is done. `dsmpSlot` (the inlined DSMP block in each installed script) is the shared pool.
-- `Script command` — the command prefix that runs one digest script, from `zdTool(name)` (or `Z.tool(name)`) in `zt-digest-lib.js`: `zt-digest <tool>` for a script listed in `ZD_TOOLS` (a ported script), else `pwsh -NoProfile -File "<ZD_SCRIPTS>\<name>.ps1"`. Every stage module builds its commands from it, so a newly ported script needs one entry in `ZD_TOOLS` and no module change.
+- `Script command` — the command prefix that runs one digest script, from `zdTool(name)` (or `Z.tool(name)`) in `zt-digest-lib.js`: `zt-digest <tool>` for a script listed in `ZD_TOOLS` (since `zt-digest-lib` v6, every digest script), else `pwsh -NoProfile -File "<ZD_SCRIPTS>\<name>.ps1"`. Every stage module builds its commands from it, so a newly ported script needs one entry in `ZD_TOOLS` and no module change.
 - `Compiler step` — one script command with `-Step <s> ...` (`zt-digest <tool> -Step <s> ...` or `pwsh -NoProfile -File "<script>.ps1" -Step <s> ...`) whose last output line is compact JSON, often with a `jobs` list for DeepSeek. `drive()` runs it: one Haiku agent runs the command, managers run its jobs, an optional cleanup agent deletes the conversations.
 - `Card cycle` — `runCards()`: the card compiler (`zt-digest card`) plan → DeepSeek JSON → apply in shares of `applyShare` jobs → check → up to `cardFixRounds` fix rounds → report (the Card layer rules of the glossary).
 - `Model compiler` — `compileBatch()` in `zt-model-lib.js`: DeepSeek brief → Sonnet plan (`plan.json`) → script skeleton and DeepSeek fill → DeepSeek derive → DeepSeek review and script split (up to `reviewRounds`) → script report and cleanup. Concept models skip derive and review.
@@ -123,7 +123,7 @@ Every stage module calls `zdMake(ctx, params)` (directly or through `zmlMake` / 
 
 ### Workflows and their stages
 
-#### zt-econ-digest (v3.2.0) and zt-math-digest (v2.3.0) on base v2.2.0: the composed stage graph
+#### zt-econ-digest (v3.3.0) and zt-math-digest (v2.4.0) on base v2.3.0: the composed stage graph
 
 The stage ids, modules, and `after` edges come from the registry `blueprint.json` of each variant; titles are the progress phases.
 
@@ -270,7 +270,7 @@ Library modules (no stage; their top-level names carry a prefix because all modu
 
 | Module | Version | Requires | Exports |
 |---|---|---|---|
-| `zt-digest-lib` | 5 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, tool, cleanupDsh, runCards, cardBlock`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`pwsh -NoProfile -File "<scripts>\hub-compiler.ps1"`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
+| `zt-digest-lib` | 6 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, tool, cleanupDsh, runCards, cardBlock`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`zt-digest hub`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
 | `zt-model-lib` | 2 | `zt-digest-lib` | `zmlMake(ctx, p)` → `{ Z, listModels(selector, label), elaborateAll(models, label), logModels(reports), modelCleanup(), dshJobs() }`; internal `compileBatch(batch, kind)` |
 | `zt-math-lib` | 2 | `zt-digest-lib` | `zmMake(ctx, p)` → `{ Z, A, MATH_WORK, SUPPLY, UNITS_PER_JOB, MAIN_RESULTS, mstep(step, more), runMathScript(what, step, extra, phase), mathOpts(stage, phase) }`; `MATH_COMPILER` is `Z.tool('math-compiler')` |
 
@@ -307,7 +307,7 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 
 ### Tools per workflow
 
-The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and a cleanup agent deletes the conversations (see Control inside one compiler step). A script listed in `ZD_TOOLS` runs as a `zt-digest` tool (see [zt-digest](zt-digest.md)); every other script runs through pwsh from `scripts/book-digest/` (see [Digest scripts](digest-scripts.md)).
+The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and a cleanup agent deletes the conversations (see Control inside one compiler step). Every digest script is listed in `ZD_TOOLS` and runs as its `zt-digest` tool (see [zt-digest](zt-digest.md)); what each step does is in [Digest scripts](digest-scripts.md). No stage starts a pwsh.
 
 Tools that every workflow uses through `zt-digest-lib`:
 
@@ -323,18 +323,18 @@ Tools that every workflow uses through `zt-digest-lib`:
 |---|---|
 | `gate` | none (checks the args in the script) |
 | `zt-dsh-source` | a Haiku probe: `deepseek_run`, `deepseek_wait`, `deepseek_delete`, `deepseek_remove_workspace` |
-| `zt-digest-prepare` | a Haiku agent: `prepare-book-digest.ps1`, `deepseek_usage` |
-| `zt-book-terms` | compiler steps `book-terms.ps1` (plan, apply) |
+| `zt-digest-prepare` | a Haiku agent: `zt-digest prepare`, `deepseek_usage` |
+| `zt-book-terms` | compiler steps `zt-digest terms` (plan, apply) |
 | `zt-cards-book` | the card cycle: `zt-digest card` |
-| `zt-digest-blocks` | Haiku managers: `deepseek_run` per group (digest prefix, skills, model, effort), `snapshot-topics.ps1`, the helper `zt-digest call`, `zt-check`; then the card cycle per block |
-| `zt-hubs` | a Haiku hub manager (`hub-compiler.ps1 -Step survey`), then compiler steps `hub-compiler.ps1` (plan, apply, check, report) |
-| `zt-link-prepare` | a Haiku agent: `prepare-link-pass.ps1`, `deepseek_usage` (mode `link`) |
+| `zt-digest-blocks` | Haiku managers: `deepseek_run` per group (digest prefix, skills, model, effort), `zt-digest snapshot-topics`, the helper `zt-digest call`, `zt-check`; then the card cycle per block |
+| `zt-hubs` | a Haiku hub manager (`zt-digest hub -Step survey`), then compiler steps `zt-digest hub` (plan, apply, check, report) |
+| `zt-link-prepare` | a Haiku agent: `zt-digest prepare-link`, `deepseek_usage` (mode `link`) |
 | `zt-link-pass` | Haiku managers: `deepseek_run` per pending group (link prefix), the helper `zt-digest call`, `zt-check` |
 | `zt-link-check` | the card cycle: `zt-digest card` |
 | `zt-dsh-cleanup` | a Haiku agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace`, `deepseek_usage` |
-| `zt-organize` | `organize-survey.ps1`; Opus with the zt skills and every zt call piped to `zt-digest call -`, never the `mcp__zt__*` tools (decisions: read-only `get_card`, `get_tree`, `get_model`, `search_cards`; the legacy job also writes, for example `move_card`, `delete_card`) and Read/Write for `decisions.json`; `organize-apply.ps1`; the card cycle for the notes; compiler steps `book-skeleton.ps1` (plan, apply; DeepSeek skill `asd-ste100-zh`) |
-| `zt-figures` | `attach-figures.ps1` |
-| `zt-bridge` | compiler steps `bridge-compiler.ps1` (plan, read-only judge jobs, report; apply with a selection) |
+| `zt-organize` | `zt-digest organize-survey`; Opus with the zt skills and every zt call piped to `zt-digest call -`, never the `mcp__zt__*` tools (decisions: read-only `get_card`, `get_tree`, `get_model`, `search_cards`; the legacy job also writes, for example `move_card`, `delete_card`) and Read/Write for `decisions.json`; `zt-digest organize-apply`; the card cycle for the notes; compiler steps `zt-digest skeleton` (plan, apply; DeepSeek skill `asd-ste100-zh`) |
+| `zt-figures` | `zt-digest figures` |
+| `zt-bridge` | compiler steps `zt-digest bridge` (plan, read-only judge jobs, report; apply with a selection) |
 | `zt-audit` | `zt-digest audit` (read-only; `digest-audit.ps1` ported) |
 | `zt-digest-report` | none (assembles the result) |
 
@@ -344,19 +344,19 @@ Tools that every workflow uses through `zt-digest-lib`:
 |---|---|
 | `zt-model-layer` (with `zt-model-lib`) | a Haiku agent: `zt-digest list-models`; per batch compiler steps `zt-digest model` (the model compiler, `model-compiler.ps1` ported: brief, skeleton and fill, derive, review and split, report), Sonnet for `plan.json`; a Haiku cleanup agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace` |
 | `zt-explain` | compiler steps `zt-digest model` (`explain`, `explain-apply`, `explain-report`) |
-| `zt-event-layer` | compiler steps `event-compiler.ps1` (plan, apply, report) |
-| `zt-finding-layer` | compiler steps `finding-compiler.ps1` (plan, apply, report) |
+| `zt-event-layer` | compiler steps `zt-digest event` (plan, apply, report) |
+| `zt-finding-layer` | compiler steps `zt-digest finding` (plan, apply, report) |
 
-**`zt-math-digest`** (all four slots; the math modules use `zt-math-lib`, which runs `math-compiler.ps1`):
+**`zt-math-digest`** (all four slots; the math modules use `zt-math-lib`, which runs `zt-digest math`):
 
 | Module | Slot | Tools |
 |---|---|---|
-| `zt-math-skeleton` | `after-prepare` | Haiku agents: `math-compiler.ps1` (`index`, `docs`, `skeleton`); compiler steps `notation`, `notation-apply` |
+| `zt-math-skeleton` | `after-prepare` | Haiku agents: `zt-digest math` (`index`, `docs`, `skeleton`); compiler steps `notation`, `notation-apply` |
 | `zt-model-layer`, `zt-explain` | `after-digest` | as in `zt-econ-digest` |
-| `zt-math-boundary` | `after-digest` | compiler steps `math-compiler.ps1` (`boundary`, `boundary-apply`, `boundary-settle`) |
-| `zt-math-proof` | `after-digest` | compiler steps `math-compiler.ps1` (`proof`, `proof-apply`) |
-| `zt-math-theory` | `after-link` | compiler steps `math-compiler.ps1` (`theory`, `theory-apply`) |
-| `zt-math-check` | `after-audit` | a Haiku agent: `math-compiler.ps1 -Step check` (read-only) |
+| `zt-math-boundary` | `after-digest` | compiler steps `zt-digest math` (`boundary`, `boundary-apply`, `boundary-settle`) |
+| `zt-math-proof` | `after-digest` | compiler steps `zt-digest math` (`proof`, `proof-apply`) |
+| `zt-math-theory` | `after-link` | compiler steps `zt-digest math` (`theory`, `theory-apply`) |
+| `zt-math-check` | `after-audit` | a Haiku agent: `zt-digest math -Step check` (read-only) |
 
 ## Behaviour
 
@@ -435,7 +435,7 @@ The stage stands after Figures and before Hubs in both workflows. Each variant p
 - **Pipelines, not barriers.** Inside `digest`, a block's card cycle starts when that block's manager returns; a follow-up error is logged and the block still reports.
 - **Missing reports are failures.** A group a manager did not report becomes `{ status: 'failed', errors: 'no report from its manager' }`; a job a step manager did not report becomes `failed`.
 - **JSON parsing.** `zdLastJson` takes the last line that holds a JSON object, also after prose on the same line; the step agent is told to return the line whole even when it is tens of kilobytes.
-- **Approvals.** Digest and link managers allow only the zt helper (the prompt reads "the zt helper (zt-digest call, or pwsh with zt-mcp.ps1)"), `zt-check`, and read-only reads under `out` or of `source`, and reject every write. Compiler-step managers also allow the read-only `-Step precheck` of the card compiler (`zt-digest card`, or `card-compiler.ps1`) and of the hub, event, and finding compilers, the model compiler (`zt-digest model`, or `model-compiler.ps1`) with `-Step explain-check`, `book-skeleton.ps1 -Step apply` without `-Apply`, and writes under the step's `writes` folder (else the one file the prompt names). Each approval names both forms, so a job file that still writes the pwsh form passes. Questions get "按任务说明自行决定，不需要询问。". Bridge judge managers (`readOnly`) get one exclusive list instead: `bridge-compiler.ps1 -Step precheck` (never `-Apply`), `zt-check`, the zt helper with `-Allow "<dsh>\read-only.allow.txt"` (an empty list: reads only), reads under `out`, and JSON writes under `<out>\bridge\out`.
+- **Approvals.** Digest and link managers allow only the zt helper (the prompt reads "the zt helper (zt-digest call, or pwsh with zt-mcp.ps1)"), `zt-check`, and read-only reads under `out` or of `source`, and reject every write. Compiler-step managers also allow the read-only `-Step precheck` of the card, hub, event, and finding compilers (`zt-digest card`, `hub`, `event`, `finding`, or their scripts), the model compiler (`zt-digest model`, or `model-compiler.ps1`) with `-Step explain-check`, the book skeleton (`zt-digest skeleton`, or `book-skeleton.ps1`) with `-Step apply` and without `-Apply`, and writes under the step's `writes` folder (else the one file the prompt names). Each approval names both forms, so a job file that still writes the pwsh form passes. Questions get "按任务说明自行决定，不需要询问。". Bridge judge managers (`readOnly`) get one exclusive list instead: the Bridge compiler (`zt-digest bridge`, or `bridge-compiler.ps1`) with `-Step precheck` (never `-Apply`), `zt-check`, the zt helper with `-Allow "<dsh>\read-only.allow.txt"` (an empty list: reads only), reads under `out`, and JSON writes under `<out>\bridge\out`.
 - **Skills.** A missing skill marks the group failed; the manager never starts a run without its skills and never pastes a skill into a prompt.
 - **Usage.** `zt-dsh-cleanup` subtracts the `deepseek_usage` reading taken at Prepare (mode `full`) or at the link preparation (mode `link`) and averages per digest and link run.
 
@@ -519,7 +519,7 @@ The args object (Interfaces) is the run-time configuration. These settings are f
 | Setting | Where | Value | Effect |
 |---|---|---|---|
 | Script folder | `ZD_SCRIPTS` in `zt-digest-lib.js` | `E:\zet\scripts\book-digest` | every PowerShell command and instruction file path |
-| Ported scripts | `ZD_TOOLS` and `zdTool(name, scripts)` in `zt-digest-lib.js` (`Z.tool(name)` in the stage modules) | `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context` → `model-context`, `list-models` → `list-models` | a listed script runs as `zt-digest <tool>`; any other as `pwsh -NoProfile -File "<ZD_SCRIPTS>\<name>.ps1"`. The harness keeps the same map in `ZT_DIGEST_TOOLS` |
+| Ported scripts | `ZD_TOOLS` and `zdTool(name, scripts)` in `zt-digest-lib.js` (`Z.tool(name)` in the stage modules) | `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics` | a listed script runs as `zt-digest <tool>`; any other as `pwsh -NoProfile -File "<ZD_SCRIPTS>\<name>.ps1"`. The harness keeps the same map in `ZT_DIGEST_TOOLS` |
 | zt helper | `ZD_CALL` (`ZD_DIGEST` + ` call`) in `zt-digest-lib.js` | `zt-digest call` | Opus's zt calls in Organize, and the helper the manager approvals name. |
 | DeepSeek sources | `ZD_DSH_SOURCES`; `DSH_SOURCES` | `official: deepseek-official/deepseek-flash`, `opencode: opencode-go/deepseek-v4.1-flash` | the model of every DeepSeek run |
 | DSMP limits | `ZD_PER_MANAGER_MAX`, `ZD_MAX_MANAGERS`; `DSMP_PER_MANAGER`, `DSMP_MAX_MANAGERS`; `DSMP.perManager`, `DSMP.maxManagers` in the inlined DSMP block | 8, 8 | caps on jobs per manager and managers alive |
@@ -588,7 +588,7 @@ node $A verify zt-math-digest --scope project --project E:\zet
 When a script gains a `zt-digest` tool ([zt-digest](zt-digest.md)), no stage module changes:
 
 1. Add `'<script>': '<tool>'` to `ZD_TOOLS` in `zt-digest-lib.js` and raise the library's version.
-2. In `framework-harness.mjs`, add `<tool>: '<script>'` to `ZT_DIGEST_TOOLS` and the tool name to `ZT_DIGEST_COMMAND`, `canonical`, and the `ported` regex of the check "the ported scripts run as zt-digest tools". The old command checks then match the canonical form unchanged.
+2. In `framework-harness.mjs`, add `<tool>: '<script>'` to `ZT_DIGEST_TOOLS`; `ZT_DIGEST_COMMAND`, `canonical`, and the `ported` regex of the check "the ported scripts run as zt-digest tools" are built from it (tool names longest first). The old command checks then match the canonical form unchanged. A harness that reads commands itself (`bridge-workflow-harness.mjs`) must also match `zt-digest <tool> -…`.
 3. Check the variants' `sim.json`: an entry whose `prompt` regex names `<script>.ps1"` no longer matches the tool command.
 4. Raise the base and variant versions and reinstall both variants (Change a framework digest).
 
@@ -596,7 +596,7 @@ When a script gains a `zt-digest` tool ([zt-digest](zt-digest.md)), no stage mod
 
 Both harnesses build each variant in memory and run the workflow script body as an `AsyncFunction(args, agent, phase, log, parallel, pipeline)` with a stand-in runtime: every agent returns a canned answer chosen by its label or by the command in its prompt. In `framework-harness.mjs` managers stay alive 3 ms so the harness can measure the peak number of managers alive. No model, DeepSeek, or zt call runs.
 
-`commandOf` in `framework-harness.mjs` finds the first `pwsh -NoProfile -File ...` command or `zt-digest <tool> -...` command (`ZT_DIGEST_COMMAND`: a tool name followed by a parameter, so the approval lines, which name tools without one, do not match) in a prompt. `canonical` rewrites a tool command to the form of the script it replaced, `pwsh -NoProfile -File "E:\zet\scripts\book-digest\<script>.ps1" ...` (map `ZT_DIGEST_TOOLS`), so the command checks written for the PowerShell scripts still match. Each recorded call keeps `cmd` (the canonical command) and `raw` (the `zt-digest` command as the prompt gave it). The Prepare checks allow the quoted script path (`prepare-book-digest\.ps1"?`).
+`commandOf` in `framework-harness.mjs` finds the first `pwsh -NoProfile -File ...` command or `zt-digest <tool> -...` command (`ZT_DIGEST_COMMAND`, built from `ZT_DIGEST_TOOLS` with the longest names first, so `model-context` is not read as `model` nor `prepare-link` as `prepare`; a tool name followed by a parameter, so the approval lines, which name tools without one, do not match) in a prompt. `bridge-workflow-harness.mjs` takes the first `pwsh -NoProfile -File ...` or `zt-digest bridge -...` command. `canonical` rewrites a tool command to the form of the script it replaced, `pwsh -NoProfile -File "E:\zet\scripts\book-digest\<script>.ps1" ...` (map `ZT_DIGEST_TOOLS`), so the command checks written for the PowerShell scripts still match. Each recorded call keeps `cmd` (the canonical command) and `raw` (the `zt-digest` command as the prompt gave it). The Prepare checks allow the quoted script path (`prepare-book-digest\.ps1"?`).
 
 ```bash
 node scripts/book-digest/tests/framework-harness.mjs       # 131 checks: both variants
@@ -650,6 +650,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-16` — Every digest script runs as its `zt-digest` tool (`zt-econ-digest` 3.3.0, `zt-math-digest` 2.4.0, base 2.3.0; `zt-digest-lib` v6). `ZD_TOOLS` now also maps `hub-compiler`, `bridge-compiler`, `math-compiler`, `event-compiler`, `finding-compiler`, `book-terms`, `book-skeleton`, `organize-survey`, `organize-apply`, `attach-figures`, `prepare-book-digest`, `prepare-link-pass`, and `snapshot-topics` to `zt-digest hub`, `bridge`, `math`, `event`, `finding`, `terms`, `skeleton`, `organize-survey`, `organize-apply`, `figures`, `prepare`, `prepare-link`, and `snapshot-topics`; no stage module changed. The manager approvals name the Bridge, hub, event, finding, and skeleton tools beside their scripts, because the job files' SELF-CHECK lines now run the tools. The sim files match `zt-digest <tool> -Step …`; `framework-harness.mjs` builds its tool patterns from `ZT_DIGEST_TOOLS`, and `bridge-workflow-harness.mjs` reads `zt-digest bridge` commands.
 - `2026-10-16` — The ported scripts run as `zt-digest` tools (`zt-econ-digest` 3.2.0, `zt-math-digest` 2.3.0, base 2.2.0; `zt-digest-lib` v5 with `ZD_DIGEST`, `ZD_TOOLS`, `ZD_CALL`, `zdTool`, and `tool`; `zt-audit` v2, `zt-book-terms` v2, `zt-bridge` v5, `zt-digest-prepare` v3, `zt-event-layer` v2, `zt-finding-layer` v2, `zt-explain` v3, `zt-figures` v2, `zt-hubs` v2, `zt-link-prepare` v2, `zt-math-lib` v2, `zt-model-lib` v2, `zt-organize` v2). Every stage builds its commands with `Z.tool('<script>')`. `ZD_TOOLS` maps `digest-audit`, `card-compiler`, `model-compiler`, `model-context`, and `list-models` to `zt-digest audit`, `card`, `model`, `model-context`, and `list-models`; the stages run the audit, the card cycle, the model compiler, explain, and the model listing through them. The other scripts still run through pwsh. The helper is `zt-digest call`: Organize's Opus pipes to it, and the manager approvals name it beside pwsh with `zt-mcp.ps1`. `framework-harness.mjs` rewrites tool commands to the canonical pwsh form and gains two checks (131 checks).
 - `2026-10-16` — The hand-written `zt-book-digest.js`, the legacy math workflow, its generator `make-math-workflow.mjs`, and `workflow-harness.mjs` and `math-workflow-harness.mjs` are removed; the base and the two variants replace them. `bridge-workflow-harness.mjs` checks only the two variants.
 - `2026-10-16` — Interfaces gain "Tools per workflow": the agents, DeepSeek Harness MCP tools, zt tools, and PowerShell scripts that each module of the base, `zt-econ-digest`, and `zt-math-digest` uses.
