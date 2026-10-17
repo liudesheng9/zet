@@ -77,9 +77,10 @@ try {
     Assert ($job -match '必须写线索枢纽的分支' -and $job -match [regex]::Escape("[[$($made[4])]]")) 'plan: the branch needs a line hub'
     Assert ($job -match '邻近主题' -and $job -match [regex]::Escape($legacy)) 'plan: neighbours and the legacy hub in the job'
     Assert (-not ($job -match [regex]::Escape("- $legacy |"))) 'plan: the legacy hub is not listed as a member'
-    $selfCheck = "SELF-CHECK: pwsh -NoProfile -File `"$compiler`" -Step precheck -Work `"$work`" -File `"$(Join-Path $work "out\hub-$a.json")`""
-    Assert ($job.Contains($selfCheck)) 'plan: the topic job names the SELF-CHECK command of its file'
-    Assert ((Get-Content -Raw -LiteralPath $plan.jobs[1].files[1]) -match 'SELF-CHECK: .* -Step precheck .*fields\.json') 'plan: the field job names its SELF-CHECK command'
+    $selfCheck = "SELF-CHECK: zt-digest hub -Step precheck -Work `"$work`" -File `"$(Join-Path $work "out\hub-$a.json")`""
+    Assert ($job.Contains($selfCheck)) 'plan: the topic job names the SELF-CHECK command of its file (zt-digest hub, no pwsh)'
+    Assert ((Get-Content -Raw -LiteralPath $plan.jobs[1].files[1]) -match 'SELF-CHECK: zt-digest hub -Step precheck .*fields\.json') 'plan: the field job names its SELF-CHECK command'
+    Assert ($job -match '(?m)^HELPER: zt-digest call\r?$') 'plan: the topic job names the helper as zt-digest call'
 
     # DeepSeek's files
     $out = Join-Path $work 'out'
