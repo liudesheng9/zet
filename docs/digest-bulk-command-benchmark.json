@@ -1,0 +1,256 @@
+{
+  "generated_utc": "2026-10-17T22:32:15.629692+00:00",
+  "scope": "actual read-only CLI/MCP commands on two isolated consistent copies; no apply, provider or workflow runs; synthetic group ownership manifests over retained real Cards",
+  "fixture": {
+    "source": "D:\\zt-target\\qualification-indexed-reads-O6rotV\\after\\archive\\zt.sqlite3",
+    "source_file_sha256": "73188c33b07bc373b7ff0fca9138a16a8f35b042316e85b2bb52f9f9ddf58e68",
+    "input": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "book": "stiglitz2014learning",
+    "book_cards": 1565,
+    "groups": 171,
+    "source_commit": "034896029403d6f6b5e14f08b2c13da0007f9e85",
+    "backend": {
+      "path": "D:\\zt-target\\release\\zt.exe",
+      "sha256": "4f5b9e6f0e4da3fe0e94c87ee3ce20cfb04632e22efc1d644e6e9efd01c10bb6"
+    },
+    "clients": {
+      "before": {
+        "path": "C:\\Users\\chenx\\.cargo\\bin\\zt-digest.exe",
+        "sha256": "29066b035c8ee963165ad55385507333a04fa2003176d41ea3b03b89fd3d607c"
+      },
+      "after": {
+        "path": "D:\\zt-digest-target\\release\\zt-digest.exe",
+        "sha256": "65dabb9e925352ffb161010962af3be817be83f35dab868007b2b9669ee355b4"
+      }
+    },
+    "baseline_backend": {
+      "path": "C:\\Users\\chenx\\.cargo\\bin\\zt.exe",
+      "sha256": "fd3538cdb14f2d908937e0bc532bef92a534292be63d075901ede580f48950f0"
+    },
+    "baseline_input": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "comparison": "matching client/server releases on separate identical data copies; legacy client on new backend failed the reply limit and is retained separately",
+    "candidate_source": "b9a5ce5dbb12d4bee3327cafc0a6d284b12adb36"
+  },
+  "row_evidence": {
+    "title_rows": 10895,
+    "indexed_link_occurrences": 56994,
+    "book_tree_cards": 1565,
+    "owned_and_attributed_primary_addresses": 2671,
+    "quality_checked_addresses": 1445
+  },
+  "sampling": "One baseline observation per command; one candidate warmup and three measured calls. Snapshot trials 1-3 predate the ordering correction and are excluded. No percentile or exact causal speedup claim. Source/build/test work overlapped part of the long legacy prepare-link observation; developer-host wall times are retained as observed.",
+  "results": [
+    {
+      "command": "snapshot",
+      "baseline_observations": 1,
+      "before_observed_ms": 50317.43929994991,
+      "before_calls": {
+        "list_trees": 1,
+        "get_tree": 218
+      },
+      "before_call_count": 219,
+      "before_mcp_processes": 1,
+      "after_samples_ms": [
+        585.3834999725223,
+        609.09670003457,
+        591.6137999738567
+      ],
+      "after_median_ms": 591.6137999738567,
+      "after_max_observed_ms": 609.09670003457,
+      "after_calls": {
+        "export_titles": 1
+      },
+      "after_call_count": 1,
+      "after_mcp_processes": 1,
+      "after_bulk_addresses_requested": 0,
+      "parity": "exact retained projection match",
+      "projection": {
+        "bytes": 1193031,
+        "sha256": "b9b2570b2fb88d0a71c7171e269b551b81b37666d7a37cb8a8aa0ca6382dde15"
+      }
+    },
+    {
+      "command": "plan",
+      "baseline_observations": 1,
+      "before_observed_ms": 106174.58200000692,
+      "before_calls": {
+        "list_trees": 1,
+        "get_tree": 218,
+        "get_card": 1448,
+        "list_hubs": 1,
+        "list_broken_links": 1
+      },
+      "before_call_count": 1669,
+      "before_mcp_processes": 11,
+      "after_samples_ms": [
+        2623.62219998613,
+        2632.759200001601,
+        2604.7898000106215
+      ],
+      "after_median_ms": 2623.62219998613,
+      "after_max_observed_ms": 2632.759200001601,
+      "after_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "after_call_count": 18,
+      "after_mcp_processes": 1,
+      "after_bulk_addresses_requested": 2671,
+      "parity": "exact retained projection match",
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "stdout_bytes_equal": true
+    },
+    {
+      "command": "check",
+      "baseline_observations": 1,
+      "before_observed_ms": 101753.15460003912,
+      "before_calls": {
+        "list_trees": 1,
+        "get_tree": 218,
+        "get_card": 1448,
+        "list_hubs": 1,
+        "list_broken_links": 1
+      },
+      "before_call_count": 1669,
+      "before_mcp_processes": 11,
+      "after_samples_ms": [
+        2422.9112999746576,
+        2410.1336000021547,
+        2513.2776999962516
+      ],
+      "after_median_ms": 2422.9112999746576,
+      "after_max_observed_ms": 2513.2776999962516,
+      "after_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "after_call_count": 18,
+      "after_mcp_processes": 1,
+      "after_bulk_addresses_requested": 2671,
+      "parity": "exact retained projection match",
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "stdout_bytes_equal": true
+    },
+    {
+      "command": "report",
+      "baseline_observations": 1,
+      "before_observed_ms": 105315.6844000332,
+      "before_calls": {
+        "list_trees": 1,
+        "get_tree": 218,
+        "get_card": 1448,
+        "list_hubs": 1,
+        "list_broken_links": 1
+      },
+      "before_call_count": 1669,
+      "before_mcp_processes": 11,
+      "after_samples_ms": [
+        2469.5452000014484,
+        2369.3392999703065,
+        2689.0025000320747
+      ],
+      "after_median_ms": 2469.5452000014484,
+      "after_max_observed_ms": 2689.0025000320747,
+      "after_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "after_call_count": 18,
+      "after_mcp_processes": 1,
+      "after_bulk_addresses_requested": 2671,
+      "parity": "exact retained projection match",
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "stdout_bytes_equal": true,
+      "complete_report_json_equal": true
+    },
+    {
+      "command": "prepare-link",
+      "baseline_observations": 1,
+      "before_observed_ms": 555258.195500006,
+      "before_calls": {
+        "list_trees": 1,
+        "get_tree": 218,
+        "get_card": 10679
+      },
+      "before_call_count": 10898,
+      "before_mcp_processes": 12,
+      "after_samples_ms": [
+        8119.4942999864,
+        7963.3481000200845,
+        7770.8359999815
+      ],
+      "after_median_ms": 7963.3481000200845,
+      "after_max_observed_ms": 8119.4942999864,
+      "after_calls": {
+        "export_titles": 1,
+        "get_cards": 55
+      },
+      "after_call_count": 56,
+      "after_mcp_processes": 1,
+      "after_bulk_addresses_requested": 10895,
+      "parity": "exact retained projection match",
+      "projection": {
+        "file_count": 343,
+        "bytes": 3991649,
+        "sha256": "8a83b76fb1a44e30542e044d0e845ce0718df95f9cc0b1e7d154451117058cc4"
+      },
+      "stdout_bytes_equal": true
+    }
+  ],
+  "preservation": {
+    "unchanged_cards": true,
+    "unchanged_source_file": true,
+    "after": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "baseline_after": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "unchanged_baseline_cards": true
+  },
+  "legacy_client_on_new_backend_failure": {
+    "variant": "before",
+    "command": "snapshot",
+    "trial": "warmup",
+    "elapsed_ms": 3123.085000028368,
+    "exit_code": 1,
+    "calls": {
+      "list_trees": 1,
+      "get_tree": 217
+    },
+    "mcp_processes": 1,
+    "bulk_addresses_requested": 0,
+    "failure": "zt-digest snapshot-topics: zt-mcp failed: 216 error read limit exceeded for reply_bytes: 9922990 > 8388608; reduce the requested chunk"
+  },
+  "limits": "Full Card state/job/fault projections match in the selected book scope. prepare-link files and snapshot match byte for byte. This is not an actual digest workflow or the separate shared orphan-definition qualification."
+}

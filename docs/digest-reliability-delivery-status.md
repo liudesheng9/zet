@@ -75,6 +75,24 @@ Preparation of the retained-data timing comparison found one remaining full-view
 
 The retained-data command comparison exposed an ordering regression in the title adapter: the title API's numeric Topic order changed the former digest rendering order. The public preparation test first failed for multi-digit Topic ids, then passed after the adapter restored binary tree/address input order before the existing rendering/ranking sorts (29 preparation assertions). The API's numeric ZET order is unchanged. On the 10,895-Card fixture, the corrected 1,193,031-byte snapshot matches the legacy SHA-256 exactly. Initial whole-book planning also matches the 1,445 picked Cards, complete planned state and 83 fault lines. These are intermediate qualification results; the complete command comparison is still running.
 
+### Retained-data command qualification
+
+The completed [command evidence](digest-bulk-command-benchmark.json) records the matching installed baseline client/server and candidate builds, hashes, request counts, payload-row counts and preserved artifacts under `D:/zt-target/qualification/issue67-command-bulk/`. Each release pair reads a separate consistent copy of the same 10,895 Cards, including the 1,565-Card `stiglitz2014learning` Literature tree. The 171 group ownership manifests are synthetic inputs over those retained Cards; no source extraction, provider call, apply or actual workflow runs. Both isolated services have been stopped, and both Card row hashes, revisions and the original fixture file hash remain unchanged.
+
+| Command | Baseline observation, seconds | Candidate median, seconds | Calls before → after | MCP processes before → after |
+|---|---:|---:|---:|---:|
+| snapshot-topics | 50.317 | 0.592 | 219 → 1 | 1 → 1 |
+| Card plan | 106.175 | 2.624 | 1,669 → 18 | 11 → 1 |
+| Card check | 101.753 | 2.423 | 1,669 → 18 | 11 → 1 |
+| Card report | 105.316 | 2.470 | 1,669 → 18 | 11 → 1 |
+| prepare-link | 555.258 | 7.963 | 10,898 → 56 | 12 → 1 |
+
+Each candidate command has one warm-up and three measured samples. The baseline has one observation per command. Some source/build/test work overlapped the long baseline preparation run, so these are observed developer-host timings, without a percentile or exact causal speedup claim. All candidate samples meet the named local command latency targets. They do not establish whole-workflow throughput.
+
+The snapshot matches byte for byte. All Card steps match the selected 1,445-Card state, complete jobs and 83 fault lines; the complete report JSON also matches. All 343 link-preparation files (3,991,649 bytes) match byte for byte, including candidate ranking and ownership. The initial attempt to run the old client against the new server failed on a 9.9 MB tree reply exceeding the new 8 MiB limit; that failure and the earlier ordering mismatch remain retained rather than being counted as successful measurements.
+
+T32 is qualified for these commands. #67 remains open for its T22 gate: the shared orphan predicate and exact revision-scoped sets assigned to #76 are not established by this timing comparison.
+
 Windows Defender quarantined the temporary test copy and subsequently blocked the debug build itself as `Trojan:Win32/Bearfoos.A!ml`. The [investigation](windows-defender-build-investigation.md) records the events, source/build review, artifact hashes and limits of the diagnosis. The leading explanation is a development-build false positive; the classifier's exact cause is not established.
 
 The unnecessary hidden PowerShell/`ExecutionPolicy Bypass` daemon launcher has been replaced with direct Windows process creation, explicit path arguments and no inherited handles. The public no-shell/path regression failed before the change and passes afterward. The full root regression passes: 338 tests, zero failures, one deliberately ignored real-clipboard test. Both final debug and release binaries pass Defender custom scans; real-time protection and behavior monitoring remain enabled. No exclusions or security settings were changed.
