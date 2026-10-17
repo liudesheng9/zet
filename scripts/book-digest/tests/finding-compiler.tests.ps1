@@ -59,7 +59,7 @@ try {
     Assert ($plan.candidates -eq 3 -and $plan.groups -eq 2 -and @($plan.jobs).Count -eq 1) "plan: three result candidates (with a number and an empirical cue) in two groups, one job ($($plan.candidates), $($plan.groups))"
     $jobText = Get-Content (Join-Path $staging 'findings\fd-01.md') -Raw -Encoding utf8
     Assert ($jobText -match 'sections/s01.md:5' -and $jobText -match '42%' -and $jobText -notmatch '风险中性') 'plan: the job lists the result sentences, not the model assumption'
-    Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match "锚点：``$key/1``" -and $jobText -match 'SELF-CHECK: pwsh -NoProfile -File .*finding-compiler\.ps1" -Step precheck .* -Job fd-01') 'plan: the job names the anchors, the Idea Cards, and its SELF-CHECK line'
+    Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match "锚点：``$key/1``" -and $jobText.Contains("SELF-CHECK: zt-digest finding -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'findings')`" -Job fd-01")) 'plan: the job names the anchors, the Idea Cards, and its SELF-CHECK line'
 
     $good = @(
         @{ group = 1; src = 'sections/s01.md:5'; title = '31 家受访企业因为缺少保险市场推迟了投资'; measure = '企业推迟投资的原因。'; data = '48 家企业的访谈，原书未写明年份。'
@@ -98,16 +98,12 @@ try {
 
     # A parallel stage (models, events) edits an Idea Card between apply's read and its write. The edit carries
     # base, so zt refuses it; the job stays pending, and a rerun writes the Link and keeps the other stage's line.
-    $copy = Join-Path $scratch 'tree\scripts\book-digest'
-    $helperDir = Join-Path $scratch 'tree\skills\zt\scripts'
-    New-Item -ItemType Directory -Force $copy, $helperDir | Out-Null
-    Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'), (Join-Path $PSScriptRoot '..\*.md') -Destination $copy
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'racing-zt-mcp.ps1') -Destination (Join-Path $helperDir 'zt-mcp.ps1')
-    $env:ZT_REAL_HELPER = $script:ZtHelper
+    # zt-digest's test seam stands in for the parallel stage: before the first write batch that edits
+    # ZT_RACE_TARGET it appends ZT_RACE_LINE to that Card once (ZT_RACE_FLAG marks it done).
     $env:ZT_RACE_TARGET = $ideas[1]
     $env:ZT_RACE_FLAG = Join-Path $scratch 'raced'
     $env:ZT_RACE_LINE = '事件阶段在这里补了一句。'
-    $racer = Join-Path $copy 'finding-compiler.ps1'
+    $racer = $compiler
     $late = $good[1].Clone(); $late.title = '1200 家受调查小企业中多数申请过贷款'; $late.result = '多数受调查小企业申请过贷款。'
     @{ findings = @($late) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $staging 'findings\out\fd-02.json') -Encoding utf8
     $raced = Last @(pwsh -NoProfile -File $racer -Step apply -Staging $staging -Apply 2>&1)
