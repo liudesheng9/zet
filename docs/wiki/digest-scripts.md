@@ -5,7 +5,8 @@ paths:
   - "scripts/book-digest/*.ps1"
   - "scripts/book-digest/tests/*.ps1"
   - "scripts/book-digest/tests/*.json"
-synced: fe5d77864def
+  - "scripts/book-digest/tests/*.cmd"
+synced: b1953a1
 updated: 2026-10-16
 ---
 

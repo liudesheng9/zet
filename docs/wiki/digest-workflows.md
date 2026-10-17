@@ -7,7 +7,7 @@ paths:
   - ".claude/workflows/**"
   - ".claude/workflow-framework/**"
   - "!.claude/workflow-framework/*/history/**"
-synced: fe5d77864def
+synced: b1953a1
 updated: 2026-10-16
 ---
 
