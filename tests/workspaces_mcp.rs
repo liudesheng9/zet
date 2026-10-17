@@ -23,6 +23,454 @@ struct TestHome {
 }
 
 #[test]
+fn an_oversized_preview_reply_is_rolled_back_before_the_mcp_reply_limit() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"large-draft/group/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Large draft"}},
+        {"op_key":"large-draft/group/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Large claim"}}
+    ]}));
+    let mut base = "large-draft/group/1/create/source".to_string();
+    for i in 0..4 {
+        let key = format!("large-draft/group/1/grow/paragraph-{i}");
+        mcp.ok("apply_batch",json!({"items":[{"op_key":key,"client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":base,"owned_paragraph":{"text":format!("{i} {}", "x".repeat(1000000))}}}]}));
+        base = key;
+    }
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let request = json!({"preview":true,"items":[{"op_key":"large-draft/group/1/link/new","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":base,"owned_paragraph":{"text":"依赖 [[0/0]]，后者给出了共同的讨论范围。"}}}]});
+    let (error, failed) = mcp.call("apply_batch", request.clone());
+    assert!(failed);
+    assert_eq!(error["code"], "read_limit");
+    assert_eq!(error["limit_kind"], "reply_bytes");
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    let mut actual = request;
+    actual.as_object_mut().unwrap().remove("preview");
+    assert_eq!(
+        mcp.ok("apply_batch", actual)["results"][0]["replayed"],
+        false,
+        "the rejected preview retained no receipt or authored change"
+    );
+}
+
+#[test]
+fn a_batch_preview_uses_real_validators_but_retains_no_cards_receipts_or_allocation() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let create = json!({"preview":true,"items":[
+        {"op_key":"draft/group-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Draft scope"}},
+        {"op_key":"draft/group-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@topic","title":"Constraint"}},
+        {"op_key":"draft/group-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@target","title":"Claim","body":"Independent prose."}},
+        {"op_key":"draft/group-1/1/create/link","client_ref":"link","tool":"edit_card","arguments":{"at":"@@source","base_receipt":"draft/group-1/1/create/source","owned_paragraph":{"text":"依赖 [[@@target]]，后者给出共同的约束。"}}}
+    ]});
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let draft = mcp.ok("apply_batch", create.clone());
+    assert_eq!(draft["preview"], true);
+    assert_eq!(draft["applied"], false);
+    assert_eq!(draft["complete"], true);
+    assert_eq!(draft["archive_revision"], revision);
+    let source = draft["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["address"] == "0/2")
+        .unwrap();
+    assert_eq!(
+        source["body"],
+        "Independent prose.\n\n依赖 [[0/1]]，后者给出共同的约束。"
+    );
+    assert_eq!(draft["paragraphs"][0]["address"], "0/2");
+    assert_eq!(draft["paragraphs"][0]["links"], json!(["0/1"]));
+    assert_eq!(draft["paragraphs"][0]["kinds"], json!(["0/1"]));
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert_eq!(
+        mcp.ok("apply_batch", create.clone()),
+        draft,
+        "a preview retains no operation receipts or allocation"
+    );
+    let mut actual = create.clone();
+    actual.as_object_mut().unwrap().remove("preview");
+    let applied = mcp.ok("apply_batch", actual);
+    assert!(
+        applied["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["replayed"] == false)
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/2"}))["text"],
+        source["text"]
+    );
+    let replay = mcp.ok("apply_batch", create.clone());
+    assert!(
+        replay["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["replayed"] == true)
+    );
+    mcp.ok(
+        "edit_card",
+        json!({"at":"0/2","body":"Independent later correction."}),
+    );
+    let (conflict, failed) = mcp.call("apply_batch", create);
+    assert!(
+        failed,
+        "historical receipts cannot preview a different current output"
+    );
+    assert_eq!(conflict["code"], "write_conflict");
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/2"}))["body"],
+        "Independent later correction."
+    );
+}
+
+#[test]
+fn an_owned_paragraph_cannot_be_hidden_by_the_existing_cards_code_context() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    for (i, body) in [
+        "Intro.\n\n```text\nAn unfinished code block.",
+        "`An unfinished inline code span.",
+        "Normal context.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        mcp.ok("apply_batch",json!({"items":[
+            {"op_key":format!("run-hidden/case-{i}/1/create/topic"),"client_ref":"topic","tool":"create_topic","arguments":{"title":"Code context"}},
+            {"op_key":format!("run-hidden/case-{i}/1/create/source"),"client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":body}},
+            {"op_key":format!("run-hidden/case-{i}/1/create/target"),"client_ref":"target","tool":"create_successor","arguments":{"at":"@@source","title":"Constraint"}}
+        ]}));
+        let (conflict,failed)=mcp.call("apply_batch",json!({"items":[{"op_key":format!("run-hidden/case-{i}/1/link/paragraph"),"client_ref":"source","tool":"edit_card","arguments":{"at":format!("{i}/1"),"base_receipt":format!("run-hidden/case-{i}/1/create/source"),"owned_paragraph":{"text":format!("依赖 [[{i}/2]]，这里的 `value` 是共同约束。")}}}]}));
+        let card = mcp.ok("get_card", json!({"at":format!("{i}/1")}));
+        if i < 2 {
+            assert!(failed, "a new owned paragraph cannot silently become code");
+            assert_eq!(conflict["code"], "write_conflict");
+            assert_eq!(card["body"], *body);
+        } else {
+            assert!(!failed, "{conflict}");
+            assert_eq!(card["outbound"][0]["address"], format!("{i}/2"));
+            assert_eq!(
+                card["body"],
+                format!("{body}\n\n依赖 [[{i}/2]]，这里的 `value` 是共同约束。")
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_paragraph_adoption_is_explicit_and_ambiguous_owned_spans_refuse() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let paragraph = "依赖 [[0/1]]，后者给出共同的约束。";
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-adopt/group-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Adoption"}},
+        {"op_key":"run-adopt/group-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@topic","title":"Constraint"}},
+        {"op_key":"run-adopt/group-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@target","title":"Legacy claim","body":format!("Intro.\n\n{paragraph}")}}
+    ]}));
+    let owned = |mcp: &mut Mcp,
+                 key: &str,
+                 base: &str,
+                 text: &str,
+                 replaces: Option<&str>,
+                 adopt: bool| {
+        mcp.call("apply_batch",json!({"items":[{"op_key":key,"client_ref":"source","tool":"edit_card","arguments":{"at":"0/2","base_receipt":base,"owned_paragraph":{"text":text,"replaces_receipt":replaces,"adopt_legacy":adopt}}}]}))
+    };
+    let edit = |mcp: &mut Mcp, key: &str, base: &str, body: &str| {
+        mcp.ok("apply_batch",json!({"items":[{"op_key":key,"client_ref":"source","tool":"edit_card","arguments":{"at":"0/2","base_receipt":base,"body":body}}]}))
+    };
+    let original = "run-adopt/group-1/1/create/source";
+    let (_, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/1/link/unowned",
+        original,
+        paragraph,
+        Some(original),
+        false,
+    );
+    assert!(
+        failed,
+        "a normal create receipt cannot claim paragraph ownership"
+    );
+    let (_, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/1/link/append",
+        original,
+        paragraph,
+        None,
+        false,
+    );
+    assert!(failed);
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let ownership = "run-adopt/group-1/1/link/adopt";
+    let (adopted, failed) = owned(&mut mcp, ownership, original, paragraph, None, true);
+    assert!(!failed, "{adopted}");
+    assert_eq!(
+        adopted["results"][0]["result"]["owned_paragraph"]["adopted"],
+        true
+    );
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    let replacement = "特例 [[0/1]]，本命题只覆盖其中一种情形。";
+    let duplicate = format!("Intro.\n\n{paragraph}\n\n{paragraph}");
+    let duplicate_base = "run-adopt/group-1/2/review/duplicates";
+    edit(&mut mcp, duplicate_base, ownership, &duplicate);
+    let (conflict, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/2/link/correct",
+        duplicate_base,
+        replacement,
+        Some(ownership),
+        false,
+    );
+    assert!(failed);
+    assert_eq!(conflict["code"], "write_conflict");
+    assert_eq!(conflict["observed_body"], duplicate);
+    let (_, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/2/link/adopt",
+        duplicate_base,
+        paragraph,
+        None,
+        true,
+    );
+    assert!(failed);
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/2"}))["body"], duplicate);
+    let fenced = format!("Intro.\n\n```text\n{paragraph}\n```");
+    let fenced_base = "run-adopt/group-1/3/review/fenced";
+    edit(&mut mcp, fenced_base, duplicate_base, &fenced);
+    let (conflict, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/3/link/correct",
+        fenced_base,
+        replacement,
+        Some(ownership),
+        false,
+    );
+    assert!(failed);
+    assert!(
+        conflict["error"]
+            .as_str()
+            .unwrap()
+            .contains("absent or changed")
+    );
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/2"}))["body"], fenced);
+    let changed = format!("Intro.\n\n{paragraph} Changed by another writer.");
+    let changed_base = "run-adopt/group-1/4/review/changed";
+    edit(&mut mcp, changed_base, fenced_base, &changed);
+    let (_, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/4/link/correct",
+        changed_base,
+        replacement,
+        Some(ownership),
+        false,
+    );
+    assert!(failed);
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/2"}))["body"], changed);
+    let legacy = format!("Intro.\n\n{replacement}");
+    let legacy_base = "run-adopt/group-1/5/review/legacy";
+    edit(&mut mcp, legacy_base, changed_base, &legacy);
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let (adopted, failed) = owned(
+        &mut mcp,
+        "run-adopt/group-1/5/link/adopt",
+        legacy_base,
+        replacement,
+        Some(ownership),
+        true,
+    );
+    assert!(!failed, "{adopted}");
+    assert_eq!(
+        adopted["results"][0]["result"]["owned_paragraph"]["adopted"],
+        true
+    );
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/2"}))["body"], legacy);
+    let current = "run-adopt/group-1/5/link/adopt";
+    let mixed = json!({"items":[{"op_key":"run-adopt/group-1/6/link/mixed","client_ref":"source","tool":"edit_card","arguments":{"at":"0/2","base_receipt":current,"body":"Must not replace other content.","owned_paragraph":{"text":paragraph}}}]});
+    assert!(mcp.err("apply_batch", mixed).contains("cannot combine"));
+    let oversized = json!({"items":[{"op_key":"run-adopt/group-1/6/link/large","client_ref":"source","tool":"edit_card","arguments":{"at":"0/2","base_receipt":current,"owned_paragraph":{"text":"x".repeat(1024*1024+1)}}}]});
+    assert!(
+        mcp.err("apply_batch", oversized)
+            .contains("1048576 authored bytes")
+    );
+    let first = "run-adopt/group-1/6/link/first";
+    let mut invalid = json!({"items":[
+        {"op_key":first,"client_ref":"first","tool":"edit_card","arguments":{"at":"0/2","base_receipt":current,"owned_paragraph":{"text":"扩展 [[0/1]]，两者使用不同的条件。"}}},
+        {"op_key":"run-adopt/group-1/6/link/second","client_ref":"second","tool":"edit_card","arguments":{"at":"0/2","base_receipt":first,"owned_paragraph":{"text":"依赖 [[MissingBook]]，不允许不存在的目标。"}}}
+    ]});
+    assert!(
+        mcp.err("apply_batch", invalid.clone())
+            .contains("does not exist")
+    );
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/2"}))["body"], legacy);
+    invalid["items"][1]["arguments"]["owned_paragraph"]["text"] =
+        json!("对照 [[0/1]]，这里展示另一条推理途径。");
+    let retried = mcp.ok("apply_batch", invalid);
+    assert_eq!(
+        retried["results"][0]["replayed"], false,
+        "a rolled-back paragraph left no receipt"
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/2"}))["body"],
+        format!(
+            "{legacy}\n\n扩展 [[0/1]]，两者使用不同的条件。\n\n对照 [[0/1]]，这里展示另一条推理途径。"
+        )
+    );
+    let fenced_input = json!({"items":[{"op_key":"run-adopt/group-1/7/link/fenced-input","client_ref":"source","tool":"edit_card","arguments":{"at":"0/2","base_receipt":"run-adopt/group-1/6/link/second","owned_paragraph":{"text":format!("```text\n{paragraph}\n```")}}}]});
+    assert!(
+        mcp.err("apply_batch", fenced_input)
+            .contains("one paragraph")
+    );
+}
+
+#[test]
+fn an_owned_paragraph_handles_a_bare_heading_and_retains_its_own_line_endings() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-bare/group-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Bare root"}},
+        {"op_key":"run-bare/group-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@topic","title":"Constraint"}}
+    ]}));
+    home.db()
+        .execute(
+            "UPDATE cards SET text='# Bare root' WHERE location='0/0'",
+            [],
+        )
+        .unwrap();
+    let paragraph = "依赖 [[0/1]]，\r\n后者给出共同的约束。";
+    mcp.ok("apply_batch",json!({"items":[{"op_key":"run-bare/group-1/1/link/paragraph","client_ref":"topic","tool":"edit_card","arguments":{"at":"0/0","base_receipt":"run-bare/group-1/1/create/topic","owned_paragraph":{"text":paragraph}}}]}));
+    let card = mcp.ok("get_card", json!({"at":"0/0"}));
+    assert_eq!(card["title"], "Bare root");
+    assert_eq!(card["body"], paragraph.replace("\r\n", "\n"));
+    assert!(card["text"].as_str().unwrap().contains(paragraph));
+    let replacement = "特例 [[0/1]]，本卡讨论较窄的情形。";
+    mcp.ok("apply_batch",json!({"items":[{"op_key":"run-bare/group-1/2/link/paragraph","client_ref":"topic","tool":"edit_card","arguments":{"at":"0/0","base_receipt":"run-bare/group-1/1/link/paragraph","owned_paragraph":{"text":replacement,"replaces_receipt":"run-bare/group-1/1/link/paragraph"}}}]}));
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/0"}))["body"], replacement);
+}
+
+#[test]
+fn an_owned_correction_preserves_legacy_authored_bytes_when_reverse_links_change() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-bytes/group-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Bytes"}},
+        {"op_key":"run-bytes/group-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":"An independent formula.\n\n$$\nx^2+y^2=z^2\n$$\n\n![Figure](https://example.test/figure.png)"}},
+        {"op_key":"run-bytes/group-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@source","title":"Constraint"}}
+    ]}));
+    let old = "依赖 [[0/2]]，后者给出共同的约束。";
+    mcp.ok("apply_batch",json!({"items":[{"op_key":"run-bytes/group-1/1/link/paragraph","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-bytes/group-1/1/create/source","owned_paragraph":{"text":old}}}]}));
+    let card = mcp.ok("get_card", json!({"at":"0/1"}));
+    // Prepare a valid retained Markdown fixture with legacy transport/framing.
+    // Assertions still observe the real MCP and integrity CLI, not database rows.
+    let raw = card["text"]
+        .as_str()
+        .unwrap()
+        .replace('\n', "\r\n")
+        .replacen(
+            "# Claim\r\n\r\n",
+            "\r\n \t\r\n# Claim ###\r\n\r\n \t\r\n",
+            1,
+        );
+    home.db()
+        .execute("UPDATE cards SET text=?1 WHERE location='0/1'", [&raw])
+        .unwrap();
+    let replacement = "特例 [[0/2]]，本命题只覆盖其中一种情形。";
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-bytes/group-1/2/link/paragraph","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-bytes/group-1/1/link/paragraph","owned_paragraph":{"text":replacement,"replaces_receipt":"run-bytes/group-1/1/link/paragraph"}}},
+        {"op_key":"run-bytes/group-1/2/link/carrier","client_ref":"carrier","tool":"create_successor","arguments":{"at":"0/2","title":"Inbound carrier","body":"依赖 [[0/1]]，这里给出另一条作者链接。"}}
+    ]}));
+    let after = mcp.ok("get_card", json!({"at":"0/1"}));
+    let marker = "<!-- zt:reverse-links -->";
+    assert_eq!(
+        after["text"]
+            .as_str()
+            .unwrap()
+            .split(marker)
+            .next()
+            .unwrap(),
+        raw.split(marker).next().unwrap().replace(old, replacement)
+    );
+    assert_eq!(after["inbound"][0]["address"], "0/3");
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn receipt_owned_paragraph_is_corrected_without_replacing_other_authored_content() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let body = "An independent observation.\n\n$$\nx^2+y^2=z^2\n$$\n\n![Figure](https://example.test/figure.png)";
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-paragraph/group-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Paragraphs"}},
+        {"op_key":"run-paragraph/group-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Independent claim","body":body}},
+        {"op_key":"run-paragraph/group-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@source","title":"A related constraint"}}
+    ]}));
+    let paragraph = "依赖 [[0/2]]，后者给出共同的约束。";
+    let appended=mcp.ok("apply_batch",json!({"items":[{"op_key":"run-paragraph/group-1/1/link/paragraph","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-paragraph/group-1/1/create/source","owned_paragraph":{"text":paragraph}}}]}));
+    assert_eq!(
+        appended["results"][0]["result"]["owned_paragraph"]["text"],
+        paragraph
+    );
+    let replay=mcp.ok("apply_batch",json!({"items":[{"op_key":"run-paragraph/group-1/1/link/paragraph","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-paragraph/group-1/1/create/source","owned_paragraph":{"text":paragraph,"replaces_receipt":null,"adopt_legacy":false}}}]}));
+    assert_eq!(replay["results"][0]["replayed"], true);
+    let before = mcp.ok("get_card", json!({"at":"0/1"}));
+    assert_eq!(before["body"], format!("{body}\n\n{paragraph}"));
+    let replacement = "特例 [[0/2]]，本命题只覆盖其中一种情形。";
+    let correction = json!({"items":[{"op_key":"run-paragraph/group-1/2/link/paragraph","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-paragraph/group-1/1/link/paragraph","owned_paragraph":{"text":replacement,"replaces_receipt":"run-paragraph/group-1/1/link/paragraph"}}}]});
+    mcp.ok("apply_batch", correction.clone());
+    let after = mcp.ok("get_card", json!({"at":"0/1"}));
+    assert_eq!(
+        after["text"],
+        before["text"]
+            .as_str()
+            .unwrap()
+            .replace(paragraph, replacement)
+    );
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    assert_eq!(
+        mcp.ok("apply_batch", correction)["results"][0]["replayed"],
+        true
+    );
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        after["body"]
+    );
+}
+
+#[test]
 fn identified_authored_bases_ignore_reverse_links_but_detect_metadata_changes() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -90,7 +538,6 @@ fn a_maximum_batch_publishes_one_revision_and_one_combined_link_refresh() {
     assert_eq!(report["last_write"]["indexed_cards"], 64);
     assert_eq!(report["last_write"]["refreshed_cards"], 64);
 }
-
 #[test]
 fn batch_identity_and_access_failures_leave_no_partial_writes() {
     let home = TestHome::new();

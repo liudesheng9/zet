@@ -28,7 +28,7 @@ impl Limit {
     }
 }
 
-fn text_value(card: &Card) -> Result<Value> {
+pub(crate) fn text_value(card: &Card) -> Result<Value> {
     let parsed = crate::parse_card_text(&card.text)?;
     Ok(json!({
         "address":card.address,"tree":crate::tree_id(&card.address),

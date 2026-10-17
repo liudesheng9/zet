@@ -1929,6 +1929,8 @@ fn insert_literature_card_tx(
         bail!("Literature Card `{citation_key}` already exists");
     }
     validate_card_text(conn, citation_key, text, None)?;
+    let parsed = parse_card_text(text)?;
+    let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
          VALUES(NULL, ?1, 0, 1, ?2, ?3, ?4, ?5)",
@@ -2361,6 +2363,8 @@ fn insert_card_tx(
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     validate_card_text(conn, location, text, None)?;
+    let parsed = parse_card_text(text)?;
+    let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis)
          VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6, ?7)",
@@ -2394,6 +2398,7 @@ fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()
     if before.title == after.title && before.body == after.body {
         return Ok(());
     }
+    let text = compose_card_text(&after.title, &after.body, &after.reverse);
     let tx = conn.transaction()?;
     tx.execute(
         "UPDATE cards SET text = ?1 WHERE row_id = ?2",

@@ -218,7 +218,6 @@ fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usi
         let Some(card) = optional_card(conn, target)? else {
             continue;
         };
-        let parsed = crate::parse_card_text(&card.text)?;
         let mut sources = conn.prepare_cached("SELECT DISTINCT l.source,c.text FROM links l JOIN cards c ON (c.location=l.source OR c.citation_key=l.source) WHERE l.target=?1 ORDER BY l.source")?;
         let linked = sources
             .query_map([target], |r| {
@@ -231,7 +230,7 @@ fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usi
             .collect::<Result<Vec<_>>>()?;
         let reverse =
             crate::card::reverse_section(linked.iter().map(|(a, t)| (a.as_str(), t.as_str())));
-        let text = crate::compose_card_text(&parsed.title, &parsed.body, &reverse);
+        let text = crate::card::with_reverse_section(&card.text, &reverse)?;
         if text != card.text {
             changed += conn.execute(
                 "UPDATE cards SET text=?1 WHERE row_id=?2",
@@ -293,9 +292,7 @@ pub(crate) fn check(conn: &Connection) -> Result<Value> {
         );
     }
     for c in &cards {
-        let parsed = crate::parse_card_text(&c.text)?;
-        let expected_text =
-            crate::compose_card_text(&parsed.title, &parsed.body, &reverse[&c.address]);
+        let expected_text = crate::card::with_reverse_section(&c.text, &reverse[&c.address])?;
         if c.text != expected_text {
             faults.push(json!({"kind":"reverse","address":c.address}));
         }

@@ -604,6 +604,9 @@ A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-diges
 
 ## Testing
 
+`tests/owned-paragraph.tests.ps1` exercises the actual identified helper and MCP against a temporary archive: append/correct through exact receipts, preservation of independent prose/formulas/figure references, source allow-list refusal before earlier writes, exact-result scope, nested-byte chunking, no-write Link SELF-CHECK, malformed/incomplete preview refusal, then persisted apply of the checked paragraph. The checker tests deliberately retain unrelated English prose so the paragraph check cannot silently turn into a whole-Card language rewrite. It runs through `run-all.ps1` as `owned-paragraph`; `ZT_DIGEST` selects the candidate compiler.
+
+
 The preparation suite also checks the fresh snapshot's legacy rendering order for multi-digit Topic ids. The bulk title API's numeric order must not change digest rendering or the input order of equal-score ranking candidates.
 
 `identified-batch.tests.ps1` drives the public helper through a 69-operation, two-chunk build of a 66-part model. Its real MCP child exits after the first 64 operations commit, before delivering the reply. A new process recovers the prefix and cross-chunk references, verifies every final authored output and completes without duplicates; another replay changes no revision. Independent output changes fail completion and remain intact. The same test exercises `terms` compiler create/replay, retained accepted plans, guarded edits under a new plan revision and changed-input refusal. It is auto-discovered by `run-all.ps1` and respects `ZT_DIGEST`/`-Zt` candidate builds; no provider or actual workflow runs.

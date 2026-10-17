@@ -177,7 +177,212 @@ fn guard_edit(conn: &rusqlite::Connection, args: &Value, current: &str) -> Resul
     Ok(())
 }
 
+fn paragraph_spans(body: &str, paragraph: &str) -> Vec<std::ops::Range<usize>> {
+    let fenced = crate::link::fenced_code_ranges(body);
+    let code = crate::link::code_ranges(body);
+    body.match_indices(paragraph)
+        .filter_map(|(start, _)| {
+            let end = start + paragraph.len();
+            let before = start == 0
+                || (body[..start].ends_with('\n')
+                    && body[..start]
+                        .lines()
+                        .last()
+                        .is_none_or(|line| line.trim().is_empty()));
+            let after = end == body.len()
+                || body[end..]
+                    .strip_prefix("\r\n")
+                    .or_else(|| body[end..].strip_prefix('\n'))
+                    .is_some_and(|rest| {
+                        rest.lines()
+                            .next()
+                            .is_none_or(|line| line.trim().is_empty())
+                    });
+            let crosses = code.iter().any(|code| {
+                (code.start < start && start < code.end) || (code.start < end && end < code.end)
+            });
+            (before
+                && after
+                && !crosses
+                && !fenced
+                    .iter()
+                    .any(|code| code.start < end && start < code.end))
+            .then_some(start..end)
+        })
+        .collect()
+}
+
+fn owned_paragraph(
+    root: &Path,
+    conn: &rusqlite::Connection,
+    args: &Value,
+    current: &str,
+) -> Result<(Value, bool)> {
+    for key in args
+        .as_object()
+        .context("paragraph arguments must be an object")?
+        .keys()
+    {
+        if !["at", "base_fingerprint", "base_receipt", "owned_paragraph"].contains(&key.as_str()) {
+            bail!("owned_paragraph cannot combine with argument `{key}`");
+        }
+    }
+    let address = args["at"].as_str().context("missing paragraph at")?;
+    let card = crate::load_card(conn, address)?;
+    crate::Access::Agent.ensure_writable(card.workspace)?;
+    let range = crate::card::authored_body_range(&card.text)?;
+    let original_body = &card.text[range.clone()];
+    let spec = args["owned_paragraph"]
+        .as_object()
+        .context("owned_paragraph must be an object")?;
+    for key in spec.keys() {
+        if !["text", "replaces_receipt", "adopt_legacy"].contains(&key.as_str()) {
+            bail!("unknown owned_paragraph field `{key}`");
+        }
+    }
+    let text = spec
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .context("owned paragraph text must be nonempty")?;
+    if text.starts_with(['\r', '\n'])
+        || text.ends_with(['\r', '\n'])
+        || text.lines().any(|line| line.trim().is_empty())
+        || text.contains(crate::card::REVERSE_MARKER)
+        || !crate::link::fenced_code_ranges(text).is_empty()
+    {
+        bail!(
+            "owned paragraph text must be one paragraph without a generated marker or fenced code"
+        );
+    }
+    let replaces = match spec.get("replaces_receipt") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(key)) if !key.is_empty() => Some(key.as_str()),
+        _ => bail!("replaces_receipt must be an operation key or null"),
+    };
+    let adopt = match spec.get("adopt_legacy") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => bail!("adopt_legacy must be a boolean"),
+    };
+    let conflict = |reason: &str| {
+        anyhow::Error::from(Conflict {
+            address: address.to_string(),
+            reason: reason.into(),
+            observed_body: original_body.to_string(),
+            observed_fingerprint: current.to_string(),
+        })
+    };
+    let desired = paragraph_spans(original_body, text);
+    let (body, adopted) = if let Some(key) = replaces {
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT result_json FROM applied_ops WHERE op_key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let prior: Value = stored
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let old = prior["owned_paragraph"]["text"]
+            .as_str()
+            .filter(|s| !s.is_empty());
+        if prior["address"] != address || old.is_none() {
+            return Err(conflict(
+                "the named receipt does not own a paragraph of this Card",
+            ));
+        }
+        let old = old.unwrap();
+        let spans = paragraph_spans(original_body, old);
+        if spans.len() == 1 {
+            if old != text && !desired.is_empty() {
+                return Err(conflict(
+                    "both the owned and desired paragraphs are present; review duplicate content",
+                ));
+            }
+            let mut body = original_body.to_string();
+            body.replace_range(spans[0].clone(), text);
+            (body, false)
+        } else if spans.is_empty() && adopt && desired.len() == 1 {
+            (original_body.to_string(), true)
+        } else {
+            return Err(conflict(if spans.is_empty() {
+                "owned paragraph is absent or changed"
+            } else {
+                "owned paragraph occurs more than once"
+            }));
+        }
+    } else if adopt {
+        if desired.len() != 1 {
+            return Err(conflict(
+                "verified legacy adoption requires exactly one desired paragraph",
+            ));
+        }
+        (original_body.to_string(), true)
+    } else {
+        if !desired.is_empty() {
+            return Err(conflict(
+                "desired paragraph is already present; explicit verified legacy adoption is required",
+            ));
+        }
+        (
+            if original_body.is_empty() {
+                text.to_string()
+            } else {
+                format!("{original_body}\n\n{text}")
+            },
+            false,
+        )
+    };
+    if paragraph_spans(&body, text).len() != 1 {
+        return Err(conflict(
+            "desired text is not one standalone authored paragraph in the resulting Card",
+        ));
+    }
+    crate::link_index::validate(conn, text, None)?;
+    let changed = body != original_body;
+    if changed {
+        let mut written = card.text.clone();
+        let inserted = if range.is_empty() {
+            let prefix = &card.text[..range.start];
+            let separator = if !prefix.ends_with('\n') {
+                "\n\n"
+            } else if prefix
+                .lines()
+                .last()
+                .is_some_and(|line| !line.trim().is_empty())
+            {
+                "\n"
+            } else {
+                ""
+            };
+            format!("{separator}{body}\n\n")
+        } else {
+            body.clone()
+        };
+        written.replace_range(range, &inserted);
+        crate::artifact::require_present(root, &written)?;
+        crate::validate_card_text(conn, address, &written, Some(&card.text))?;
+        conn.execute(
+            "UPDATE cards SET text=?1 WHERE row_id=?2",
+            rusqlite::params![written, card.row_id],
+        )?;
+    }
+    Ok((
+        json!({"address":address,"owned_paragraph":{"address":address,"text":text,"replaces_receipt":replaces,"adopted":adopted}}),
+        changed,
+    ))
+}
+
 pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
+    let preview = match args.get("preview") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => bail!("preview must be a boolean"),
+    };
     let items = args["items"]
         .as_array()
         .context("missing array argument `items`")?;
@@ -186,9 +391,15 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     }
     let authored_bytes: usize = items
         .iter()
-        .flat_map(|item| {
+        .map(|item| {
             ["title", "body", "text", "bibtex", "base"]
                 .map(|name| item["arguments"][name].as_str().map(str::len).unwrap_or(0))
+                .into_iter()
+                .sum::<usize>()
+                + item["arguments"]["owned_paragraph"]["text"]
+                    .as_str()
+                    .map(str::len)
+                    .unwrap_or(0)
         })
         .sum();
     if authored_bytes > 1024 * 1024 {
@@ -224,6 +435,7 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20))?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
+    let archive_revision = crate::link_index::revision(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)")?;
     let mut refs = BTreeMap::new();
     let mut changed = BTreeSet::new();
@@ -264,6 +476,10 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             continue;
         }
         let before = if tool == "edit_card" {
+            crate::Access::Agent.ensure_writable(
+                crate::load_card(&tx, arguments["at"].as_str().context("missing edit at")?)?
+                    .workspace,
+            )?;
             Some(fingerprint(
                 &tx,
                 arguments["at"].as_str().context("missing edit at")?,
@@ -286,7 +502,11 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                 .remove("base_receipt");
         }
         let (mut result, did_change) =
-            crate::mcp::write_card_tx(root, &tx, tool, &write_arguments)?;
+            if tool == "edit_card" && arguments.get("owned_paragraph").is_some() {
+                owned_paragraph(root, &tx, &arguments, before.as_deref().expect("edit base"))?
+            } else {
+                crate::mcp::write_card_tx(root, &tx, tool, &write_arguments)?
+            };
         let address = result["address"]
             .as_str()
             .context("write result missing address")?
@@ -304,7 +524,54 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     }
     if !changed.is_empty() {
         crate::link_index::sync_sources(&tx, &changed)?;
-        crate::link_index::bump_revision(&tx)?;
+        if !preview {
+            crate::link_index::bump_revision(&tx)?;
+        }
+    }
+    if preview {
+        let mut expected = BTreeMap::new();
+        let mut paragraphs = Vec::new();
+        for receipt in &results {
+            let result = &receipt["result"];
+            let address = result["address"]
+                .as_str()
+                .context("draft receipt missing address")?;
+            expected.insert(
+                address,
+                result["after_fingerprint"]
+                    .as_str()
+                    .context("draft receipt missing fingerprint")?,
+            );
+            if let Some(text) = result["owned_paragraph"]["text"].as_str() {
+                let links = crate::model::read_links(text, str::to_string);
+                let kinds: BTreeSet<_> = links
+                    .iter()
+                    .filter(|link| link.kind != crate::model::RelationKind::Refers)
+                    .map(|link| link.target.clone())
+                    .collect();
+                let targets: BTreeSet<_> = links.iter().map(|link| link.target.clone()).collect();
+                paragraphs
+                    .push(json!({"address":address,"body":text,"links":targets,"kinds":kinds}));
+            }
+        }
+        let mut cards = Vec::new();
+        for (address, expected) in expected {
+            let observed = fingerprint(&tx, address)?;
+            if observed != expected {
+                let card = crate::load_card(&tx, address)?;
+                return Err(anyhow::Error::new(Conflict {
+                    address: address.to_string(),
+                    reason: "current output differs from the final draft receipt".to_string(),
+                    observed_body: crate::parse_card_text(&card.text)?.body,
+                    observed_fingerprint: observed,
+                }));
+            }
+            cards.push(crate::read::text_value(&crate::load_card(&tx, address)?)?);
+        }
+        tx.rollback()?;
+        return Ok(
+            json!({"results":results,"preview":true,"applied":false,"complete":true,"archive_revision":archive_revision,"cards":cards,"paragraphs":paragraphs}),
+        );
     }
     tx.commit()?;
     Ok(json!({"results":results}))

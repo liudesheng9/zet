@@ -321,7 +321,22 @@ pub fn read(zt: &mut Zt, tool: &str, arguments: Value) -> Result<Value> {
 /// Apply an immutable accepted call list with archive receipts. Retrying starts
 /// at the beginning and recovers each original address from its receipt. Each
 /// chunk is atomic; the full list is not. The caller still verifies its outputs.
-pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> Result<Vec<Value>> {
+pub(crate) fn invoke_identified(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+) -> Result<Vec<Value>> {
+    Ok(execute_identified(zt, calls, prefix, allow, false)?.0)
+}
+
+fn execute_identified(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+    preview: bool,
+) -> Result<(Vec<Value>, Option<Value>)> {
     let segments: Vec<_> = prefix.split('/').collect();
     if segments.len() != 4
         || segments.iter().any(|s| s.is_empty())
@@ -377,7 +392,27 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
         ["title", "body", "text", "bibtex", "base"]
             .iter()
             .map(|key| arguments[key].as_str().map(str::len).unwrap_or(0))
-            .sum()
+            .sum::<usize>()
+            + arguments["owned_paragraph"]["text"]
+                .as_str()
+                .map(str::len)
+                .unwrap_or(0)
+    }
+    if preview
+        && (calls.is_empty()
+            || calls.len() > 64
+            || calls
+                .iter()
+                .map(|call| authored_bytes(&call["arguments"]))
+                .sum::<usize>()
+                > 1024 * 1024
+            || calls.iter().any(|call| {
+                call["tool"] != "edit_card" || !call["arguments"]["owned_paragraph"].is_object()
+            }))
+    {
+        bail!(
+            "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
+        );
     }
     // Reject unsupported operations, forward dependencies and oversized single
     // items before committing any chunk. No placeholder makes a target exist.
@@ -390,6 +425,27 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
         }
         if !call["arguments"].is_object() {
             bail!("identified call {index}: arguments must be an object");
+        }
+        if let Some(allowed) = allow {
+            if matches!(
+                call["tool"].as_str(),
+                Some("create_topic" | "create_literature")
+            ) {
+                bail!(
+                    "identified call {index}: {} is not allowed in this run",
+                    call["tool"]
+                );
+            }
+            let at = call["arguments"]["at"].as_str().unwrap_or_default();
+            let earlier = at
+                .strip_prefix("@@")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n < index);
+            if !allowed.contains(at) && !earlier {
+                bail!(
+                    "identified call {index}: `{at}` is not allowed; use an owned address or an exact earlier result reference"
+                );
+            }
         }
         arguments(&call["arguments"], &[], index, 0)?;
         if call["tool"] == "edit_card" {
@@ -419,6 +475,7 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
     }
     let mut resolved = Vec::new();
     let mut done = Vec::new();
+    let mut draft = None;
     while done.len() < calls.len() {
         let start = done.len();
         let mut items = Vec::new();
@@ -447,7 +504,14 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
             items.push(json!({"op_key":format!("{prefix}/item-{index:06}"),"client_ref":index.to_string(),"tool":calls[index]["tool"],"arguments":args}));
         }
         let count = items.len();
-        let reply=zt.call("apply_batch",json!({"items":items})).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
+        if preview && count != calls.len() {
+            bail!("CheckOnly resolved draft exceeds one 1048576-byte batch");
+        }
+        let mut request = json!({"items":items});
+        if preview {
+            request["preview"] = json!(true);
+        }
+        let reply=zt.call("apply_batch",request).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
         let results = reply["results"]
             .as_array()
             .context("incomplete identified batch: missing results")?;
@@ -474,11 +538,112 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
             resolved.push(address.to_string());
             done.push(result.clone());
         }
+        if preview {
+            draft = Some(reply);
+        }
     }
-    verify_identified(zt, &done)?;
-    Ok(done)
+    if !preview {
+        verify_identified(zt, &done)?;
+    }
+    Ok((done, draft))
 }
 
+/// Validate the real transaction draft, then run only the Link paragraph rules.
+/// No preview result is a receipt or a guarantee that a later base still matches.
+fn precheck_identified(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+) -> Result<Vec<String>> {
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true)?;
+    let draft = draft.context("incomplete Link draft: no preview")?;
+    if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {
+        bail!("incomplete Link draft: explicit complete, unapplied preview required");
+    }
+    let revision = draft["archive_revision"]
+        .as_u64()
+        .context("incomplete Link draft: missing revision")?;
+    let mut expected = BTreeMap::new();
+    for receipt in &receipts {
+        expected.insert(
+            receipt["result"]["address"]
+                .as_str()
+                .context("incomplete Link draft address")?,
+            receipt["result"]["after_fingerprint"]
+                .as_str()
+                .context("incomplete Link draft fingerprint")?,
+        );
+    }
+    let cards = draft["cards"]
+        .as_array()
+        .context("incomplete Link draft: missing Cards")?;
+    if cards.len() != expected.len() {
+        bail!("incomplete Link draft: wrong Card count");
+    }
+    for card in cards {
+        let address = card["address"]
+            .as_str()
+            .context("incomplete Link draft Card address")?;
+        if card["workspace"] != "agent"
+            || expected.remove(address) != Some(authored_fingerprint(card).as_str())
+        {
+            bail!("incomplete Link draft: authored output mismatch at `{address}`");
+        }
+    }
+    let paragraphs = draft["paragraphs"]
+        .as_array()
+        .context("incomplete Link draft: missing paragraphs")?;
+    if paragraphs.len() != receipts.len() {
+        bail!("incomplete Link draft: wrong paragraph count");
+    }
+    let mut entries = Vec::new();
+    for (paragraph, receipt) in paragraphs.iter().zip(&receipts) {
+        let address = receipt["result"]["address"].as_str().unwrap();
+        if paragraph["address"] != address
+            || paragraph["body"] != receipt["result"]["owned_paragraph"]["text"]
+            || !paragraph["body"].is_string()
+            || ["links", "kinds"].iter().any(|key| {
+                paragraph[key]
+                    .as_array()
+                    .is_none_or(|values| values.iter().any(|v| !v.is_string()))
+            })
+        {
+            bail!("incomplete Link draft: paragraph identity or Link facts mismatch");
+        }
+        entries.push(json!({"address":address,"title":"","body":paragraph["body"],"links":paragraph["links"],"kinds":paragraph["kinds"],"category":"idea"}));
+    }
+    if zt.cards(&[], "text")?.archive_revision != revision {
+        bail!("incomplete Link draft: archive revision changed");
+    }
+    let mut file = tempfile::NamedTempFile::new()?;
+    serde_json::to_writer(&mut file, &entries)?;
+    std::io::Write::flush(&mut file)?;
+    let check = crate::check::Check {
+        json: file.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let checked = zt_check::check::run_lines(&check.args(), None)
+        .context("Link draft checker did not run")?;
+    if !checked.iter().any(|line| {
+        line.strip_prefix("faults: ")
+            .is_some_and(|count| count.parse::<usize>().is_ok())
+    }) {
+        bail!("Link draft checker did not report completeness");
+    }
+    let mut faults: Vec<_> = checked
+        .into_iter()
+        .filter(|line| {
+            line.split_whitespace().nth(1).is_some_and(|rule| {
+                ["L1", "L2", "R2", "R3", "R4", "R5", "R7", "R9"].contains(&rule)
+            })
+        })
+        .collect();
+    let count = faults.len();
+    faults.insert(0, format!("preview: not_applied revision={revision}"));
+    faults.push(format!("faults: {count}"));
+    Ok(faults)
+}
 /// A receipt proves a historical commit. Completion additionally needs current
 /// authored outputs to match the final accepted write for each address.
 fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
@@ -530,7 +695,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(
         argv,
         &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix"],
-        &[],
+        &["CheckOnly"],
     )?;
     let calls: Vec<Value> = if a.has("Tool") {
         let arguments: Value = serde_json::from_str(&a.str_or("Json", "{}")).context("-Json is not JSON")?;
@@ -549,12 +714,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             one => vec![one],
         }
     };
+    if a.flag("CheckOnly") && !a.has("OperationPrefix") {
+        bail!("CheckOnly requires OperationPrefix and a receipt-owned Link draft");
+    }
     if a.has("OperationPrefix") {
-        if ["From","Addresses","Log","Allow","Moves","SrcLog","TopicGate","TopicSimilarity"].iter().any(|name|a.has(name)) {
-            bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs, allow-list, moves or Topic-gate options");
+        if ["From","Addresses","Log","Moves","SrcLog","TopicGate","TopicSimilarity"].iter().any(|name|a.has(name)) {
+            bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs, moves or Topic-gate options");
         }
+        let options=Options::new().allow_file(&a.str("Allow"))?;
         let mut zt=Zt::start()?;
-        let results=invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?)?;
+        if a.flag("CheckOnly") {
+            let lines=precheck_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?;
+            let code=if lines.last().is_some_and(|line|line=="faults: 0") {0}else{1};
+            util::print_lines(&lines)?;
+            return Ok(code);
+        }
+        let results=invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?;
         let lines:Vec<_>=results.iter().enumerate().map(|(index,result)|format!("{index} ok {}",result["result"]["address"].as_str().unwrap())).collect();
         util::print_lines(&lines)?;
         return Ok(0);

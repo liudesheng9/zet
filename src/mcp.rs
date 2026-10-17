@@ -182,7 +182,7 @@ impl Server {
                 Ok(match call_tool(name, arguments) {
                     Ok(value) => {
                         let result = tool_result(value, false);
-                        if matches!(name, "get_cards" | "get_tree" | "export_titles") {
+                        if matches!(name, "get_cards" | "get_tree" | "export_titles") || (name == "apply_batch" && arguments["preview"] == true) {
                             let size = serde_json::to_vec(&result)
                                 .map_err(|e| {
                                     RpcError::invalid_params(&format!(
@@ -473,9 +473,12 @@ pub(crate) fn write_card_tx(
     args: &Value,
 ) -> Result<(Value, bool)> {
     if name == "edit_card" {
-        if args.get("base_fingerprint").is_some() || args.get("base_receipt").is_some() {
+        if args.get("base_fingerprint").is_some()
+            || args.get("base_receipt").is_some()
+            || args.get("owned_paragraph").is_some()
+        {
             bail!(
-                "authored base_fingerprint/base_receipt are only available within apply_batch; single edit_card keeps its raw base guard"
+                "base_fingerprint, base_receipt and owned_paragraph are only available within apply_batch; single edit_card keeps its raw base guard"
             );
         }
         let at = string_arg(args, "at")?;
@@ -657,6 +660,15 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
         "edit_card" => {
             if let Some(value) = args.get("base_fingerprint").and_then(Value::as_str) {
                 canonical["base_fingerprint"] = json!(value.to_ascii_lowercase());
+            }
+            if let Some(spec) = canonical
+                .get_mut("owned_paragraph")
+                .and_then(Value::as_object_mut)
+            {
+                spec.entry("replaces_receipt").or_insert(Value::Null);
+                if spec.get("adopt_legacy").is_none_or(Value::is_null) {
+                    spec.insert("adopt_legacy".into(), json!(false));
+                }
             }
         }
         other => bail!("unsupported batch tool `{other}`"),
@@ -981,8 +993,8 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "apply_batch",
             "Apply identified Card writes",
-            "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. Agent Access and ordinary Card/base/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
-            json!({"items":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false}}}),
+            "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
+            json!({"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied."},"items":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false}}}),
             &["items"],
             false,
             false,

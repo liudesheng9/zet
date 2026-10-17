@@ -90,6 +90,9 @@ flowchart LR
 
 ## Interfaces
 
+`src/card.rs::authored_body_range` validates a Card and locates its original authored body bytes without normalizing line endings, heading decoration, whitespace or the generated section. `with_reverse_section` changes only the generated suffix, preserving the authored prefix and existing marker line. The indexed Reverse-link refresh uses this helper, including when an unrelated inbound Link changes during an owned paragraph correction. Ordinary authored creates/saves still normalize their own text explicitly through `compose_card_text`; generated maintenance is not an implicit whole-Card formatter.
+
+
 All items are `pub(crate)`; ZT is one binary crate (`src/main.rs`), so there is no library API. `src/main.rs` re-exports `ParsedCard`, `compose_card_text`, `parse_card_text`, `parse_literature_edit_text`, `regular_template`, `topic_template`, `CardType`, `Access`, and `Workspace` at the crate root.
 
 ### Card text (`src/card.rs`)

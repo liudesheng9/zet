@@ -118,6 +118,9 @@ Control and data flow: a CLI process resolves the archive root from the config, 
 
 ## Interfaces
 
+The transaction-level create helpers and `update_card_text` explicitly compose ordinary authored writes before storage. `src/link_index.rs` replaces generated Reverse sections with `card::with_reverse_section`, and its integrity oracle uses the same byte-preserving rule. This preserves existing normal terminal-save formatting while allowing a receipt-owned edit to retain a legacy authored prefix exactly. The owned paragraph writer alone splices its authorized body span inside the caller's transaction; it does not call the ordinary whole-Card formatter.
+
+
 Identified Card writes create the additive `applied_ops(op_key PRIMARY KEY, request_hash, result_json, committed_at)` table inside their archive write transaction. Required values are non-null; commit time is UTC. Receipts are never expired by time or stored in a separate run database. They remain historical evidence even if a later Card edit/delete/clear changes their outputs; consumers must reread and verify the retained authored fingerprints before declaring current completion. The transaction-level `insert_card_tx` and `insert_literature_card_tx` share ordinary storage validation without committing or refreshing derived data themselves.
 
 `link_index::sync_sources` replaces occurrence rows for all changed sources, then refreshes the union of those sources and their old/new targets once. The single-source wrapper uses the same implementation. A bounded batch owns the one revision increment and receipt commit; a replay makes no new Card or Link-index write. Diagnostic `last_write.indexed_cards`/`refreshed_cards` cover the complete union, rather than only the last item.

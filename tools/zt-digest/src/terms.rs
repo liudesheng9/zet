@@ -364,7 +364,7 @@ fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
                 .as_array()
                 .filter(|calls| calls.len() == 1)
                 .context("incomplete accepted terms write plan")?;
-            let receipts = crate::calls::invoke_identified(&mut zt, calls, &p.operation_prefix)?;
+            let receipts = crate::calls::invoke_identified(&mut zt, calls, &p.operation_prefix, None)?;
             address = receipts[0]["result"]["address"].clone();
             receipt_keys = receipts.iter().map(|r| r["op_key"].clone()).collect();
         }
