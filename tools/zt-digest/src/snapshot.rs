@@ -1,7 +1,126 @@
-//! `zt-digest snapshot-topics` — not ported yet (the port of `snapshot-topics.ps1`).
+//! `zt-digest snapshot-topics`: the port of `scripts/book-digest/snapshot-topics.ps1`. Writes a
+//! compact snapshot of every tree (address and title of each Card) for a DeepSeek digest run, so
+//! it can place and link Cards without spending turns on searches. Read-only calls through one
+//! `zt mcp`: `list_trees`, then `get_tree` per tree. Agent trees first, then human trees (marked
+//! read-only); titles are cut to -TitleChars characters. Prints `<N> cards -> <Out>`.
+//!
+//! `cut` and `mark` serve `prepare-link` (prepare-link-pass.ps1) too, which wrote the same lines.
 
-use anyhow::{Result, bail};
+use crate::args::Args;
+use crate::model::read_calls;
+use crate::ps::{self, CiMap, NL, eq, s};
+use crate::util;
+use crate::zt::Zt;
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
-pub fn cli(_argv: &[String]) -> Result<i32> {
-    bail!("not ported yet")
+/// `Cut`: a title of at most `chars` UTF-16 units, else cut and `…` added.
+pub(crate) fn cut(text: &str, chars: usize) -> String {
+    if ps::len16(text) <= chars { text.to_string() } else { format!("{}…", ps::cut16(text, chars)) }
+}
+
+/// `Mark`: ` [模型·<facet>]` for a Model part, ` [模型]` for a Model Card, ` [事件]` for an Event
+/// Card. Common facets read in Chinese; any other facet is the label its author wrote.
+pub(crate) fn mark(card: &Value) -> String {
+    let card_type = s(&card["type"]);
+    let facet = s(&card["facet"]);
+    if eq(&card_type, "model") && !facet.is_empty() {
+        let mut names: CiMap<&str> = CiMap::new();
+        for (k, v) in [
+            ("setting", "设定"),
+            ("assumptions", "假设"),
+            ("timing", "时序"),
+            ("dynamics", "动态"),
+            ("solution", "求解"),
+            ("results", "结论"),
+            ("intuition", "直觉"),
+            ("limits", "局限"),
+        ] {
+            names.insert(k, v);
+        }
+        let name = names.get(&facet).map(|n| n.to_string()).unwrap_or(facet);
+        return format!(" [模型·{name}]");
+    }
+    if eq(&card_type, "model") {
+        " [模型]".to_string()
+    } else if eq(&card_type, "event") {
+        " [事件]".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// The trees of both Workspaces: `list_trees`, then `get_tree` per tree, in list order.
+pub(crate) fn read_trees(zt: &mut Zt) -> Result<Vec<Value>> {
+    let listed = read_calls(zt, &[("list_trees", json!({}))])?.into_iter().next().unwrap_or(Value::Null);
+    let reads: Vec<(&str, Value)> = ps::each(&listed["trees"]).iter().map(|t| ("get_tree", json!({ "tree": t["tree"] }))).collect();
+    if reads.is_empty() {
+        return Ok(Vec::new());
+    }
+    read_calls(zt, &reads)
+}
+
+/// One snapshot line: `- `<address>`<mark> <title>` (a root), else indented.
+pub(crate) fn card_line(card: &Value, title_chars: usize) -> String {
+    let indent = if eq(&s(&card["edge"]), "root") { "- " } else { "  - " };
+    format!("{indent}`{}`{} {}", s(&card["address"]), mark(card), cut(&s(&card["title"]), title_chars))
+}
+
+/// The cards of a tree in `Sort-Object { $_.address }` order.
+pub(crate) fn sorted_cards(tree: &Value) -> Vec<Value> {
+    let mut cards = ps::ps_items(&tree["cards"]);
+    ps::ps_sort(&mut cards, |a, b| ps::culture_cmp(&s(&a["address"]), &s(&b["address"])));
+    cards
+}
+
+/// `zt-digest snapshot-topics -Out <file> [-TitleChars 40]`.
+pub fn cli(argv: &[String]) -> Result<i32> {
+    let params = ["Out", "TitleChars"];
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
+    let out = a.required("Out")?;
+    if out.is_empty() {
+        bail!("Cannot bind argument to parameter 'Out' because it is an empty string.");
+    }
+    let title_chars = a.int_or("TitleChars", 40)?.max(0) as usize;
+    let mut zt = Zt::start()?;
+    let details = read_trees(&mut zt)?;
+
+    let mut text = String::new();
+    text.push_str("# 现有卡片快照（本组启动时生成；之后其他组可能新增卡片；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");
+    text.push_str(NL);
+    text.push_str(NL);
+    let mut count = 0;
+    for workspace in ["agent", "human"] {
+        text.push_str(if workspace == "agent" { "## 代理工作区" } else { "## 人类工作区（只读，可链接）" });
+        text.push_str(NL);
+        for tree in details.iter().filter(|t| eq(&s(&t["workspace"]), workspace)) {
+            for card in sorted_cards(tree) {
+                text.push_str(&card_line(&card, title_chars));
+                text.push_str(NL);
+                count += 1;
+            }
+        }
+        text.push_str(NL);
+    }
+    std::fs::write(&out, text).with_context(|| format!("failed to write {out}"))?;
+    util::print_line(&format!("{count} cards -> {out}"))?;
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_and_cuts() {
+        assert_eq!(mark(&json!({ "type": "model", "facet": "Setting" })), " [模型·设定]");
+        assert_eq!(mark(&json!({ "type": "model", "facet": "均衡" })), " [模型·均衡]");
+        assert_eq!(mark(&json!({ "type": "model", "facet": null })), " [模型]");
+        assert_eq!(mark(&json!({ "type": "event" })), " [事件]");
+        assert_eq!(mark(&json!({ "type": "idea" })), "");
+        assert_eq!(cut("一二三", 3), "一二三");
+        assert_eq!(cut("一二三四", 3), "一二三…");
+        assert_eq!(card_line(&json!({ "address": "3/1", "edge": "direct", "title": "标题" }), 40), "  - `3/1` 标题");
+        assert_eq!(card_line(&json!({ "address": "3/0", "edge": "root", "title": "T" }), 40), "- `3/0` T");
+    }
 }
