@@ -20,6 +20,12 @@ The server is registered globally as `zt` (Claude Code tools `mcp__zt__*`, Codex
 2. `list_trees` (filter by `workspace`, `zone`), then `get_tree` or `get_card`.
 3. `search_cards` before creating anything, so you extend or link existing Cards instead of duplicating them. `list_links` with `cross_workspace_only` shows how your Cards connect to the user's.
 
+For several known addresses, use `get_cards` with `addresses` in the required order. The default `view: "full"` matches `get_card`; `view: "text"` omits model and hub calculations and returns the complete body/text, BibTeX and Card metadata. Check `missing` and `complete` before treating a read as complete. Missing addresses do not become empty Cards. Each batch has one `archive_revision`.
+
+Use `get_tree` with `bodies: true` for all bodies of a book or Topic in one read view. Use `export_titles` with optional `workspace` and `zone` filters to obtain titles, addresses and metadata without bodies in one selected-text pass. Both return an archive revision. If several reads must describe the same state and their revisions differ, retry the read set once or mark it as a changing view.
+
+`get_cards` permits at most 200 addresses. Bulk Card, tree and title-export replies permit at most 8 MiB of encoded tool-result data, including the text and structured representations. A `read_limit` tool error reports `limit_kind`, `limit`, `actual` and `complete: false`; reduce the chunk instead of accepting a partial dataset. Tree/export reads fail explicitly when too large. No response is silently truncated.
+
 Writing (agent Workspace only):
 
 - New idea area: `create_topic` with a one-line `title` and a short `body`.

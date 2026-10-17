@@ -24,6 +24,7 @@ mod mcp;
 mod model;
 mod ops;
 mod place;
+mod read;
 mod scholar;
 mod session;
 mod shutdown;
@@ -1581,32 +1582,32 @@ fn target_exists(conn: &Connection, target: &str) -> Result<bool> {
     }
 }
 
+fn card_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    Ok(Card {
+        row_id: row.get(0)?,
+        address: row.get(1)?,
+        citation_key: row.get(2)?,
+        is_topic: row.get::<_, i64>(3)? == 1,
+        is_lit: row.get::<_, i64>(4)? == 1,
+        bibtex: row.get(5)?,
+        text: row.get(6)?,
+        workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
+        card_type: CardType::from_stored(&row.get::<_, String>(8)?),
+        facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
+        emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
+        level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
+        hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
+        form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
+    })
+}
+
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
                 is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
-        |row| {
-            Ok(Card {
-                row_id: row.get(0)?,
-                address: row.get(1)?,
-                citation_key: row.get(2)?,
-                is_topic: row.get::<_, i64>(3)? == 1,
-                is_lit: row.get::<_, i64>(4)? == 1,
-                bibtex: row.get(5)?,
-                text: row.get(6)?,
-                workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
-                card_type: CardType::from_stored(&row.get::<_, String>(8)?),
-                facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
-                emphasis: model::Emphasis::from_stored(
-                    row.get::<_, Option<String>>(10)?.as_deref(),
-                ),
-                level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
-                hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
-                form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
-            })
-        },
+        card_from_row,
     )
     .with_context(|| format!("card `{target}` does not exist"))
 }
@@ -1617,24 +1618,7 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
                 is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(Card {
-            row_id: row.get(0)?,
-            address: row.get(1)?,
-            citation_key: row.get(2)?,
-            is_topic: row.get::<_, i64>(3)? == 1,
-            is_lit: row.get::<_, i64>(4)? == 1,
-            bibtex: row.get(5)?,
-            text: row.get(6)?,
-            workspace: Workspace::from_stored(&row.get::<_, String>(7)?),
-            card_type: CardType::from_stored(&row.get::<_, String>(8)?),
-            facet: model::Facet::from_stored(row.get::<_, Option<String>>(9)?.as_deref()),
-            emphasis: model::Emphasis::from_stored(row.get::<_, Option<String>>(10)?.as_deref()),
-            level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
-            hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
-            form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
-        })
-    })?;
+    let rows = stmt.query_map([], card_from_row)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
 }

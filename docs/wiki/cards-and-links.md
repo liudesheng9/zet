@@ -402,6 +402,8 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ## Change history
 
+- `2026-10-17` — Expose the existing `line_around` helper to the indexed Broken-link reader so repeated occurrences retain the original source-line rendering.
+
 - `2026-10-17` — Keep the body parser and exact Reverse link rendering as the oracle for the new transactional occurrence index; production target validation is scoped and the full lifecycle validator is test-only.
 
 - `2026-10-16` — Wiki doc created.

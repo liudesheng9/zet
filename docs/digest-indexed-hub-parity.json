@@ -1,0 +1,64 @@
+{
+  "generated_utc": "2026-10-17T20:47:12.226Z",
+  "scope": "isolated consistent archive copies; persistent MCP; release new build versus installed release baseline; no Card writes; no live Card changes",
+  "staging": "D:/zt-target/qualification-indexed-reads-0QGMEM",
+  "results": [
+    {
+      "name": "before",
+      "executable": "C:/Users/chenx/.cargo/bin/zt.exe",
+      "archive_cards": 10895,
+      "timings": [
+        {
+          "tool": "get_hub",
+          "args": {
+            "at": "100/1|b"
+          },
+          "projection_sha256": "98c35b88337ef25bbe92e5299c1f04d44076b73a5640bebf2c91c7911b466d2a",
+          "samples": 1,
+          "elapsed_ms": 302.17859999999996,
+          "reply_json_bytes": 3991
+        },
+        {
+          "tool": "list_hubs",
+          "args": {},
+          "projection_sha256": "2131f3525769569e5f0ab3277da3907003a9aba1911827c8bb35b448389f2c6d",
+          "samples": 1,
+          "elapsed_ms": 20222.777100000003,
+          "reply_json_bytes": 69377
+        }
+      ],
+      "input_cards_sha256": "dd3631606ceca8f05fabfa6185657438d63e6f6a37e0cda6dc17582ca71a087e",
+      "executable_sha256": "fd3538cdb14f2d908937e0bc532bef92a534292be63d075901ede580f48950f0"
+    },
+    {
+      "name": "after",
+      "executable": "D:/zt-target/release/zt.exe",
+      "archive_cards": 10895,
+      "timings": [
+        {
+          "tool": "get_hub",
+          "args": {
+            "at": "100/1|b"
+          },
+          "projection_sha256": "98c35b88337ef25bbe92e5299c1f04d44076b73a5640bebf2c91c7911b466d2a",
+          "baseline_parity": true,
+          "samples": 1,
+          "elapsed_ms": 161.41820000000007,
+          "reply_json_bytes": 3991
+        },
+        {
+          "tool": "list_hubs",
+          "args": {},
+          "projection_sha256": "2131f3525769569e5f0ab3277da3907003a9aba1911827c8bb35b448389f2c6d",
+          "baseline_parity": true,
+          "samples": 1,
+          "elapsed_ms": 3009.648699999998,
+          "reply_json_bytes": 69377
+        }
+      ],
+      "input_cards_sha256": "dd3631606ceca8f05fabfa6185657438d63e6f6a37e0cda6dc17582ca71a087e",
+      "executable_sha256": "f0cceb17797c22d86aa72a6979fbd6200396cfbecb49fb09898c07f6bcf4d518"
+    }
+  ],
+  "identical_card_inputs": true
+}

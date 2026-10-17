@@ -27,6 +27,10 @@ named by its BibTeX Citation key, such as `Smith2024`). Card addresses are uniqu
 Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by writing \
 `[[address]]` in Markdown bodies; Links may cross Workspaces, but Cards and trees never move \
 between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
+use get_cards for ordered full/text bulk reads (at most 200 addresses). Check missing, complete and \
+archive_revision. get_tree with bodies=true includes full text, and export_titles reads selected \
+titles in one pass. These bulk replies have an 8 MiB encoded tool-result limit; a read_limit error \
+requires a smaller chunk. If related reads have different revisions, retry once or label a changing view. \
 create new trees with create_topic or create_literature, then grow them with create_successor. \
 Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
 real-world event with its date, place, actors, and source), a Finding Card (`finding`: one \
@@ -176,8 +180,40 @@ impl Server {
                     return Err(RpcError::invalid_params(&format!("unknown tool `{name}`")));
                 }
                 Ok(match call_tool(name, arguments) {
-                    Ok(value) => tool_result(value, false),
-                    Err(error) => tool_result(json!({ "error": format!("{error:#}") }), true),
+                    Ok(value) => {
+                        let result = tool_result(value, false);
+                        if matches!(name, "get_cards" | "get_tree" | "export_titles") {
+                            let size = serde_json::to_vec(&result)
+                                .map_err(|e| {
+                                    RpcError::invalid_params(&format!(
+                                        "cannot encode read reply: {e}"
+                                    ))
+                                })?
+                                .len();
+                            if size > 8 * 1024 * 1024 {
+                                tool_result(
+                                    crate::read::Limit {
+                                        kind: "reply_bytes",
+                                        limit: 8 * 1024 * 1024,
+                                        actual: size,
+                                    }
+                                    .value(),
+                                    true,
+                                )
+                            } else {
+                                result
+                            }
+                        } else {
+                            result
+                        }
+                    }
+                    Err(error) => tool_result(
+                        error
+                            .downcast_ref::<crate::read::Limit>()
+                            .map(crate::read::Limit::value)
+                            .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
+                        true,
+                    ),
                 })
             }
             "resources/list" => Ok(json!({ "resources": [] })),
@@ -242,137 +278,60 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
     }
     let root = archive_root()?;
     match name {
-        "list_workspaces" => {
-            let snapshot = Snapshot::read(&root)?;
-            let workspaces = Workspace::ALL
-                .into_iter()
-                .map(|workspace| {
-                    let counts = crate::workspace::counts(&snapshot.cards, workspace);
-                    json!({
-                        "id": workspace.id(),
-                        "label": workspace.label(),
-                        "access": if ACCESS.can_write(workspace) { "read-write" } else { "read-only" },
-                        "zones": {
-                            "topic": { "trees": counts.topic_trees },
-                            "literature": { "trees": counts.literature_trees },
-                        },
-                        "cards": counts.cards,
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(json!({
-                "workspaces": workspaces,
-                "cards": snapshot.cards.len(),
-                "broken_links": snapshot.lifecycle.broken_links()?.len(),
-            }))
-        }
-        "list_trees" => {
-            let snapshot = Snapshot::read(&root)?;
-            let workspace = optional_workspace(args)?;
-            let zone = optional_zone(args)?;
-            let trees = snapshot
-                .trees()
-                .into_iter()
-                .filter(|tree| workspace.is_none_or(|ws| tree["workspace"] == ws.id()))
-                .filter(|tree| zone.is_none_or(|zone| tree["kind"] == zone))
-                .collect::<Vec<_>>();
-            Ok(json!({ "trees": trees }))
-        }
+        "list_workspaces" => crate::read::workspaces(&root),
+        "list_trees" => crate::read::trees(&root, optional_workspace(args)?, optional_zone(args)?),
         "get_tree" => {
-            let snapshot = Snapshot::read(&root)?;
             let tree = string_arg(args, "tree")?;
-            let tree = crate::tree_id(&tree).to_string();
-            let root_address = crate::tree_root_address(&tree);
-            let Some(root_card) = snapshot.by_address.get(&root_address) else {
-                bail!("tree `{tree}` does not exist");
-            };
-            let cards = snapshot
-                .cards
-                .iter()
-                .filter(|card| crate::is_tree_member(&card.address, &tree))
-                .map(|card| snapshot.summary(card))
-                .collect::<Vec<_>>();
-            Ok(json!({
-                "tree": tree,
-                "root": root_address,
-                "workspace": root_card.workspace.id(),
-                "zone": ops::zone(root_card),
-                "title": snapshot.title(&root_address),
-                "cards": cards,
-            }))
+            let bodies = args
+                .get("bodies")
+                .map(|v| v.as_bool().context("argument `bodies` must be a boolean"))
+                .transpose()?
+                .unwrap_or(false);
+            crate::read::tree(&root, &tree, bodies)
+        }
+        "export_titles" => {
+            crate::read::titles(&root, optional_workspace(args)?, optional_zone(args)?)
         }
         "get_card" => {
-            let snapshot = Snapshot::read(&root)?;
             let at = string_arg(args, "at")?;
-            let card = snapshot
-                .by_address
-                .get(&at)
-                .with_context(|| format!("card `{at}` does not exist"))?;
-            let parsed = &snapshot.parsed[&card.address];
-            Ok(json!({
-                "address": card.address,
-                "tree": crate::tree_id(&card.address),
-                "workspace": card.workspace.id(),
-                "writable": ACCESS.can_write(card.workspace),
-                "kind": ops::kind(card),
-                "type": card.card_type.id(),
-                "facet": card.facet.as_ref().map(Facet::id),
-                "emphasis": card.emphasis.map(Emphasis::id),
-                "level": card.level_id(),
-                "form": card.form.map(crate::math::MathForm::id),
-                "model": snapshot.model(&card.address),
-                "hubs": crate::hub::hubs_of(&snapshot, &card.address),
-                "title": parsed.title,
-                "body": parsed.body,
-                "text": card.text,
-                "bibtex": card.bibtex,
-                "citation_key": card.citation_key,
-                "parent": snapshot.nav(crate::parent_location(&card.address)),
-                "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
-                "sides": snapshot.sides(card),
-                "outbound": snapshot.outbound(&card.address),
-                "inbound": snapshot.inbound_refs(&card.address),
-            }))
+            crate::read::card(&root, &at)
+        }
+        "get_cards" => {
+            let addresses = args
+                .get("addresses")
+                .and_then(Value::as_array)
+                .context("missing array argument `addresses`")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .context("each address must be a string")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let text = match args
+                .get("view")
+                .map(|v| v.as_str().context("argument `view` must be full or text"))
+                .transpose()?
+                .unwrap_or("full")
+            {
+                "full" => false,
+                "text" => true,
+                other => bail!("unknown Card view `{other}`; expected full or text"),
+            };
+            crate::read::cards(&root, &addresses, text)
         }
         "get_model" => {
-            let snapshot = Snapshot::read(&root)?;
             let at = string_arg(args, "at")?;
-            if !snapshot.by_address.contains_key(&at) {
-                bail!("card `{at}` does not exist");
-            }
-            let mut model = snapshot.model(&at).with_context(|| {
-                format!("`{at}` is not a Model Card or Model part; set type `model` first")
-            })?;
-            // Each Card of the model with its body, so one call reads the whole model.
-            let body = |address: &str| {
-                snapshot
-                    .parsed
-                    .get(address)
-                    .map(|parsed| parsed.body.clone())
-                    .unwrap_or_default()
-            };
-            if let Some(head) = model["head"]["address"].as_str().map(str::to_string) {
-                model["head"]["body"] = json!(body(&head));
-            }
-            if let Some(parts) = model["parts"].as_array_mut() {
-                for part in parts {
-                    if let Some(address) = part["address"].as_str().map(str::to_string) {
-                        part["body"] = json!(body(&address));
-                    }
-                }
-            }
-            Ok(model)
+            crate::read::model(&root, &at)
         }
         "get_hub" => {
-            let snapshot = Snapshot::read(&root)?;
             let at = string_arg(args, "at")?;
             let limits = crate::hub::Limits::from_args(args)?;
-            crate::hub::Graph::new(&snapshot).report(&at, &limits)
+            crate::read::hubs(&root, Some(&at), None, &limits)
         }
         "list_hubs" => {
-            let snapshot = Snapshot::read(&root)?;
             let limits = crate::hub::Limits::from_args(args)?;
-            Ok(crate::hub::Graph::new(&snapshot).list(optional_workspace(args)?, &limits))
+            crate::read::hubs(&root, None, optional_workspace(args)?, &limits)
         }
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
@@ -392,37 +351,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "results": snapshot.search_in(&query, optional_workspace(args)?, card_type, form, limit),
             }))
         }
-        "list_links" => {
-            let snapshot = Snapshot::read(&root)?;
-            let workspace = optional_workspace(args)?;
-            let cross_only = args
-                .get("cross_workspace_only")
+        "list_links" => crate::read::links(
+            &root,
+            optional_workspace(args)?,
+            args.get("cross_workspace_only")
                 .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let mut links = Vec::new();
-            for card in &snapshot.cards {
-                for link in snapshot.outbound(&card.address) {
-                    let target_workspace = link["workspace"].as_str();
-                    let involved = workspace
-                        .is_none_or(|ws| card.workspace == ws || target_workspace == Some(ws.id()));
-                    let crosses = target_workspace.is_some_and(|ws| ws != card.workspace.id());
-                    if involved && (!cross_only || crosses) {
-                        links.push(json!({
-                            "source": card.address,
-                            "source_workspace": card.workspace.id(),
-                            "target": link["address"],
-                            "target_workspace": link["workspace"],
-                            "broken": link["broken"],
-                        }));
-                    }
-                }
-            }
-            Ok(json!({ "links": links }))
-        }
-        "list_broken_links" => {
-            let snapshot = Snapshot::read(&root)?;
-            Ok(json!({ "broken": snapshot.broken(optional_workspace(args)?)? }))
-        }
+                .unwrap_or(false),
+        ),
+        "list_broken_links" => crate::read::broken(&root, optional_workspace(args)?),
         "create_topic" => {
             let workspace = target_workspace(args)?;
             let title = title_arg(args)?;
@@ -846,8 +782,17 @@ fn tool_definitions() -> Vec<Value> {
             "get_tree",
             "Get tree",
             "Every Card of one tree, root first, with its type (idea, event, finding, model, hub), edge (root, direct, side), parent, excerpt, and Links.",
-            json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." } }),
+            json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." },"bodies":{"type":"boolean","description":"Include complete body, stored text and BibTeX in each summary."} }),
             &["tree"],
+            true,
+            false,
+        ),
+        tool(
+            "export_titles",
+            "Export titles",
+            "Read titles in one selected-text pass, filtered by Workspace and Zone. Includes count and archive revision; no bodies.",
+            json!({"workspace":workspace_filter,"zone":{"type":"string","enum":["topic","literature","all"]}}),
+            &[],
             true,
             false,
         ),
@@ -857,6 +802,15 @@ fn tool_definitions() -> Vec<Value> {
             "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, or hub), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. A Model Card or Model part also reports `model`: its model's structure.",
             json!({ "at": at }),
             &["at"],
+            true,
+            false,
+        ),
+        tool(
+            "get_cards",
+            "Get cards",
+            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Reports missing addresses explicitly.",
+            json!({"addresses":{"type":"array","items":{"type":"string"},"maxItems":200},"view":{"type":"string","enum":["full","text"],"default":"full"}}),
+            &["addresses"],
             true,
             false,
         ),
@@ -1218,11 +1172,21 @@ mod tests {
     #[test]
     fn insert_card_names_the_create_successor_fields_it_does_not_take() {
         let tools = tool_definitions();
-        let find = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap().clone();
+        let find = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap()
+                .clone()
+        };
         let (insert, create) = (find("insert_card"), find("create_successor"));
         let insert_fields = insert["inputSchema"]["properties"].as_object().unwrap();
         let description = insert["description"].as_str().unwrap();
-        for field in create["inputSchema"]["properties"].as_object().unwrap().keys() {
+        for field in create["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
             if ["at", "kind"].contains(&field.as_str()) || insert_fields.contains_key(field) {
                 continue;
             }

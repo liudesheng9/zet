@@ -1,0 +1,179 @@
+{
+  "generated_utc": "2026-10-17T20:44:20.789Z",
+  "scope": "isolated consistent archive copies; persistent MCP; release new build versus installed release baseline; no Card writes; no live Card changes",
+  "staging": "D:/zt-target/qualification-indexed-reads-O6rotV",
+  "results": [
+    {
+      "name": "before",
+      "executable": "C:/Users/chenx/.cargo/bin/zt.exe",
+      "archive_cards": 10895,
+      "timings": [
+        {
+          "tool": "get_card",
+          "args": {
+            "at": "0/1"
+          },
+          "projection_sha256": "ffcea84b104bcaabf2266e06244d77238492ff0de4905e175e8957fd50971e9a",
+          "samples": 10,
+          "median_ms": 222.97839999999997,
+          "p95_ms": 229.94769999999994,
+          "reply_json_bytes": 1191
+        },
+        {
+          "tool": "get_tree",
+          "args": {
+            "tree": "0"
+          },
+          "projection_sha256": "0827e77300d5d709511c3836161acb0a6e392c8fa83dcb8a2b02792ab9341606",
+          "samples": 10,
+          "median_ms": 308.95380000000023,
+          "p95_ms": 347.2555000000002,
+          "reply_json_bytes": 1624
+        },
+        {
+          "tool": "list_trees",
+          "args": {},
+          "projection_sha256": "f7817c21b588bc3ab1c7c7555ba627a6d9191a27d86b1db861d54b00f118b393",
+          "samples": 10,
+          "median_ms": 691.5770000000002,
+          "p95_ms": 721.4560999999994,
+          "reply_json_bytes": 76107
+        },
+        {
+          "tool": "list_links",
+          "args": {},
+          "projection_sha256": "2f693c3041d3e0076a34a18d8b6246643d474ab961ffa99b91df07b6cbe85059",
+          "samples": 10,
+          "median_ms": 882.2743999999984,
+          "p95_ms": 937.3729999999996,
+          "reply_json_bytes": 7703763
+        },
+        {
+          "tool": "list_workspaces",
+          "args": {},
+          "projection_sha256": "050c1aaca25da0171180f15ba1b950e1b28e63cbf202f97a702a3b14db9a2e56",
+          "samples": 10,
+          "median_ms": 355.5727000000006,
+          "p95_ms": 378.3391999999985,
+          "reply_json_bytes": 291
+        },
+        {
+          "tool": "get_model",
+          "args": {
+            "at": "117/1"
+          },
+          "projection_sha256": "20acc6b401817b4489a882582eeb5ac39fe0600edb6de1ff701136bcf992663f",
+          "samples": 10,
+          "median_ms": 330.487000000001,
+          "p95_ms": 349.51780000000144,
+          "reply_json_bytes": 94954
+        }
+      ],
+      "input_cards_sha256": "dd3631606ceca8f05fabfa6185657438d63e6f6a37e0cda6dc17582ca71a087e",
+      "executable_sha256": "fd3538cdb14f2d908937e0bc532bef92a534292be63d075901ede580f48950f0"
+    },
+    {
+      "name": "after",
+      "executable": "D:/zt-target/release/zt.exe",
+      "archive_cards": 10895,
+      "timings": [
+        {
+          "tool": "get_card",
+          "args": {
+            "at": "0/1"
+          },
+          "projection_sha256": "ffcea84b104bcaabf2266e06244d77238492ff0de4905e175e8957fd50971e9a",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 1.5763999999981024,
+          "p95_ms": 1.6802999999999884,
+          "reply_json_bytes": 1191
+        },
+        {
+          "tool": "get_tree",
+          "args": {
+            "tree": "0"
+          },
+          "projection_sha256": "0827e77300d5d709511c3836161acb0a6e392c8fa83dcb8a2b02792ab9341606",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 2.0333000000027823,
+          "p95_ms": 2.331399999995483,
+          "reply_json_bytes": 1661
+        },
+        {
+          "tool": "list_trees",
+          "args": {},
+          "projection_sha256": "f7817c21b588bc3ab1c7c7555ba627a6d9191a27d86b1db861d54b00f118b393",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 43.42170000000624,
+          "p95_ms": 48.85349999999744,
+          "reply_json_bytes": 76107
+        },
+        {
+          "tool": "list_links",
+          "args": {},
+          "projection_sha256": "2f693c3041d3e0076a34a18d8b6246643d474ab961ffa99b91df07b6cbe85059",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 736.6149000000005,
+          "p95_ms": 778.6865000000034,
+          "reply_json_bytes": 7703763
+        },
+        {
+          "tool": "list_workspaces",
+          "args": {},
+          "projection_sha256": "050c1aaca25da0171180f15ba1b950e1b28e63cbf202f97a702a3b14db9a2e56",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 69.34339999999793,
+          "p95_ms": 81.10749999999825,
+          "reply_json_bytes": 291
+        },
+        {
+          "tool": "get_model",
+          "args": {
+            "at": "117/1"
+          },
+          "projection_sha256": "20acc6b401817b4489a882582eeb5ac39fe0600edb6de1ff701136bcf992663f",
+          "baseline_parity": true,
+          "samples": 10,
+          "median_ms": 28.810499999999593,
+          "p95_ms": 32.29370000000199,
+          "reply_json_bytes": 94954
+        },
+        {
+          "tool": "get_cards",
+          "args": {
+            "addresses": [
+              "0/1",
+              "117/1"
+            ],
+            "view": "text"
+          },
+          "samples": 1,
+          "elapsed_ms": 2.4478000000017346,
+          "reply_json_bytes": 12312,
+          "count": 2,
+          "archive_revision": 0,
+          "complete": true
+        },
+        {
+          "tool": "export_titles",
+          "args": {},
+          "samples": 1,
+          "elapsed_ms": 249.475400000003,
+          "reply_json_bytes": 2122987,
+          "count": 10895,
+          "archive_revision": 0,
+          "complete": true
+        }
+      ],
+      "input_cards_sha256": "dd3631606ceca8f05fabfa6185657438d63e6f6a37e0cda6dc17582ca71a087e",
+      "executable_sha256": "f0cceb17797c22d86aa72a6979fbd6200396cfbecb49fb09898c07f6bcf4d518"
+    }
+  ],
+  "identical_card_inputs": true,
+  "projection_normalization": "Exclude new top-level complete/archive_revision; compare tree and tree-list arrays in a common root/address order; all other content and arrays unchanged."
+}

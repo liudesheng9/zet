@@ -3,6 +3,7 @@ block: mcp-server
 title: MCP server
 paths:
   - "src/mcp.rs"
+  - "src/read.rs"
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
 synced: fe5d77864def
@@ -15,7 +16,7 @@ updated: 2026-10-17
 
 `zt mcp` is the Model Context Protocol server that lets AI agents (Claude Code, Codex, and DeepSeek Harness through a helper script) work in the slip-box. It speaks JSON-RPC 2.0 over stdio, one message per line, and offers every Card operation as an MCP tool. It acts with agent Access: it reads every Card in both Workspaces, but it changes only the agent Workspace, and it refuses any change that would rewrite the body of a human Card. It also offers six `scholar_archive_*` tools that read the local Scholar Archive through the Scholar Archive bridge. The block exists so that agents get the same Card rules as the human's own tools (it calls the same operations as the GUI) without any way to change the human's Cards. The server is a thin adapter: it parses arguments, calls `src/ops.rs` and `src/scholar.rs`, and wraps the results as MCP tool results.
 
-**Owns:** the stdio JSON-RPC loop and its error codes, protocol version negotiation, the server instructions text (`INSTRUCTIONS`), the tool list with its input schemas and annotations, the mapping from tool arguments to operation calls, the fixed `ACCESS = Access::Agent`, the plan/confirm result shape (`plan_or_done`), and the project-level client config `.mcp.json`.
+**Owns:** the stdio JSON-RPC loop and its error codes, protocol version negotiation, the server instructions text (`INSTRUCTIONS`), the tool list with its input schemas and annotations, per-request indexed read selection in `src/read.rs`, the mapping from tool arguments to operation calls, the fixed `ACCESS = Access::Agent`, the plan/confirm result shape (`plan_or_done`), and the project-level client config `.mcp.json`.
 
 **Does not own:** the Card operations and their plans ([Card operations](card-operations.md)); the Access rules themselves, Workspaces, Card types, and Links ([Cards, Workspaces and Links](cards-and-links.md)); the model, build, and math reports ([Models and math](models-and-math.md)); hub reports and limits ([Hub Cards](hub-cards.md)); the bridge protocol, pairing, artifacts, and caches ([Scholar bridge](scholar-bridge.md)); the service lifecycle, `zt` command dispatch, and schema migrations ([Service, CLI and storage](service-and-cli.md)); registering the server in agent clients and the `zt-mcp.ps1` helper ([Agent skills](agent-skills.md)).
 
@@ -38,7 +39,7 @@ updated: 2026-10-17
 - `Card type` — `idea`, `event`, `finding`, `model`, `hub` (`CardType`); the `type` argument.
 - `Model facet`, `Emphasis`, `Elaboration level`, `Math form`, `Hub level` — the `facet`, `emphasis`, `level`, and `form` arguments. `level` is one argument for both the model level (`concept`, `formal`) and the hub level (`line`, `topic`, `field`, `register`); `ops::parse_level_arg` splits it.
 - `Plan` and `confirm` — destructive operations return `ops::Outcome::Confirm { confirm, lines }` until the caller repeats the call with the named confirmation text; `plan_or_done` in `src/mcp.rs` turns it into `{ applied: false, confirm, plan, next }`.
-- `Snapshot` — every Card with its parsed text and Link graph (`ops::Snapshot` in `src/ops.rs`); each read tool builds a fresh one with `Snapshot::read`.
+- `Snapshot` — a set of Cards with parsed text and its Link graph (`ops::Snapshot` in `src/ops.rs`). Search, the GUI and Session retain full archive Snapshots; indexed MCP views supply a selected context to the same calculations.
 - `Scholar Archive bridge` — the signed, read-only connection to the Scholar Archive (`scholar::Bridge` in `src/scholar.rs`); the `scholar_archive_*` tools use it.
 - `Artifact` and `Document link` — `![caption](artifact:<sha256>)` and `[label](scholar:<file_id>)`; `scholar_archive_artifact` and `scholar_archive_file` return their Markdown, and `artifact::require_present` refuses Card text that shows an artifact ZET does not hold.
 
@@ -77,6 +78,22 @@ flowchart LR
 Control is synchronous and single-threaded: one line is answered completely before the next line is read, so replies come back in request order (the test client in `tests/workspaces_mcp.rs` asserts "replies arrive in request order"). The server holds no state except the `initialized` flag; every tool call opens the database again, so the server sees writes from the GUI, Sessions, and other `zt mcp` processes at once.
 
 ## Interfaces
+
+### Indexed and bulk read views
+
+`src/read.rs` owns per-request SQLite read transactions for `get_card`, `get_cards`, `get_tree`, `get_model`, `list_trees`, `list_links`, `list_broken_links`, `list_workspaces`, `get_hub` and `list_hubs`. The module has no persistent cache. It supplies a selected context to `Snapshot::from_cards`, reusing the existing model/build/math calculations; the GUI and Session keep their full Snapshot lifecycle and remain the independent oracle.
+
+Ordinary Card reads load the requested Card, indexed inbound/outbound neighbours, immediate navigation and relevant hub bodies. The request-local `Scope` collector expands the requested model's members and, for a requested Theory report, its units. Boundary models supply ownership, citation and title context without recursively expanding unrelated neighbours' models. Shared owners/members, external premises, incoming users/theories and plain citers' users remain present for the existing build/math reports. A tree summary loads the exact tree and its one-hop references, without computing every model. Contexts of at least 200 Cards produce a `zt.log` entry with Card count, revision and elapsed milliseconds; required context is not truncated to meet a latency target.
+
+| Read | Contract |
+|---|---|
+| `get_cards({addresses,view?})` | At most 200 addresses. Default `full` has the same Card fields as `get_card`; `text` returns title/body/text, BibTeX, type/facet/emphasis/level/form, Workspace and basic identity without model/hub calculations. `cards` preserves request order and duplicates for found addresses; `missing` preserves missing request occurrences. `complete` is false if any address is missing. Includes one `archive_revision`. |
+| `get_tree({tree,bodies?})` | Existing summary fields plus `archive_revision` and `complete`. With `bodies: true`, each summary adds `body`, `text` and `bibtex`. Exact root plus indexed `<tree>/` range, followed by existing membership filtering and ZET address ordering; case and `_` in Citation keys do not broaden selection. |
+| `export_titles({workspace?,zone?})` | `titles` contains address, tree, Workspace, type, facet and title; `count`, `complete` and `archive_revision` describe the complete selected result. One pass over selected stored text parses the title. This is O(selected text), with no stored-title cache. |
+| Indexed lists | Workspace SQL counts and occurrence-based Broken link counts; roots with range counts for trees; distinct source-target pairs for `list_links`; each Broken occurrence, with its actual source line, for `list_broken_links`. Only Broken sources need their body parsed for that list. |
+| Hub policy | Global policy enumerates Card metadata/title lines, Hub Card bodies and indexed relationships once. It does not load ordinary bodies. The existing `hub::Graph` computes levels, faults, coverage, candidates and policy results using that input. |
+
+The encoded tool result for `get_cards`, `get_tree` and `export_titles` has an 8 MiB limit, counting both pretty text and structured content. A limit error has `isError: true`, `error`, `code: "read_limit"`, `limit_kind` (`addresses` or `reply_bytes`), `limit`, `actual`, and `complete: false`; it returns no partial Cards. The caller reduces its chunk. If several reads have different revisions, callers retry once or record a changing view. Unknown bulk view values/types, malformed addresses arrays and nonboolean `bodies` fail explicitly.
 
 ### Command and client config
 
@@ -213,7 +230,7 @@ The server never checks `initialized`: requests before `initialize` are served (
 3. In `call_tool`, `scholar_archive_artifact` is handled first: `archive_root()`, then `scholar::Bridge::connect()`, then `scholar::keep_artifact(bridge, root, file_id, path, caption)`.
 4. Any other `scholar_archive_*` name goes to `call_scholar_tool`, which does **not** call `archive_root()`: these tools work when the service is down and even when no `archive_root` is configured.
 5. Every Card tool calls `archive_root()` = `crate::require_service_up()` with the context "the ZT service is not available; run `zt up`".
-6. A read tool builds `Snapshot::read(&root)` (which runs `ensure_markdown_cards` and loads and parses every Card) and shapes JSON from it.
+6. Indexed reads open one SQLite read transaction through `src/read.rs`, select their required context and shape JSON with the existing domain calculations. Search retains a full `Snapshot::read(&root)`.
 7. A write tool parses its arguments, checks artifacts with `artifact::require_present(&root, text)`, and calls the `ops` function with `ACCESS`. The `ops` function takes the edit lock (`acquire_edit_lock_within`, 20 s patience, `EDIT_PATIENCE` in `src/ops.rs`), checks `access.ensure_writable` and, for renames, `access.ensure_link_rewrites_allowed`, and either applies the change or returns a plan.
 
 ### The service: connect, never start
@@ -400,7 +417,7 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **A running `zt mcp` keeps the old binary.** Agent clients start the server once per conversation; after a rebuild, open conversations keep the old tools and old logic, and on Windows they lock `zt.exe`, so `cargo install` fails until it is renamed aside or the processes end.
 - **`tools/list` is static per process** (`listChanged: false`); a new tool appears only in a new client conversation.
 - **The service is a gate, not a dependency to start.** A service stopped with `zt down` makes every Card tool fail; only a crashed daemon is restarted by the call. Scholar tools other than `scholar_archive_artifact` work anyway.
-- **Every read re-parses the whole archive.** On a large archive each `get_card` or `search_cards` costs a full `Snapshot::read`. A batch of reads is cheaper through fewer, wider calls (`get_tree`, `get_model`).
+- **Search remains global.** `search_cards` uses a full Snapshot, because it searches all authored bodies. Targeted Card/tree/model reads use `src/read.rs`; hub policy still enumerates global metadata and index relationships because its policy is global.
 - **`edit_card` composes title and body from text read outside the edit lock.** Without `base`, a concurrent edit between that read and `ops::edit` can be overwritten. Pass `base` when edits may race.
 - **`create_successor` with `level`, a hub level, or `form` is two operations.** If the second (`ops::edit`) fails, the Card exists without them. The handler checks most combinations before creating, which makes this rare.
 - **`insert_card` takes no `level` or `form`.** Its schema and handler take `title`, `body`, `type`, `facet`, and `emphasis`; the description says so and sends a Model Card's level or Math form to `edit_card` after the insert. The unit test `insert_card_names_the_create_successor_fields_it_does_not_take` fails when `create_successor` gains a field that `insert_card` neither takes nor names.
@@ -411,6 +428,8 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+
+- `2026-10-17` — Add indexed per-request reads, complete model-context loading, `get_cards`, tree bodies and title export, structured read limits and large-context diagnostics. Compare projections with the full GUI Snapshot, including shared/math/plain-citer context, exact tree selection, repeated Broken occurrences and concurrent revisions.
 
 - `2026-10-17` — Extend public integration coverage for Link-index integrity/reindex, scoped title/Link updates, atomic metadata revisions, failed legacy migration recovery and Windows sharing-lock retries. MCP tool schemas are unchanged in this step.
 

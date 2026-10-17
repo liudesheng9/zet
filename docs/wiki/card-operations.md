@@ -78,6 +78,8 @@ flowchart LR
 
 ## Interfaces
 
+`Snapshot::from_cards(cards)` factors the existing pure read calculations out of `Snapshot::load`. Full GUI/Session loading remains unchanged; `src/read.rs` supplies a complete selected request context for MCP projections. No cross-request cache or new invalidation mechanism is introduced.
+
 All items are `pub(crate)`. ZT is one binary crate, with no library API.
 
 ### Write operations (`src/ops.rs`)
@@ -426,6 +428,8 @@ Pitfalls:
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
+
+- `2026-10-17` — Extract `Snapshot::from_cards` so targeted MCP readers and the full archive oracle share the same model, math, summary and Link calculations.
 
 - `2026-10-17` — Make MCP/GUI edits atomic across text and metadata and maintain the derived Link index/revision. Public integration tests verify scoped ordinary updates and one revision per edit.
 

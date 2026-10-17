@@ -485,6 +485,12 @@ impl Snapshot {
 
     pub(crate) fn load(conn: &Connection) -> Result<Self> {
         let cards = crate::load_cards(conn)?;
+        Self::from_cards(cards)
+    }
+
+    /// Shared domain calculations over a complete request context. The GUI keeps
+    /// loading the full archive; indexed MCP readers supply only relevant Cards.
+    pub(crate) fn from_cards(cards: Vec<Card>) -> Result<Self> {
         let lifecycle = crate::link_lifecycle_from_cards(&cards)?;
         let mut parsed = BTreeMap::new();
         for card in &cards {

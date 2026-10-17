@@ -23,6 +23,498 @@ struct TestHome {
 }
 
 #[test]
+fn a_model_neighbours_own_unrelated_model_does_not_expand_the_read_scope() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    for title in ["Requested model", "Neighbour model", "Unrelated model"] {
+        mcp.ok("create_topic", json!({"title":title}));
+    }
+    for n in 0..3 {
+        mcp.ok(
+            "create_successor",
+            json!({"at":format!("{n}/0"),"title":format!("Model {n}"),"type":"model"}),
+        );
+    }
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/1","kind":"side","title":"Required part","facet":"设定"}),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({"at":"0/1","body":"参照 [[1/1]]，比较相关模型。"}),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({"at":"1/1","body":"参照 [[2/1]]，比较另一个模型。"}),
+    );
+    let expected = mcp.ok("get_model", json!({"at":"0/1"}));
+    home.db()
+        .execute(
+            "UPDATE cards SET text='malformed unrelated Markdown' WHERE location='2/1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(mcp.ok("get_model", json!({"at":"0/1"})), expected);
+}
+
+#[test]
+fn bulk_text_and_revision_remain_one_read_view_during_another_process_edits() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut reader = home.mcp();
+    reader.ok("create_topic", json!({"title":"Concurrent read"}));
+    reader.ok(
+        "create_successor",
+        json!({"at":"0/0","title":"Versioned claim","body":"Version 0."}),
+    );
+    let base =
+        reader.ok("get_cards", json!({"addresses":["0/1"],"view":"text"}))["archive_revision"]
+            .as_u64()
+            .unwrap();
+    let mut writer = home.mcp();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let writer_barrier = barrier.clone();
+    let worker = thread::spawn(move || {
+        writer_barrier.wait();
+        for version in 1..=20 {
+            writer.ok(
+                "edit_card",
+                json!({"at":"0/1","body":format!("Version {version}.")}),
+            );
+        }
+    });
+    barrier.wait();
+    for _ in 0..12 {
+        let view = reader.ok(
+            "get_cards",
+            json!({"addresses":vec!["0/1";100],"view":"text"}),
+        );
+        let version = view["archive_revision"].as_u64().unwrap() - base;
+        for card in view["cards"].as_array().unwrap() {
+            assert_eq!(
+                card["body"],
+                format!("Version {version}."),
+                "Card body and revision must belong to the same committed read view"
+            );
+        }
+    }
+    worker.join().unwrap();
+    assert_eq!(
+        reader.ok("get_cards", json!({"addresses":["0/1"],"view":"text"}))["archive_revision"],
+        base + 20
+    );
+}
+
+#[test]
+fn hub_policy_uses_indexed_links_and_metadata_without_parsing_unrelated_bodies() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Hub subject"}));
+    mcp.ok("create_successor", json!({"at":"0/0","title":"Anchor"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/1","title":"Second claim"}),
+    );
+    mcp.ok("create_successor",json!({"at":"0/2","title":"Candidate","body":"参照 [[0/1]] 和 [[0/2]]，说明两个成员的联系。"}));
+    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","type":"hub","level":"topic","title":"Subject hub","body":"## 问题\n- [[0/1]] 给出问题的起点和主要边界\n\n## 联系\n- [[0/2]] 解释第二个命题与原问题的联系"}));
+    mcp.ok("create_topic", json!({"title":"Neighbour"}));
+    mcp.ok("create_successor",json!({"at":"1/0","title":"External discussion","body":"参照 [[0/1]] 和 [[0/2]]，提出邻近主题的问题。"}));
+    let calls = [
+        ("get_hub", json!({"at":"0/1|a","neighbour_links":1})),
+        (
+            "list_hubs",
+            json!({"workspace":"agent","topic_min":2,"line_min":2,"neighbour_links":1}),
+        ),
+    ];
+    let expected = calls
+        .iter()
+        .map(|(name, args)| mcp.ok(name, args.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(expected[0]["candidates"][0]["address"], "0/3");
+    home.db().execute("UPDATE cards SET text='# External discussion\n\nmalformed [[unclosed' WHERE location='1/1'",[]).unwrap();
+    for ((name, args), value) in calls.into_iter().zip(expected) {
+        assert_eq!(
+            mcp.ok(name, args),
+            value,
+            "full Snapshot hub policy parity for {name}"
+        );
+    }
+}
+
+#[test]
+fn indexed_lists_preserve_counts_filters_and_repeated_broken_occurrences() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Indexed lists"}));
+    mcp.ok("create_successor", json!({"at":"1/0","title":"Anchor"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"1/1","kind":"side","title":"Temporary target"}),
+    );
+    mcp.ok("create_successor",json!({"at":"1/1","title":"Finding","type":"finding","body":"参照 [[1/1|a]] 和 [[1/1|a]]，并与 [[0/1]] 对照。"}));
+    mcp.ok("delete_card", json!({"at":"1/1|a","confirm":"delete"}));
+    let lists = [
+        ("list_workspaces", json!({})),
+        ("list_trees", json!({})),
+        ("list_links", json!({})),
+        (
+            "list_links",
+            json!({"workspace":"human","cross_workspace_only":true}),
+        ),
+        ("list_broken_links", json!({"workspace":"agent"})),
+    ];
+    let expected = lists
+        .iter()
+        .map(|(name, args)| mcp.ok(name, args.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected[2]["links"].as_array().unwrap().len(),
+        2,
+        "list_links keeps its distinct-target contract"
+    );
+    assert_eq!(
+        expected[4]["broken"].as_array().unwrap().len(),
+        2,
+        "broken reporting preserves occurrences"
+    );
+    assert_eq!(expected[0]["broken_links"], 2);
+    // Persistence fault outside the sources whose body lines the list needs.
+    home.db()
+        .execute(
+            "UPDATE cards SET text='# Anchor\n\nmalformed [[unclosed' WHERE location='1/1'",
+            [],
+        )
+        .unwrap();
+    for ((name, args), expected) in lists.into_iter().zip(expected) {
+        assert_eq!(
+            mcp.ok(name, args),
+            expected,
+            "indexed {name} matches the full Snapshot result"
+        );
+    }
+}
+
+#[test]
+fn tree_bodies_and_title_export_use_exact_selection_order_and_revision() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{Case_Book,title={Selected book}}","body":"Root notes."}),
+    );
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{CaseXBook,title={Other book}}"}),
+    );
+    let mut previous = "Case_Book".to_string();
+    for n in 1..=12 {
+        let made = mcp.ok(
+            "create_successor",
+            json!({"at":previous,"title":format!("Claim {n}"),"body":format!("Body {n}.")}),
+        );
+        previous = made["address"].as_str().unwrap().to_string();
+    }
+    let tree = mcp.ok("get_tree", json!({"tree":"Case_Book/2","bodies":true}));
+    let cards = tree["cards"].as_array().unwrap();
+    assert_eq!(cards.len(), 13);
+    assert_eq!(cards[0]["address"], "Case_Book");
+    assert_eq!(cards[0]["bibtex"], "@book{Case_Book,title={Selected book}}");
+    for n in 1..=12 {
+        assert_eq!(cards[n]["address"], format!("Case_Book/{n}"));
+        assert_eq!(cards[n]["body"], format!("Body {n}."));
+        assert!(cards[n]["text"].is_string());
+    }
+    let titles = mcp.ok(
+        "export_titles",
+        json!({"workspace":"agent","zone":"literature"}),
+    );
+    assert_eq!(titles["count"], 14);
+    assert_eq!(titles["archive_revision"], tree["archive_revision"]);
+    assert!(titles["archive_revision"].is_u64());
+    for row in titles["titles"].as_array().unwrap() {
+        assert_eq!(row["workspace"], "agent");
+        assert!(row["title"].is_string());
+        assert!(row.get("body").is_none() && row.get("text").is_none());
+    }
+    assert_eq!(
+        mcp.ok("export_titles", json!({"workspace":"human","zone":"topic"}))["count"],
+        2
+    );
+    assert!(
+        mcp.err("get_tree", json!({"tree":"case_Book"}))
+            .contains("does not exist")
+    );
+    let summary = mcp.ok("get_tree", json!({"tree":"Case_Book"}));
+    assert!(summary["cards"][0].get("body").is_none());
+    let sentinel = mcp.ok("create_topic", json!({"title":"Unrelated sentinel"}))["address"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    home.db()
+        .execute(
+            "UPDATE cards SET text='malformed unrelated Markdown' WHERE location=?1",
+            [sentinel],
+        )
+        .unwrap();
+    assert_eq!(
+        mcp.ok("get_tree", json!({"tree":"Case_Book","bodies":true}))["cards"],
+        tree["cards"]
+    );
+    assert_eq!(
+        mcp.ok(
+            "export_titles",
+            json!({"workspace":"agent","zone":"literature"})
+        )["titles"],
+        titles["titles"]
+    );
+}
+
+#[test]
+fn bulk_reads_reject_oversize_encoded_replies_and_the_server_remains_usable() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_topic",
+        json!({"title":"Large text","body":"x".repeat(2_200_000)}),
+    );
+    let (value, error) = mcp.call("get_cards", json!({"addresses":["0/0"],"view":"text"}));
+    assert!(error, "the complete MCP reply must fit in 8 MiB");
+    assert_eq!(value["code"], "read_limit");
+    assert_eq!(value["limit_kind"], "reply_bytes");
+    assert_eq!(value["limit"], 8 * 1024 * 1024);
+    assert!(value["actual"].as_u64().unwrap() > 8 * 1024 * 1024);
+    assert_eq!(value["complete"], false);
+    assert!(value.get("cards").is_none());
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[]}))["cards"],
+        json!([])
+    );
+    let (tree, error) = mcp.call("get_tree", json!({"tree":"0","bodies":true}));
+    assert!(error);
+    assert_eq!(tree["code"], "read_limit");
+    assert_eq!(tree["complete"], false);
+    mcp.ok(
+        "edit_card",
+        json!({"at":"0/0","title":"t".repeat(4_300_000)}),
+    );
+    let (titles, error) = mcp.call("export_titles", json!({}));
+    assert!(error);
+    assert_eq!(titles["code"], "read_limit");
+    assert_eq!(titles["complete"], false);
+}
+
+#[test]
+fn bulk_read_limits_fail_explicitly_instead_of_returning_a_truncated_success() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Bounded"}));
+    let (value, error) = mcp.call(
+        "get_cards",
+        json!({"addresses":vec!["0/0";201],"view":"text"}),
+    );
+    assert!(error, "a too-large request must fail");
+    assert_eq!(value["code"], "read_limit");
+    assert_eq!(value["limit_kind"], "addresses");
+    assert_eq!(value["limit"], 200);
+    assert_eq!(value["actual"], 201);
+    assert_eq!(value["complete"], false);
+    assert!(value.get("cards").is_none());
+    assert!(
+        mcp.err("get_cards", json!({"addresses":["0/0"],"view":42}))
+            .contains("view")
+    );
+    assert!(
+        mcp.err("get_cards", json!({"addresses":[42],"view":"text"}))
+            .contains("string")
+    );
+}
+
+#[test]
+fn indexed_model_context_matches_the_gui_full_snapshot_for_shared_math_and_human_links() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Result"}));
+    mcp.ok("create_successor",json!({"at":"0/0","title":"Main theorem","type":"model","level":"formal","form":"theorem","body":"(H1) A hypothesis. (C1) A conclusion."}));
+    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","title":"Main setting","facet":"前提","body":"A defined setting."}));
+    mcp.ok("create_successor",json!({"at":"0/1|a","title":"Main proof","facet":"证明：关键","emphasis":"core","body":"依赖 [[0/1|a]]，说明这一步。"}));
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{Shared_Book,title={Shared book}}"}),
+    );
+    mcp.ok("create_successor",json!({"at":"Shared_Book","title":"Shared lemma","type":"model","form":"lemma","level":"formal"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"Shared_Book/1","kind":"side","title":"Shared setting","facet":"前提"}),
+    );
+    mcp.ok("create_successor",json!({"at":"Shared_Book/1|a","title":"Shared derivation","facet":"推导：公共","body":"依赖 [[Shared_Book/1|a]]，完成共同推导。"}));
+    mcp.ok("edit_card",json!({"at":"0/1","body":"(H1) A hypothesis. (C1) A conclusion.\n\n结构：[[0/1|a]]、[[0/1|a|1]]、[[Shared_Book/1|a|1]]。"}));
+    mcp.ok("edit_card",json!({"at":"Shared_Book/1","body":"结构：[[Shared_Book/1|a]]、[[Shared_Book/1|a|1]]、[[0/1|a|1]]。"}));
+    mcp.ok("create_topic", json!({"title":"Premise"}));
+    mcp.ok("create_successor",json!({"at":"1/0","title":"Premise definition","type":"model","form":"definition","level":"concept","body":"(C1) A defined object."}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/1","title":"First plain user","body":"依赖 [[1/1]]，用于第一个外部问题。"}),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/2","title":"Second plain user","body":"依赖 [[1/1]]，用于第二个外部问题。"}),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/3","title":"User of the first user","body":"依赖 [[0/2]]，继续外部讨论。"}),
+    );
+    mcp.ok("edit_card",json!({"at":"0/1|a|1","body":"依赖 [[0/1|a]]、[[Shared_Book/1|a|1]]、[[1/1]] 和 [[Shared_Book/1|a]]，推出结论。"}));
+    mcp.ok("create_topic", json!({"title":"Theory"}));
+    mcp.ok("create_successor",json!({"at":"2/0","title":"Theory overview","type":"model","form":"theory","body":"## 主要结果\n- [[0/1]]\n- [[Shared_Book/1]]\n\n## 对象\n- [[1/1]]"}));
+    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","title":"Reader hub","type":"hub","level":"line","body":"## 构建\n- [[0/1|a|1]] 说明主结果关键证明与前提的关系\n- [[Shared_Book/1|a|1]] 提供可复用的公共推导步骤"}));
+    home.cmd_with_editor("# Human discussion\n\n参照 [[0/1|a|1]]，由读者提出讨论。\n")
+        .args(["t", "Human discussion"])
+        .assert()
+        .success();
+    let addresses = [
+        "0/1",
+        "0/1|a",
+        "0/1|a|1",
+        "Shared_Book/1|a|1",
+        "1/1",
+        "2/1",
+        "0/1|b",
+    ];
+    let mut models = std::collections::BTreeMap::new();
+    let mut full_cards = Vec::new();
+    for at in addresses {
+        let oracle = home.gui_card(at);
+        let actual = mcp.ok("get_card", json!({"at":at}));
+        for (field, value) in actual.as_object().unwrap() {
+            if field != "writable" {
+                assert_eq!(
+                    value, &oracle[field],
+                    "full Snapshot field {field} for {at}"
+                );
+            }
+        }
+        full_cards.push(actual);
+        if oracle["model"].is_object() {
+            let mut model = oracle["model"].clone();
+            let head = model["head"]["address"].as_str().unwrap().to_string();
+            model["head"]["body"] = home.gui_card(&head)["body"].clone();
+            for part in model["parts"].as_array_mut().unwrap() {
+                part["body"] = home.gui_card(part["address"].as_str().unwrap())["body"].clone();
+            }
+            assert_eq!(
+                mcp.ok("get_model", json!({"at":at})),
+                model,
+                "full Snapshot model for {at}"
+            );
+            models.insert(at.to_string(), model);
+        }
+    }
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":addresses}))["cards"],
+        json!(full_cards),
+        "a bulk union keeps every full Card projection equivalent"
+    );
+    mcp.ok("create_topic", json!({"title":"Unrelated sentinel"}));
+    home.db()
+        .execute(
+            "UPDATE cards SET text='malformed unrelated Markdown' WHERE location='4/0'",
+            [],
+        )
+        .unwrap();
+    for (at, expected) in models {
+        assert_eq!(mcp.ok("get_model", json!({"at":at})), expected);
+    }
+}
+
+#[test]
+fn full_card_reads_use_local_context_and_default_bulk_matches_single_card() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Local tree"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","title":"Local source","body":"参照 [[0/0]]，有明确理由。"}),
+    );
+    mcp.ok("create_topic", json!({"title":"Unrelated"}));
+    let before = mcp.ok("get_card", json!({"at":"0/1"}));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":["0/1"]}))["cards"][0],
+        before
+    );
+    // A malformed unrelated Card must not make a local read parse the archive.
+    home.db()
+        .execute(
+            "UPDATE cards SET text='bad unrelated stored Markdown' WHERE location='1/0'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/1"})), before);
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":["0/1"]}))["cards"][0],
+        before
+    );
+    assert!(mcp.err("get_card", json!({"at":"1/0"})).contains("heading"));
+}
+
+#[test]
+fn bulk_text_reads_preserve_order_missing_addresses_and_one_archive_revision() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{Bulk_Book,title={Bulk book}}","body":"Book notes."}),
+    );
+    let expected = mcp.ok("get_card", json!({"at":"Bulk_Book"}));
+    let response = mcp.ok(
+        "get_cards",
+        json!({"addresses":["Bulk_Book","Absent","0/1","Bulk_Book"],"view":"text"}),
+    );
+    assert_eq!(response["complete"], false);
+    assert_eq!(response["missing"], json!(["Absent"]));
+    assert!(response["archive_revision"].is_u64());
+    let cards = response["cards"].as_array().unwrap();
+    assert_eq!(
+        cards
+            .iter()
+            .map(|c| c["address"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Bulk_Book", "0/1", "Bulk_Book"]
+    );
+    for key in [
+        "address",
+        "workspace",
+        "type",
+        "facet",
+        "level",
+        "form",
+        "title",
+        "text",
+        "body",
+        "bibtex",
+    ] {
+        assert_eq!(cards[0][key], expected[key], "text projection field {key}");
+    }
+    assert!(cards[0].get("model").is_none());
+    assert_eq!(cards[1]["workspace"], "human");
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["complete"],
+        true
+    );
+}
+
+#[test]
 fn saving_unchanged_shell_text_and_literature_metadata_keeps_the_revision() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -401,6 +893,39 @@ fn an_explicit_reindex_repairs_corrupt_derived_rows_without_changing_card_text()
 }
 
 impl TestHome {
+    fn gui_card(&self, at: &str) -> Value {
+        use std::io::Read;
+        let url = fs::read_to_string(self.archive_root.join("zt.gui")).unwrap();
+        let port: u16 = url
+            .trim()
+            .trim_start_matches("http://127.0.0.1:")
+            .trim_end_matches('/')
+            .parse()
+            .unwrap();
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            stream,
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut page = String::new();
+        stream.read_to_string(&mut page).unwrap();
+        let token = page
+            .split("name=\"zt-token\" content=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        http_request(
+            port,
+            "GET",
+            &format!("/api/card?at={}", at.replace('|', "%7C")),
+            token,
+            None,
+        )
+    }
+
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path().join("config");

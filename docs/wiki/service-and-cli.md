@@ -118,6 +118,8 @@ Control and data flow: a CLI process resolves the archive root from the config, 
 
 ## Interfaces
 
+`card_from_row` decodes the shared 14-column Card projection for exact/full storage reads and the MCP hub-policy metadata projection. Metadata rules have one decoder; read query selection is owned by `src/read.rs`.
+
 ### Link integrity and recovery
 
 `zt status --check-links` prints a JSON integrity report from one read transaction and exits nonzero on drift. It compares every indexed occurrence and stored Reverse link section with a fresh full parse. The report includes `ok`, `cards`, `links`, `archive_revision`, `faults` and `last_write` counters (`indexed_cards`, `refreshed_cards`, `changed_reverse_sections`). `zt reindex` takes the edit lock, rebuilds the derived index and repairs generated sections transactionally, without rewriting authored content.
@@ -645,6 +647,8 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+
+- `2026-10-17` — Share the Card row decoder across full, targeted and hub-policy projections; MCP read selection is in `src/read.rs`.
 
 - `2026-10-17` — Add the derived transactional Link index, consistent migration/backup, scoped ordinary updates, archive revisions and public integrity/reindex commands. Stale-lock Windows sharing violations are retried through their typed I/O cause; cleanup closes its own handle before deletion. Public MCP/CLI tests cover rebuild preservation, locality, metadata revisions, failed migration/retry, and a held Windows sharing handle.
 

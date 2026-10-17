@@ -5,7 +5,7 @@ paths:
   - "skills/**"
   - "scripts/install-agent-integrations.ps1"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Agent skills and integrations
@@ -435,6 +435,8 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+
+- `2026-10-17` — Teach `get_cards`, `get_tree` bodies, `export_titles`, explicit read limits, missing-address checks and revision consistency in the ZT skill.
 
 - `2026-10-16` — `skills/zt-digest-protocol` is rebuilt as the protocol of the digest base only: the base stages, slots, modes, and args, the profile contract, the base tools and their SELF-CHECK lines. The variants' layers (models, events, findings, math) and the legacy notes are gone; `references/scripts.md` lists only the base's tools, prompts, and tests.
 - `2026-10-16` — `skills/zt-digest-protocol` names the `zt-digest` tools for every stage and every SELF-CHECK command (hub, Bridge, event, finding, skeleton, card, model), with the script each replaced; `figures.ps1` is gone from `references/scripts.md`, and `book-of.ps1` and `relatedness.ps1` are marked as kept for old callers.

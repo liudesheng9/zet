@@ -319,6 +319,9 @@ pub(crate) struct Graph<'a> {
     hubs: BTreeMap<String, (Option<HubLevel>, Body)>,
     /// Hub → the hubs that list it.
     upper: BTreeMap<String, BTreeSet<String>>,
+    /// Per-request indexed occurrences for policy projections. The full
+    /// Snapshot path remains the independent GUI/test oracle.
+    indexed_links: Option<&'a BTreeMap<String, Vec<String>>>,
 }
 
 impl<'a> Graph<'a> {
@@ -349,7 +352,28 @@ impl<'a> Graph<'a> {
             snapshot,
             hubs,
             upper,
+            indexed_links: None,
         }
+    }
+
+    pub(crate) fn with_links(
+        snapshot: &'a Snapshot,
+        links: &'a BTreeMap<String, Vec<String>>,
+    ) -> Self {
+        let mut graph = Self::new(snapshot);
+        graph.indexed_links = Some(links);
+        graph
+    }
+
+    fn outbound(&self, at: &str) -> Vec<String> {
+        if let Some(links) = self.indexed_links {
+            return links.get(at).cloned().unwrap_or_default();
+        }
+        self.snapshot
+            .outbound(at)
+            .into_iter()
+            .filter_map(|link| link["address"].as_str().map(str::to_string))
+            .collect()
     }
 
     fn level(&self, address: &str) -> Option<HubLevel> {
@@ -447,14 +471,11 @@ impl<'a> Graph<'a> {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for card in &self.snapshot.cards {
             let source_tree = crate::tree_id(&card.address);
-            for link in self.snapshot.outbound(&card.address) {
-                let Some(target) = link["address"].as_str() else {
-                    continue;
-                };
-                if link["broken"] == true {
+            for target in self.outbound(&card.address) {
+                if !self.snapshot.by_address.contains_key(&target) {
                     continue;
                 }
-                let target_tree = crate::tree_id(target);
+                let target_tree = crate::tree_id(&target);
                 let other = if source_tree == tree && target_tree != tree {
                     target_tree
                 } else if target_tree == tree && source_tree != tree {
@@ -676,14 +697,7 @@ impl<'a> Graph<'a> {
             }
             if level == HubLevel::Topic {
                 let root = format!("{}/0", crate::tree_id(address));
-                let linked = self.snapshot.parsed.get(&root).is_some_and(|parsed| {
-                    LinkBody::parse(&parsed.body).is_ok_and(|links| {
-                        links
-                            .occurrences()
-                            .iter()
-                            .any(|occurrence| occurrence.target == address)
-                    })
-                });
+                let linked = self.outbound(&root).iter().any(|target| target == address);
                 if self.snapshot.by_address.contains_key(&root) && !linked {
                     fault(
                         &mut faults,
@@ -798,10 +812,8 @@ impl<'a> Graph<'a> {
                 continue;
             }
             let links = self
-                .snapshot
                 .outbound(&card.address)
                 .into_iter()
-                .filter_map(|link| link["address"].as_str().map(str::to_string))
                 .filter(|target| covered.contains(target))
                 .count();
             if links >= 2 {

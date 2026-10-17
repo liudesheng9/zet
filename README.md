@@ -374,6 +374,9 @@ Reverse links to the human Card.
 | `list_workspaces` | both Workspaces, their Zones, Card counts, and your access |
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
+| `get_cards` | ordered full/text Card reads, up to 200 addresses, with missing addresses and one archive revision |
+| `get_tree` with `bodies: true` | complete tree bodies, stored text and BibTeX in one read view |
+| `export_titles` | one title/metadata pass, filtered by Workspace and Zone, with count and revision |
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |

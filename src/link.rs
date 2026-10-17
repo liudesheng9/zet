@@ -335,7 +335,7 @@ impl LinkLifecycle {
     }
 }
 
-fn line_around(text: &str, index: usize) -> &str {
+pub(crate) fn line_around(text: &str, index: usize) -> &str {
     let start = text[..index].rfind('\n').map_or(0, |newline| newline + 1);
     let end = text[index..]
         .find('\n')
