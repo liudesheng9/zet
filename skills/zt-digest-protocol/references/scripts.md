@@ -1,82 +1,71 @@
-# Scripts and instruction files of the digest workflows
+# Tools, prompt files, and tests of the digest base
 
-All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the path says otherwise. "Writes" says whether the script changes Cards in the slip-box.
+All paths are under `E:\zet`. "Writes" says whether a tool changes Cards in the slip-box.
 
-Every digest script runs as a `zt-digest <tool>` (`tools/zt-digest`, installed beside `zt.exe` by `scripts/install-zt-digest.ps1`) with the same parameters and output. The tables name the tool and, in brackets, the `.ps1` it replaced; that `.ps1` only forwards to its tool, so an old command still works. The workflows run the tools directly (`zdTool` in `zt-digest-lib.js`), and every job file's `SELF-CHECK:` line names the tool. `zt-digest call` is the zt helper.
+Every base stage runs a `zt-digest <tool>` (`tools/zt-digest`, installed beside `zt.exe` by `scripts/install-zt-digest.ps1`). A tool keeps the parameters and output of the PowerShell script it replaced (in brackets); that `.ps1` in `scripts/book-digest/` only forwards to its tool, so an old command still works. The workflow modules build each command with `zdTool` (`ZD_TOOLS` in `zt-digest-lib.js`), and every job file's `SELF-CHECK:` line names the tool. The variants' layers use more tools (`model`, `model-context`, `list-models`, `event`, `finding`, `math`); the variants' blueprints and docs describe them.
 
 ## Compilers (the basic block)
 
 | Tool (script) | Stage | Steps | Use it to | Writes |
 | --- | --- | --- | --- | --- |
-| `zt-digest model` (`model-compiler.ps1`) | Models | `brief`, `validate`, `apply`, `derive`, `review`, `split`, `report`; `explain`, `explain-check`, `explain-apply`, `explain-report` | Build each Model Card's parts: context packs and briefs, validate Sonnet's `plan.json`, the skeleton and setting tables, fill and derive jobs, review verdicts and splits, the report. The explain steps add 思路, 说明, and 解读 to finished Derivation parts. | yes |
-| `zt-digest card` (`card-compiler.ps1`) | Cards, Link check, Organize notes | `plan`, `precheck`, `apply`, `check`, `report` | Fix the Card language and layer faults of a book's Idea Cards, Event Cards, Finding Cards, and anchors; review a sample against the source; link orphan Cards; carry out Organize notes. DeepSeek writes JSON. | yes |
-| `zt-digest hub` (`hub-compiler.ps1`) | Hubs | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | Build the line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `D:\zt-digest\hubs\state.json`. | yes |
-| `zt-digest terms` (`book-terms.ps1`) | Prepare | `plan`, `apply` | The book term table (术语表) that rule R6 checks against. | the 术语表 Card |
-| `zt-digest skeleton` (`book-skeleton.ps1`) | Organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index, the structure Card, and the Topic bodies. | yes, with `-Apply` |
-| `zt-digest bridge` (`bridge-compiler.ps1`) | Bridge | `plan`, `precheck`, `report`, `apply` | Freeze candidate endpoints, check BR1–BR9 and Card rules, publish an immutable report, and apply only explicit report-bound ids. Flags: Step/Staging/CitationKey/Work/Profile/MaxSources/Candidates/Books/Job/ReportId/Accept/AcceptEarlier/Apply. Preview without -Apply changes no Card or apply state. The workflow runs `report` only when every judge job answered. Apply checks the changed carrier for L1 and L2 as an Idea draft. The summary line holds `outcome_counts`, and `outcomes` only when there are at most 30. | only accepted agent carriers with `-Apply` |
-| `zt-digest math` (`math-compiler.ps1`) | math variant | `index`, `docs`, `skeleton`, `notation`, `notation-apply`, `boundary`, `boundary-apply`, `boundary-settle`, `proof`, `proof-apply`, `theory`, `theory-apply`, `check` | Numbered statements, mathematical units, Theory Cards (`docs/math-cards-design.md`). | yes |
+| `zt-digest card` (`card-compiler.ps1`) | digest blocks, link-check, cards-book, Organize notes | `plan`, `precheck`, `apply`, `check`, `report` | Fix the Card language and layer faults of a book's Idea, Event, and Finding Cards and anchors; review a sample against the source; link orphan Cards; carry out Organize notes. DeepSeek writes JSON. Options: `-Book`, `-Staging`, `-Groups`, `-Sample`, `-Rules`, `-MaxCards`, `-NoOrphans`, `-Notes`, `-Compact`, `-MaxJobs`. | yes |
+| `zt-digest terms` (`book-terms.ps1`) | terms | `plan`, `apply` | The book term table (术语表) that rule R6 checks against. | the 术语表 Card |
+| `zt-digest skeleton` (`book-skeleton.ps1`) | organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index, the structure Card, and the Topic bodies. | yes, with `-Apply` |
+| `zt-digest hub` (`hub-compiler.ps1`) | hubs, hubs-first | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | The line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `<hubWork>\state.json` (default `D:\zt-digest\hubs`). | yes |
+| `zt-digest bridge` (`bridge-compiler.ps1`) | bridge | `plan`, `precheck`, `report`, `apply` | Freeze candidate endpoints, check BR1–BR9 and the Card rules, publish an immutable report, and apply only explicit report-bound ids. Options: `-Staging`, `-CitationKey`, `-Work`, `-Profile`, `-MaxSources`, `-Candidates`, `-Books`, `-Job`, `-ReportId`, `-Accept`, `-AcceptEarlier`, `-Apply`. Without `-Apply` it changes no Card or apply state. | only accepted agent carriers, with `-Apply` |
 
 ## Preparation and passes
 
 | Tool (script) | Stage | Use it to | Writes |
 | --- | --- | --- | --- |
-| `zt-digest prepare` (`prepare-book-digest.ps1`) | Prepare | Chinese-only text, section groups, the group files (with their `SELF-CHECK` line), the shared DeepSeek prefixes, and with `-Apply` the agent Literature tree with one anchor per group. | anchors |
-| `zt-digest snapshot-topics` (`snapshot-topics.ps1`) | Digest | A compact list of every Topic tree for one digest run, so it places and links Cards without searching. | no |
-| `book-of.ps1` | none | Kept for old callers and `tests/book-of.tests.ps1`; the tools use its Rust port (`src/audit/book_of.rs`). Pure ordinal classification and weighted inferred attribution, including Finding Cards. A tie goes as in the old audit (sorted, case-insensitive key order). No archive calls. | no |
-| `relatedness.ps1` | none | Kept for old callers; the tools use its Rust port (`src/card/relatedness.rs`). Dot-sourced: TF-IDF over Chinese character bigrams; tells each run which other sections and Cards are related. | no |
-| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | Link | A snapshot of every Card; per group, the Cards it owns, the candidate targets, the allow list, and the `SELF-CHECK` line. | no |
-| `zt-digest list-models` (`list-models.ps1`) | Models | The Model Cards a digest wrote (`-Groups`, `-All -CitationKey`), with level, parts, and faults. | no |
-| `zt-digest model-context` (`model-context.ps1`) | Models, Explain | The context pack of one model: its Cards, Links, source group files and headings, the anchor, the other models. | no |
-| `zt-digest organize-survey` (`organize-survey.ps1`) | Organize | Everything Opus must decide: duplicate and small Topics, merge proposals, model faults, broken Links, missing hubs. Read-only. | no |
-| `zt-digest organize-apply` (`organize-apply.ps1`) | Organize | Carry out Opus's `decisions.json`: Topic merges and Card moves, logged. | yes |
-| `zt-digest figures` (`attach-figures.ps1`, with the functions of the removed `figures.ps1`) | Figures | Show the book's figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes |
+| `zt-digest prepare` (`prepare-book-digest.ps1`) | prepare | Chinese-only text, section groups (`groups\gNN.md` with their write command and `SELF-CHECK` line), the shared DeepSeek prefixes from `-Instructions`, and with `-Apply` the agent Literature tree with one anchor per group. | anchors |
+| `zt-digest snapshot-topics` (`snapshot-topics.ps1`) | digest | A compact list of every Topic tree for one digest run, so it places and links Cards without searching. | no |
+| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | link-prepare | A snapshot of every Card; per group, the Cards it owns, the candidate targets, the allow list, and the `SELF-CHECK` line; the groups still pending. | no |
+| `zt-digest organize-survey` (`organize-survey.ps1`) | organize | Everything Opus must decide: duplicate and small Topics, merge proposals, model faults, broken Links, missing hubs. Read-only. | no |
+| `zt-digest organize-apply` (`organize-apply.ps1`) | organize | Carry out Opus's `decisions.json`: Topic merges and Card moves, logged. | yes |
+| `zt-digest figures` (`attach-figures.ps1`) | figures | Show the book's figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes |
 
-## Checks and audit
+## The helper, checks, and audit
 
 | Tool | Use it to | Writes |
 | --- | --- | --- |
-| `zt-check` (`tools/zt-check`, install with `scripts/install-zt-check.ps1`) | The one checker and the only source of truth, for every agent: `--cards` (a writer's own Cards, classified as the audit does), `--addresses`, `--model`, `--json` (drafts, offline). Rules R2 to R17, I, E, L. Starts `zt mcp` once to read Cards; `--json` needs no archive. | no |
-| `Invoke-ZtCheck` (in `zt-calls.ps1`) | How a PowerShell caller calls zt-check (the tools run zt-check in-process): the old parameter names (`-Json`, `-Model`, `-Addresses`, `-Cards`, `-Log`, `-Book`, `-Rules`, `-Setting`, `-Level`, `-RequireExplain`, `-SkipShared`, `-Max*`). Throws when zt-check does not run. | no |
-| `scripts/install-zt-check.ps1` | Build the crate (target `D:\zt-check-target`) and install `zt-check.exe` beside `zt.exe`. A running copy is renamed aside. | no |
-| `zt-digest audit` (`digest-audit.ps1`) | Read-only audit of one book or the whole Workspace. It reads the trees of both Workspaces. It reports faults per rule and category, Topic trees, orphans, Idea, Event, and Finding Cards without a source line or kinded Link, models not self-sufficient, explained Derivation parts, figures, missing hubs, broken Links, and actual distinct semantic Bridge pairs in/out by book/human/unattributed. `island` is true when a book has no Bridge in or out. Incomplete tree reads give complete=false and island=null. Writes `audit.json`, `audit.md` (with an Islands row), `audit-faults.txt`. | no |
-| `zt-calls.ps1` | Dot-sourced by PowerShell callers and the tests (the tools do this in-process): `Invoke-Zt` calls zt MCP tools through the helper with UTF-8 decoding. | as called |
+| `zt-digest call` (the old path `skills/zt/scripts/zt-mcp.ps1` forwards to it) | The zt helper: a JSON array of calls on stdin or in a file, with `-Allow`, `-Log`, `-SrcLog`, `-TopicGate`, `-Moves`, and `-From`/`-Addresses` to resume. DeepSeek writes through it; the tools run it in-process. | as called |
+| `zt-check` (`tools/zt-check`, `scripts/install-zt-check.ps1`) | The one checker for every agent: `--cards` (a writer's own Cards, classified as the audit does), `--addresses`, `--model`, `--json` (drafts, offline). Rules R2 to R17 and I, E, F, L. | no |
+| `zt-digest audit` (`digest-audit.ps1`) | Read-only audit of one book or the whole Workspace, over both Workspaces: faults per rule and category, Topic trees, orphans, Cards without a source line or kinded Link, figures, missing hubs, broken Links, and distinct Bridge pairs in and out per book. `island` is true when a book has no Bridge; an incomplete tree read gives `complete: false` and `island: null`. Writes `audit.json`, `audit.md`, `audit-faults.txt`. | no |
+| `zt-calls.ps1`, `book-of.ps1`, `relatedness.ps1` | PowerShell libraries kept for PowerShell callers and their tests (`Invoke-Zt`, `Invoke-ZtCheck`; book attribution; TF-IDF relatedness). The tools use their Rust ports. | as called |
 
-## DeepSeek instruction files (`dsh-*.zh.md`)
+## DeepSeek instruction files (`scripts/book-digest/dsh-*.zh.md`)
 
 Each opens the prompt of every job of its task, so DeepSeek caches it. Each has a 自查 (self-check) step.
 
 | File | Task | Output |
 | --- | --- | --- |
-| `dsh-digest-base.zh.md`, `dsh-model-cards.zh.md` | Digest run: Idea and Model Cards of one group, and its anchor (the variants pass both with `-Instructions`; `dsh-instructions.zh.md` is only the default of `zt-digest prepare` without `-Instructions`) | Cards through the helper |
-| `dsh-bridge-instructions.zh.md` | Read frozen candidate bodies; assess actual mechanism, scope and direction; SELF-CHECK; never edit Cards | assigned `br-NNN.json` only |
+| `dsh-digest-base.zh.md` | Digest run: the Idea Cards of one group and its anchor. A variant adds supplements through `profile.instructions`; `dsh-instructions.zh.md` is only the default of `zt-digest prepare` without `-Instructions`. | Cards through the helper |
 | `dsh-link-instructions.zh.md` | Link run: reasoned Links from a group's own Cards | Links through the helper |
-| `dsh-brief-instructions.zh.md` | Model brief: equations, skipped steps, the book's own intuition (直觉) | `brief.md` |
-| `dsh-fill-instructions.zh.md` | Model fill and derive: Model Card, setting, parts, charts, Derivation parts with 思路, 说明, 解读 | Cards through the helper |
-| `dsh-review-instructions.zh.md` | Derivation review: errors, jumps, density, explanation | `review-NN.json` |
-| `dsh-explain-instructions.zh.md` | Explanations for finished Derivation parts | JSON |
 | `dsh-card-instructions.zh.md` | Card cycle fix and review | JSON |
 | `dsh-orphan-instructions.zh.md` | Links to orphan Cards | JSON |
 | `dsh-terms-instructions.zh.md` | Book term table | JSON |
 | `dsh-skeleton-instructions.zh.md` | Literature index, structure Card, Topic bodies | JSON |
 | `dsh-hub-instructions.zh.md` | Field and topic hubs | JSON |
-| `dsh-math-*.zh.md` | The math variant's stages | see `docs/zt-math-digest-workflow.md` |
-| `model-architect.md`, `model-architect-math.md` | Sonnet's planning instructions | `plan.json` |
+| `dsh-bridge-instructions.zh.md` | Bridge judge: read frozen candidate bodies; judge mechanism, scope, and direction; never edit Cards | the assigned `br-NNN.json` only |
 
-## Workflows and blueprints
+## Workflow files
 
 | File | Use it to |
 | --- | --- |
-| `scripts/book-digest/workflow/zt-digest-base.blueprint.json` | The base: shared stages, slots, args, roles, modes. |
-| `scripts/book-digest/workflow/zt-econ-digest.blueprint.json`, `zt-math-digest.blueprint.json` | The two variants: profile and slot fills. |
-| `scripts/book-digest/workflow/modules/*.js` | The stage modules and libraries. |
-| `.claude/workflows/zt-econ-digest.js`, `.claude/workflows/zt-math-digest.js` | The installed, frozen builds. Never edit them: change a blueprint or module and reinstall with `assemble.mjs install`. |
+| `scripts/book-digest/workflow/zt-digest-base.blueprint.json` | The base: stages, slots, args, roles, modes, checkpoint. |
+| `scripts/book-digest/workflow/modules/zt-digest-lib.js` | The shared library: settings from the args, `zdTool`, the digest and link managers, `drive`, the card cycle (`runCards`). |
+| `scripts/book-digest/workflow/modules/` (`zt-dsh-source`, `zt-digest-prepare`, `zt-book-terms`, `zt-cards-book`, `zt-digest-blocks`, `zt-hubs`, `zt-link-prepare`, `zt-link-pass`, `zt-link-check`, `zt-dsh-cleanup`, `zt-organize`, `zt-figures`, `zt-bridge`, `zt-audit`, `zt-digest-report`) | The base stage modules, one per stage. |
+| `.claude/workflows/<name>.js` | An installed, frozen variant build. Never edit it: change a blueprint or module and reinstall with `assemble.mjs install`. |
 
 ## Tests (`scripts/book-digest/tests/`)
 
 | Test | Covers |
 | --- | --- |
-| `framework-harness.mjs` | Both variants built in memory with canned agent answers: stage order, commands, manager counts and the 8-manager cap, deletes not archives, one shared base, frozen structure, installed = built. |
-| `model-compiler.tests.ps1`, `card-compiler.tests.ps1`, `hub-compiler.tests.ps1`, `math-compiler.tests.ps1`, `event-compiler.tests.ps1`, `finding-compiler.tests.ps1` | Each compiler on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`), including the precheck and explain-check steps. |
-| `zt-check.tests.ps1`, `card-layer.tests.ps1` + fixtures, and `cargo test` in `tools/zt-check` | zt-check's rules, on fixtures. |
-| `book-terms`, `organize`, `attach-figures`, `prepare`, `zt-calls`, `zt-helper-gate` `.tests.ps1` | Their tools, through the forwarders. |
-| `book-of`, `bridge-compiler`, `bridge-planning`, `bridge-validation`, `bridge-math`, `bridge-attribution-retry`, `bridge-human` `.tests.ps1`; `bridge-workflow-harness.mjs` | The attribution helper, the Bridge compiler on scratch archives, and the Bridge stage of the workflows. `bridge-human.tests.ps1` seeds its scratch database with `node:sqlite` and needs no Python (`-Python` is ignored). |
+| `run-all.ps1` | Runs every test file and harness below in parallel (`-Throttle 4`). |
+| `framework-harness.mjs` | The variants built in memory with canned agent answers: base stage order, commands, manager counts and the 8-manager cap, deletes not archives, one shared base, frozen structure, installed = built, ported scripts run as tools. |
+| `bridge-workflow-harness.mjs` | The Bridge stage of the workflows: discovery and explicit apply as separate, bounded paths. |
+| `card-compiler`, `hub-compiler`, `digest-audit`, `book-terms`, `organize`, `attach-figures`, `prepare` `.tests.ps1` | The base tools on scratch archives (`ZT_CONFIG_DIR`, its own `zt up`), including the precheck steps. |
+| `bridge-compiler`, `bridge-planning`, `bridge-validation`, `bridge-math`, `bridge-attribution-retry`, `bridge-human`, `book-of` `.tests.ps1` | The Bridge tool on scratch archives, and book attribution. |
+| `zt-check.tests.ps1`, `card-layer.tests.ps1` + fixtures; `cargo test` in `tools/zt-check` and `tools/zt-digest` | zt-check's rules, and the tools' unit tests. |
+| `zt-calls.tests.ps1`, `zt-helper-gate.tests.ps1`, `requires-version.tests.ps1` | The helper (`-SrcLog`, `-TopicGate`, parallel helpers), UTF-8 under a GBK console, and the PowerShell 7.5 declarations. |

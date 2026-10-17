@@ -1,13 +1,16 @@
 ---
 name: zt-digest-protocol
-description: The base protocol of the ZT digest workflows (zt-econ-digest, zt-math-digest) that turn a book into ZET Cards. It names the building blocks, every script and what to use it for, the order of the stages, the job and file formats, the quality checks (zt-check and the SELF-CHECK lines), and the rules each run must keep. Use it to run or change a digest workflow, to debug a stage, or to build a new digest variant on the same blocks.
+description: The protocol of the ZT digest base (scripts/book-digest/workflow/zt-digest-base.blueprint.json), the shared part of every ZT digest workflow that turns a book into ZET Cards. It names the roles, the compiler cycle, the base stages and slots, the modes, the zt-digest tools the base runs, the profile contract a variant fills, the quality checks (zt-check and the SELF-CHECK lines), and the rules each run keeps. Use it to run or change the base, to debug a base stage, or to build a new variant on it. It does not describe a variant's own layers (models, events, findings, math): see that variant's blueprint and docs.
 ---
 
-# ZT Digest Protocol
+# ZT Digest Protocol (the base)
 
-A digest turns one book (a Chinese or bilingual Markdown file from the Scholar Archive) into Cards in the **agent Workspace** of the ZET slip-box. The Workflow Framework Protocol builds every digest from one base blueprint (`scripts/book-digest/workflow/zt-digest-base.blueprint.json`) and the stage modules in `scripts/book-digest/workflow/modules/`. Two variants are installed frozen in `E:\zet\.claude\workflows\`: `zt-econ-digest` (economics books: the model, event, and empirical-results layers) and `zt-math-digest` (mathematics textbooks: the model layer and the math stages). Build every new variant on the blocks below, so all digests keep one standard.
+A digest turns one book (a Chinese or bilingual Markdown file from the Scholar Archive) into Cards in the **agent Workspace** of the ZET slip-box. Every digest workflow is built by the Workflow Framework Protocol from one **base** and one **variant**:
 
-Detailed docs in the repo (`E:\zet\docs`): `zt-digest-workflow.md` (the stages and arguments), `zt-digest-framework.md` (base, variants, install), `model-compiler-design.md`, `hub-cards-design.md`, `digest-card-layers-proposal.md`, `derivation-explanations-proposal.md`, `zt-math-digest-workflow.md`, `math-cards-design.md`. The full list of scripts and instruction files is in [references/scripts.md](references/scripts.md).
+- The base (`E:\zet\scripts\book-digest\workflow\zt-digest-base.blueprint.json`, `"kind": "base"`) holds every stage that all book types share, the args, the roles, the modes, and four empty **slots**.
+- A variant blueprint names the base, sets the **profile** (section 4), and fills the slots with its own layers. The installed variants are frozen builds in `E:\zet\.claude\workflows\`. This skill covers the base only.
+
+Docs in the repo (`E:\zet\docs`): `zt-digest-workflow.md` (stages and args), `zt-digest-framework.md` (base, variants, install), `hub-cards-design.md`, `digest-card-layers-proposal.md`. The developer wiki block is `docs/wiki/digest-workflows.md`. The tools, prompt files, and tests of the base are listed in [references/scripts.md](references/scripts.md).
 
 ## 1. Roles
 
@@ -15,117 +18,153 @@ Each kind of worker does one kind of work. Do not move work between them.
 
 | Worker | Does | Never does |
 | --- | --- | --- |
-| **Scripts** (the `zt-digest` tools, `tools/zt-digest`; the `scripts/book-digest/*.ps1` not ported yet) | Every structural step: skeletons, tree operations (insert, move, delete), job files, checks, apply, reports. Every zt write of a JSON answer. | Write prose. |
-| **DeepSeek** (DeepSeek Harness, V4.1 Flash, effort high) | The labour: Card text, briefs, Derivation parts, explanations, reviews, hubs, terms, charts. It writes Card bodies through the zt helper, or a JSON file that a script applies. | Plan structure, or change Cards it does not own. |
-| **Haiku** | Managers: start DeepSeek jobs, approve their tool calls, collect answers, delete conversations. Runs one script command per step. Chooses limits from a survey (hubs). | Read the book, write Cards, decide content. |
-| **Sonnet** | The model architect: one `plan.json` per model (level, parts, build order, Derivation parts). | Write Cards, start DeepSeek runs. |
-| **Opus** | Organize decisions only (`decisions.json`: thesis, Topic merges, moves, notes). | Edits: a script and DeepSeek carry out its decisions. |
+| **Tools** (`zt-digest <tool>`, `E:\zet\tools\zt-digest`) | Every structural step: skeletons, tree operations (insert, move, delete), job files, checks, apply, reports. Every zt write of a JSON answer. | Write prose. |
+| **DeepSeek** (DeepSeek Harness, V4.1 Flash, effort high) | The labour: Card text, Links, reviews, terms, hubs, skeleton text, Bridge judgements. It writes Card bodies through the zt helper, or a JSON file that a tool applies. | Plan structure, or change Cards it does not own. |
+| **Haiku** (role `manager`, effort low) | Runs one tool command per step; manages DeepSeek jobs: starts them, approves their tool calls, collects answers, deletes conversations. Chooses the hub limits from a survey. | Read the book, write Cards, decide content. |
+| **Opus** (role `organizer`) | The Organize decisions only (`decisions.json`: thesis, Topic merges, moves, notes). | Edit Cards: a tool and DeepSeek carry out its decisions. |
 
-Card language: every Card follows `asd-ste100-zh` (one statement per sentence, no `；`, active voice, at most 40 characters per description sentence). The checker enforces it (rules R2 to R17).
+The base also declares the role `architect` (Sonnet) for variant layers that plan models; no base stage uses it. Modules start agents only through `ctx.agent`, so the role fixes the model and effort.
+
+Card language: every Card follows `asd-ste100-zh` (one statement per sentence, no `；`, active voice, at most 40 characters per description sentence). zt-check enforces it (section 6).
 
 ## 2. The basic block: the compiler cycle
 
-Every stage that hands work to DeepSeek is a **compiler cycle**: one script with steps, DeepSeek in between.
+Every stage that hands work to DeepSeek is a **compiler cycle**: one tool with steps, DeepSeek in between.
 
 ```
 survey ──▶ plan ──▶ DeepSeek writes ──▶ SELF-CHECK ──▶ apply ──▶ check ──▶ (one fix round) ──▶ report ──▶ cleanup
- script    script    JSON or bodies      the writer      script    script    same conversation    script     Haiku
+ tool      tool      JSON or bodies      the writer      tool      tool      same conversation    tool       Haiku
 ```
 
 1. **plan** writes one job file per few items and prints `{"jobs":[{"id","files":[...],"prompt"}]}` as its last line. `files` opens with the shared instruction file (`dsh-*.zh.md`), so DeepSeek caches the prefix.
-2. **DeepSeek writes** a JSON result file (preferred: the script then makes every zt write), or Card bodies through the helper with `-Allow` (only its own Cards).
-3. **SELF-CHECK**: every job file carries a `SELF-CHECK:` line, the exact read-only command that runs the checks of apply. The writer runs it, fixes each fault, and reruns until `faults: 0` (at most three runs). A fault the old Card already had is listed as kept, not counted. This removes guessing and most fix rounds.
+2. **DeepSeek writes** a JSON result file (preferred: the tool then makes every zt write), or Card bodies through the helper with `-Allow` (only its own Cards).
+3. **SELF-CHECK**: every job file carries a `SELF-CHECK:` line, the exact read-only command that runs the checks of apply. The writer runs it, fixes each fault, and reruns until `faults: 0` (at most three runs). A fault the old Card already had is listed as kept, not counted.
 4. **apply** validates again and writes. It refuses a changed Card, a lost Link, figure, or formula, and any new fault. It never writes unchecked text: no `faults: N` line from the checker means stop.
 5. **check / fix**: refused items go back **once** to the same conversation (`"continue": "<job id>"`, with `fallback` files for a fresh one). A second refusal is final and reported.
-6. **report** prints counts per item. **cleanup** deletes the DeepSeek conversations and removes the workspace (section 4).
+6. **report** prints counts per item. **cleanup** deletes the DeepSeek conversations and removes the workspace (section 5).
 
-Compilers that follow it (each a `zt-digest` tool; its old `.ps1` forwards to it): `model` (brief, plan, apply, derive, review, split, explain), `card` (card cycle), `hub`, `terms`, `skeleton`, `math`, `bridge`, `event`, `finding`. A new stage is a new compiler with the same steps.
+The workflow drives one step with `drive()` (`zt-digest-lib.js`): one Haiku agent runs the command, Haiku managers run its jobs (8 per manager), and an optional cleanup agent deletes the conversations. The base's compilers: `card` (the card cycle), `terms`, `hub`, `skeleton`, `bridge`. A new stage is a new compiler with the same steps.
 
-## 3. Stage logistics (the base, mode `full`)
+## 3. The base stages (mode `full`)
 
 ```
-Prepare ─▶ [after-prepare] ─▶ Terms ─▶ Digest blocks (in parallel, each with its card cycle) ─▶ [after-digest] ─▶ Link ─▶ Link check ─▶ [after-link] ─▶ Cleanup ─▶ Organize ─▶ Figures ─▶ Bridge ─▶ Hubs ─▶ Audit ─▶ [after-audit] ─▶ Report
+args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ digest (blocks in parallel, each with its card cycle) ─▶ [after-digest]
+     ─▶ link-prepare ─▶ link ─▶ link-check ─▶ [after-link] ─▶ cleanup ─▶ organize ─▶ figures ─▶ bridge ─▶ hubs ─▶ audit ─▶ [after-audit] ─▶ report
 ```
 
-The `[slots]` take each variant's layers. `zt-econ-digest` fills `after-digest` with Models, Explain, Events, and Findings. `zt-math-digest` fills `after-prepare` with the statement skeleton and notation, `after-digest` with Models, Explain, Boundary, and Proof, `after-link` with Theory, and `after-audit` with the math check. The model layer runs once after the whole digest.
+`[slot]` marks where a variant puts its layers; the base leaves the slots empty. Each stage is one module in `scripts/book-digest/workflow/modules/`; every module builds its commands with `Z.tool('<script>')` (`zdTool`), which gives `zt-digest <tool>`.
 
-| Stage | Steps | Writes Cards? |
+| Stage (module) | Steps | Writes Cards? | On failure |
+| --- | --- | --- | --- |
+| args (`gate`) | Checks `citationKey` (unless mode `hubs` or `audit`) and `source`, `bibtex`, `bookTitle` (mode `full`). | no | halt |
+| source (`zt-dsh-source`) | With `dshSource: auto`, a Haiku probe asks the official DeepSeek source, then OpenCode Go, for one short answer; the run stops when neither answers. | no | halt |
+| prepare (`zt-digest-prepare`) | `zt-digest prepare -Apply` with the profile's `-Instructions` (and `-NoEventCandidates`): Chinese-only text, section groups (`groups\gNN.md`, each with its `SELF-CHECK:` line), the shared prefixes, and the Literature tree with one anchor Card per group. | anchors | halt |
+| terms (`zt-book-terms`) | `zt-digest terms` plan → one DeepSeek job → apply: the book term table (术语表) that rule R6 reads. | the 术语表 Card | continue |
+| cards-book (`zt-cards-book`) | Mode `cards` only: the card cycle on the whole book, with orphans. | rewrites | halt |
+| digest (`zt-digest-blocks`) | One Haiku manager per block of `perManager` groups (at most 8). Each group: `zt-digest snapshot-topics`, then one DeepSeek run on the digest prefix (built from the profile's instruction files) and the group file; it writes Cards with the helper (`-Log`, `-SrcLog`, `-TopicGate`), then runs its SELF-CHECK. When a block's manager returns, its card cycle starts (`zt-digest card -Groups … -Sample … -NoOrphans`). | yes | halt when no group is done |
+| link-prepare, link (`zt-link-prepare`, `zt-link-pass`) | `zt-digest prepare-link`, then link managers (up to `linkPerManager` runs each) whose DeepSeek runs append reasoned Links (`dsh-link-instructions.zh.md`, `-Allow allow-gNN.txt`), each with its SELF-CHECK. | Links | halt |
+| link-check (`zt-link-check`) | A card cycle after the link pass (`-Work <out>\cards-link`, with orphan jobs): every hard rule in mode `full`, otherwise `cardRules` or L1 and L2. | rewrites, Links | halt |
+| cleanup (`zt-dsh-cleanup`) | Delete leftover DeepSeek conversations, remove the workspace, delete scratch files, read the usage ledger. | no | halt |
+| organize (`zt-organize`) | `zt-digest organize-survey` → Opus `decisions.json` → `zt-digest organize-apply` → a notes card cycle (`-Notes`) → `zt-digest skeleton` plan → DeepSeek → apply (Literature index, structure Card, Topic bodies). | yes | continue |
+| figures (`zt-figures`) | `zt-digest figures -Apply`: show the book's own figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes | halt |
+| bridge (`zt-bridge`) | `zt-digest bridge` with the profile's `bridgeProfile`: bounded plan → read-only judge jobs → immutable report (section 8). | no in discovery | continue; the stage shows `status: failed` |
+| hubs (`zt-hubs`) | `zt-digest hub` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards | halt |
+| audit (`zt-audit`) | `zt-digest audit`, read-only, over both Workspaces: faults per rule and category, orphans, figures, hubs, broken Links, Bridge counts in and out per book, islands. | no | halt |
+| report (`zt-digest-report`) | No agent: the run's result for the mode, with each stage's status and the variant's extra reports. | no | halt |
+
+A module that fails softly returns `{ status: 'failed', ... }` and its stage still ends; only a thrown error fails a stage. "halt" stops the run.
+
+**Modes** (`args.mode`, default `full`) re-run base stages on an existing digest:
+
+| Mode | Stages | Needs |
 | --- | --- | --- |
-| Prepare | Haiku probes the DeepSeek source (`dshSource`). `zt-digest prepare -Apply`: Chinese text, section groups, the Literature tree with one anchor per group, the shared prefixes. `zt-digest terms`: the term table (术语表). | anchors, 术语表 |
-| Digest | One Haiku manager per block of `perManager` groups (at most 8). Each group: `zt-digest snapshot-topics`, then one DeepSeek run (the prefix built from the profile's instruction files, `dsh-digest-base.zh.md` and `dsh-model-cards.zh.md`, + the group file) that writes Idea and Model Cards with the helper (Event and Finding Cards come from their own layers) (`-Log`, `-SrcLog`, `-TopicGate`), then its SELF-CHECK. | yes |
-| Models | `zt-digest list-models`, then per batch the model compiler: brief (DeepSeek) → plan (Sonnet) → fill → derive → review → split → report. | Model parts |
-| Cards | The card compiler per block: plan → fix/review/orphan jobs (JSON) → apply → check → report. | rewrites |
-| Link | `zt-digest prepare-link`, then link managers (up to 8 runs each) that append reasoned Links (`dsh-link-instructions.zh.md`), each with its SELF-CHECK. Then a card cycle on L1, L2, and orphans. | Links |
-| Cleanup | Delete leftover DeepSeek conversations, remove the workspace, delete scratch files, read the usage ledger. | no |
-| Organize | `zt-digest organize-survey` → Opus `decisions.json` → `zt-digest organize-apply` → a notes card cycle → `zt-digest skeleton` (Literature index, structure Card, Topic bodies). | yes |
-| Figures | `zt-digest figures`: show the book's own figures in the Cards that name them. | yes |
-| Bridge | `zt-digest bridge`: bounded plan → judge SELF-CHECK → immutable report, published only when every judge job answered; the cleanup always runs. Explicit report-id-bound apply only in mode bridge. A failure shows as `status: failed`, and the run continues. | no in discovery; accepted agent carriers only in apply |
-| Hubs | `zt-digest hub` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards |
-| Audit | `zt-digest audit`, read-only, over both Workspaces: faults per rule, orphans, models, explanations, figures, hubs, semantic Bridge counts in and out per book, and islands (books with no Bridge). | no |
+| `link` | prepare, link-prepare, link, link-check, cleanup, organize (with `organize: true`), hubs (with `hubs: true`) | `out`, `citationKey`, `groups` |
+| `cards` | prepare, cards-book | `out`, `citationKey` |
+| `hubs` | hubs-first (the hub stage on the whole agent Workspace), organize (with `organize: true`) | `out` |
+| `figures` | figures | `out`, `citationKey` |
+| `audit` | audit (one book with `citationKey`, else every book) | `out` |
+| `bridge` | source, bridge (discovery); with `bridgeReport` and a selection, only apply | `out`, `citationKey` |
 
-Modes run single stages on an existing digest: `link`, `models`, `cards`, `explain`, `hubs`, `figures`, `bridge`, `audit` (see `docs/zt-digest-workflow.md`). The args are always an object: `out`, `citationKey`, and for `full` also `source`, `bibtex`, `bookTitle`.
+A variant adds its own modes. **Checkpoint**: `args.until: "digest"` stops a full run after the digest, before the slot `after-digest` and the link pass.
 
-## 4. Protocols every variant inherits
+**Args** are always an object; the kernel refuses an undeclared key. `out` is required; `source`, `bibtex`, `bookTitle` for `full`. The base's own args: sizing (`perManager`, `maxChars`, `maxUnits`, `linkPerManager`, `dshPerBatch`, `dshManagers`, `applyShare`), DeepSeek (`dshSource`, `dshModel`, `dshEffort`), switches (`terms`, `cardChecks`, `organize`, `figures`, `bridge`, `hubs`, `audit`), the card cycle (`ideaSample`, `cardRules`, `cardFixRounds`, `cardMax`), hubs (`hubWork`, `hubLimits`, `hubTrees`, `hubRebuild`, `hubEffort`, `hubFixRounds`), Bridge (`bridgeMax`, `bridgeCandidates`, `bridgeBooks`, `bridgeReport`, `bridgeApply`, `bridgeApplyEarlier`), and source slicing (`fileId`, `startHeading`, `endHeading`, `skipHeadings`, `groups`). Every DeepSeek effort below `high` is raised to `high` and logged. The base also declares the args its variants' model layers read (`models`, `level`, `perSonnet`, and the rest); they do nothing in the base.
+
+## 4. What a variant fills
+
+A variant changes no base stage. It gives:
+
+1. **`consts.profile`**, which the base stages read:
+
+   | Field | Read by | Example |
+   | --- | --- | --- |
+   | `instructions` | prepare: the digest prompt, built from `dsh-digest-base.zh.md` and the type's supplements | `"dsh-digest-base.zh.md,dsh-model-cards.zh.md"` |
+   | `noEventCandidates` | prepare: no event candidates in the group files (when a layer writes the Event Cards) | `true` |
+   | `digestPrefix`, `linkPrefix` | digest and link managers: the prefix files they send first | `shared-prefix.md`, `link-prefix.md` |
+   | `bridgeProfile` | bridge: which source Cards to select | `book` |
+
+   Other profile fields belong to the variant's own layers.
+2. **`fill`**: the stages of each slot (`after-prepare`, `after-digest`, `after-link`, `after-audit`), with their modules, `when` conditions, params, and `after` edges.
+3. Its own **modes**, args, and the `extra` reports that `report` adds to the result.
+
+Steps to build one:
+
+1. Write `scripts/book-digest/workflow/zt-<name>-digest.blueprint.json` with `"base": "./zt-digest-base.blueprint.json"`, the profile, and the slot fills; put new stage modules in `modules/zt-<name>-*.js` (one `defineModule` each; prefix top-level names; no clocks, randomness, or file access).
+2. A new stage is a compiler (section 2): a `zt-digest` tool (`tools/zt-digest/src/<tool>.rs`) with plan, precheck, apply, check, report; a `dsh-<name>-*.zh.md` instruction file with a 自查 section; a `SELF-CHECK:` line in every job file; JSON answers applied by the tool. Add the script name to `ZD_TOOLS` in `zt-digest-lib.js` if a `.ps1` forwards to it.
+3. New Card rules go into zt-check (`tools/zt-check/src/check.rs`) with a unit test.
+4. Add the new read-only commands to the manager approval lines.
+5. Write a sim file and checks in `scripts/book-digest/tests/framework-harness.mjs`, then install: `node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs install <blueprint> --sim <sim> --scope project --project E:\zet`, and `verify <name> --scope project --project E:\zet`.
+6. Pilot on one chapter (`cardMax`, `hubTrees`), with a database backup first, before any whole-book run.
+
+A change to the base or to a shared module (`zt-digest-lib` and the base stage modules) changes every variant: raise the versions and reinstall them all.
+
+## 5. Rules every run keeps
 
 - **DeepSeek Subagent Managed Protocol** (global skill `deepseek-subagent-managed-protocol`): one Haiku manager per 8 DeepSeek jobs, at most 8 managers alive at once in the whole run (`dsmpSlot`), conversations deleted (never archived) after their answer is collected, a workspace removed when its work is done. Write cleanup steps as plain steps: a Haiku agent refuses deletes that cite "the user's protocol" as authority.
-- **Quality checks** (section 5): every DeepSeek task checks its own work before it replies.
-- **Approvals**: a manager approves only the zt helper (`zt-digest call`, or zt-mcp.ps1), `zt-check`, the read-only precheck steps, read-only reads under `out`, and writes of the job's own JSON file. Everything else is rejected.
-- **Files and state**: each compiler keeps `state.json` in its work folder (the DeepSeek cwd), so a rerun skips finished items. Every script prints compact JSON as its last line. Job ids are stable; follow-ups continue the job's conversation.
-- **The zt helper** (`zt-digest call`; the old path `~\.codex\skills\zt\scripts\zt-mcp.ps1` forwards to it): a JSON array of calls on stdin; `-Allow` (Cards a run may change), `-Log` (created Cards), `-SrcLog` (source lines), `-TopicGate` (no duplicate Topics), `-Moves` (address changes). The `zt-digest` tools run it in-process; a PowerShell caller uses it through `zt-calls.ps1` (UTF-8 under a GBK console).
+- **Approvals**: a manager approves only the zt helper (`zt-digest call`), `zt-check`, the read-only `-Step precheck` commands of the job's tool, read-only reads under `out` (or of `source`), and writes of the job's own JSON file. Everything else is rejected.
+- **Skills are sent, not pasted**: managers pass a job's skills in the `skills` field of every `deepseek_run` and `deepseek_prompt`: `zettelkasten` and `asd-ste100-zh` for digest and link runs, `asd-ste100-zh` for the card cycle, terms, skeleton, and hubs. No prompt file carries skill text.
+- **Files and state**: each compiler keeps `state.json` in its work folder (the DeepSeek cwd), so a rerun skips finished items. Every tool prints compact JSON as its last line. Job ids are stable; follow-ups continue the job's conversation.
+- **The zt helper** is `zt-digest call`: a JSON array of calls on stdin (`@'…'@ | zt-digest call - …`), with `-Allow` (the Cards a run may change), `-Log` (Cards it made), `-SrcLog` (their source lines), `-TopicGate` (no duplicate Topics), and `-Moves` (address changes); `@@N` is the address of call N. The old path `~\.codex\skills\zt\scripts\zt-mcp.ps1` forwards to it.
 - **Source fidelity**: a step or explanation the book does not give carries `（补：书中略去）` or `（补：书中未写）`. The book's modality stays.
 
-## 5. Quality checks
+## 6. Quality checks
 
-`zt-check` is the **one checker and the only source of truth** for Card quality. It is a crate of its own (`E:\zet\tools\zt-check`): building it never builds zt, and `scripts\install-zt-check.ps1` installs `zt-check.exe` beside `zt.exe` without a service restart. Every agent calls it directly: Claude sessions, workflow agents, Haiku managers, and DeepSeek runs. The `zt-digest` tools run it in-process (zt-check is a library of theirs); a PowerShell caller uses `Invoke-ZtCheck` in `zt-calls.ps1`, which takes the old parameter names and throws when zt-check does not run. There is no PowerShell checker.
+`zt-check` is the **one checker and the only source of truth** for Card quality (`E:\zet\tools\zt-check`, installed beside `zt.exe` by `scripts\install-zt-check.ps1`, no service restart). Every agent calls it directly; the `zt-digest` tools run it in-process.
 
 ```
 zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,...]   # a writer's own Cards, classified as the audit does
-zt-check --addresses <a,b,...> [--setting <a>] [--level formal] [--require-explain]
-zt-check --model <address> [--skip-shared]
-zt-check --json <file> [--setting <a>] [--level concept|formal]               # drafts, offline
-limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16 --max-explain-chars 600
+zt-check --addresses <a,b,...>
+zt-check --json <file>                                                      # drafts, offline
 ```
 
-Output: one line per fault `<address> <rule> <text>`, then `faults: N`; a run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language, Card size, Derivation steps and explanation) and I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links; see `docs/finding-cards-design.md` for F1 to F4). A new rule goes into `tools/zt-check/src/check.rs` with a unit test; its tests are `cargo test` in the crate and `scripts/book-digest/tests/zt-check.tests.ps1`, `card-layer.tests.ps1`.
+Output: one line per fault `<address> <rule> <text>`, then `faults: N`. A run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language and size) and the Card layer rules I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links).
 
-The SELF-CHECK commands per task:
+The SELF-CHECK of each base task:
 
 | Task | SELF-CHECK |
 | --- | --- |
 | Digest run | `zt-check --cards <anchor> --log <owned> --book <key>` (in the group file) |
 | Link run | `zt-check --log <allow> --cards "" --book <key> --rules L1,L2,R2,R3,R4,R5,R7,R9` |
-| Model fill and derive | `zt-check --addresses <own Cards> <LIMITS>` (`CHECK` and `LIMITS` in the job file; LIMITS holds `--require-explain`) |
-| Explain | `zt-digest model -Step explain-check -Work <work> -Job <id>` |
 | Card cycle fix and orphan | `zt-digest card -Step precheck -Work <work> -Job <id>` |
 | Hubs | `zt-digest hub -Step precheck -Work <work> -File <hub json>` |
 | Skeleton | `zt-digest skeleton -Step apply -Staging <out> -Work <work>` without `-Apply` |
 | Bridge judge | `zt-digest bridge -Step precheck -Staging <out> -CitationKey <key> -Work <work> -Job <id>` |
-| Events, findings | `zt-digest event` or `zt-digest finding` `-Step precheck -Staging <out> -Work <work> -Job <id>` |
-
-## 6. Building a new digest variant
-
-1. **A variant is a blueprint, not a copy.** Write `scripts/book-digest/workflow/zt-<name>-digest.blueprint.json` that names the base in `"base"`, sets the profile, and fills the slots with its own stage modules (`modules/zt-<name>-*.js`, each one `defineModule` block). Install it with `node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs install` (see `docs/zt-digest-framework.md`). A change to the base or a shared module needs every variant reinstalled.
-2. **A new stage is a compiler** (section 2): a `zt-digest` tool (`tools/zt-digest/src/<tool>.rs`, with a forwarding `.ps1` if anything names a script) with plan, precheck, apply, check, report; a `dsh-<name>-*.zh.md` instruction file with a 自查 section; a `SELF-CHECK:` line in every job file; JSON answers applied by the script.
-3. **New rules go into zt-check** (`tools/zt-check/src/check.rs`) with a unit test, so every agent gets them.
-4. **Tests**: `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1` runs every test file and harness in parallel. A new compiler gets a test on a scratch archive (`ZT_CONFIG_DIR`, its own `zt up`; see `tests/model-compiler.tests.ps1`), and checks in the workflow harness (`tests/framework-harness.mjs`) with canned agent answers that checks stage order, commands, manager counts, and that no prompt archives.
-5. **Approvals and docs**: add the new read-only commands to the manager approval lines; document the stage in `docs/`.
-6. **Pilot** on one model or one chapter (`only`, `explainMax`, `cardMax`, `hubTrees`), with a database backup first, before any whole-book run.
 
 ## 7. Operating rules
 
 - **Back up before a run that changes Cards**: `node -e "const {DatabaseSync}=require('node:sqlite'); new DatabaseSync('D:/zt/zt.sqlite3',{readOnly:true}).exec(\"VACUUM INTO 'D:/zt/backups/<name>'\")"` (the archive is in WAL mode; a file copy misses changes). Check `pragma integrity_check`.
-- **Run an edited workflow by `scriptPath`**: named workflows load when the session starts.
-- **Never rerun finished models**, and ask the user before the next stage of a long digest.
-- **Do not deploy zt during a run** (`zt down` kills the helper). `zt-check` installs without a restart.
-- **Build zt with `CARGO_TARGET_DIR=D:/zt-target`**, zt-check with `D:/zt-check-target` (E: is nearly full).
-- **Script traps**: PowerShell names are case-insensitive (a local `$check` overwrites `$Check`); JS `String.replace` with a string expands `$'`; `split(a).join(b)` needs a string `b`, not a function; a Bash heredoc loses backslashes (write files with the editor).
+- **Run an installed workflow by `scriptPath`** (`E:\zet\.claude\workflows\<name>.js`); named workflows load when the session starts. Never edit an installed script: change the blueprint or module and reinstall.
+- **Ask the user before the next stage of a long digest.**
+- **Do not deploy zt during a run** (`zt down` kills the helper). `zt-check` and `zt-digest` install without a restart.
+- **Build on D:** (E: is nearly full): zt with `CARGO_TARGET_DIR=D:/zt-target`, zt-check with `D:/zt-check-target`, zt-digest with `D:/zt-digest-target` (`scripts\install-zt-digest.ps1`, run from `E:\zet`: job files name paths of the repository the binary was built from).
+- **Tests**: `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1 -Throttle 4` runs every test file and harness in parallel; `cargo test --release` in `tools/zt-digest` and `tools/zt-check`.
+- **Script traps**: JS `String.replace` with a string expands `$'`; `split(a).join(b)` needs a string `b`; a Bash heredoc loses backslashes (write files with the editor).
 
-## Cross-book Bridge contract
+## 8. Cross-book Bridge contract
 
-The shared stage runs after Figures and before Hubs. Full mode discovers and reports; `bridge: false` returns skipped. Mode `bridge` needs only `out` and `citationKey`. `bridgeMax` defaults to 60 (integer 1–120), `bridgeCandidates` to 5 (integer 1–8, plus at most two literal term matches), and `bridgeBooks` optionally filters exact agent book keys. Math selects theory main results/objects, definitions, and other units with load at least two. Retrieval is bounded and can miss relationships expressed deep in a body.
+The base stage runs after Figures and before Hubs. Full mode discovers and reports; `bridge: false` returns skipped. Mode `bridge` needs only `out` and `citationKey`. `bridgeMax` defaults to 60 (integer 1–120), `bridgeCandidates` to 5 (integer 1–8, plus at most two literal term matches), and `bridgeBooks` optionally filters exact agent book keys. The variant's `bridgeProfile` picks which source Cards are selected. Retrieval is bounded and can miss relationships expressed deep in a body.
 
-Report-only: use a fresh output folder, inspect `bridge/report.md` and immutable `bridge/proposals.json`. The workflow publishes the report only after every judge job answered. When the plan or a judge job fails, nothing is published: run mode `bridge` again with the same `out` to resume. The cleanup deletes every DeepSeek judge conversation and the DeepSeek workspace, never archives, and always runs, also after a throw. Proposal ids are `b001`, `b002`, and so on. Apply: use that same output folder with `mode: "bridge"`, `bridgeReport: "<actual report_id>"`, and `bridgeApply: ["<actual bNNN>"]` or `"all"`. `bridgeApplyEarlier` independently selects earlier carriers; earlier-only is valid. Example ids and hashes are placeholders. Empty arrays grant no edits; booleans, mixed arrays, duplicates, wrong sections and unknown ids fail. Apply has no model source probe, judge, planning, Organize, or Hubs.
+Report-only: use a fresh output folder, inspect `bridge/report.md` and immutable `bridge/proposals.json`. The workflow publishes the report only after every judge job answered. When the plan or a judge job fails, nothing is published: run mode `bridge` again with the same `out` to resume. The cleanup deletes every DeepSeek judge conversation and the DeepSeek workspace, never archives, and always runs, also after a throw. Proposal ids are `b001`, `b002`, and so on. Apply: use that same output folder with `mode: "bridge"`, `bridgeReport: "<actual report_id>"`, and `bridgeApply: ["<actual bNNN>"]` or `"all"`. `bridgeApplyEarlier` independently selects earlier carriers; earlier-only is valid. Empty arrays grant no edits; booleans, mixed arrays, duplicates, wrong sections, and unknown ids fail. Apply has no source probe, judge, planning, Organize, or Hubs.
 
-A judge loads zettelkasten and asd-ste100-zh, reads only frozen candidates, writes its assigned answer, and runs its exact precheck up to three times. Its manager approves only the Bridge precheck, `zt-check`, the zt helper with the empty `read-only.allow.txt`, reads under `out`, and JSON writes under `bridge\out`. It never writes/splits/moves Cards or grants acceptance. One source has at most two proposals, and one pair of Cards has at most one relation (the reverse of a proposed pair is refused). A Model Card carrier takes no evidence word (印证, 案例). A Link names a whole Card. Human Cards are read-only. No Model head may Bridge to a Model part; rests-on cannot target a part. Model heads can cite outside math unit heads. Earlier carriers are agent Idea/Model heads from another attributed book and can only use 依赖/基于 to cite a new unit. 特例 is restricted to Definition heads, narrower to broader.
+A judge loads `zettelkasten` and `asd-ste100-zh`, reads only frozen candidates, writes its assigned answer, and runs its exact precheck up to three times. Its manager approves only the Bridge precheck, `zt-check`, the zt helper with the empty `read-only.allow.txt`, reads under `out`, and JSON writes under `bridge\out`. A judge never writes, splits, or moves Cards, and never grants acceptance. One source has at most two proposals, and one pair of Cards has at most one relation (the reverse of a proposed pair is refused). A Link names a whole Card. Human Cards are read-only. The tool checks BR1 to BR9 and the Card rules before a report and before each accepted edit.
 
-Before the first live mutation obtain actual user selections and make a consistent archive backup through the supported procedure (`zt dp`, or the established SQLite VACUUM INTO backup with integrity verification). Keep filing quiet: no insert/move/delete/key rename/retype or Organize alongside apply. The compiler uses raw `edit_card` base, per-report locking and durable per-carrier intents. Reverse links update on ordinary saves. A stale report needs a fresh folder and new review. Retries preserve accepted text, verify persisted effects, and never automatically restore an archive. Hubs may run later as separately requested maintenance. Keep old frozen workflow versions and reports.
+Before the first live edit, get the user's actual selections and make a consistent archive backup (`zt dp`, or the SQLite `VACUUM INTO` backup with an integrity check). Keep filing quiet: no insert, move, delete, key rename, retype, or Organize alongside apply. The tool uses the raw `edit_card` base, per-report locking, and durable per-carrier intents. A stale report needs a fresh folder and a new review. Retries keep accepted text, verify persisted effects, and never restore an archive on their own. Keep old frozen workflow versions and reports.
