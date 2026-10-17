@@ -15,6 +15,8 @@ $env:ZT_CONFIG_DIR = Join-Path $scratch 'config'
 $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $compiler = Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
+# zt-digest starts `<ZT_CHECK_ZT> mcp`: the seam forwards to zt mcp and injects a fault or a race.
+$seam = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
     $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
@@ -163,14 +165,10 @@ try {
 
     # A confirmed write followed by a failed verification read must remain visible.
     Write-Cards @(@{tool='edit_card';arguments=@{at=$source;body=$before[0].body}})|Out-Null
-    $faultCopy=Join-Path $scratch 'fault\scripts\book-digest';$faultHelper=Join-Path $scratch 'fault\skills\zt\scripts'
-    New-Item -ItemType Directory -Force $faultCopy,$faultHelper|Out-Null
-    Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'),(Join-Path $PSScriptRoot '..\*.md') -Destination $faultCopy
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'faulting-zt-mcp.ps1') -Destination (Join-Path $faultHelper 'zt-mcp.ps1')
-    $env:ZT_REAL_HELPER=$script:ZtHelper;$env:ZT_FAIL_AFTER_EDIT=$source;$env:ZT_FAIL_CARD=$target;$env:ZT_FAIL_FLAG=Join-Path $scratch 'written.flag'
+    # zt-digest reads and writes in-process: the seam stands in for its zt mcp (ZT_CHECK_ZT).
+    $env:ZT_CHECK_ZT=$seam;$env:ZT_FAIL_AFTER_EDIT=$source;$env:ZT_FAIL_CARD=$target;$env:ZT_FAIL_FLAG=Join-Path $scratch 'written.flag'
     $faultWork=Join-Path $staging 'written-review';New-Item -ItemType Directory -Force $faultWork,(Join-Path $faultWork 'tmp')|Out-Null
     Copy-Item -LiteralPath $publishedFile -Destination (Join-Path $faultWork 'proposals.json')
-    $compiler=Join-Path $faultCopy 'bridge-compiler.ps1'
     $unverified=Compile @('-Step','apply','-Staging',$staging,'-Work',$faultWork,'-CitationKey','New2026','-ReportId',$published.report_id,'-Accept','b001','-Apply')
     $written=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$source}}))[0]
     Assert (-not $unverified.ok -and $unverified.outcomes[0].status -ceq 'written_unverified' -and $source -cin $unverified.changed_carriers -and $written.body.Contains("跨书关联：$sentence")) 'failed post-write verification names the persisted carrier and retains written_unverified'
@@ -178,24 +176,19 @@ try {
     $reverified=Compile @('-Step','apply','-Staging',$staging,'-Work',$faultWork,'-CitationKey','New2026','-ReportId',$published.report_id,'-Accept','b001','-Apply')
     $reread=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$source}}))[0]
     Assert ($reverified.ok -and $reverified.outcomes[0].status -ceq 'verified' -and $reread.body -ceq $written.body) 'a later invocation completes verification without another append'
-    $compiler=Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
-    Remove-Item Env:ZT_FAIL_AFTER_EDIT,Env:ZT_FAIL_CARD,Env:ZT_FAIL_FLAG
+    Remove-Item Env:ZT_CHECK_ZT,Env:ZT_FAIL_AFTER_EDIT,Env:ZT_FAIL_CARD,Env:ZT_FAIL_FLAG
 
-    # The established helper seam injects a real concurrent edit after the compiler read.
+    # The zt mcp seam injects a real concurrent edit after the compiler read.
     Write-Cards @(@{tool='edit_card';arguments=@{at=$source;body=$before[0].body}})|Out-Null
-    $copy=Join-Path $scratch 'race\scripts\book-digest';$helperDir=Join-Path $scratch 'race\skills\zt\scripts'
-    New-Item -ItemType Directory -Force $copy,$helperDir|Out-Null
-    Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'),(Join-Path $PSScriptRoot '..\*.md') -Destination $copy
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'racing-zt-mcp.ps1') -Destination (Join-Path $helperDir 'zt-mcp.ps1')
-    $env:ZT_REAL_HELPER=$script:ZtHelper;$env:ZT_RACE_TARGET=$source;$env:ZT_RACE_FLAG=Join-Path $scratch 'raced';$env:ZT_RACE_LINE='并行编辑保留这句话。'
+    $env:ZT_CHECK_ZT=$seam;$env:ZT_RACE_TARGET=$source;$env:ZT_RACE_FLAG=Join-Path $scratch 'raced';$env:ZT_RACE_LINE='并行编辑保留这句话。'
     $raceWork=Join-Path $staging 'race-review';New-Item -ItemType Directory -Force $raceWork,(Join-Path $raceWork 'tmp')|Out-Null
     Copy-Item -LiteralPath $publishedFile -Destination (Join-Path $raceWork 'proposals.json')
-    $compiler=Join-Path $copy 'bridge-compiler.ps1'
     $raced=Compile @('-Step','apply','-Staging',$staging,'-Work',$raceWork,'-CitationKey','New2026','-ReportId',$published.report_id,'-Accept','b001','-Apply')
     $raceBody=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$source}}))[0].body
     Assert (-not $raced.ok -and $raced.outcomes[0].status -ceq 'conflict' -and $raceBody.Contains($env:ZT_RACE_LINE) -and -not $raceBody.Contains('跨书关联：')) 'a raw-base race preserves concurrent prose and reports conflict without an overwrite'
     $stale=Compile @('-Step','apply','-Staging',$staging,'-Work',$raceWork,'-CitationKey','New2026','-ReportId',$published.report_id,'-Accept','b001','-Apply')
     Assert (-not $stale.ok -and $stale.outcomes[0].status -cin @('stale','conflict')) 'retry never adopts unreviewed concurrent prose as a fresh base'
+    Remove-Item Env:ZT_CHECK_ZT,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE
     Write-Cards @(@{tool='move_card';arguments=@{at=$source;to="$target|b"}},@{tool='move_card';arguments=@{at=$source;to="$target|b";confirm='move'}})|Out-Null
     $movedWork=Join-Path $staging 'moved-review';New-Item -ItemType Directory -Force $movedWork,(Join-Path $movedWork 'tmp')|Out-Null
     Copy-Item -LiteralPath $publishedFile -Destination (Join-Path $movedWork 'proposals.json')
