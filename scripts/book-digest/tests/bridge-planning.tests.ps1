@@ -55,32 +55,26 @@ try{
  }
  $report=Compile @('-Step','report','-Staging',$staging,'-Work',$partialWork,'-CitationKey','New2026')
  Assert ($report.ok -and $report.counts.proposals -eq 2 -and $report.counts.none_sources -eq 58) 'all selected source outcomes reconcile before the two-carrier recovery fixture'
- $raceCopy=Join-Path $scratch 'race\scripts\book-digest';$raceHelper=Join-Path $scratch 'race\skills\zt\scripts'
- New-Item -ItemType Directory -Force $raceCopy,$raceHelper|Out-Null
- Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'),(Join-Path $PSScriptRoot '..\*.md') -Destination $raceCopy
- Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'racing-zt-mcp.ps1') -Destination (Join-Path $raceHelper 'zt-mcp.ps1')
- $env:ZT_REAL_HELPER=$script:ZtHelper;$env:ZT_RACE_TARGET=$picked[1];$env:ZT_RACE_FLAG=Join-Path $scratch 'raced';$env:ZT_RACE_LINE='并行阶段修改第二张卡片。'
- $compiler=Join-Path $raceCopy 'bridge-compiler.ps1'
+ # zt-digest reads and writes in-process: the zt mcp seam (ZT_CHECK_ZT) injects the race and the fault.
+ $seam=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+ $env:ZT_CHECK_ZT=$seam;$env:ZT_RACE_TARGET=$picked[1];$env:ZT_RACE_FLAG=Join-Path $scratch 'raced';$env:ZT_RACE_LINE='并行阶段修改第二张卡片。'
  $partial=Compile @('-Step','apply','-Staging',$staging,'-Work',$partialWork,'-CitationKey','New2026','-ReportId',$report.report_id,'-Accept','all','-Apply')
  Assert (-not $partial.ok -and $partial.status -ceq 'partial' -and @($partial.outcomes|Where-Object status -CEQ 'verified').Count -eq 1 -and @($partial.outcomes|Where-Object status -CEQ 'conflict').Count -eq 1) 'one successful carrier remains verified when the later carrier conflicts'
  $first=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$picked[0]}}))[0].text
  $retry=Compile @('-Step','apply','-Staging',$staging,'-Work',$partialWork,'-CitationKey','New2026','-ReportId',$report.report_id,'-Accept','all','-Apply')
  $after=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$picked[0]}}))[0].text
  Assert (-not $retry.ok -and $first -ceq $after -and @($retry.outcomes|Where-Object status -CEQ 'verified').Count -eq 1) 'a partial retry preserves the first carrier without duplicating or losing progress'
- $copy=Join-Path $scratch 'fault\scripts\book-digest';$helperDir=Join-Path $scratch 'fault\skills\zt\scripts'
- New-Item -ItemType Directory -Force $copy,$helperDir|Out-Null
- Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'),(Join-Path $PSScriptRoot '..\*.md') -Destination $copy
- Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'faulting-zt-mcp.ps1') -Destination (Join-Path $helperDir 'zt-mcp.ps1')
- $env:ZT_REAL_HELPER=$script:ZtHelper;$env:ZT_FAIL_TREE='Old2020';$compiler=Join-Path $copy 'bridge-compiler.ps1'
+ Remove-Item Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE
+ $env:ZT_FAIL_TREE='Old2020'
  $failedWork=Join-Path $staging 'failed'
  $failed=Compile @('-Step','plan','-Staging',$staging,'-Work',$failedWork,'-CitationKey','New2026')
  Assert ($Code -eq 2 -and -not $failed.ok -and -not(Test-Path -LiteralPath (Join-Path $failedWork 'plan.json'))) 'a required tree read failure publishes no empty snapshot or judge jobs'
- # The audit (zt-digest audit) reads through its own zt mcp, not through the helper, so the faulting
- # helper cannot fail its tree reads. The rule "incomplete external reads leave semantic isolation
- # unknown rather than true" is the Rust test audit::tests::an_incomplete_read_leaves_the_island_unknown.
- # Here the audit reads every tree, so the graph is complete.
+ Remove-Item Env:ZT_CHECK_ZT,Env:ZT_FAIL_TREE
+ # The rule "incomplete external reads leave semantic isolation unknown rather than true" is the
+ # Rust test audit::tests::an_incomplete_read_leaves_the_island_unknown. Here the audit runs
+ # without the seam and reads every tree, so the graph is complete.
  $auditOut=Join-Path $scratch 'audit'
- $lines=@(pwsh -NoProfile -File (Join-Path $copy 'digest-audit.ps1') -CitationKey New2026 -Out $auditOut -SkipModels)
+ $lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $auditOut -SkipModels)
  if($LASTEXITCODE){throw "audit failed: $lines"}
  $audit=Get-Content -LiteralPath (Join-Path $auditOut 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String
  Assert ($audit.books[0].bridges.complete -eq $true) 'the audit reads every tree through its own zt mcp, so its graph is complete'
