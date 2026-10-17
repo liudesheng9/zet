@@ -677,7 +677,7 @@ impl Compiler {
         if !ps::eq(&in_order.join(","), &kept_main.join(",")) {
             faults.push(format!("kept main-line parts must stay in their order: {}", in_order.join(", ")));
         }
-        if current_main.is_empty() && !list(&structure["parts"]).is_empty() && main.iter().any(|p| !truthy(&p["existing"])) {
+        if lacks_main_line(structure, &current_main, &main) {
             faults.push("the model has parts but no main line: list the part that should become the setting as existing, line main".into());
         }
         for m in list(&plan["merge"]) {
@@ -2396,5 +2396,31 @@ impl Compiler {
             }));
         }
         self.out_last(&json!({ "models": reports }))
+    }
+}
+
+/// The no-main-line fault of `test_plan`: the model's own parts have no main line, yet the plan
+/// adds a new main-line part. Only filed parts count; a part filed under another model and joined
+/// by a Link belongs to its home model, so a model whose only members are linked parts has none.
+fn lacks_main_line(structure: &Value, current_main: &[String], main: &[&Value]) -> bool {
+    let has_filed = pipe(&structure["parts"]).into_iter().any(|p| !ps::is_false(&p["filed"]));
+    current_main.is_empty() && has_filed && main.iter().any(|p| !truthy(&p["existing"]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lacks_main_line;
+    use serde_json::json;
+
+    #[test]
+    fn linked_parts_do_not_need_a_main_line() {
+        let linked = json!({ "parts": [{ "address": "b/7|a|a|1", "filed": false }] });
+        let new_part = json!({ "id": "S", "line": "main" });
+        assert!(!lacks_main_line(&linked, &[], &[&new_part]));
+        let filed = json!({ "parts": [{ "address": "b/8|a|a", "filed": true }] });
+        assert!(lacks_main_line(&filed, &[], &[&new_part]));
+        let kept = json!({ "id": "S", "existing": "b/8|a|a", "line": "main" });
+        assert!(!lacks_main_line(&filed, &[], &[&kept]));
+        assert!(!lacks_main_line(&filed, &["b/8|a|a".to_string()], &[&new_part]));
     }
 }

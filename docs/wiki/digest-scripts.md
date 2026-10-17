@@ -7,7 +7,7 @@ paths:
   - "scripts/book-digest/tests/*.json"
   - "scripts/book-digest/tests/*.cmd"
 synced: b1953a1
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Digest scripts
@@ -280,7 +280,7 @@ One batch of models shares one `-Work` folder (the workflow uses `<out>\models\m
 
 Every insert, move, and delete runs as the only call of its helper run with `-Moves`, and `Update-Moved` maps every address in `state.json` (part ids, job addresses) through each `moved` map.
 
-`Test-Plan` faults include: wrong `model`; level not `concept` or `formal`; no `card`; a missing or duplicate id; a `figure` label not in `figures.json` (`Get-FigureLine`: `<Staging>\figures.json`, or without `-Staging`, as the architect's `validate` runs, the nearest folder above `-Work` that holds `figures.json`; the workflow's `-Work` is `<out>\models\<batch>`); more than one of `existing`, `take`, `move`; a bad `line`; a side part without `of`; a new part without facet, title, or spec; a facet over 32 characters; a Derivation part in a concept model, off the main line, without `to`, with a facet not starting `推导`, or with `steps` over `-MaxSteps`; the first Derivation part of a chain without `from` or `rests`; a formal model without a main line, without a setting first (facet 设定, or 前提 for a unit), without `symbols` or `terms`; a concept model with more than four own parts; a `forward` rest; a `closure` rest outside the model (a Model Card with a unit Math form is a Cited premise, `Test-Unit`); an unlisted filed part; kept main-line parts out of order; a merge into an unknown part.
+`Test-Plan` faults include: wrong `model`; level not `concept` or `formal`; no `card`; a missing or duplicate id; a `figure` label not in `figures.json` (`Get-FigureLine`: `<Staging>\figures.json`, or without `-Staging`, as the architect's `validate` runs, the nearest folder above `-Work` that holds `figures.json`; the workflow's `-Work` is `<out>\models\<batch>`); more than one of `existing`, `take`, `move`; a bad `line`; a side part without `of`; a new part without facet, title, or spec; a facet over 32 characters; a Derivation part in a concept model, off the main line, without `to`, with a facet not starting `推导`, or with `steps` over `-MaxSteps`; the first Derivation part of a chain without `from` or `rests`; a formal model without a main line, without a setting first (facet 设定, or 前提 for a unit), without `symbols` or `terms`; a concept model with more than four own parts; a `forward` rest; a `closure` rest outside the model (a Model Card with a unit Math form is a Cited premise, `Test-Unit`); an unlisted filed part; kept main-line parts out of order; new main-line parts in a model whose filed parts have no main line (parts filed under another model and joined by a Link do not count, so a model built only from linked parts may start its main line); a merge into an unknown part.
 
 ### Explain (`model-compiler.ps1` explain steps)
 
