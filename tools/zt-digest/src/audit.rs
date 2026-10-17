@@ -31,21 +31,6 @@ pub struct Params {
     pub skip_models: bool,
 }
 
-impl Params {
-    /// The parameters `card` passes: one book, its folder, the models skipped.
-    pub fn for_card(book: &str, out: &str) -> Self {
-        Self {
-            citation_key: book.to_string(),
-            out: out.to_string(),
-            max_sentences: 12,
-            max_chars: 400,
-            max_steps: 6,
-            sample: 15,
-            skip_models: true,
-        }
-    }
-}
-
 /// One fault line of zt-check: `<address> <rule> <text>`.
 #[derive(Clone)]
 pub struct Fault {

@@ -261,103 +261,339 @@ impl Compiler {
 
     // --- the audit -------------------------------------------------------------------------------
 
-    fn group_addresses(&self)->Result<Vec<String>> {
-        let staging=field(&self.state,"staging");
-        if staging.is_empty() {bail!("-Groups needs -Staging (owned-gNN.txt)");}
-        let book=field(&self.state,"book");let groups=field(&self.state,"groups");
-        let mut addresses=BTreeSet::new();
-        for group in RULE_SPLIT.split(&groups).filter(|g|!g.is_empty()) {
-            let n=match group.parse::<i64>() {Ok(n)=>n,Err(_)=>group.parse::<f64>().map(ps::ps_int)?};
+    fn group_addresses(&self) -> Result<Vec<String>> {
+        let staging = field(&self.state, "staging");
+        if staging.is_empty() {
+            bail!("-Groups needs -Staging (owned-gNN.txt)");
+        }
+        let book = field(&self.state, "book");
+        let groups = field(&self.state, "groups");
+        let mut addresses = BTreeSet::new();
+        for group in RULE_SPLIT.split(&groups).filter(|g| !g.is_empty()) {
+            let n = match group.parse::<i64>() {
+                Ok(n) => n,
+                Err(_) => group.parse::<f64>().map(ps::ps_int)?,
+            };
             addresses.insert(format!("{book}/{n}"));
-            let path=join_path(&staging,&format!("owned-g{n:02}.txt"));
-            if !Path::new(&path).is_file() {bail!("incomplete group input: missing owned manifest `{path}`");}
-            addresses.extend(file_lines(&path)?.into_iter().map(|line|line.trim().to_string()).filter(|line|!line.is_empty()));
+            let path = join_path(&staging, &format!("owned-g{n:02}.txt"));
+            if !Path::new(&path).is_file() {
+                bail!("incomplete group input: missing owned manifest `{path}`");
+            }
+            addresses.extend(
+                file_lines(&path)?
+                    .into_iter()
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty()),
+            );
         }
         Ok(addresses.into_iter().collect())
     }
 
-    /// Normal group cycles ask for local quality and defer global orphans to
-    /// the book cycle. Read their owned manifest and required parents/terms.
-    fn invoke_group_audit(&mut self,dir:&str)->Result<AuditView> {
-        let book=field(&self.state,"book");
-        let addresses=self.group_addresses()?;
-        let details=crate::snapshot::read_title_trees(self.zt()?)?;
-        let revision=details.first().and_then(|tree|tree["archive_revision"].as_u64()).context("incomplete group catalogue: missing revision")?;
-        if !details.iter().any(|tree|field(tree,"tree")==book && field(tree,"workspace")=="agent" && field(tree,"zone")=="literature") {bail!("no agent Literature tree `{book}`");}
-        let metadata:Vec<Value>=details.iter().flat_map(|tree|ps_items(&tree["cards"])).collect();
-        let owned=self.zt()?.cards(&addresses,"text")?;
-        if owned.archive_revision!=revision {bail!("incomplete group inputs: changing read view");}
-        if owned.cards.iter().any(|card|field(card,"workspace")!="agent") {bail!("group ownership includes a read-only human Card");}
-        let mut rows:BTreeMap<String,Value>=owned.cards.into_iter().map(|card|(field(&card,"address"),card)).collect();
-        let term=metadata.iter().find(|card|field(card,"tree")==book && TERMS_TITLE.is_match(&field(card,"title"))).map(|card|field(card,"address"));
-        let mut required:BTreeSet<String>=rows.values().map(|card|field(card,"parent_address")).filter(|at|!at.is_empty() && !rows.contains_key(at)).collect();
-        if let Some(at)=&term {if !rows.contains_key(at){required.insert(at.clone());}}
-        if !required.is_empty() {
-            let extra=self.zt()?.cards(&required.into_iter().collect::<Vec<_>>(),"text")?;
-            if extra.archive_revision!=revision {bail!("incomplete group inputs: changing read view");}
-            for card in extra.cards {rows.insert(field(&card,"address"),card);}
+    /// Local groups need owned inputs; book cycles also need inferred book
+    /// members and incoming agent carriers. Neither needs unrelated bodies.
+    fn invoke_scoped_audit(&mut self, dir: &str, group_only: bool) -> Result<AuditView> {
+        let book = field(&self.state, "book");
+        let revision = self.zt()?.cards(&[], "text")?.archive_revision;
+        let details = crate::snapshot::read_title_trees(self.zt()?)?;
+        if details
+            .iter()
+            .any(|tree| tree["archive_revision"].as_u64() != Some(revision))
+        {
+            bail!("incomplete Card catalogue: changing read view");
         }
-        let graph:Vec<Value>=metadata.iter().map(|metadata|{
-            let mut card=rows.get(&field(metadata,"address")).unwrap_or(metadata).clone();
-            card["parent"]=card["parent_address"].clone();card
-        }).collect();
-        let index=audit::book_of::book_index(&details,&graph);
-        let mut cards=Vec::new();let mut entries=Vec::new();let mut by=HashMap::new();
-        for (at,mut card) in rows {
-            let category=index.category.get(&at).cloned().context("incomplete group category metadata")?;
-            card["category"]=json!(category);
-            card["book"]=json!(index.book_of.get(&at));
-            card["parent"]=card["parent_address"].clone();
-            card["kinds"]=json!(ps::keys(&card["kinds"]));
-            if addresses.contains(&at) && index.book_of.get(&at)==Some(&book) && is_in(&category,WRITABLE) {entries.push(card.clone());}
-            by.insert(ci(&at),cards.len());cards.push(card);
+        if !details.iter().any(|tree| {
+            field(tree, "tree") == book
+                && field(tree, "workspace") == "agent"
+                && field(tree, "zone") == "literature"
+        }) {
+            bail!("no agent Literature tree `{book}`");
         }
-        let term_card=term.as_ref().and_then(|at|by.get(&ci(at)).map(|&i|&cards[i]));
-        let checked=Self::style_check(&entries,term_card)?;
-        let mut faults:HashMap<String,Vec<(String,String)>>=HashMap::new();let mut lines=Vec::new();
-        for (at,rule,text) in checked {
-            lines.push(format!("{at} {rule} {text}"));
-            faults.entry(ci(&at)).or_default().push((rule,text));
-        }
-        std::fs::create_dir_all(dir)?;
-        util::write_text(join_path(dir,"audit-cards.json"),&ps::json_pretty(&json!(cards)))?;
-        util::write_text(join_path(dir,"audit-faults.txt"),&lines.join(NL))?;
-        let known=metadata.iter().filter(|card|field(card,"workspace")=="agent").map(|card|field(card,"address")).collect::<Vec<_>>();
-        util::write_text(join_path(dir,"audit-addresses.txt"),&known.join(NL))?;
-        let coverage=json!({"complete":true,"scope":{"kind":"groups","groups":self.state["groups"],"addresses":addresses,"checked_addresses":entries.iter().map(|card|field(card,"address")).collect::<Vec<_>>()},"archive_revision":revision,"global_checks":"not_run","faults":lines.len()});
-        util::write_text(join_path(dir,"audit.json"),&ps::json_pretty(&coverage))?;
-        util::write_text(join_path(dir,"audit.md"),&format!("# Group Card quality{NL}{NL}Required reads complete at archive revision {revision}. Global checks were not run.{NL}"))?;
-        Ok(AuditView{cards,by,faults})
-    }
-
-    fn invoke_audit(&mut self, dir: &str) -> Result<AuditView> {
-        let needs_global=self.rule_list().iter().any(|rule|is_in(rule,WHOLE_WORKSPACE) || rule=="F4");
-        if !field(&self.state,"groups").is_empty() && truthy(&self.state["no_orphans"]) && !needs_global {return self.invoke_group_audit(dir);}
-        let params = audit::Params::for_card(&field(&self.state, "book"), dir);
-        let zt = self.zt()?;
-        if let Err(error) = audit::run(zt, &params, &mut |_| {}) {
-            bail!("digest-audit failed: {error:#}");
-        }
-        let mut faults: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        for line in file_lines(&join_path(dir, "audit-faults.txt"))? {
-            let parts: Vec<&str> = line.splitn(3, ' ').collect();
-            if parts.len() < 3 {
-                continue;
+        let mut metadata: Vec<Value> = details
+            .iter()
+            .flat_map(|tree| ps_items(&tree["cards"]))
+            .collect();
+        let positions: BTreeMap<String, usize> = metadata
+            .iter()
+            .enumerate()
+            .map(|(i, card)| (field(card, "address"), i))
+            .collect();
+        if !group_only {
+            let graph = self
+                .zt()?
+                .call("list_links", json!({}))
+                .context("incomplete book relationship read")?;
+            for card in &mut metadata {
+                card["links"] = json!([]);
             }
-            faults.entry(ci(parts[0])).or_default().push((parts[1].to_string(), parts[2].to_string()));
-        }
-        let mut view = AuditView { faults, cards: Vec::new(), by: HashMap::new() };
-        for c in ps_array(&read_json_file(&join_path(dir, "audit-cards.json"))?) {
-            let key = ci(&field(&c, "address"));
-            match view.by.get(&key) {
-                Some(&i) => view.cards[i] = c,
-                None => {
-                    view.by.insert(key, view.cards.len());
-                    view.cards.push(c);
+            for link in graph["links"]
+                .as_array()
+                .context("incomplete book relationship list")?
+            {
+                let source = link["source"]
+                    .as_str()
+                    .context("incomplete book Link source")?;
+                let target = link["target"]
+                    .as_str()
+                    .context("incomplete book Link target")?;
+                let source_index = *positions
+                    .get(source)
+                    .context("incomplete book relationship source catalogue")?;
+                let broken = link["broken"]
+                    .as_bool()
+                    .context("incomplete book Link existence")?;
+                if !broken {
+                    if !positions.contains_key(target) {
+                        bail!("incomplete book relationship target catalogue `{target}`");
+                    }
+                    metadata[source_index]["links"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!(target));
                 }
             }
         }
-        Ok(view)
+        let catalogue_index = audit::book_of::book_index(&details, &metadata);
+        let mut declared = BTreeSet::new();
+        let addresses: Vec<String> = if group_only {
+            self.group_addresses()?
+        } else {
+            let staging = field(&self.state, "staging");
+            if !staging.is_empty() {
+                let files = std::fs::read_dir(&staging)
+                    .with_context(|| format!("incomplete ownership staging `{staging}`"))?;
+                for entry in files {
+                    let entry = entry
+                        .with_context(|| format!("incomplete ownership staging `{staging}`"))?;
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    if !name.starts_with("owned-g") || !name.ends_with(".txt") {
+                        continue;
+                    }
+                    if !entry.file_type()?.is_file() {
+                        bail!("owned manifest is not a file: {}", entry.path().display());
+                    }
+                    let path = entry.path().to_string_lossy().into_owned();
+                    declared.extend(
+                        file_lines(&path)?
+                            .into_iter()
+                            .map(|line| line.trim().to_string())
+                            .filter(|line| !line.is_empty()),
+                    );
+                }
+            }
+            let mut selected = declared.clone();
+            selected.extend(
+                metadata
+                    .iter()
+                    .filter(|card| {
+                        field(card, "workspace") == "agent"
+                            && catalogue_index.book_of.get(&field(card, "address")) == Some(&book)
+                    })
+                    .map(|card| field(card, "address")),
+            );
+            selected.into_iter().collect()
+        };
+        let selected: BTreeSet<String> = addresses.iter().cloned().collect();
+        let owned = self.zt()?.cards(&addresses, "text")?;
+        if owned.archive_revision != revision {
+            bail!("incomplete Card inputs: changing read view");
+        }
+        if owned
+            .cards
+            .iter()
+            .any(|card| field(card, "workspace") != "agent")
+        {
+            bail!("Card ownership includes a read-only human Card");
+        }
+        // Topic ids are numeric; a letter-led tree is a Literature key.
+        if let Some(card) = owned.cards.iter().find(|card| {
+            let tree = card["tree"].as_str().unwrap_or_default();
+            tree != book && tree.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        }) {
+            bail!(
+                "owned Card `{}` belongs to another Literature tree `{}`",
+                field(card, "address"),
+                field(card, "tree")
+            );
+        }
+        let mut rows: BTreeMap<String, Value> = owned
+            .cards
+            .into_iter()
+            .map(|card| (field(&card, "address"), card))
+            .collect();
+        let term = metadata
+            .iter()
+            .find(|card| field(card, "tree") == book && TERMS_TITLE.is_match(&field(card, "title")))
+            .map(|card| field(card, "address"));
+        let parents: BTreeSet<String> = rows
+            .values()
+            .map(|card| field(card, "parent_address"))
+            .filter(|at| !at.is_empty() && !rows.contains_key(at))
+            .collect();
+        let mut required = BTreeSet::new();
+        if let Some(at) = &term {
+            if !rows.contains_key(at) {
+                required.insert(at.clone());
+            }
+        }
+        if !group_only {
+            for card in &metadata {
+                if field(card, "workspace") == "agent"
+                    && catalogue_index
+                        .category
+                        .get(&field(card, "address"))
+                        .is_some_and(|category| is_in(category, &["idea", "finding"]))
+                    && ps_items(&card["links"])
+                        .iter()
+                        .any(|target| selected.contains(&s(target)))
+                    && !rows.contains_key(&field(card, "address"))
+                {
+                    required.insert(field(card, "address"));
+                }
+            }
+        }
+        if !required.is_empty() {
+            let extra = self
+                .zt()?
+                .cards(&required.into_iter().collect::<Vec<_>>(), "text")?;
+            if extra.archive_revision != revision {
+                bail!("incomplete Card inputs: changing read view");
+            }
+            for card in extra.cards {
+                rows.insert(field(&card, "address"), card);
+            }
+        }
+        // Parent context needs its fresh title, not its authored body.
+        for at in parents {
+            if !rows.contains_key(&at) {
+                let position = *positions
+                    .get(&at)
+                    .context("incomplete parent title catalogue")?;
+                rows.insert(at, metadata[position].clone());
+            }
+        }
+        let graph: Vec<Value> = metadata
+            .iter()
+            .map(|metadata| {
+                let mut card = rows
+                    .get(&field(metadata, "address"))
+                    .unwrap_or(metadata)
+                    .clone();
+                card["parent"] = card["parent_address"].clone();
+                card
+            })
+            .collect();
+        let index = audit::book_of::book_index(&details, &graph);
+        let mut inbound: HashMap<String, Vec<String>> = HashMap::new();
+        let mut kinded: HashMap<String, i64> = HashMap::new();
+        if !group_only {
+            for card in graph
+                .iter()
+                .filter(|card| field(card, "workspace") == "agent")
+            {
+                let source = field(card, "address");
+                let category = index
+                    .category
+                    .get(&source)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                let kinds = ps::keys(&card["kinds"]);
+                for target in ps::select_unique(ps_items(&card["links"]).iter().map(s)) {
+                    if !selected.contains(&target) {
+                        continue;
+                    }
+                    inbound
+                        .entry(target.clone())
+                        .or_default()
+                        .push(source.clone());
+                    if is_in(&target, &kinds)
+                        && (category == "idea"
+                            || (category == "finding"
+                                && index.category.get(&target).map(String::as_str)
+                                    != Some("finding")))
+                    {
+                        *kinded.entry(target).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let mut cards = Vec::new();
+        let mut entries = Vec::new();
+        let mut by = HashMap::new();
+        for (at, mut card) in rows {
+            let category = index
+                .category
+                .get(&at)
+                .cloned()
+                .context("incomplete group category metadata")?;
+            let primary = selected.contains(&at);
+            card["category"] = json!(if primary {
+                category.as_str()
+            } else {
+                "context"
+            });
+            card["book"] = if primary {
+                json!(book)
+            } else {
+                json!(index.book_of.get(&at))
+            };
+            card["parent"] = card["parent_address"].clone();
+            card["kinds"] = json!(ps::keys(&card["kinds"]));
+            if !group_only {
+                card["inbound"] = json!(inbound.get(&at).cloned().unwrap_or_default());
+                card["inbound_kinded"] = json!(kinded.get(&at).copied().unwrap_or(0));
+            }
+            if primary && is_in(&category, WRITABLE) {
+                entries.push(card.clone());
+            }
+            by.insert(ci(&at), cards.len());
+            cards.push(card);
+        }
+        let term_card = term
+            .as_ref()
+            .and_then(|at| by.get(&ci(at)).map(|&i| &cards[i]));
+        let checked = Self::style_check(&entries, term_card)?;
+        let mut faults: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut lines = Vec::new();
+        for (at, rule, text) in checked {
+            lines.push(format!("{at} {rule} {text}"));
+            faults.entry(ci(&at)).or_default().push((rule, text));
+        }
+        if self.zt()?.cards(&[], "text")?.archive_revision != revision {
+            bail!("incomplete Card inputs: changing read view");
+        }
+        std::fs::create_dir_all(dir)?;
+        util::write_text(
+            join_path(dir, "audit-cards.json"),
+            &ps::json_pretty(&json!(cards)),
+        )?;
+        util::write_text(join_path(dir, "audit-faults.txt"), &lines.join(NL))?;
+        let known = metadata
+            .iter()
+            .filter(|card| field(card, "workspace") == "agent")
+            .map(|card| field(card, "address"))
+            .collect::<Vec<_>>();
+        util::write_text(join_path(dir, "audit-addresses.txt"), &known.join(NL))?;
+        let scope = if group_only { "groups" } else { "book" };
+        let coverage = json!({"complete":true,"scope":{"kind":scope,"groups":self.state["groups"],"addresses":addresses,"checked_addresses":entries.iter().map(|card|field(card,"address")).collect::<Vec<_>>()},"archive_revision":revision,"global_checks":"not_run","relationship_checks":if group_only{"not_run"}else{"book"},"faults":lines.len()});
+        util::write_text(join_path(dir, "audit.json"), &ps::json_pretty(&coverage))?;
+        util::write_text(
+            join_path(dir, "audit.md"),
+            &format!(
+                "# {scope} Card quality{NL}{NL}Required reads complete at archive revision {revision}. Global archive checks were not run.{NL}"
+            ),
+        )?;
+        Ok(AuditView { cards, by, faults })
+    }
+
+    fn invoke_audit(&mut self, dir: &str) -> Result<AuditView> {
+        let needs_global = self
+            .rule_list()
+            .iter()
+            .any(|rule| is_in(rule, WHOLE_WORKSPACE) || rule == "F4");
+        let group_only = !field(&self.state, "groups").is_empty()
+            && truthy(&self.state["no_orphans"])
+            && !needs_global;
+        self.invoke_scoped_audit(dir, group_only)
     }
 
     // --- writes ----------------------------------------------------------------------------------

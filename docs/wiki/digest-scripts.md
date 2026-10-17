@@ -226,6 +226,8 @@ Job ids by script: `card-compiler.ps1` `fix-NN`, `orphans-NN`, `fix-NN-r2`; `mod
 
 ## Behaviour
 
+The Card compiler's quality inputs are scoped in `tools/zt-digest/src/card.rs`: a local group uses its owned manifest/anchors; a book cycle adds the book, declared owned external Topic Cards and previously attributed Topic members. It uses fresh titles, bounded body batches and indexed relationship addresses, with external carriers marked as context. Parent titles do not require parent bodies. Owned Cards with missing source attribution stay in the checks; another Literature tree, human ownership, unreadable staging or a missing required input is an error. `before`/`after` reports identify their checked group/book scope rather than claiming a global audit. The separate public audit still provides the global report.
+
 ### The compiler cycle
 
 Every layer script implements the same cycle (`docs/digest-card-layers-proposal.md`, principle 1):
@@ -703,6 +705,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests, and describes zt-check rules as "R2 to R17, I, E, L" without the F rules; the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+- `2026-10-17` — Extend `scoped-bulk.tests.ps1` through whole-book quality, declared/inferred Topic members, missing-source detection, incoming anchor/Idea facts, global quality-oracle comparison, missing carriers/manifests/staging, foreign ownership refusal and title-only parent context.
 
 - `2026-10-17` — Extend the public audit fixture with frozen pre-migration report/fault files, bulk-call/process checks, required model scope, missing-input refusal and a real edit between reads. The MCP seam can fail a model read or inject that edit after a bulk reply.
 

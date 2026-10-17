@@ -37,4 +37,10 @@ The previously interrupted `scoped-bulk.tests.ps1` copied and ran the final debu
 
 The complete root regression passes: 338 tests, zero failures, one deliberately ignored real-clipboard test. This includes daemon restart, sign-in, sign-out, shutdown, GUI, CLI, MCP, model and Workspace suites. The PRD and unfinished implementation issues remain open. No actual digest workflow was run.
 
+## Later host observations
+
+At 16:47:45 Defender recorded the same detection on `C:\Users\chenx\AppData\Local\Temp\scoped-bulk-test-76288\bin\zt.exe`. At 16:55 that copy was readable and its SHA-256 was exactly `8C274C6B63F8CA6D249FB1F35A8EE597B1A4292F6241AB1DA68A692D964D578B`, matching the rebuilt debug executable above. A clean scan and the direct launcher therefore do not establish a permanent Defender fix. The same bytes have received different outcomes in normal testing; the decisive classifier/context signal remains unknown. No exclusion or protection change was applied.
+
+A later parallel regression run failed during PowerShell startup with an explicit `System.OutOfMemoryException`, and another MCP child closed before the book assertions. Windows System event 2004 recorded virtual-memory exhaustion at 16:50:24 and 16:53:48. At 16:55 the host had about 13 GiB of commit headroom again. The failures were retained under `D:/zt-target/qualification/issue67-book-suites/`; the two failed suites were rerun sequentially after the host recovered. Their outcome is recorded in the delivery status. User applications and security settings were not changed to make those tests pass.
+
 If a later build is detected, retain its exact hash, detection events and build identity for review. Microsoft's [false-positive guidance](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-false-positives-negatives) describes submitting the affected file to Microsoft for analysis. No application file was uploaded during this investigation.
