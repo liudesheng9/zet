@@ -203,6 +203,13 @@ try {
     $structureRun = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)
     $structureAllow = @(Get-Content -LiteralPath (Join-Path $staging 'allow-g02.txt') -Encoding utf8)
     Assert ($structureRun.code -eq 0 -and 'Test2021/2|b' -notin $structureAllow) 'bulk ownership inference preserves the eight-distinct-outbound structure guard with repeated targets'
+    # export_titles has ZET numeric order; the digest snapshot retains the former
+    # list_trees/get_tree rendering order, including multi-digit Topic ids.
+    $null = Invoke-Zt @(1..12 | ForEach-Object { @{tool='create_topic';arguments=@{title="Ordering $_"}} })
+    $orderedSnapshot = Join-Path $staging 'snapshot-ordering.md'
+    $ordered = Invoke-Script 'snapshot-topics.ps1' @('-Out', $orderedSnapshot)
+    $orderedText = Get-Content -LiteralPath $orderedSnapshot -Raw -Encoding utf8
+    Assert ($ordered.code -eq 0 -and $orderedText.IndexOf('- `10/0`') -ge 0 -and $orderedText.IndexOf('- `10/0`') -lt $orderedText.IndexOf('- `2/0`')) 'the fresh title export preserves the former multi-digit Topic tree rendering order'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

@@ -41,6 +41,13 @@ pub(crate) fn read_title_trees(zt:&mut Zt)->Result<Vec<Value>> {
         }
         trees[index]["cards"].as_array_mut().unwrap().push(row);
     }
+    // The former list_trees/get_tree input followed the archive's binary
+    // address order. Preserve that input order before the existing renderers
+    // and ranking sorts, whose equal-score ordering depends on it.
+    trees.sort_by(|a,b|s(&a["tree"]).cmp(&s(&b["tree"])));
+    for tree in &mut trees {
+        tree["cards"].as_array_mut().unwrap().sort_by(|a,b|s(&a["address"]).cmp(&s(&b["address"])));
+    }
     Ok(trees)
 }
 
