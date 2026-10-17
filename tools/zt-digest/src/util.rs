@@ -66,6 +66,7 @@ pub fn print_line(line: &str) -> Result<()> {
 }
 
 /// The last line of a compiler step: the step's result as compact JSON.
+#[allow(dead_code)]
 pub fn print_last(value: &Value) -> Result<()> {
     print_line(&compact(value))
 }

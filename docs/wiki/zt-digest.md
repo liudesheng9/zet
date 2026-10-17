@@ -52,7 +52,7 @@ updated: 2026-10-16
 
 - `Tool` — one subcommand of `zt-digest`, named after the script it replaces: `call` (`zt-mcp.ps1`), `audit` (`digest-audit.ps1`), `card` (`card-compiler.ps1`), `model` (`model-compiler.ps1`), `model-context` (`model-context.ps1`), `list-models` (`list-models.ps1`). All six are ported.
 - `Forwarder` — a PowerShell script whose body is replaced by a call of its tool (`& $exe <tool> @args`), kept so that callers and tests that name the script still work. `ZT_DIGEST` names the binary to use; otherwise it is `zt-digest` on PATH. The model forwarders rebuild `$args` first: an array becomes a comma-separated value, and `-Name:value`, which `pwsh -File` and `&` hand over as two arguments, becomes one again. `card-compiler.ps1` sets `ZT_DIGEST_SCRIPTS` to its own folder.
-- `Script paths` — job files name the scripts as the scripts named themselves: `HELPER:` the helper `skills\zt\scripts\zt-mcp.ps1`, `SELF-CHECK:` `scripts\book-digest\model-compiler.ps1`, and the `dsh-*.zh.md` files in `scripts\book-digest`. `model::Scripts` takes them from the repository zt-digest was built from (`CARGO_MANIFEST_DIR`), or from `ZT_DIGEST_REPO`.
+- `Script paths` — job files name the scripts as the scripts named themselves: `HELPER:` the helper `skills\zt\scripts\zt-mcp.ps1` and the `dsh-*.zh.md` files in `scripts\book-digest`. `model::Scripts` takes them from the repository zt-digest was built from (`CARGO_MANIFEST_DIR`), or from `ZT_DIGEST_REPO`.
 - `PowerShell semantics` — what the scripts' output depended on and the ported tools keep: case-insensitive string comparison and hashtable keys, `Sort-Object` order (an unstable introsort with the zh-CN culture's case-insensitive collation), `@($null)` as one item, `[int]` rounding half to even, and `ConvertTo-Json` formatting (`audit/ps.rs`, `model::ps`).
 - `Call` — one `{ "tool", "arguments" }` object of a helper batch; `@@N` in a string argument is the address of call N.
 - `Done` / `Failure` — what `calls::run` returns: the lines of the calls that succeeded, and the call that failed with its message and the addresses so far.
@@ -129,7 +129,7 @@ The port of `card-compiler.ps1`; [Digest scripts](digest-scripts.md) describes t
 | `report` | the report with `refused` as a count | `after/`, `report.json`, `decisions.json` |
 | `precheck` | fault lines, then `faults: N` | none |
 
-Each job file holds `SELF-CHECK: pwsh -NoProfile -File "<scripts>\card-compiler.ps1" -Step precheck -Work "<absolute work folder>" -Job <id>`. `<scripts>` is `ZT_DIGEST_SCRIPTS`, which the forwarder sets to its own folder, or else the `scripts/book-digest` folder of the repository the binary was built from. The tool reads `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md` from the same folder.
+Each job file holds `SELF-CHECK: zt-digest card -Step precheck -Work "<absolute work folder>" -Job <id>`, so the writer's self-check starts no pwsh. The tool reads `dsh-card-instructions.zh.md` and `dsh-orphan-instructions.zh.md` from `ZT_DIGEST_SCRIPTS`, which the forwarder sets to its own folder, or else from the `scripts/book-digest` folder of the repository the binary was built from. The explain job files of `model` name `SELF-CHECK: zt-digest model -Step explain-check …` the same way.
 
 ### `model`
 
@@ -230,6 +230,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 
 ## Change history
 
+- `2026-10-16` — The job files of `card` and `model` name their self-checks as `zt-digest card -Step precheck …` and `zt-digest model -Step explain-check …`, not the forwarding scripts. The workflows run every ported script as its tool (`zdTool` in `zt-digest-lib.js`).
 - `2026-10-16` — The model tools: `model` (model-compiler.ps1, every step), `model-context`, and `list-models`, with `model::ps` for the PowerShell semantics they keep; the three scripts are forwarders. The 19 steps of `model-compiler.tests.ps1` take 1.3 s in the tool, 11.6 s through the forwarders, and 34 s in the old script.
 - `2026-10-16` — `audit` and `card`: the ports of `digest-audit.ps1` and `card-compiler.ps1` (with `relatedness.ps1` and the audit's part of `book-of.ps1`), `audit/ps.rs` for PowerShell and .NET semantics, and `util::bind_positional`; the two scripts forward to the tools.
 - `2026-10-16` — zt-digest created: the crate, the `call` tool (the zt helper in Rust), `Invoke-Zt` and `Invoke-ZtCheck` in Rust, `zt-mcp.ps1` as a forwarder, `scripts/install-zt-digest.ps1`.

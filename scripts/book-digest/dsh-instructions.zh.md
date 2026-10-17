@@ -27,7 +27,7 @@
 
 ## 写入 ZET
 
-你没有原生 zt 工具。用一条 pwsh 命令把全部调用通过 here-string 交给助手脚本（`'@` 必须单独占一行、顶格），命令末尾照抄组信息中的 `-Log` 参数，它记录你写的卡片：
+你没有原生 zt 工具。用一条 pwsh 命令把全部调用通过 here-string 交给助手 `zt-digest call`（`'@` 必须单独占一行、顶格），命令末尾照抄组信息中的 `-Log` 参数，它记录你写的卡片：
 
 ```
 @'
@@ -35,7 +35,7 @@
  {"tool":"create_successor","arguments":{"at":"@@0","title":"……","body":"……"}},
  {"tool":"create_successor","arguments":{"at":"{{KEY}}/7","kind":"side","title":"……","body":"…… [[@@1]] ……"}},
  {"tool":"edit_card","arguments":{"at":"{{KEY}}/7","title":"……","body":"……"}}]
-'@ | pwsh -NoProfile -File "{{HELPER}}" - -Log "…"
+'@ | zt-digest call - -Log "…"
 ```
 
 - 字符串参数中的 `@@N` 替换为第 N 个调用（从 0 起）返回的地址，只能指向**更早**的调用：先建被链接的卡片，再建链接它的卡片；互相链接时最后用 `edit_card` 补回指。

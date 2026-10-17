@@ -11,9 +11,9 @@
 //!   report    compares the faults before and after; writes report.json and decisions.json
 //!   precheck  checks one job's JSON file the way apply and the audit will, without a write
 //!
-//! The job files name their precheck command as `pwsh -NoProfile -File "<scripts>\card-compiler.ps1" …`
-//! (the forwarder), where <scripts> is ZT_DIGEST_SCRIPTS (the forwarder sets it) or the
-//! scripts\book-digest folder of the repository this binary was built from. The instruction
+//! The job files name their precheck command as `zt-digest card -Step precheck …` (this tool, no
+//! pwsh). <scripts> is ZT_DIGEST_SCRIPTS (the forwarder sets it) or the scripts\book-digest folder
+//! of the repository this binary was built from. The instruction
 //! files dsh-card-instructions.zh.md and dsh-orphan-instructions.zh.md are read from there too.
 
 mod relatedness;
@@ -250,8 +250,7 @@ impl Compiler {
     /// The precheck line of a job file, with absolute paths.
     fn self_check(&self, id: &str) -> Result<String> {
         let dir = std::path::absolute(&self.p.work)?.to_string_lossy().into_owned();
-        let script = join_path(&self.scripts, "card-compiler.ps1");
-        Ok(format!("SELF-CHECK: pwsh -NoProfile -File \"{script}\" -Step precheck -Work \"{dir}\" -Job {id}"))
+        Ok(format!("SELF-CHECK: zt-digest card -Step precheck -Work \"{dir}\" -Job {id}"))
     }
 
     fn add_self_check(&self, sb: &mut String, id: &str) -> Result<()> {

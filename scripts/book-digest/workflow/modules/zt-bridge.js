@@ -1,6 +1,6 @@
-// ==== module zt-bridge v4 ====
+// ==== module zt-bridge v5 ====
 defineModule({
-  id: 'zt-bridge', version: '4', requires: ['zt-digest-lib'],
+  id: 'zt-bridge', version: '5', requires: ['zt-digest-lib'],
   summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
   params: {
     args: { type: 'object', required: true, description: 'run arguments' },
@@ -24,7 +24,7 @@ defineModule({
     const applying=!!(A.bridgeReport||accept||earlier)
     if(applying&&(p.mode!=='bridge'||!A.bridgeReport||!(accept||earlier)))
       return {status:'failed',error:'Bridge apply requires mode bridge, bridgeReport, and a nonempty acceptance section.'}
-    const step=(s,more='')=>`pwsh -NoProfile -File "${Z.SCRIPTS}\\bridge-compiler.ps1" -Step ${s} -Staging ${q(Z.OUT)} -CitationKey ${q(Z.KEY)} -Work ${q(work)}${more}`
+    const step=(s,more='')=>`${Z.tool('bridge-compiler')} -Step ${s} -Staging ${q(Z.OUT)} -CitationKey ${q(Z.KEY)} -Work ${q(work)}${more}`
     if(applying){
       const extra=` -ReportId ${q(A.bridgeReport)}${accept?` -Accept ${q(accept)}`:''}${earlier?` -AcceptEarlier ${q(earlier)}`:''} -Apply`
       const result=await Z.runScript('bridge: apply','Bridge',step('apply',extra),'; filing must stay quiet: no insertion, movement, deletion, key rename, retype, or Organize during apply')

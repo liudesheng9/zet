@@ -1,10 +1,10 @@
-// ==== module zt-organize v1 ====
+// ==== module zt-organize v2 ====
 // Organize: organize-survey.ps1 lists what to decide; Opus writes only decisions.json (thesis, Topic merges,
 // moves, Card notes); organize-apply.ps1 carries out the merges and moves; a card cycle hands the notes to
 // DeepSeek; book-skeleton.ps1 and one DeepSeek job write the Literature Card index, the structure Card, and the
 // Topic bodies. args.organize "legacy" runs the old single Opus job instead.
 defineModule({
-  id: 'zt-organize', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-organize', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: Organize (survey → Opus decisions → apply → notes card cycle → skeleton), or the legacy Opus job.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -24,13 +24,12 @@ defineModule({
     const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]${r.level === 'concept' ? '（概念模型）' : r.level === 'formal' ? '（形式模型）' : ''}：${(r.parts || []).map(pp => `${pp.facet}${pp.emphasis === 'core' ? '（核心）' : ''} [[${pp.address}]]`).join('、')}${(r.issues || []).length ? `；未解决：${r.issues.join('；')}` : ''}${r.notes && r.notes.length ? `；建议：${r.notes.join('；')}` : ''}`).join('\n')
     const groupLines = ((MODE === 'full' ? p.digest : p.link) || []).map(r => `- 第 ${r.group} 组 [[${KEY}/${r.group}]]：${r.status}${r.cards ? `，${r.cards} 张` : ''}${r.models ? `，模型卡 ${r.models}` : ''}${r.events ? `，事件卡 ${r.events}` : ''}${r.topics && r.topics.length ? `；新主题：${r.topics.join('、')}` : ''}${r.errors && r.errors !== '无' ? `；问题：${r.errors}` : ''}`).join('\n')
     const ORG = `${OUT}\\organize`
-    const HELPER = ZD_HELPER
     if (A.organize === 'legacy') {
       const report = await Z.zAgent(
         `You are the final coordinator of a ZET book digest. DeepSeek agents have digested 《${A.bookTitle}》 group by group into the agent Workspace of the ZET slip-box, then added reasoned cross-part Links to their own Cards. Your job is to organize the whole card structure. Use the zettelkasten and zt skills (load them with the Skill tool first). Make every zt call through the helper script, not the mcp__zt__* tools (the conversation's MCP server may be an older zt): write a JSON array of calls and run it in one PowerShell command, e.g.
   @'
   [{"tool":"list_trees","arguments":{"workspace":"agent"}},{"tool":"search_cards","arguments":{"type":"model","workspace":"agent"}}]
-  '@ | pwsh -NoProfile -File "${HELPER}" -
+  '@ | ${ZD_CALL} -
   Each output line is "N <json>", "N ok <address>", or "N error <reason>" (then a resume line); "@@N" in an argument is the address returned by call N. Batch many reads or writes per command. delete_card and move_card return a plan first; call again with the confirm text. Write all Card text in Chinese. Change only the agent Workspace; human Cards are read-only but you may link to them.
 
   Book: Literature Card [[${KEY}]] (agent Workspace, Literature Zone). Its Direct-successor line [[${KEY}/1]] … [[${KEY}/${groupCount}]] holds one anchor Card per group, in book order; each anchor holds that part's central claim, a section index, and its place in the whole book.
@@ -55,7 +54,7 @@ defineModule({
       return report || 'no report from the Opus coordinator'
     }
     // 1. The survey: a script lists what Opus must decide.
-    const surveyed = await Z.runScript('organize: survey', 'Organize', `pwsh -NoProfile -File "${SCRIPTS}\\organize-survey.ps1" -Staging "${OUT}" -Work "${ORG}"`)
+    const surveyed = await Z.runScript('organize: survey', 'Organize', `${Z.tool('organize-survey')} -Staging "${OUT}" -Work "${ORG}"`)
     const survey = surveyed.json
     if (!survey) log(`Organize: the survey failed (${surveyed.run && surveyed.run.output}).`)
     // 2. Opus decides; it writes decisions.json and nothing else.
@@ -64,7 +63,7 @@ defineModule({
 Read ${ORG}\\survey.md first (Read tool). It lists the book's Topics, the duplicate candidates, small Topics, Card merge proposals, the models with faults, broken Links, and missing hubs. When a decision needs a Card's text, read it through the helper (read-only calls only: get_card, get_tree, get_model, search_cards), e.g.
 @'
 [{"tool":"get_tree","arguments":{"tree":"62"}},{"tool":"get_card","arguments":{"at":"62/1"}}]
-'@ | pwsh -NoProfile -File "${HELPER}" -
+'@ | ${ZD_CALL} -
 ${modelLines ? `The architect's notes on the book's models (Cards outside a model that should link a part of it):\n${modelLines}\n` : ''}
 Decide, then write ${ORG}\\decisions.json (UTF-8, Write tool) with exactly these fields:
 - "thesis": the book's central thesis as one Chinese sentence of at most 40 characters. It becomes the title of the structure Card.
@@ -79,14 +78,14 @@ Return thesis, merges, moves, notes (the counts), and report: a short Chinese re
       },
     ) : null
     // 3. A script carries out the merges and moves.
-    const applied = decided ? await Z.runScript('organize: apply', 'Organize', `pwsh -NoProfile -File "${SCRIPTS}\\organize-apply.ps1" -Work "${ORG}"`) : null
+    const applied = decided ? await Z.runScript('organize: apply', 'Organize', `${Z.tool('organize-apply')} -Work "${ORG}"`) : null
     const moved = applied ? applied.json : null
     if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused` : `apply failed (${applied && applied.run && applied.run.output})`}; ${decided.notes || 0} notes.`)
     // 4. The notes go to DeepSeek as a card cycle: every hard rule in mode "full" (the script adds N1), else N1.
     const notes = decided && decided.notes ? await Z.runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
     // 5. The skeleton: the Literature Card index, the structure Card, the Topic bodies.
     const SK = `${OUT}\\skeleton`
-    const kstep = (s, more = '') => `pwsh -NoProfile -File "${SCRIPTS}\\book-skeleton.ps1" -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`
+    const kstep = (s, more = '') => `${Z.tool('book-skeleton')} -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`
     const kopts = { dsh: SK, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Organize', writes: `${SK}\\out`, remove: 'delete', keep: true }
     await Z.drive('organize: skeleton', { ...kopts, command: kstep('plan') })
     const sk = zdLastJson(((await Z.drive('organize: skeleton apply', { ...kopts, command: kstep('apply', ` -Decisions "${ORG}\\decisions.json" -Apply`), cleanup: true })) || {}).output)

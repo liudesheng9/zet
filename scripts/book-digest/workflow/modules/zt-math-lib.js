@@ -1,4 +1,4 @@
-// ==== module zt-math-lib v1 ====
+// ==== module zt-math-lib v2 ====
 // The shared code of the math stages (docs/math-cards-design.md): math-compiler.ps1 does every structural step;
 // DeepSeek writes JSON files and Card bodies; Haiku drivers relay the jobs under the DeepSeek Subagent Managed
 // Protocol (drive, from zt-digest-lib). Each stage has its own DeepSeek workspace under <out>\math\, and its last
@@ -7,11 +7,11 @@ function zmMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const A = Z.A
   const MATH_WORK = `${Z.OUT}\\math`
-  const MATH_COMPILER = `${Z.SCRIPTS}\\math-compiler.ps1`
+  const MATH_COMPILER = Z.tool('math-compiler')
   const SUPPLY = ['none', 'examples', 'examples+answers'].includes(A.supply) ? A.supply : 'examples'
   const UNITS_PER_JOB = Math.max(1, A.unitsPerJob || 4)
   const MAIN_RESULTS = Math.max(1, A.mainResults || 7)
-  const mstep = (s, more = '') => `pwsh -NoProfile -File "${MATH_COMPILER}" -Step ${s} -Staging "${Z.OUT}"${more}`
+  const mstep = (s, more = '') => `${MATH_COMPILER} -Step ${s} -Staging "${Z.OUT}"${more}`
   // One script step relayed by Haiku; its last JSON line, or null (logged) on a failure.
   const runMathScript = async (what, s, extra, phaseName) => {
     const run = await Z.zAgent(
@@ -29,7 +29,7 @@ Return ok (true when it exits without an error) and output = its last output lin
 }
 
 defineModule({
-  id: 'zt-math-lib', version: '1', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-math-lib', version: '2', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: math-compiler.ps1 steps and DeepSeek options for the zt-math-* stage modules.',
 })
 // ==== end module zt-math-lib ====

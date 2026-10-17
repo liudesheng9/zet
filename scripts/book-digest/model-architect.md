@@ -6,7 +6,7 @@ Keep your work small. Read only what the plan needs. Do not load skills.
 
 ## Inputs (in your prompt)
 
-- `COMPILER`: the script `model-compiler.ps1`. `WORK`: the batch folder.
+- `COMPILER`: the model compiler command, `zt-digest model`. `WORK`: the batch folder.
 - For each model: `MODEL` (the Model Card's address) and `DIR` (its folder). `DIR` holds:
   - `brief.md`: DeepSeek's brief of the source: the question, the actors, the symbols, each equation in book order with its number, file, and lines, whether the book shows or skips each derivation step, the numerical examples, the diagrams, the outside premises, and the existing parts.
   - `context.md`: the context pack: the Model Card as the digest wrote it, its existing parts, its neighbours, and the book's other models.
@@ -96,7 +96,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 
 ## Check the plan
 
-Run `pwsh -NoProfile -File "<COMPILER>" -Step validate -Work "<WORK>" -Plan "<DIR>\plan.json" <LIMITS>`. It prints one fault per line and then `faults: N`. Fix the plan until it prints `faults: 0`. Finish one model before you start the next.
+Run `<COMPILER> -Step validate -Work "<WORK>" -Plan "<DIR>\plan.json" <LIMITS>`. It prints one fault per line and then `faults: N`. Fix the plan until it prints `faults: 0`. Finish one model before you start the next.
 
 ## Report
 

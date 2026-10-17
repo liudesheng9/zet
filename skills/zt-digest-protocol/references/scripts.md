@@ -2,6 +2,8 @@
 
 All paths are under `E:\zet`. Scripts are in `scripts/book-digest/` unless the path says otherwise. "Writes" says whether the script changes Cards in the slip-box.
 
+The scripts ported to Rust run as `zt-digest <tool>` (`tools/zt-digest`, installed beside `zt.exe` by `scripts/install-zt-digest.ps1`) with the same parameters and output: `zt-digest call` (the zt helper), `audit` (`digest-audit.ps1`), `card` (`card-compiler.ps1`), `model` (`model-compiler.ps1`), `model-context`, and `list-models`. The `.ps1` of a ported script only forwards to its tool. The workflows run the tools directly (`zdTool` in `zt-digest-lib.js`).
+
 ## Compilers (the basic block)
 
 | Script | Stage | Steps | Use it to | Writes |

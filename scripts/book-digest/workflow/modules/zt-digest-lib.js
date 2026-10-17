@@ -1,13 +1,21 @@
-// ==== module zt-digest-lib v4 ====
-// The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), ported from
-// .claude/workflows/zt-book-digest.js: the settings read from the args, the digest and link managers, the
+// ==== module zt-digest-lib v5 ====
+// The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
+// hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), and the card layer cycle (runCards). The model compiler is zt-model-lib (the
 // model layer, which each book type installs). A library module: the stage modules call zdMake(ctx, params) and use what it returns.
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
-const ZD_HELPER = 'C:\\Users\\chenx\\.codex\\skills\\zt\\scripts\\zt-mcp.ps1'
+// The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
+// is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
+// helper is `zt-digest call` (ZD_CALL); the old helper path zt-mcp.ps1 forwards to it.
+const ZD_DIGEST = 'zt-digest'
+const ZD_TOOLS = { 'digest-audit': 'audit', 'card-compiler': 'card', 'model-compiler': 'model', 'model-context': 'model-context', 'list-models': 'list-models' }
+const ZD_CALL = `${ZD_DIGEST} call`
+function zdTool(name, scripts = ZD_SCRIPTS) {
+  return ZD_TOOLS[name] ? `${ZD_DIGEST} ${ZD_TOOLS[name]}` : `pwsh -NoProfile -File "${scripts}\\${name}.ps1"`
+}
 const ZD_DSH_SOURCES = {
   official: 'deepseek-official/deepseek-flash',
   opencode: 'opencode-go/deepseek-v4.1-flash',
@@ -68,7 +76,7 @@ function zdMake(ctx, p) {
   const MODELS = A.models !== false
   const ARCH_DOC = `${SCRIPTS}\\model-architect.md`
   const ARCH_SUPPLEMENT = profile.architectSupplement ? `${SCRIPTS}\\${profile.architectSupplement.file}` : null
-  const COMPILER = `${SCRIPTS}\\model-compiler.ps1`
+  const COMPILER = zdTool('model-compiler', SCRIPTS)
   const MODEL_WORK = `${OUT}\\models`
   const PER_SONNET = Math.max(1, A.perSonnet || 6)
   const DSH_PER_BATCH = Math.min(ZD_PER_MANAGER_MAX, Math.max(1, A.dshPerBatch || A.dshPerSonnet || 8))
@@ -85,12 +93,12 @@ function zdMake(ctx, p) {
   const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_delete'
   const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace`
   const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
-  const HUB_COMPILER = `${SCRIPTS}\\hub-compiler.ps1`
+  const HUB_COMPILER = zdTool('hub-compiler', SCRIPTS)
   const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
   const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
   const HUB_SKILLS = ['asd-ste100-zh']
   const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
-  const CARD_COMPILER = `${SCRIPTS}\\card-compiler.ps1`
+  const CARD_COMPILER = zdTool('card-compiler', SCRIPTS)
   const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
   const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? (MODE === 'full' ? 0.1 : 0)))
   const CARD_SKILLS = ['asd-ste100-zh']
@@ -140,7 +148,7 @@ Return ok (true when it exits without an error) and output = its last output lin
     digest: {
       phase: 'Digest',
       steps: g => `Group ${g.n}:
-  a. Snapshot the slip-box (one PowerShell call): pwsh -NoProfile -File ${SCRIPTS}\\snapshot-topics.ps1 -Out "${g.snapshot}"
+  a. Snapshot the slip-box (one PowerShell call): ${zdTool('snapshot-topics', SCRIPTS)} -Out "${g.snapshot}"
   b. deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${DIGEST_PREFIX}", "${g.file}"] (the book, its index and the snapshot stay on disk; DSH reads what it needs); prompt "按以上说明完成你的组，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.`,
       answer: '{"group","cards","models","events","topics","anchor","errors"}',
       fields: 'cards (Cards written), models (Model Cards), events (Event Cards), topics (as "地址 主题名")',
@@ -167,7 +175,7 @@ ${block.map(S.steps).join('\n')}
 Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
 Then follow "status" until the run ends:
   - "running": deepseek_wait (session_id, wait_seconds 900).
-  - "needs_response": approve (decision "allow") a pwsh command that runs zt-mcp.ps1, the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+  - "needs_response": approve (decision "allow") a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1), the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
   - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
   - "finished": parse its JSON ${S.answer}.
   Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
@@ -248,7 +256,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: bridge-compiler.ps1 with -Step precheck (never -Apply); the check zt-check (read-only); a pwsh command that runs zt-mcp.ps1 with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a pwsh command that runs zt-mcp.ps1, or the check zt-check (read-only); a read-only self-check of a draft: card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, or finding-compiler.ps1 with -Step precheck, model-compiler.ps1 with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: bridge-compiler.ps1 with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1), or the check zt-check (read-only); a read-only self-check of a draft: the card compiler (${ZD_DIGEST} card, or card-compiler.ps1), hub-compiler.ps1, event-compiler.ps1, or finding-compiler.ps1 with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or book-skeleton.ps1 with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
@@ -311,7 +319,7 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
 
   // --- Cards: the card layer cycle -----------------------------------------------------------------
   const runCards = async (label, work, extra = '', only = '') => {
-    const cstep = (s, more = '') => `pwsh -NoProfile -File "${CARD_COMPILER}" -Step ${s} -Work "${work}" -Compact${more}`
+    const cstep = (s, more = '') => `${CARD_COMPILER} -Step ${s} -Work "${work}" -Compact${more}`
     const sessions = {}
     let jobs = 0
     const crun = async (what, command, opts = {}) => {
@@ -356,7 +364,7 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     const reported = zdLastJson(((await crun('report', cstep('report'), { cleanup: true })) || {}).output)
     if (!applied) log(`Cards ${label}: an apply step failed; the cycle is marked failed.`)
     if (reported) log(`Cards ${label}: faults ${reported.faults_before} → ${reported.faults_after} on ${reported.cards} Cards; verdicts ${JSON.stringify(reported.verdicts)}; ${reported.splits} splits, ${reported.merges} merge proposals, ${reported.refused} refused; ${reported.orphan_links} orphan Links (${reported.orphans_after} orphans left); ${jobs} DeepSeek jobs.`)
-    return { status: reported && applied ? 'done' : 'failed', label, plan, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from card-compiler.ps1 -Step apply' }) }
+    return { status: reported && applied ? 'done' : 'failed', label, plan, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from the card compiler -Step apply' }) }
   }
   const cardBlock = async (block) => {
     const groups = block.map(g => g.n).join(',')
@@ -367,6 +375,8 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
     HUB_WORK, HUB_COMPILER, HUB_EFFORT, HUB_FIX_ROUNDS, HUB_SKILLS, PER_MANAGER, LINK_PER_MANAGER, raised,
     zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
+    // The command that runs a digest script: zt-digest <tool> once ported, else pwsh with the script.
+    tool: name => zdTool(name, SCRIPTS),
     // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
     cleanupDsh: (label, o) => driveAgent(label, o, 'cleanup'),
     runCards, cardBlock, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
@@ -375,7 +385,7 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '4', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '5', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, drive, model compiler, card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

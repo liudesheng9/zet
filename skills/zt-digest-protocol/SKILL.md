@@ -15,7 +15,7 @@ Each kind of worker does one kind of work. Do not move work between them.
 
 | Worker | Does | Never does |
 | --- | --- | --- |
-| **Scripts** (`scripts/book-digest/*.ps1`) | Every structural step: skeletons, tree operations (insert, move, delete), job files, checks, apply, reports. Every zt write of a JSON answer. | Write prose. |
+| **Scripts** (the `zt-digest` tools, `tools/zt-digest`; the `scripts/book-digest/*.ps1` not ported yet) | Every structural step: skeletons, tree operations (insert, move, delete), job files, checks, apply, reports. Every zt write of a JSON answer. | Write prose. |
 | **DeepSeek** (DeepSeek Harness, V4.1 Flash, effort high) | The labour: Card text, briefs, Derivation parts, explanations, reviews, hubs, terms, charts. It writes Card bodies through the zt helper, or a JSON file that a script applies. | Plan structure, or change Cards it does not own. |
 | **Haiku** | Managers: start DeepSeek jobs, approve their tool calls, collect answers, delete conversations. Runs one script command per step. Chooses limits from a survey (hubs). | Read the book, write Cards, decide content. |
 | **Sonnet** | The model architect: one `plan.json` per model (level, parts, build order, Derivation parts). | Write Cards, start DeepSeek runs. |
@@ -69,9 +69,9 @@ Modes run single stages on an existing digest: `link`, `models`, `cards`, `expla
 
 - **DeepSeek Subagent Managed Protocol** (global skill `deepseek-subagent-managed-protocol`): one Haiku manager per 8 DeepSeek jobs, at most 8 managers alive at once in the whole run (`dsmpSlot`), conversations deleted (never archived) after their answer is collected, a workspace removed when its work is done. Write cleanup steps as plain steps: a Haiku agent refuses deletes that cite "the user's protocol" as authority.
 - **Quality checks** (section 5): every DeepSeek task checks its own work before it replies.
-- **Approvals**: a manager approves only zt-mcp.ps1, `zt-check`, the read-only precheck steps, read-only reads under `out`, and writes of the job's own JSON file. Everything else is rejected.
+- **Approvals**: a manager approves only the zt helper (`zt-digest call`, or zt-mcp.ps1), `zt-check`, the read-only precheck steps, read-only reads under `out`, and writes of the job's own JSON file. Everything else is rejected.
 - **Files and state**: each compiler keeps `state.json` in its work folder (the DeepSeek cwd), so a rerun skips finished items. Every script prints compact JSON as its last line. Job ids are stable; follow-ups continue the job's conversation.
-- **The zt helper** (`~\.codex\skills\zt\scripts\zt-mcp.ps1`): a JSON array of calls on stdin; `-Allow` (Cards a run may change), `-Log` (created Cards), `-SrcLog` (source lines), `-TopicGate` (no duplicate Topics), `-Moves` (address changes). Scripts call it through `zt-calls.ps1` (UTF-8 under a GBK console).
+- **The zt helper** (`zt-digest call`; the old path `~\.codex\skills\zt\scripts\zt-mcp.ps1` forwards to it): a JSON array of calls on stdin; `-Allow` (Cards a run may change), `-Log` (created Cards), `-SrcLog` (source lines), `-TopicGate` (no duplicate Topics), `-Moves` (address changes). The `zt-digest` tools run it in-process; PowerShell scripts call it through `zt-calls.ps1` (UTF-8 under a GBK console).
 - **Source fidelity**: a step or explanation the book does not give carries `（补：书中略去）` or `（补：书中未写）`. The book's modality stays.
 
 ## 5. Quality checks

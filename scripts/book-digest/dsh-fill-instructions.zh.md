@@ -98,12 +98,12 @@ $w$ 在两边相消，所以 E 的财富不影响参与。检验：$f=1$ 时 (5.
 ## 写入 ZET（全程最多 5 条命令）
 
 1. **读取（通常不需要）**：任务文件已附上原文和前提。只有缺内容时才读：用一条命令读原文行（`Get-Content -LiteralPath <文件> | Select-Object -Skip <起始行-1> -First <行数>`），或用 `get_card` 读前提卡。
-2. **写入（一条命令）**：用助手脚本一次写完你的全部分卡，只用 `edit_card`，只传 `at` 和 `body`（需要缩短标题时再传 `title`）。命令末尾加上 `-Allow` 参数和任务文件给出的许可文件，它只允许你改自己的分卡：
+2. **写入（一条命令）**：用助手 `zt-digest call` 一次写完你的全部分卡，只用 `edit_card`，只传 `at` 和 `body`（需要缩短标题时再传 `title`）。命令末尾加上 `-Allow` 参数和任务文件给出的许可文件，它只允许你改自己的分卡：
 
 ```
 @'
 [{"tool":"edit_card","arguments":{"at":"Key/11|b|a|4","body":"**起点**\n- 依赖……"}}]
-'@ | pwsh -NoProfile -File "<HELPER>" - -Allow "<ALLOW>"
+'@ | zt-digest call - -Allow "<ALLOW>"
 ```
 
    输出每行一条：`N ok <地址>`；失败为 `N error <原因>` 并停止，随后一行 `resume: -From N -Addresses …`。只改第 N 个调用，用同一 here-string 重跑，并在末尾加上这两个参数。`edit in progress` 表示别的任务正在写入：原样重跑即可。

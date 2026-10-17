@@ -289,7 +289,7 @@
       }
     },
     {
-      "prompt": "card-compiler\\.ps1\" -Step plan",
+      "prompt": "zt-digest card -Step plan",
       "answer": {
         "ok": true,
         "output": "{\"picked\":0,\"with_faults\":0,\"faults\":0,\"review\":0,\"orphans\":0,\"jobs\":[]}",
@@ -297,7 +297,7 @@
       }
     },
     {
-      "prompt": "card-compiler\\.ps1\" -Step report",
+      "prompt": "zt-digest card -Step report",
       "answer": {
         "ok": true,
         "output": "{\"cards\":0,\"faults_before\":0,\"faults_after\":0}",

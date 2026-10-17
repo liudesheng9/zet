@@ -28,6 +28,11 @@ const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: build
 let planJobs = 21
 let applyPending = 0
 let explainApplies = 0
+// The scripts ported to zt-digest (ZD_TOOLS in zt-digest-lib.js): tool → script.
+const ZT_DIGEST_TOOLS = { audit: 'digest-audit', card: 'card-compiler', model: 'model-compiler', 'model-context': 'model-context', 'list-models': 'list-models' }
+// A tool command has a parameter after the tool name; the approval lines name tools without one.
+const ZT_DIGEST_COMMAND = /zt-digest (?:audit|card|model-context|list-models|model) -[A-Za-z][^\n]*/
+const canonical = (cmd) => cmd.replace(/^zt-digest (audit|card|model-context|list-models|model)\b/, (m, tool) => `pwsh -NoProfile -File "E:\\zet\\scripts\\book-digest\\${ZT_DIGEST_TOOLS[tool]}.ps1"`)
 function runtime(kind, opts0 = {}) {
   const calls = []
   const managed = []
@@ -35,13 +40,21 @@ function runtime(kind, opts0 = {}) {
   const logs = []
   const phases = []
   const pool = { alive: 0, peak: 0, prompts: [] }
-  const commandOf = (prompt) => (String(prompt).match(/pwsh -NoProfile -File[^\n]*/) || [''])[0]
+  // The command in a prompt: a pwsh script, or a zt-digest tool. A tool's command is written in the form of
+  // the script it replaced (`pwsh -NoProfile -File "<scripts>\<script>.ps1" ...`), so the checks below match
+  // one form; `raw` keeps the command as the prompt gave it.
+  const commandOf = (prompt) => {
+    const text = String(prompt)
+    const found = [text.match(/pwsh -NoProfile -File[^\n]*/), text.match(ZT_DIGEST_COMMAND)].filter(Boolean).sort((a, b) => a.index - b.index)[0]
+    return found ? canonical(found[0]) : ''
+  }
   const json = (o) => JSON.stringify(o)
   const job = (id) => ({ id, files: ['a', 'b'], prompt: 'p' })
   const answer = (prompt, opts) => {
     const label = opts.label || ''
     const cmd = commandOf(prompt)
-    calls.push({ label, phase: opts.phase, model: opts.model, cmd, prompt: String(prompt) })
+    const raw = (String(prompt).match(ZT_DIGEST_COMMAND) || [''])[0]
+    calls.push({ label, phase: opts.phase, model: opts.model, cmd, raw, prompt: String(prompt) })
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
     if (label === 'prepare book') return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
     if (label === 'math: index') return { ok: true, output: json({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }) }
@@ -204,6 +217,10 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   const labels = calls.map(c => c.label)
   const cmds = calls.map(c => c.cmd).filter(Boolean)
   check(result && result.mode === 'full', 'econ full: runs to its end')
+  const ported = /(card-compiler|model-compiler|digest-audit|list-models|model-context)\.ps1/
+  check(cmds.some(c => ported.test(c)) && calls.filter(c => ported.test(c.cmd)).every(c => /^zt-digest (card|model|audit|list-models|model-context) -/.test(c.raw)),
+    'econ full: the ported scripts run as zt-digest tools, never through pwsh')
+  check(calls.filter(c => /^(digest|link) manager/.test(c.label)).every(c => /zt-digest call/.test(c.prompt)), 'econ full: digest and link managers approve the zt-digest helper')
   check(labels.indexOf('terms: plan') > labels.indexOf('prepare book') && labels.indexOf('terms: plan') < labels.findIndex(l => /^digest manager/.test(l)), 'econ full: the term table runs after Prepare and before the digest')
   check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -Book Key -Staging "D:\\x\\Key".* -Groups "1,2" -Sample 0\.1 -NoOrphans/.test(c)), 'econ full: a card cycle per digest block, with -Groups, the sample, and no orphans')
   check(cmds.some(c => /-Step plan -Work "[^"]*cards-link"/.test(c)) && !cmds.some(c => /cards-link".*-Rules/.test(c)), 'econ full: the link check runs with the default hard rules')
@@ -217,7 +234,7 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(result.terms && result.terms.ok && result.cards && result.cards.blocks.length === 1 && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, cards, organize, and audit')
   check(phases.includes('Cards') || calls.some(c => c.phase === 'Cards'), 'econ full: the card cycle runs in the Cards phase')
   check(/shared-prefix\.md/.test(calls.find(c => /^digest manager/.test(c.label)).prompt) && /link-prefix\.md/.test(calls.find(c => /^link manager/.test(c.label)).prompt), 'econ full: the digest and link runs read the economics profile\'s prefixes')
-  check(cmds.some(c => /prepare-book-digest\.ps1 .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'econ full: Prepare builds the prompt from the base and the model-card supplement, with no event candidates')
+  check(cmds.some(c => /prepare-book-digest\.ps1"? .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'econ full: Prepare builds the prompt from the base and the model-card supplement, with no event candidates')
   const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
   check(labels.indexOf('find models: whole book') > lastDigest && labels.indexOf('events: write') > lastDigest && labels.indexOf('events: report') < labels.indexOf('prepare link pass'), 'econ full: the model layer and the event layer run after the digest and before the link pass')
   check(cmds.some(c => /event-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.events && result.events.status === 'done' && result.events.applied.created === 1, 'econ full: the event layer applies and reports its Event Cards')
@@ -368,7 +385,7 @@ const mbase = { ...base, hubs: true, figures: false }
   check(pool.peak <= 8 && managed.every(m => m.jobs.length <= 8), `math protocol: at most 8 managers at once and 8 jobs per manager (peak ${pool.peak})`)
   check(calls.filter(c => /^(boundary|proof|theory|notation):/.test(c.label)).every(c => c.model === 'haiku'), 'math protocol: Haiku runs every math step and manager')
   check(!labels.some(l => /^(events|findings):/.test(l)) && !cmds.some(c => /(event|finding)-compiler/.test(c)), 'math full: no event or empirical-results layer (the economics set\'s)')
-  check(cmds.some(c => /prepare-book-digest\.ps1 .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'math full: Prepare builds the base prompt with the model-card supplement (the math supplement follows in math-prefix.md)')
+  check(cmds.some(c => /prepare-book-digest\.ps1"? .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'math full: Prepare builds the base prompt with the model-card supplement (the math supplement follows in math-prefix.md)')
   check(!logs.some(l => /failed(?! none)/.test(l)), `math full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
 }
 {

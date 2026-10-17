@@ -235,7 +235,7 @@ for ($g = 0; $g -lt $groups.Count; $g++) {
 - 锚点卡片：``$anchor``
 - 章节：$($groups[$g][0].chapter)；小节：$($headings -join '；')（文件 $($sections -join '、')，原文附在下面）
 - 用词最接近的其他小节（先看这些）：$($related -join '；')
-- 写入命令：``... | pwsh -NoProfile -File "$installedHelper" - -Log "$owned" -SrcLog "$srcLog" -TopicGate "$gate"``
+- 写入命令：``... | zt-digest call - -Log "$owned" -SrcLog "$srcLog" -TopicGate "$gate"``
 - SELF-CHECK: ``zt-check --cards "$anchor" --log "$owned" --book $CitationKey``
 - 现有主题卡片快照：``$staging\snapshot-$id.md``（本组启动时生成）
 - 全书索引：``$($manifest.index)``

@@ -13,7 +13,7 @@
   ```
   @'
   [{"tool":"search_cards","arguments":{"type":"event","query":"通用汽车"}}]
-  '@ | pwsh -NoProfile -File "{{HELPER}}" -
+  '@ | zt-digest call -
   ```
 
   同一事件已有事件卡时（别的书也可能报告过它），在 `existing` 写那张卡的地址。脚本在它的来源行后追加本书的来源和证据作用，不再建新卡。

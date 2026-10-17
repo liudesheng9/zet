@@ -93,7 +93,6 @@ struct Compiler {
     state_file: String,
     /// `$Helper`, `$PSCommandPath`, `$Check`: the names job files carry.
     helper: String,
-    command: String,
     check: String,
     docs: Docs,
     explain_args: String,
@@ -220,7 +219,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         json!({ "order": [], "models": {}, "jobs": {}, "rereview": [], "reviews": [], "seq": 0 })
     };
     let mut c = Compiler {
-        command: scripts.file("model-compiler.ps1"),
         helper: scripts.helper.clone(),
         check: "zt-check".into(),
         p,
@@ -1962,8 +1960,8 @@ impl Compiler {
     /// `Get-ExplainCheckCommand`: the SELF-CHECK line of an explain job file.
     fn explain_check_command(&self, id: &str) -> String {
         format!(
-            "pwsh -NoProfile -File \"{}\" -Step explain-check -Work \"{}\" -Job \"{id}\" -MaxSentences {} -MaxChars {} -MaxSteps {} {}",
-            self.command, self.p.work, self.p.max_sentences, self.p.max_chars, self.p.max_steps, self.explain_args
+            "zt-digest model -Step explain-check -Work \"{}\" -Job \"{id}\" -MaxSentences {} -MaxChars {} -MaxSteps {} {}",
+            self.p.work, self.p.max_sentences, self.p.max_chars, self.p.max_steps, self.explain_args
         )
     }
 

@@ -204,7 +204,7 @@ try {
         [ordered]@{ address = $d2; idea = '把上界代入融资条件。（补：书中未写）'; notes = @{ '1' = '这一步代入上一张的结果。' }; meaning = '清算价值够大，项目才借得到钱。' }
     )), $utf8)
     # explain-check: the writer's own check prints what explain-apply will refuse, and writes nothing.
-    Assert ($jobFile -match "SELF-CHECK: pwsh -NoProfile -File `"[^`"]+model-compiler\.ps1`" -Step explain-check -Work `"[^`"]+`" -Job `"$([regex]::Escape($explain.jobs[1].id))`" -MaxSentences 12 .*-MaxExplainChars 600") "explain: the job file names its SELF-CHECK command ($(($jobFile -split "`n") -match 'SELF-CHECK'))"
+    Assert ($jobFile -match "SELF-CHECK: zt-digest model -Step explain-check -Work `"[^`"]+`" -Job `"$([regex]::Escape($explain.jobs[1].id))`" -MaxSentences 12 .*-MaxExplainChars 600") "explain: the job file names its SELF-CHECK command ($(($jobFile -split "`n") -match 'SELF-CHECK'))"
     $c1 = @(Run 'explain-check' @('-Job', $explain.jobs[0].id))
     Assert ($c1[-1] -eq 'faults: 2' -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1'])) explain R16 " }).Count -eq 1 -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1~3'])) explain no entry" }).Count -eq 1 -and @($c1 | Where-Object { $_ -match '^\(blocked, not counted\)' }).Count -eq 1) "explain-check: the long 思路 and the missing entry are faults, the blocked part is not counted ($($c1 -join ' / '))"
     $c2 = @(Run 'explain-check' @('-Job', $explain.jobs[1].id))
@@ -224,7 +224,7 @@ try {
         [ordered]@{ address = $ids['D1']; idea = '先求还款的上界。'; notes = @{}; meaning = '它给出上界。' },
         [ordered]@{ address = $ids['D1~3']; idea = '把两段合起来。'; notes = @{}; meaning = '还款不超过清算价值。' }
     )), $utf8)
-    Assert ($follow -match 'SELF-CHECK: pwsh .*-Step explain-check') 'explain-apply: the follow-up names the SELF-CHECK command'
+    Assert ($follow -match 'SELF-CHECK: zt-digest model .*-Step explain-check') 'explain-apply: the follow-up names the SELF-CHECK command'
     $c3 = @(Run 'explain-check' @('-Job', $explain.jobs[0].id))
     Assert ($c3[-1] -eq 'faults: 0') "explain-check: the follow-up's new result file passes ($($c3 -join ' / '))"
     $ap2 = Last (Run 'explain-apply')

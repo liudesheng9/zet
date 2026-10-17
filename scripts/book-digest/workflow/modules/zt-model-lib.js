@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v1 ====
+// ==== module zt-model-lib v2 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list
 // (list-models.ps1) and the model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill,
 // derive, review, split → report and clean-up (model-compiler.ps1 does every structural step). A book type
@@ -19,7 +19,7 @@ function zmlMake(ctx, p) {
   }
   const listModels = (selector, label) => zAgent(
     `List the Model Cards of a ZET book digest. Run this one PowerShell command and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
-pwsh -NoProfile -File ${SCRIPTS}\\list-models.ps1 -Staging "${OUT}" ${selector}
+${Z.tool('list-models')} -Staging "${OUT}" ${selector}
 If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
     { label, phase: 'Models', model: 'haiku', schema: MODEL_LIST },
   )
@@ -43,7 +43,7 @@ If it fails, return ok=false with the error text and models=[]; do not retry wit
     const dsh = `${MODEL_WORK}\\${name}`
     managerFolders.push(dsh)
     const tag = `${kind} ${batch[0].address}${batch.length > 1 ? ` +${batch.length - 1}` : ''}`
-    const step = (s, extra = '') => `pwsh -NoProfile -File "${COMPILER}" -Step ${s} -Work "${dsh}" -Staging "${OUT}" ${LIMITS}${COMPILER_DOCS}${extra}`
+    const step = (s, extra = '') => `${COMPILER} -Step ${s} -Work "${dsh}" -Staging "${OUT}" ${LIMITS}${COMPILER_DOCS}${extra}`
     const sessions = {}
     const run = async (what, command, skills, effort, opts = {}) => {
       const r = await drive(`${what}: ${tag}`, { command, dsh, skills, effort, sessions: opts.continues ? sessions : null, cleanup: opts.cleanup })
@@ -169,7 +169,7 @@ Return late_deleted (the count) and folders (how many folders you handled).`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '1', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '2', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model list and the model compiler (brief, architect plan, fill, derive, review, split) for the model layer.',
 })
 // ==== end module zt-model-lib ====

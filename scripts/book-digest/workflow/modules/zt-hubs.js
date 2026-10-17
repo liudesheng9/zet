@@ -1,4 +1,4 @@
-// ==== module zt-hubs v1 ====
+// ==== module zt-hubs v2 ====
 // The hub compiler on the whole agent Workspace: a Haiku hub manager reads the survey and chooses the limits;
 // hub-compiler.ps1 does every structural step; DeepSeek plans the fields and writes each hub as JSON; Haiku
 // drivers relay the DeepSeek jobs; check and at most hubFixRounds fix rounds; report and clean-up.
@@ -15,7 +15,7 @@ const ZH_LIMITS = {
   required: ['ok', 'limits'],
 }
 defineModule({
-  id: 'zt-hubs', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-hubs', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the Hub Cards of the whole agent Workspace (hub-compiler.ps1 with a Haiku hub manager).',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -26,7 +26,7 @@ defineModule({
     const Z = zdMake(ctx, p)
     const A = Z.A
     const HUB_WORK = Z.HUB_WORK
-    const hstep = (s, extra = '') => `pwsh -NoProfile -File "${Z.HUB_COMPILER}" -Step ${s} -Work "${HUB_WORK}"${extra}`
+    const hstep = (s, extra = '') => `${Z.HUB_COMPILER} -Step ${s} -Work "${HUB_WORK}"${extra}`
     const manager = await Z.zAgent(
       `You are the hub manager of a ZET slip-box. Hub Cards are the ways into a subject: a topic hub for each large Topic tree, a line hub for each large branch, field hubs over related Topics, and one register. A script builds them; DeepSeek writes them. You choose the limits that decide which hubs the policy requires and how large a hub may be. You read no Card.
 1. Run this one PowerShell command in the foreground with timeout 600000 and wait for it:

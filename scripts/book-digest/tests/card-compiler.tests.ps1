@@ -77,7 +77,7 @@ try {
     $jobText = Get-Content $state.jobs[$fix[0].id].file -Raw -Encoding utf8
     Assert ($jobText -match "卡片 ``$([regex]::Escape($b))``" -and $jobText -match 'R4') 'plan: the job file lists the Card and its faults'
     Assert ((Test-Path (Join-Path $work 'dsh-card-instructions.zh.md')) -and (Get-Content (Join-Path $work 'dsh-card-instructions.zh.md') -Raw -Encoding utf8) -match "\[\[$key\]\]") 'plan: the instruction file names the book'
-    $selfCheck = "(?m)^SELF-CHECK: pwsh -NoProfile -File ""$([regex]::Escape($compiler))"" -Step precheck -Work ""$([regex]::Escape((Resolve-Path $work).Path))"" -Job "
+    $selfCheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $work).Path))"" -Job "
     Assert ($jobText -match ($selfCheck + [regex]::Escape($fix[0].id) + '\s*$')) 'plan: the fix job file names its precheck command'
     Assert ((Get-Content $state.jobs[$orph[0].id].file -Raw -Encoding utf8) -match ($selfCheck + [regex]::Escape($orph[0].id) + '\s*$')) 'plan: the orphan job file names its precheck command'
 

@@ -65,7 +65,7 @@
 ```
 @'
 [{"tool":"append_card","arguments":{"at":"…","text":"…"}}, …]
-'@ | pwsh -NoProfile -File "{{HELPER}}" - -Allow "…"
+'@ | zt-digest call - -Allow "…"
 ```
 
 失败时输出 `N error …` 和 `resume: -From N -Addresses …`：只修改第 N 个调用，在命令末尾加上这两个参数重跑。

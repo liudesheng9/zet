@@ -31,12 +31,6 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use zt_check::mcp::{reply_error, reply_text};
 
-/// The read-only tools: a batch of only these needs no allow-list or log.
-pub const READ_TOOLS: &[&str] = &[
-    "list_workspaces", "list_trees", "get_tree", "get_card", "get_model", "get_hub", "list_hubs", "list_links",
-    "list_broken_links", "search_cards",
-];
-
 #[derive(Default)]
 pub struct Options {
     pub from: usize,
@@ -66,6 +60,7 @@ impl Options {
 
 /// One call that succeeded.
 pub struct Done {
+    #[allow(dead_code)]
     pub index: usize,
     /// The line the helper prints for it.
     pub line: String,
@@ -315,6 +310,7 @@ pub fn invoke(zt: &mut Zt, calls: &[Value]) -> Result<Vec<Value>> {
 }
 
 /// One read call; its answer.
+#[allow(dead_code)]
 pub fn read(zt: &mut Zt, tool: &str, arguments: Value) -> Result<Value> {
     invoke(zt, &[json!({ "tool": tool, "arguments": arguments })])?
         .into_iter()
