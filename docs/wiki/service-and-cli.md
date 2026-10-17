@@ -404,6 +404,8 @@ Command plans (`command_plan`):
 
 ## Data and storage
 
+The Link-index migration already records `metadata.archive_id` as 16 OS-random bytes encoded by 32 hexadecimal characters. This persistent archive identity is reused by the prepared-run ledger contract and exposed through `get_cards`, alongside the canonical directory path. It survives Card clearing and consistent SQLite backups/restores. A fresh database at the same directory gets another identity. Readers never substitute a new value for missing/corrupt identity metadata; doing that would silently rebind pending work.
+
 ### Config directory
 
 | File | Written by | Content |

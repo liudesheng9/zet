@@ -1,6 +1,6 @@
 //! Per-request Card projections. Bodies and domain calculations remain authoritative.
 use crate::{Access, Card, ops::Snapshot};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -447,7 +447,14 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
             text_facts(&tx, &crate::load_card(&tx, at)?)?
         });
     }
-    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?});
+    let archive_id: String = tx.query_row(
+        "SELECT value FROM metadata WHERE key='archive_id'", [], |row| row.get(0))
+        .context("missing archive identity; archive migration must complete before ledger binding")?;
+    if archive_id.len() != 32 || !archive_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        bail!("invalid archive identity; refusing an unbound read");
+    }
+    let archive_path = std::fs::canonicalize(root).context("resolve archive identity path")?;
+    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":{"id":archive_id,"path":archive_path.to_string_lossy()}});
     if let Some(snapshot) = &snapshot {
         log_large_context(
             root,

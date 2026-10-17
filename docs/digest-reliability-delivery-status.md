@@ -145,6 +145,14 @@ All 356 root tests pass with zero failures and one intentionally ignored real-cl
 
 #69 remains open for the R222 unit-completion evidence alongside the later ledger/workflow adaptation. The paragraph ownership and bounded draft-check contracts are implemented and tested; no actual digest workflow or live archive migration has been performed.
 
+## #70: prepared-run identity foundation (in progress)
+
+The existing archive migration already stores a random 128-bit `archive_id` in metadata. `get_cards`, including an empty address list, now exposes that unchanged identifier with the resolved archive directory as `archive_identity`. The prepared-run binding can therefore distinguish a different database restored at the same path while retaining the identity of a consistent backup. Missing/malformed identity refuses the read; it is never replaced silently. This reuses the existing 32-hex-digit value rather than creating another UUID/table.
+
+A real MCP/CLI regression first failed because identity was unavailable, then passes across ordinary writes, service restarts, replacement at the same directory, consistent backup restore and confirmed Card clearing. Corrupt/missing metadata is also refused without generating another id. All 46 Workspace/MCP tests pass (`D:/zt-target/qualification/issue70-archive-identity-mcp.log`); focused evidence is `issue70-archive-identity-red/green.log`.
+
+This establishes the archive identity transport only. The per-preparation five-table ledger, source/manifest/contracts binding, claims, deterministic group completion and downstream registration remain unfinished; #70 stays open. No production archive was migrated or rebound.
+
 ## #76: shared orphan scope and predicate
 
 `tools/zt-check/src/graph.rs` now owns shared purpose classification, the orphan predicate and complete revision-scoped report assembly. Audit, the Card cycle and standalone Card checks use that classification. Standalone checks read one complete fresh title catalogue for the anchor denominator rather than mistaking three links for a whole-book majority in a requested subset.

@@ -913,7 +913,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_cards",
             "Get cards",
-            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Reports missing addresses explicitly.",
+            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Reports missing addresses explicitly. archive_identity contains the persisted random 128-bit id and resolved archive path, including for an empty address list; bind prepared runs to it rather than a path alone.",
             json!({"addresses":{"type":"array","items":{"type":"string"},"maxItems":200},"view":{"type":"string","enum":["full","text"],"default":"full"}}),
             &["addresses"],
             true,

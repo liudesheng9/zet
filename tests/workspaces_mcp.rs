@@ -23,6 +23,94 @@ struct TestHome {
 }
 
 #[test]
+fn a_ledger_can_distinguish_archive_replacement_from_a_consistent_restore_at_the_same_path() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let before = mcp.ok("get_cards", json!({"addresses":[],"view":"text"}));
+    let identity = before["archive_identity"].clone();
+    let id = identity["id"].as_str().expect("stable archive identity");
+    assert!(id.len() == 32 && id.bytes().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(
+        identity["path"],
+        fs::canonicalize(&home.archive_root)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    mcp.ok("create_topic", json!({"title":"Retained archive"}));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_identity"],
+        identity
+    );
+    let saved = home.archive_root.join("consistent-snapshot.sqlite3");
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    conn.execute("VACUUM INTO ?1", [saved.to_string_lossy().as_ref()])
+        .unwrap();
+    drop(conn);
+    drop(mcp);
+    home.cmd().arg("down").assert().success();
+    fs::rename(
+        home.archive_root.join("zt.sqlite3"),
+        home.archive_root.join("original.sqlite3"),
+    )
+    .unwrap();
+    home.cmd().arg("up").assert().success();
+    let mut fresh = home.mcp();
+    let replacement =
+        fresh.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_identity"].clone();
+    assert_ne!(
+        replacement["id"], identity["id"],
+        "a different database at the same path must not reuse pending ledger work"
+    );
+    assert_eq!(replacement["path"], identity["path"]);
+    drop(fresh);
+    home.cmd().arg("down").assert().success();
+    fs::copy(&saved, home.archive_root.join("zt.sqlite3")).unwrap();
+    home.cmd().arg("up").assert().success();
+    let mut restored = home.mcp();
+    assert_eq!(
+        restored.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_identity"],
+        identity
+    );
+    assert_eq!(
+        restored.ok("get_card", json!({"at":"0/0"}))["title"],
+        "Retained archive"
+    );
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .success();
+    assert_eq!(
+        restored.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_identity"],
+        identity,
+        "clearing Cards keeps the archive identity"
+    );
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    conn.execute("DELETE FROM metadata WHERE key='archive_id'", [])
+        .unwrap();
+    let (missing, failed) = restored.call("get_cards", json!({"addresses":[],"view":"text"}));
+    assert!(failed && missing.to_string().contains("missing archive identity"));
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM metadata WHERE key='archive_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "a read must not invent a replacement identity");
+    conn.execute(
+        "INSERT INTO metadata(key,value) VALUES('archive_id','invalid')",
+        [],
+    )
+    .unwrap();
+    let (invalid, failed) = restored.call("get_cards", json!({"addresses":[],"view":"text"}));
+    assert!(failed && invalid.to_string().contains("invalid archive identity"));
+    conn.execute("UPDATE metadata SET value=?1 WHERE key='archive_id'", [id])
+        .unwrap();
+}
+#[test]
 fn an_oversized_preview_reply_is_rolled_back_before_the_mcp_reply_limit() {
     let home = TestHome::new();
     home.configure_and_up();
