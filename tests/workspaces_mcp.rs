@@ -29,8 +29,13 @@ fn bulk_text_has_the_summary_facts_needed_by_scoped_digest_checks() {
     let mut mcp = home.mcp();
     mcp.ok("create_topic", json!({"title":"Facts"}));
     mcp.ok("create_successor", json!({"at":"0/0","title":"Premise"}));
-    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","title":"Claim","body":"## 说明\n\n依赖 [[0/1]]，也参照 [[0/1]]。\n\n```text\n[[MissingBook]]\n```"}));
+    mcp.ok("create_successor", json!({"at":"0/1","title":"Later removed"}));
+    mcp.ok("create_successor",json!({"at":"0/1","kind":"side","title":"Claim","body":"## 说明\n\n依赖 [[0/1]]，也参照 [[0/1]]。另见 [[0/2]] 和 [[0/2]]。\n\n```text\n[[MissingBook]]\n```"}));
+    let deletion = mcp.ok("delete_card", json!({"at":"0/2"}));
+    let deleted=mcp.ok("delete_card", json!({"at":"0/2","confirm":deletion["confirm"]}));
+    assert_eq!(deleted["applied"],true);
     let full = mcp.ok("get_card", json!({"at":"0/1|a"}));
+    assert!(full["outbound"].as_array().unwrap().iter().any(|link|link["broken"]==true));
     let tree = mcp.ok("get_tree", json!({"tree":"0"}));
     let summary = tree["cards"]
         .as_array()
@@ -47,6 +52,8 @@ fn bulk_text_has_the_summary_facts_needed_by_scoped_digest_checks() {
         );
     }
     assert_eq!(text["parent_address"], full["parent"]["address"]);
+    assert_eq!(text["outbound_count"], full["outbound"].as_array().unwrap().len());
+    assert_eq!(text["outbound_count"], 2);
     assert!(text.get("model").is_none() && text.get("hubs").is_none());
 }
 

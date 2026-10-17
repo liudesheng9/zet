@@ -93,6 +93,8 @@ Ordinary Card reads load the requested Card, indexed inbound/outbound neighbours
 | Indexed lists | Workspace SQL counts and occurrence-based Broken link counts; roots with range counts for trees; distinct source-target pairs for `list_links`; each Broken occurrence, with its actual source line, for `list_broken_links`. Only Broken sources need their body parsed for that list. |
 | Hub policy | Global policy enumerates Card metadata/title lines, Hub Card bodies and indexed relationships once. It does not load ordinary bodies. The existing `hub::Graph` computes levels, faults, coverage, candidates and policy results using that input. |
 
+The text view also returns `outbound_count`, the number of distinct authored Link targets including Broken links. Repeated occurrences count once and fenced text does not count, matching `get_card.outbound.length`. The existing indexed query uses a left existence join to retain this count while still returning only valid targets in `links`/`kinds`. This preserves the digest's structure/index ownership guard without calculating the full Card view.
+
 The encoded tool result for `get_cards`, `get_tree` and `export_titles` has an 8 MiB limit, counting both pretty text and structured content. A limit error has `isError: true`, `error`, `code: "read_limit"`, `limit_kind` (`addresses` or `reply_bytes`), `limit`, `actual`, and `complete: false`; it returns no partial Cards. The caller reduces its chunk. If several reads have different revisions, callers retry once or record a changing view. Unknown bulk view values/types, malformed addresses arrays and nonboolean `bodies` fail explicitly.
 
 ### Command and client config
@@ -428,6 +430,8 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+
+- `2026-10-17` — Add the lean distinct `outbound_count`, preserving the full view's valid/Broken/repeated/fenced target semantics. Public MCP tests compare the count after a confirmed target deletion; ownership inference needs no full projection.
 
 - `2026-10-17` — Extend the lean text batch with existing summary facts needed by scoped checks and link-candidate exclusion; compare them with the tree/full-Card projections through public MCP tests.
 

@@ -684,7 +684,14 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         let body = s(&full["body"]);
         // Hub Cards belong to the hub stage, and structure Cards (long lists of Links) to the
         // coordinator, not to a group.
-        if eq(&s(&full["type"]), "hub") || ps::ps_count(&full["outbound"]) >= 8 {
+        if eq(&s(&full["type"]), "hub") {
+            continue;
+        }
+        let outbound=match full["outbound_count"].as_u64() {
+            Some(count)=>count,
+            None=>bail!("incomplete prepare-link input: missing outbound count for `{address}`"),
+        };
+        if outbound >= 8 {
             continue;
         }
         let mut n: Option<i64> = None;

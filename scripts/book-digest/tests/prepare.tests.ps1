@@ -196,6 +196,13 @@ try {
     [IO.File]::WriteAllText((Join-Path $staging 'linked-g01.txt'), "done`n", $utf8)
     $rerun = (Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)).last | ConvertFrom-Json
     Assert (($rerun.pending -join ',') -eq '2,3' -and $rerun.groups[0].done) 'linked-gNN.txt takes a group off the pending list'
+    # Group 2 has no owned log, so the structure/index inference guard runs.
+    $targets = @('Test2021','Test2021/1','Test2021/2','Test2021/3','Test2021/1|a','Test2021/2|a','0/0','0/1')
+    $indexBody = "来源：[[Test2021]] §1.1`n`n" + (($targets | ForEach-Object { "[[$_]]" }) -join "`n")
+    $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at='Test2021/2';kind='side';title='结构索引';body=$indexBody}})
+    $structureRun = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)
+    $structureAllow = @(Get-Content -LiteralPath (Join-Path $staging 'allow-g02.txt') -Encoding utf8)
+    Assert ($structureRun.code -eq 0 -and 'Test2021/2|b' -notin $structureAllow) 'bulk ownership inference preserves the eight-distinct-outbound structure guard with repeated targets'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

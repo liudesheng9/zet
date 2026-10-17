@@ -73,16 +73,18 @@ fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
     value["excerpt"] = json!(crate::ops::excerpt(
         value["body"].as_str().unwrap_or_default()
     ));
-    let mut query=conn.prepare_cached("SELECT l.target,l.kind FROM links l JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE l.source=?1 ORDER BY l.ord")?;
+    let mut query=conn.prepare_cached("SELECT l.target,l.kind,t.row_id IS NOT NULL FROM links l LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE l.source=?1 ORDER BY l.ord")?;
     let rows = query.query_map([&card.address], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, bool>(2)?))
     })?;
     let mut links = Vec::new();
     let mut seen = BTreeSet::new();
     let mut kinds = serde_json::Map::new();
     for row in rows {
-        let (target, kind) = row?;
-        if seen.insert(target.clone()) {
+        let (target, kind, exists) = row?;
+        let first=seen.insert(target.clone());
+        if !exists {continue;}
+        if first {
             links.push(target.clone());
         }
         if let Some(kind) = kind {
@@ -90,6 +92,7 @@ fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
         }
     }
     value["links"] = json!(links);
+    value["outbound_count"] = json!(seen.len());
     value["kinds"] = json!(kinds);
     value["edge"] = json!(crate::ops::edge(card));
     let parent = match crate::parent_location(&card.address) {
