@@ -16,7 +16,7 @@
 //! of the repository this binary was built from. The instruction
 //! files dsh-card-instructions.zh.md and dsh-orphan-instructions.zh.md are read from there too.
 
-mod relatedness;
+pub(crate) mod relatedness;
 mod text;
 
 use crate::args::Args;

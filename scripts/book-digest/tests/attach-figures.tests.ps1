@@ -1,11 +1,12 @@
 #Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\attach-figures.tests.ps1 [-Zt <zt.exe>]
-# Drives attach-figures.ps1 on a scratch archive (ZT_CONFIG_DIR, its own service) with a figures.json
-# standing in for the Scholar Archive, so no bridge is needed. Checks where a figure lands, that a
-# longer number (图 2.C.10) and Cards outside the book or on the anchor line are left alone, that a
-# Chinese numeral (图四) finds a Roman label (IV), and that a second run changes nothing. Also checks
-# the caption labels figures.ps1 reads. The live archive is not touched. -Zt runs a zt build that
-# is not installed yet (copied to the scratch folder and put first on PATH).
+# Drives attach-figures.ps1 (a forwarder to `zt-digest figures`) on a scratch archive (ZT_CONFIG_DIR,
+# its own service) with a figures.json standing in for the Scholar Archive, so no bridge is needed.
+# Checks where a figure lands, that a longer number (图 2.C.10) and Cards outside the book or on the
+# anchor line are left alone, that a Chinese numeral (图四) finds a Roman label (IV), and that a second
+# run changes nothing. The caption labels and mention patterns (figures.ps1 before the port) are
+# checked by the unit tests of tools/zt-digest/src/figures.rs. The live archive is not touched. -Zt
+# runs a zt build that is not installed yet (copied to the scratch folder and put first on PATH).
 param([string]$Zt = '')
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -22,19 +23,8 @@ $env:ZT_CONFIG_DIR = Join-Path $scratch 'config'
 $env:ZT_GUI_PORT = '0'
 $attach = Join-Path $PSScriptRoot '..\attach-figures.ps1' | Resolve-Path | ForEach-Object Path
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
-. (Join-Path $PSScriptRoot '..\figures.ps1')
 $failed = 0
 function Assert($condition, $message) { if (-not $condition) { Write-Output "FAIL: $message"; $script:failed++ } else { Write-Output "ok: $message" } }
-
-# --- caption labels and mention patterns (no archive needed) -------------------------------------------
-Assert ((Get-FigureLabels 'Figure 2.C.1 (left)\') -join ',' -eq '2.C.1') 'a caption line gives its label'
-Assert ((Get-FigureLabels 'FIGURE IV') -join ',' -eq 'IV,四') 'a Roman label also gives its Chinese numeral'
-Assert ((Get-FigureLabels '图四\') -join ',' -eq '四,IV') 'a Chinese numeral also gives its Roman label'
-Assert (-not (Get-FigureLabels 'The figure shows a curve.')) 'prose is not a caption'
-Assert ((Get-FigureImageName '![](../Assets/G%20H/images/abc.jpg)\') -eq 'abc.jpg') 'an image line names its file'
-$p = Get-FigureMentionPattern '2.C.1'
-Assert (('如图 2.C.1 所示' -match $p) -and ('图2.C.1。' -match $p) -and -not ('图 2.C.10' -match $p) -and -not ('图 2.C.1.a' -match $p)) 'a mention never matches a longer number'
-Assert (('见图 I 中' -match (Get-FigureMentionPattern 'I')) -and -not ('图 II' -match (Get-FigureMentionPattern 'I'))) 'Roman labels do not run into each other'
 
 try {
     zt config set archive_root $archive | Out-Null

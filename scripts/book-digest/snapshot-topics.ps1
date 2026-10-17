@@ -8,40 +8,27 @@
   Reads through `zt mcp` (agent Access, read-only calls). Agent Topic trees list every Card;
   human Topic trees are listed too, marked read-only. Titles are cut to -TitleChars characters.
   Prints the number of Cards listed.
+
+  Parameters: -Out <file> (required), -TitleChars 40.
+
+  This script forwards every argument to `zt-digest snapshot-topics` (tools/zt-digest/src/snapshot.rs),
+  which reads through one `zt mcp`; callers should call the tool directly. ZT_DIGEST names another
+  zt-digest build.
 #>
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory)][string]$Out,
-    [int]$TitleChars = 40
-)
 $ErrorActionPreference = 'Stop'
-$utf8 = [Text.UTF8Encoding]::new($false)
-
-. (Join-Path $PSScriptRoot 'zt-calls.ps1')
-function Cut($text) { if ($text.Length -le $TitleChars) { $text } else { $text.Substring(0, $TitleChars) + '…' } }
-# Common facets read in Chinese; any other facet is the label its author wrote.
-$facetNames = @{ setting = '设定'; assumptions = '假设'; timing = '时序'; dynamics = '动态'; solution = '求解'; results = '结论'; intuition = '直觉'; limits = '局限' }
-function Mark($card) {
-    if ($card.type -eq 'model' -and $card.facet) { $name = if ($facetNames.ContainsKey($card.facet)) { $facetNames[$card.facet] } else { $card.facet }; return " [模型·$name]" }
-    switch ($card.type) { 'model' { ' [模型]' } 'event' { ' [事件]' } default { '' } }
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+# ZT_DIGEST names another build (a test of an unreleased zt-digest).
+$exe = if ($env:ZT_DIGEST) { $env:ZT_DIGEST } else { (Get-Command zt-digest -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+if (-not $exe) { throw 'zt-digest is not installed: run scripts\install-zt-digest.ps1' }
+# `pwsh -File` and `&` hand `-Name:value` over as two arguments (a switch value as a Boolean); the
+# tool takes `-Name:value`.
+$pass = [Collections.Generic.List[string]]::new()
+foreach ($a in $args) {
+    $last = if ($pass.Count) { $pass[$pass.Count - 1] } else { '' }
+    if ($last -match '^-[A-Za-z]\w*:$') { $pass[$pass.Count - 1] = $last + $(if ($a -is [array]) { $a -join ',' } else { "$a" }) }
+    elseif ($a -is [bool] -and $last -match '^-[A-Za-z]\w*$') { $pass[$pass.Count - 1] = "${last}:$a" }
+    elseif ($a -is [array]) { $pass.Add($a -join ',') }
+    else { $pass.Add("$a") }
 }
-
-$trees = (Invoke-Zt @(@{ tool = 'list_trees'; arguments = @{} })).trees
-$details = @(Invoke-Zt @($trees | ForEach-Object { @{ tool = 'get_tree'; arguments = @{ tree = $_.tree } } }))
-
-$text = [Text.StringBuilder]::new()
-[void]$text.AppendLine('# 现有卡片快照（本组启动时生成；之后其他组可能新增卡片；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）').AppendLine()
-$count = 0
-foreach ($workspace in 'agent', 'human') {
-    [void]$text.AppendLine($(if ($workspace -eq 'agent') { '## 代理工作区' } else { '## 人类工作区（只读，可链接）' }))
-    foreach ($tree in $details | Where-Object { $_.workspace -eq $workspace }) {
-        foreach ($card in $tree.cards | Sort-Object { $_.address }) {
-            $indent = if ($card.edge -eq 'root') { '- ' } else { '  - ' }
-            [void]$text.AppendLine("$indent``$($card.address)``$(Mark $card) $(Cut $card.title)")
-            $count++
-        }
-    }
-    [void]$text.AppendLine()
-}
-[IO.File]::WriteAllText($Out, $text.ToString(), $utf8)
-"$count cards -> $Out"
+& $exe snapshot-topics @pass
+exit $LASTEXITCODE
