@@ -5,7 +5,9 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(not(windows))]
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -596,34 +598,58 @@ fn start_service_at(root: &Path) -> Result<String> {
 
 #[cfg(windows)]
 fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
-    let exe = env::current_exe()?;
-    let script = format!(
-        "Start-Process -WindowStyle Hidden -FilePath {} -ArgumentList @('__daemon', {})",
-        powershell_quote(&exe),
-        powershell_quote(root)
-    );
-    let status = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("failed to launch daemon through PowerShell")?;
-    if !status.success() {
-        bail!("failed to launch daemon");
-    }
-    Ok(None)
-}
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
 
-#[cfg(windows)]
-fn powershell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+    let exe: Vec<u16> = env::current_exe()?
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // Windows argv parsing doubles a run of backslashes before a closing quote.
+    // Quotes themselves cannot occur in a Windows directory name.
+    let path: Vec<u16> = root.as_os_str().encode_wide().collect();
+    let trailing = path
+        .iter()
+        .rev()
+        .take_while(|&&unit| unit == b'\\' as u16)
+        .count();
+    let mut args: Vec<u16> = "zt __daemon \"".encode_utf16().collect();
+    args.extend(path);
+    args.extend(std::iter::repeat_n(b'\\' as u16, trailing));
+    args.extend([b'"' as u16, 0]);
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    // No inherited handles: a long-lived daemon must not keep its caller's
+    // capture pipes or file locks alive. All buffers live through this call.
+    let started = unsafe {
+        CreateProcessW(
+            exe.as_ptr(),
+            args.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if started == 0 {
+        return Err(io::Error::last_os_error()).context("failed to start daemon");
+    }
+    unsafe {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    Ok(Some(process.dwProcessId))
 }
 
 #[cfg(not(windows))]

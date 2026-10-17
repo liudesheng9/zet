@@ -16,8 +16,9 @@ machine ends the user's session.
 - `zt __boot` is `zt up` that records its outcome in `<config dir>\autostart.log` (and a
   `login start:` line in `zt.log`), because nobody sees its output. `zt autostart` shows the
   last outcome.
-- `zt up` waits up to 15 seconds for the daemon, since PowerShell starts slowly while the machine
-  is still signing in.
+- `zt up` starts `zt __daemon <root>` directly with `CREATE_NO_WINDOW` and null stdio. It needs
+  no shell on PATH and passes archive paths as one argument, including spaces and apostrophes.
+  It waits up to 15 seconds for the service record while the machine is still signing in.
 
 ## Down with the machine
 

@@ -372,6 +372,39 @@ fn path_with_only_fakes(directory: &std::path::Path) -> std::ffi::OsString {
     std::env::join_paths(paths).expect("test PATH")
 }
 
+#[cfg(windows)]
+#[test]
+fn service_starts_without_a_shell_and_preserves_archive_path() {
+    let mut home = TestHome::new();
+    home.archive_root = home._tmp.path().join("archive with spaces and 'quote'");
+    home.cmd()
+        .args(["config", "set", "archive_root"])
+        .arg(&home.archive_root)
+        .assert()
+        .success();
+    // A service launch needs only zt itself; no shell on PATH is required.
+    let empty_path = home._tmp.path().join("empty-path");
+    fs::create_dir(&empty_path).expect("empty PATH directory");
+    home.cmd()
+        .env("PATH", &empty_path)
+        .arg("up")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("service started pid:"));
+    home.cmd()
+        .env("PATH", &empty_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: up"));
+    home.cmd()
+        .env("PATH", &empty_path)
+        .arg("down")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("service stopped"));
+}
+
 #[test]
 fn service_bootstraps_configured_archive_root_and_reports_status() {
     let home = TestHome::new();
