@@ -1,6 +1,6 @@
 # Digest Run Issues (stiglitz2014learning): Proposal
 
-Status (2026-10-17): proposal, second version. Nothing in it is built yet, except the validator fix of I14 (commit `bb7e905`). The workflow `zt-econ-digest` is a frozen install (v3.3.0). Its changes go through the workflow-framework-protocol pre-flight as a new version of the digest base, so `zt-math-digest` gets them too.
+Status (2026-10-17): proposal, third version. Nothing in it is built yet, except the validator fix of I14 (commit `bb7e905`). The section "State of each issue" says what is open, fixed, or in progress as of 19:30 UTC. The workflow `zt-econ-digest` is a frozen install (v3.3.0). Its changes go through the workflow-framework-protocol pre-flight as a new version of the digest base, so `zt-math-digest` gets them too.
 
 ## Goals
 
@@ -32,7 +32,7 @@ Durations are wall-clock minutes from the run start (03:55 UTC).
 | `wf_96cd75b3-88a` | models, `only` = 66 failed | 42 min | 26 | 2.0 M | 6 of 66 attempted, 5 built (60 skipped as "already have their parts") |
 | `wf_cb793e9d-1ef` | models, `rebuild`, `only` = 61 | 54 min | 141 | 11.4 M | 20 built, 41 failed (19 lock, 15 validator, 7 other) |
 
-After three runs, 129 of 170 models are built and 7 groups have no Cards. The first session is still at work on the last 41 models when this document is written. The book needed three runs and still has gaps: G1 and G2 failed.
+After three runs, 129 of 170 models are built and 7 groups have no Cards. A fourth run (`wf_5f87c07b-01c`, the first of four rebuild batches for the last 41 models) is in progress when this document is written. The book needed three runs and still has gaps: G1 and G2 failed.
 
 ### Timeline of the full run
 
@@ -127,7 +127,7 @@ The card audit reads with 6 worker processes (`read_many`, `tools/zt-digest/src/
 
 **I20. Commands run without the long timeout.** Snapshots ran under the 120 s default; card steps ran into the 600 s cap.
 
-**I21. Managers break the step order.** Managers 18, 19, and 20 started DeepSeek before the snapshot. The order lives only in the prompt.
+**I21. Managers break the step order.** At least 8 groups (6, 11, 41, 86, 91, 96, 132, and others) started DeepSeek before their snapshot existed. Those runs placed and linked their Cards with no snapshot or an older one (group 132 used group 131's). The order lives only in the prompt.
 
 ### E. Reporting
 
@@ -148,6 +148,70 @@ From `audit.md`: 157 orphans; 77 Card language faults; 15 Cards with no kinded L
 ### G. Operator friction
 
 **I27. The workflow does not take a book title.** The session found the archive file, chose `startHeading` 前言, `endHeading` 注释, and `skipHeadings`, and wrote the BibTeX entry by hand.
+
+### H. Found in a second sweep of every agent report
+
+A second sweep read the final report of every agent of the four runs (781 error and note fields) and checked the slip-box. It found these issues.
+
+**I28. A repair run drops the downstream work of the models it builds.** Mode `models` skips Organize. In the full run, Organize turned the model architects' link suggestions ("X 应链接 C": the Card X should link part C) into 237 notes, and the notes cycle applied them. The repair runs made 65 more such suggestions (run 2: 6, run 3: 54, run 4 so far: 5). No layer applies them. The structure Card, the link pass, and the hubs also describe the models as they were before the repair.
+
+**I29. The skeleton covers over lost groups.** The skeleton step wrote anchor Cards for the 7 groups that were never digested. `stiglitz2014learning/92` is titled "第 92 组：分析" and summarizes the group from its neighbours, with no Idea Card under it. The audit sees an anchor and reports no gap.
+
+**I30. The endnotes are outside the digest range, but the models need them.** The run digests from 前言 to just before 注释, so the endnotes are not in any group text. More than 20 architect notes say a footnote's text is missing, for example the definition of σ, which the book gives only in a footnote. The writers must then guess or leave the step open.
+
+**I31. The digest's Model Card drafts state things the book does not say.** The architects found many claims with no source in the book ("书中没有", "原文无据", "须核实"): five in `stiglitz2014learning/1|b` alone, and others in `35|a`, `101|a`, and `114|a`. The check happens only for models that the compiler rebuilds. No step checks Idea Cards against the text in this way.
+
+**I32. The link pass cannot fix its own sentences.** When zt-check flags a sentence that the link pass wrote, the pass can only append (`append_card`); its `edit_card` failed on the lock. Faults stayed: R2 in `253/3`, L1 in five Cards `77|b` to `77|i` and in `118`, an unrecognized relation word in `235/1|c`, R4 in `55|a`.
+
+**I33. Edits corrupt Card text.** 31 Cards of the agent Workspace repeat their title line in the body (10 in this book, 21 in Topic trees; `stiglitz2014learning/31` has it three times). A link manager reported that an edit changed characters (方向 → 向向, 代价 → 价价) and repeated a title line, and that it fixed them. 5 older Cards in `hart1995firms` and `mascolell1995microeconomic` contain 向向 or 价价 and need a check. zt-check reports none of this.
+
+**I34. Step agents skip their step without a fault.**
+- A derive agent did not run `model derive` for `67|a` (run 3): it read the relayed user request ("rebuild all 61") as a conflict with its step.
+- A review step got an empty job list (`{"jobs":[]}`) for `59|a` and did nothing.
+- 5 agents ended with no structured output.
+
+Each counts as a finished step today.
+
+**I35. Two Finding jobs were never run.** `finding -Step apply` returned `ok: false` with `pending_jobs: 2` (16 applied, 11 Findings made). The agent did not run them, as its prompt said, and nothing else did.
+
+**I36. DeepSeek leftovers stay behind.** A cleanup agent stopped before deleting 18 conversations and a model folder, because the deletes cannot be undone. Another could not remove a workspace because one conversation still ran (`89|a`). Runs 1 and 3 deleted 1 and 18 conversations late. Every stored conversation slows the DeepSeek Desktop.
+
+**I37. The source text has OCR faults that nobody reports back.** Architects found a misprinted denominator in (A.66), (A.69a) printed twice, and a sign in (A.53). They worked around them in the Cards. The Scholar Archive copy keeps the faults.
+
+**I38. DeepSeek answers put prose before the one-line JSON.** Several managers saw it. The managers read the last line, so no result was lost. A stricter reader would lose them.
+
+## State of each issue
+
+As of 2026-10-17, 19:30 UTC. "Open" means nothing has changed since the run. The code has one change since the run (`bb7e905`).
+
+| Issue | State | What is left |
+| --- | --- | --- |
+| I1–I7 running time | open | all of Part 2 and W1–W5 |
+| I8 lock failures | open; models in repair | 41 models unbuilt at 18:45; the fourth run works on the first 11 |
+| I9 os error 32 | open | A5.1 |
+| I10 repeated paragraphs | open, data left | 18 paragraphs in 15 Cards |
+| I11 placeholder parts | in progress | 137 parts still say `待写` (304 after run 2) |
+| I12 lost groups | open, data left | groups 92–95 and 168–170 have no Idea Cards |
+| I13 background commands | open | 23 card-check blocks were never run again |
+| I14 validator | **fixed** | `bb7e905`, installed; 15 models unblocked |
+| I15 rerun skips placeholders | open; worked around | the repair runs pass `rebuild: true` |
+| I16 cascade in a batch | open; worked around | the repair runs sort models in book order |
+| I17–I18 retries, agent text | open | Part 1 |
+| I19–I21 agent behaviour | open | W3 |
+| I22–I26 reporting | open | L3, L9, W9 |
+| I27 book title | open | W8 |
+| I28 repair drops downstream work | open, data left | 65 link suggestions unapplied; structure Card and hubs stale for the repaired models |
+| I29 skeleton anchors | open, data left | 7 anchors without groups |
+| I30 endnotes | open | W11 |
+| I31 Model Card drafts | open, data left | drafts of models that were not rebuilt are unchecked |
+| I32 link pass cannot edit | open, data left | about 10 faults in the Cards named in I32 |
+| I33 text corruption | open, data left | 31 repeated title lines; 5 older Cards to check |
+| I34 skipped steps | open, data left | `67|a` derive and `59|a` review not run |
+| I35 Finding jobs | open, data left | 2 Finding jobs not run |
+| I36 DeepSeek leftovers | open | conversations and folders of runs 1 and 3 |
+| I37 OCR faults | open | not reported to the archive |
+| I38 prose before JSON | handled | the managers read the last line |
+| M4 daemon died | open | A6 |
 
 ## Part 1. The run ledger (G1, G2)
 
@@ -206,15 +270,20 @@ Each layer states its unit, what "done" means in the slip-box, and what it hands
 | digest | group `gNN` | `prepare` | the anchor Card `<book>/NN` exists; `owned-gNN.txt` lists the group's Cards, and each exists; the DeepSeek SELF-CHECK line is present | `cards/gNN` (offline check), one `models/<address>` per Model Card made, `events/gNN` if the group has dated sentences, `findings/gNN` if it has result sentences, `link/gNN` |
 | cards (offline) | group | digest | zt-check on the group's Cards has no hard fault, or its faults are registered for the book cycle | `cards-book` |
 | cards-book | book | first digest unit | the card cycle report shows its faults fixed or refused with reasons | `organize` |
-| models | Model Card | digest | apply finished; no part says `待写`; `validate` faults 0 or listed as tolerated | `explain/<address>` for a formal model with Derivation parts; `organize` |
-| events, findings | group | digest | the JSON is applied, or the group has none | `organize` |
+| models | Model Card | digest | apply finished; no part says `待写`; `validate` faults 0 or listed as tolerated; every step of its chain (brief, plan, fill, derive, review, split, report) reported | `explain/<address>` for a formal model with Derivation parts; `notes/<address>` for each link suggestion of its plan; `structure/<address>` (its line in the structure Card); `hubs/<tree>` for each Topic tree its parts are in |
+| events, findings | group | digest | every job is applied (no `pending_jobs`), or the group has none | `organize` |
 | link | group | digest | `linked-gNN.txt` exists; every owned Card has a kinded Link or a recorded reason | `link-check` |
 | link-check | book | first link unit | report faults 0, or each left fault named | `organize` |
 | organize | book | link-check, models, events, findings | structure Card, Topic bodies, notes cycle done | `hubs/<tree>` for each Topic tree touched; `figures`, `bridge` |
+| skeleton | book | organize | an anchor is written only for a group whose digest unit is `done`; a group not done gets an anchor marked `待写`, which the gate and the audit count as open | `audit` |
+| notes | one link suggestion | models | the suggested Link is in the Card, or the notes cycle refused it with a reason | `audit` |
+| cleanup | one DeepSeek conversation | the unit that started it | the conversation is deleted; the workspace is removed when its last conversation is gone | none |
 | hubs | Topic tree | organize | hub check has 0 faults for the tree | `audit` |
 | figures, bridge, audit | book | organize, hubs | their reports exist | none |
 
 `prepare` registers all 171 digest units at the start. From then on, every unit of the run descends from them, so the ledger knows the full target of the run before any agent starts.
+
+A unit that becomes `done` later, in a `resume` or a mode `models` run, registers the same downstream units as it would have in the first run. So its link suggestions, its structure Card line, and its hubs follow it, and a repair never leaves the later layers stale (I28). The skeleton reads the ledger, so it cannot cover over a lost group (I29).
 
 ### L5. How the workflow uses the ledger
 
@@ -239,6 +308,8 @@ Every write that a unit makes carries a key: `<unit>#<step>#<n>`. The zt write (
 
 `mode: "resume"` with `out` only. It reads the ledger, puts every `failed` and `blocked` unit back to `ready` with `attempts` 0, and runs the normal stages on them, in layer order. It never touches a `done` unit, so a finished model stays as built. A unit that fails again in the rerun is reported with its fault for manual work.
 
+`resume` runs every layer that has open units, Organize's notes cycle and the hubs included. A mode `models` run does the same for the units its models register.
+
 The rule "no model re-runs without asking" still holds: the run asks before `resume`, and `resume` re-runs only units that are not done.
 
 ### L8. Why one run, or one rerun, covers everything
@@ -257,13 +328,23 @@ The rule "no model re-runs without asking" still holds: the run asks before `res
 
 ## Part 2. Faster tools (G3)
 
-The order is by effect. A1–A4 are in zt; A5–A7 in zt-digest.
+A1–A6 are in zt; A7 is in zt-digest. There is no read cache: each read asks SQLite for only the rows it needs (A1), with the links table (A3) as the index that makes this possible.
 
-### A1. Keep the Snapshot in the MCP server (M1)
+### A1. Read only what a call needs (M1)
 
-The `zt mcp` server keeps its Snapshot between calls and reloads it only when SQLite's `data_version` changes, the same way the GUI does (`src/gui.rs:285`). A run of reads with no write between them then costs one load, not one per call.
+No read cache: a cache would add state to keep in step with every writer (decision Q7). Each read handler of `zt mcp` asks SQLite for its own rows, in place of building a Snapshot of all 10,891 Cards (`src/mcp.rs:245-337`):
 
-Expected: a read between writes goes from about 240 ms to a few milliseconds. `snapshot-topics` and a card audit read mostly between writes, so they get most of this.
+| Tool | Rows it reads |
+| --- | --- |
+| `get_card` | the Card's row; its outbound Links (`links` by `source`); its inbound Links (`links_by_target`) with the sources' titles; the parent, direct, and side successors by address; its hubs (inbound Links from hub Cards); its model (the rows of the model's range and the Links among them) |
+| `get_tree` | the rows whose address is in the tree |
+| `list_trees` | one grouped query over the addresses |
+| `get_model` | the rows of the model's range, the Links among them, and its Links to Cards outside it |
+| `list_links`, `list_broken_links` | `links` rows; a Broken link is a row whose `target` has no Card |
+
+This needs the links table: without it, the inbound Links of one Card are known only after every body is parsed. So A1 comes after A3. `search_cards` and the Workspace counts still read many rows; a full-text index (SQLite FTS5) can serve the search later if it is slow.
+
+Expected: a read touches kilobytes, takes milliseconds, and no longer grows with the size of the slip-box. The Session and the GUI keep their present Snapshot.
 
 ### A2. Bulk reads (M2)
 
@@ -309,7 +390,7 @@ A body edit that leaves its Links as they were affects no other Card. A typical 
 
 **What keeps the full path.** Moves, renames of a citation key, deletes with compaction, and Markdown conversions change many addresses at once. They keep their present transaction. At its end they rebuild the `links` rows of the moved Cards and of the Cards whose Links they rewrote, then the Reverse links of the affected Cards, from the table.
 
-**Reads use the table too.** `Snapshot::load` takes `inbound` from `links_by_target` in place of parsing every body. `get_card` (`inbound`, `outbound`), `list_links`, `list_broken_links`, and the model relations read rows. With A1 the Snapshot is kept between calls anyway; the table makes the reload after a write cheap.
+**Reads use the table too.** The read handlers of A1 take inbound and outbound Links, Broken links, and model relations from the table. Where a full Snapshot is still built (the Session, the GUI), `Snapshot::load` takes `inbound` from `links_by_target` in place of parsing every body.
 
 **Migration and safety.**
 
@@ -341,12 +422,11 @@ Later, one writer: the zt service applies all writes from a queue, and the lock 
 
 Add the exit cause to `zt.log` (panic message, or the signal), and a heartbeat line from the daemon every minute during a run. A digest run checks `zt status` before each stage and waits for a restart in place of failing its calls.
 
-### A7. zt-digest reads less and once
+### A7. zt-digest reads less
 
-1. **One snapshot per run, updated by the ledger.** `prepare` writes the topic snapshot once (A2 `export_titles`). When a digest unit is done, `ledger done` appends its new Cards to the snapshot. A group reads a snapshot that is current to the last finished group, with no zt call at all.
+1. **A fresh snapshot in one call.** `snapshot-topics` makes the topic snapshot with one `export_titles` call (A2) in place of 219 calls. Each group still gets its own fresh snapshot; nothing is kept between groups.
 2. **Scoped audits.** The card steps audit only their unit's Cards and the Cards they link to, not the whole book and not every tree.
-3. **One read per step chain.** The card plan, check, and report of one unit share one read when `data_version` did not change.
-4. **Fewer processes.** `read_many` keeps its 6 workers only when the reads are many; with A2 bulk reads, one process is enough.
+3. **Fewer processes.** `read_many` keeps its 6 workers only when the reads are many; with A2 bulk reads, one process is enough.
 
 ### Expected command times
 
@@ -354,7 +434,7 @@ Estimates from M1–M3, for a slip-box of this size, to be measured after each c
 
 | Command | Now | After A1–A4, A7 |
 | --- | --- | --- |
-| `snapshot-topics` | 61 s (per group) | 0 s (the ledger keeps it); 1–2 s at prepare |
+| `snapshot-topics` | 61 s (per group) | about 1 s (per group) |
 | `card plan` / `check` / `report` | 128 s to over 600 s | under 10 s |
 | `prepare-link` | 576 s | under 20 s |
 | `model apply` | 188–363 s, and fails under load | under 30 s, no lock failures |
@@ -369,7 +449,7 @@ The other slow steps of the run (`skeleton plan` 213 s, `skeleton apply` 226 s, 
 
 **W2. One agent per step chain** (I7, I13, I20). One agent runs plan → DeepSeek jobs → apply → check → report for its units, in place of one agent per step. Every zt-digest call gets the 600 000 ms timeout; Part 2 makes the calls short enough to fit it.
 
-**W3. A narrow agent type** (I19, I21). `zt-digest-runner`, with only PowerShell, Read, Write, and the deepseek tools: no terminal tabs, no Monitor, no session tools. A digest group is two commands around the DeepSeek run: `zt-digest group-start -Group N` (claims the unit, writes the group prompt; the snapshot is already current, A7.1) and `zt-digest group-finish -Group N` (checks the outputs, calls `ledger done`). The order then lives in the tool, not in the prompt.
+**W3. A narrow agent type** (I19, I21). `zt-digest-runner`, with only PowerShell, Read, Write, and the deepseek tools: no terminal tabs, no Monitor, no session tools. A digest group is two commands around the DeepSeek run: `zt-digest group-start -Group N` (claims the unit, writes the fresh snapshot and the group prompt) and `zt-digest group-finish -Group N` (checks the outputs, calls `ledger done`). The order then lives in the tool, not in the prompt.
 
 **W4. A time cap on one DeepSeek run** (I5). After `dshRunCap` (default 20 minutes), the manager cancels the run, keeps what it wrote, and records a transient fault; the ledger retries the unit. The zt helper (`skills/zt/scripts/zt-mcp.ps1`) fails a call fast when the lock stays busy, so DeepSeek sees an error and not a hang.
 
@@ -385,12 +465,26 @@ The other slow steps of the run (`skeleton plan` 213 s, `skeleton apply` 226 s, 
 
 **W10. Quality work after a run** (section F). The `explain` layer for formal models (135 Derivation parts without 思路 and 解读), and a final fix cycle on the audit's faults.
 
+**W11. Endnotes as reference text** (I30). Prepare cuts the 注释 section into one note file per chapter and adds each chapter's notes to its groups' prompt files as reference text. The notes are read, not digested into Cards.
+
+**W12. A source check of Model Card drafts** (I31). The whole-book card cycle (W1) reviews every Model Card draft, and a sample of Idea Cards, against its group text with one question: which claims are not in the text? A claim with no source is cut or marked `（补：书中未写）`, as the model writers already do.
+
+**W13. The link pass edits its own paragraph** (I32). The link pass writes its Links paragraph through `apply_batch` (A4) with an idempotency key (L6). A fix round replaces that paragraph by its key, so the pass can correct its own sentences without touching the rest of the body.
+
+**W14. Guard Card text** (I33). zt refuses a body whose first line repeats the Card's `# ` title. A new zt-check rule reports a repeated title line; the audit counts it. A one-time card fix cleans the 31 Cards, and a person checks the 5 older Cards for 向向 and 价价.
+
+**W15. A step either runs or fails** (I34, I35). Step agents get only their step, never the user's request text. A step result must be the command's own JSON line or a ledger fault. An empty job list where jobs were expected, `pending_jobs` above 0, or a missing structured output is a transient fault in the ledger, and the unit is retried.
+
+**W16. Cleanup from the ledger** (I36). Every DeepSeek conversation is a `cleanup` unit of the unit that started it (L4). The cleanup step deletes exactly the conversations the ledger lists for finished units; it does not need to judge which deletes are safe. Folders under `<out>\models\` are removed by zt-digest after their unit is done.
+
+**W17. Report source faults** (I37). The architects' notes about the source (misprints, repeated lines) go to `<out>\source-faults.md`, one line per fault with the place in the Markdown, for the person who keeps the Scholar Archive.
+
 ## Coverage: every issue and its fix
 
 | Issue | Fixed by |
 | --- | --- |
 | I1 snapshot per group | A1, A2, A7.1 |
-| I2 whole-book audits | A1, A2, A7.2–3 |
+| I2 whole-book audits | A1, A2, A7.2 |
 | I3 block card cycles | W1 |
 | I4 card backlog delays models | W1, W5 |
 | I5 slow DeepSeek run | W4 |
@@ -416,6 +510,17 @@ The other slow steps of the run (`skeleton plan` 213 s, `skeleton apply` 226 s, 
 | I25 `done` with failures | L5 (`partial`), L9 |
 | I26 orphan definitions | W9 |
 | I27 book title | W8 |
+| I28 repair drops downstream work | L4, L7 |
+| I29 skeleton anchors | L4 (skeleton row) |
+| I30 endnotes | W11 |
+| I31 Model Card drafts | W12 |
+| I32 link pass cannot edit | W13, A4, L6 |
+| I33 text corruption | W14 |
+| I34 skipped steps | W15, L2 |
+| I35 Finding jobs | W15, L4 |
+| I36 DeepSeek leftovers | W16 |
+| I37 OCR faults | W17 |
+| I38 prose before JSON | handled; W15 keeps "the last line" as the rule |
 | daemon died (M4) | A6 |
 
 ## Expected effect
@@ -428,11 +533,11 @@ Estimates, not measurements:
 
 ## Order of work
 
-1. **Clean up this book** (now). The 15 Cards with repeated paragraphs (W7), the 7 missing groups, the models still unbuilt, and the failed card blocks. The first session is still working on the 41 models.
-2. **Fast zt** (A1, A3, A5.1–2), each with a test and a timing before and after. A1 and A5 are small. A3 is a schema change: first the `links` table and its migration, with `zt reindex` and the check, then the writers one by one. A1 and A3 give most of G3.
+1. **Clean up this book** (now). The 15 Cards with repeated paragraphs (W7), the 31 repeated title lines (W14), the 7 missing groups and their skeleton anchors, the models still unbuilt, the `67|a` derive and `59|a` review, the 2 Finding jobs, the 65 link suggestions of the repaired models (a notes cycle), the DeepSeek leftovers, and the failed card blocks. The fourth run is still working on the 41 models.
+2. **Fast zt** (A3, then A1, and A5.1–2), each with a test and a timing before and after. A3 is a schema change: first the `links` table and its migration, with `zt reindex` and the check, then the writers one by one. Then A1, one read handler at a time. A5 is small. A3 and A1 give most of G3.
 3. **The ledger** (L1–L4, L6) in zt-digest, with tests on a small book; then A2, A4, A7.
 4. **The workflow** (L5, L7, W1–W6) as a new version of the digest base, through the pre-flight. Pilot it on a short paper, then on the 7 missing groups of this book as a `resume`.
-5. **The rest** (A6, W7–W10, one writer in the service).
+5. **The rest** (A6, W7–W17, one writer in the service).
 
 ## Decisions for the user
 
@@ -444,3 +549,5 @@ Estimates, not measurements:
 | Q4 | Where does the ledger live? | `<out>\ledger.sqlite3`, beside the staging files of the book. |
 | Q5 | Keep the lock file, or move all writes into the service? | Lock file with A3–A5 now; one writer later. |
 | Q6 | Add a `links` table to the slip-box database (a schema change), with the Card body still the source of truth? | Yes (A3). Reverse links stay stored in Card text, updated for only the affected Cards. |
+| Q7 | A read cache in the MCP server? | **Decided (2026-10-17): no.** Reads ask SQLite for their own rows (A1). |
+| Q8 | Read the endnotes as reference text for every group of their chapter (W11)? | Yes. They cost prompt length but no Cards. |
