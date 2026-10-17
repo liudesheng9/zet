@@ -275,11 +275,51 @@ New read tools, so one call replaces hundreds:
 
 Then `snapshot-topics` is 1 call, the card audit about 3 calls, and `prepare-link` about 2 calls.
 
-### A3. Change only the reverse links that change (M3)
+### A3. A links table, and Reverse links for only the affected Cards (M3)
 
-`regenerate_reverse_links_tx` rewrites all 10,891 Cards on every write. Replace it, for the single-Card writers (`insert_card`, `update_card_text`, the metadata writers), with an update of only the Cards whose reverse sections change: the targets in the Card's old and new Links, and the Card itself. The full regeneration stays for moves, renames, deletes, and conversions, which change many addresses.
+**Why zt rebuilds the links today.** The database has two tables, `cards` and `metadata`. A Link exists only as a `[[address]]` macro in a Card body. A Reverse link exists only as generated text in each target Card, after the `<!-- zt:reverse-links -->` marker. No table records which Card links to which. So zt finds the link graph by parsing every Card body: on every read (`Snapshot::load` builds `inbound`) and on every write (`regenerate_reverse_links_tx` derives every Card's Reverse link section and rewrites all 10,891 rows). The link-lifecycle refactor kept it this way on purpose: "No structural Link table or cached Link index in SQLite" is in its non-goals (`docs/link-lifecycle-and-session-command-policy-deepening-design.md`). That was a limit on the scope of that refactor, to avoid a schema change. It was not a rule for good, and the slip-box has since grown to 10,891 Cards.
 
-Expected: a write goes from at least 0.45 s and 10.7 MB to milliseconds and a few kilobytes, and it holds the lock only that long. With A3, the edit lock stops being a bottleneck (I8).
+**The change.** Record the links in a table. The Card body stays the source of truth; the table is an index of it, changed in the same transaction as the body, so the two cannot drift.
+
+```sql
+CREATE TABLE links (
+  source TEXT NOT NULL,     -- the address of the Card that holds the Link
+  ord    INTEGER NOT NULL,  -- the occurrence's place in the body (0, 1, 2, ...)
+  target TEXT NOT NULL,     -- the address in [[...]]; kept when no Card has it (a Broken link)
+  kind   TEXT,              -- rests-on, illustrates, contrasts, relaxes, corresponds, objects, or NULL (a plain reference)
+  PRIMARY KEY (source, ord)
+);
+CREATE INDEX links_by_target ON links (target, source);
+```
+
+- Every occurrence is a row, the same occurrences that `LinkBody::parse` finds today. Titles, BibTeX metadata, and Reverse link sections are not scanned, as today.
+- A Broken link keeps its row. When a Card is later made at that address, its inbound Links are already in the table.
+- `kind` comes from the same parse that `get_model` uses for its relations, so model reads can use the table too.
+
+**A write updates only the Cards it affects.** For a write to Card C (create, edit of the body or the title, a change of type or metadata):
+
+1. Parse C's new body. Compare its rows with C's old rows in `links`. Replace C's rows.
+2. The affected Cards are:
+   - each target that C now links to and did not before, or no longer links to;
+   - each target of C's Links, when C's title changed, because a Reverse link line shows the source's title;
+   - C itself, when C is new, because Cards that already link to its address now count.
+3. For each affected Card that exists, build its Reverse link section from `links_by_target`: the distinct sources, in address order, each with its current title. This is the same wording and order as `reverse_sections` (`src/link.rs:285`), so no Card text changes in form. Update only those rows.
+
+A body edit that leaves its Links as they were affects no other Card. A typical write affects 0–20 Cards, not 10,891.
+
+**What keeps the full path.** Moves, renames of a citation key, deletes with compaction, and Markdown conversions change many addresses at once. They keep their present transaction. At its end they rebuild the `links` rows of the moved Cards and of the Cards whose Links they rewrote, then the Reverse links of the affected Cards, from the table.
+
+**Reads use the table too.** `Snapshot::load` takes `inbound` from `links_by_target` in place of parsing every body. `get_card` (`inbound`, `outbound`), `list_links`, `list_broken_links`, and the model relations read rows. With A1 the Snapshot is kept between calls anyway; the table makes the reload after a write cheap.
+
+**Migration and safety.**
+
+- `ensure_links_table` builds the table once from the Card bodies, in the same pattern as the other `ensure_*` steps (`src/main.rs:1092`), with a backup first.
+- A new command, `zt reindex`, rebuilds the table and all Reverse link sections from the bodies, the full path of today. It repairs any drift.
+- A test, and a new check option of `zt status`, compare the table with a fresh parse of every body, and every stored Reverse link section with the one the table gives.
+
+**Expected.** A write goes from at least 0.45 s and 10.7 MB to a parse of one body and a few row updates: milliseconds and kilobytes. The edit lock is then held for milliseconds, and it stops being a bottleneck (I8). The cost no longer grows with the size of the slip-box.
+
+**Later, if wanted.** Reverse links could be made from the table when a Card is read, in place of being stored in its text. That removes the affected-Card updates too, but every client that reads the stored text (exports, the Session, the GUI, `get_card`'s `text`) would have to change. This proposal keeps the stored section.
 
 ### A4. A batch write tool (M3, I8, I10)
 
@@ -389,7 +429,7 @@ Estimates, not measurements:
 ## Order of work
 
 1. **Clean up this book** (now). The 15 Cards with repeated paragraphs (W7), the 7 missing groups, the models still unbuilt, and the failed card blocks. The first session is still working on the 41 models.
-2. **Fast zt** (A1, A3, A5.1–2). Three small changes in zt, each with a test and a timing before and after. A1 and A3 give most of G3.
+2. **Fast zt** (A1, A3, A5.1–2), each with a test and a timing before and after. A1 and A5 are small. A3 is a schema change: first the `links` table and its migration, with `zt reindex` and the check, then the writers one by one. A1 and A3 give most of G3.
 3. **The ledger** (L1–L4, L6) in zt-digest, with tests on a small book; then A2, A4, A7.
 4. **The workflow** (L5, L7, W1–W6) as a new version of the digest base, through the pre-flight. Pilot it on a short paper, then on the 7 missing groups of this book as a `resume`.
 5. **The rest** (A6, W7–W10, one writer in the service).
@@ -403,3 +443,4 @@ Estimates, not measurements:
 | Q3 | Does a `partial` stage stop the run, or does the run go on with what is done? | Go on, and put the rest on the rerun list (L5). |
 | Q4 | Where does the ledger live? | `<out>\ledger.sqlite3`, beside the staging files of the book. |
 | Q5 | Keep the lock file, or move all writes into the service? | Lock file with A3–A5 now; one writer later. |
+| Q6 | Add a `links` table to the slip-box database (a schema change), with the Card body still the source of truth? | Yes (A3). Reverse links stay stored in Card text, updated for only the affected Cards. |
