@@ -6,7 +6,7 @@ paths:
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # MCP server
@@ -411,6 +411,8 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+
+- `2026-10-17` — Extend public integration coverage for Link-index integrity/reindex, scoped title/Link updates, atomic metadata revisions, failed legacy migration recovery and Windows sharing-lock retries. MCP tool schemas are unchanged in this step.
 
 - `2026-10-16` — The `insert_card` description no longer claims every `create_successor` field; it names `level` and `form` as `edit_card` work, checked by a unit test.
 - `2026-10-16` `753bd7b` — Finding Cards: `type: finding` in every type enum, Finding counts in `list_trees`, Finding Cards in `INSTRUCTIONS` (zt 0.20.0).

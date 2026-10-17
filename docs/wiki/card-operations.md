@@ -5,7 +5,7 @@ paths:
   - "src/ops.rs"
   - "src/place.rs"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Card operations
@@ -172,7 +172,7 @@ The GUI returns `Outcome::into_value()` as it is: `{confirm, lines}` or the resu
 3. `access.ensure_writable(card.workspace)`. For `create_successor` this is the parent's Workspace.
 4. Plan the change. For any change that renames addresses, call `access.ensure_link_rewrites_allowed(conn, mapping)`. For Agent Access this refuses the change if any human Card outside the mapping holds a `[[target]]` that the mapping would rewrite. Owner Access always passes. Rewriting a human Card's Reverse link section is not counted.
 5. If the call is two-step and `confirm` is not the expected word, return `Outcome::Confirm` with the plan lines. Nothing is written. All the validation above has already run, so an agent learns about a refusal on the plan call.
-6. Apply the plan. Regenerate Reverse links in the same transaction (in `src/main.rs`).
+6. Apply the plan. Ordinary creates/edits update the changed source's occurrence index and affected Reverse links. Structural changes rebuild the index in their existing transaction. `edit` validates and commits authored text, type, facet, emphasis, model/hub level and Math form together; it advances one archive revision only when those values change. A no-op edit is not a new revision.
 
 ### Two-step confirmation
 
@@ -426,6 +426,8 @@ Pitfalls:
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
+
+- `2026-10-17` — Make MCP/GUI edits atomic across text and metadata and maintain the derived Link index/revision. Public integration tests verify scoped ordinary updates and one revision per edit.
 
 - `2026-10-16` — `ops::delete` checks `DeletePlan::compaction`: a delete keeps the later Side successors in place when a breaking Link would land on a renamed Card.
 - `2026-10-16` `753bd7b` — Finding Cards: `trees()` counts `findings`. The type refusal names Finding Cards.

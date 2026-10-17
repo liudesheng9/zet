@@ -975,7 +975,7 @@ fn reverse_links_and_broken_links_are_generated_from_card_text() {
 }
 
 #[test]
-fn malformed_stored_link_text_remains_readable_and_strict_writes_are_atomic() {
+fn malformed_stored_link_text_remains_readable_and_validation_is_scoped_to_its_source() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
@@ -995,14 +995,23 @@ fn malformed_stored_link_text_remains_readable_and_strict_writes_are_atomic() {
         .success()
         .stdout(predicate::str::contains("before [[0/0"));
 
-    let topic_before = home.card_text("0/0");
     home.cmd_with_editor("# Topic\n\nchanged\n\n<!-- zt:reverse-links -->\n")
         .args(["e", "--at", "0/0"])
         .assert()
+        .success();
+    assert_eq!(home.card_text("0/1"), malformed);
+    home.cmd().args(["status", "--check-links"]).assert().failure();
+    home.cmd_with_editor("# Base\n\nstill [[0/0\n")
+        .args(["e", "--at", "0/1"])
+        .assert()
         .failure()
         .stderr(predicate::str::contains("invalid link macro"));
-    assert_eq!(home.card_text("0/0"), topic_before);
     assert_eq!(home.card_text("0/1"), malformed);
+    home.cmd_with_editor("# Base\n\nrepaired [[0/0]]\n")
+        .args(["e", "--at", "0/1"])
+        .assert()
+        .success();
+    home.cmd().args(["status", "--check-links"]).assert().success();
 }
 
 #[test]
@@ -3509,6 +3518,11 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
     );
     drop(backup);
 
+    let backups_before_restart = fs::read_dir(&home.archive_root)
+        .expect("archive listing")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+        .count();
     home.cmd().arg("down").assert().success();
     home.wait_until(|| !home.archive_root.join("zt.pid").exists());
     home.cmd().arg("up").assert().success();
@@ -3518,8 +3532,8 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
         .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
         .count();
     assert_eq!(
-        backups_after_restart, 2,
-        "each conversion runs only once: Markdown cards, then open model facets"
+        backups_after_restart, backups_before_restart,
+        "completed migrations, including the Link index, do not back up again on restart"
     );
 }
 

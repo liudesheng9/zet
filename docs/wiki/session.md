@@ -6,7 +6,7 @@ paths:
   - "src/session/**"
   - "tests/pty_session.rs"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Terminal Session
@@ -444,6 +444,8 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - PTY tests match against all frames ever drawn: wait for "one more" occurrence than before a key, never only for a string that an earlier frame already showed.
 
 ## Change history
+
+- `2026-10-17` — Session `ty`, `lv`, and `mf` metadata changes commit with the shared archive revision in one transaction. Identical metadata does not advance it; authored Link occurrences are unchanged.
 
 - `2026-10-16` — `zt.sessions` is read, changed, and written only under the `zt.sessions.lock` OS lock (`update_session_pids`), so Sessions that start or quit together keep each other's pid.
 - `2026-10-16` — `del` calls `apply_delete_plan(conn, plan)`; a delete keeps later Side successors in place when a breaking Link would land on a renamed one ([Card operations](card-operations.md)).

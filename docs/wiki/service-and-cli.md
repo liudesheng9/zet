@@ -3,6 +3,7 @@ block: service-and-cli
 title: Service, CLI and storage
 paths:
   - "src/main.rs"
+  - "src/link_index.rs"
   - "src/shutdown.rs"
   - "src/autostart.rs"
   - "src/bin/**"
@@ -12,7 +13,7 @@ paths:
   - "tests/support/**"
   - "tests/fixtures/**"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Service, CLI and storage
@@ -113,9 +114,15 @@ flowchart TD
 | Dump | `src/dump.rs` | Builds and compresses the dump. |
 | Autostart | `src/autostart.rs`, `src/bin/zt-boot.rs` | Sign-in start. |
 
-Control and data flow: a CLI process resolves the archive root from the config, checks the service (`require_service_up` also runs `ensure_markdown_cards`), takes the edit lock for a write, opens its own SQLite connection, and writes in one transaction that ends with `regenerate_reverse_links_tx`. The daemon itself does not serve Card writes from the CLI; it only holds the lock, keeps the record, and runs the GUI thread. Every CLI process and the GUI open the database directly.
+Control and data flow: a CLI process resolves the archive root from the config, checks the service (`require_service_up` also runs `ensure_markdown_cards`), takes the edit lock for a write, opens its own SQLite connection, and commits the authored change, derived Links and generated sections together. Ordinary writes finalize one source with `link_index::source_changed`; structural changes use `regenerate_reverse_links_tx`. The daemon itself does not serve Card writes from the CLI; it holds the daemon lock, keeps the record, and runs the GUI thread. Every CLI process and the GUI open the database directly.
 
 ## Interfaces
+
+### Link integrity and recovery
+
+`zt status --check-links` prints a JSON integrity report from one read transaction and exits nonzero on drift. It compares every indexed occurrence and stored Reverse link section with a fresh full parse. The report includes `ok`, `cards`, `links`, `archive_revision`, `faults` and `last_write` counters (`indexed_cards`, `refreshed_cards`, `changed_reverse_sections`). `zt reindex` takes the edit lock, rebuilds the derived index and repairs generated sections transactionally, without rewriting authored content.
+
+`src/link_index.rs` owns the index migration, `ensure`, `sync_source`, `source_changed`, `rebuild`, `check`, and archive revision. Migration makes a consistent `VACUUM INTO` backup, verifies its integrity and atomically installs the index. The Markdown-format early return still runs this ensure step. A malformed Card names its address and rolls back the migration; an unknown index version is refused. Reindex repairs drift explicitly instead of concealing it in ordinary reads.
 
 ### CLI commands (dispatch in `run`, `src/main.rs`)
 
@@ -214,7 +221,7 @@ Card storage:
 | `delete_plan(conn, at) -> Result<DeletePlan>`, `DeletePlan::into(conn, into)`, `DeletePlan::compaction()`, `delete_verification_lines`, `apply_delete_plan(conn, plan)` | Delete a subtree, or a whole tree from its root; optional re-pointing of inbound Links to `into`; Side successor compaction, left out when it would make a breaking Link resolve to a renamed Card. |
 | `move_plan(conn, at, new_location) -> Result<MovePlan>`, `move_verification_lines`, `apply_move_plan` | Plain subtree move to a free Location (the base case of `place::move_plan`). |
 | `apply_location_mapping_tx(conn, mapping)` | Renames rows through a `__moving__` prefix, rewrites Links, and calls `spread::follow`. |
-| `regenerate_reverse_links_tx(conn)` | Recomputes and rewrites the Reverse link section of every Card. |
+| `regenerate_reverse_links_tx(conn)` | Rebuilds the occurrence index after a structural change, refreshes generated sections only where text differs, and advances the revision in the caller's transaction. Before index migration, retains the legacy full-parser path. |
 | `count_rewritten_links`, `replace_link_locations`, `citation_rename_lines`, `citation_key_exists_case_insensitive`, `citation_key_conflicts`, `card_counts`, `read_confirmation(input, expected)`, `run_editor`, `link_lifecycle`, `link_lifecycle_from_cards` | Supporting helpers. |
 
 Location helpers (all pure except where a `conn` is taken):
@@ -331,7 +338,7 @@ Each rebuild runs `BEGIN IMMEDIATE; CREATE TABLE cards_<x> …; INSERT … SELEC
 1. `require_service_up`, then `acquire_edit_lock` (held until the command returns, including while `EDITOR` is open).
 2. Load the anchor Card (`load_card`), compute the target Location (`direct_successor`, `next_side_successor`, `next_topic_location`, or the `place` plan).
 3. `run_editor` writes the template (`topic_template`, `regular_template`, `card::card_template`, or current text) to a temp file with suffix `.zt.md` (`.bib` for metadata), runs `EDITOR <path>`; a non-zero exit is "cancelled" and stores nothing; the temp file is removed.
-4. Validate and write in one transaction, ending with `regenerate_reverse_links_tx`; print the address.
+4. Validate the referenced targets and write in one transaction, ending with `link_index::source_changed`; print the address.
 
 `zt l` loops on the `.bib` buffer, keeping the user's text on errors (`literature::parse_metadata` errors or `Literature Card \`<key>\` already exists`); the Card title always comes from the BibTeX title (`compose_card_text(&metadata.title, …)`), and client Reverse link text is dropped.
 
@@ -380,7 +387,7 @@ Command plans (`command_plan`):
 
 - Exactly one daemon per archive: the daemon lock serializes daemons; `RestartMarker` serializes restarts.
 - The service is down only after `zt down` or a system end; both remove `zt.pid`.
-- Every Card write holds the edit lock and runs in one SQLite transaction that ends with a full Reverse link regeneration.
+- Every Card write holds the edit lock. Ordinary creates and text/title edits update the changed source's Link occurrences and refresh only that Card and its old/new targets in the same transaction. Structural operations retain a full index/Reverse link rebuild, updating stored sections only when they differ. Card edit text and type/level/form changes commit together with one archive revision.
 - Argument errors are found before the editor opens or any lock-free side effect happens (tests check that the editor never runs).
 - Literature tree Cards never leave their tree; Topic tree Cards never enter one; Tree roots have no Side successors and cannot be moved.
 - Citation keys are unique case-insensitively (`cards_citation_key_nocase`) but looked up case-sensitively (`load_card`, `go casekey` fails).
@@ -448,6 +455,10 @@ archive_root=D:\zt-archive
 Table CHECKs: a non-Literature row has a `location` and no key or BibTeX; a Literature row has `is_topic = 0`, no `location`, a key, and BibTeX; plus the facet/level/hub/form rules above. Columns added by `ALTER TABLE` (`model_level`, `math_form`) carry only their column CHECK in migrated archives, so the "Model Card only" rules for them are kept in code (`model::set_level`, `model::set`, `math::set_form`). The Topic-is-Idea rule is kept in `insert_card`.
 
 ### `metadata` table
+
+The derived `links` table has `(source, ord)` as its primary key, with `target` and optional computed `kind`, and an index on `(target, source)`. It retains every occurrence, including repeated targets and Broken links; target existence is not a foreign key. Kinds come from the existing body/Relation parser. Generated Reverse links, titles, BibTeX and code are excluded. Clear empties the index; move/rename/delete/insert rebuild it within their existing transaction.
+
+Additional metadata keys are `links_index_version`, `archive_id`, `archive_revision`, and diagnostic `link_write_stats`. The identity binds a future digest ledger to its archive. Revisions increase once per changing content/metadata transaction, including Session retyping; unchanged reindex, MCP edits, shell text saves and identical BibTeX saves leave the revision alone. Ordinary target validation queries only referenced addresses, preserving already Broken links while refusing newly introduced missing targets.
 
 `key TEXT PRIMARY KEY, value TEXT NOT NULL`. Keys: `next_topic_id` (decimal; when missing, `next_topic_id` falls back to the largest Topic number + 1), `card_format` (`markdown`), and `gui_spreads` ([GUI](gui.md), `src/spread.rs`).
 
@@ -567,7 +578,7 @@ pty.wait_for_exit();
 ### Add a shell command
 
 1. Add a match arm in `run` (`src/main.rs`) that matches the exact argument shape; parse options with a `parse_*` helper that fails before any side effect.
-2. Implement `cmd_<name>` or `shell_<name>`: call `require_service_up` for anything that reads Cards, `acquire_edit_lock` for anything that writes, and do the write in one transaction that ends with `regenerate_reverse_links_tx`.
+2. Implement `cmd_<name>` or `shell_<name>`: call `require_service_up` for anything that reads Cards, `acquire_edit_lock` for anything that writes, and do the write in one transaction that ends with `link_index::source_changed` for an ordinary source, or `regenerate_reverse_links_tx` for a structural change.
 3. Add its line to `cmd_help` (in the "up" group if it needs the service). Shell-only commands must not appear in Session help (tests check `dp` and `clear`).
 4. Add an end-to-end test in `tests/cli_service.rs` with `TestHome`.
 
@@ -626,14 +637,16 @@ Gaps:
 - **A daemon of zt 0.7 or earlier has no lock file**: `daemon_alive` returns `None`, which counts as alive everywhere except `clear_stale_legacy_service` in `zt up`.
 - **`config.toml` is not TOML.** It is `key=value` lines; values are not quoted. `Config::save` rewrites only the `archive_root` line (in place, or appended) and keeps every other line, comments included (test `config_set_rewrites_only_the_archive_root_line`).
 - **`EDITOR` is split on whitespace**, so an editor path with spaces needs a wrapper or a path without spaces.
-- **Every write rewrites every Card.** `regenerate_reverse_links_tx` and `apply_location_mapping_tx` load all Cards and update each row; cost grows with the archive.
+- **Structural changes still scan the archive.** `regenerate_reverse_links_tx` rebuilds the occurrence index for moves, renames, insertions and deletions; `apply_location_mapping_tx` rewrites only changed authored text. Ordinary writes use `link_index::source_changed` instead and index one body. Full integrity checks and reindex are intentionally global operations.
 - **Two `move_plan`s.** `crate::move_plan` (plain move to a free Location) is the base case; the shell calls `place::move_plan`, which delegates to it only for `To` without `--alone`.
-- **`zt clear` deletes only `cards` and resets `next_topic_id`.** `metadata.gui_spreads`, `card_format`, `artifacts/`, and `dump/` stay; Spreads keep addresses of deleted Cards.
+- **`zt clear` deletes `cards` and derived `links`, and resets `next_topic_id`.** `metadata.gui_spreads`, `card_format`, `artifacts/`, and `dump/` stay; Spreads keep addresses of deleted Cards.
 - **On Unix the daemon is a plain child process** (no `setsid`), and `shutdown::watch` handles no signals; a daemon that dies with its terminal is repaired by the next command through the stale-record path.
 - **`card_counts` opens the database without migrations** and turns query errors into 0, so `zt status` can report `cards: 0` on an unreadable database.
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+
+- `2026-10-17` — Add the derived transactional Link index, consistent migration/backup, scoped ordinary updates, archive revisions and public integrity/reindex commands. Stale-lock Windows sharing violations are retried through their typed I/O cause; cleanup closes its own handle before deletion. Public MCP/CLI tests cover rebuild preservation, locality, metadata revisions, failed migration/retry, and a held Windows sharing handle.
 
 - `2026-10-16` — `Config::save` keeps the other lines of `config.toml` and changes only `archive_root`.
 - `2026-10-16` — `sessions_lock_path` (`zt.sessions.lock`); the daemon creates `zt.sessions` in append mode instead of an exists-then-write.

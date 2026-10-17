@@ -9,7 +9,7 @@ paths:
   - "src/link.rs"
   - "tests/card_types.rs"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Cards, Workspaces and Links
@@ -306,8 +306,8 @@ This is `replace_link_locations` in `src/main.rs`.
 ### Validate an edit's Links and list Broken links
 
 ```rust
-let lifecycle = crate::link_lifecycle(&conn)?;           // snapshots of every Card
-lifecycle.validate_edit(&new.body, Some(&old.body))?;    // refuses new Broken targets
+crate::link_index::validate(&conn, &new.body, Some(&old.body))?;
+let lifecycle = crate::link_lifecycle(&conn)?; // full report oracle
 for broken in lifecycle.broken_links()? {
     println!("{} {} -> {}: {}", broken.source_address, broken.source_title,
              broken.target, broken.source_line);
@@ -387,7 +387,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ### Pitfalls
 
-- **Every write rewrites every Card.** `regenerate_reverse_links_tx` loads, parses, and updates all rows on each save, delete, move, or rename. One Card whose stored text fails `parse_card_text` or strict `LinkBody::parse` makes every later write fail. Keep stored text valid when you patch the database by hand.
+- **Bodies remain authoritative; the Link index is derived.** Ordinary writes validate referenced targets and maintain only their source/targets through `src/link_index.rs` ([Service and storage](service-and-cli.md)). Structural changes and explicit integrity/reindex commands retain a full parse. The full `LinkLifecycle::validate_edit` remains a test oracle; production validation no longer parses unrelated bodies. Never patch live Card storage by hand.
 - **The marker is found everywhere, even in code.** `parse` matches `<!-- zt:reverse-links -->` on any trimmed line, including inside a fenced code block, so a Card that quotes the marker loses the rest of its body (or is refused if it quotes it twice).
 - **Stray `]]` is checked only after the last Link.** Strict parsing refuses `[[0/1]] then ]]` but accepts `a ]] b [[0/1]]`, because the tail check starts at the end of the last Link.
 - **Only fenced and inline code is code.** Indented code blocks (4 spaces) and fences indented more than 3 spaces (for example inside a list item) are prose, so `[[…]]` in them are Links and must be valid.
@@ -401,6 +401,8 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 - **Stale test message.** In `tests/card_types.rs`, the assertion message "the schema accepts only the three Card types" predates Finding and Hub Cards; the check itself (refusing `fact`) is still right.
 
 ## Change history
+
+- `2026-10-17` — Keep the body parser and exact Reverse link rendering as the oracle for the new transactional occurrence index; production target validation is scoped and the full lifecycle validator is test-only.
 
 - `2026-10-16` — Wiki doc created.
 - `2026-10-16` — The dump type test adds a line Hub Card and checks `hub_levels`.

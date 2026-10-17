@@ -22,6 +22,384 @@ struct TestHome {
     archive_root: std::path::PathBuf,
 }
 
+#[test]
+fn saving_unchanged_shell_text_and_literature_metadata_keeps_the_revision() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_topic",
+        json!({"title":"Unchanged","body":"Keep this claim."}),
+    );
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{SameBook,title={Same book}}","body":"Keep these notes."}),
+    );
+    let revision = || -> Value {
+        let out = home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["archive_revision"].clone()
+    };
+    let before = revision();
+    for (at, part) in [
+        ("0/0", None),
+        ("SameBook", Some("text")),
+        ("SameBook", Some("metadata")),
+    ] {
+        let card = mcp.ok("get_card", json!({"at":at}));
+        let content = if part == Some("metadata") {
+            card["bibtex"].as_str().unwrap()
+        } else {
+            card["text"].as_str().unwrap()
+        };
+        let mut cmd = home.cmd_with_editor(content);
+        cmd.args(["e", "--at", at]);
+        if let Some(part) = part {
+            cmd.args(["--part", part]);
+        }
+        cmd.assert().success();
+        assert_eq!(
+            revision(),
+            before,
+            "an unchanged {at} {part:?} save is not a new archive version"
+        );
+        assert_eq!(mcp.ok("get_card", json!({"at":at}))["text"], card["text"]);
+    }
+}
+
+#[test]
+fn link_index_can_be_checked_and_rebuilt_without_changing_authored_cards() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let topic = mcp.ok(
+        "create_topic",
+        json!({"title":"Index topic","body":"An entry point."}),
+    );
+    let root = topic["address"].as_str().unwrap();
+    let made = mcp.ok("create_successor", json!({"at":root,"kind":"direct","title":"A reasoned claim","body":format!("依赖 [[{root}]]，说明前提。") }));
+    let address = made["address"].as_str().unwrap();
+    let before = mcp.ok("get_card", json!({"at":address}));
+
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&checked).expect("structured Link integrity report");
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["links"], 1);
+    home.cmd().arg("reindex").assert().success();
+    let after = mcp.ok("get_card", json!({"at":address}));
+    assert_eq!(after["text"], before["text"]);
+    let target = mcp.ok("get_card", json!({"at":root}));
+    assert!(
+        target["text"]
+            .as_str()
+            .unwrap()
+            .contains("A reasoned claim")
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn ordinary_link_edits_only_index_the_changed_card_and_refresh_its_neighbours() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({"title":"Related","body":"Entry"}));
+    let target = mcp.ok(
+        "create_successor",
+        json!({"at":topic["address"],"title":"Premise","kind":"direct","body":"A premise."}),
+    );
+    let at = target["address"].as_str().unwrap();
+    let source = mcp.ok("create_successor", json!({"at":at,"kind":"side","title":"Source","body":format!("依赖 [[{at}]]，也借用 [[{at}]]。") }));
+    for n in 0..20 {
+        mcp.ok(
+            "create_topic",
+            json!({"title":format!("Unrelated {n}"),"body":"Independent body."}),
+        );
+    }
+    mcp.ok(
+        "edit_card",
+        json!({"at":source["address"],"title":"Renamed source"}),
+    );
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&checked).unwrap();
+    assert_eq!(
+        report["links"], 2,
+        "occurrences are retained, not deduplicated"
+    );
+    assert_eq!(
+        report["last_write"]["indexed_cards"], 1,
+        "unrelated Card bodies must not be indexed again"
+    );
+    assert_eq!(report["last_write"]["refreshed_cards"], 2);
+    let target = mcp.ok("get_card", json!({"at":at}));
+    assert!(target["text"].as_str().unwrap().contains("Renamed source"));
+    mcp.ok(
+        "edit_card",
+        json!({"at":source["address"],"body":"The reference was removed."}),
+    );
+    let target = mcp.ok("get_card", json!({"at":at}));
+    assert!(!target["text"].as_str().unwrap().contains("Renamed source"));
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn metadata_and_content_edits_advance_one_revision_and_no_op_edits_do_not() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let root = mcp.ok("create_topic", json!({"title":"Models"}));
+    let card = mcp.ok(
+        "create_successor",
+        json!({"at":root["address"],"kind":"direct","title":"A model","body":"A setting."}),
+    );
+    let revision = || -> u64 {
+        let out = home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["archive_revision"]
+            .as_u64()
+            .unwrap()
+    };
+    let before = revision();
+    mcp.ok(
+        "edit_card",
+        json!({"at":card["address"],"type":"model","level":"formal","form":"proposition"}),
+    );
+    assert_eq!(revision(), before + 1);
+    mcp.ok(
+        "edit_card",
+        json!({"at":card["address"],"type":"model","level":"formal","form":"proposition"}),
+    );
+    assert_eq!(revision(), before + 1);
+    mcp.ok(
+        "edit_card",
+        json!({"at":card["address"],"title":"A revised model","level":"concept","form":"lemma"}),
+    );
+    assert_eq!(
+        revision(),
+        before + 2,
+        "one transaction for authored text and metadata"
+    );
+}
+
+#[test]
+fn legacy_link_migration_names_a_bad_card_and_can_be_retried_after_repair() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let card = mcp.ok(
+        "create_topic",
+        json!({"title":"Preserved legacy topic","body":"The original body."}),
+    );
+    let at = card["address"].as_str().unwrap();
+    let original = mcp.ok("get_card", json!({"at":at}))["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(mcp);
+    home.cmd().arg("down").assert().success();
+    // Model an archive created before the index and an invalid persisted body.
+    // This is storage-boundary fault injection, not a query used to assert behavior.
+    let db = home.db();
+    db.execute_batch("DROP TABLE links; DELETE FROM metadata WHERE key='links_index_version';")
+        .unwrap();
+    db.execute(
+        "UPDATE cards SET text='# Bad\n\n[[invalid target]]\n' WHERE location=?1",
+        [at],
+    )
+    .unwrap();
+    drop(db);
+    home.cmd()
+        .arg("up")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("Card `{at}`")));
+    let db = home.db();
+    db.execute(
+        "UPDATE cards SET text=?1 WHERE location=?2",
+        rusqlite::params![original, at],
+    )
+    .unwrap();
+    drop(db);
+    home.cmd().arg("up").assert().success();
+    let mut mcp = home.mcp();
+    assert_eq!(mcp.ok("get_card", json!({"at":at}))["text"], original);
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[cfg(windows)]
+#[test]
+fn stale_lock_sharing_violation_is_retried_until_the_handle_is_released() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let home = TestHome::new();
+    home.configure_and_up();
+    let path = home.archive_root.join("zt.edit.lock");
+    fs::write(&path, "zt edit lock\npid 999999\n").unwrap();
+    let (sent, ready) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(path)
+            .unwrap();
+        sent.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        drop(handle);
+    });
+    ready.recv().unwrap();
+    let output = home.cmd().arg("reindex").output().unwrap();
+    holder.join().unwrap();
+    assert!(
+        output.status.success(),
+        "a transient sharing violation must be retried: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn structural_changes_keep_the_link_index_in_step_and_protect_human_authorship() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Structure"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","kind":"direct","title":"First"}),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/1","kind":"side","title":"Target"}),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/1","kind":"side","title":"Source","body":"依赖 [[0/1|a]]。"}),
+    );
+    mcp.ok(
+        "move_card",
+        json!({"at":"0/1|b","to":"0/2","confirm":"move"}),
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+    mcp.ok("insert_card",json!({"before":"0/1|a","title":"Inserted","body":"A local continuation.","confirm":"insert"}));
+    assert!(
+        mcp.ok("get_card", json!({"at":"0/2"}))["body"]
+            .as_str()
+            .unwrap()
+            .contains("[[0/1|a|1]]")
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+    mcp.ok(
+        "delete_card",
+        json!({"at":"0/1|a","into":"0/1","confirm":"delete"}),
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{IndexBook,title={Indexed book}}","body":"依赖 [[0/1]]。"}),
+    );
+    mcp.ok("create_successor",json!({"at":"IndexBook","kind":"direct","title":"Literature claim","body":"参照 [[0/2]]。"}));
+    mcp.ok("edit_literature_metadata",json!({"at":"IndexBook","bibtex":"@book{RenamedIndexBook,title={Renamed indexed book}}","confirm":"move"}));
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+    home.cmd_with_editor("# Human author\n\n参照 [[0/2]]。\n")
+        .args(["t", "Human author"])
+        .assert()
+        .success();
+    let refusal = mcp.err(
+        "move_card",
+        json!({"at":"0/2","to":"0/1|a","confirm":"move"}),
+    );
+    assert!(refusal.contains("human workspace"));
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn an_explicit_reindex_repairs_corrupt_derived_rows_without_changing_card_text() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("create_topic", json!({"title":"Kept target"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","kind":"direct","title":"Kept source","body":"依赖 [[0/0]]，保持原文。"}),
+    );
+    let before = mcp.ok("get_card", json!({"at":"0/0"}))["text"].clone();
+    // Corruption injection at the persistence boundary; assert recovery via CLI/MCP.
+    home.db().execute("DELETE FROM links", []).unwrap();
+    let out = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let faults: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        faults["faults"][0]["first_missing"][0],
+        json!("0/1"),
+        "identify the first faulty occurrence source"
+    );
+    home.cmd().arg("reindex").assert().success();
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/0"}))["text"], before);
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
 impl TestHome {
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");

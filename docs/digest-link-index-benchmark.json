@@ -1,0 +1,29 @@
+{
+  "generated_utc": "2026-10-17T20:19:28.834Z",
+  "scope": "isolated consistent archive copies; persistent MCP; debug new build versus installed release baseline; no live Card changes",
+  "staging": "D:/zt-target/qualification-link-index-dbsqOd",
+  "results": [
+    {
+      "name": "before",
+      "executable": "C:/Users/chenx/.cargo/bin/zt.exe",
+      "archive_cards": 10895,
+      "samples": 10,
+      "median_ms": 1311.3110000000015,
+      "p95_ms": 1441.5548
+    },
+    {
+      "name": "after",
+      "executable": "D:/zt-target/debug/zt.exe",
+      "archive_cards": 10895,
+      "samples": 10,
+      "median_ms": 20.427499999997963,
+      "p95_ms": 21.963999999999942,
+      "last_write": {
+        "changed_reverse_sections": 1,
+        "indexed_cards": 1,
+        "refreshed_cards": 2
+      },
+      "integrity_ok": true
+    }
+  ]
+}

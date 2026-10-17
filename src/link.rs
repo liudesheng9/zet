@@ -257,6 +257,7 @@ impl LinkLifecycle {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_edit<'a>(
         &self,
         body: &'a str,

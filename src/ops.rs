@@ -245,26 +245,49 @@ pub(crate) fn edit(
         crate::card_type::ensure_allowed(&card, card_type)?;
         crate::model::ensure_allowed(&conn, Some(&card), card_type, facet.as_ref(), emphasis)?;
     }
-    match text {
-        Some(text) if card.is_lit => crate::update_literature_text(&mut conn, &card, text)?,
-        Some(text) => crate::update_card_text(&mut conn, &card, text)?,
-        None => {}
+    let tx = conn.transaction()?;
+    let mut changed =
+        retyped || level != card.level || hub_level != card.hub_level || form != card.form;
+    if let Some(text) = text {
+        let old = crate::parse_card_text(&card.text)?;
+        let mut parsed = if card.is_lit {
+            crate::parse_literature_edit_text(text)?
+        } else {
+            crate::parse_card_text(text)?
+        };
+        if card.is_lit {
+            parsed.title = old.title.clone();
+        }
+        if parsed.title != old.title || parsed.body != old.body {
+            let text = crate::compose_card_text(&parsed.title, &parsed.body, &old.reverse);
+            crate::validate_card_text(&tx, &card.address, &text, Some(&card.text))?;
+            tx.execute(
+                "UPDATE cards SET text=?1 WHERE row_id=?2",
+                rusqlite::params![text, card.row_id],
+            )?;
+            crate::link_index::sync_source(&tx, &card.address)?;
+            changed = true;
+        }
     }
     if retyped {
-        crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
+        crate::model::set(&tx, &card, card_type, facet.as_ref(), emphasis)?;
     }
     if level != card.level {
-        let card = crate::load_card(&conn, &card.address)?;
-        crate::model::set_level(&conn, &card, level)?;
+        let card = crate::load_card(&tx, &card.address)?;
+        crate::model::set_level(&tx, &card, level)?;
     }
     if hub_level != card.hub_level {
-        let card = crate::load_card(&conn, &card.address)?;
-        crate::hub::set_level(&conn, &card, hub_level)?;
+        let card = crate::load_card(&tx, &card.address)?;
+        crate::hub::set_level(&tx, &card, hub_level)?;
     }
     if form != card.form {
-        let card = crate::load_card(&conn, &card.address)?;
-        crate::math::set_form(&conn, &card, form)?;
+        let card = crate::load_card(&tx, &card.address)?;
+        crate::math::set_form(&tx, &card, form)?;
     }
+    if changed && crate::link_index::ready(&tx) {
+        crate::link_index::bump_revision(&tx)?;
+    }
+    tx.commit()?;
     Ok(card.address)
 }
 

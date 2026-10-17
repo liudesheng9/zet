@@ -760,7 +760,14 @@ fn execute_command(
             let card = crate::load_card(&conn, &at)?;
             // A part keeps its emphasis while it stays a part.
             let emphasis = card.emphasis.filter(|_| facet.is_some());
-            crate::model::set(&conn, &card, card_type, facet.as_ref(), emphasis)?;
+            let tx = conn.unchecked_transaction()?;
+            crate::model::set(&tx, &card, card_type, facet.as_ref(), emphasis)?;
+            if (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis)
+                && crate::link_index::ready(&tx)
+            {
+                crate::link_index::bump_revision(&tx)?;
+            }
+            tx.commit()?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub> [<facet>]"),
@@ -769,17 +776,25 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root)?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
+            let tx = conn.unchecked_transaction()?;
+            let changed;
             if card.card_type == crate::CardType::Hub {
                 let level = if value.eq_ignore_ascii_case("none") {
                     None
                 } else {
                     Some(crate::hub::HubLevel::parse(value)?)
                 };
-                crate::hub::set_level(&conn, &card, level)?;
+                changed = level != card.hub_level;
+                crate::hub::set_level(&tx, &card, level)?;
             } else {
                 let level = crate::model::parse_optional_level(value)?;
-                crate::model::set_level(&conn, &card, level)?;
+                changed = level != card.level;
+                crate::model::set_level(&tx, &card, level)?;
             }
+            if changed && crate::link_index::ready(&tx) {
+                crate::link_index::bump_revision(&tx)?;
+            }
+            tx.commit()?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["lv", ..] => bail!("usage: lv <level|none>"),
@@ -789,7 +804,12 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root)?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            crate::math::set_form(&conn, &card, form)?;
+            let tx = conn.unchecked_transaction()?;
+            crate::math::set_form(&tx, &card, form)?;
+            if form != card.form && crate::link_index::ready(&tx) {
+                crate::link_index::bump_revision(&tx)?;
+            }
+            tx.commit()?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mf", ..] => bail!("usage: mf <form|none>"),
@@ -1822,8 +1842,13 @@ mod tests {
         // Move the last Card alone before the first: the others move down.
         let mut state = SessionState::at("0/4");
         assert_eq!(
-            execute(temp.path(), &mut state, "mv alone before 0/1", &mut interaction)
-                .expect("move before"),
+            execute(
+                temp.path(),
+                &mut state,
+                "mv alone before 0/1",
+                &mut interaction
+            )
+            .expect("move before"),
             Execution::Continue(CommandResult::Changed)
         );
         assert_eq!(state.pointer(), &Pointer::Card("0/1".to_string()));

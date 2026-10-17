@@ -17,6 +17,7 @@ mod dump;
 mod gui;
 mod hub;
 mod link;
+mod link_index;
 mod literature;
 mod math;
 mod mcp;
@@ -60,6 +61,8 @@ fn run() -> Result<()> {
         [cmd] if cmd == "up" => cmd_up(),
         [cmd] if cmd == "down" => cmd_down(),
         [cmd] if cmd == "status" => cmd_status(),
+        [cmd, flag] if cmd == "status" && flag == "--check-links" => link_index::command(false),
+        [cmd] if cmd == "reindex" => link_index::command(true),
         [cmd] if cmd == "stats" => cmd_stats(),
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
         [cmd] if cmd == "dp" => cmd_dump(),
@@ -1105,7 +1108,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
         )
         .optional()?;
     if format.as_deref() == Some(CARD_FORMAT) {
-        return Ok(());
+        return link_index::ensure(root, &mut conn);
     }
     let cards = load_cards(&conn)?;
     let converted = cards
@@ -1144,7 +1147,7 @@ fn ensure_markdown_cards(root: &Path) -> Result<()> {
         [CARD_FORMAT],
     )?;
     tx.commit()?;
-    Ok(())
+    link_index::ensure(root, &mut conn)
 }
 
 fn cmd_down() -> Result<()> {
@@ -1283,6 +1286,12 @@ fn cmd_clear() -> Result<()> {
     let tx = conn.transaction()?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
     tx.execute("DELETE FROM cards", [])?;
+    if link_index::ready(&tx) {
+        link_index::rebuild(&tx)?;
+        if count > 0 {
+            link_index::bump_revision(&tx)?;
+        }
+    }
     tx.execute(
         "INSERT INTO metadata(key, value) VALUES('next_topic_id', '0')
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1300,6 +1309,8 @@ fn cmd_help() -> Result<()> {
         .map(|root| is_service_up(root))
         .unwrap_or(false);
     println!("zt commands:");
+    println!("  zt status --check-links");
+    println!("  zt reindex");
     println!("  zt up");
     println!("  zt down");
     println!("  zt status");
@@ -1440,8 +1451,11 @@ fn validate_card_text(
 ) -> Result<ParsedCard> {
     let parsed = parse_card_text(text)?;
     let old = old_text.map(parse_card_text).transpose()?;
-    link_lifecycle(conn)?
-        .validate_edit(&parsed.body, old.as_ref().map(|card| card.body.as_str()))?;
+    link_index::validate(
+        conn,
+        &parsed.body,
+        old.as_ref().map(|card| card.body.as_str()),
+    )?;
     Ok(parsed)
 }
 
@@ -1902,13 +1916,31 @@ fn insert_literature_card(
             CardType::Idea.id()
         ],
     )?;
-    regenerate_reverse_links_tx(&tx)?;
+    link_index::source_changed(&tx, citation_key)?;
     tx.commit()?;
     Ok(())
 }
 
 /// The first line of an edit lock file whose holder also keeps the file's OS lock.
 const EDIT_LOCK_MARKER: &str = "zt edit lock";
+
+#[derive(Debug)]
+struct EditBusy;
+impl std::fmt::Display for EditBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("edit in progress")
+    }
+}
+impl std::error::Error for EditBusy {}
+
+fn edit_busy(error: &anyhow::Error) -> bool {
+    error.is::<EditBusy>()
+        || error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| e.raw_os_error() == Some(32))
+        })
+}
 
 /// The edit lock: `zt.edit.lock`, created new by its holder and removed when the holder is done.
 /// The holder also keeps the file's OS lock, which the system releases however the holder ends,
@@ -1976,7 +2008,7 @@ fn acquire_edit_lock(root: &Path) -> Result<EditLock> {
             }
         }
     }
-    bail!("edit in progress")
+    Err(EditBusy.into())
 }
 
 /// Removes the lock file of a holder that ended without removing it: the file has the marker
@@ -1985,7 +2017,8 @@ fn remove_stale_edit_lock(path: &Path) -> Result<bool> {
     let mut file = match fs::OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(_) => return Ok(false),
+        Err(err) if err.raw_os_error() == Some(32) => return Ok(false),
+        Err(err) => return Err(err).with_context(|| format!("failed to open {}", path.display())),
     };
     if file.try_lock().is_err() {
         return Ok(false);
@@ -1995,6 +2028,8 @@ fn remove_stale_edit_lock(path: &Path) -> Result<bool> {
     if !text.starts_with(EDIT_LOCK_MARKER) {
         return Ok(false);
     }
+    // The guard serializes stale cleanup; release this handle before Windows deletion.
+    drop(file);
     fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
     Ok(true)
 }
@@ -2007,7 +2042,7 @@ fn acquire_edit_lock_within(root: &Path, patience: Duration) -> Result<EditLock>
     let mut pause = Duration::from_millis(20);
     loop {
         match acquire_edit_lock(root) {
-            Err(err) if err.to_string() == "edit in progress" && start.elapsed() < patience => {
+            Err(err) if edit_busy(&err) && start.elapsed() < patience => {
                 thread::sleep(pause);
                 pause = (pause * 2).min(Duration::from_millis(400));
             }
@@ -2122,12 +2157,16 @@ fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> R
     let parsed = parse_literature_edit_text(edited)?;
     let text = compose_card_text(&metadata.title, &parsed.body, "");
     validate_card_text(conn, &card.address, &text, Some(&card.text))?;
+    let stored = parse_card_text(&card.text)?;
+    if parsed.body == stored.body && metadata.title == stored.title {
+        return Ok(());
+    }
     let tx = conn.transaction()?;
     tx.execute(
         "UPDATE cards SET text = ?1 WHERE row_id = ?2",
         params![text, card.row_id],
     )?;
-    regenerate_reverse_links_tx(&tx)?;
+    link_index::source_changed(&tx, &card.address)?;
     tx.commit()?;
     Ok(())
 }
@@ -2223,6 +2262,12 @@ fn update_literature_metadata(
     title: &str,
 ) -> Result<()> {
     let parsed = parse_card_text(&card.text)?;
+    if citation_key == card.address
+        && card.bibtex.as_deref() == Some(bibtex)
+        && title == parsed.title
+    {
+        return Ok(());
+    }
     let text = compose_card_text(title, &parsed.body, "");
     let tx = conn.transaction()?;
     let mapping = if citation_key != card.address {
@@ -2235,7 +2280,11 @@ fn update_literature_metadata(
         params![citation_key, bibtex, text, card.row_id],
     )?;
     apply_location_mapping_tx(&tx, &mapping)?;
-    regenerate_reverse_links_tx(&tx)?;
+    if mapping.is_empty() {
+        link_index::source_changed(&tx, citation_key)?;
+    } else {
+        regenerate_reverse_links_tx(&tx)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -2286,7 +2335,10 @@ fn insert_card(
             emphasis.map(model::Emphasis::id)
         ],
     )?;
-    regenerate_reverse_links_tx(&tx)?;
+    link_index::source_changed(&tx, location)?;
+    if is_topic {
+        bump_next_topic_id(&tx, location)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -2295,23 +2347,31 @@ fn insert_card(
 fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Result<String> {
     let location = next_topic_location(conn)?;
     insert_card(conn, &location, true, workspace, CardType::Idea, None, text)?;
-    bump_next_topic_id(conn, &location)?;
     Ok(location)
 }
 
 fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()> {
     validate_card_text(conn, &card.address, text, Some(&card.text))?;
+    let before = parse_card_text(&card.text)?;
+    let after = parse_card_text(text)?;
+    if before.title == after.title && before.body == after.body {
+        return Ok(());
+    }
     let tx = conn.transaction()?;
     tx.execute(
         "UPDATE cards SET text = ?1 WHERE row_id = ?2",
         params![text, card.row_id],
     )?;
-    regenerate_reverse_links_tx(&tx)?;
+    link_index::source_changed(&tx, &card.address)?;
     tx.commit()?;
     Ok(())
 }
 
 fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
+    if link_index::ready(conn) {
+        link_index::rebuild(conn)?;
+        return link_index::bump_revision(conn);
+    }
     let cards = load_cards(conn)?;
     let reverse_sections = link_lifecycle_from_cards(&cards)?.reverse_sections()?;
     for card in &cards {
@@ -2480,7 +2540,10 @@ fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
     if !plan.inbound.is_empty() {
         match &plan.into {
             Some(into) => {
-                lines.push(format!("links re-pointed to {into}: {}", plan.inbound.len()));
+                lines.push(format!(
+                    "links re-pointed to {into}: {}",
+                    plan.inbound.len()
+                ));
                 for (source, target) in &plan.inbound {
                     lines.push(format!("{source}: [[{target}]] -> [[{into}]]"));
                 }
@@ -2631,10 +2694,12 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
     let cards = load_cards(conn)?;
     for card in cards {
         let text = replace_link_locations(&card.text, mapping)?;
-        conn.execute(
-            "UPDATE cards SET text = ?1 WHERE row_id = ?2",
-            params![text, card.row_id],
-        )?;
+        if text != card.text {
+            conn.execute(
+                "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+                params![text, card.row_id],
+            )?;
+        }
     }
     spread::follow(conn, mapping, &BTreeSet::new())
 }
