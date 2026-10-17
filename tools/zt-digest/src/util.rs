@@ -69,3 +69,43 @@ pub fn print_line(line: &str) -> Result<()> {
 pub fn print_last(value: &Value) -> Result<()> {
     print_line(&compact(value))
 }
+
+/// PowerShell's positional binding: a value that follows no parameter name goes to the next
+/// parameter of `params` (in declaration order) that was not named. Returns the arguments with
+/// each such value named, for `Args::parse`; a value left over is an error, as in PowerShell.
+pub fn bind_positional(argv: &[String], params: &[&str]) -> Result<Vec<String>> {
+    let is_name = |a: &str| a.len() > 1 && a.starts_with('-') && a[1..].chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+    let mut named: Vec<String> = Vec::new();
+    let mut positional: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if is_name(arg) {
+            let (name, inline) = match arg[1..].split_once(':') {
+                Some((name, _)) => (name.to_ascii_lowercase(), true),
+                None => (arg[1..].to_ascii_lowercase(), false),
+            };
+            out.push(arg.clone());
+            if params.iter().any(|p| p.eq_ignore_ascii_case(&name)) && !inline && i + 1 < argv.len() {
+                out.push(argv[i + 1].clone());
+                i += 1;
+            }
+            named.push(name);
+        } else {
+            positional.push(arg.clone());
+        }
+        i += 1;
+    }
+    let mut free = params.iter().filter(|p| !named.contains(&p.to_ascii_lowercase()));
+    for value in positional {
+        match free.next() {
+            Some(p) => {
+                out.push(format!("-{p}"));
+                out.push(value);
+            }
+            None => anyhow::bail!("a positional parameter cannot be found that accepts argument '{value}'"),
+        }
+    }
+    Ok(out)
+}

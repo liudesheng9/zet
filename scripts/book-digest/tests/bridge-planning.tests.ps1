@@ -75,9 +75,13 @@ try{
  $failedWork=Join-Path $staging 'failed'
  $failed=Compile @('-Step','plan','-Staging',$staging,'-Work',$failedWork,'-CitationKey','New2026')
  Assert ($Code -eq 2 -and -not $failed.ok -and -not(Test-Path -LiteralPath (Join-Path $failedWork 'plan.json'))) 'a required tree read failure publishes no empty snapshot or judge jobs'
+ # The audit (zt-digest audit) reads through its own zt mcp, not through the helper, so the faulting
+ # helper cannot fail its tree reads. The rule "incomplete external reads leave semantic isolation
+ # unknown rather than true" is the Rust test audit::tests::an_incomplete_read_leaves_the_island_unknown.
+ # Here the audit reads every tree, so the graph is complete.
  $auditOut=Join-Path $scratch 'audit'
  $lines=@(pwsh -NoProfile -File (Join-Path $copy 'digest-audit.ps1') -CitationKey New2026 -Out $auditOut -SkipModels)
  if($LASTEXITCODE){throw "audit failed: $lines"}
  $audit=Get-Content -LiteralPath (Join-Path $auditOut 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String
- Assert (-not $audit.books[0].bridges.complete -and $null -eq $audit.books[0].bridges.island) 'incomplete external reads leave semantic isolation unknown rather than true'
+ Assert ($audit.books[0].bridges.complete -eq $true) 'the audit reads every tree through its own zt mcp, so its graph is complete'
 }finally{zt down|Out-Null}
