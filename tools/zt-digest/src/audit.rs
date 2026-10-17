@@ -10,11 +10,10 @@ mod markdown;
 
 
 use crate::args::Args;
-use crate::calls;
 use crate::check::Check;
 use crate::util;
 use crate::zt::Zt;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use crate::ps::{self, key as ci, culture_cmp, group_by, ps_array, ps_count, eq, is_in, ps_int, ps_items, ps_sort, ps_sort_unique, field, s, truthy};
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -28,8 +27,6 @@ pub struct Params {
     pub max_sentences: i64,
     pub max_chars: i64,
     pub max_steps: i64,
-    pub throttle: i64,
-    pub chunk: i64,
     pub sample: i64,
     pub skip_models: bool,
 }
@@ -43,8 +40,6 @@ impl Params {
             max_sentences: 12,
             max_chars: 400,
             max_steps: 6,
-            throttle: 6,
-            chunk: 40,
             sample: 15,
             skip_models: true,
         }
@@ -129,69 +124,6 @@ fn tally(items: &[String]) -> Value {
     Value::Object(map)
 }
 
-/// One read: its answer, or None when it fails or answers no object.
-fn read_one(zt: &mut Zt, call: &Value) -> Result<Option<Value>> {
-    let one = std::slice::from_ref(call);
-    let result = match calls::run(zt, one, &mut calls::Options::new()) {
-        Ok(r) => Ok(r),
-        Err(_) => {
-            // zt mcp went away: a new server for this call and the rest.
-            *zt = Zt::start()?;
-            calls::run(zt, one, &mut calls::Options::new())
-        }
-    };
-    Ok(match result {
-        Ok((done, None)) => done.into_iter().next().and_then(|d| d.value),
-        _ => None,
-    })
-}
-
-/// `Read-Many`: reads in call order, None for a call that fails or answers no object. Above one
-/// chunk (-Chunk calls), up to -Throttle workers read chunks at once, each on its own `zt mcp`
-/// (the script ran -Throttle helper processes); `zt` is one of them.
-fn read_many(zt: &mut Zt, calls: &[Value], throttle: i64, chunk: i64) -> Result<Vec<Option<Value>>> {
-    let chunk = chunk.max(1) as usize;
-    let chunks: Vec<(usize, &[Value])> = calls.chunks(chunk).enumerate().map(|(i, c)| (i * chunk, c)).collect();
-    let workers = (throttle.max(1) as usize).min(chunks.len());
-    if workers <= 1 {
-        return calls.iter().map(|c| read_one(zt, c)).collect();
-    }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let work = |zt: &mut Zt| -> Result<Vec<(usize, Option<Value>)>> {
-        let mut got = Vec::new();
-        loop {
-            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let Some((start, part)) = chunks.get(k) else { break };
-            for (i, call) in part.iter().enumerate() {
-                got.push((start + i, read_one(zt, call)?));
-            }
-        }
-        Ok(got)
-    };
-    let mut out: Vec<Option<Value>> = vec![None; calls.len()];
-    let results: Vec<Result<Vec<(usize, Option<Value>)>>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (1..workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut own = Zt::start()?;
-                    work(&mut own)
-                })
-            })
-            .collect();
-        let mut results = vec![work(zt)];
-        for h in handles {
-            results.push(h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a read worker panicked"))));
-        }
-        results
-    });
-    for r in results {
-        for (i, v) in r? {
-            out[i] = v;
-        }
-    }
-    Ok(out)
-}
-
 /// `Bridge-Counts`: the semantic Bridges of book `key`, an actual distinct directed pair of
 /// substantive Cards (idea, finding, event, model, part; not a notation table) in different
 /// buckets (a book, `human`, `unattributed`), joined by a kinded Link that is not "refers".
@@ -254,10 +186,6 @@ fn bridge_counts(graph_cards: &[Value], index: &book_of::BookIndex, graph_comple
     json!({ "out": side(0), "in": side(1), "island": island, "complete": graph_complete, "peers": peers })
 }
 
-fn read_zt(zt: &mut Zt, calls: &[Value]) -> Result<Vec<Value>> {
-    calls::invoke(zt, calls)
-}
-
 fn str_list(value: &Value) -> Vec<String> {
     ps_items(value).iter().map(s).collect()
 }
@@ -274,9 +202,19 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let sw = Instant::now();
     let secs = |sw: &Instant| ps_int(sw.elapsed().as_secs_f64());
 
-    // --- the trees ---
-    let listed = read_zt(zt, &[json!({ "tool": "list_trees", "arguments": {} })])?;
-    let all_trees: Vec<Value> = listed.first().map(|v| ps_items(&v["trees"])).unwrap_or_default();
+    // The public global report needs every category, book attribution and
+    // Bridge endpoint. Load that graph once, without model projections per Card.
+    let revision = zt.cards(&[], "text")?.archive_revision;
+    let mut all_trees = crate::snapshot::read_title_trees(zt)?;
+    if all_trees.iter().any(|tree| tree["archive_revision"].as_u64() != Some(revision)) {
+        bail!("incomplete audit inputs: changing title view");
+    }
+    for tree in &mut all_trees {
+        let rows = ps_items(&tree["cards"]);
+        tree["count"] = json!(rows.len());
+        tree["title"] = rows.iter().find(|card| field(card,"edge")=="root")
+            .context("incomplete audit catalogue: missing tree root")?["title"].clone();
+    }
     let trees: Vec<Value> = all_trees.iter().filter(|t| field(t, "workspace") == "agent").cloned().collect();
     let all_books: Vec<String> = trees.iter().filter(|t| eq(&field(t, "kind"), "literature")).map(|t| field(t, "tree")).collect();
     let mut books = all_books.clone();
@@ -291,10 +229,22 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         tree_info.insert(ci(&field(t, "tree")), t.clone());
     }
     let topic_trees: Vec<String> = trees.iter().filter(|t| eq(&field(t, "kind"), "topic")).map(|t| field(t, "tree")).collect();
-    let tree_calls: Vec<Value> = all_trees.iter().map(|t| json!({ "tool": "get_tree", "arguments": { "tree": t["tree"].clone() } })).collect();
-    let read = read_many(zt, &tree_calls, p.throttle, p.chunk)?;
-    let graph_complete = read.iter().all(Option::is_some) && read.len() == all_trees.len();
-    let graph_cards: Vec<Value> = read.iter().flatten().flat_map(|r| ps_items(&r["cards"])).collect();
+    let addresses: Vec<String> = all_trees.iter().flat_map(|tree|ps_items(&tree["cards"]))
+        .map(|card|field(&card,"address")).collect();
+    let read = zt.cards(&addresses, "text")?;
+    if read.archive_revision != revision {bail!("incomplete audit inputs: changing graph view");}
+    let graph_complete = true;
+    let mut graph_cards = read.cards;
+    let mut incoming: HashMap<String,usize> = HashMap::new();
+    for card in &graph_cards {
+        for target in ps::select_unique(str_list(&card["links"])) {
+            *incoming.entry(target).or_default() += 1;
+        }
+    }
+    for card in &mut graph_cards {
+        card["parent"] = card["parent_address"].clone();
+        card["inbound"] = json!(incoming.get(&field(card,"address")).copied().unwrap_or(0));
+    }
     let cards: Vec<Value> = graph_cards.iter().filter(|c| field(c, "workspace") == "agent").cloned().collect();
     host(&format!("read {} Cards in {} trees ({} s)", cards.len(), trees.len(), secs(&sw)));
 
@@ -309,14 +259,21 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         scope.extend(unattributed.iter().copied());
     }
 
-    // --- bodies: get_model for each Model Card, get_card for the rest ---
+    // Complete model contexts are required only for the requested report scope.
     let heads: Vec<&Value> = if p.skip_models { Vec::new() } else { scope.iter().copied().filter(|c| eq(&category(c), "model")).collect() };
-    let model_calls: Vec<Value> = heads.iter().map(|c| json!({ "tool": "get_model", "arguments": { "at": field(c, "address") } })).collect();
-    let structures = read_many(zt, &model_calls, p.throttle, p.chunk)?;
+    let structures: Vec<Value> = heads.iter().map(|head| {
+        let at = field(head,"address");
+        let model = zt.call("get_model",json!({"at":at}))
+            .with_context(||format!("incomplete audit model `{at}`"))?;
+        if model["head"]["address"].as_str()!=Some(at.as_str()) || !model["parts"].is_array() || !model["build"].is_object() {
+            bail!("incomplete audit model `{at}`: missing head, parts or build");
+        }
+        Ok(model)
+    }).collect::<Result<_>>()?;
     // address (case ignored) -> (title, body)
     let mut bodies: HashMap<String, (String, String)> = HashMap::new();
     let mut facets: HashMap<String, String> = HashMap::new();
-    for m in structures.iter().flatten() {
+    for m in &structures {
         if truthy(&m["head"]) {
             bodies.insert(ci(&field(&m["head"], "address")), (field(&m["head"], "title"), field(&m["head"], "body")));
         }
@@ -330,16 +287,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         .copied()
         .filter(|c| !bodies.contains_key(&ci(&field(c, "address"))) && !(p.skip_models && is_in(&category(c), &["model", "part"])))
         .collect();
-    let card_calls: Vec<Value> = missing.iter().map(|c| json!({ "tool": "get_card", "arguments": { "at": field(c, "address") } })).collect();
-    let got = read_many(zt, &card_calls, p.throttle, p.chunk)?;
-    let mut unread: Vec<String> = Vec::new();
-    for (c, g) in missing.iter().zip(&got) {
-        match g {
-            Some(g) => {
-                bodies.insert(ci(&field(c, "address")), (field(g, "title"), field(g, "body")));
-            }
-            None => unread.push(field(c, "address")),
-        }
+    let unread: Vec<String> = Vec::new();
+    for card in missing {
+        bodies.insert(ci(&field(card,"address")),(field(card,"title"),field(card,"body")));
     }
     host(&format!("read {} bodies, {} models ({} s)", bodies.len(), structures.len(), secs(&sw)));
 
@@ -371,7 +321,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         Ok(())
     };
     let mut in_model: HashSet<String> = HashSet::new();
-    for m in structures.iter().flatten() {
+    for m in &structures {
         if !truthy(&m["head"]) {
             continue;
         }
@@ -454,15 +404,14 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     host(&format!("Card language: {} faults ({} s)", faults.len(), secs(&sw)));
 
     // --- the Workspace ---
-    let hub_list = read_zt(
-        zt,
-        &[
-            json!({ "tool": "list_hubs", "arguments": { "workspace": "agent" } }),
-            json!({ "tool": "list_broken_links", "arguments": { "workspace": "agent" } }),
-        ],
-    )?;
-    let hubs = hub_list.first().cloned().unwrap_or(Value::Null);
-    let broken = ps_array(&hub_list.get(1).cloned().unwrap_or(Value::Null)["broken"]);
+    let hubs = zt.call("list_hubs",json!({"workspace":"agent"}))
+        .context("incomplete audit hub read")?;
+    let broken_read = zt.call("list_broken_links",json!({"workspace":"agent"}))
+        .context("incomplete audit Broken link read")?;
+    let broken = broken_read["broken"].as_array().context("incomplete audit Broken link list")?;
+    if !hubs["hubs"].is_array() || !hubs["missing"].is_array() || !hubs["counts"].is_object() {
+        bail!("incomplete audit hub data");
+    }
     let broken_from: Vec<String> = broken
         .iter()
         .map(|b| {
@@ -572,10 +521,6 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             if !book_of(head).is_some_and(|b| eq(&b, key)) {
                 continue;
             }
-            let Some(m) = m else {
-                model_rows.push(json!({ "address": field(head, "address"), "error": "get_model failed" }));
-                continue;
-            };
             let b = &m["build"];
             let n = json!({
                 "closure": ps_count(&b["closure"]), "forward": ps_count(&b["forward"]),
@@ -688,9 +633,14 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         }));
     }
     let scope_name = if p.citation_key.is_empty() { "agent".to_string() } else { p.citation_key.clone() };
+    if zt.cards(&[], "text")?.archive_revision != revision {
+        bail!("incomplete audit inputs: changing read view");
+    }
     let seconds = secs(&sw);
     let report = json!({
         "generated": ps::local_minute(),
+        "complete": true,
+        "archive_revision": revision,
         "scope": scope_name,
         "limits": limits,
         "seconds": seconds,
@@ -728,14 +678,15 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = ["CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk", "Sample"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["SkipModels"])?;
+    // Accept existing wrappers' integer options. The bulk path owns its
+    // server-limited chunk size and always uses this command's one client.
+    let _legacy_read_options = (a.int_or("Throttle",1)?,a.int_or("Chunk",200)?);
     let p = Params {
         citation_key: a.str("CitationKey"),
         out: a.required("Out")?,
         max_sentences: a.int_or("MaxSentences", 12)?,
         max_chars: a.int_or("MaxChars", 400)?,
         max_steps: a.int_or("MaxSteps", 6)?,
-        throttle: a.int_or("Throttle", 6)?,
-        chunk: a.int_or("Chunk", 40)?,
         sample: a.int_or("Sample", 15)?,
         skip_models: a.flag("SkipModels"),
     };

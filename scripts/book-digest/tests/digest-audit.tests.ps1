@@ -62,4 +62,48 @@ try {
     $report=Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw -Encoding utf8|ConvertFrom-Json -AsHashtable -DateKind String
     $md = Get-Content -LiteralPath (Join-Path $out 'audit.md') -Raw -Encoding utf8
     Assert ($report.books[0].bridges.island -eq $true -and $report.books[0].bridges.peers -gt 0 -and $md -match '\| Islands \(books with no semantic Bridge in or out\) \| `Lone2030`') 'a book with peers and no Bridge is an island that audit.md names'
+    # Frozen from the public pre-migration audit on this exact fixture (fda5cf1).
+    $baselineFaults = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'audit-bulk-faults-fixture.txt'))
+    $baselineReport = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'audit-bulk-report-fixture.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_TRACE_TOOLS = Join-Path $scratch 'bulk-audit-tools.jsonl'
+    $env:ZT_FAIL_TREE = 'Earlier2020'
+    $env:ZT_FAIL_CARD = 'Lone2030/1|a'
+    $env:ZT_FAIL_FLAG = Join-Path $scratch 'no-single-card.flag'
+    [IO.File]::WriteAllText($env:ZT_FAIL_FLAG, '')
+    $bulkOut = Join-Path $scratch 'bulk-audit'
+    $bulkLines = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Lone2030 -Out $bulkOut -SkipModels 2>&1)
+    Assert ($LASTEXITCODE -eq 0) "global audit runs through complete bulk inputs: $($bulkLines -join ' | ')"
+    $trace = @(Get-Content -LiteralPath $env:ZT_TRACE_TOOLS -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert (@($trace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'global audit uses one client without per-Card or per-tree projections'
+    $bulkReport = Get-Content -LiteralPath (Join-Path $bulkOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
+    Assert ($bulkReport.complete -and $bulkReport.archive_revision -is [long]) 'the completed audit records its consistent graph revision'
+    foreach ($key in @('generated','seconds','complete','archive_revision')) { $report.Remove($key); $bulkReport.Remove($key) }
+    Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'bulk and pre-migration reports preserve every existing graph, Bridge, orphan and quality field'
+    Assert ($baselineFaults -ceq [IO.File]::ReadAllText((Join-Path $bulkOut 'audit-faults.txt'))) 'bulk and pre-migration audit fault lines match exactly'
+    $modelOut = Join-Path $scratch 'model-audit'
+    $env:ZT_TRACE_TOOLS = Join-Path $scratch 'model-audit-tools.jsonl'
+    $modelLines = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Audit2026 -Out $modelOut -Throttle 6 -Chunk 1 2>&1)
+    Assert ($LASTEXITCODE -eq 0) "a complete model report runs through the same client: $($modelLines -join ' | ')"
+    $modelReport = Get-Content -LiteralPath (Join-Path $modelOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
+    $modelTrace = @(Get-Content -LiteralPath $env:ZT_TRACE_TOOLS -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert ($modelReport.books[0].models.count -eq 1 -and $modelReport.books[0].models.list[0].parts -eq 1 -and @($modelTrace | Where-Object tool -eq 'get_model').Count -eq 1 -and @($modelTrace.process_id | Sort-Object -Unique).Count -eq 1) 'only required model contexts are read, including when legacy worker options are supplied'
+    $env:ZT_BULK_MISSING = 'Earlier2020/1|a'
+    $missingOut = Join-Path $scratch 'incomplete-bulk-audit'
+    $missingLines = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Lone2030 -Out $missingOut -SkipModels 2>&1)
+    Assert ($LASTEXITCODE -ne 0 -and ($missingLines -join ' ').Contains('incomplete Card read') -and -not (Test-Path -LiteralPath (Join-Path $missingOut 'audit.json'))) 'a missing graph input cannot publish an empty or zero-fault global report'
+    Remove-Item Env:ZT_BULK_MISSING
+    $env:ZT_FAIL_MODEL = $extra[0]
+    $failedModelOut = Join-Path $scratch 'incomplete-model-audit'
+    $failedModel = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Audit2026 -Out $failedModelOut 2>&1)
+    Assert ($LASTEXITCODE -ne 0 -and ($failedModel -join ' ').Contains("incomplete audit model ``$($extra[0])``") -and -not (Test-Path -LiteralPath (Join-Path $failedModelOut 'audit.json'))) 'a required model failure names its input and cannot publish a complete audit'
+    Remove-Item Env:ZT_FAIL_MODEL
+    $env:ZT_RACE_AFTER_READ = '1'
+    $env:ZT_RACE_TARGET = 'Earlier2020/1|a'
+    $env:ZT_RACE_FLAG = Join-Path $scratch 'changed-after-bulk.flag'
+    $env:ZT_RACE_LINE = '另一个写入者在审计读取后修改了卡片。'
+    $changingOut = Join-Path $scratch 'changing-audit'
+    $changing = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Lone2030 -Out $changingOut -SkipModels 2>&1)
+    Assert ($LASTEXITCODE -ne 0 -and ($changing -join ' ').Contains('changing read view') -and -not (Test-Path -LiteralPath (Join-Path $changingOut 'audit.json'))) 'a real edit between graph and relationship reads cannot publish a mixed-revision audit'
+    Remove-Item Env:ZT_RACE_AFTER_READ,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE
 } finally { zt down | Out-Null }

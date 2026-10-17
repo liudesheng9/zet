@@ -1,0 +1,153 @@
+{
+  "scope": "Lone2030",
+  "limits": {
+    "MaxSentences": 12,
+    "MaxChars": 400,
+    "MaxSteps": 6
+  },
+  "workspace": {
+    "trees": 4,
+    "topic_trees": 1,
+    "books": 3,
+    "cards": 15,
+    "cards_by_category": {
+      "idea": 4,
+      "root": 4,
+      "anchor": 3,
+      "finding": 1,
+      "hub": 1,
+      "model": 1,
+      "part": 1
+    },
+    "topic_tree_sizes": {
+      "n": 1,
+      "min": 2,
+      "p25": 2,
+      "median": 2,
+      "p75": 2,
+      "max": 2
+    },
+    "hubs": {
+      "counts": {
+        "topic": 1
+      },
+      "missing": 1,
+      "with_faults": 1,
+      "missing_list": [
+        {
+          "level": "register",
+          "workspace": "agent"
+        }
+      ]
+    },
+    "broken_links": 0,
+    "unattributed": {
+      "count": 1,
+      "by_category": {
+        "root": 1
+      },
+      "orphans": [],
+      "style": null,
+      "list": [
+        "0/0"
+      ]
+    }
+  },
+  "books": [
+    {
+      "key": "Lone2030",
+      "title": "Lone",
+      "bridges": {
+        "out": {
+          "books": {},
+          "human": 0,
+          "unattributed": 0
+        },
+        "in": {
+          "books": {},
+          "human": 0,
+          "unattributed": 0
+        },
+        "island": true,
+        "complete": true,
+        "peers": 5
+      },
+      "cards": 3,
+      "cards_by_category": {
+        "anchor": 1,
+        "idea": 1,
+        "root": 1
+      },
+      "cards_in_topic_trees": 0,
+      "unread": [],
+      "topics": {
+        "trees": 0,
+        "majority": 0,
+        "sizes": {
+          "n": 0
+        },
+        "list": []
+      },
+      "style": {
+        "cards_checked": 3,
+        "faults": 0,
+        "cards_with_faults": 0,
+        "by_rule": {},
+        "by_category": {}
+      },
+      "layer": {
+        "faults": 3,
+        "advisory": 1,
+        "cards_with_faults": 1,
+        "by_rule": {
+          "I1": 1,
+          "I2": 1,
+          "I4": 1,
+          "I5": 1
+        },
+        "term_table": null
+      },
+      "orphans": {
+        "count": 2,
+        "by_category": {
+          "anchor": 1,
+          "idea": 1
+        },
+        "list": [
+          "Lone2030/1",
+          "Lone2030/1|a"
+        ]
+      },
+      "no_source": {
+        "count": 0,
+        "of": 1,
+        "by_category": {},
+        "list": []
+      },
+      "unkinded": {
+        "count": 1,
+        "of": 1,
+        "refers_links": 0,
+        "list": [
+          "Lone2030/1|a"
+        ]
+      },
+      "models": {
+        "count": 0,
+        "levels": {},
+        "not_self_sufficient": 0,
+        "with_issues": 0,
+        "derivations": 0,
+        "explained": 0,
+        "list": []
+      },
+      "figures": {
+        "shown_labels": 0,
+        "missing_known": 0,
+        "missing_unknown": 0,
+        "list": []
+      },
+      "broken_links": 0
+    }
+  ]
+}

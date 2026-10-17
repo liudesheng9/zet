@@ -91,8 +91,6 @@ pub fn run_audit(zt: &mut Zt, key: &str, out: &str) -> Result<()> {
         max_sentences: 12,
         max_chars: 400,
         max_steps: 6,
-        throttle: 6,
-        chunk: 40,
         sample: 15,
         skip_models: false,
     };

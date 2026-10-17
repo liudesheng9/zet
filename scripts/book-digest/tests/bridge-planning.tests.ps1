@@ -72,10 +72,10 @@ try{
  Remove-Item Env:ZT_CHECK_ZT,Env:ZT_FAIL_TREE
  # The rule "incomplete external reads leave semantic isolation unknown rather than true" is the
  # Rust test audit::tests::an_incomplete_read_leaves_the_island_unknown. Here the audit runs
- # without the seam and reads every tree, so the graph is complete.
+ # without the seam and requires the complete bulk graph before publishing.
  $auditOut=Join-Path $scratch 'audit'
  $lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $auditOut -SkipModels)
  if($LASTEXITCODE){throw "audit failed: $lines"}
  $audit=Get-Content -LiteralPath (Join-Path $auditOut 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String
- Assert ($audit.books[0].bridges.complete -eq $true) 'the audit reads every tree through its own zt mcp, so its graph is complete'
+ Assert ($audit.books[0].bridges.complete -eq $true) 'the audit completes its required bulk graph through one MCP client'
 }finally{zt down|Out-Null}

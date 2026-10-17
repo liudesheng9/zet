@@ -1,0 +1,4 @@
+Lone2030/1 I1 (advisory) the title states no claim: 第一组
+Lone2030/1|a I2 (17 characters < 40) merge candidate
+Lone2030/1|a I4 no kinded Link to a Card other than the parent
+Lone2030/1|a I5 no Card other than the parent links here

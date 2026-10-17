@@ -93,7 +93,7 @@ flowchart LR
   CHK --> ZT
 ```
 
-A tool parses its parameters with `Args`, opens one `Zt`, and passes it to every read, write, and check. Nothing else starts a process, except the audit's read workers: above one chunk of reads, up to `-Throttle` threads read at once, each on its own `Zt`. `card` runs the audit in-process (`audit::run`) on its own `Zt`; its `precheck` starts no `Zt`, because zt-check `--json` reads no Card.
+A tool parses its parameters with `Args`, opens one `Zt`, and passes it to every read, write, and check. The audit uses that same client for its fresh catalogue, bounded text batches, required model contexts and relationship reports. It starts no read-worker pool. `card` runs the audit in-process (`audit::run`) on its own `Zt`; its `precheck` starts no `Zt`, because zt-check `--json` reads no Card.
 
 ## Interfaces
 
@@ -101,14 +101,14 @@ A tool parses its parameters with `Args`, opens one `Zt`, and passes it to every
 
 `prepare-link` uses that title catalogue and `Zt::cards(..., "text")` in the same MCP process. It compares revisions, preserves ownership and existing-link exclusion, and uses the old ranking inputs: full bodies for non-root agent candidates, compact excerpts for human Cards and Topic roots. Its global candidate-ranking corpus still requires one bulk text pass over the catalogue; it does not read each tree or calculate a model per Card. Limit errors reduce chunks, and missing required input stops the command. Group/whole-book audit and checker migration is still in progress under #67.
 
-Normal `card` group cycles (`-Groups` with `-NoOrphans`, without requested global rules) now read their owned logs/anchors and required parent/term Cards through bounded text batches. The existing `book_index` determines categories and attribution, and the existing offline checker produces local faults. `before`/`after` artifacts label the checked addresses, revision and global checks `not_run`. A missing required Card or owned manifest stops planning. Explicit global/orphan requests keep the full-book audit path, which is still being migrated. Scoped R4/R6 results match the retained full-book path in the public test. The executable-testing interruption is resolved; the investigation is recorded in `docs/windows-defender-build-investigation.md`.
+Normal `card` group cycles (`-Groups` with `-NoOrphans`, without requested global rules) now read their owned logs/anchors and required parent/term Cards through bounded text batches. The existing `book_index` determines categories and attribution, and the existing offline checker produces local faults. `before`/`after` artifacts label the checked addresses, revision and global checks `not_run`. A missing required Card or owned manifest stops planning. Explicit global/orphan requests use the complete bulk global audit. The dedicated whole-book Card scope remains in progress. Scoped R4/R6 results match the retained full-book path in the public test. The executable-testing interruption is resolved; the investigation is recorded in `docs/windows-defender-build-investigation.md`.
 
 ### Command line
 
 ```text
 zt-digest call <file|-> [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Moves f] [-SrcLog f] [-TopicGate f] [-TopicSimilarity 0.8]
 zt-digest call -Tool <tool> [-Json '{...}']
-zt-digest audit [-CitationKey <key>] -Out <folder> [-MaxSentences 12] [-MaxChars 400] [-MaxSteps 6] [-Throttle 6] [-Chunk 40] [-Sample 15] [-SkipModels]
+zt-digest audit [-CitationKey <key>] -Out <folder> [-MaxSentences 12] [-MaxChars 400] [-MaxSteps 6] [-Throttle N] [-Chunk N] [-Sample 15] [-SkipModels]
 zt-digest card -Step plan|apply|check|report|precheck -Work <folder> [-Book <key>] [-Staging <folder>] [-Groups "1,2"] [-PerJob 8] [-Sample 0] [-Seed 1] [-Rules R2,...] [-MaxCards 0] [-NoOrphans] [-Notes <file>] [-Compact] [-MaxJobs 0] [-Job <id>] [-File <json>]
 zt-digest model -Step <step> -Work <folder> [-Staging <folder>] [...]
 zt-digest model-context -Staging <folder> -Model <address> -Out <file>
@@ -148,12 +148,14 @@ Input: a UTF-8 JSON file, or `-` for stdin, holding one call or an array of call
 
 ### `audit`
 
-The port of `digest-audit.ps1`; [Digest scripts](digest-scripts.md) describes what it reports. It makes only read calls (`list_trees`, `get_tree`, `get_model` unless `-SkipModels`, `get_card`, `list_hubs`, `list_broken_links`). It reads in chunks of `-Chunk` calls on up to `-Throttle` workers; a call that fails becomes null, and a tree that could not be read makes `bridges.complete` false. It runs zt-check `--json` in-process, once per model and once per book. A `-CitationKey` that is not an agent Literature tree fails with ``no agent Literature tree `<key>` ``.
+The port of `digest-audit.ps1`; [Digest scripts](digest-scripts.md) describes what it reports. It makes only read calls: one fresh title export, bounded lean Card batches, `get_model` for required scoped models unless `-SkipModels`, `list_hubs` and `list_broken_links`. Its archive-wide category, attribution, Bridge and orphan report requires the complete graph; the indexed lean facts supply outgoing relations and complete inbound counts. Bodies are reused from that read, without a second per-Card pass. Model contexts are read only for the selected report scope.
+
+Missing required input or a revision change is an explicit error, so it cannot produce a successful zero-fault report. A completed report records `complete: true` and `archive_revision`, after checking that the graph, model and relationship inputs share the revision. `-Throttle` and `-Chunk` remain accepted integer compatibility options; server limits control adaptive batches and the command always uses one client. It runs zt-check `--json` in-process, once per model and once per book. A `-CitationKey` that is not an agent Literature tree fails with ``no agent Literature tree `<key>` ``.
 
 | Output | Content |
 |---|---|
 | stdout | `read N Cards in M trees (S s)`, `read N bodies, M models (S s)`, `Card language: N faults (S s)`, then the summary as compact JSON |
-| `audit.json` | the report: `generated`, `scope`, `limits`, `seconds`, `workspace`, `books[]` |
+| `audit.json` | the report: `generated`, `complete`, `archive_revision`, `scope`, `limits`, `seconds`, `workspace`, `books[]` |
 | `audit.md` | the report for people |
 | `audit-faults.txt` | every Card language and Card layer fault line, sorted by address |
 | `audit-cards.json` | every Card checked outside a model, with body, Links, kinds, inbound Links, category, tree, book, parent |
@@ -288,7 +290,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **zt-check as a library.** The check runs on the tool's own `Zt`, and its rules stay in one crate.
 - **Key order.** `serde_json` has `preserve_order`, so compact JSON keeps the order zt and the tools wrote, as `ConvertTo-Json` did.
 - **PowerShell's order, not Rust's.** `src/ps.rs` copies what the scripts' files depended on: `Sort-Object` is .NET's introsort (equal keys come out in its order, not input order, above 16 items), strings sort by the zh-CN culture ignoring case (Han before Latin letters), `[Random]::new(seed)` is the .NET generator, and JSON is written as `ConvertTo-Json` writes it (two-space indent, CRLF, `1.0` for a whole double). On the card-compiler test flow and on a 635-Card archive, every file `audit` and `card` write equals the script's, byte for byte, except where PowerShell's order was random: the keys of an unordered `@{}` (`limits`, `bridges.out`, `bridges.in`) and ties in the relatedness ranking.
-- **Read workers.** The audit read with `-Throttle` helper processes; the tool keeps that, with one `zt mcp` per worker thread, because one `zt mcp` answers a `get_card` in about 8 ms.
+- **Audit inputs.** The audit uses bounded bulk reads in one MCP client. Legacy `-Throttle` and `-Chunk` values are parsed for wrapper compatibility; they do not create workers or override server limits. Read failures stop the audit rather than becoming null rows.
 - **The forwarder must read stdin as UTF-8.** It sets `[Console]::InputEncoding`; without it a GBK console garbles the batch.
 - **PowerShell semantics are kept on purpose.** The model tools compare text as `-eq` did (case and ignorable characters do not count), look up `@{}` keys without case, count lengths in UTF-16 units, treat `@($null)` as one element, and write doubles where `Measure-Object` gave doubles (`src/ps.rs`). State maps read back from `state.json` are case-sensitive, as `ConvertFrom-Json -AsHashtable` made them.
 - **Ties and unordered keys.** Where the scripts' output depended on the enumeration order of an unordered `@{}` (randomised per pwsh process), the tools write insertion order, so their output is now stable: the keys of a new `state.json` of `event`/`finding`, `setup-calls.json` of `prepare`, Bridge plan and report objects, and the order of equal-count word groups in `terms`' job. Ties in the relatedness ranking (the keep-150 or keep-80 cut, equal scores) are broken by text order, as in `card`; the scripts broke them in hashtable order and differed from run to run. This changes a few "most related sections" lines in `prepare`'s group files, some candidate lines of `prepare-link`, and on one source the Bridge plan id. An Int32-keyed hashtable whose order the output showed (`event`'s refused list) is reproduced (`int_hashtable_order`).
@@ -296,6 +298,8 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+
+- `2026-10-17` — Migrate global audit graph/body reads to bounded lean batches and remove the read-worker/null-fallback path. Preserve frozen report/fault output, require complete models, record the revision, and fail on missing inputs or concurrent edits. Organize/skeleton callers use the same audit path.
 
 - `2026-10-17` — Switch snapshots and link preparation to fresh title exports and bounded lean reads, preserving rendering, source ownership, excerpt-based ranking and linked-target exclusion. Add process/call-count, chunk-limit and missing-input regression coverage.
 - `2026-10-17` — Add owned-manifest group quality inputs with explicit scope/global-coverage labels, preserving required term-table checks and refusing missing inputs before a plan is published. Global audit migration remains open.

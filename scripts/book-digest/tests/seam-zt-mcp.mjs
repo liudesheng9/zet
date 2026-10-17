@@ -45,6 +45,7 @@ async function handle(line) {
     return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: true } })
   }
   if (tool === 'get_tree' && env.ZT_FAIL_TREE && at.tree === env.ZT_FAIL_TREE) return send(fault(message.id, 'simulated unavailable tree'))
+  if (tool === 'get_model' && env.ZT_FAIL_MODEL && at.at === env.ZT_FAIL_MODEL) return send(fault(message.id, 'simulated unavailable model'))
   if (tool === 'get_card' && flag(env.ZT_FAIL_FLAG) && at.at === env.ZT_FAIL_CARD) return send(fault(message.id, 'simulated unavailable target after persistence'))
   if (tool === 'edit_card' && env.ZT_RACE_TARGET && at.at === env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG)) {
     fs.writeFileSync(env.ZT_RACE_FLAG, '')
@@ -59,6 +60,12 @@ async function handle(line) {
     value.missing = [env.ZT_BULK_MISSING]
     value.complete = false
     reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
+  }
+  if (tool === 'get_cards' && at.addresses.length && env.ZT_RACE_AFTER_READ && env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG) && !failed(reply)) {
+    fs.writeFileSync(env.ZT_RACE_FLAG, '')
+    const read = await call('get_card', { at: env.ZT_RACE_TARGET })
+    const card = JSON.parse(read.result.content.map(c => c.text).join('\n'))
+    await call('edit_card', { at: env.ZT_RACE_TARGET, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   if (tool === 'edit_card' && env.ZT_FAIL_AFTER_EDIT && at.at === env.ZT_FAIL_AFTER_EDIT && env.ZT_FAIL_FLAG && !failed(reply)) fs.writeFileSync(env.ZT_FAIL_FLAG, '')
   send(reply)

@@ -594,6 +594,8 @@ When a script gains a `zt-digest` tool ([zt-digest](zt-digest.md)), no stage mod
 
 ## Testing
 
+`scripts/book-digest/tests/seam-zt-mcp.mjs` forwards to a real isolated `zt mcp` for compiler tests. It traces requested tools/processes and can inject bulk limits/missing rows, a required model-read failure, or an actual agent-Card edit after a bulk reply (`ZT_RACE_AFTER_READ` with the existing race target/flag/line). These seams test completeness and revision guards without running a digest workflow. Production stage modules and frozen workflow scripts do not use them.
+
 Both harnesses build each variant in memory and run the workflow script body as an `AsyncFunction(args, agent, phase, log, parallel, pipeline)` with a stand-in runtime: every agent returns a canned answer chosen by its label or by the command in its prompt. In `framework-harness.mjs` managers stay alive 3 ms so the harness can measure the peak number of managers alive. No model, DeepSeek, or zt call runs.
 
 `commandOf` in `framework-harness.mjs` finds the first `pwsh -NoProfile -File ...` command or `zt-digest <tool> -...` command (`ZT_DIGEST_COMMAND`, built from `ZT_DIGEST_TOOLS` with the longest names first, so `model-context` is not read as `model` nor `prepare-link` as `prepare`; a tool name followed by a parameter, so the approval lines, which name tools without one, do not match) in a prompt. `bridge-workflow-harness.mjs` takes the first `pwsh -NoProfile -File ...` or `zt-digest bridge -...` command. `canonical` rewrites a tool command to the form of the script it replaced, `pwsh -NoProfile -File "E:\zet\scripts\book-digest\<script>.ps1" ...` (map `ZT_DIGEST_TOOLS`), so the command checks written for the PowerShell scripts still match. Each recorded call keeps `cmd` (the canonical command) and `raw` (the `zt-digest` command as the prompt gave it). The Prepare checks allow the quoted script path (`prepare-book-digest\.ps1"?`).
@@ -649,6 +651,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-17` — Extend the real-MCP compiler seam with named model-read failure and an edit after a bulk response; global audit tests reject missing inputs and mixed revisions without running workflow agents.
 
 - `2026-10-17` — Extend the MCP stand-in with tool/process tracing, bounded-reply faults and incomplete bulk responses for compiler tests. No installed workflow or actual book run changes in this step.
 
