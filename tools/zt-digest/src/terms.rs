@@ -392,7 +392,7 @@ fn term_call(zt: &mut Zt, key: &str, title: &str, body: &str, guarded: bool) -> 
             let mut args = json!({"at":address,"title":title,"body":body});
             if guarded {
                 let read = zt.cards(&[address], "text")?;
-                args["base"] = read.cards[0]["text"].clone();
+                args["base_fingerprint"] = json!(crate::calls::authored_fingerprint(&read.cards[0]));
             }
             json!({"tool":"edit_card","arguments":args})
         }

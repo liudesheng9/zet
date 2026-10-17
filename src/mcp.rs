@@ -211,6 +211,7 @@ impl Server {
                         error
                             .downcast_ref::<crate::read::Limit>()
                             .map(crate::read::Limit::value)
+                            .or_else(||error.downcast_ref::<crate::batch::Conflict>().map(crate::batch::Conflict::value))
                             .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
                         true,
                     ),
@@ -472,6 +473,11 @@ pub(crate) fn write_card_tx(
     args: &Value,
 ) -> Result<(Value, bool)> {
     if name == "edit_card" {
+        if args.get("base_fingerprint").is_some() || args.get("base_receipt").is_some() {
+            bail!(
+                "authored base_fingerprint/base_receipt are only available within apply_batch; single edit_card keeps its raw base guard"
+            );
+        }
         let at = string_arg(args, "at")?;
         let card = crate::load_card(conn, &at)?;
         ACCESS.ensure_writable(card.workspace)?;
@@ -648,7 +654,11 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             canonical["title"] = json!(title_arg(args)?);
             canonical["body"] = json!(optional_string(args, "body")?);
         }
-        "edit_card" => {}
+        "edit_card" => {
+            if let Some(value) = args.get("base_fingerprint").and_then(Value::as_str) {
+                canonical["base_fingerprint"] = json!(value.to_ascii_lowercase());
+            }
+        }
         other => bail!("unsupported batch tool `{other}`"),
     }
     Ok(canonical)

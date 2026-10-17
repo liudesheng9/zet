@@ -7,6 +7,26 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+#[derive(Debug)]
+pub(crate) struct Conflict {
+    pub(crate) address: String,
+    pub(crate) reason: String,
+    pub(crate) observed_body: String,
+    pub(crate) observed_fingerprint: String,
+}
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at `{}`", self.reason, self.address)
+    }
+}
+impl std::error::Error for Conflict {}
+impl Conflict {
+    pub(crate) fn value(&self) -> Value {
+        json!({"error":self.to_string(),"code":"write_conflict","address":self.address,"observed_body":self.observed_body,"observed_fingerprint":self.observed_fingerprint,"complete":false})
+    }
+}
+
 fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Result<Value> {
     Ok(match value {
         Value::String(text) => {
@@ -88,6 +108,73 @@ fn fingerprint(conn: &rusqlite::Connection, address: &str) -> Result<String> {
     Ok(hash(
         &json!({"title":parsed.title,"body":parsed.body,"bibtex":card.bibtex,"type":card.card_type.id(),"facet":card.facet.map(|f|f.id().to_string()),"emphasis":card.emphasis.map(crate::model::Emphasis::id),"level":card.level.map(crate::model::Level::id),"hub_level":card.hub_level.map(crate::hub::HubLevel::id),"form":card.form.map(crate::math::MathForm::id)}),
     ))
+}
+
+fn guard_edit(conn: &rusqlite::Connection, args: &Value, current: &str) -> Result<()> {
+    let address = args["at"].as_str().context("missing edit at")?;
+    let literal = args.get("base_fingerprint");
+    let receipt = args.get("base_receipt");
+    if literal.is_none() && receipt.is_none() {
+        bail!("identified edit requires an authored base_fingerprint or base_receipt");
+    }
+    if args.get("base").is_some() {
+        bail!(
+            "apply_batch uses an authored fingerprint or receipt; raw base belongs to single edit_card"
+        );
+    }
+    if literal.is_some() && receipt.is_some() {
+        bail!("use one authored base_fingerprint or base_receipt");
+    }
+    let mut expected = None;
+    if let Some(value) = literal {
+        expected = Some(
+            value
+                .as_str()
+                .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+                .context("base_fingerprint must be a 64-character authored SHA-256")?
+                .to_ascii_lowercase(),
+        );
+    }
+    if let Some(key) = receipt {
+        let key = key
+            .as_str()
+            .context("base_receipt must be an operation key")?;
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT result_json FROM applied_ops WHERE op_key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(stored) = stored {
+            let result: Value = serde_json::from_str(&stored).context("invalid base receipt")?;
+            if result["address"] == address {
+                expected = result["after_fingerprint"].as_str().map(str::to_string);
+            }
+        }
+        if expected.is_none() {
+            expected = Some(String::new());
+        }
+    }
+    if expected
+        .as_deref()
+        .is_some_and(|expected| expected != current)
+    {
+        let card = crate::load_card(conn, address)?;
+        let reason = if expected.as_deref() == Some("") {
+            "base receipt was not found for this Card"
+        } else {
+            "authored base changed"
+        };
+        return Err(Conflict {
+            address: address.to_string(),
+            reason: reason.into(),
+            observed_body: crate::parse_card_text(&card.text)?.body,
+            observed_fingerprint: current.to_string(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
@@ -184,7 +271,22 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         } else {
             None
         };
-        let (mut result, did_change) = crate::mcp::write_card_tx(root, &tx, tool, &arguments)?;
+        if let Some(before) = &before {
+            guard_edit(&tx, &arguments, before)?;
+        }
+        let mut write_arguments = arguments.clone();
+        if tool == "edit_card" {
+            write_arguments
+                .as_object_mut()
+                .unwrap()
+                .remove("base_fingerprint");
+            write_arguments
+                .as_object_mut()
+                .unwrap()
+                .remove("base_receipt");
+        }
+        let (mut result, did_change) =
+            crate::mcp::write_card_tx(root, &tx, tool, &write_arguments)?;
         let address = result["address"]
             .as_str()
             .context("write result missing address")?

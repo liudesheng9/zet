@@ -392,6 +392,27 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
             bail!("identified call {index}: arguments must be an object");
         }
         arguments(&call["arguments"], &[], index, 0)?;
+        if call["tool"] == "edit_card" {
+            let args = &call["arguments"];
+            if args.get("base").is_some() {
+                bail!(
+                    "identified call {index}: use an authored base_fingerprint/base_receipt; raw base belongs to single edit_card"
+                );
+            }
+            let earlier = args["at"]
+                .as_str()
+                .and_then(|at| at.strip_prefix("@@"))
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n < index);
+            if args.get("base_fingerprint").is_none()
+                && args.get("base_receipt").is_none()
+                && !earlier
+            {
+                bail!(
+                    "identified call {index}: edit requires an authored base or an earlier accepted result reference"
+                );
+            }
+        }
         if authored_bytes(&call["arguments"]) > 1024 * 1024 {
             bail!("identified call {index}: exceeds 1048576 authored bytes");
         }
@@ -403,7 +424,18 @@ pub(crate) fn invoke_identified(zt: &mut Zt, calls: &[Value], prefix: &str) -> R
         let mut items = Vec::new();
         let mut bytes = 0;
         for index in start..calls.len().min(start + 64) {
-            let args = arguments(&calls[index]["arguments"], &resolved, index, start)?;
+            let mut args = arguments(&calls[index]["arguments"], &resolved, index, start)?;
+            if calls[index]["tool"] == "edit_card"
+                && args.get("base_fingerprint").is_none()
+                && args.get("base_receipt").is_none()
+            {
+                let n = calls[index]["arguments"]["at"]
+                    .as_str()
+                    .and_then(|at| at.strip_prefix("@@"))
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .context("identified edit missing an earlier base reference")?;
+                args["base_receipt"] = json!(format!("{prefix}/item-{n:06}"));
+            }
             let size = authored_bytes(&args);
             if bytes + size > 1024 * 1024 {
                 if items.is_empty() {
@@ -472,13 +504,7 @@ fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
         let address = card["address"]
             .as_str()
             .context("incomplete identified output address")?;
-        let model = card["type"] == "model";
-        let hub = card["type"] == "hub";
-        let authored = json!({"title":card["title"],"body":card["body"],"bibtex":card["bibtex"],"type":card["type"],"facet":card["facet"],"emphasis":card["emphasis"],"level":if model{card["level"].clone()}else{Value::Null},"hub_level":if hub{card["level"].clone()}else{Value::Null},"form":card["form"]});
-        // Archive receipts hash standard serde JSON, not the PowerShell JSON
-        // renderer kept for legacy file/output compatibility.
-        let fingerprint =
-            crate::canon::sha256_hex(crate::canon::canonical(&authored).to_string().as_bytes());
+        let fingerprint = authored_fingerprint(&card);
         if card["workspace"] != "agent" || expected.get(address) != Some(&fingerprint) {
             bail!(
                 "identified output changed: `{address}` no longer matches its accepted receipt; keep the current Card and use a newly accepted plan revision for a correction"
@@ -489,6 +515,14 @@ fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
         bail!("incomplete identified output verification: archive revision changed");
     }
     Ok(())
+}
+
+/// The archive receipt projection uses standard JSON and excludes generated text.
+pub(crate) fn authored_fingerprint(card: &Value) -> String {
+    let model = card["type"] == "model";
+    let hub = card["type"] == "hub";
+    let authored = json!({"title":card["title"],"body":card["body"],"bibtex":card["bibtex"],"type":card["type"],"facet":card["facet"],"emphasis":card["emphasis"],"level":if model{card["level"].clone()}else{Value::Null},"hub_level":if hub{card["level"].clone()}else{Value::Null},"form":card["form"]});
+    crate::canon::sha256_hex(crate::canon::canonical(&authored).to_string().as_bytes())
 }
 
 /// `zt-digest call`.

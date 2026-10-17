@@ -23,6 +23,50 @@ struct TestHome {
 }
 
 #[test]
+fn identified_authored_bases_ignore_reverse_links_but_detect_metadata_changes() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok("apply_batch",json!({"items":[
+        {"op_key":"run-base/card-1/1/create/topic","client_ref":"topic","tool":"create_topic","arguments":{"title":"Bases"}},
+        {"op_key":"run-base/card-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Source","body":"Original body."}},
+        {"op_key":"run-base/card-1/1/create/target","client_ref":"target","tool":"create_successor","arguments":{"at":"@@source","title":"Other claim"}}
+    ]}));
+    mcp.ok(
+        "edit_card",
+        json!({"at":"0/2","body":"依赖 [[0/1]]，这里给出独立的理由。"}),
+    );
+    let (wrong,is_error)=mcp.call("apply_batch",json!({"items":[{"op_key":"run-base/card-1/2/edit/wrong","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","body":"Wrong receipt must refuse.","base_receipt":"run-base/card-1/1/create/target"}}]}));
+    assert!(
+        is_error,
+        "a base receipt for another Card must not authorize this edit"
+    );
+    assert_eq!(wrong["code"], "write_conflict");
+    let updated=mcp.ok("apply_batch",json!({"items":[{"op_key":"run-base/card-1/2/edit/body","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","body":"Accepted after inbound change.","base_receipt":"run-base/card-1/1/create/source"}}]}));
+    let base = updated["results"][0]["result"]["after_fingerprint"].clone();
+    mcp.ok("edit_card", json!({"at":"0/1","type":"event"}));
+    let (conflict,is_error)=mcp.call("apply_batch",json!({"items":[{"op_key":"run-base/card-1/3/edit/stale","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","body":"Must refuse.","base_fingerprint":base}}]}));
+    assert!(
+        is_error,
+        "a stale authored metadata base must not overwrite the Card"
+    );
+    assert_eq!(conflict["code"], "write_conflict");
+    assert_eq!(conflict["observed_body"], "Accepted after inbound change.");
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        "Accepted after inbound change."
+    );
+    assert!(
+        mcp.err(
+            "edit_card",
+            json!({"at":"0/1","body":"Must also refuse.","base_fingerprint":base})
+        )
+        .contains("only available within apply_batch")
+    );
+    assert!(mcp.err("apply_batch",json!({"items":[{"op_key":"run-base/card-1/4/edit/unguarded","client_ref":"source","tool":"edit_card","arguments":{"at":"0/1","body":"An unguarded overwrite must refuse."}}]})).contains("requires an authored base"));
+}
+
+#[test]
 fn a_maximum_batch_publishes_one_revision_and_one_combined_link_refresh() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -117,12 +161,9 @@ fn batch_edits_use_the_existing_base_guard_and_keep_authored_fingerprints() {
     home.configure_and_up();
     let mut mcp = home.mcp();
     mcp.ok("create_topic", json!({"title":"Edits"}));
-    mcp.ok(
-        "create_successor",
-        json!({"at":"0/0","title":"Original title","body":"Old body."}),
-    );
+    mcp.ok("apply_batch",json!({"items":[{"op_key":"run-edit/card-1/1/create/source","client_ref":"source","tool":"create_successor","arguments":{"at":"0/0","title":"Original title","body":"Old body."}}]}));
     let before = mcp.ok("get_card", json!({"at":"0/1"}));
-    let batch = json!({"items":[{"op_key":"run-edit/card-1/1/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base":before["text"],"body":"A real event happened in 2026.","type":"event"}}]});
+    let batch = json!({"items":[{"op_key":"run-edit/card-1/1/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-edit/card-1/1/create/source","body":"A real event happened in 2026.","type":"event"}}]});
     let receipt = mcp.ok("apply_batch", batch.clone());
     let result = &receipt["results"][0]["result"];
     assert!(result["before_fingerprint"].as_str().is_some());
@@ -135,8 +176,9 @@ fn batch_edits_use_the_existing_base_guard_and_keep_authored_fingerprints() {
         mcp.ok("apply_batch", batch)["results"][0]["result"],
         *result
     );
-    let stale = json!({"items":[{"op_key":"run-edit/card-1/2/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base":before["text"],"body":"Stale overwrite."}}]});
-    assert!(mcp.err("apply_batch", stale).contains("changed since"));
+    let stale = json!({"items":[{"op_key":"run-edit/card-1/2/apply/body","client_ref":"card","tool":"edit_card","arguments":{"at":"0/1","base_receipt":"run-edit/card-1/1/create/source","body":"Stale overwrite."}}]});
+    assert!(mcp.err("apply_batch", stale).contains("authored base changed"));
+    assert!(mcp.err("edit_card",json!({"at":"0/1","base":before["text"],"body":"Raw stale overwrite."})).contains("changed since"));
     assert_eq!(
         mcp.ok("get_card", json!({"at":"0/1"}))["body"],
         card["body"]

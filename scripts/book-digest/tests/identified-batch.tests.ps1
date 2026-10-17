@@ -83,11 +83,20 @@ try {
     $newPlan = @(& $Digest terms -Step apply -Staging $staging -Apply -OperationPrefix 'qualification/terms/2/apply' 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($newPlan[-1] | ConvertFrom-Json).card -eq 'ReceiptTerms/1|a') 'a newly accepted revision applies a guarded edit to the existing term table'
     Assert ((Invoke-Zt @(@{tool='get_card';arguments=@{at='ReceiptTerms/1|a'}})).body.Contains('新接受的定义')) 'the persisted compiler output is reread and verified'
+    $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at='ReceiptTerms/1';title='Independent inbound carrier'}})
+    [IO.File]::WriteAllText((Join-Path $termsOut 'terms.json'),' {"terms":[{"term":"资本","meaning":"反向链接变化后的定义","section":"§3"}]}',$utf8)
+    $env:ZT_RACE_AFTER_READ = '1'
+    $env:ZT_RACE_TARGET = 'ReceiptTerms/2'
+    $env:ZT_RACE_FLAG = Join-Path $scratch 'new-inbound-link.flag'
+    $env:ZT_RACE_LINE = '参照 [[ReceiptTerms/1|a]]，这里给出独立的术语背景。'
+    $inboundChanged = @(& $Digest terms -Step apply -Staging $staging -Apply -OperationPrefix 'qualification/terms/3/apply' 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $env:ZT_RACE_FLAG)) 'an unrelated inbound Link between plan read and apply does not invalidate the authored base'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item Env:ZT_DROP_BATCH_REPLY_FLAG -ErrorAction SilentlyContinue
     Remove-Item Env:ZT_CHECK_ZT -ErrorAction SilentlyContinue
     Remove-Item Env:ZT_TRACE_TOOLS -ErrorAction SilentlyContinue
+    Remove-Item Env:ZT_RACE_AFTER_READ,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'all passed'

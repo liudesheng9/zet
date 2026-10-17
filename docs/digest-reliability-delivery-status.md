@@ -121,6 +121,16 @@ All 80 digest unit tests and four affected public suites pass: term compiler (11
 
 #68 remains open for model-compiler adoption and its manager/compiler lifecycle gate, which also depends on the later unit/lease work. No live installation or production archive migration has been performed.
 
+## #69: authored-base guards (in progress)
+
+Identified edits now require exactly one authored `base_fingerprint` or prior `base_receipt` for the same Card. The base covers authored title/body and editable metadata, excluding generated Reverse links, and is compared within the archive transaction. A missing guard is refused. Stale metadata/body or a missing/wrong-Card base receipt returns a structured `write_conflict` with the current body/fingerprint and rolls back the unseen batch. The ordinary single `edit_card` raw-base contract and Bridge's exact checks remain unchanged; single edits explicitly reject the batch-only guard fields, and batches refuse raw bases.
+
+The identified helper attaches a receipt base when an edit addresses an earlier accepted result, including across recovered chunks. Direct edits provide a checked fingerprint or receipt. The terms compiler retains an authored fingerprint in its accepted edit plan. A real race adds an incoming Link after the base read, changing the generated Reverse text before apply: the compiler succeeds. An authored/type change still refuses. The 66-part lost-reply/replay test continues to pass with mandatory guards.
+
+All 38 Workspace/MCP tests and 80 digest unit tests pass, plus all four affected public suites: term compiler (11 assertions), Bridge compiler (39), identified writes/recovery/base race (18) and helper calls (exit 0). Logs: `D:/zt-target/qualification/issue69-authored-base-final.log`, `issue69-authored-base-unit.log`, `issue69-authored-base-suites/` and the focused `issue69-*-red/green.log` evidence.
+
+This is the first #69 contract only. Receipt-owned paragraph append/correction, exact byte preservation, verified legacy adoption and the Link draft-precheck path remain unfinished; the issue stays open.
+
 ## Remaining slices
 
 #67–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.

@@ -45,7 +45,7 @@ updated: 2026-10-17
 
 ## Architecture
 
-All of the block is in `src/mcp.rs`. It has five parts:
+Transport, catalogue and argument adapters are in `src/mcp.rs`; `src/read.rs` supplies indexed request projections. Transaction writers and identified receipts belong to [Card operations](card-operations.md). The server adapter has five parts:
 
 | Component | Items in `src/mcp.rs` | Job |
 |---|---|---|
@@ -82,6 +82,8 @@ Control is synchronous and single-threaded: one line is answered completely befo
 `apply_batch` accepts `items` with `op_key`, `client_ref`, `tool` and `arguments`. Supported tools are `create_topic`, `create_literature`, `create_successor` and `edit_card`. A batch has 1–64 items and at most 1,048,576 UTF-8 bytes across authored title/body/text/BibTeX/base inputs. `@@name` resolves an earlier result in placement or authored input; forward/unknown references fail. Agent Access, artifacts, Link validation, base guards and model/type constraints use the ordinary write validators inside the evolving transaction.
 
 The response has ordered `results`, each retaining its operation key, client reference, exact write result and `replayed` flag. The write result also carries before/after authored fingerprints (a create has no before fingerprint). Replays supply their original addresses to later items. A changed payload or changed resolved binding under an existing key fails. Any failed unseen item rolls back all unseen writes and receipts; previously committed receipts survive. The batch publishes one Link-index/Reverse-link update over the affected union and one Card revision. Each ordinary MCP create/edit uses the same `write_card_tx` parser and transaction writers. This implements the archive portion of #68; compiler/crash qualification is still pending.
+
+An identified edit requires one `arguments.base_fingerprint` (authored SHA-256) or `arguments.base_receipt` (earlier operation key for the same Card). Its base excludes generated Reverse links and includes editable metadata. Stale/misaddressed bases return a structured tool error with `code: "write_conflict"`, address, observed body/fingerprint and `complete: false`. The server checks it within the write transaction. The existing single `edit_card` raw `base` contract is unchanged; batch-only guard fields are explicitly rejected on that single-operation path. Raw `base` is refused in a batch.
 
 ### Indexed and bulk read views
 
