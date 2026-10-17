@@ -10,7 +10,7 @@
 //! models. Prints one compact JSON line:
 //! {"model","group","anchor","sections","parts","context"}.
 
-use super::ps::{self, each, pipe, s, truthy};
+use crate::ps::{self, each, pipe, s, truthy};
 use super::read_calls;
 use crate::args::Args;
 use crate::util;

@@ -10,7 +10,7 @@
 //! wrote. Model parts are never listed. Prints one compact JSON line:
 //! {"models":[{"address","title","group","level","form","parts","issues","faults"}]}.
 
-use super::ps::{self, CiMap, pipe, s, truthy};
+use crate::ps::{self, CiMap, pipe, s, truthy};
 use super::read_calls;
 use crate::args::Args;
 use crate::util;

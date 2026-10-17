@@ -5,7 +5,7 @@
 //! weights at the `keep` cut, equal scores) at random. This port breaks them by first
 //! appearance: terms in text order, documents in input order.
 
-use crate::audit::ps::{lower_invariant, ps_sort};
+use crate::ps::{lower_invariant, ps_sort};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;

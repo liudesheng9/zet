@@ -7,7 +7,7 @@
 
 pub mod book_of;
 mod markdown;
-pub mod ps;
+
 
 use crate::args::Args;
 use crate::calls;
@@ -15,7 +15,7 @@ use crate::check::Check;
 use crate::util;
 use crate::zt::Zt;
 use anyhow::{Result, bail};
-use ps::{ci, culture_cmp, group_by, ps_array, ps_count, ps_eq, ps_in, ps_int, ps_items, ps_sort, ps_sort_unique, ps_str, s, truthy};
+use crate::ps::{self, key as ci, culture_cmp, group_by, ps_array, ps_count, eq, is_in, ps_int, ps_items, ps_sort, ps_sort_unique, field, s, truthy};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -198,16 +198,16 @@ fn read_many(zt: &mut Zt, calls: &[Value], throttle: i64, chunk: i64) -> Result<
 /// `island` is true when there are none, null when a tree could not be read (`complete` false)
 /// or no substantive Card outside the book exists (`peers` 0).
 fn bridge_counts(graph_cards: &[Value], index: &book_of::BookIndex, graph_complete: bool, key: &str) -> Value {
-    let category = |c: &Value| index.category.get(&s(c, "address")).cloned().unwrap_or_default();
-    let graph_by_address: HashMap<String, &Value> = graph_cards.iter().map(|c| (s(c, "address"), c)).collect();
+    let category = |c: &Value| index.category.get(&field(c, "address")).cloned().unwrap_or_default();
+    let graph_by_address: HashMap<String, &Value> = graph_cards.iter().map(|c| (field(c, "address"), c)).collect();
     let endpoint = |c: &Value| {
-        s(c, "kind") == "regular" && ["idea", "finding", "event", "model", "part"].contains(&category(c).as_str()) && !NOTATION.is_match(&s(c, "title"))
+        field(c, "kind") == "regular" && ["idea", "finding", "event", "model", "part"].contains(&category(c).as_str()) && !NOTATION.is_match(&field(c, "title"))
     };
     let bucket = |c: &Value| -> String {
-        if s(c, "workspace") == "human" {
+        if field(c, "workspace") == "human" {
             return "human".into();
         }
-        index.book_of.get(&s(c, "address")).cloned().unwrap_or_else(|| "unattributed".into())
+        index.book_of.get(&field(c, "address")).cloned().unwrap_or_else(|| "unattributed".into())
     };
     let mut books_n: [BTreeMap<String, i64>; 2] = [BTreeMap::new(), BTreeMap::new()];
     let mut human = [0i64; 2];
@@ -220,11 +220,11 @@ fn bridge_counts(graph_cards: &[Value], index: &book_of::BookIndex, graph_comple
         let links = str_list(&carrier["links"]);
         let Some(kinds) = carrier["kinds"].as_object() else { continue };
         for (at, kind) in kinds {
-            if ps_str(kind) == "refers" || !links.contains(at) {
+            if s(kind) == "refers" || !links.contains(at) {
                 continue;
             }
             let Some(target) = graph_by_address.get(at) else { continue };
-            if !endpoint(target) || !seen.insert(format!("{}\0{at}", s(carrier, "address"))) {
+            if !endpoint(target) || !seen.insert(format!("{}\0{at}", field(carrier, "address"))) {
                 continue;
             }
             let (from, to) = (bucket(carrier), bucket(target));
@@ -259,7 +259,7 @@ fn read_zt(zt: &mut Zt, calls: &[Value]) -> Result<Vec<Value>> {
 }
 
 fn str_list(value: &Value) -> Vec<String> {
-    ps_items(value).iter().map(ps_str).collect()
+    ps_items(value).iter().map(s).collect()
 }
 
 /// What `run` returns: the progress lines and the summary.
@@ -277,8 +277,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     // --- the trees ---
     let listed = read_zt(zt, &[json!({ "tool": "list_trees", "arguments": {} })])?;
     let all_trees: Vec<Value> = listed.first().map(|v| ps_items(&v["trees"])).unwrap_or_default();
-    let trees: Vec<Value> = all_trees.iter().filter(|t| s(t, "workspace") == "agent").cloned().collect();
-    let all_books: Vec<String> = trees.iter().filter(|t| ps_eq(&s(t, "kind"), "literature")).map(|t| s(t, "tree")).collect();
+    let trees: Vec<Value> = all_trees.iter().filter(|t| field(t, "workspace") == "agent").cloned().collect();
+    let all_books: Vec<String> = trees.iter().filter(|t| eq(&field(t, "kind"), "literature")).map(|t| field(t, "tree")).collect();
     let mut books = all_books.clone();
     if !p.citation_key.is_empty() {
         if !books.contains(&p.citation_key) {
@@ -288,57 +288,57 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     }
     let mut tree_info: HashMap<String, Value> = HashMap::new();
     for t in &trees {
-        tree_info.insert(ci(&s(t, "tree")), t.clone());
+        tree_info.insert(ci(&field(t, "tree")), t.clone());
     }
-    let topic_trees: Vec<String> = trees.iter().filter(|t| ps_eq(&s(t, "kind"), "topic")).map(|t| s(t, "tree")).collect();
+    let topic_trees: Vec<String> = trees.iter().filter(|t| eq(&field(t, "kind"), "topic")).map(|t| field(t, "tree")).collect();
     let tree_calls: Vec<Value> = all_trees.iter().map(|t| json!({ "tool": "get_tree", "arguments": { "tree": t["tree"].clone() } })).collect();
     let read = read_many(zt, &tree_calls, p.throttle, p.chunk)?;
     let graph_complete = read.iter().all(Option::is_some) && read.len() == all_trees.len();
     let graph_cards: Vec<Value> = read.iter().flatten().flat_map(|r| ps_items(&r["cards"])).collect();
-    let cards: Vec<Value> = graph_cards.iter().filter(|c| s(c, "workspace") == "agent").cloned().collect();
+    let cards: Vec<Value> = graph_cards.iter().filter(|c| field(c, "workspace") == "agent").cloned().collect();
     host(&format!("read {} Cards in {} trees ({} s)", cards.len(), trees.len(), secs(&sw)));
 
     let index = book_of::book_index(&all_trees, &graph_cards);
-    let category = |c: &Value| index.category.get(&s(c, "address")).cloned().unwrap_or_default();
-    let book_of = |c: &Value| index.book_of.get(&s(c, "address")).cloned();
+    let category = |c: &Value| index.category.get(&field(c, "address")).cloned().unwrap_or_default();
+    let book_of = |c: &Value| index.book_of.get(&field(c, "address")).cloned();
     let bridge_counts = |key: &str| bridge_counts(&graph_cards, &index, graph_complete, key);
 
-    let mut scope: Vec<&Value> = cards.iter().filter(|c| book_of(c).is_some_and(|b| ps_in(&b, &books))).collect();
+    let mut scope: Vec<&Value> = cards.iter().filter(|c| book_of(c).is_some_and(|b| is_in(&b, &books))).collect();
     let unattributed: Vec<&Value> = cards.iter().filter(|c| book_of(c).is_none()).collect();
     if p.citation_key.is_empty() {
         scope.extend(unattributed.iter().copied());
     }
 
     // --- bodies: get_model for each Model Card, get_card for the rest ---
-    let heads: Vec<&Value> = if p.skip_models { Vec::new() } else { scope.iter().copied().filter(|c| ps_eq(&category(c), "model")).collect() };
-    let model_calls: Vec<Value> = heads.iter().map(|c| json!({ "tool": "get_model", "arguments": { "at": s(c, "address") } })).collect();
+    let heads: Vec<&Value> = if p.skip_models { Vec::new() } else { scope.iter().copied().filter(|c| eq(&category(c), "model")).collect() };
+    let model_calls: Vec<Value> = heads.iter().map(|c| json!({ "tool": "get_model", "arguments": { "at": field(c, "address") } })).collect();
     let structures = read_many(zt, &model_calls, p.throttle, p.chunk)?;
     // address (case ignored) -> (title, body)
     let mut bodies: HashMap<String, (String, String)> = HashMap::new();
     let mut facets: HashMap<String, String> = HashMap::new();
     for m in structures.iter().flatten() {
         if truthy(&m["head"]) {
-            bodies.insert(ci(&s(&m["head"], "address")), (s(&m["head"], "title"), s(&m["head"], "body")));
+            bodies.insert(ci(&field(&m["head"], "address")), (field(&m["head"], "title"), field(&m["head"], "body")));
         }
         for part in ps_items(&m["parts"]) {
-            bodies.insert(ci(&s(&part, "address")), (s(&part, "title"), s(&part, "body")));
-            facets.insert(ci(&s(&part, "address")), s(&part, "facet"));
+            bodies.insert(ci(&field(&part, "address")), (field(&part, "title"), field(&part, "body")));
+            facets.insert(ci(&field(&part, "address")), field(&part, "facet"));
         }
     }
     let missing: Vec<&Value> = scope
         .iter()
         .copied()
-        .filter(|c| !bodies.contains_key(&ci(&s(c, "address"))) && !(p.skip_models && ps_in(&category(c), &["model", "part"])))
+        .filter(|c| !bodies.contains_key(&ci(&field(c, "address"))) && !(p.skip_models && is_in(&category(c), &["model", "part"])))
         .collect();
-    let card_calls: Vec<Value> = missing.iter().map(|c| json!({ "tool": "get_card", "arguments": { "at": s(c, "address") } })).collect();
+    let card_calls: Vec<Value> = missing.iter().map(|c| json!({ "tool": "get_card", "arguments": { "at": field(c, "address") } })).collect();
     let got = read_many(zt, &card_calls, p.throttle, p.chunk)?;
     let mut unread: Vec<String> = Vec::new();
     for (c, g) in missing.iter().zip(&got) {
         match g {
             Some(g) => {
-                bodies.insert(ci(&s(c, "address")), (s(g, "title"), s(g, "body")));
+                bodies.insert(ci(&field(c, "address")), (field(g, "title"), field(g, "body")));
             }
-            None => unread.push(s(c, "address")),
+            None => unread.push(field(c, "address")),
         }
     }
     host(&format!("read {} bodies, {} models ({} s)", bodies.len(), structures.len(), secs(&sw)));
@@ -377,20 +377,20 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         }
         let mut line: HashMap<String, Value> = HashMap::new();
         for o in ps_items(&m["build"]["order"]) {
-            line.insert(ci(&s(&o, "address")), json!(s(&o, "line")));
+            line.insert(ci(&field(&o, "address")), json!(field(&o, "line")));
         }
         let head = &m["head"];
-        let mut entries = vec![json!({ "address": s(head, "address"), "title": s(head, "title"), "body": s(head, "body"), "facet": null, "line": "head" })];
+        let mut entries = vec![json!({ "address": field(head, "address"), "title": field(head, "title"), "body": field(head, "body"), "facet": null, "line": "head" })];
         for part in ps_items(&m["parts"]) {
-            let a = s(&part, "address");
+            let a = field(&part, "address");
             entries.push(json!({
-                "address": a, "title": s(&part, "title"), "body": s(&part, "body"), "facet": s(&part, "facet"),
+                "address": a, "title": field(&part, "title"), "body": field(&part, "body"), "facet": field(&part, "facet"),
                 "line": line.get(&ci(&a)).cloned().unwrap_or(Value::Null)
             }));
             in_model.insert(ci(&a));
         }
-        in_model.insert(ci(&s(head, "address")));
-        invoke_check(zt, &entries, &s(&m["build"], "setting"), &s(m, "level"))?;
+        in_model.insert(ci(&field(head, "address")));
+        invoke_check(zt, &entries, &field(&m["build"], "setting"), &field(m, "level"))?;
     }
     // The link graph of the Workspace: who links each Card, and how many Idea Cards link it with a kind word.
     let mut inbound_from: HashMap<String, Vec<String>> = HashMap::new();
@@ -399,9 +399,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         let kinded = ps::keys(&c["kinds"]);
         let cat = category(c);
         for t in ps::select_unique(str_list(&c["links"])) {
-            inbound_from.entry(ci(&t)).or_default().push(s(c, "address"));
+            inbound_from.entry(ci(&t)).or_default().push(field(c, "address"));
             let target_cat = index.category.get(&t).map(String::as_str);
-            if ps_in(&t, &kinded) && (ps_eq(&cat, "idea") || (ps_eq(&cat, "finding") && !target_cat.is_some_and(|x| ps_eq(x, "finding")))) {
+            if is_in(&t, &kinded) && (eq(&cat, "idea") || (eq(&cat, "finding") && !target_cat.is_some_and(|x| eq(x, "finding")))) {
                 *kinded_from.entry(ci(&t)).or_default() += 1;
             }
         }
@@ -409,33 +409,33 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     // A book's term table: a Card of its Literature tree whose title starts with 术语表.
     let mut term_card: HashMap<String, String> = HashMap::new();
     for c in &cards {
-        let tree = s(c, "tree");
-        if ps_in(&tree, &all_books) && TERMS_TITLE.is_match(&s(c, "title")) && !term_card.contains_key(&ci(&tree)) {
-            term_card.insert(ci(&tree), s(c, "address"));
+        let tree = field(c, "tree");
+        if is_in(&tree, &all_books) && TERMS_TITLE.is_match(&field(c, "title")) && !term_card.contains_key(&ci(&tree)) {
+            term_card.insert(ci(&tree), field(c, "address"));
         }
     }
     let rest: Vec<Value> = scope
         .iter()
-        .filter(|c| !in_model.contains(&ci(&s(c, "address"))) && bodies.contains_key(&ci(&s(c, "address"))))
+        .filter(|c| !in_model.contains(&ci(&field(c, "address"))) && bodies.contains_key(&ci(&field(c, "address"))))
         .map(|c| {
-            let a = s(c, "address");
+            let a = field(c, "address");
             let (title, body) = bodies[&ci(&a)].clone();
             json!({
                 "address": a, "title": title, "body": body,
                 "facet": facets.get(&ci(&a)).cloned().map(Value::String).unwrap_or(Value::Null), "line": null,
-                "category": category(c), "tree": s(c, "tree"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
-                "parent": s(c, "parent"), "links": str_list(&c["links"]), "kinds": ps::keys(&c["kinds"]),
+                "category": category(c), "tree": field(c, "tree"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
+                "parent": field(c, "parent"), "links": str_list(&c["links"]), "kinds": ps::keys(&c["kinds"]),
                 "inbound": inbound_from.get(&ci(&a)).cloned().unwrap_or_default(),
                 "inbound_kinded": kinded_from.get(&ci(&a)).copied().unwrap_or(0)
             })
         })
         .collect();
     // The Cards the layer rules read, with their bodies: card builds its jobs from them.
-    let addresses: String = cards.iter().map(|c| format!("{}{}", s(c, "address"), ps::NL)).collect();
+    let addresses: String = cards.iter().map(|c| format!("{}{}", field(c, "address"), ps::NL)).collect();
     util::write_text(ps::join_path(&out_dir, "audit-addresses.txt"), &addresses)?;
     util::write_text(ps::join_path(&out_dir, "audit-cards.json"), &ps::json_pretty(&Value::Array(rest.clone())))?;
     // One call per book, with the book's term table (R6) when it has one.
-    for (name, group) in group_by(&rest, |e| s(e, "book")) {
+    for (name, group) in group_by(&rest, |e| field(e, "book")) {
         let setting = if !name.is_empty() { term_card.get(&ci(&name)).cloned().unwrap_or_default() } else { String::new() };
         invoke_check(zt, &group, &setting, "")?;
     }
@@ -468,7 +468,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         .map(|b| {
             for k in ["from", "source", "address"] {
                 if truthy(&b[k]) {
-                    return s(b, k);
+                    return field(b, k);
                 }
             }
             String::new()
@@ -480,7 +480,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let unattributed_style = if !p.citation_key.is_empty() {
         Value::Null
     } else {
-        let set: HashMap<String, String> = unattributed.iter().map(|c| (ci(&s(c, "address")), category(c))).collect();
+        let set: HashMap<String, String> = unattributed.iter().map(|c| (ci(&field(c, "address")), category(c))).collect();
         let uf: Vec<&Fault> = faults.iter().filter(|f| set.contains_key(&ci(&f.address))).collect();
         let mut by_cat = Map::new();
         for (name, group) in group_by(&uf, |f| set[&ci(&f.address)].clone()) {
@@ -500,7 +500,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "books": all_books.len(),
         "cards": cards.len(),
         "cards_by_category": tally(&cards.iter().map(|c| category(c)).collect::<Vec<_>>()),
-        "topic_tree_sizes": quantiles(&trees.iter().filter(|t| ps_eq(&s(t, "kind"), "topic")).map(|t| t["count"].as_i64().unwrap_or(0)).collect::<Vec<_>>()),
+        "topic_tree_sizes": quantiles(&trees.iter().filter(|t| eq(&field(t, "kind"), "topic")).map(|t| t["count"].as_i64().unwrap_or(0)).collect::<Vec<_>>()),
         "hubs": {
             "counts": hubs["counts"].clone(),
             "missing": ps_count(&hubs["missing"]),
@@ -511,26 +511,26 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "unattributed": {
             "count": unattributed.len(),
             "by_category": tally(&unattributed.iter().map(|c| category(c)).collect::<Vec<_>>()),
-            "orphans": unattributed.iter().filter(|c| !ps_eq(&category(c), "root") && c["inbound"].as_i64().unwrap_or(0) == 0).map(|c| s(c, "address")).collect::<Vec<_>>(),
+            "orphans": unattributed.iter().filter(|c| !eq(&category(c), "root") && c["inbound"].as_i64().unwrap_or(0) == 0).map(|c| field(c, "address")).collect::<Vec<_>>(),
             "style": unattributed_style,
-            "list": unattributed.iter().map(|c| s(c, "address")).collect::<Vec<_>>()
+            "list": unattributed.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
         }
     });
     let advisory = ["I1", "I6", "E5", "L3"];
     let mut book_reports: Vec<Value> = Vec::new();
     for key in &books {
-        let mine: Vec<&Value> = scope.iter().copied().filter(|c| book_of(c).is_some_and(|b| ps_eq(&b, key))).collect();
-        let mine_set: HashMap<String, &Value> = mine.iter().map(|c| (ci(&s(c, "address")), *c)).collect();
-        let regular: Vec<&Value> = mine.iter().copied().filter(|c| !ps_eq(&category(c), "root")).collect();
-        let writing: Vec<&Value> = mine.iter().copied().filter(|c| ps_in(&category(c), &["idea", "event", "finding"])).collect();
+        let mine: Vec<&Value> = scope.iter().copied().filter(|c| book_of(c).is_some_and(|b| eq(&b, key))).collect();
+        let mine_set: HashMap<String, &Value> = mine.iter().map(|c| (ci(&field(c, "address")), *c)).collect();
+        let regular: Vec<&Value> = mine.iter().copied().filter(|c| !eq(&category(c), "root")).collect();
+        let writing: Vec<&Value> = mine.iter().copied().filter(|c| is_in(&category(c), &["idea", "event", "finding"])).collect();
 
         // Topic trees with Cards of the book.
-        let in_topics: Vec<&Value> = mine.iter().copied().filter(|c| ps_in(&s(c, "tree"), &topic_trees)).collect();
-        let tree_rows: Vec<Value> = group_by(&in_topics, |c| s(c, "tree"))
+        let in_topics: Vec<&Value> = mine.iter().copied().filter(|c| is_in(&field(c, "tree"), &topic_trees)).collect();
+        let tree_rows: Vec<Value> = group_by(&in_topics, |c| field(c, "tree"))
             .into_iter()
             .map(|(name, group)| {
                 let t = tree_info.get(&ci(&name)).cloned().unwrap_or(Value::Null);
-                json!({ "tree": name, "title": s(&t, "title"), "cards": group.len(), "size": t["count"].as_i64().unwrap_or(0) })
+                json!({ "tree": name, "title": field(&t, "title"), "cards": group.len(), "size": t["count"].as_i64().unwrap_or(0) })
             })
             .collect();
         let majority = tree_rows.iter().filter(|r| r["cards"].as_i64().unwrap_or(0) * 2 > r["size"].as_i64().unwrap_or(0)).count();
@@ -550,7 +550,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             .copied()
             .filter(|c| {
                 !str_list(&c["links"]).iter().any(|t| {
-                    book_of::source_target(t, &index.book_set) && book_of::link_book(t, &index.book_set).is_some_and(|b| ps_eq(b, key))
+                    book_of::source_target(t, &index.book_set) && book_of::link_book(t, &index.book_set).is_some_and(|b| eq(b, key))
                 })
             })
             .collect();
@@ -559,9 +559,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         for c in &writing {
             let kinded = ps::keys(&c["kinds"]);
             let others: Vec<String> = str_list(&c["links"]).into_iter().filter(|t| !book_of::source_target(t, &index.book_set)).collect();
-            refers += others.iter().filter(|t| !ps_in(t, &kinded)).count();
-            let parent = s(c, "parent");
-            if !kinded.iter().any(|k| !ps_eq(k, &parent)) {
+            refers += others.iter().filter(|t| !is_in(t, &kinded)).count();
+            let parent = field(c, "parent");
+            if !kinded.iter().any(|k| !eq(k, &parent)) {
                 unkinded.push(c);
             }
         }
@@ -569,11 +569,11 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         // Models.
         let mut model_rows: Vec<Value> = Vec::new();
         for (head, m) in heads.iter().zip(&structures) {
-            if !book_of(head).is_some_and(|b| ps_eq(&b, key)) {
+            if !book_of(head).is_some_and(|b| eq(&b, key)) {
                 continue;
             }
             let Some(m) = m else {
-                model_rows.push(json!({ "address": s(head, "address"), "error": "get_model failed" }));
+                model_rows.push(json!({ "address": field(head, "address"), "error": "get_model failed" }));
                 continue;
             };
             let b = &m["build"];
@@ -582,11 +582,11 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "unanchored": ps_count(&b["unanchored"]), "beyond_level": ps_count(&b["beyond_level"])
             });
             let num = |k: &str| n[k].as_i64().unwrap_or(0);
-            let open = num("closure") + num("forward") + num("unanchored") + if ps_eq(&s(m, "level"), "concept") { num("beyond_level") } else { 0 };
-            let derived: Vec<Value> = ps_items(&m["parts"]).into_iter().filter(|part| ps::culture_starts_with(&s(part, "facet"), "推导")).collect();
-            let explained = derived.iter().filter(|part| THINKING.is_match(&s(part, "body")) && READING.is_match(&s(part, "body"))).count();
+            let open = num("closure") + num("forward") + num("unanchored") + if eq(&field(m, "level"), "concept") { num("beyond_level") } else { 0 };
+            let derived: Vec<Value> = ps_items(&m["parts"]).into_iter().filter(|part| ps::starts_with(&field(part, "facet"), "推导")).collect();
+            let explained = derived.iter().filter(|part| THINKING.is_match(&field(part, "body")) && READING.is_match(&field(part, "body"))).count();
             model_rows.push(json!({
-                "address": s(head, "address"), "title": s(head, "title"), "level": m["level"].clone(),
+                "address": field(head, "address"), "title": field(head, "title"), "level": m["level"].clone(),
                 "parts": ps_count(&m["parts"]), "issues": ps_count(&m["issues"]), "faults": n,
                 "self_sufficient": open == 0, "derivations": derived.len(), "explained": explained
             }));
@@ -596,10 +596,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         let mut shown_labels: Vec<String> = Vec::new();
         let mut shown_set: HashSet<String> = HashSet::new();
         for c in &regular {
-            if ps_in(&category(c), &["hub", "anchor"]) {
+            if is_in(&category(c), &["hub", "anchor"]) {
                 continue;
             }
-            let Some((_, body)) = bodies.get(&ci(&s(c, "address"))) else { continue };
+            let Some((_, body)) = bodies.get(&ci(&field(c, "address"))) else { continue };
             for m in SHOWN.captures_iter(body) {
                 let label = m[1].trim().to_string();
                 if shown_set.insert(ci(&label)) {
@@ -609,29 +609,29 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         }
         let mut named: Vec<Value> = Vec::new();
         for c in &regular {
-            if ps_in(&category(c), &["hub", "anchor"]) {
+            if is_in(&category(c), &["hub", "anchor"]) {
                 continue;
             }
-            let Some((title, body)) = bodies.get(&ci(&s(c, "address"))) else { continue };
+            let Some((title, body)) = bodies.get(&ci(&field(c, "address"))) else { continue };
             let plain = IMAGE.replace_all(&format!("{title}\n{body}"), "").into_owned();
             for label in ps_sort_unique(&figure_labels(&plain)) {
                 let shown_here = Regex::new(&format!(r"(?i)!\[图\s?{}\]\(artifact:", regex::escape(&label))).unwrap();
                 if shown_here.is_match(body) {
                     continue;
                 }
-                named.push(json!({ "address": s(c, "address"), "figure": label, "known": shown_set.contains(&ci(&label)) }));
+                named.push(json!({ "address": field(c, "address"), "figure": label, "known": shown_set.contains(&ci(&label)) }));
             }
         }
 
         let mut topics_list = tree_rows.clone();
         ps_sort(&mut topics_list, |a, b| (-a["cards"].as_i64().unwrap_or(0)).cmp(&-b["cards"].as_i64().unwrap_or(0)));
-        let level_names: Vec<String> = model_rows.iter().map(|r| if truthy(&r["level"]) { ps_str(&r["level"]) } else { "none".into() }).collect();
+        let level_names: Vec<String> = model_rows.iter().map(|r| if truthy(&r["level"]) { s(&r["level"]) } else { "none".into() }).collect();
         let sum = |k: &str| model_rows.iter().map(|r| r[k].as_i64().unwrap_or(0)).sum::<i64>();
         let known = named.iter().filter(|n| n["known"] == true).count();
-        let layer_hard: Vec<&&Fault> = my_layer.iter().filter(|f| !ps_in(&f.rule, &advisory)).collect();
+        let layer_hard: Vec<&&Fault> = my_layer.iter().filter(|f| !is_in(&f.rule, &advisory)).collect();
         book_reports.push(json!({
             "key": key,
-            "title": s(tree_info.get(&ci(key)).unwrap_or(&Value::Null), "title"),
+            "title": field(tree_info.get(&ci(key)).unwrap_or(&Value::Null), "title"),
             "bridges": bridge_counts(key),
             "cards": mine.len(),
             "cards_by_category": tally(&mine.iter().map(|c| category(c)).collect::<Vec<_>>()),
@@ -643,7 +643,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "list": topics_list
             },
             "style": {
-                "cards_checked": mine.iter().filter(|c| bodies.contains_key(&ci(&s(c, "address")))).count(),
+                "cards_checked": mine.iter().filter(|c| bodies.contains_key(&ci(&field(c, "address")))).count(),
                 "faults": my_faults.len(),
                 "cards_with_faults": ps_sort_unique(&my_faults.iter().map(|f| f.address.clone()).collect::<Vec<_>>()).len(),
                 "by_rule": tally(&my_faults.iter().map(|f| f.rule.clone()).collect::<Vec<_>>()),
@@ -659,16 +659,16 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "orphans": {
                 "count": orphans.len(),
                 "by_category": tally(&orphans.iter().map(|c| category(c)).collect::<Vec<_>>()),
-                "list": orphans.iter().map(|c| s(c, "address")).collect::<Vec<_>>()
+                "list": orphans.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
             },
             "no_source": {
                 "count": no_source.len(), "of": writing.len(),
                 "by_category": tally(&no_source.iter().map(|c| category(c)).collect::<Vec<_>>()),
-                "list": no_source.iter().map(|c| s(c, "address")).collect::<Vec<_>>()
+                "list": no_source.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
             },
             "unkinded": {
                 "count": unkinded.len(), "of": writing.len(), "refers_links": refers,
-                "list": unkinded.iter().map(|c| s(c, "address")).collect::<Vec<_>>()
+                "list": unkinded.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
             },
             "models": {
                 "count": model_rows.len(),
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(lone["island"], json!(true));
         assert!(lone["peers"].as_i64().unwrap() > 0);
         // A book alone: no peers, so not an island.
-        let alone: Vec<Value> = cards.iter().filter(|c| s(c, "tree") == "Lone2030").cloned().collect();
+        let alone: Vec<Value> = cards.iter().filter(|c| field(c, "tree") == "Lone2030").cloned().collect();
         let index = book_of::book_index(&trees, &alone);
         let b = bridge_counts(&alone, &index, true, "Lone2030");
         assert!(b["island"].is_null());

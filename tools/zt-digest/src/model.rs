@@ -6,10 +6,12 @@
 //! in-process, and builds a model's context pack in-process (the script ran
 //! model-context.ps1 as a child).
 
+use crate::ps;
+
 mod compiler;
 mod context;
 mod list;
-mod ps;
+
 mod text;
 
 use crate::zt::Zt;

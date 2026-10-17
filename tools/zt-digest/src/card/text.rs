@@ -1,7 +1,7 @@
 //! What a rewrite must keep, and the Link kinds as ZT reads them (card-compiler.ps1:
 //! Get-Keep, Test-Kinded, Get-LinkKinds).
 
-use crate::audit::ps::{lower_invariant, select_unique};
+use crate::ps::{lower_invariant, select_unique};
 use regex::Regex;
 use std::sync::LazyLock;
 

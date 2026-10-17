@@ -16,7 +16,7 @@
 //! `faults: N`. The steps, the files, and the job texts are the script's; see
 //! docs/wiki/digest-scripts.md and docs/wiki/zt-digest.md.
 
-use super::ps::{self, CiMap, each, list, pipe, s, truthy};
+use crate::ps::{self, CiMap, each, list, pipe, s, truthy};
 use super::text::{self, derives, line_of, ref_of};
 use super::{Scripts, context, get_card, get_model, read_calls};
 use crate::args::Args;

@@ -3,7 +3,7 @@
 //! tables, and the explain step's insertion and core. Each is the function of
 //! model-compiler.ps1 it names.
 
-use super::ps::{self, list, pipe, s, truthy};
+use crate::ps::{self, list, pipe, s, truthy};
 use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;

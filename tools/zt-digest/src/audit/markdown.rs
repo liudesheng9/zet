@@ -1,7 +1,7 @@
 //! audit.md, as digest-audit.ps1 wrote it (AppendLine: Environment.NewLine).
 
 use super::Params;
-use super::ps::{NL, ps_items, ps_str, truthy};
+use crate::ps::{NL, ps_items, s, truthy};
 use serde_json::Value;
 
 /// `$cut`: the first -Sample items in backticks, then `, … (N)`; or `none`.
@@ -27,16 +27,16 @@ fn cut(list: &[String], sample: i64) -> String {
 
 /// `$tally`: `name count` pairs, or `none`.
 fn tally(t: &Value) -> String {
-    let pairs: Vec<String> = t.as_object().map(|m| m.iter().map(|(k, v)| format!("{k} {}", ps_str(v))).collect()).unwrap_or_default();
+    let pairs: Vec<String> = t.as_object().map(|m| m.iter().map(|(k, v)| format!("{k} {}", s(v))).collect()).unwrap_or_default();
     if pairs.is_empty() { "none".into() } else { pairs.join(", ") }
 }
 
 fn strings(v: &Value) -> Vec<String> {
-    ps_items(v).iter().map(ps_str).collect()
+    ps_items(v).iter().map(s).collect()
 }
 
 fn n(v: &Value) -> String {
-    ps_str(v)
+    s(v)
 }
 
 pub fn render(report: &Value, p: &Params) -> String {
@@ -186,7 +186,7 @@ pub fn render(report: &Value, p: &Params) -> String {
             cut(&strings(&b["unkinded"]["list"]), p.sample)
         ));
         let not_self: Vec<String> =
-            ps_items(&b["models"]["list"]).iter().filter(|r| !truthy(&r["self_sufficient"])).map(|r| ps_str(&r["address"])).collect();
+            ps_items(&b["models"]["list"]).iter().filter(|r| !truthy(&r["self_sufficient"])).map(|r| s(&r["address"])).collect();
         line(&format!(
             "- **Models**: {} ({}). Not self-sufficient: {}. With get_model issues: {}. Derivation parts with 思路 and 解读: {} of {}. {}",
             n(&b["models"]["count"]),
@@ -200,7 +200,7 @@ pub fn render(report: &Value, p: &Params) -> String {
         let known: Vec<String> = ps_items(&b["figures"]["list"])
             .iter()
             .filter(|f| truthy(&f["known"]))
-            .map(|f| format!("{} 图 {}", ps_str(&f["address"]), ps_str(&f["figure"])))
+            .map(|f| format!("{} 图 {}", s(&f["address"]), s(&f["figure"])))
             .collect();
         line(&format!(
             "- **Figures**: {} figures shown. Named but not shown: {} known, {} unknown. {}",
@@ -212,12 +212,12 @@ pub fn render(report: &Value, p: &Params) -> String {
         let bb = &b["bridges"];
         let side_text = |side: &Value| {
             let mut parts: Vec<String> =
-                side["books"].as_object().map(|m| m.iter().map(|(k, v)| format!("`{k}` {}", ps_str(v))).collect()).unwrap_or_default();
+                side["books"].as_object().map(|m| m.iter().map(|(k, v)| format!("`{k}` {}", s(v))).collect()).unwrap_or_default();
             if truthy(&side["human"]) {
-                parts.push(format!("human {}", ps_str(&side["human"])));
+                parts.push(format!("human {}", s(&side["human"])));
             }
             if truthy(&side["unattributed"]) {
-                parts.push(format!("unattributed {}", ps_str(&side["unattributed"])));
+                parts.push(format!("unattributed {}", s(&side["unattributed"])));
             }
             if parts.is_empty() { "none".to_string() } else { parts.join(", ") }
         };

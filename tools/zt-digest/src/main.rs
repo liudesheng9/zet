@@ -15,10 +15,22 @@
 
 mod args;
 mod audit;
+mod bridge;
 mod calls;
 mod card;
 mod check;
+mod event;
+mod figures;
+mod finding;
+mod hub;
+mod math;
 mod model;
+mod organize;
+mod prepare;
+mod ps;
+mod skeleton;
+mod snapshot;
+mod terms;
 mod util;
 mod zt;
 
@@ -33,12 +45,26 @@ fn main() {
         "model" => model::cli(&rest),
         "model-context" => model::context_cli(&rest),
         "list-models" => model::list_cli(&rest),
+        "hub" => hub::cli(&rest),
+        "bridge" => bridge::cli(&rest),
+        "math" => math::cli(&rest),
+        "event" => event::cli(&rest),
+        "finding" => finding::cli(&rest),
+        "terms" => terms::cli(&rest),
+        "skeleton" => skeleton::cli(&rest),
+        "organize-survey" => organize::survey_cli(&rest),
+        "organize-apply" => organize::apply_cli(&rest),
+        "figures" => figures::cli(&rest),
+        "prepare" => prepare::cli(&rest),
+        "prepare-link" => prepare::link_cli(&rest),
+        "snapshot-topics" => snapshot::cli(&rest),
         "version" | "--version" | "-v" => {
             println!("zt-digest {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, audit, card, model, model-context, list-models");
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics");
             Ok(2)
         }
     };

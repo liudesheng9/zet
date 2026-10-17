@@ -20,13 +20,14 @@ mod relatedness;
 mod text;
 
 use crate::args::Args;
-use crate::audit::{self, ps};
+use crate::audit;
+use crate::ps;
 use crate::calls;
 use crate::check::Check;
 use crate::util;
 use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
-use ps::{NL, ci, culture_cmp, join_path, leaf, ps_array, ps_eq, ps_in, ps_items, ps_sort, ps_str, s, truthy};
+use crate::ps::{NL, key as ci, culture_cmp, join_path, leaf, ps_array, eq, is_in, ps_items, ps_sort, field, s, truthy};
 use regex::Regex;
 use relatedness::Relatedness;
 use serde_json::{Map, Value, json};
@@ -117,10 +118,10 @@ fn format_card(card: &Value, faults: &[(String, String)], parent_title: &str, so
         sb.push_str(t);
         sb.push_str(NL);
     };
-    line(&format!("## 卡片 `{}`（{}）", s(card, "address"), s(card, "category")));
+    line(&format!("## 卡片 `{}`（{}）", field(card, "address"), field(card, "category")));
     line("");
     if truthy(&card["parent"]) {
-        line(&format!("- 父卡：`{}` {parent_title}", s(card, "parent")));
+        line(&format!("- 父卡：`{}` {parent_title}", field(card, "parent")));
     }
     if !source.is_empty() {
         line(&format!("- 原文：{source}"));
@@ -136,12 +137,12 @@ fn format_card(card: &Value, faults: &[(String, String)], parent_title: &str, so
     line("");
     line("### 标题");
     line("");
-    line(&s(card, "title"));
+    line(&field(card, "title"));
     line("");
     line("### 正文");
     line("");
     line("````markdown");
-    line(&trim_end(&s(card, "body")));
+    line(&trim_end(&field(card, "body")));
     line("````");
     line("");
     sb
@@ -223,12 +224,12 @@ impl Compiler {
     }
 
     fn rule_list(&self) -> Vec<String> {
-        RULE_SPLIT.split(&s(&self.state, "rules")).filter(|r| !r.is_empty()).map(str::to_string).collect()
+        RULE_SPLIT.split(&field(&self.state, "rules")).filter(|r| !r.is_empty()).map(str::to_string).collect()
     }
 
     fn hard_faults(&self, audit: &AuditView, address: &str) -> Vec<(String, String)> {
         let rules = self.rule_list();
-        audit.all_faults(address).iter().filter(|(rule, _)| ps_in(rule, &rules)).cloned().collect()
+        audit.all_faults(address).iter().filter(|(rule, _)| is_in(rule, &rules)).cloned().collect()
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -261,7 +262,7 @@ impl Compiler {
     // --- the audit -------------------------------------------------------------------------------
 
     fn invoke_audit(&mut self, dir: &str) -> Result<AuditView> {
-        let params = audit::Params::for_card(&s(&self.state, "book"), dir);
+        let params = audit::Params::for_card(&field(&self.state, "book"), dir);
         let zt = self.zt()?;
         if let Err(error) = audit::run(zt, &params, &mut |_| {}) {
             bail!("digest-audit failed: {error:#}");
@@ -276,7 +277,7 @@ impl Compiler {
         }
         let mut view = AuditView { faults, cards: Vec::new(), by: HashMap::new() };
         for c in ps_array(&read_json_file(&join_path(dir, "audit-cards.json"))?) {
-            let key = ci(&s(&c, "address"));
+            let key = ci(&field(&c, "address"));
             match view.by.get(&key) {
                 Some(&i) => view.cards[i] = c,
                 None => {
@@ -344,13 +345,13 @@ impl Compiler {
 
     /// `Add-Owned`: a Card a split made joins the group that owns the Card it came from.
     fn add_owned(&self, from: &str, new: &str) -> Result<()> {
-        let staging = s(&self.state, "staging");
+        let staging = field(&self.state, "staging");
         if staging.is_empty() {
             return Ok(());
         }
         for file in matching_files(&staging, "owned-g") {
             let lines: Vec<String> = file_lines(&file)?.iter().map(|l| l.trim().to_string()).collect();
-            if ps_in(from, &lines) {
+            if is_in(from, &lines) {
                 util::append_text(&file, &format!("{new}\n"))?;
                 return Ok(());
             }
@@ -362,8 +363,8 @@ impl Compiler {
 
     /// `Test-Rewrite`: None, or why apply refuses the rewrite.
     fn test_rewrite(&mut self, old: &Value, entry: &Value) -> Result<Option<String>> {
-        let title = s(entry, "title");
-        let body = s(entry, "body");
+        let title = field(entry, "title");
+        let body = field(entry, "body");
         if title.trim().is_empty() || body.trim().is_empty() {
             return Ok(Some("the title or the body is empty".into()));
         }
@@ -371,33 +372,33 @@ impl Compiler {
             return Ok(Some("the body starts with a # heading".into()));
         }
         let mut new = format!("{title}\n{body}");
-        if ps_eq(&s(entry, "verdict"), "split") {
+        if eq(&field(entry, "verdict"), "split") {
             let parts = ps_array(&entry["split"]);
             if parts.is_empty() {
                 return Ok(Some("split names no new Card".into()));
             }
             for p in &parts {
-                if s(p, "title").trim().is_empty() || s(p, "body").trim().is_empty() {
+                if field(p, "title").trim().is_empty() || field(p, "body").trim().is_empty() {
                     return Ok(Some("a split Card has no title or body".into()));
                 }
-                new.push_str(&format!("\n{}\n{}", s(p, "title"), s(p, "body")));
+                new.push_str(&format!("\n{}\n{}", field(p, "title"), field(p, "body")));
             }
         }
-        let keep = text::keep(&format!("{}\n{}", s(old, "title"), s(old, "body")));
+        let keep = text::keep(&format!("{}\n{}", field(old, "title"), field(old, "body")));
         let now = text::keep(&new);
-        let mut lost: Vec<String> = keep.links.iter().filter(|l| !ps_in(l, &now.links)).cloned().collect();
+        let mut lost: Vec<String> = keep.links.iter().filter(|l| !is_in(l, &now.links)).cloned().collect();
         // An Organize note that names other Links may replace a wrongly cited Card: the rewrite may
         // drop as many Links as it adds of those the note names, and no more.
-        let note_text = if truthy(&self.state["notes"]) { s(&self.state["notes"], &s(entry, "address")) } else { String::new() };
+        let note_text = if truthy(&self.state["notes"]) { field(&self.state["notes"], &field(entry, "address")) } else { String::new() };
         let named = text::link_targets(&note_text);
-        let added = ps::select_unique(named.into_iter().filter(|n| ps_in(n, &now.links) && !ps_in(n, &keep.links)));
+        let added = ps::select_unique(named.into_iter().filter(|n| is_in(n, &now.links) && !is_in(n, &keep.links)));
         if !lost.is_empty() && lost.len() <= added.len() {
             lost.clear();
         }
         if !lost.is_empty() {
             return Ok(Some(format!("lost Links: {}", lost.iter().map(|l| format!("[[{l}]]")).collect::<Vec<_>>().join(" "))));
         }
-        let new_links: Vec<String> = now.links.iter().filter(|l| !ps_in(l, &keep.links)).cloned().collect();
+        let new_links: Vec<String> = now.links.iter().filter(|l| !is_in(l, &keep.links)).cloned().collect();
         let mut made = Vec::new();
         if !new_links.is_empty() {
             let known = self.known()?;
@@ -409,10 +410,10 @@ impl Compiler {
                 made.iter().map(|l| format!("[[{l}]]")).collect::<Vec<_>>().join(" ")
             )));
         }
-        if keep.figures.iter().any(|f| !ps_in(f, &now.figures)) {
+        if keep.figures.iter().any(|f| !is_in(f, &now.figures)) {
             return Ok(Some("lost a figure line".into()));
         }
-        if let Some(first) = keep.formulas.iter().find(|f| !ps_in(f, &now.formulas)) {
+        if let Some(first) = keep.formulas.iter().find(|f| !is_in(f, &now.formulas)) {
             return Ok(Some(format!("changed formulas: {first}")));
         }
         Ok(None)
@@ -421,15 +422,15 @@ impl Compiler {
     // --- plan ------------------------------------------------------------------------------------
 
     fn source_hint(&self, card: &Value) -> String {
-        let staging = s(&self.state, "staging");
+        let staging = field(&self.state, "staging");
         if staging.is_empty() {
             return String::new();
         }
-        let src = s(&self.state["src"], &s(card, "address"));
+        let src = field(&self.state["src"], &field(card, "address"));
         if !src.is_empty() {
             return format!("`{}`（只读这几行）", join_path(&staging, &src));
         }
-        if let Some(m) = SECTION.captures(&s(card, "body")) {
+        if let Some(m) = SECTION.captures(&field(card, "body")) {
             return format!("小节 §{}：在 `{}` 中用 Select-String 找到它，只读相关段落", &m[1], join_path(&staging, "sections"));
         }
         format!("在 `{}` 中用 Select-String 找到这张卡的出处，只读相关段落", join_path(&staging, "sections"))
@@ -445,8 +446,8 @@ impl Compiler {
         let docs: Vec<(String, String)> = audit
             .cards
             .iter()
-            .filter(|c| ps_in(&s(c, "category"), &["idea", "event", "finding", "anchor"]))
-            .map(|c| (s(c, "address"), format!("{} {} {}", s(c, "title"), s(c, "title"), s(c, "body"))))
+            .filter(|c| is_in(&field(c, "category"), &["idea", "event", "finding", "anchor"]))
+            .map(|c| (field(c, "address"), format!("{} {} {}", field(c, "title"), field(c, "title"), field(c, "body"))))
             .collect();
         let model = Relatedness::new(&docs, 80);
         let size = (2 * self.p.per_job).max(1) as usize;
@@ -458,28 +459,28 @@ impl Compiler {
             self.add_self_check(&mut sb, &id)?;
             let mut candidates = Map::new();
             for o in chunk {
-                let a = s(o, "address");
+                let a = field(o, "address");
                 // An Event or Finding Card is linked from Idea Cards only (E4, F4).
-                let is_event = ps_in(&s(o, "category"), &["event", "finding"]);
+                let is_event = is_in(&field(o, "category"), &["event", "finding"]);
                 let linking: Vec<String> = audit
                     .cards
                     .iter()
-                    .filter(|c| ps_items(&c["links"]).iter().any(|l| ps_eq(&ps_str(l), &a)))
-                    .map(|c| s(c, "address"))
+                    .filter(|c| ps_items(&c["links"]).iter().any(|l| eq(&s(l), &a)))
+                    .map(|c| field(c, "address"))
                     .collect();
-                let parent = s(o, "parent");
+                let parent = field(o, "parent");
                 let cands = model.find(&a, 5, |id| {
                     let Some(card) = audit.card(id) else { return true };
-                    let category = s(card, "category");
-                    ps_eq(id, &parent) || ps_in(id, &linking) || !ps_in(&category, WRITABLE) || (is_event && !ps_eq(&category, "idea"))
+                    let category = field(card, "category");
+                    eq(id, &parent) || is_in(id, &linking) || !is_in(&category, WRITABLE) || (is_event && !eq(&category, "idea"))
                 });
                 candidates.insert(a.clone(), json!(cands));
-                sb.push_str(&format!("## 孤立卡片 `{a}`（{}）{NL}{NL}", s(o, "category")));
-                sb.push_str(&format!("### {}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", s(o, "title"), trim_end(&s(o, "body"))));
+                sb.push_str(&format!("## 孤立卡片 `{a}`（{}）{NL}{NL}", field(o, "category")));
+                sb.push_str(&format!("### {}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", field(o, "title"), trim_end(&field(o, "body"))));
                 sb.push_str(&format!("候选卡片：{NL}{NL}"));
                 for cand in &cands {
                     let card = audit.card(cand).cloned().unwrap_or(Value::Null);
-                    let mut cb = SPACES.replace_all(&s(&card, "body"), " ").trim().to_string();
+                    let mut cb = SPACES.replace_all(&field(&card, "body"), " ").trim().to_string();
                     if cb.encode_utf16().count() > 160 {
                         let mut cut = String::new();
                         let mut units = 0;
@@ -492,13 +493,13 @@ impl Compiler {
                         }
                         cb = format!("{cut}…");
                     }
-                    sb.push_str(&format!("- `{cand}` {}：{cb}{NL}", s(&card, "title")));
+                    sb.push_str(&format!("- `{cand}` {}：{cb}{NL}", field(&card, "title")));
                 }
                 sb.push_str(NL);
             }
             let file = join_path(&self.p.work, &format!("{id}.md"));
             util::write_text(&file, &sb)?;
-            let cards: Vec<String> = chunk.iter().map(|c| s(c, "address")).collect();
+            let cards: Vec<String> = chunk.iter().map(|c| field(c, "address")).collect();
             self.state["jobs"][&id] =
                 json!({ "kind": "orphans", "file": file, "out": out, "cards": cards, "candidates": candidates, "applied": false });
             made.push(json!({ "id": id, "files": [join_path(&self.p.work, &leaf(&self.orphan_doc())), file], "prompt": ORPHAN_PROMPT }));
@@ -513,7 +514,7 @@ impl Compiler {
         for j in jobs {
             let kind = if truthy(&j["continue"]) {
                 "follow"
-            } else if ps::starts_ci(&s(j, "id"), "orphans-") {
+            } else if ps::starts_ci(&field(j, "id"), "orphans-") {
                 "orphans"
             } else {
                 "fix"
@@ -522,7 +523,7 @@ impl Compiler {
                 prompts.insert(kind.to_string(), j["prompt"].clone());
             }
             let files = ps_array(&j["files"]);
-            let mut c = json!({ "id": j["id"], "kind": kind, "file": leaf(&ps_str(files.last().unwrap_or(&Value::Null))) });
+            let mut c = json!({ "id": j["id"], "kind": kind, "file": leaf(&s(files.last().unwrap_or(&Value::Null))) });
             if truthy(&j["continue"]) {
                 c["continue"] = j["continue"].clone();
             }
@@ -546,7 +547,7 @@ impl Compiler {
     }
 
     fn has_orphan_fault(audit: &AuditView, address: &str, rules: &[&str]) -> bool {
-        audit.all_faults(address).iter().any(|(rule, _)| ps_in(rule, rules))
+        audit.all_faults(address).iter().any(|(rule, _)| is_in(rule, rules))
     }
 
     fn step_plan(&mut self) -> Result<()> {
@@ -573,17 +574,17 @@ impl Compiler {
                 other => ps_array(other),
             };
             for n in list {
-                let a = s(&n, "address");
-                let note = s(&n, "note").trim().to_string();
+                let a = field(&n, "address");
+                let note = field(&n, "note").trim().to_string();
                 if a.is_empty() || note.is_empty() {
                     continue;
                 }
                 audit.faults.entry(ci(&a)).or_default().push(("N1".into(), note.clone()));
-                let joined = format!("{} {note}", s(&self.state["notes"], &a)).trim().to_string();
+                let joined = format!("{} {note}", field(&self.state["notes"], &a)).trim().to_string();
                 self.state["notes"][&a] = json!(joined);
             }
-            let rules = s(&self.state, "rules");
-            if !ps_in("N1", &RULE_SPLIT.split(&rules).collect::<Vec<_>>()) {
+            let rules = field(&self.state, "rules");
+            if !is_in("N1", &RULE_SPLIT.split(&rules).collect::<Vec<_>>()) {
                 self.state["rules"] = json!(format!("{rules},N1"));
             }
         }
@@ -626,15 +627,15 @@ impl Compiler {
             .cards
             .iter()
             .filter(|c| {
-                ps_eq(&s(c, "book"), &self.p.book)
+                eq(&field(c, "book"), &self.p.book)
                     && !c["book"].is_null()
-                    && ps_in(&s(c, "category"), WRITABLE)
-                    && owned.as_ref().is_none_or(|o| o.contains(&s(c, "address")))
+                    && is_in(&field(c, "category"), WRITABLE)
+                    && owned.as_ref().is_none_or(|o| o.contains(&field(c, "address")))
             })
             .cloned()
             .collect();
-        ps_sort(&mut picked, |a, b| culture_cmp(&s(a, "address"), &s(b, "address")));
-        let mut with_faults: Vec<Value> = picked.iter().filter(|c| !self.hard_faults(&audit, &s(c, "address")).is_empty()).cloned().collect();
+        ps_sort(&mut picked, |a, b| culture_cmp(&field(a, "address"), &field(b, "address")));
+        let mut with_faults: Vec<Value> = picked.iter().filter(|c| !self.hard_faults(&audit, &field(c, "address")).is_empty()).cloned().collect();
         if self.p.max_cards > 0 {
             with_faults.truncate(self.p.max_cards as usize);
         }
@@ -642,7 +643,7 @@ impl Compiler {
         if self.p.sample > 0.0 && !self.p.staging.is_empty() {
             let clean: Vec<Value> = picked
                 .iter()
-                .filter(|c| ps_eq(&s(c, "category"), "idea") && self.hard_faults(&audit, &s(c, "address")).is_empty())
+                .filter(|c| eq(&field(c, "category"), "idea") && self.hard_faults(&audit, &field(c, "address")).is_empty())
                 .cloned()
                 .collect();
             let count = clean.len().min((self.p.sample * clean.len() as f64).ceil() as usize);
@@ -650,14 +651,14 @@ impl Compiler {
             let mut keyed: Vec<(i32, Value)> = clean.into_iter().map(|c| (rng.next(), c)).collect();
             ps_sort(&mut keyed, |a, b| a.0.cmp(&b.0));
             review = keyed.into_iter().take(count).map(|(_, c)| c).collect();
-            ps_sort(&mut review, |a, b| culture_cmp(&s(a, "address"), &s(b, "address")));
+            ps_sort(&mut review, |a, b| culture_cmp(&field(a, "address"), &field(b, "address")));
         }
         let mut orphans: Vec<Value> = Vec::new();
         if !self.p.no_orphans {
             orphans = picked
                 .iter()
                 .filter(|c| {
-                    ps_in(&s(c, "category"), &["idea", "event", "finding"]) && Self::has_orphan_fault(&audit, &s(c, "address"), &["I5", "E4", "F4"])
+                    is_in(&field(c, "category"), &["idea", "event", "finding"]) && Self::has_orphan_fault(&audit, &field(c, "address"), &["I5", "E4", "F4"])
                 })
                 .cloned()
                 .collect();
@@ -666,17 +667,17 @@ impl Compiler {
             }
         }
         for c in with_faults.iter().chain(&review).chain(&orphans) {
-            let a = s(c, "address");
-            self.state["plan"][&a] = json!({ "title": s(c, "title"), "body": s(c, "body"), "category": s(c, "category") });
+            let a = field(c, "address");
+            self.state["plan"][&a] = json!({ "title": field(c, "title"), "body": field(c, "body"), "category": field(c, "category") });
             let rules: Vec<String> = self.hard_faults(&audit, &a).into_iter().map(|(r, _)| r).collect();
             self.state["before"][&a] = json!(rules);
         }
-        self.state["picked"] = json!(picked.iter().map(|c| s(c, "address")).collect::<Vec<_>>());
+        self.state["picked"] = json!(picked.iter().map(|c| field(c, "address")).collect::<Vec<_>>());
         let parent_title = |a: &str| -> String {
             if a.is_empty() {
                 return String::new();
             }
-            audit.card(a).map(|c| s(c, "title")).unwrap_or_default()
+            audit.card(a).map(|c| field(c, "title")).unwrap_or_default()
         };
         let mut jobs: Vec<Value> = Vec::new();
         let fix_cards: Vec<(Value, bool)> =
@@ -689,14 +690,14 @@ impl Compiler {
             let mut sb = format!("# 任务 {id}{NL}{NL}把结果写入 `{out}`。本任务共 {} 张卡。{NL}{NL}", chunk.len());
             self.add_self_check(&mut sb, &id)?;
             for (card, is_review) in chunk {
-                let a = s(card, "address");
+                let a = field(card, "address");
                 let faults = self.hard_faults(&audit, &a);
-                let source = if *is_review || faults.iter().any(|(r, _)| ps_in(r, &["I3", "E1", "E2"])) { self.source_hint(card) } else { String::new() };
-                sb.push_str(&format_card(card, &faults, &parent_title(&s(card, "parent")), &source));
+                let source = if *is_review || faults.iter().any(|(r, _)| is_in(r, &["I3", "E1", "E2"])) { self.source_hint(card) } else { String::new() };
+                sb.push_str(&format_card(card, &faults, &parent_title(&field(card, "parent")), &source));
             }
             let file = join_path(&self.p.work, &format!("{id}.md"));
             util::write_text(&file, &sb)?;
-            let cards: Vec<String> = chunk.iter().map(|(c, _)| s(c, "address")).collect();
+            let cards: Vec<String> = chunk.iter().map(|(c, _)| field(c, "address")).collect();
             self.state["jobs"][&id] = json!({ "kind": "fix", "file": file, "out": out, "cards": cards, "applied": false });
             jobs.push(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT }));
         }
@@ -707,11 +708,11 @@ impl Compiler {
             util::write_text(join_path(&self.p.work, &leaf(&doc)), &text)?;
         }
         for j in jobs.iter_mut() {
-            let first = ps_str(&j["files"][0]);
+            let first = s(&j["files"][0]);
             j["files"][0] = json!(join_path(&self.p.work, &leaf(&first)));
         }
         self.save_state()?;
-        let faults: usize = with_faults.iter().map(|c| self.hard_faults(&audit, &s(c, "address")).len()).sum();
+        let faults: usize = with_faults.iter().map(|c| self.hard_faults(&audit, &field(c, "address")).len()).sum();
         let mut out = json!({
             "book": self.p.book, "picked": picked.len(), "with_faults": with_faults.len(), "review": review.len(),
             "orphans": orphans.len(), "faults": faults, "jobs": jobs
@@ -728,7 +729,7 @@ impl Compiler {
         }
         let job_ids: Vec<String> = ps::keys(&self.state["jobs"]);
         let exists = |job: &Value| {
-            let out = s(job, "out");
+            let out = field(job, "out");
             !out.is_empty() && Path::new(&out).exists()
         };
         let pending: Vec<String> =
@@ -739,11 +740,11 @@ impl Compiler {
         let mut retry: Vec<(String, HashSet<String>)> = Vec::new();
         for a in ps::keys(&self.state["refused"]) {
             let r = &self.state["refused"][&a];
-            let job = s(r, "job");
-            if ps::starts_ci(&s(r, "reason"), "zt:")
+            let job = field(r, "job");
+            if ps::starts_ci(&field(r, "reason"), "zt:")
                 && !a.contains("<-")
                 && self.state["jobs"].get(&job).is_some()
-                && ps_eq(&s(&self.state["jobs"][&job], "kind"), "fix")
+                && eq(&field(&self.state["jobs"][&job], "kind"), "fix")
             {
                 match retry.iter_mut().find(|(k, _)| ci(k) == ci(&job)) {
                     Some((_, set)) => {
@@ -754,7 +755,7 @@ impl Compiler {
             }
         }
         let mut to_apply: Vec<String> = pending.clone();
-        to_apply.extend(retry.iter().map(|(k, _)| k.clone()).filter(|k| !ps_in(k, &pending)));
+        to_apply.extend(retry.iter().map(|(k, _)| k.clone()).filter(|k| !is_in(k, &pending)));
         // -MaxJobs: a share of the jobs per call; the caller repeats apply until pending_jobs is 0.
         let mut later: Vec<String> = Vec::new();
         if self.p.max_jobs > 0 && to_apply.len() > self.p.max_jobs as usize {
@@ -763,12 +764,12 @@ impl Compiler {
         let mut addresses: Vec<String> = Vec::new();
         for id in &to_apply {
             let job = &self.state["jobs"][id.as_str()];
-            addresses.extend(ps_items(&job["cards"]).iter().map(ps_str));
+            addresses.extend(ps_items(&job["cards"]).iter().map(s));
             if truthy(&job["candidates"])
                 && let Some(m) = job["candidates"].as_object()
             {
                 for v in m.values() {
-                    addresses.extend(ps_items(v).iter().map(ps_str));
+                    addresses.extend(ps_items(v).iter().map(s));
                 }
             }
         }
@@ -793,8 +794,8 @@ impl Compiler {
         for id in &to_apply {
             let job = self.state["jobs"][id.as_str()].clone();
             let only: Option<HashSet<String>> =
-                if ps_in(id, &pending) { None } else { retry.iter().find(|(k, _)| k == id).map(|(_, set)| set.clone()) };
-            let result = match read_json_file(&s(&job, "out")) {
+                if is_in(id, &pending) { None } else { retry.iter().find(|(k, _)| k == id).map(|(_, set)| set.clone()) };
+            let result = match read_json_file(&field(&job, "out")) {
                 Ok(r) => r,
                 Err(error) => {
                     self.state["refused"][&format!("job:{id}")] = json!({ "job": id, "reason": format!("unreadable JSON: {error:#}") });
@@ -802,15 +803,15 @@ impl Compiler {
                     continue;
                 }
             };
-            let job_cards: Vec<String> = ps_items(&job["cards"]).iter().map(ps_str).collect();
-            let field = |name: &str| if result.is_object() { result[name].clone() } else { Value::Null };
-            if ps_eq(&s(&job, "kind"), "fix") {
+            let job_cards: Vec<String> = ps_items(&job["cards"]).iter().map(s).collect();
+            let answer = |name: &str| if result.is_object() { result[name].clone() } else { Value::Null };
+            if eq(&field(&job, "kind"), "fix") {
                 let mut edits: Vec<Value> = Vec::new();
                 let mut entries: HashMap<String, Value> = HashMap::new();
                 let mut late_splits: Vec<(String, Value)> = Vec::new();
-                for entry in ps_array(&field("cards")) {
-                    let a = s(&entry, "address");
-                    if !ps_in(&a, &job_cards) {
+                for entry in ps_array(&answer("cards")) {
+                    let a = field(&entry, "address");
+                    if !is_in(&a, &job_cards) {
                         continue;
                     }
                     if let Some(only) = &only {
@@ -822,43 +823,43 @@ impl Compiler {
                         }
                         bump(&mut counts, "retried");
                     }
-                    let verdict = s(&entry, "verdict");
+                    let verdict = field(&entry, "verdict");
                     let old = self.state["plan"][&a].clone();
                     let refuse = |state: &mut Value, counts: &mut Vec<(&str, i64)>, reason: String| {
                         state["refused"][&a] = json!({ "job": id, "reason": reason });
                         bump(counts, "refused");
                     };
-                    if ps_eq(&verdict, "ok") {
+                    if eq(&verdict, "ok") {
                         bump(&mut counts, "ok");
-                        self.state["applied"][&a] = json!({ "job": id, "verdict": "ok", "note": s(&entry, "note") });
+                        self.state["applied"][&a] = json!({ "job": id, "verdict": "ok", "note": field(&entry, "note") });
                         continue;
                     }
-                    if ps_eq(&verdict, "merge") {
+                    if eq(&verdict, "merge") {
                         bump(&mut counts, "merge");
-                        push(&mut self.state["merges"], json!({ "address": a, "merge_with": s(&entry, "merge_with"), "note": s(&entry, "note") }));
+                        push(&mut self.state["merges"], json!({ "address": a, "merge_with": field(&entry, "merge_with"), "note": field(&entry, "note") }));
                         self.state["applied"][&a] = json!({ "job": id, "verdict": "merge" });
                         continue;
                     }
-                    if !ps_in(&verdict, &["fix", "split", "unfaithful"]) {
+                    if !is_in(&verdict, &["fix", "split", "unfaithful"]) {
                         refuse(&mut self.state, &mut counts, format!("unknown verdict `{verdict}`"));
                         continue;
                     }
-                    if !ps_in(&s(&old, "category"), WRITABLE) {
-                        refuse(&mut self.state, &mut counts, format!("category {} is not writable", s(&old, "category")));
+                    if !is_in(&field(&old, "category"), WRITABLE) {
+                        refuse(&mut self.state, &mut counts, format!("category {} is not writable", field(&old, "category")));
                         continue;
                     }
                     // The title and the body decide a change; the stored text also holds the Reverse links.
                     let now = current.get(&ci(&a)).cloned();
                     // Already written (a run stopped part way): record it, and make a split Card that run did not make.
                     if let Some(now) = &now
-                        && ps_eq(&s(now, "title"), s(&entry, "title").trim())
-                        && ps_eq(&trim_end(&s(now, "body")), &trim_end(&s(&entry, "body")))
+                        && eq(&field(now, "title"), field(&entry, "title").trim())
+                        && eq(&trim_end(&field(now, "body")), &trim_end(&field(&entry, "body")))
                     {
-                        self.state["applied"][&a] = json!({ "job": id, "verdict": verdict, "note": s(&entry, "note") });
-                        if ps_eq(&verdict, "split") && !self.split_recorded(&a, id) {
-                            let side_titles: Vec<String> = ps_items(&now["sides"]).iter().map(|x| s(x, "title").trim().to_string()).collect();
+                        self.state["applied"][&a] = json!({ "job": id, "verdict": verdict, "note": field(&entry, "note") });
+                        if eq(&verdict, "split") && !self.split_recorded(&a, id) {
+                            let side_titles: Vec<String> = ps_items(&now["sides"]).iter().map(|x| field(x, "title").trim().to_string()).collect();
                             for part in ps_array(&entry["split"]) {
-                                if !ps_in(s(&part, "title").trim(), &side_titles) {
+                                if !is_in(field(&part, "title").trim(), &side_titles) {
                                     late_splits.push((a.clone(), part));
                                 }
                             }
@@ -868,7 +869,7 @@ impl Compiler {
                     let changed = match &now {
                         None => true,
                         Some(now) => {
-                            !ps_eq(&s(now, "title"), &s(&old, "title")) || !ps_eq(&trim_end(&s(now, "body")), &trim_end(&s(&old, "body")))
+                            !eq(&field(now, "title"), &field(&old, "title")) || !eq(&trim_end(&field(now, "body")), &trim_end(&field(&old, "body")))
                         }
                     };
                     if changed {
@@ -879,7 +880,7 @@ impl Compiler {
                         refuse(&mut self.state, &mut counts, why);
                         continue;
                     }
-                    edits.push(json!({ "tool": "edit_card", "arguments": { "at": a, "title": s(&entry, "title").trim(), "body": trim_end(&s(&entry, "body")) } }));
+                    edits.push(json!({ "tool": "edit_card", "arguments": { "at": a, "title": field(&entry, "title").trim(), "body": trim_end(&field(&entry, "body")) } }));
                     entries.insert(ci(&a), entry);
                 }
                 // The edits first; a split Card only for an edit that is written, and only once.
@@ -887,28 +888,28 @@ impl Compiler {
                 let mut creates: Vec<Value> = Vec::new();
                 let mut from: Vec<String> = Vec::new();
                 for (edit, r) in edits.iter().zip(&done) {
-                    let a = s(&edit["arguments"], "at");
+                    let a = field(&edit["arguments"], "at");
                     let entry = entries.get(&ci(&a)).cloned().unwrap_or(Value::Null);
                     if let Err(error) = r {
                         self.state["refused"][&a] = json!({ "job": id, "reason": format!("zt: {error}") });
                         bump(&mut counts, "refused");
                         continue;
                     }
-                    self.state["applied"][&a] = json!({ "job": id, "verdict": s(&entry, "verdict"), "note": s(&entry, "note") });
-                    if ps_eq(&s(&entry, "verdict"), "unfaithful") {
+                    self.state["applied"][&a] = json!({ "job": id, "verdict": field(&entry, "verdict"), "note": field(&entry, "note") });
+                    if eq(&field(&entry, "verdict"), "unfaithful") {
                         bump(&mut counts, "unfaithful");
                     } else {
                         bump(&mut counts, "fix");
                     }
-                    if ps_eq(&s(&entry, "verdict"), "split") && !self.split_recorded(&a, id) {
+                    if eq(&field(&entry, "verdict"), "split") && !self.split_recorded(&a, id) {
                         for part in ps_array(&entry["split"]) {
-                            creates.push(json!({ "tool": "create_successor", "arguments": { "at": a, "kind": "side", "title": s(&part, "title").trim(), "body": trim_end(&s(&part, "body")) } }));
+                            creates.push(json!({ "tool": "create_successor", "arguments": { "at": a, "kind": "side", "title": field(&part, "title").trim(), "body": trim_end(&field(&part, "body")) } }));
                             from.push(a.clone());
                         }
                     }
                 }
                 for (at, part) in late_splits {
-                    creates.push(json!({ "tool": "create_successor", "arguments": { "at": at, "kind": "side", "title": s(&part, "title").trim(), "body": trim_end(&s(&part, "body")) } }));
+                    creates.push(json!({ "tool": "create_successor", "arguments": { "at": at, "kind": "side", "title": field(&part, "title").trim(), "body": trim_end(&field(&part, "body")) } }));
                     from.push(at);
                 }
                 let made = self.invoke_writes(&creates)?;
@@ -928,16 +929,16 @@ impl Compiler {
             } else {
                 let mut calls: Vec<Value> = Vec::new();
                 let mut what: Vec<(String, String)> = Vec::new();
-                for l in ps_array(&field("links")) {
-                    let to = s(&l, "to");
-                    let from = s(&l, "from");
-                    let text = s(&l, "text").trim().to_string();
-                    if !ps_in(&to, &job_cards) {
+                for l in ps_array(&answer("links")) {
+                    let to = field(&l, "to");
+                    let from = field(&l, "from");
+                    let text = field(&l, "text").trim().to_string();
+                    if !is_in(&to, &job_cards) {
                         continue;
                     }
-                    let cands: Vec<String> = ps_array(&job["candidates"][&to]).iter().map(ps_str).collect();
+                    let cands: Vec<String> = ps_array(&job["candidates"][&to]).iter().map(s).collect();
                     let mut reason = None;
-                    if !ps_in(&from, &cands) {
+                    if !is_in(&from, &cands) {
                         reason = Some(format!("`{from}` is not a candidate"));
                     } else if !text.contains(&format!("[[{to}]]")) {
                         reason = Some("the text does not link the orphan".into());
@@ -948,7 +949,7 @@ impl Compiler {
                     } else {
                         let raw: Vec<String> = text::LINK.captures_iter(&text).map(|c| c[1].to_string()).collect();
                         let known = self.known()?;
-                        if raw.iter().any(|t| !known.contains(t) && !ps_eq(t, &to)) {
+                        if raw.iter().any(|t| !known.contains(t) && !eq(t, &to)) {
                             reason = Some("a Link to a Card that does not exist".into());
                         }
                     }
@@ -959,7 +960,7 @@ impl Compiler {
                     }
                     // Already appended by a run that stopped part way: record it, do not append it twice.
                     if let Some(card) = current.get(&ci(&from))
-                        && s(card, "body").contains(&text)
+                        && field(card, "body").contains(&text)
                     {
                         push(&mut self.state["orphan_links"], json!({ "to": to, "from": from }));
                         bump(&mut counts, "orphan_links");
@@ -968,8 +969,8 @@ impl Compiler {
                     calls.push(json!({ "tool": "append_card", "arguments": { "at": from, "text": text } }));
                     what.push((to, from));
                 }
-                for n in ps_array(&field("none")) {
-                    push(&mut self.state["orphan_none"], json!({ "orphan": s(&n, "orphan"), "note": s(&n, "note") }));
+                for n in ps_array(&answer("none")) {
+                    push(&mut self.state["orphan_none"], json!({ "orphan": field(&n, "orphan"), "note": field(&n, "note") }));
                     bump(&mut counts, "orphan_none");
                 }
                 let done = self.invoke_writes(&calls)?;
@@ -999,7 +1000,7 @@ impl Compiler {
     }
 
     fn split_recorded(&self, from: &str, job: &str) -> bool {
-        ps_items(&self.state["splits"]).iter().any(|x| ps_eq(&s(x, "from"), from) && ps_eq(&s(x, "job"), job))
+        ps_items(&self.state["splits"]).iter().any(|x| eq(&field(x, "from"), from) && eq(&field(x, "job"), job))
     }
 
     // --- check -----------------------------------------------------------------------------------
@@ -1013,12 +1014,12 @@ impl Compiler {
         let mut total: usize = 0;
         for id in ps::keys(&self.state["jobs"]) {
             let job = self.state["jobs"][&id].clone();
-            if !ps_eq(&s(&job, "kind"), "fix") || !truthy(&job["applied"]) || truthy(&job["followed"]) {
+            if !eq(&field(&job, "kind"), "fix") || !truthy(&job["applied"]) || truthy(&job["followed"]) {
                 continue;
             }
             // The job's Cards and the Cards its splits made: a new Card is checked like the others.
-            let mut addresses: Vec<String> = ps_items(&job["cards"]).iter().map(ps_str).collect();
-            addresses.extend(ps_items(&self.state["splits"]).iter().filter(|x| ps_eq(&s(x, "job"), &id)).map(|x| s(x, "address")));
+            let mut addresses: Vec<String> = ps_items(&job["cards"]).iter().map(s).collect();
+            addresses.extend(ps_items(&self.state["splits"]).iter().filter(|x| eq(&field(x, "job"), &id)).map(|x| field(x, "address")));
             let mut open: Vec<(String, Vec<(String, String)>, Value)> = Vec::new();
             for a in addresses {
                 let left = self.hard_faults(&audit, &a);
@@ -1027,7 +1028,7 @@ impl Compiler {
                     continue;
                 }
                 let applied = &self.state["applied"][&a];
-                if truthy(applied) && ps_in(&s(applied, "verdict"), &["ok", "merge"]) && !truthy(&refused) {
+                if truthy(applied) && is_in(&field(applied, "verdict"), &["ok", "merge"]) && !truthy(&refused) {
                     continue;
                 }
                 open.push((a, left, refused));
@@ -1045,10 +1046,10 @@ impl Compiler {
             self.add_self_check(&mut sb, &fid)?;
             for (a, left, refused) in &open {
                 let Some(card) = audit.card(a) else { continue };
-                self.state["plan"][a.as_str()] = json!({ "title": s(card, "title"), "body": s(card, "body"), "category": s(card, "category") });
+                self.state["plan"][a.as_str()] = json!({ "title": field(card, "title"), "body": field(card, "body"), "category": field(card, "category") });
                 let mut faults = left.clone();
                 if truthy(refused) {
-                    faults.push(("拒绝".into(), format!("脚本拒绝了上一轮的改写：{}", s(refused, "reason"))));
+                    faults.push(("拒绝".into(), format!("脚本拒绝了上一轮的改写：{}", field(refused, "reason"))));
                 }
                 sb.push_str(&format_card(card, &faults, "", ""));
             }
@@ -1069,7 +1070,7 @@ impl Compiler {
         }
         self.save_state()?;
         // A Card that took an orphan Link got new text: check it too, in a fresh fix job.
-        let linked = ps::select_unique(ps_items(&self.state["orphan_links"]).iter().filter(|l| !truthy(&l["checked"])).map(|l| s(l, "from")));
+        let linked = ps::select_unique(ps_items(&self.state["orphan_links"]).iter().filter(|l| !truthy(&l["checked"])).map(|l| field(l, "from")));
         if let Some(list) = self.state["orphan_links"].as_array_mut() {
             for l in list.iter_mut() {
                 l["checked"] = json!(true);
@@ -1087,7 +1088,7 @@ impl Compiler {
             self.add_self_check(&mut sb, &fid)?;
             for a in &open {
                 let card = audit.card(a).cloned().unwrap_or(Value::Null);
-                self.state["plan"][a.as_str()] = json!({ "title": s(&card, "title"), "body": s(&card, "body"), "category": s(&card, "category") });
+                self.state["plan"][a.as_str()] = json!({ "title": field(&card, "title"), "body": field(&card, "body"), "category": field(&card, "category") });
                 let faults = self.hard_faults(&audit, a);
                 if self.state["before"].get(a).is_none() {
                     self.state["before"][a.as_str()] = json!(faults.iter().map(|f| f.0.clone()).collect::<Vec<_>>());
@@ -1105,27 +1106,27 @@ impl Compiler {
         if !truthy(&self.state["no_orphans"]) {
             let mut handled: HashSet<String> = HashSet::new();
             if let Some(m) = self.state["jobs"].as_object() {
-                for j in m.values().filter(|j| ps_eq(&s(j, "kind"), "orphans")) {
-                    handled.extend(ps_items(&j["cards"]).iter().map(ps_str));
+                for j in m.values().filter(|j| eq(&field(j, "kind"), "orphans")) {
+                    handled.extend(ps_items(&j["cards"]).iter().map(s));
                 }
             }
-            let mut scope: HashSet<String> = ps_items(&self.state["picked"]).iter().map(ps_str).collect();
-            scope.extend(ps_items(&self.state["splits"]).iter().map(|x| s(x, "address")));
+            let mut scope: HashSet<String> = ps_items(&self.state["picked"]).iter().map(s).collect();
+            scope.extend(ps_items(&self.state["splits"]).iter().map(|x| field(x, "address")));
             orphans = audit
                 .cards
                 .iter()
                 .filter(|c| {
-                    let a = s(c, "address");
+                    let a = field(c, "address");
                     scope.contains(&a)
                         && !handled.contains(&a)
-                        && ps_in(&s(c, "category"), &["idea", "event", "finding"])
+                        && is_in(&field(c, "category"), &["idea", "event", "finding"])
                         && Self::has_orphan_fault(&audit, &a, &["I5", "E4", "F4"])
                 })
                 .cloned()
                 .collect();
-            ps_sort(&mut orphans, |a, b| culture_cmp(&s(a, "address"), &s(b, "address")));
+            ps_sort(&mut orphans, |a, b| culture_cmp(&field(a, "address"), &field(b, "address")));
             for o in &orphans {
-                let a = s(o, "address");
+                let a = field(o, "address");
                 if self.state["before"].get(&a).is_none() {
                     self.state["before"][a.as_str()] = json!([]);
                 }
@@ -1148,14 +1149,14 @@ impl Compiler {
         let rules = self.rule_list();
         let mut before: Vec<(String, i64)> = Vec::new();
         let mut after: Vec<(String, i64)> = Vec::new();
-        let add = |list: &mut Vec<(String, i64)>, k: &str| match list.iter_mut().find(|(n, _)| ps_eq(n, k)) {
+        let add = |list: &mut Vec<(String, i64)>, k: &str| match list.iter_mut().find(|(n, _)| eq(n, k)) {
             Some(e) => e.1 += 1,
             None => list.push((k.to_string(), 1)),
         };
         let before_keys = ps::keys(&self.state["before"]);
         for a in &before_keys {
             for r in ps_items(&self.state["before"][a.as_str()]) {
-                add(&mut before, &ps_str(&r));
+                add(&mut before, &s(&r));
             }
             for (rule, _) in self.hard_faults(&audit, a) {
                 add(&mut after, &rule);
@@ -1165,7 +1166,7 @@ impl Compiler {
         let mut verdicts: Vec<(String, i64)> = Vec::new();
         if let Some(m) = self.state["applied"].as_object() {
             for v in m.values() {
-                add(&mut verdicts, &s(v, "verdict"));
+                add(&mut verdicts, &field(v, "verdict"));
             }
         }
         let as_map = |list: &[(String, i64)]| -> Value { Value::Object(list.iter().map(|(k, v)| (k.clone(), json!(v))).collect()) };
@@ -1212,7 +1213,7 @@ impl Compiler {
             let f = join_path(&self.p.work, &format!("{dir}\\audit-cards.json"));
             if Path::new(&f).exists() {
                 for c in ps_array(&read_json_file(&f)?) {
-                    let key = ci(&s(&c, "address"));
+                    let key = ci(&field(&c, "address"));
                     match at.get(&key) {
                         Some(&i) => cards[i] = c,
                         None => {
@@ -1236,7 +1237,7 @@ impl Compiler {
 
     /// `Invoke-StyleCheck`: zt-check on the entries (and the term table entry for R6).
     fn style_check(entries: &[Value], term: Option<&Value>) -> Result<Vec<(String, String, String)>> {
-        let want: Vec<String> = entries.iter().map(|e| s(e, "address")).collect();
+        let want: Vec<String> = entries.iter().map(|e| field(e, "address")).collect();
         let mut all = entries.to_vec();
         if let Some(t) = term {
             all.push(t.clone());
@@ -1244,14 +1245,14 @@ impl Compiler {
         let tmp = unique_temp("card-precheck");
         let result = (|| {
             util::write_text(&tmp, &ps::json_pretty(&Value::Array(all)))?;
-            let check = Check { json: tmp.clone(), setting: term.map(|t| s(t, "address")).unwrap_or_default(), ..Check::default() };
+            let check = Check { json: tmp.clone(), setting: term.map(|t| field(t, "address")).unwrap_or_default(), ..Check::default() };
             check_offline(&check)
         })();
         let _ = std::fs::remove_file(&tmp);
         let mut out = Vec::new();
         for line in result? {
             let p: Vec<&str> = line.splitn(3, ' ').collect();
-            if p.len() == 3 && ps_in(p[0], &want) && RULE_NAME.is_match(p[1]) {
+            if p.len() == 3 && is_in(p[0], &want) && RULE_NAME.is_match(p[1]) {
                 out.push((p[0].to_string(), p[1].to_string(), p[2].to_string()));
             }
         }
@@ -1264,15 +1265,15 @@ impl Compiler {
             add(&job, "json", "the file holds no \"cards\" list");
             return Ok(());
         }
-        let rules: Vec<String> = self.rule_list().into_iter().filter(|r| !ps_in(r, WHOLE_WORKSPACE)).collect();
+        let rules: Vec<String> = self.rule_list().into_iter().filter(|r| !is_in(r, WHOLE_WORKSPACE)).collect();
         let info = self.audit_cards()?;
-        let info_of = |a: &str| info.iter().rev().find(|c| ps_eq(&s(c, "address"), a)).cloned();
-        let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(ps_str).collect();
+        let info_of = |a: &str| info.iter().rev().find(|c| eq(&field(c, "address"), a)).cloned();
+        let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(s).collect();
         let mut entries: Vec<Value> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for entry in ps_items(&result["cards"]).into_iter().filter(truthy) {
-            let a = s(&entry, "address");
-            if !ps_in(&a, &job_cards) {
+            let a = field(&entry, "address");
+            if !is_in(&a, &job_cards) {
                 add(if a.is_empty() { "-" } else { &a }, "refuse", &format!("`{a}` is not a Card of job {job}"));
                 continue;
             }
@@ -1280,23 +1281,23 @@ impl Compiler {
                 add(&a, "entry", "a second entry for this Card: write one entry per Card");
                 continue;
             }
-            let verdict = s(&entry, "verdict");
-            if ps_eq(&verdict, "ok") {
+            let verdict = field(&entry, "verdict");
+            if eq(&verdict, "ok") {
                 continue;
             }
-            if ps_eq(&verdict, "merge") {
-                if s(&entry, "merge_with").trim().is_empty() {
+            if eq(&verdict, "merge") {
+                if field(&entry, "merge_with").trim().is_empty() {
                     add(&a, "entry", "merge names no merge_with");
                 }
                 continue;
             }
-            if !ps_in(&verdict, &["fix", "split", "unfaithful"]) {
+            if !is_in(&verdict, &["fix", "split", "unfaithful"]) {
                 add(&a, "refuse", &format!("unknown verdict `{verdict}`"));
                 continue;
             }
             let old = self.state["plan"][&a].clone();
-            if !ps_in(&s(&old, "category"), WRITABLE) {
-                add(&a, "refuse", &format!("category {} is not writable", s(&old, "category")));
+            if !is_in(&field(&old, "category"), WRITABLE) {
+                add(&a, "refuse", &format!("category {} is not writable", field(&old, "category")));
                 continue;
             }
             if let Some(why) = self.test_rewrite(&old, &entry)? {
@@ -1304,20 +1305,20 @@ impl Compiler {
             }
             let card = info_of(&a);
             let book = match &card {
-                Some(c) if truthy(&c["book"]) => s(c, "book"),
-                _ => s(&self.state, "book"),
+                Some(c) if truthy(&c["book"]) => field(c, "book"),
+                _ => field(&self.state, "book"),
             };
-            let parent = card.as_ref().map(|c| s(c, "parent")).unwrap_or_default();
-            let title = s(&entry, "title").trim().to_string();
-            let body = trim_end(&s(&entry, "body"));
+            let parent = card.as_ref().map(|c| field(c, "parent")).unwrap_or_default();
+            let title = field(&entry, "title").trim().to_string();
+            let body = trim_end(&field(&entry, "body"));
             if !title.is_empty() && !body.trim().is_empty() {
-                entries.push(Self::check_entry(&a, &title, &body, &s(&old, "category"), &book, &parent));
+                entries.push(Self::check_entry(&a, &title, &body, &field(&old, "category"), &book, &parent));
             }
-            if ps_eq(&verdict, "split") {
+            if eq(&verdict, "split") {
                 // A split Card is an Idea Card filed as a Side successor of this Card: its parent.
                 for (n, part) in ps_items(&entry["split"]).into_iter().filter(truthy).enumerate() {
-                    let pt = s(&part, "title").trim().to_string();
-                    let pb = trim_end(&s(&part, "body"));
+                    let pt = field(&part, "title").trim().to_string();
+                    let pb = trim_end(&field(&part, "body"));
                     if !pt.is_empty() && !pb.trim().is_empty() {
                         entries.push(Self::check_entry(&format!("{a}+split{}", n + 1), &pt, &pb, "idea", &book, &a));
                     }
@@ -1333,14 +1334,14 @@ impl Compiler {
             return Ok(());
         }
         let mut term = None;
-        if ps_in("R6", &rules) {
-            let book = s(&self.state, "book");
-            if let Some(t) = info.iter().find(|c| ps_eq(&s(c, "tree"), &book) && TERMS_TITLE.is_match(&s(c, "title"))) {
-                term = Some(json!({ "address": s(t, "address"), "title": s(t, "title"), "body": s(t, "body") }));
+        if is_in("R6", &rules) {
+            let book = field(&self.state, "book");
+            if let Some(t) = info.iter().find(|c| eq(&field(c, "tree"), &book) && TERMS_TITLE.is_match(&field(c, "title"))) {
+                term = Some(json!({ "address": field(t, "address"), "title": field(t, "title"), "body": field(t, "body") }));
             }
         }
         for (address, rule, text) in Self::style_check(&entries, term.as_ref())? {
-            if ps_in(&rule, &rules) {
+            if is_in(&rule, &rules) {
                 add(&address, &rule, &text);
             }
         }
@@ -1349,24 +1350,24 @@ impl Compiler {
 
     fn orphan_draft(&mut self, the_job: &Value, result: &Value, add: &mut dyn FnMut(&str, &str, &str)) -> Result<()> {
         let job = self.p.job.clone();
-        let mut rules: Vec<String> = self.rule_list().into_iter().filter(|r| (R_RULE.is_match(r) && !ps_eq(r, "R3")) || ps_eq(r, "L1")).collect();
+        let mut rules: Vec<String> = self.rule_list().into_iter().filter(|r| (R_RULE.is_match(r) && !eq(r, "R3")) || eq(r, "L1")).collect();
         rules.push("L2".into());
-        let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(ps_str).collect();
-        let book = s(&self.state, "book");
+        let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(s).collect();
+        let book = field(&self.state, "book");
         let mut entries: Vec<Value> = Vec::new();
         let mut done: HashSet<String> = HashSet::new();
         for l in ps_items(&result["links"]).into_iter().filter(truthy) {
-            let to = s(&l, "to");
-            let from = s(&l, "from");
-            let text = s(&l, "text").trim().to_string();
+            let to = field(&l, "to");
+            let from = field(&l, "from");
+            let text = field(&l, "text").trim().to_string();
             let at = format!("{to}<-{from}");
-            if !ps_in(&to, &job_cards) {
+            if !is_in(&to, &job_cards) {
                 add(&at, "refuse", &format!("`{to}` is not an orphan of job {job}"));
                 continue;
             }
             done.insert(ci(&to));
-            let cands: Vec<String> = ps_array(&the_job["candidates"][&to]).iter().map(ps_str).collect();
-            if !ps_in(&from, &cands) {
+            let cands: Vec<String> = ps_array(&the_job["candidates"][&to]).iter().map(s).collect();
+            if !is_in(&from, &cands) {
                 add(&at, "refuse", &format!("`{from}` is not a candidate: choose one of {}", cands.join(", ")));
             }
             if !text.contains(&format!("[[{to}]]")) {
@@ -1379,7 +1380,7 @@ impl Compiler {
             }
             let raw: Vec<String> = text::LINK.captures_iter(&text).map(|c| c[1].to_string()).collect();
             let known = self.known()?;
-            let unknown: Vec<String> = raw.into_iter().filter(|t| !known.contains(t) && !ps_eq(t, &to)).collect();
+            let unknown: Vec<String> = raw.into_iter().filter(|t| !known.contains(t) && !eq(t, &to)).collect();
             if !unknown.is_empty() {
                 add(
                     &at,
@@ -1393,8 +1394,8 @@ impl Compiler {
             }
         }
         for n in ps_items(&result["none"]).into_iter().filter(truthy) {
-            let o = s(&n, "orphan");
-            if !ps_in(&o, &job_cards) {
+            let o = field(&n, "orphan");
+            if !is_in(&o, &job_cards) {
                 add(if o.is_empty() { "-" } else { &o }, "entry", &format!("`{o}` is not an orphan of job {job}"));
             } else {
                 done.insert(ci(&o));
@@ -1409,7 +1410,7 @@ impl Compiler {
             return Ok(());
         }
         for (address, rule, text) in Self::style_check(&entries, None)? {
-            if ps_in(&rule, &rules) {
+            if is_in(&rule, &rules) {
                 add(&address, &rule, &text);
             }
         }
@@ -1426,7 +1427,7 @@ impl Compiler {
         match the_job {
             None => add(if job.is_empty() { "-" } else { &job }, "job", &format!("no job `{job}` in {}", self.state_file)),
             Some(the_job) => {
-                let path = if !self.p.file.is_empty() { self.p.file.clone() } else { s(&the_job, "out") };
+                let path = if !self.p.file.is_empty() { self.p.file.clone() } else { field(&the_job, "out") };
                 let mut result = None;
                 if !Path::new(&path).is_file() {
                     add(&job, "json", &format!("no JSON file at {path}"));
@@ -1439,7 +1440,7 @@ impl Compiler {
                     }
                 }
                 if let Some(result) = result {
-                    if ps_eq(&s(&the_job, "kind"), "fix") {
+                    if eq(&field(&the_job, "kind"), "fix") {
                         self.fix_draft(&the_job, &result, &mut add)?;
                     } else {
                         self.orphan_draft(&the_job, &result, &mut add)?;

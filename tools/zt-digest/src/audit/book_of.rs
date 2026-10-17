@@ -1,7 +1,7 @@
 //! The parts of `scripts/book-digest/book-of.ps1` the audit uses: the category of each Card and
 //! the book a Card belongs to (inferred attribution). Comparisons are ordinal, as in the script.
 
-use super::ps::{culture_cmp, ps_sort, s};
+use crate::ps::{culture_cmp, field, ps_sort};
 use regex::Regex;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -24,34 +24,34 @@ pub fn source_target(target: &str, books: &HashSet<String>) -> bool {
 }
 
 fn links(card: &Value) -> Vec<String> {
-    super::ps::ps_items(&card["links"]).iter().map(super::ps::ps_str).collect()
+    crate::ps::ps_items(&card["links"]).iter().map(crate::ps::s).collect()
 }
 
 /// `Get-Category`.
 fn category(card: &Value, literature: &HashSet<String>, anchor_count: &HashMap<String, usize>) -> String {
-    let kind = s(card, "kind");
+    let kind = field(card, "kind");
     if kind == "topic" || kind == "literature" {
         return "root".into();
     }
-    match s(card, "type").as_str() {
+    match field(card, "type").as_str() {
         "finding" => return "finding".into(),
         "hub" => return "hub".into(),
         "event" => return "event".into(),
-        "model" => return if super::ps::truthy(&card["facet"]) { "part" } else { "model" }.into(),
+        "model" => return if crate::ps::truthy(&card["facet"]) { "part" } else { "model" }.into(),
         _ => {}
     }
-    let tree = s(card, "tree");
+    let tree = field(card, "tree");
     let in_book = literature.contains(&tree);
-    if in_book && ANCHOR.is_match(&s(card, "address")) {
+    if in_book && ANCHOR.is_match(&field(card, "address")) {
         return "anchor".into();
     }
-    if in_book && TERMS.is_match(&s(card, "title")) {
+    if in_book && TERMS.is_match(&field(card, "title")) {
         return "terms".into();
     }
-    if in_book && STRUCTURE.is_match(&s(card, "excerpt")) {
+    if in_book && STRUCTURE.is_match(&field(card, "excerpt")) {
         return "structure".into();
     }
-    if in_book && s(card, "parent") == format!("{tree}/1") && s(card, "edge") == "side" && s(card, "type") == "idea" {
+    if in_book && field(card, "parent") == format!("{tree}/1") && field(card, "edge") == "side" && field(card, "type") == "idea" {
         let own = Regex::new(&format!("^{}/\\d+$", regex::escape(&tree))).unwrap();
         let anchors: HashSet<String> = links(card).into_iter().filter(|t| own.is_match(t)).collect();
         // A missing count reads as $null, and any count is -ge $null.
@@ -79,28 +79,28 @@ pub fn book_index(trees: &[Value], cards: &[Value]) -> BookIndex {
     let mut books = HashSet::new();
     let mut literature = HashSet::new();
     for tree in trees {
-        if s(tree, "kind") == "literature" {
-            literature.insert(s(tree, "tree"));
-            if s(tree, "workspace") == "agent" {
-                books.insert(s(tree, "tree"));
+        if field(tree, "kind") == "literature" {
+            literature.insert(field(tree, "tree"));
+            if field(tree, "workspace") == "agent" {
+                books.insert(field(tree, "tree"));
             }
         }
     }
     let mut anchors: HashMap<String, usize> = HashMap::new();
     for card in cards {
-        if literature.contains(&s(card, "tree")) && ANCHOR.is_match(&s(card, "address")) {
-            *anchors.entry(s(card, "tree")).or_default() += 1;
+        if literature.contains(&field(card, "tree")) && ANCHOR.is_match(&field(card, "address")) {
+            *anchors.entry(field(card, "tree")).or_default() += 1;
         }
     }
     let mut category_of = HashMap::new();
     let mut book_of = HashMap::new();
     for card in cards {
-        let address = s(card, "address");
+        let address = field(card, "address");
         category_of.insert(address.clone(), category(card, &literature, &anchors));
-        if s(card, "workspace") != "agent" {
+        if field(card, "workspace") != "agent" {
             continue;
         }
-        let tree = s(card, "tree");
+        let tree = field(card, "tree");
         if books.contains(&tree) {
             book_of.insert(address, tree);
             continue;
