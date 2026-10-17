@@ -62,7 +62,7 @@ try {
     Assert ($plan.candidates -eq 2 -and $plan.groups -eq 2 -and @($plan.jobs).Count -eq 1) "plan: two candidates of two groups in one job ($($plan.candidates), $($plan.groups), $(@($plan.jobs).Count))"
     $jobText = Get-Content (Join-Path $staging 'events\ev-01.md') -Raw -Encoding utf8
     Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match '纵向一体化消除供应商的敲竹杠' -and $jobText -match 'sections/s01.md:3') 'plan: the job lists each group''s Idea Cards with titles and its candidates'
-    Assert ($jobText -match 'SELF-CHECK: pwsh -NoProfile -File .*event-compiler\.ps1" -Step precheck .* -Job ev-01') 'plan: the job carries its SELF-CHECK line'
+    Assert ($jobText.Contains("SELF-CHECK: zt-digest event -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'events')`" -Job ev-01")) 'plan: the job carries its SELF-CHECK line (zt-digest event, no pwsh)'
     Assert ((Get-Content (Join-Path $staging 'events\dsh-event-instructions.zh.md') -Raw -Encoding utf8) -match "\[\[$key\]\]") 'plan: the instructions name the book'
 
     $answer = Join-Path $staging 'events\out\ev-01.json'
@@ -107,16 +107,12 @@ try {
 
     # A parallel stage (models, findings) edits an Idea Card between apply's read and its write. The edit carries
     # base, so zt refuses it; the job stays pending, and a rerun writes the Link and keeps the other stage's line.
-    $copy = Join-Path $scratch 'tree\scripts\book-digest'
-    $helperDir = Join-Path $scratch 'tree\skills\zt\scripts'
-    New-Item -ItemType Directory -Force $copy, $helperDir | Out-Null
-    Copy-Item -Path (Join-Path $PSScriptRoot '..\*.ps1'), (Join-Path $PSScriptRoot '..\*.md') -Destination $copy
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'racing-zt-mcp.ps1') -Destination (Join-Path $helperDir 'zt-mcp.ps1')
-    $env:ZT_REAL_HELPER = $script:ZtHelper
+    # zt-digest's test seam stands in for the parallel stage: before the first write batch that edits
+    # ZT_RACE_TARGET it appends ZT_RACE_LINE to that Card once (ZT_RACE_FLAG marks it done).
     $env:ZT_RACE_TARGET = $ideas[0]
     $env:ZT_RACE_FLAG = Join-Path $scratch 'raced'
     $env:ZT_RACE_LINE = '模型阶段在这里补了一句。'
-    $racer = Join-Path $copy 'event-compiler.ps1'
+    $racer = $compiler
     $late = @{ group = 1; src = 'sections/s01.md:3'; title = '1927 年通用汽车扩建费雪车身工厂'; time = '1927 年'; place = '美国'; actors = '通用汽车、费雪车身公司'
         course = '通用汽车扩建了费雪车身的工厂。'; section = '§1'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点：一体化后买方敢于投资。"; existing = '' }
     @{ events = @($late) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $staging 'events\out\ev-02.json') -Encoding utf8
