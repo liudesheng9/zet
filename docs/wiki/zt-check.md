@@ -62,7 +62,7 @@ flowchart TD
     cli -->|--model| cm["check_model"]
     cli -->|--cards / --log| cc["check_cards"]
     ca & cm & cc --> zt["mcp::Zt (spawns zt mcp)"]
-    zt -->|get_card, get_model, get_tree, list_trees| server[("zt mcp → ZT service archive")]
+    zt -->|get_cards, get_model| server[("zt mcp → ZT service archive")]
     cj & ca & cm & cc --> run["Check::run"]
     run --> lang["Check::language + Check::sentence (R2–R17)"]
     run --> layer["Check::layer + finding_rules (I, E, F, L)"]
@@ -84,7 +84,11 @@ flowchart TD
 
 ## Interfaces
 
-`mcp::Zt::cards(addresses, view)` returns `CardRead { cards, archive_revision }` through that command's existing MCP process. It chunks at 200 addresses, halves a chunk after a structured byte/address limit error, and fails when a single Card still cannot fit. It verifies complete/missing/count/address order and a common revision across chunks. Missing input or a changing read view fails explicitly; it cannot become an empty successful dataset. Existing checker entry modes have not yet been switched to this client method.
+`mcp::Zt::cards(addresses, view)` returns `CardRead { cards, archive_revision }` through that command's existing MCP process. It chunks at 200 addresses, halves a chunk after a structured byte/address limit error, and fails when a single Card still cannot fit. It verifies complete/missing/count/address order and a common revision across chunks. Missing input or a changing read view fails explicitly; it cannot become an empty successful dataset.
+
+`--addresses` and `--cards` use lean batches through one MCP process. `--addresses` asks for a model context only when its first Card is a Model Card/part. `--cards` uses the returned Link/kind/parent facts and reads each required primary model context once when its filed members establish ownership; a shared part's home is resolved independently. The valid numeric Topic ids and letter-led Literature keys identify agent Literature membership without tree scans. The existing categories, language and layer rules are unchanged.
+
+`--model` uses the head and parts in its complete model context. Required external settings use lean batches. Each live mode compares the archive revision before and after collecting inputs and refuses a changing view. Public temporary-archive tests retain language, term-table and formal explanation faults while blocking old per-Card/tree reads. See `docs/digest-reliability-delivery-status.md` for the current completion boundary.
 
 ### Command line
 
@@ -102,9 +106,9 @@ limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences
 | Mode | Input | Reads zt | Term table (R6) | Level | Layer rules | `faults: N` counts |
 |---|---|---|---|---|---|---|
 | `--json <file>` | A JSON array of entries, or one entry (BOM allowed) | no | `--setting` names an entry in the file; its body gives the table | `--level`, else none (formal rules) | yes, for entries with `category` | every line |
-| `--addresses <list>` | Addresses (split on commas and white space) | `get_card` each | `--setting`, else the first Card's `model.build.setting` (from the list, else `get_card`) | `--level`, else the first Card's `model.level` | no | every line |
-| `--model <address>` | Any Card of a model | `get_model`, `get_card` of the head (and of the setting when not a member) | `--setting`, else `build.setting` | `--level`, else the model's `level` | no | every line |
-| `--cards <list>` / `--log <file>` | Addresses from the list plus one per line of the log file | `get_card` each, `list_trees` (agent), `get_tree` per tree | each model's own setting | each model's own level | yes, by computed category | hard (non-advisory) lines of the selected rules |
+| `--addresses <list>` | Addresses (split on commas and white space) | Bounded `get_cards` text batches; `get_model` for the first Card only when it is a Model Card/part; final revision probe | `--setting`, else the first model's `build.setting`; a required external setting is another lean batch | `--level`, else the first model's `level` | no | every line |
+| `--model <address>` | Any Card of a model | `get_model` head/parts; revision probes; lean external setting when required | `--setting`, else `build.setting` | `--level`, else the model's `level` | no | every line |
+| `--cards <list>` / `--log <file>` | Addresses from the list plus one per line of the log file | Bounded lean batches; required primary model contexts shared across known filed members; final revision probe | each model's own setting | each model's own level | yes, by computed category | hard (non-advisory) lines of the selected rules |
 
 Flags:
 
@@ -378,7 +382,9 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 
 ## Change history
 
-- `2026-10-17` — Add the shared bounded bulk client used by digest link preparation, with public tool-boundary tests for chunk reduction and explicit missing-input failures. Checker input-mode migration remains subsequent work in #67.
+- `2026-10-17` — All live modes use required lean Card batches or complete model contexts through one client, preserve Link/category/term/explanation rules, reuse filed-model ownership within the command, and refuse revision changes. Public tests cover the removed per-Card/tree reads and the existing fault outputs.
+
+- `2026-10-17` — Add the shared bounded bulk client used by digest link preparation, with public tool-boundary tests for chunk reduction and explicit missing-input failures. Migrate `--addresses` and external setting reads; the Card input-mode migration remains in progress in #67.
 
 - `2026-10-16` — Every digest script forwards to a `zt-digest` tool (stage 2), so the card, model, hub, Bridge, event, and finding checks all run in-process through `check::Check`; `Invoke-ZtCheck` stays for PowerShell callers.
 - `2026-10-16` — zt-check becomes a library too (`src/lib.rs`): `check::run_lines` returns the lines on a given `Zt`, `Zt::request` returns a raw reply, and `reply_text`/`reply_error` read it, for zt-digest.

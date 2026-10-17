@@ -31,7 +31,7 @@ use crate::ps::{NL, key as ci, culture_cmp, join_path, leaf, ps_array, eq, is_in
 use regex::Regex;
 use relatedness::Relatedness;
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -261,7 +261,78 @@ impl Compiler {
 
     // --- the audit -------------------------------------------------------------------------------
 
+    fn group_addresses(&self)->Result<Vec<String>> {
+        let staging=field(&self.state,"staging");
+        if staging.is_empty() {bail!("-Groups needs -Staging (owned-gNN.txt)");}
+        let book=field(&self.state,"book");let groups=field(&self.state,"groups");
+        let mut addresses=BTreeSet::new();
+        for group in RULE_SPLIT.split(&groups).filter(|g|!g.is_empty()) {
+            let n=match group.parse::<i64>() {Ok(n)=>n,Err(_)=>group.parse::<f64>().map(ps::ps_int)?};
+            addresses.insert(format!("{book}/{n}"));
+            let path=join_path(&staging,&format!("owned-g{n:02}.txt"));
+            if !Path::new(&path).is_file() {bail!("incomplete group input: missing owned manifest `{path}`");}
+            addresses.extend(file_lines(&path)?.into_iter().map(|line|line.trim().to_string()).filter(|line|!line.is_empty()));
+        }
+        Ok(addresses.into_iter().collect())
+    }
+
+    /// Normal group cycles ask for local quality and defer global orphans to
+    /// the book cycle. Read their owned manifest and required parents/terms.
+    fn invoke_group_audit(&mut self,dir:&str)->Result<AuditView> {
+        let book=field(&self.state,"book");
+        let addresses=self.group_addresses()?;
+        let details=crate::snapshot::read_title_trees(self.zt()?)?;
+        let revision=details.first().and_then(|tree|tree["archive_revision"].as_u64()).context("incomplete group catalogue: missing revision")?;
+        if !details.iter().any(|tree|field(tree,"tree")==book && field(tree,"workspace")=="agent" && field(tree,"zone")=="literature") {bail!("no agent Literature tree `{book}`");}
+        let metadata:Vec<Value>=details.iter().flat_map(|tree|ps_items(&tree["cards"])).collect();
+        let owned=self.zt()?.cards(&addresses,"text")?;
+        if owned.archive_revision!=revision {bail!("incomplete group inputs: changing read view");}
+        if owned.cards.iter().any(|card|field(card,"workspace")!="agent") {bail!("group ownership includes a read-only human Card");}
+        let mut rows:BTreeMap<String,Value>=owned.cards.into_iter().map(|card|(field(&card,"address"),card)).collect();
+        let term=metadata.iter().find(|card|field(card,"tree")==book && TERMS_TITLE.is_match(&field(card,"title"))).map(|card|field(card,"address"));
+        let mut required:BTreeSet<String>=rows.values().map(|card|field(card,"parent_address")).filter(|at|!at.is_empty() && !rows.contains_key(at)).collect();
+        if let Some(at)=&term {if !rows.contains_key(at){required.insert(at.clone());}}
+        if !required.is_empty() {
+            let extra=self.zt()?.cards(&required.into_iter().collect::<Vec<_>>(),"text")?;
+            if extra.archive_revision!=revision {bail!("incomplete group inputs: changing read view");}
+            for card in extra.cards {rows.insert(field(&card,"address"),card);}
+        }
+        let graph:Vec<Value>=metadata.iter().map(|metadata|{
+            let mut card=rows.get(&field(metadata,"address")).unwrap_or(metadata).clone();
+            card["parent"]=card["parent_address"].clone();card
+        }).collect();
+        let index=audit::book_of::book_index(&details,&graph);
+        let mut cards=Vec::new();let mut entries=Vec::new();let mut by=HashMap::new();
+        for (at,mut card) in rows {
+            let category=index.category.get(&at).cloned().context("incomplete group category metadata")?;
+            card["category"]=json!(category);
+            card["book"]=json!(index.book_of.get(&at));
+            card["parent"]=card["parent_address"].clone();
+            card["kinds"]=json!(ps::keys(&card["kinds"]));
+            if addresses.contains(&at) && index.book_of.get(&at)==Some(&book) && is_in(&category,WRITABLE) {entries.push(card.clone());}
+            by.insert(ci(&at),cards.len());cards.push(card);
+        }
+        let term_card=term.as_ref().and_then(|at|by.get(&ci(at)).map(|&i|&cards[i]));
+        let checked=Self::style_check(&entries,term_card)?;
+        let mut faults:HashMap<String,Vec<(String,String)>>=HashMap::new();let mut lines=Vec::new();
+        for (at,rule,text) in checked {
+            lines.push(format!("{at} {rule} {text}"));
+            faults.entry(ci(&at)).or_default().push((rule,text));
+        }
+        std::fs::create_dir_all(dir)?;
+        util::write_text(join_path(dir,"audit-cards.json"),&ps::json_pretty(&json!(cards)))?;
+        util::write_text(join_path(dir,"audit-faults.txt"),&lines.join(NL))?;
+        let known=metadata.iter().filter(|card|field(card,"workspace")=="agent").map(|card|field(card,"address")).collect::<Vec<_>>();
+        util::write_text(join_path(dir,"audit-addresses.txt"),&known.join(NL))?;
+        let coverage=json!({"complete":true,"scope":{"kind":"groups","groups":self.state["groups"],"addresses":addresses,"checked_addresses":entries.iter().map(|card|field(card,"address")).collect::<Vec<_>>()},"archive_revision":revision,"global_checks":"not_run","faults":lines.len()});
+        util::write_text(join_path(dir,"audit.json"),&ps::json_pretty(&coverage))?;
+        util::write_text(join_path(dir,"audit.md"),&format!("# Group Card quality{NL}{NL}Required reads complete at archive revision {revision}. Global checks were not run.{NL}"))?;
+        Ok(AuditView{cards,by,faults})
+    }
+
     fn invoke_audit(&mut self, dir: &str) -> Result<AuditView> {
+        let needs_global=self.rule_list().iter().any(|rule|is_in(rule,WHOLE_WORKSPACE) || rule=="F4");
+        if !field(&self.state,"groups").is_empty() && truthy(&self.state["no_orphans"]) && !needs_global {return self.invoke_group_audit(dir);}
         let params = audit::Params::for_card(&field(&self.state, "book"), dir);
         let zt = self.zt()?;
         if let Err(error) = audit::run(zt, &params, &mut |_| {}) {

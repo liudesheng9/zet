@@ -1390,12 +1390,12 @@ fn setting_body(zt: &mut Zt, cards: &[Value], setting: &str) -> Result<Option<St
     {
         return Ok(Some(ps_string(prop(card, "body"))));
     }
-    let card = zt.call("get_card", json!({ "at": setting }))?;
-    Ok(Some(ps_string(card.get("body"))))
+    let read = zt.cards(&[setting.to_string()], "text")?;
+    Ok(Some(ps_string(read.cards[0].get("body"))))
 }
 
-/// `--model`: every Card of the model, with its setting's term table and its
-/// level (card-style-check.ps1 -Model: get_model, and get_card for the head).
+/// `--model`: every Card of the complete model context, with its setting's
+/// term table and level. An external setting uses a required lean read.
 pub(crate) fn check_model(
     zt: &mut Zt,
     at: &str,
@@ -1405,12 +1405,12 @@ pub(crate) fn check_model(
     require_explain: bool,
     skip_shared: bool,
 ) -> Result<Vec<String>> {
+    let revision = zt.cards(&[], "text")?.archive_revision;
     let structure = zt.call("get_model", json!({ "at": at }))?;
-    let head = structure["head"]["address"]
+    structure["head"]["address"]
         .as_str()
-        .with_context(|| format!("`{at}` belongs to no model"))?
-        .to_string();
-    let mut cards = vec![card_entry(&zt.call("get_card", json!({ "at": head }))?)];
+        .with_context(|| format!("`{at}` belongs to no model"))?;
+    let mut cards = vec![card_entry(&structure["head"])];
     for part in structure["parts"].as_array().into_iter().flatten() {
         cards.push(card_entry(part));
     }
@@ -1439,6 +1439,9 @@ pub(crate) fn check_model(
     let check = Check::new(limits, require_explain, &level)
         .with_terms(body.as_deref())
         .with_shared(shared);
+    if zt.cards(&[], "text")?.archive_revision != revision {
+        bail!("incomplete checker inputs: changing read view");
+    }
     Ok(check.run(&cards))
 }
 
@@ -1454,32 +1457,32 @@ pub(crate) fn check_cards(
     book: &str,
     limits: Limits,
 ) -> Result<Vec<String>> {
-    let mut cards = Vec::new();
-    for at in addresses {
-        cards.push(zt.call("get_card", json!({ "at": at }))?);
-    }
-    let trees = zt.call("list_trees", json!({ "workspace": "agent" }))?;
-    let books = trees["trees"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|tree| ps_eq(&ps_string(tree.get("kind")), "literature"))
-        .map(|tree| ps_string(tree.get("tree")))
-        .collect::<Vec<_>>();
-    // get_tree of every tree the Cards are in: each Card's Links and Relation kinds.
-    let mut entries: HashMap<String, Value> = HashMap::new();
-    let mut seen: Vec<String> = Vec::new();
-    for card in &cards {
-        let tree = ps_string(card.get("tree"));
-        if tree.is_empty() || seen.iter().any(|known| key(known) == key(&tree)) {
-            continue;
-        }
-        seen.push(tree.clone());
-        let read = zt.call("get_tree", json!({ "tree": tree }))?;
-        for entry in read["cards"].as_array().into_iter().flatten() {
-            let address = ps_string(entry.get("address"));
-            if ps_in(&address, addresses) {
-                entries.insert(key(&address), entry.clone());
+    let batch = zt.cards(addresses, "text")?;
+    let mut cards = batch.cards;
+    let mut owners: HashMap<String, Option<String>> = HashMap::new();
+    let mut models: HashMap<String, Value> = HashMap::new();
+    for card in &mut cards {
+        if card["type"] == "model" {
+            let at = ps_string(card.get("address"));
+            if !owners.contains_key(&at) {
+                let model = zt.call("get_model", json!({"at":at}))?;
+                let head = model["head"]["address"].as_str().map(str::to_string);
+                owners.insert(at.clone(), head.clone());
+                if let Some(head) = head {
+                    owners.insert(head.clone(), Some(head.clone()));
+                    // A shared part may have a different primary owner. Only
+                    // filed parts are known to have this model as their home.
+                    for part in model["parts"].as_array().into_iter().flatten() {
+                        if part["filed"] == true {
+                            owners.insert(ps_string(part.get("address")), Some(head.clone()));
+                        }
+                    }
+                    models.insert(head, model);
+                }
+            }
+            if let Some(Some(head)) = owners.get(&at) {
+                let model = &models[head];
+                card["model"] = json!({"head":{"address":head},"level":model["level"],"build":{"setting":model["build"]["setting"]}});
             }
         }
     }
@@ -1490,11 +1493,11 @@ pub(crate) fn check_cards(
         let tree = ps_string(card.get("tree"));
         let title = ps_string(card.get("title"));
         let body = ps_string(card.get("body"));
-        let in_book = ps_in(&tree, &books);
-        let entry = entries.get(&key(&address));
+        // Valid Topic tree ids are numeric; Literature Citation keys start with a letter.
+        let in_book = card["workspace"] == "agent" && BOOK_CARD.is_match(&tree);
         // The same categories as digest-audit.ps1 (Get-Category).
         let has_facet = !ps_string(card.get("facet")).is_empty();
-        let category = if entry.is_some_and(|entry| ps_in(&ps_string(entry.get("kind")), &["topic", "literature"])) {
+        let category = if ps_in(&ps_string(card.get("kind")), &["topic", "literature"]) {
             "root"
         } else {
             match key(&ps_string(card.get("type"))).as_str() {
@@ -1509,11 +1512,16 @@ pub(crate) fn check_cards(
                 _ => "idea",
             }
         };
-        let head = card["model"]["head"]["address"].as_str().map(str::to_string);
+        let head = card["model"]["head"]["address"]
+            .as_str()
+            .map(str::to_string);
         if matches!(category, "part" | "model")
             && let Some(head) = head
         {
-            match by_model.iter_mut().find(|(known, _)| key(known) == key(&head)) {
+            match by_model
+                .iter_mut()
+                .find(|(known, _)| key(known) == key(&head))
+            {
                 Some((_, members)) => members.push(card.clone()),
                 None => by_model.push((head, vec![card.clone()])),
             }
@@ -1525,16 +1533,16 @@ pub(crate) fn check_cards(
         item.insert("body".into(), json!(body));
         item.insert("facet".into(), Value::Null);
         if matches!(category, "idea" | "anchor" | "event" | "finding") {
-            let parent = card["parent"]["address"].as_str().unwrap_or_default().to_string();
-            let links = entry
-                .and_then(|entry| entry["links"].as_array())
+            let parent = ps_string(card.get("parent_address"));
+            let links = card["links"]
+                .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
                 .filter(|link| !link.is_empty())
                 .collect::<Vec<_>>();
-            let kinds = entry
-                .and_then(|entry| entry["kinds"].as_object())
+            let kinds = card["kinds"]
+                .as_object()
                 .map(|kinds| kinds.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
             item.insert("category".into(), json!(category));
@@ -1568,6 +1576,9 @@ pub(crate) fn check_cards(
     }
     if !plain.is_empty() {
         lines.extend(Check::new(limits, false, "").run(&plain));
+    }
+    if zt.cards(&[], "text")?.archive_revision != batch.archive_revision {
+        bail!("incomplete checker inputs: changing read view");
     }
     Ok(lines)
 }
@@ -1696,7 +1707,7 @@ impl Options {
     }
 }
 
-/// `--addresses`: card-style-check.ps1 -Addresses. The Cards from get_card;
+/// `--addresses`: card-style-check.ps1 -Addresses. The Cards from lean batches;
 /// the term table from --setting or the first Card's model setting; the level
 /// from --level or the first Card's model.
 pub(crate) fn check_addresses(
@@ -1707,16 +1718,30 @@ pub(crate) fn check_addresses(
     limits: Limits,
     require_explain: bool,
 ) -> Result<Vec<String>> {
-    let mut read = Vec::new();
-    for at in addresses {
-        read.push(zt.call("get_card", json!({ "at": at }))?);
-    }
-    let first = read.first().map(|card| card["model"].clone()).unwrap_or(Value::Null);
-    let setting = if setting.is_empty() { ps_string(first["build"].get("setting")) } else { setting.to_string() };
-    let level = if level.is_empty() { ps_string(first.get("level")) } else { level.to_string() };
+    let batch = zt.cards(addresses, "text")?;
+    let read = batch.cards;
+    let first = match read.first().filter(|card| card["type"] == "model") {
+        Some(card) => zt.call("get_model", json!({"at":card["address"]}))?,
+        None => Value::Null,
+    };
+    let setting = if setting.is_empty() {
+        ps_string(first["build"].get("setting"))
+    } else {
+        setting.to_string()
+    };
+    let level = if level.is_empty() {
+        ps_string(first.get("level"))
+    } else {
+        level.to_string()
+    };
     let cards = read.iter().map(card_entry).collect::<Vec<_>>();
     let body = setting_body(zt, &cards, &setting)?;
-    Ok(Check::new(limits, require_explain, &level).with_terms(body.as_deref()).run(&cards))
+    if zt.cards(&[], "text")?.archive_revision != batch.archive_revision {
+        bail!("incomplete checker inputs: changing read view");
+    }
+    Ok(Check::new(limits, require_explain, &level)
+        .with_terms(body.as_deref())
+        .run(&cards))
 }
 
 /// `zt-check …`.
@@ -1750,9 +1775,20 @@ pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
         let count = lines.len();
         (lines, count)
     } else if let Some(list) = &options.addresses {
-        let list = LIST_SPLIT.split(list).filter(|at| !at.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let list = LIST_SPLIT
+            .split(list)
+            .filter(|at| !at.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
         let zt = server(zt, &mut own)?;
-        let lines = check_addresses(zt, &list, &setting, &level, options.limits.clone(), options.require_explain)?;
+        let lines = check_addresses(
+            zt,
+            &list,
+            &setting,
+            &level,
+            options.limits.clone(),
+            options.require_explain,
+        )?;
         let count = lines.len();
         (lines, count)
     } else if let Some(at) = &options.model {
@@ -1828,7 +1864,8 @@ fn write_lines(lines: &[String]) -> Result<()> {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../../../scripts/book-digest/tests/card-style-fixture.json");
+    const FIXTURE: &str =
+        include_str!("../../../scripts/book-digest/tests/card-style-fixture.json");
 
     fn run_json(
         cards: &Value,

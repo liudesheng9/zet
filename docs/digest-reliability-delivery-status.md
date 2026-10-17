@@ -53,7 +53,21 @@ The first implementation step switches `snapshot-topics` to one fresh title expo
 
 The shared checker client chunks at 200 addresses, reduces chunks after a structured reply-limit error, and rejects missing, reordered or changing-view inputs. Public preparation tests observed each old failure before its fix (per-tree snapshot reads, per-Card link reads, loss of linked-target exclusion, and lack of chunk adaptation). The latest preparation suite also verifies missing input fails explicitly. All 27 Workspace/MCP, 80 digest unit and ten checker unit tests pass for this step. Logs are under `D:/zt-target/qualification/issue67-*.log`.
 
-This slice remains open. Group/offline checks, whole-book/audit input migration, complete fault-coverage comparisons and command timing qualification still remain. It does not yet satisfy all #67 acceptance criteria.
+This slice remains open. Whole-book/audit input migration, complete fault-coverage comparisons and command timing qualification still remain. It does not yet satisfy all #67 acceptance criteria.
+
+The next implementation step adds owned-manifest group checks for the normal `-NoOrphans` group cycle, using required parents and the book term table and labelling global checks `not_run`. Public tests pass for identical requested R4/R6/L1/L2 fault lines against the full-book path, one MCP process, no unrelated tree reads, and missing Card/manifest refusal. Every standalone live checker mode now uses lean batches or its complete model context, preserves its fault rules and checks revision consistency. Filed members share one primary model read; unfiled shared members are resolved independently.
+
+After each observed pre-fix failure, the public group/checker tests pass. The final relevant regression run passes all six suites: preparation (27 assertions), scoped inputs (17, then 18 after adding nonzero Link-fault parity), Card compiler (57), model compiler (59), and both language/layer fixture suites. Ten checker and 80 digest unit tests also pass. Logs: `D:/zt-target/qualification/issue67-group-checker-suites/` and `issue67-check-*-red/green.log`. These verify the delivered partial changes; #67 stays open for its remaining global/whole-book read and timing requirements.
+
+### Resolved executable-testing interruption
+
+Windows Defender quarantined the temporary test copy and subsequently blocked the debug build itself as `Trojan:Win32/Bearfoos.A!ml`. The [investigation](windows-defender-build-investigation.md) records the events, source/build review, artifact hashes and limits of the diagnosis. The leading explanation is a development-build false positive; the classifier's exact cause is not established.
+
+The unnecessary hidden PowerShell/`ExecutionPolicy Bypass` daemon launcher has been replaced with direct Windows process creation, explicit path arguments and no inherited handles. The public no-shell/path regression failed before the change and passes afterward. The full root regression passes: 338 tests, zero failures, one deliberately ignored real-clipboard test. Both final debug and release binaries pass Defender custom scans; real-time protection and behavior monitoring remain enabled. No exclusions or security settings were changed.
+
+The interrupted scoped integration test now copies/runs the debug executable and reaches its intended pre-fix `--cards` assertion. Executable testing can continue. This is not verification of the still-unimplemented Card-checker change. Logs: `D:/zt-target/qualification/defender-native-*.log` and `issue67-check-cards-red.log`.
+
+The installed service was last checked up at PID 77700, archive `D:/zt`, 10,895 Cards, zero Sessions. It has not yet been upgraded; final deployment remains part of the unfinished delivery.
 
 ## Remaining slices
 

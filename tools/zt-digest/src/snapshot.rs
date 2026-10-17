@@ -35,7 +35,10 @@ pub(crate) fn read_title_trees(zt:&mut Zt)->Result<Vec<Value>> {
         row["edge"]=json!(if root{"root"}else{"direct"});
         row["kind"]=json!(if at==tree{"literature"}else if root{"topic"}else{"regular"});
         trees[index]["archive_revision"]=export["archive_revision"].clone();
-        if root {trees[index]["zone"]=json!(if at==tree{"literature"}else{"topic"});}
+        if root {
+            let kind=if at==tree{"literature"}else{"topic"};
+            trees[index]["zone"]=json!(kind);trees[index]["kind"]=json!(kind);
+        }
         trees[index]["cards"].as_array_mut().unwrap().push(row);
     }
     Ok(trees)
