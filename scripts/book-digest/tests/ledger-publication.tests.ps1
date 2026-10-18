@@ -342,6 +342,35 @@ try {
     Refuses @('ledger','done','-Out',$figureOut,'-Unit',$figureClaim.id,'-Token',"$($figureClaim.token)",'-Outputs',(Figure-Plan @(@{ref='图1-1';outcome='shown';reason='';sha256=('0'*64);path='x.png'}))) 'classify every recognized reference exactly once'
     $figureDone = Run-Digest @('ledger','done','-Out',$figureOut,'-Unit',$figureClaim.id,'-Token',"$($figureClaim.token)",'-Outputs',(Figure-Plan @()))
     Assert ($figureDone.state -eq 'done' -and @($figureDone.coverage).Count -eq 0 -and $figureDone.unit -ceq $figurePublication.unit) 'a source with no recognized reference completes with an empty checked figure coverage'
+
+    # T19: a completed producer that registers Model work changes the input set of
+    # every downstream publication, so a fresh revision names that work explicitly
+    # while the older revision stays terminal and no unrelated build runs.
+    $modelsOut = Join-Path $scratch 'models-book'
+    $modelsOptions = Join-Path $scratch 'models-options.json'
+    [IO.File]::WriteAllText($modelsOptions,'{"terms":false,"events":false,"findings":false,"figures":false,"bridge":false}',$utf8)
+    $null = Run-Digest @('prepare','-Source',$secondSource,'-Out',$modelsOut,'-CitationKey','ModelsBook','-BibTeX','@book{ModelsBook,title={Models book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-Variant','econ','-RunOptions',$modelsOptions,'-Apply')
+    $modelsInitial = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','organize')
+    $modelsGroup = (Run-Digest @('ledger','next','-Out',$modelsOut,'-Layer','digest','-Take','1','-Owner','models-manager')).units[0]
+    $modelsStart = Run-Digest @('group-start','-Out',$modelsOut,'-Group','1','-Token',"$($modelsGroup.token)")
+    $modelsJob = Get-Content -LiteralPath $modelsStart.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    [IO.File]::WriteAllText($modelsStart.draft,(@{
+        schema_version = 1; unit = $modelsGroup.id; token = $modelsGroup.token; input_hash = $modelsStart.input_hash; disposition = 'cards'
+        calls = @(
+            @{ tool = 'edit_card'; arguments = @{ at = 'ModelsBook/1'; title = '融资约束改变投资选择'; body = '融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。'; base_fingerprint = $modelsJob.inputs.anchor.fingerprint } },
+            @{ tool = 'create_topic'; arguments = @{ title = '企业融资机制' } },
+            @{ tool = 'create_successor'; arguments = @{ at = '@@1'; title = '融资成本决定最优投入'; type = 'model'; level = 'concept'; body = '融资成本改变企业的投资选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ModelsBook/1]]' } },
+            @{ tool = 'create_successor'; arguments = @{ at = '@@2'; kind = 'side'; title = '企业比较投资收益与融资成本'; type = 'model'; facet = '设定'; body = '可以说，企业比较投资收益与融资成本。融资成本超过收益时，企业取消投资。来源：[[ModelsBook/1]]' } }
+        )
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $modelsDone = Run-Digest @('group-finish','-Out',$modelsOut,'-Group','1','-Token',"$($modelsGroup.token)",'-Draft',$modelsStart.draft)
+    $modelChild = @($modelsDone.children | Where-Object { $_ -like 'models/g001-m*@1' })
+    Assert ($modelsDone.state -eq 'done' -and $modelChild.Count -eq 1) 'a completed producer registers its Model candidate as its own logical unit'
+    $modelsNext = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','organize')
+    Assert ($modelsNext.unit -ceq 'organize/book@2' -and -not $modelsNext.reused -and @($modelsNext.superseded) -contains $modelsInitial.unit) 'new Model work derives the next downstream publication revision and supersedes the older one'
+    Assert (@($modelsNext.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the fresh revision names the registered Model work as an explicit unresolved disposition'
+    $modelsTerminal = @((Run-Digest @('ledger','status','-Out',$modelsOut,'-Layer','organize')).units | Where-Object { $_.id -eq $modelsInitial.unit })[0]
+    Assert ($modelsTerminal.state -eq 'failed' -and $modelsTerminal.fault.code -eq 'superseded' -and $modelsTerminal.fault.by -ceq 'organize/book@2') 'the older publication revision is terminal history rather than rerunnable work'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

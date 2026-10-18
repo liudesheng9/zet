@@ -111,13 +111,17 @@ const PUBLICATION: &[&str] = &[
 ];
 
 /// The producer layers whose recorded work forms one aggregate publication input.
-/// The whole-book Card and Link cycles also enumerate their digest groups, so a
-/// group that later produces nothing still changes the manifest.
+/// Every publication also reads the Model candidates its groups registered, so a
+/// repaired or newly built model changes the input set of every downstream
+/// revision. The whole-book Card and Link cycles additionally enumerate their own
+/// child layer, and Organize also reads the registered note suggestions it must
+/// dispose. A producer that later emits nothing still changes the manifest.
 fn publication_sources(layer: &str) -> Option<&'static [&'static str]> {
     match layer {
-        "cards-book" => Some(&["digest", "cards"]),
-        "link-check" => Some(&["digest", "link"]),
-        "organize" | "skeleton" | "figures" | "bridge" | "audit" | "hubs" => Some(&["digest"]),
+        "cards-book" => Some(&["digest", "models", "cards"]),
+        "link-check" => Some(&["digest", "models", "link"]),
+        "organize" => Some(&["digest", "models", "notes"]),
+        "skeleton" | "figures" | "bridge" | "audit" | "hubs" => Some(&["digest", "models"]),
         _ => None,
     }
 }
@@ -1272,6 +1276,29 @@ fn unit_result(p: &Prepared, unit: &str) -> Result<Value> {
     }
 }
 
+/// Every registered note suggestion with the outcome its own unit retained.
+fn registered_notes(p: &Prepared) -> Result<std::collections::BTreeMap<String, Value>> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let mut statement =
+        conn.prepare("SELECT id,result_json FROM units WHERE layer='notes' ORDER BY id")?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut notes = std::collections::BTreeMap::new();
+    for (id, result) in rows {
+        notes.insert(
+            id,
+            match result {
+                Some(result) => serde_json::from_str(&result).context("invalid note result")?,
+                None => Value::Null,
+            },
+        );
+    }
+    Ok(notes)
+}
+
 /// The prepared members one publication layer must classify exactly once. A
 /// skeleton indexes the prepared groups, so every anchor is either verified
 /// substantive work or a named gap (R226).
@@ -1406,6 +1433,40 @@ fn verify_coverage(
                 _ => bail!("unknown figure coverage outcome `{outcome}`"),
             }
             checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason,"path":figure["path"],"sha256":figure["sha256"]}));
+        }
+        return Ok(json!(checked));
+    }
+    if layer == "organize" {
+        // Organize disposes every registered note suggestion, and the ledger checks
+        // the recorded disposition against the suggestion's own retained outcome.
+        let recorded = registered_notes(p)?;
+        let entries = plan["coverage"]
+            .as_array()
+            .context("publication completion is missing its checked coverage")?;
+        if entries.len() != recorded.len() {
+            bail!("organize coverage must dispose every registered note suggestion exactly once");
+        }
+        let mut checked = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            let reference = field(entry, "ref")?.to_string();
+            if !seen.insert(reference.clone()) {
+                bail!("organize coverage names `{reference}` twice");
+            }
+            let outcome = field(entry, "outcome")?;
+            if !["applied", "already_present", "refused"].contains(&outcome) {
+                bail!("organize coverage outcome for `{reference}` must be applied, already_present or refused");
+            }
+            let suggestion = recorded
+                .get(&reference)
+                .with_context(|| format!("organize coverage names `{reference}`, which is not a registered suggestion"))?;
+            let disposition = suggestion["outcome"].as_str().with_context(|| {
+                format!("{reference} has no retained suggestion outcome yet")
+            })?;
+            if disposition != outcome {
+                bail!("organize coverage says `{reference}` is {outcome}, but its own outcome is {disposition}");
+            }
+            checked.push(json!({"ref":reference,"outcome":outcome,"reason":entry["reason"]}));
         }
         return Ok(json!(checked));
     }
