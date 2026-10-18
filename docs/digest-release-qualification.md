@@ -284,48 +284,13 @@ node $asm install scripts\book-digest\workflow\zt-math-digest.blueprint.json --s
 
 ## 9. Short-source failure/resume pilot package
 
-The pilot is the smallest real run that exercises a formal model, a shared premise, an Event/Finding candidate and one deliberately failed group. It uses [`digest-pilot-short-source.zh.md`](digest-pilot-short-source.zh.md): four sections, one formal model with a setting and a result, the shared premise 「有限描述假设」, one dated Event sentence (1937, Coase) and one Finding sentence (12%, 1980–1990). It runs **only** after the user's authorization and with a fresh archive backup; it is prepared here, not executed.
+The pilot procedure now lives in the **#90 package**, [`digest-pilot-90.md`](digest-pilot-90.md) §7: the deployment and installed identity (§3), the qualified bounded source and its persisted identity (§6), the exact `Workflow(...)` invocation, the one injected failure, the single `mode: "resume"`, and the evidence table the run must fill. This section states the frame and points there, because three details of the first draft changed when the procedure was rehearsed (`scripts/book-digest/tests/pilot-rehearsal.ps1`, 20 assertions) and must not be run from the old text:
 
-**1. Prepare the pilot (no Card work yet).**
+- **The source is calibrated for the workflow's own prepare command.** The frozen prepare stage passes `-MaxChars` and `-MaxUnits` but never `-MinUnitChars`, whose default is 1000 characters per unit. The source is now 3,575 characters in three units of 1,155 / 1,181 / 1,149 (SHA-256 `d0a27cd8…`), so `prepare -Variant econ -Apply` with the workflow's own arguments yields three groups: `g01` 导论/Intro.1 (the 1937 Coase Event), `g02` 第一章/1.1/1.2 (the shared premise 「有限描述假设」 and Hart 1995), `g03` 第二章/2.1/2.2 (the formal model with its setting and result, and the 12% / 1980–1990 data sentence). The earlier draft had prepared the source by hand with `-MinUnitChars 200`, which the workflow cannot pass; that produced one group and would have left the pilot without a completed neighbour group.
+- **The injected failure is a fault document, not a message.** `ledger fail` takes `-Fault <json|file>` (with matching `unit` and `input_hash`) and a class that the fault code belongs to. The deterministic injection is `check_failed` with `-Class content`, which leaves the unit `failed` until the resume; `provider_transient`/`retryable` would be retried inside the attempt budget and never reach the resume. The `-Class transient -Message …` form of the earlier draft does not exist.
+- **Do not use `until: "digest"` for the failure/resume pilot.** A checkpoint stop is a legitimate cheap inspection pass, but continuing it with `mode resume` spends the run's single resume budget (`ledger resume` reports `resumed` whenever unresolved units remain), which the injected failure needs. A resume takes `{ out }` only; any identity, source, group count or Bridge selection is refused by the args gate.
 
-```powershell
-zt-digest prepare -Variant econ -Source E:\zet\docs\digest-pilot-short-source.zh.md `
-  -Out D:\zt-digest\pilot-econ -CitationKey Pilot2026 -BookTitle "Release qualification book" `
-  -BibTeX "@book{Pilot2026,title={Release qualification book},author={Qualification, Ada},year={2026}}" `
-  -MinUnitChars 200 -MaxUnits 2 -NoFigures
-```
-
-Expected: exit 0; `manifest.json` with 3 groups; `book.zh.md`, `sections/`, `groups/g01..g03.md`, `events.json` with the 1937 candidate, `source-faults.md` with zero faults, and no Ledger before `-Apply`.
-
-**2. Authorize and initialize the prepared run.** Rerun the same command with `-Apply`, which creates the `Pilot2026` Literature tree and `ledger.sqlite3`. `zt-digest ledger status -Out D:\zt-digest\pilot-econ` must show `prepare/book@1` done and the group units registered.
-
-**3. Run the workflow on the short source** (the user's Claude Code run):
-
-```
-zt-econ-digest, mode full, args { out: "D:\\zt-digest\\pilot-econ", mode: "full", events: true, findings: true, cardChecks: true }
-```
-
-`until: "digest"` is the declared checkpoint: stop there first and read `ledger status -Out … -Verify` (every registered group, its owning manager, the ready Model work) before spending the rest of the run.
-
-**4. Inject the one recoverable failure.** Before the model stage, edit one group's claimed unit to fail once, e.g. `zt-digest ledger fail -Out <out> -Unit digest/g001@1 -Token <current token> -Class transient -Message "pilot injected failure"`. The run must record the attempt, keep the group open, and (in `full`) continue with the other groups and the layers they release.
-
-**5. One resume.** After the initial run settles, `mode resume` with `{ out }` only. Expected: invocation 2, `resume_count` 1, only the unresolved units reset (the injected group and its downstream work), completed models and groups untouched (same result, attempts and completion time), a second resume refused as `resume_used`.
-
-**6. The evidence to collect (this is what qualifies the pilot).**
-
-| Check | Where |
-|---|---|
-| every prepared group is registered and either verified or named with its evidence | `ledger status -Out <out> -Verify` |
-| the Event and Finding candidates each have a disposition | `events.json`, `findings.json`, `events-finish`/`findings-finish` results |
-| the formal model's parts, closure and explanation obligations | `get_model` on the Model Card, `explain-finish` result |
-| the shared premise is one Card linked by both models | `get_model` neighbours, `status --check-links` |
-| the injected failure and its one resume | `ledger report`, the `attempt_reset`/`retry` events |
-| nothing done was rebuilt | unchanged `completed_at`/`result` for the done units |
-| coverage, placeholders and usage | `ledger report -Out <out>` |
-| the archive is still index-clean | `zt status --check-links` |
-
-**7. Deployment gating.** The pilot never runs against `D:\zt` while a digest is active, and installing binaries never interrupts a run (R408). A full comparable book run is the final runtime/performance qualification, not the first test.
-
+The pilot still runs **only** under the user's authorization, against a fresh verified backup, with a fresh staging folder (`mode full` prepares it once; the only continuation is `mode resume`), and it never runs against `D:\zt` while a digest is active (R408). Installing binaries never interrupts a run: the pilot's binaries were installed and verified before the window, and the live archive stayed at revision 0 through that work. A full comparable book run is still the final runtime/performance qualification, not the first test.
 ## 10. Limits and open items
 
 - The whole-run time, agent count and token targets of R354 are **unmeasured** and are not claimed. The measured tool targets are the five commands in section 7 plus the ordinary read/write and model-apply results; a single completed comparable run is still required for R354.
