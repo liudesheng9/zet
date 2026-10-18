@@ -24,6 +24,8 @@ try {
     Assert $true 'the real preparation declares its run contract'
     $manifest = Get-Content (Join-Path $out 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $contract = $manifest.run_contract
+    $statusLines = @(& $Digest ledger status -Out $out 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $out 'ledger.sqlite3'))) 'successful reliable preparation initializes its durable ledger before returning'
     Assert ($contract.schema_version -eq 1 -and $contract.variant -eq 'econ' -and $manifest.groups.Count -ge 2) 'the prepared target has an explicit schema, variant and complete group enumeration'
     $archive = Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})
     Assert ($contract.archive_identity.id -eq $archive.archive_identity.id -and $contract.archive_identity.path -eq $archive.archive_identity.path) 'preparation binds the actual archive identity and resolved path'

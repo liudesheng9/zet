@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 regex = "1.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+getrandom = "0.4"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 tempfile = "3.27"
 zt-check = { path = "../zt-check" }

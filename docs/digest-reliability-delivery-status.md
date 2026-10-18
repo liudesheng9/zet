@@ -157,7 +157,15 @@ Preparation/link artifact publication now uses the existing tempfile dependency 
 
 All 17 public preparation-contract assertions and 29 existing preparation assertions pass; ten checker and 80 digest unit tests pass. Logs: `D:/zt-target/qualification/issue70-contract-public/`, `issue70-contract-public-summary.log`, `issue70-contract-checker-unit.log`, `issue70-contract-digest-unit.log` and the focused `issue70-*.log` RED/GREEN evidence. The malformed-identity fixture uses its tiny-source grouping option explicitly so it reaches the intended probe.
 
-This establishes archive identity transport and a hashed preparation description only. The per-preparation five-table ledger, enforcement of immutable run identity/options, claims, deterministic group completion and downstream registration remain unfinished; #70 stays open. Existing ledger commands/frozen workflow integration have not been announced as available. No production archive was migrated or rebound.
+This establishes archive identity transport and a hashed preparation description. Subsequent ledger progress is recorded below; #70 stays open. No production archive was migrated or rebound.
+
+### #70 five-table initialization and offline status
+
+`ledger init -Out` now validates the prepared schema, embedded workflow contracts, every source/group/section/artifact hash and locator, the current archive identity and actual agent Literature metadata/anchors before creating state. It atomically creates the five contracted WAL tables, foreign keys, specified indexes, immutable identity, all selected groups, Terms, required fixed book obligations, barrier metadata, preparation evidence and an append-only event. Existing initialization verifies the same binding without changing rows or the random run id. Reliable `prepare -Variant ... -Apply` invokes this through its existing MCP client before returning; preparation refuses to overwrite an output directory already containing a ledger.
+
+`ledger status -Out [-Layer]` is a consistent, read-only durable-state projection that works without an archive executable/service; it explicitly reports that a current archive verification was not requested. Skeleton anchors leave every digest group open. The full default variant target and deliberate figure/variant exclusions are explicit. Live option selection, receipt-safe setup recovery, claim/lease/completion/gate commands, verified group drafts and atomic downstream registration remain unfinished, so neither #70 nor the parent is complete.
+
+TDD evidence: the public command initially failed as unsupported (`issue70-ledger-init-red.log`); regeneration protection, offline status and automatic init each have separate RED/GREEN evidence. `D:/zt-target/qualification/issue70-initial-ledger-public-summary.log` records three suites, zero failures: ledger-core 20 assertions, ledger-preparation 18, existing prepare 29. Mismatch cases compare every retained ledger row, rather than accepting a generic failure message as proof of preservation.
 
 ## #75: exact content-corruption checks
 

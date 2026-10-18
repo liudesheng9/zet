@@ -24,6 +24,7 @@ mod event;
 mod figures;
 mod finding;
 mod hub;
+mod ledger;
 mod math;
 mod model;
 mod organize;
@@ -57,6 +58,7 @@ fn main() {
         "organize-apply" => organize::apply_cli(&rest),
         "figures" => figures::cli(&rest),
         "prepare" => prepare::cli(&rest),
+        "ledger" => ledger::cli(&rest),
         "prepare-link" => prepare::link_cli(&rest),
         "snapshot-topics" => snapshot::cli(&rest),
         "version" | "--version" | "-v" => {
@@ -65,7 +67,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
-       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics");
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics, ledger");
             Ok(2)
         }
     };

@@ -383,6 +383,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply"])?;
     let source = mandatory(&a, "Source")?;
     let out = mandatory(&a, "Out")?;
+    if Path::new(&out).join("ledger.sqlite3").exists() {
+        bail!("output directory is already initialized; use ledger resume operations or a new output directory");
+    }
     let key = mandatory(&a, "CitationKey")?;
     let bibtex = mandatory(&a, "BibTeX")?;
     let title = a.str("BookTitle");
@@ -589,6 +592,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
 
     // --- agent Literature tree ---
+    let mut prepared_zt = None;
     if apply {
         let mut zt = Zt::start()?;
         let z = &mut zt;
@@ -625,11 +629,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures});
             let contract=run_contract(&manifest,&variant,&source_hash,options,archive)?;
             manifest.insert("run_contract".into(),contract);
+            prepared_zt = Some(zt);
         }
     }
 
     let manifest = Value::Object(manifest);
     write(&join_path(&staging, "manifest.json"), &ps::json_pretty(&manifest))?;
+    if let Some(mut zt) = prepared_zt {
+        crate::ledger::init_prepared(&staging, &mut zt)?;
+    }
     util::print_line(&ps::json_compact(&manifest))?;
     Ok(0)
 }
