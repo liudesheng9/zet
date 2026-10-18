@@ -4558,6 +4558,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
         && p.out.parent().and_then(Path::file_name).is_some_and(|n| {
             [
                 "ledger-group-finish-test-",
+                "ledger-link-test-",
                 "ledger-terms-test-",
                 "ledger-prepare-recovery-test-",
                 "ledger-publication-test-",
@@ -5861,6 +5862,779 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
     let mut zt = Zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = group_finish(&p, &mut zt, group, token, &draft, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+/// R222: a Link unit is complete only when every owned in-scope Card carries the
+/// required kinded Link or a checked disposition, the receipt-owned paragraphs
+/// still exist, and the Link SELF-CHECK passes over the persisted Cards. The unit
+/// enumerates its scope from the group's registered owned manifest, never from a
+/// caller-supplied address list.
+const LINK_RULES: &str = "L1,L2";
+const LINK_MAX_CALLS: usize = 64;
+const LINK_MAX_BYTES: usize = 1024 * 1024;
+
+fn link_unit(number: u64) -> String {
+    format!("link/g{number:03}@1")
+}
+
+/// The Link unit's frozen inputs were registered by the group producer; re-hashing
+/// them proves the enumeration below is the accepted one.
+fn link_inputs(p: &Prepared, unit: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let raw: String = conn
+        .query_row("SELECT inputs_json FROM units WHERE id=?1", [unit], |r| {
+            r.get(0)
+        })
+        .with_context(|| format!("unknown unit {unit}"))?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+/// The exact in-scope set: the group's published owned manifest, re-hashed here so
+/// a changed or shortened file cannot silently shrink the Link obligation.
+fn link_owned(p: &Prepared, inputs: &Value, number: u64) -> Result<Vec<String>> {
+    if inputs["producer"] != json!(format!("digest/g{number:03}@1")) {
+        bail!("Link unit input does not name its group producer");
+    }
+    let record = &inputs["owned"];
+    check_file(record, "Link unit owned manifest")?;
+    let path = Path::new(field(record, "path")?);
+    if !path.starts_with(&p.out) {
+        bail!("Link unit owned manifest escaped the prepared output directory");
+    }
+    let text = util::read_text(path)?;
+    let mut owned = std::collections::BTreeSet::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.len() > 200 || line.chars().any(char::is_control) {
+            bail!("Link unit owned manifest holds an unreadable Card address");
+        }
+        if !owned.insert(line.to_string()) {
+            bail!("Link unit owned manifest names `{line}` twice");
+        }
+    }
+    if owned.is_empty() {
+        bail!("Link unit owned manifest enumerates no Card");
+    }
+    Ok(owned.into_iter().collect())
+}
+
+/// The accepted plan: one owned paragraph per written Card, and one checked
+/// disposition for every other owned Card. A Card is never silently omitted.
+fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+    let in_owned = |at: &str| owned.iter().any(|owned| owned == at);
+    let mut calls = Vec::new();
+    let mut written = std::collections::BTreeMap::new();
+    let mut bytes = 0usize;
+    for (index, call) in draft["calls"]
+        .as_array()
+        .context("Link draft calls must be an array")?
+        .iter()
+        .enumerate()
+    {
+        if call.as_object().is_none_or(|value| {
+            value
+                .keys()
+                .any(|key| !["tool", "arguments"].contains(&key.as_str()))
+        }) {
+            bail!("Link draft call {index} must contain only tool and arguments");
+        }
+        if call["tool"] != "edit_card" {
+            bail!("Link draft call {index} must edit one owned Card's paragraph");
+        }
+        let arguments = call["arguments"]
+            .as_object()
+            .context("Link draft call arguments must be an object")?;
+        if arguments.keys().any(|key| {
+            !["at", "base_fingerprint", "base_receipt", "owned_paragraph"].contains(&key.as_str())
+        }) {
+            bail!("Link draft call {index} may carry only an owned paragraph and its authored base");
+        }
+        let at = arguments
+            .get("at")
+            .and_then(Value::as_str)
+            .context("Link draft call has no Card address")?;
+        if !in_owned(at) {
+            bail!("Link draft call {index} names `{at}`, which is not an owned Card of this Link unit");
+        }
+        if written.insert(at.to_string(), index).is_some() {
+            bail!("Link draft writes `{at}` twice; a correction needs a new plan revision");
+        }
+        if arguments.get("base").is_some() {
+            bail!("Link draft call {index} must use an authored base, not a raw base");
+        }
+        if arguments.get("base_fingerprint").is_none() && arguments.get("base_receipt").is_none() {
+            bail!("Link draft call {index} has no authored base for its owned paragraph");
+        }
+        let paragraph = arguments
+            .get("owned_paragraph")
+            .and_then(Value::as_object)
+            .context("Link draft call must supply one receipt-owned paragraph")?;
+        if paragraph
+            .keys()
+            .any(|key| !["text", "replaces_receipt", "adopt_legacy"].contains(&key.as_str()))
+        {
+            bail!("Link draft call {index} has an unknown owned paragraph field");
+        }
+        let text = paragraph
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .context("Link draft call has an empty owned paragraph")?;
+        bytes += text.len();
+        calls.push(call.clone());
+    }
+    if calls.len() > LINK_MAX_CALLS || bytes > LINK_MAX_BYTES {
+        bail!(
+            "a Link plan holds at most {LINK_MAX_CALLS} owned paragraphs within {LINK_MAX_BYTES} bytes; check each revision separately"
+        );
+    }
+    let mut dispositions = std::collections::BTreeMap::new();
+    for (index, entry) in draft["dispositions"]
+        .as_array()
+        .context("Link draft dispositions must be an array")?
+        .iter()
+        .enumerate()
+    {
+        if entry.as_object().is_none_or(|value| {
+            value
+                .keys()
+                .any(|key| !["at", "outcome", "reason"].contains(&key.as_str()))
+        }) {
+            bail!("Link disposition {index} must contain only at, outcome and reason");
+        }
+        let at = entry["at"]
+            .as_str()
+            .context("Link disposition has no Card address")?;
+        if !in_owned(at) {
+            bail!("Link disposition {index} names `{at}`, which is not an owned Card of this Link unit");
+        }
+        let outcome = entry["outcome"].as_str().unwrap_or_default();
+        if !["already_linked", "no_link"].contains(&outcome) {
+            bail!("Link disposition {index} must be already_linked or no_link");
+        }
+        let reason = entry["reason"].as_str().unwrap_or_default().trim();
+        if reason.is_empty() || reason.chars().count() > 500 || reason.contains(['\r', '\n']) {
+            bail!("Link disposition for `{at}` needs one reason line of at most 500 characters");
+        }
+        if dispositions
+            .insert(at.to_string(), (outcome.to_string(), reason.to_string()))
+            .is_some()
+        {
+            bail!("Link draft disposes `{at}` twice");
+        }
+    }
+    let mut outcomes = Vec::new();
+    for at in owned {
+        match (written.get(at), dispositions.get(at)) {
+            (Some(index), None) => {
+                outcomes.push(json!({"at":at,"outcome":"linked","call":index}))
+            }
+            (None, Some((outcome, reason))) => {
+                outcomes.push(json!({"at":at,"outcome":outcome,"reason":reason}))
+            }
+            (Some(_), Some(_)) => {
+                bail!("Link draft gives `{at}` both an owned paragraph and a disposition")
+            }
+            (None, None) => bail!("Link draft has no outcome for the owned Card `{at}`"),
+        }
+    }
+    Ok((calls, outcomes))
+}
+
+/// A Card's kinded Link targets, as the archive itself computes them: a Link
+/// whose Relation kind is not a plain `refers` statement.
+fn kinded_links(card: &Value) -> Result<std::collections::BTreeSet<String>> {
+    let kinds = card["kinds"]
+        .as_object()
+        .context("Link unit Card is missing its kind facts")?;
+    Ok(kinds
+        .iter()
+        .filter(|(_, kind)| kind.as_str() != Some("refers"))
+        .map(|(target, _)| target.clone())
+        .collect())
+}
+
+/// The Link targets written in one receipt-owned paragraph.
+fn paragraph_targets(text: &str) -> Result<Vec<String>> {
+    let target = regex::Regex::new(r"\[\[([^\]]+)\]\]")?;
+    Ok(target
+        .captures_iter(text)
+        .map(|capture| {
+            capture[1]
+                .split('|')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .filter(|target| !target.is_empty())
+        .collect())
+}
+
+/// Every owned Card's required kinded Link, its receipt-owned paragraph and its
+/// changed-Card set. Missing or invented Card facts are refused, never skipped.
+fn link_verify(
+    owned: &[String],
+    outcomes: &[Value],
+    receipts: &[Value],
+    cards: &std::collections::BTreeMap<String, Value>,
+) -> Result<(Vec<Value>, Vec<String>)> {
+    let mut detail = Vec::new();
+    for outcome in outcomes {
+        let at = field(outcome, "at")?;
+        let card = cards
+            .get(at)
+            .with_context(|| format!("the owned Card `{at}` is missing from the archive read"))?;
+        if card["workspace"] != "agent" {
+            bail!("the owned Card `{at}` is not in the agent Workspace");
+        }
+        match field(outcome, "outcome")? {
+            "linked" => {
+                let index = outcome["call"]
+                    .as_u64()
+                    .context("missing Link call index")? as usize;
+                let receipt = receipts
+                    .get(index)
+                    .with_context(|| format!("missing the owned paragraph receipt of `{at}`"))?;
+                let receipt_at = field(&receipt["result"], "address")?;
+                if receipt_at != at {
+                    bail!("the owned paragraph receipt of `{at}` names `{receipt_at}`");
+                }
+                if crate::calls::authored_fingerprint(card)
+                    != field(&receipt["result"], "after_fingerprint")?
+                {
+                    bail!("the owned paragraph receipt of `{at}` no longer describes its Card");
+                }
+                let text = field(&receipt["result"]["owned_paragraph"], "text")?;
+                if !card["body"].as_str().unwrap_or_default().contains(text) {
+                    bail!("the owned paragraph of `{at}` is absent from its persisted Card");
+                }
+                let targets = paragraph_targets(text)?;
+                let kinds = kinded_links(card)?;
+                let kinded: Vec<String> = targets
+                    .iter()
+                    .filter(|target| kinds.contains(*target))
+                    .cloned()
+                    .collect();
+                if kinded.is_empty() {
+                    bail!("the owned paragraph of `{at}` carries no kinded Link");
+                }
+                detail.push(json!({"at":at,"outcome":"linked","receipt":field(receipt,"op_key")?,"paragraph":text,"links":targets,"kinded":kinded}));
+            }
+            "already_linked" => {
+                let kinds = kinded_links(card)?.into_iter().collect::<Vec<_>>();
+                if kinds.is_empty() {
+                    bail!("`{at}` is recorded as already_linked but carries no kinded Link");
+                }
+                detail.push(json!({"at":at,"outcome":"already_linked","reason":outcome["reason"],"kinds":kinds}));
+            }
+            "no_link" => detail.push(json!({"at":at,"outcome":"no_link","reason":outcome["reason"]})),
+            other => bail!("unknown Link outcome `{other}`"),
+        }
+    }
+    let changed = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt["result"]["before_fingerprint"] != receipt["result"]["after_fingerprint"]
+        })
+        .map(|receipt| field(&receipt["result"], "address").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for at in &changed {
+        if !owned.iter().any(|owned| owned == at) {
+            bail!("a Link receipt changed the unowned Card `{at}`");
+        }
+        if !seen.insert(at.clone()) {
+            bail!("a Link receipt changed `{at}` twice");
+        }
+    }
+    Ok((detail, changed))
+}
+
+/// The Link SELF-CHECK: the existing checker's Link rules over every owned Card.
+/// A language fault the group already deferred stays the card cycle's obligation.
+fn link_self_check(cards: &[Value], p: &Prepared) -> Result<Value> {
+    use std::collections::{HashMap, HashSet};
+    let book = field(&p.contract, "citation_key")?;
+    let literature = HashSet::from([book.to_string()]);
+    let anchors = HashMap::from([(
+        book.to_string(),
+        p.contract["groups"].as_array().unwrap().len(),
+    )]);
+    let mut entries = Vec::new();
+    for card in cards {
+        let mut entry = card.clone();
+        entry["category"] = json!(zt_check::graph::category(card, &literature, &anchors));
+        entry["parent"] = card["parent_address"].clone();
+        entry["kinds"] = json!(
+            card["kinds"]
+                .as_object()
+                .context("Link self-check Card is missing its kind facts")?
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        entry["book"] = json!(book);
+        entries.push(entry);
+    }
+    let mut file = tempfile::NamedTempFile::new()?;
+    serde_json::to_writer(&mut file, &entries)?;
+    std::io::Write::flush(&mut file)?;
+    let check = crate::check::Check {
+        json: file.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let lines =
+        zt_check::check::run_lines(&check.args(), None).context("Link self-check did not run")?;
+    let count = lines
+        .last()
+        .and_then(|line| line.strip_prefix("faults: "))
+        .and_then(|n| n.parse::<usize>().ok())
+        .context("Link self-check did not report completeness")?;
+    if lines.len() != count + 1 {
+        bail!("incomplete Link self-check count");
+    }
+    let observed = &lines[..lines.len() - 1];
+    let link_rule = |line: &String| {
+        line.split_whitespace()
+            .nth(1)
+            .is_some_and(|rule| LINK_RULES.split(',').any(|known| known == rule))
+    };
+    let faults: Vec<String> = observed
+        .iter()
+        .filter(|line| !line.contains("(advisory)") && link_rule(line))
+        .cloned()
+        .collect();
+    if !faults.is_empty() {
+        bail!("Link SELF-CHECK found faults: {}", faults.join("; "));
+    }
+    Ok(json!({"ran":true,"rules":LINK_RULES,"count":0,"checked":observed.len(),"faults":faults,"lines":observed}))
+}
+
+fn link_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    if result["schema_version"] != 1
+        || result["kind"] != "link_completion"
+        || result["self_check"]["ran"] != true
+        || result["self_check"]["count"] != 0
+    {
+        bail!("incomplete typed Link completion evidence");
+    }
+    let files = result["files"]
+        .as_object()
+        .context("missing Link evidence enumeration")?;
+    if files.len() != 4
+        || files
+            .keys()
+            .any(|key| !["accepted", "coverage", "self_check", "completion"].contains(&key.as_str()))
+    {
+        bail!("incomplete Link evidence enumeration");
+    }
+    let mut keys = std::collections::BTreeSet::from(
+        ["accepted", "coverage", "self_check", "completion"].map(str::to_string),
+    );
+    for name in ["accepted", "coverage", "self_check", "completion"] {
+        field(&files[name], "path")?;
+        field(&files[name], "sha256")?;
+    }
+    for at in result["changed"]
+        .as_array()
+        .context("missing Link changed-Card enumeration")?
+    {
+        keys.insert(format!(
+            "card/{}",
+            at.as_str().context("invalid changed Link Card")?
+        ));
+    }
+    for key in result["receipt_keys"]
+        .as_array()
+        .context("missing Link receipt enumeration")?
+    {
+        keys.insert(format!(
+            "receipt/{}",
+            key.as_str().context("invalid Link receipt key")?
+        ));
+    }
+    Ok(keys)
+}
+
+/// Repeated completion re-reads the evidence it registered; a later edit of a
+/// changed Card, a changed plan or a lost receipt makes the unit incomplete.
+fn link_done(p: &Prepared, zt: &mut Zt, number: u64, unit: &str, token: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |r| r.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows=tx.prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?.query_map([unit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    let expected = link_output_keys(&result)?;
+    if rows
+        .iter()
+        .map(|(key, _, _, _)| key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        bail!("incomplete Link completion output registration");
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if result["files"][key]["path"] != *locator
+                    || result["files"][key]["sha256"] != *fingerprint
+                {
+                    bail!("changed Link evidence registration");
+                }
+                check_file(
+                    &json!({"path":locator,"sha256":fingerprint}),
+                    "Link completion evidence",
+                )?;
+            }
+            "card" | "archive_receipt" => {}
+            _ => bail!("unknown Link evidence kind"),
+        }
+    }
+    let accepted = bound_json(&result["files"]["accepted"], "Link completion evidence")?;
+    if canon::hash_value(&accepted) != result["plan_hash"] {
+        bail!("completed Link plan hash changed");
+    }
+    let inputs = link_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != field(&result, "unit_input_hash")? {
+        bail!("Link unit input hash mismatch");
+    }
+    let owned = link_owned(p, &inputs, number)?;
+    if json!(owned) != result["owned"] {
+        bail!("completed Link unit owned enumeration changed");
+    }
+    let enumerated = |value: &Value, label: &str| -> Result<std::collections::BTreeMap<String, String>> {
+        let mut outcomes = std::collections::BTreeMap::new();
+        for outcome in value.as_array().with_context(|| format!("missing {label} outcomes"))? {
+            let at = field(outcome, "at")?.to_string();
+            let kind = field(outcome, "outcome")?.to_string();
+            if outcomes.insert(at.clone(), kind).is_some() {
+                bail!("{label} outcomes name `{at}` twice");
+            }
+        }
+        Ok(outcomes)
+    };
+    if enumerated(&accepted["outcomes"], "accepted plan")?
+        != enumerated(&result["outcomes"], "completion")?
+    {
+        bail!("completed Link plan enumeration changed");
+    }
+    let receipt_addresses = verify_archive_receipts(zt, &accepted, &result["receipt_keys"])?;
+    let changed = result["changed"]
+        .as_array()
+        .context("missing Link changed-Card enumeration")?
+        .iter()
+        .map(|at| {
+            at.as_str()
+                .context("invalid changed Link Card")
+                .map(str::to_string)
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    if receipt_addresses != changed {
+        bail!("completed Link changed set differs from its archive receipts");
+    }
+    if !changed.is_empty() {
+        let read = zt.cards(&changed.iter().cloned().collect::<Vec<_>>(), "text")?;
+        for card in &read.cards {
+            let at = field(card, "address")?;
+            if card["workspace"] != "agent"
+                || result["card_fingerprints"][at] != json!(crate::calls::authored_fingerprint(card))
+            {
+                bail!("completed Link output changed: {at}");
+            }
+        }
+        if zt.archive_view()?["archive_revision"].as_u64() != Some(read.archive_revision) {
+            bail!("read_view_changed: Link completion verification");
+        }
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn link_finish(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    token: i64,
+    draft_path: &str,
+    check_only: bool,
+) -> Result<Value> {
+    use std::collections::BTreeMap;
+    let unit = link_unit(number);
+    finish_claim(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let (claimed, _progress, run, done) = finish_claim(p, &unit, token)?;
+    let inputs = link_inputs(p, &unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Link unit input hash mismatch");
+    }
+    let owned = link_owned(p, &inputs, number)?;
+    if done {
+        let mut result = link_done(p, zt, number, &unit, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let path = std::fs::canonicalize(draft_path).context("missing Link draft JSON")?;
+    if !path.starts_with(&p.out) {
+        bail!("Link draft binding path mismatch");
+    }
+    let (draft, draft_record) = json_artifact(&path)?;
+    if draft["schema_version"] != 1
+        || draft["unit"] != unit
+        || draft["token"] != token
+        || draft["input_hash"] != claimed.input_hash
+    {
+        bail!("Link draft binding mismatch: schema, unit, token or input hash");
+    }
+    if draft
+        .as_object()
+        .context("Link draft must be an object")?
+        .keys()
+        .any(|key| {
+            !["schema_version", "unit", "token", "input_hash", "calls", "dispositions"]
+                .contains(&key.as_str())
+        })
+    {
+        bail!("unknown Link draft field");
+    }
+    let (calls, outcomes) = link_plan(&owned, &draft)?;
+    let run_id = run.as_str().context("missing run id")?;
+    let prefix = format!("{run_id}/link-g{number:03}/1/apply");
+    let plan = json!({"schema_version":1,"kind":"link_plan","unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"operation_prefix":prefix,"owned":owned,"outcomes":outcomes,"calls":calls});
+    let accepted_path = p.out.join(format!("link-accepted-g{number:03}.json"));
+    if accepted_path.exists() && canon::read_json(&accepted_path.to_string_lossy())? != plan {
+        bail!("accepted_plan_changed: the Link draft differs from the immutable accepted plan");
+    }
+    // The draft view runs the real transaction validators and rolls back; only the
+    // persisted view below can establish completion.
+    let preview = if calls.is_empty() {
+        None
+    } else {
+        Some(crate::calls::preview_identified(zt, &calls, &prefix, None).context("Link draft precheck")?)
+    };
+    let mut read = zt.cards(&owned, "text")?;
+    if let Some(preview) = &preview {
+        for card in preview["cards"]
+            .as_array()
+            .context("incomplete Link draft Cards")?
+        {
+            let at = field(card, "address")?;
+            if let Some(slot) = read.cards.iter_mut().find(|known| known["address"] == at) {
+                *slot = card.clone();
+            }
+        }
+    }
+    let mut cards = BTreeMap::new();
+    for card in &read.cards {
+        let at = field(card, "address")?;
+        if !owned.iter().any(|owned| owned == at) {
+            bail!("the archive read returned the unowned Card `{at}`");
+        }
+        cards.insert(at.to_string(), card.clone());
+    }
+    for at in &owned {
+        if !cards.contains_key(at) {
+            bail!("the owned Card `{at}` does not exist");
+        }
+    }
+    let draft_receipts: Vec<Value> = match &preview {
+        Some(preview) => preview["results"]
+            .as_array()
+            .context("incomplete Link draft receipts")?
+            .clone(),
+        None => Vec::new(),
+    };
+    let (detail, draft_changed) = link_verify(&owned, &outcomes, &draft_receipts, &cards)?;
+    let self_check = link_self_check(
+        &owned
+            .iter()
+            .map(|at| cards[at].clone())
+            .collect::<Vec<_>>(),
+        p,
+    )?;
+    if zt.cards(&[], "text")?.archive_revision != read.archive_revision {
+        bail!("read_view_changed: Link draft check");
+    }
+    check_file(&draft_record, "Link draft")?;
+    if check_only {
+        return Ok(json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"check_only":true,"applied":false,"complete":true,"owned":owned,"outcomes":detail,"changed":draft_changed,"self_check":self_check,"archive_revision":read.archive_revision}));
+    }
+    renew(p, &unit, token)?;
+    let accepted = accept_plan(&accepted_path, &plan)?;
+    let receipts = if calls.is_empty() {
+        Vec::new()
+    } else {
+        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+    };
+    let read = zt.cards(&owned, "text")?;
+    let mut cards = BTreeMap::new();
+    for card in &read.cards {
+        let at = field(card, "address")?;
+        if card["workspace"] != "agent" {
+            bail!("the owned Card `{at}` is not in the agent Workspace");
+        }
+        cards.insert(at.to_string(), card.clone());
+    }
+    for at in &owned {
+        if !cards.contains_key(at) {
+            bail!("the persisted Link unit is missing its owned Card `{at}`");
+        }
+    }
+    let (detail, changed) = link_verify(&owned, &outcomes, &receipts, &cards)?;
+    let self_check = link_self_check(
+        &owned
+            .iter()
+            .map(|at| cards[at].clone())
+            .collect::<Vec<_>>(),
+        p,
+    )?;
+    let revision = read.archive_revision;
+    if zt.cards(&[], "text")?.archive_revision != revision {
+        bail!("read_view_changed: persisted Link check");
+    }
+    let card_fingerprints = changed
+        .iter()
+        .map(|at| Ok((at.clone(), crate::calls::authored_fingerprint(&cards[at]))))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let receipt_keys = receipts
+        .iter()
+        .map(|receipt| field(receipt, "op_key").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    let plan_hash = canon::hash_value(&plan);
+    let coverage = publish(
+        &p.out.join(format!("link-coverage-g{number:03}.json")),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"plan_hash":plan_hash,"operation_prefix":prefix,"owned":owned,"outcomes":detail,"changed":changed,"archive_revision":revision}),
+        )?,
+    )?;
+    let check_record = publish(
+        &p.out.join(format!("link-self-check-g{number:03}.json")),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"plan_hash":plan_hash,"rules":LINK_RULES,"self_check":self_check}),
+        )?,
+    )?;
+    let result = json!({"schema_version":1,"kind":"link_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":claimed.input_hash,"unit_input_hash":claimed.input_hash,"plan_hash":plan_hash,"draft":draft_record,"disposition":if calls.is_empty(){"no_link"}else{"linked"},"owned":owned,"outcomes":detail,"changed":changed,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"self_check":self_check,"files":{"accepted":accepted,"coverage":coverage,"self_check":check_record},"archive_revision":revision});
+    let completion = publish(
+        &p.out.join(format!("link-completion-g{number:03}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    let mut result = result;
+    result["files"]["completion"] = completion.clone();
+    link_output_keys(&result)?;
+    for record in [&accepted, &coverage, &check_record, &completion] {
+        check_file(record, "Link completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64() != Some(revision)
+    {
+        bail!("read_view_changed: Link completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    for (name, record) in [
+        ("accepted", &accepted),
+        ("coverage", &coverage),
+        ("self_check", &check_record),
+        ("completion", &completion),
+    ] {
+        output(
+            &tx,
+            &unit,
+            name,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    for (at, fingerprint) in &card_fingerprints {
+        output(
+            &tx,
+            &unit,
+            &format!("card/{at}"),
+            "card",
+            at,
+            fingerprint,
+            &json!({"tree":cards[at]["tree"],"type":cards[at]["type"],"facet":cards[at]["facet"]}),
+        )?;
+    }
+    for receipt in &receipts {
+        let op_key = field(receipt, "op_key")?;
+        output(
+            &tx,
+            &unit,
+            &format!("receipt/{op_key}"),
+            "archive_receipt",
+            op_key,
+            &canon::hash_value(&receipt["result"]),
+            &receipt["result"],
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":result["disposition"],"completion":completion,"owned":result["owned"].as_array().map(Vec::len),"changed":result["changed"],"plan_hash":plan_hash}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64, String, bool)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token", "Draft"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Group must be positive")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Token must be positive")?;
+        Ok((
+            a.str("Out"),
+            group,
+            token,
+            a.required("Draft")?,
+            a.flag("CheckOnly"),
+        ))
+    })();
+    let (out, group, token, draft, check_only) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("zt-digest link-finish: {e}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = link_finish(&p, &mut zt, group, token, &draft, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
