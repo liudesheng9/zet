@@ -173,6 +173,8 @@ Workflow({
 
 `perManager: 1` keeps one group's manager in charge at a time so the injection of §7.2 has a clear window; `events` and `findings` enable the two layers this source was chosen for; `figures: false` matches the source, which has no figures.
 
+These exact args were simulated through the workflow kernel in the stand-in runtime (`assemble.mjs simulate scripts/book-digest/workflow/zt-econ-digest.blueprint.json --sim … --mode full --args '<the object above>'`): `ok: true`, `halted: null`, every stage reached in order, `hubs-first` and `figures` skipped by the switches, 34 stand-in agent calls, peak 4. The same object with one undeclared key is refused (`ok: false`, exit 1). The stand-in runtime executes no shell command and starts no model, so this proves the handover command is legal for the frozen 4.4.0 script before the real run spends anything.
+
 Do not add `until: "digest"` to this run. The checkpoint is a legitimate stop for a cheap inspection pass, but a resume after it spends the run's single resume budget (`ledger resume` reports `resumed` whenever unresolved units remain), which the injected failure needs.
 
 ### 7.2 The injected recoverable failure
