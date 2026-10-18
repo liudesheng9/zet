@@ -30,6 +30,12 @@ function Exists($path) { [IO.File]::Exists($path) }
 function Read-Json($path) { [IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable }
 function BodyOf($at) { (Invoke-Zt @(@{tool='get_card';arguments=@{at=$at}})).body }
 function Set-Body($at,$body) { $null=Invoke-Zt @(@{tool='edit_card';arguments=@{at=$at;body=$body}}) }
+# A write batch through the helper, as the compilers write: the addresses of its create calls.
+function Write-Zt($calls) {
+    $out=@(($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    if ($LASTEXITCODE -ne 0) {throw "zt: $($out -join ' | ')"}
+    , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
+}
 function Ledger-Inspect([string]$BookOut,[string]$script) {
     $guard=@'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
@@ -261,6 +267,28 @@ try {
     Assert ($final.state -eq 'done' -and $final.disposition -eq 'verified' -and @($final.files.Keys).Count -eq 5) 'the same claim completes after the injected faults are cleared'
     $reuse=Run-Digest @('findings-finish','-Out',$out2,'-Group','2','-Token',"$($atomicClaim.token)")
     Assert ($reuse.reused -and $reuse.state -eq 'done') 'the recovered completion is reusable without new outputs'
+
+    # --- A merged Event Card and an applied answer that accepted nothing --------------------
+    # A third book merges its first group's event into an existing Event Card of another book
+    # and its second group's answer accepts none of the two declared candidates. Both are
+    # applied answers, so they complete with `verified` (merged) and `no_cards` (ruled out).
+    $third=New-Book 'SettleBook3'
+    $out3=$third.Out; $key3=$third.Key; $ideas3=$third.Ideas
+    $foreign=Write-Zt @(@{tool='create_literature';arguments=@{workspace='agent';bibtex='@book{ForeignBook,title={Foreign book}}';body='另一本书。'}})
+    $foreignEvent=Write-Zt @(@{tool='create_successor';arguments=@{at=$foreign[0];kind='direct';type='event';title='1911 年某公司登记成立';body="时间：1911 年`n地点：美国`n参与者：某公司`n经过：公司登记成立。`n来源：[[ForeignBook]] §1`n`n证据作用：本事件例示一处。"}})
+    $null=Run-Digest @('event','-Step','plan','-Staging',$out3,'-GroupsPerJob','1')
+    $merged=Event-Answer 1 $ideas3[1] 'sections/s01.md:3' '§1' '1976 年第二册报告团队生产理论' '两人发表团队生产理论。'
+    $merged.existing=$foreignEvent[0]; $merged.role="本事件例示 [[$($ideas3[1])]] 的论点：监督减少偷懒。"
+    Save-Json (Join-Path $out3 'events\out\ev-01.json') @{events=@($merged)}
+    Save-Json (Join-Path $out3 'events\out\ev-02.json') @{events=@()}
+    $ruledOut=Run-Digest @('event','-Step','apply','-Staging',$out3,'-Apply')
+    Assert ($ruledOut.ok -and $ruledOut.applied_jobs -eq 2 -and $ruledOut.created -eq 0 -and $ruledOut.merged -eq 1 -and $ruledOut.pending_jobs -eq 0) "apply: one merged Event and one applied answer with no entry ($($ruledOut | ConvertTo-Json -Compress))"
+    $mergeClaim=Claim $out3 'events'
+    $mergeDone=Run-Digest @('events-finish','-Out',$out3,'-Group','1','-Token',"$($mergeClaim.token)")
+    Assert ($mergeDone.state -eq 'done' -and $mergeDone.disposition -eq 'verified' -and $mergeDone.accepted[0].merged -eq $true -and $mergeDone.accepted[0].card -eq $foreignEvent[0] -and (BodyOf $foreignEvent[0]).Contains("来源：[[$key3]] §1")) 'a merged Event Card completes as verified with this book''s source link'
+    $emptyClaim=Claim $out3 'events'
+    $emptyAnswer=Run-Digest @('events-finish','-Out',$out3,'-Group','2','-Token',"$($emptyClaim.token)")
+    Assert ($emptyAnswer.state -eq 'done' -and $emptyAnswer.disposition -eq 'no_cards' -and $emptyAnswer.candidates[0].outcome -eq 'not_accepted' -and @($emptyAnswer.accepted).Count -eq 0 -and @($emptyAnswer.jobs).Count -eq 1) 'an applied answer that accepts none of its declared candidates completes as an explicit no_cards disposition'
 } finally {
     Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT, Env:ZT_RACE_TARGET, Env:ZT_RACE_FLAG, Env:ZT_RACE_LINE -ErrorAction SilentlyContinue
     zt down 2>&1 | Out-Null
