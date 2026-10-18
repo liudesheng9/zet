@@ -1990,8 +1990,16 @@ fn math_check_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &P
         bail!("`{unit}` completes at the book's math audit: {}", expected.display());
     }
     let retained = util::read_json(&path).context("invalid retained math audit")?;
-    let audit = required_publication(&connect(&p.out.join("ledger.sqlite3"), false)?, "audit")?
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let audit = required_publication(&conn, "audit")?
         .context("the final audit revision was never published")?;
+    // A check describes a revision the ledger has verified, never one that is still open
+    // or already failed: the final audit revision is the checked one (R241).
+    let audit_state: String =
+        conn.query_row("SELECT state FROM units WHERE id=?1", [&audit.0], |r| r.get(0))?;
+    if audit_state != "done" {
+        bail!("the final audit revision `{}` is not checked yet", audit.0);
+    }
     let revision = audit
         .0
         .rsplit_once('@')
@@ -3047,13 +3055,56 @@ fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<V
             for unit in &superseded {
                 tx.execute("UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='operator',fault_json=?2 WHERE id=?1",params![unit,canon::canonical_json(&json!({"code":"superseded","by":id,"cause":"a changed publication input manifest registers a new revision"}))])?;
             }
+            // An open obligation that depends on a revision this one replaces follows the
+            // replacement instead of dead-ending on terminal history: the final mathematics
+            // check consumes the final audit revision, whichever revision that is (R241).
+            // An aggregate publication is left alone: its own manifest is immutable, and
+            // the next publish derives the revision that consumes the replacement.
+            let publication_layers = PUBLICATION
+                .iter()
+                .map(|layer| format!("'{layer}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut repointed = Vec::new();
+            for unit in &superseded {
+                let dependents = {
+                    let query = format!(
+                        "SELECT d.unit_id FROM deps d JOIN units u ON u.id=d.unit_id \
+                         WHERE d.needs_id=?1 AND u.state NOT IN ('done','failed') \
+                         AND u.layer NOT IN ({publication_layers}) ORDER BY d.unit_id"
+                    );
+                    let mut statement = tx.prepare(&query)?;
+                    statement
+                        .query_map([unit], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for dependent in dependents {
+                    tx.execute(
+                        "UPDATE OR IGNORE deps SET needs_id=?2 WHERE unit_id=?1 AND needs_id=?3",
+                        params![dependent, id, unit],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM deps WHERE unit_id=?1 AND needs_id=?2",
+                        params![dependent, unit],
+                    )?;
+                    event(
+                        &tx,
+                        &dependent,
+                        None,
+                        None,
+                        "dependency",
+                        &json!({"from":unit,"to":id,"cause":"the prerequisite publication revision was replaced"}),
+                    )?;
+                    repointed.push(json!({"unit":dependent,"from":unit,"to":id}));
+                }
+            }
             event(
                 &tx,
                 &id,
                 None,
                 None,
                 "published",
-                &json!({"layer":layer,"logical_key":key,"revision":revision,"input_hash":input_hash,"superseded":superseded,"contributions":manifest["contributions"].as_array().unwrap().len(),"dispositions":manifest["dispositions"].as_array().unwrap().len()}),
+                &json!({"layer":layer,"logical_key":key,"revision":revision,"input_hash":input_hash,"superseded":superseded,"repointed":repointed,"contributions":manifest["contributions"].as_array().unwrap().len(),"dispositions":manifest["dispositions"].as_array().unwrap().len()}),
             )?;
             (id, revision, false)
         }

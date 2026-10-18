@@ -43,6 +43,24 @@ function Save-Json($path, $value) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
     [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 10), $utf8)
 }
+# Complete one aggregate publication through the ledger's own verified boundary: the
+# evidence accounts for exactly the manifest the claim froze, and the artifact the
+# layer requires is bound by its retained file. The test plays the compiler's part;
+# the ledger still checks every accounting rule (R241).
+function Complete-Publication($claimed, $artifacts, $coverage = $null) {
+    $parts = $claimed.id -split '/', 2
+    $rest = $parts[1] -split '@', 2
+    $evidence = Join-Path $out "publication-$($parts[0])-$($rest[0])-$($rest[1]).json"
+    $unresolved = @($claimed.inputs.dispositions | ForEach-Object { [ordered]@{ unit = $_.unit } })
+    $consumed = @($claimed.inputs.contributions | ForEach-Object { [ordered]@{ unit = $_.unit; fingerprint = $_.fingerprint } })
+    $plan = [ordered]@{ schema_version = 1; kind = 'publication_completion'; unit = $claimed.id; token = $claimed.token
+        layer = $parts[0]; key = $rest[0]; input_hash = $claimed.input_hash
+        disposition = $(if ($unresolved.Count) { 'partial' } else { 'published' })
+        consumed = $consumed; unresolved = $unresolved; artifacts = $artifacts }
+    if ($null -ne $coverage) { $plan.coverage = @($coverage) }
+    Save-Json $evidence $plan
+    return Run-Digest @('ledger','done','-Out',$out,'-Unit',$claimed.id,'-Token',$claimed.token,'-Outputs',$evidence)
+}
 function Read-Card($at) { @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $at } }))[0] }
 function Read-Model($at) { @(Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $at } }))[0] }
 $key = 'Abbott2015'
@@ -284,23 +302,31 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $model2 = Read-Model $theory2
     $expectedMembers = @($model2.math.order).Count
     Assert (@($record2['members']).Count + @($record2['tools']).Count -eq $expectedMembers) 'the applied theory record accounts for the units its model holds'
-    # The publications the theory revision consumes are supplied as done fixtures; their own
-    # verifiers are covered by ledger-publication.tests.ps1.
+    # The digest groups are done fixtures (#70 owns their verifier). The Link pass then
+    # completes through the ledger's own publication boundary, so the theory revision
+    # consumes a real link-check publication rather than a hand-marked database row.
     $upstream = @'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
 const p=path.resolve(process.argv[1]);
 if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-math-test-'))throw new Error('not the isolated ledger');
 const db=new DatabaseSync(p);db.exec('pragma foreign_keys=on;begin');
 const done=db.prepare("update units set state='done',completed_at=?,result_json='{\"disposition\":\"published\"}' where id=?");
-for(const id of ['digest/g001@1','digest/g002@1','digest/g003@1','link-check/book@1'])done.run(new Date().toISOString(),id);
+for(const id of ['digest/g001@1','digest/g002@1','digest/g003@1'])done.run(new Date().toISOString(),id);
 db.exec('commit');db.close();
 '@
     & node --no-warnings -e $upstream (Join-Path $out 'ledger.sqlite3')
-    if ($LASTEXITCODE) { throw 'isolated upstream fixture failed' }
+    if ($LASTEXITCODE) { throw 'isolated digest-group fixture failed' }
+    $links1 = Run-Digest @('ledger','publish','-Out',$out,'-Layer','link-check')
+    Assert ($links1.unit -ceq 'link-check/book@2' -and 'link-check/book@1' -in $links1.superseded -and @($links1.dispositions).Count -eq 0 -and @($links1.contributions | Where-Object { $_.unit -ceq 'digest/g001@1' }).Count -eq 1) 'the Link pass revision registers over the completed digest groups'
+    $linksClaim1 = @((Run-Digest @('ledger','next','-Out',$out,'-Layer','link-check','-Take','2','-Owner','math-link')).units)[0]
+    $linksReport1 = Join-Path $out 'link-check-report-2.json'
+    Save-Json $linksReport1 ([ordered]@{ schema_version = 1; kind = 'link_check_report'; layer = 'link-check'; unresolved = @() })
+    $linksDone1 = Complete-Publication $linksClaim1 ([ordered]@{ report = $linksReport1 })
+    Assert ($linksDone1.state -eq 'done' -and $linksDone1.disposition -eq 'published' -and $linksDone1.unit -ceq 'link-check/book@2') 'the Link pass completes through its verified publication boundary'
     $published = Run-Digest @('ledger','publish','-Out',$out,'-Layer','theory')
     Assert ($published.unit -ceq 'theory/book@2' -and $published.reused -eq $false -and 'theory/book@1' -in $published.superseded) 'a changed input set derives the next theory revision and supersedes the registered one'
     $theoryContribution = @($published.contributions | ForEach-Object { $_.unit })
-    Assert (($theoryContribution -contains 'link-check/book@1') -and ($theoryContribution -contains 'models/g003-m0001@1')) 'the theory revision consumes the link-check revision and the changed units'
+    Assert (($theoryContribution -contains 'link-check/book@2') -and ($theoryContribution -contains 'models/g003-m0001@1')) 'the theory revision consumes the completed link-check revision and the changed units'
     $organize = Run-Digest @('ledger','status','-Out',$out,'-Layer','organize')
     Assert (@($organize.dependencies | Where-Object { $_.unit -eq 'organize/book@1' -and $_.needs -eq 'theory/book@1' -and $_.condition -eq 'settled' }).Count -eq 1) 'Organize is the tail publication that follows the theory revision'
     $theoryReady = Claim 'theory'
@@ -341,24 +367,64 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $theoryPublication = @($theoryStatus.publications | Where-Object { $_.layer -eq 'theory' })[0]
     Assert ($republished.revision -eq 3 -and $republished.unit -ceq 'theory/book@3' -and @($theoryPublication.superseded | Where-Object { $_.unit -eq 'theory/book@2' -and $_.state -eq 'done' }).Count -eq 1) 'a changed unit derives the next theory revision and names the completed one as its superseded history'
     Assert (@($theoryStatus.units | Where-Object { $_.id -eq 'theory/book@2' -and $_.state -eq 'done' }).Count -eq 1) 'the superseded theory revision keeps its verified completion as history'
+    # A changed cited-premise Link pass is a changed theory input: the theory revision
+    # consumes the completed revision that replaced the one it was derived from (R241).
+    $links2 = Run-Digest @('ledger','publish','-Out',$out,'-Layer','link-check')
+    Assert ($links2.unit -ceq 'link-check/book@3' -and @($links2.dispositions).Count -eq 0) 'a changed Model candidate derives the next Link pass revision'
+    $theoryStale = Run-Digest @('ledger','status','-Out',$out,'-Layer','theory')
+    Assert (@($theoryStale.publications | Where-Object { $_.layer -eq 'theory' -and $_.current -eq $false }).Count -eq 1) 'the theory revision is no longer current once the Link pass it consumed has advanced'
+    $linksClaim2 = @((Run-Digest @('ledger','next','-Out',$out,'-Layer','link-check','-Take','2','-Owner','math-link')).units)[0]
+    $linksReport2 = Join-Path $out 'link-check-report-3.json'
+    Save-Json $linksReport2 ([ordered]@{ schema_version = 1; kind = 'link_check_report'; layer = 'link-check'; unresolved = @() })
+    $linksDone2 = Complete-Publication $linksClaim2 ([ordered]@{ report = $linksReport2 })
+    Assert ($linksDone2.state -eq 'done' -and $linksDone2.unit -ceq 'link-check/book@3') 'the changed Link pass revision completes through the same boundary'
+    $theory4 = Run-Digest @('ledger','publish','-Out',$out,'-Layer','theory')
+    $theory4Contribution = @($theory4.contributions | ForEach-Object { $_.unit })
+    Assert ($theory4.unit -ceq 'theory/book@4' -and ($theory4Contribution -contains 'link-check/book@3') -and ('theory/book@3' -in $theory4.superseded)) 'a completed Link pass revision derives the next theory revision that consumes it'
+    $theory4Claim = @((Run-Digest @('ledger','next','-Out',$out,'-Layer','theory','-Take','2','-Owner','math-theory')).units)[0]
+    $theory4Coverage = @(@{ ref = $theory1; outcome = 'rebuilt'; reason = '' }, @{ ref = $theory2; outcome = 'rebuilt'; reason = '' })
+    $theory4Done = Complete-Publication $theory4Claim ([ordered]@{ applied = $theoryApplied }) $theory4Coverage
+    Assert ($theory4Done.state -eq 'done' -and $theory4Done.unit -ceq 'theory/book@4') 'the theory revision consuming the changed Link pass completes'
+    $organized = Run-Digest @('ledger','publish','-Out',$out,'-Layer','organize')
+    $organizedContribution = @($organized.contributions | ForEach-Object { $_.unit })
+    Assert ($organized.unit -ceq 'organize/book@2' -and ($organizedContribution -contains 'theory/book@4') -and ('organize/book@1' -in $organized.superseded)) 'the final publication follows the completed theory revision it consumes'
 
-    # --- the M1-M18 check describes the revision the audit published --------------------------------
+    # --- the M1-M18 check describes the final audit revision ---------------------------------------
     $null = Math 'check' @('-Out',$out)
     $blockedCheck = Claim 'math-check'
     Assert (@($blockedCheck.units).Count -eq 0) 'the final math check waits for the audit revision'
-    # A stopped-local fixture supplies the published audit revision; the check itself runs for real.
-    $auditFixture = @'
-const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
-const p=path.resolve(process.argv[1]);
-if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-math-test-'))throw new Error('not the isolated ledger');
-const db=new DatabaseSync(p);db.prepare("update units set state='done',completed_at=?,result_json='{\"disposition\":\"published\"}' where id='audit/book@1'").run(new Date().toISOString());db.close();
-'@
-    & node --no-warnings -e $auditFixture (Join-Path $out 'ledger.sqlite3')
-    if ($LASTEXITCODE) { throw 'isolated audit fixture failed' }
+    # The audit revision advances while the check is open: a changed book derives the
+    # next revision and makes the registered one terminal. The check must follow the
+    # final revision instead of dead-ending on the superseded one (R241).
+    $auditPub = Run-Digest @('ledger','publish','-Out',$out,'-Layer','audit')
+    Assert ($auditPub.unit -ceq 'audit/book@2' -and 'audit/book@1' -in $auditPub.superseded) 'a changed book derives the final audit revision and supersedes the registered one'
+    $null = Run-Digest @('ledger','next','-Out',$out,'-Layer','math-check','-Take','2','-Owner','math-wait')
+    $waiting = Run-Digest @('ledger','status','-Out',$out,'-Layer','math-check')
+    Assert (@($waiting.units | Where-Object { $_.state -eq 'registered' }).Count -eq 1 -and @($waiting.units | Where-Object { $_.state -eq 'blocked' }).Count -eq 0) 'publishing the final audit revision leaves the open check waiting instead of blocking it'
+    $auditClaim = @((Run-Digest @('ledger','next','-Out',$out,'-Layer','audit','-Take','2','-Owner','math-audit')).units)[0]
+    $auditReport = Join-Path $out 'audit-report.json'
+    Save-Json $auditReport ([ordered]@{ schema_version = 1; kind = 'audit_report'; layer = 'audit' })
+    $auditDone = Complete-Publication $auditClaim ([ordered]@{ report = $auditReport })
+    Assert ($auditDone.state -eq 'done' -and $auditDone.unit -ceq 'audit/book@2') 'the final audit revision completes through its verified publication boundary'
     $checkClaim = Claim 'math-check'
+    Assert (@($checkClaim.units).Count -eq 1) 'the final math check follows the current audit revision instead of the superseded one'
     $checkUnit = @($checkClaim.units)[0].id
     $checkToken = @($checkClaim.units)[0].token
     $checkFile = Join-Path $out 'math-audit.json'
+    # The audit can advance again while the check is claimed. A completion must never
+    # describe an audit revision that is not checked: the check names a final, verified
+    # audit revision only (R241).
+    & node --no-warnings -e $anotherModel (Join-Path $out 'ledger.sqlite3') 'models/g003-m0003@1'
+    if ($LASTEXITCODE) { throw 'isolated third Model fixture failed' }
+    $audit3 = Run-Digest @('ledger','publish','-Out',$out,'-Layer','audit')
+    Assert ($audit3.unit -ceq 'audit/book@3' -and $audit3.reused -eq $false) 'a further Model candidate derives the next audit revision while the check is claimed'
+    $unchecked = @(& $Digest ledger done -Out $out -Unit $checkUnit -Token $checkToken -Outputs $checkFile 2>&1)
+    Assert ($LASTEXITCODE -eq 1 -and ($unchecked -join ' ').Contains('is not checked yet')) "the final check cannot describe an audit revision that is not checked ($($unchecked -join ' '))"
+    $audit3Claim = @((Run-Digest @('ledger','next','-Out',$out,'-Layer','audit','-Take','2','-Owner','math-audit')).units)[0]
+    $audit3Report = Join-Path $out 'audit-report-3.json'
+    Save-Json $audit3Report ([ordered]@{ schema_version = 1; kind = 'audit_report'; layer = 'audit' })
+    $audit3Done = Complete-Publication $audit3Claim ([ordered]@{ report = $audit3Report })
+    Assert ($audit3Done.state -eq 'done' -and $audit3Done.unit -ceq 'audit/book@3') 'the next audit revision completes through its verified publication boundary'
     $auditBytes = [IO.File]::ReadAllBytes($checkFile)
     $stale = (Get-Content -Raw $checkFile | ConvertFrom-Json -AsHashtable)
     $stale.units = $stale.units + 1
@@ -367,7 +433,7 @@ const db=new DatabaseSync(p);db.prepare("update units set state='done',completed
     Assert ($LASTEXITCODE -eq 1 -and ($staleRefused -join ' ').Contains('not the M1–M18 report of the current revision')) "a stale math audit cannot complete the final check ($($staleRefused -join ' '))"
     [IO.File]::WriteAllBytes($checkFile, $auditBytes)
     $checkDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$checkUnit,'-Token',$checkToken,'-Outputs',$checkFile)
-    Assert ($checkDone.state -eq 'done' -and $checkDone.audit -ceq 'audit/book@1' -and $checkDone.audit_revision -eq 1 -and $checkDone.units -eq 3 -and $checkDone.theories -eq 2) 'the final math check names the audit revision its M1-M18 report describes'
+    Assert ($checkDone.state -eq 'done' -and $checkDone.audit -ceq 'audit/book@3' -and $checkDone.audit_revision -eq 3 -and $checkDone.units -eq 3 -and $checkDone.theories -eq 2) 'the final math check names the final audit revision its M1-M18 report describes'
     Assert ($checkDone.faults -ge 1 -and $checkDone.by_rule.M1 -ge 1) 'the final check reports the rules the book still breaks instead of claiming a clean pass'
 
     # --- the drained obligations never rebuilt the model unit ---------------------------------------
