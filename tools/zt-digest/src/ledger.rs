@@ -5062,7 +5062,12 @@ fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Res
         bail!("fault unit/input hash mismatch");
     }
     field(fault, "cause")?;
-    let retry = class == "retryable" && claim.attempts < 3;
+    // The attempt budget is the prepared run's own setting (R273): the workflow declares
+    // it, preparation freezes it, and this transition spends it. A resume reuses it.
+    let max_attempts = settings_of(&p.contract)?["max_attempts"]
+        .as_i64()
+        .unwrap_or(DEFAULT_MAX_ATTEMPTS);
+    let retry = class == "retryable" && claim.attempts < max_attempts;
     let now = now_seconds();
     let retry_after = if retry {
         let mut jitter = [0u8; 1];

@@ -90,6 +90,15 @@ try {
     [IO.File]::WriteAllText($faultFile,(@{ schema_version = 1; unit = 'digest/g001@1'; input_hash = $taken.units[0].input_hash; code = 'provider_cap'; cause = 'the external run passed the frozen cap and was cancelled' } | ConvertTo-Json -Compress),$utf8)
     $failed = Run-Digest @('ledger','fail','-Out',$out,'-Unit','digest/g001@1','-Token',"$token",'-Class','retryable','-Fault',$faultFile)
     Assert ($failed.state -eq 'retry') 'a cancelled provider run records the transient provider cap fault and becomes retryable'
+    # --- the per-unit attempt budget is the prepared setting (R258/R273) ---
+    $tightOut = Join-Path $scratch 'tight'
+    $null = Run-Digest (@('prepare') + (Common-Args 'SettingsTight') + @('-Out',$tightOut,'-MaxAttempts','1'))
+    $tightClaim = Run-Digest @('ledger','next','-Out',$tightOut,'-Layer','digest','-Take','1','-Owner','settings-tight')
+    $tightToken = $tightClaim.units[0].token
+    $tightFault = Join-Path $scratch 'tight-fault.json'
+    [IO.File]::WriteAllText($tightFault,(@{ schema_version = 1; unit = 'digest/g001@1'; input_hash = $tightClaim.units[0].input_hash; code = 'provider_cap'; cause = 'the prepared budget allows one attempt' } | ConvertTo-Json -Compress),$utf8)
+    $spent = Run-Digest @('ledger','fail','-Out',$tightOut,'-Unit','digest/g001@1','-Token',"$tightToken",'-Class','retryable','-Fault',$tightFault)
+    Assert ($spent.state -eq 'failed') 'with maxAttempts 1 a retryable failure is terminal: the ledger spends the prepared attempt budget'
     Write-Output 'ok: ledger settings, readiness wait and provider cap verified'
 } finally {
     if (Test-Path $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
