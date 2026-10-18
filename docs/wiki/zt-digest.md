@@ -98,6 +98,15 @@ A tool parses its parameters with `Args`, opens one `Zt`, and passes it to every
 
 ## Interfaces
 
+### Prepared input contract for ledger binding
+
+`prepare -Variant econ|math -Apply` adds `manifest.run_contract` schema 1. `prepare.rs::run_contract` records the actual persisted archive identity, exact original source-byte SHA/path/file id, Citation key, effective preparation options (including bibliographic input hash), embedded base/variant versions and artifact schema. Every selected group and section has its real file hash/locator; the sorted canonical group manifest has a SHA. The translated book, index, prefixes, figure map and event-candidate artifact are also hashed. Full source/Card bodies are not duplicated in this contract. Omitting `Variant` retains the legacy preparation response shape. Variant binding requires apply and valid UTF-8 input; hashes refer to the bytes actually decoded, including any BOM/CRLF. The source is checked again before contract publication.
+
+The command reuses its one MCP process for strict body-free identity probes before and after setup. Missing/partial identity refuses before archive setup writes, and an epoch change refuses binding. Base/variant versions come from the actual compiled blueprint sources; no installed frozen script is edited. This describes prepared input, not verified group completion or an available ledger command. The five-table ledger and group lifecycle remain under implementation.
+
+The private `prepare.rs::write` publishes preparation/link artifacts through a same-directory `NamedTempFile`, complete UTF-8 write, file sync and atomic persist. No in-place truncation or delete-then-write fallback is used. A locked destination can refuse publication on Windows; the error preserves the old complete file and retry can succeed after the reader closes. This is per-file atomicity; a complete manifest is published last and consumers must still validate its artifact hashes. See [Microsoft's file move/replace contract](https://learn.microsoft.com/en-us/windows/win32/fileio/moving-and-replacing-files).
+
+
 The Card cycle's default rule set includes R18/R19, so exact prose/title corruption becomes ordinary repair work. Explicit caller rule selections retain their meaning. Link paragraph draft checks also retain R18/R19 and use the verified draft Card's actual title for R19; unrelated existing prose remains outside that paragraph language check. The archive's leading-title guard still revalidates real writes, including identified creates/edits.
 
 

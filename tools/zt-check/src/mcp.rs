@@ -89,6 +89,29 @@ impl Zt {
         serde_json::from_str(&text).with_context(|| format!("{tool}: the answer is not JSON"))
     }
 
+    /// A body-free identity/revision probe for immutable preparation binding.
+    /// Refuse a partial or malformed view before any caller can begin writing.
+    pub fn archive_view(&mut self) -> Result<Value> {
+        let view = self.call("get_cards", json!({"addresses":[],"view":"text"}))?;
+        let identity = &view["archive_identity"];
+        if view["complete"] != true
+            || view["archive_revision"].as_u64().is_none()
+            || view["cards"]
+                .as_array()
+                .is_none_or(|cards| !cards.is_empty())
+            || view["missing"]
+                .as_array()
+                .is_none_or(|missing| !missing.is_empty())
+            || identity["id"]
+                .as_str()
+                .is_none_or(|id| id.len() != 32 || !id.bytes().all(|c| c.is_ascii_hexdigit()))
+            || identity["path"].as_str().is_none_or(str::is_empty)
+        {
+            bail!("incomplete archive identity view; preparation cannot bind this archive");
+        }
+        Ok(view)
+    }
+
     /// Bounded reads through this command's existing MCP process. A missing
     /// required Card is incomplete input, never an empty successful dataset.
     pub fn cards(&mut self, addresses: &[String], view: &str) -> Result<CardRead> {

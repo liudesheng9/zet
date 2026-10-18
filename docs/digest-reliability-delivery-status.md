@@ -151,7 +151,13 @@ The existing archive migration already stores a random 128-bit `archive_id` in m
 
 A real MCP/CLI regression first failed because identity was unavailable, then passes across ordinary writes, service restarts, replacement at the same directory, consistent backup restore and confirmed Card clearing. Corrupt/missing metadata is also refused without generating another id. All 46 Workspace/MCP tests pass (`D:/zt-target/qualification/issue70-archive-identity-mcp.log`); focused evidence is `issue70-archive-identity-red/green.log`.
 
-This establishes the archive identity transport only. The per-preparation five-table ledger, source/manifest/contracts binding, claims, deterministic group completion and downstream registration remain unfinished; #70 stays open. No production archive was migrated or rebound.
+The next step adds opt-in `prepare -Variant econ|math -Apply` input-contract metadata. The manifest records the exact original source-byte SHA (including CRLF), actual archive identity, selected group/section file hashes, canonical group-manifest hash, effective preparation/bibliographic options, workflow versions compiled from source and required artifact hashes/locators. Source bytes are captured once for decoding/hash and released after normalization; strict UTF-8 is required for this new binding. Missing/incomplete archive identity is refused before setup writes or a final manifest, and identity is rechecked afterward. No full source/Card prose is duplicated in the contract.
+
+Preparation/link artifact publication now uses the existing tempfile dependency for complete write + sync + atomic persist. Public tests preserve the old full artifact on a blocked Windows replacement and publish the new full version after the reader closes. An initial test incorrectly assumed an open destination could be replaced on this rename path; the final test follows the documented Windows contract and retains the failed observations. There is no non-atomic overwrite fallback.
+
+All 17 public preparation-contract assertions and 29 existing preparation assertions pass; ten checker and 80 digest unit tests pass. Logs: `D:/zt-target/qualification/issue70-contract-public/`, `issue70-contract-public-summary.log`, `issue70-contract-checker-unit.log`, `issue70-contract-digest-unit.log` and the focused `issue70-*.log` RED/GREEN evidence. The malformed-identity fixture uses its tiny-source grouping option explicitly so it reaches the intended probe.
+
+This establishes archive identity transport and a hashed preparation description only. The per-preparation five-table ledger, enforcement of immutable run identity/options, claims, deterministic group completion and downstream registration remain unfinished; #70 stays open. Existing ledger commands/frozen workflow integration have not been announced as available. No production archive was migrated or rebound.
 
 ## #75: exact content-corruption checks
 

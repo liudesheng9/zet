@@ -594,6 +594,9 @@ When a script gains a `zt-digest` tool ([zt-digest](zt-digest.md)), no stage mod
 
 ## Testing
 
+The real-MCP test proxy supports `ZT_IDENTITY_FAULT=missing|incomplete` on an empty `get_cards` probe. It changes only the reply, not archive metadata, and keeps text/structured reply representations aligned. The preparation test verifies neither archive setup nor final manifest publication occurs under that fault. Frozen workflow sources/installed scripts remain unchanged by this test seam.
+
+
 The real-MCP seam `tests/seam-zt-mcp.mjs` supports `ZT_DRAFT_FAULT=paragraphs|cards|complete` for identified batch previews. It removes required draft inputs or marks the view incomplete while keeping the actual archive rollback behavior. The public owned-paragraph helper test verifies that each injected failure remains explicit and cannot publish a clean SELF-CHECK. This seam is test-only; no actual digest workflow run is performed.
 
 

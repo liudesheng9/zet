@@ -84,6 +84,9 @@ flowchart TD
 
 ## Interfaces
 
+`mcp::Zt::archive_view()` makes one `get_cards` call with no addresses and validates the complete empty read, revision, persisted 32-hex archive id and nonempty resolved path. It returns that verified view for preparation/ledger binding. Missing identity or incomplete protocol data raises an explicit error before a caller begins writing; ordinary bulk readers retain their existing API.
+
+
 ### Shared graph classification and orphan evidence
 
 `tools/zt-check/src/graph.rs` is the pure shared graph contract. `category(card, literature, anchor_counts)` replaces separate audit/compiler/standalone classification code. It retains typed Finding/Event/Model/part/Hub distinctions and Literature anchors, term tables and structure inference; notation tables are explicit `notation`. Callers supply the complete anchor counts needed by structure inference. `check::check_cards` obtains those counts from one fresh, complete `export_titles` at the same revision as its selected body reads; it does not infer a whole-book denominator from a requested subset.

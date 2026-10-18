@@ -604,6 +604,9 @@ A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-diges
 
 ## Testing
 
+`tests/ledger-preparation.tests.ps1` runs actual two-group preparation with a declared variant, checks source/group hashes against files, effective/bibliographic options, real archive identity and versions from the frozen source blueprints. Proxy faults remove identity or mark its empty probe incomplete and must prevent archive setup/manifest publication. The legacy artifact-only path remains tested. A held Windows reader blocks replacement without damaging the old complete artifact; after closing it, retry publishes the full new version. The test does not claim a completed ledger/group lifecycle.
+
+
 `tests/content-corruption.tests.ps1` exercises the actual checker, audit, Card compiler and Link draft helper. It checks repeated paragraph spans/title lines, outer/line-ending normalization without fuzzy interior normalization, uncertain repeated Chinese characters, code/chart/math/quotation/generated exclusions (including nested quotes), parity of audit fault lines/counts, default Card-cycle repair inclusion, no authored rewrite and actual-title validation in a Link preview. `tests/workspaces_mcp.rs` covers ordinary/identified leading-title refusal, batch rollback and legacy metadata-only preservation.
 
 

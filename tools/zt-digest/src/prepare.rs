@@ -28,6 +28,7 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -52,9 +53,19 @@ fn read_raw(path: &str) -> Result<String> {
 }
 
 fn write(path: &str, text: &str) -> Result<()> {
-    std::fs::write(path, text).with_context(|| format!("failed to write {path}"))
+    let parent = Path::new(path)
+        .parent()
+        .context("preparation artifact needs a parent directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("create temporary preparation artifact for {path}"))?;
+    temporary.write_all(text.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("atomically publish preparation artifact {path}"))?;
+    Ok(())
 }
-
 /// Where the instruction files live.
 fn scripts_dir() -> String {
     if let Ok(dir) = std::env::var("ZT_DIGEST_SCRIPTS")
@@ -276,6 +287,80 @@ fn build_prefix(dir: &str, files: &str, fill: &[(&str, &str)]) -> Result<String>
 }
 
 /// `zt-digest prepare` (prepare-book-digest.ps1).
+fn run_contract(
+    manifest: &Map<String, Value>,
+    variant: &str,
+    source_hash: &str,
+    options: Value,
+    archive: Value,
+) -> Result<Value> {
+    let base: Value = serde_json::from_str(include_str!(
+        "../../../scripts/book-digest/workflow/zt-digest-base.blueprint.json"
+    ))?;
+    let profile: Value = serde_json::from_str(match variant {
+        "econ" => {
+            include_str!("../../../scripts/book-digest/workflow/zt-econ-digest.blueprint.json")
+        }
+        "math" => {
+            include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")
+        }
+        _ => bail!("unsupported prepared-run variant `{variant}`"),
+    })?;
+    let file = |path: &str| -> Result<Value> {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("incomplete preparation artifact `{path}`"))?;
+        Ok(
+            json!({"path":std::fs::canonicalize(path)?.to_string_lossy(),"sha256":crate::canon::sha256_hex(&bytes)}),
+        )
+    };
+    let source = file(&s(&manifest["source"]))?;
+    if source["sha256"] != source_hash {
+        bail!("source changed during preparation; use a new output directory");
+    }
+    let mut source = source;
+    source["file_id"] = manifest["file_id"].clone();
+    let mut groups = Vec::new();
+    for group in manifest["groups"]
+        .as_array()
+        .context("incomplete prepared groups")?
+    {
+        let mut record = file(&s(&group["file"]))?;
+        for key in ["n", "id", "anchor", "chapter", "headings", "chars"] {
+            record[key] = group[key].clone();
+        }
+        let mut sections = Vec::new();
+        for section in group["sections"]
+            .as_array()
+            .context("incomplete prepared sections")?
+        {
+            sections.push(file(&join_path(
+                &s(&manifest["staging"]),
+                &format!("sections/{}", s(section)),
+            ))?);
+        }
+        record["sections"] = json!(sections);
+        groups.push(record);
+    }
+    let group_manifest_hash =
+        crate::canon::sha256_hex(crate::canon::canonical_json(&json!(groups)).as_bytes());
+    let mut artifacts = Map::new();
+    for key in [
+        "book",
+        "index",
+        "shared_prefix",
+        "link_prefix",
+        "figures_file",
+    ] {
+        artifacts.insert(key.to_string(), file(&s(&manifest[key]))?);
+    }
+    artifacts.insert(
+        "events".into(),
+        file(&join_path(&s(&manifest["staging"]), "events.json"))?,
+    );
+    Ok(
+        json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts}),
+    )
+}
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = [
         "Source",
@@ -293,6 +378,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "MinFigureBytes",
         "MaxEventCandidates",
         "Instructions",
+        "Variant",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply"])?;
     let source = mandatory(&a, "Source")?;
@@ -313,10 +399,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let no_event_candidates = a.flag("NoEventCandidates");
     let no_figures = a.flag("NoFigures");
     let apply = a.flag("Apply");
+    let variant=if a.has("Variant") {a.choice("Variant",&["econ","math"])?} else {String::new()};
+    if !variant.is_empty() && !apply {bail!("Variant requires Apply so the prepared run can bind its actual archive");}
     let scripts = scripts_dir();
 
     // --- Chinese-only blocks ---
-    let raw = read_raw(&source)?.replace("\r\n", "\n");
+    let source_bytes=std::fs::read(&source).with_context(||format!("Cannot find path '{source}' because it does not exist."))?;
+    let source_hash=if variant.is_empty() {String::new()} else {crate::canon::sha256_hex(&source_bytes)};
+    if !variant.is_empty() {std::str::from_utf8(&source_bytes).context("prepared-run source must be valid UTF-8")?;}
+    let raw=String::from_utf8_lossy(&source_bytes);
+    let raw=raw.strip_prefix('\u{FEFF}').unwrap_or(&raw).replace("\r\n","\n");
+    drop(source_bytes);
     if file_id == 0
         && let Some(id) = figures::file_id_in_path(&source)
     {
@@ -499,6 +592,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if apply {
         let mut zt = Zt::start()?;
         let z = &mut zt;
+        let archive=if !variant.is_empty() {
+            z.archive_view()?["archive_identity"].clone()
+        } else {Value::Null};
         let probe = calls::run(z,&[json!({ "tool": "get_card", "arguments": { "at": key } })], &mut calls::Options::new())?;
         if probe.1.is_none() {
             bail!("Literature tree {key} already exists; delete it or choose another key.");
@@ -523,6 +619,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             bail!("zt setup failed: {}", lines.join(" | "));
         }
         manifest.insert("created".into(), json!(lines));
+        if !variant.is_empty() {
+            let observed=z.archive_view()?["archive_identity"].clone();
+            if !archive.is_object() || archive!=observed {bail!("archive identity changed during preparation");}
+            let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures});
+            let contract=run_contract(&manifest,&variant,&source_hash,options,archive)?;
+            manifest.insert("run_contract".into(),contract);
+        }
     }
 
     let manifest = Value::Object(manifest);

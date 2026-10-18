@@ -54,6 +54,12 @@ async function handle(line) {
     await call('edit_card', { at: at.at, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   const reply = await ask(message)
+  if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
+    const value = reply.result.structuredContent
+    if (env.ZT_IDENTITY_FAULT === 'missing') delete value.archive_identity
+    if (env.ZT_IDENTITY_FAULT === 'incomplete') value.complete = false
+    reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
+  }
   if (tool === 'apply_batch' && at.preview && env.ZT_DRAFT_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent
     if (env.ZT_DRAFT_FAULT === 'paragraphs') value.paragraphs = []
