@@ -769,8 +769,116 @@ fn writer(p: &Prepared) -> Result<Connection> {
     connect(&p.out.join("ledger.sqlite3"), true)
 }
 
+/// Diagnose pending cycles before scheduling. An explicit stack avoids recursion depth limits.
+fn detect_cycles(tx: &Transaction) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    let mut statement = tx.prepare(
+        "SELECT id FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id",
+    )?;
+    let ids = statement
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut graph = ids
+        .into_iter()
+        .map(|id| (id, Vec::<String>::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut edges=tx.prepare("SELECT d.unit_id,d.needs_id FROM deps d JOIN units c ON c.id=d.unit_id JOIN units p ON p.id=d.needs_id WHERE c.state IN ('registered','ready','blocked','retry') AND p.state IN ('registered','ready','blocked','retry') ORDER BY d.unit_id,d.needs_id")?;
+    for edge in edges.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (from, to) = edge?;
+        graph.get_mut(&from).unwrap().push(to);
+    }
+    let mut seen = BTreeSet::new();
+    let mut finish = Vec::new();
+    for start in graph.keys() {
+        if !seen.insert(start.clone()) {
+            continue;
+        }
+        let mut stack = vec![(start.clone(), 0usize)];
+        while let Some((node, index)) = stack.last_mut() {
+            let neighbors = &graph[node];
+            if *index == neighbors.len() {
+                let (done, _) = stack.pop().unwrap();
+                finish.push(done);
+                continue;
+            }
+            let next = neighbors[*index].clone();
+            *index += 1;
+            if seen.insert(next.clone()) {
+                stack.push((next, 0));
+            }
+        }
+    }
+    // Reverse finishing order finds every cyclic producer, including overlapping cycles.
+    let mut reverse = graph
+        .keys()
+        .map(|id| (id.clone(), Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    for (from, neighbors) in &graph {
+        for to in neighbors {
+            reverse.get_mut(to).unwrap().push(from.clone());
+        }
+    }
+    seen.clear();
+    let mut cycles = BTreeMap::<String, Vec<String>>::new();
+    while let Some(start) = finish.pop() {
+        if !seen.insert(start.clone()) {
+            continue;
+        }
+        let mut component = BTreeSet::from([start.clone()]);
+        let mut stack = vec![start.clone()];
+        while let Some(node) = stack.pop() {
+            for next in &reverse[&node] {
+                if seen.insert(next.clone()) {
+                    component.insert(next.clone());
+                    stack.push(next.clone());
+                }
+            }
+        }
+        if component.len() == 1 && !graph[&start].contains(&start) {
+            continue;
+        }
+        for member in &component {
+            // Return a real closed path through this member, not a sorted component label.
+            let mut parents = BTreeMap::from([(member.clone(), None::<String>)]);
+            let mut queue = VecDeque::from([member.clone()]);
+            let mut found = None;
+            'search: while let Some(node) = queue.pop_front() {
+                for next in graph[&node].iter().filter(|n| component.contains(*n)) {
+                    if next == member {
+                        let mut cycle = vec![node.clone()];
+                        let mut cursor = &node;
+                        while let Some(parent) = &parents[cursor] {
+                            cycle.push(parent.clone());
+                            cursor = parent;
+                        }
+                        cycle.reverse();
+                        cycle.push(member.clone());
+                        found = Some(cycle);
+                        break 'search;
+                    }
+                    if !parents.contains_key(next) {
+                        parents.insert(next.clone(), Some(node.clone()));
+                        queue.push_back(next.clone());
+                    }
+                }
+            }
+            cycles.insert(
+                member.clone(),
+                found.context("cyclic dependency component has no closed path")?,
+            );
+        }
+    }
+    for (id, cycle) in cycles {
+        let fault = json!({"code":"dependency_cycle","cause":format!("dependency cycle: {}",cycle.join(" -> ")),"cycle":cycle});
+        tx.execute("UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='content',fault_json=?2 WHERE id=?1",params![id,canon::canonical_json(&fault)])?;
+        event(tx, &id, None, None, "dependency_cycle", &fault)?;
+    }
+    Ok(())
+}
+
 /// Dependency waiting consumes no attempt. Aggregates wait for their explicit enumeration barrier.
 fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
+    detect_cycles(tx)?;
     loop {
         let mut statement=tx.prepare("SELECT id,layer,state,retry_after,fault_class,fault_json FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id")?;
         let rows = statement

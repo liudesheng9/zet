@@ -185,6 +185,14 @@ A separate public failure showed that a group already blocked on Terms kept an o
 
 `D:/zt-target/qualification/issue70-schema-public-final-summary.log` records five relevant suites with zero failures in 48 seconds: claims 38 assertions, core 23, preparation 18, schema 13, existing prepare 29. These changes leave the earlier 22-suite checkpoint intact; no real workflow or production deployment has run. The remaining #70/#71 completion/recovery work stays open.
 
+### #70 pending dependency cycles
+
+Pending cycles now become explicit content faults before claiming, with an actual closed dependency path for each cyclic producer. Outside dependants block without attempts and independent ready work remains claimable. The implementation uses iterative graph traversal inside the same ledger module/transaction, including overlapping cycles; it does not transition a claimed writer to failed.
+
+The public isolated-graph fixture first failed because cyclic producers stayed registered (`issue70-dependency-cycle-red.log`). An overlap extension exposed an incomplete first classification (`issue70-overlapping-cycle-red.log`); the final implementation diagnoses every member and the test verifies every edge in its returned closed path. Focused GREEN: `issue70-overlapping-cycle-green.log`. This covers the generic pending-graph behavior; model plan/part registration and precise missing-part/source contracts remain unfinished under #72, and verified done/child registration under #70 remains open.
+
+`D:/zt-target/qualification/issue70-cycles-public-final-summary.log` records six relevant suites, zero failures, 50 seconds: dependency graph 7 assertions, claims 38, core 23, preparation 18, schema 13 and existing prepare 29. The earlier 22-suite broader regression remains the recorded unaffected compiler checkpoint.
+
 ## #75: exact content-corruption checks
 
 The shared checker now reserves R18 for repeated substantive prose paragraphs and R19 for authored title headings repeated inside a Card body. R18 normalizes line endings and outer paragraph whitespace only, retaining interior text/spacing and reporting both first/current body-line spans for each repetition. R19 names every repeated title's body line. The checks exclude code/chart fences, display formulas, explicit quotations (including nested blockquotes), generated Reverse sections and non-prose metadata/placeholders. Indented continuation text remains part of its original paragraph rather than becoming a falsely repeated fragment. An embedded source label cannot hide repeated substantive prose. Uncertain 向向/价价 text is neither rewritten nor declared corrupt from repeated characters alone.
