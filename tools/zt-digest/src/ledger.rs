@@ -3803,6 +3803,26 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
         register_publication_unit(&tx, "organize", "book", 1, &manifest, Some(&prepare))?;
         seal(&tx, "organize")?;
     }
+    // The run-level cleanup owns what no single unit registered: the shared workspaces and their
+    // removal. It waits (`settled`, never `success`) for the last content layer, so a halted run
+    // still owes its cleanup (R323, R330).
+    if enabled_layer("cleanup") {
+        register(
+            &tx,
+            "cleanup",
+            "book",
+            1,
+            &json!({"preparation_hash":p.hash}),
+            None,
+            false,
+        )?;
+        let tail = if p.contract["variant"] == "math" {
+            "math-check/book@1"
+        } else {
+            "audit/book@1"
+        };
+        dependency(&tx, "cleanup/book@1", tail, "settled")?;
+    }
     if let Some(terms) = terms.filter(|_| prepared) {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
     }
@@ -3987,23 +4007,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         .as_array()
         .context("missing declared target")?;
     let preparation = meta(&tx, "preparation")?;
-    let mut required = vec!["prepare"];
-    if layers.iter().any(|l| l == "terms") {
-        required.push("terms");
-    }
-    required.extend(
-        BOOK.iter()
-            .copied()
-            .filter(|layer| layers.iter().any(|l| l == *layer)),
-    );
-    if preparation["variant"] == "math" {
-        required.extend(
-            MATH_BOOK
-                .iter()
-                .copied()
-                .filter(|layer| layers.iter().any(|l| l == *layer)),
-        );
-    }
+    let required: Vec<&'static str> = required_layers(&tx)?;
     let mut sealed = true;
     for name in layers
         .iter()
@@ -4075,9 +4079,59 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         && counts["failed"] == 0
         && counts["blocked"] == 0
         && coverage_faults.is_empty();
+    // Cleanup reports its own half of the run beside the content half (R330): content success is
+    // never erased by a cleanup failure, and a cleanup failure still makes the whole run partial.
+    let cleanup_facts = {
+        let mut statement = tx
+            .prepare("SELECT id,state,result_json FROM units WHERE layer='cleanup' ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let mut cleanup_units = Vec::new();
+        let mut open = Vec::new();
+        let mut cleanup_complete = true;
+        for (id, state, result) in rows {
+            let result: Value = match result {
+                Some(raw) => serde_json::from_str(&raw)?,
+                None => Value::Null,
+            };
+            if state != "done" {
+                open.push(json!(id));
+            }
+            if state != "done" || result["cleanup_complete"] != true {
+                cleanup_complete = false;
+            }
+            cleanup_units.push(json!({
+                "id":id,
+                "state":state,
+                "status":result["status"],
+                "content_complete":result["content_complete"],
+                "cleanup_complete":result["cleanup_complete"],
+                "resources":result["resources"].as_array().map(Vec::len)
+            }));
+        }
+        let content = content_facts(&tx)?;
+        let content_complete = content["complete"] == true;
+        json!({
+            "units":cleanup_units,
+            "open":open,
+            "content_complete":content_complete,
+            "cleanup_complete":cleanup_complete,
+            "run_complete":content_complete && cleanup_complete,
+            "unresolved":content["unresolved"],
+            "reconciliation":[]
+        })
+    };
     let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
     let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"settings":settings_of(&preparation)?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"settings":settings_of(&preparation)?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"],"cleanup":cleanup_facts});
     drop(deps_query);
     drop(statement);
     tx.commit()?;
@@ -4102,14 +4156,46 @@ fn enumeration_closure(layer: &str) -> Option<(&'static str, &'static [&'static 
 /// A dynamic child layer is closed only when every producer that can register more of
 /// its units is terminal, so an empty claim queue never completes the layer while a
 /// producer can still append to it. Closing is monotone and one event names the fact.
+///
+/// The `cleanup` layer's producers are every other layer: a manager registers a resource
+/// while it owns any unit, so no further cleanup unit can appear once every other layer is
+/// sealed and every unit outside cleanup is terminal (R323).
 fn close_enumerations(tx: &Transaction) -> Result<()> {
     let target = meta(tx, "target")?;
-    for layer in target["enabled"]
+    let layers: Vec<&str> = target["enabled"]
         .as_array()
         .context("missing declared target")?
         .iter()
         .filter_map(Value::as_str)
-    {
+        .collect();
+    for layer in &layers {
+        if *layer == "cleanup" {
+            if meta(tx, &format!("barrier/{layer}"))?["sealed"] == true {
+                continue;
+            }
+            // A resource is registered by the owner of a claimed unit, so no further cleanup unit can
+            // appear once every other unit is terminal. A layer whose own closure belongs to another
+            // slice (notes) stays unsealed without keeping cleanup open for ever.
+            let open: i64 = tx.query_row(
+                "SELECT count(*) FROM units WHERE layer<>'cleanup' AND state NOT IN ('done','failed','blocked')",
+                [],
+                |row| row.get(0),
+            )?;
+            if open > 0 {
+                continue;
+            }
+            seal(tx, layer)?;
+            tx.execute(
+                "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
+                params![
+                    meta(tx, "invocation")?.as_i64().context("invalid invocation number")?,
+                    canon::utc_now_o(),
+                    "sealed_enumeration",
+                    canon::canonical_json(&json!({"layer":layer,"producer":Value::Null,"cause":"every unit that can register a resource is terminal"}))
+                ],
+            )?;
+            continue;
+        }
         let Some((producer, after)) = enumeration_closure(layer) else {
             continue;
         };
@@ -11418,6 +11504,1392 @@ fn rerun_list(out: &Path) -> Result<Value> {
     )
 }
 
+// --- Owned external resources and their cleanup units (R231, R322–R330) ---------------------------
+//
+// Every created external conversation belongs to the work that created it. The manager records the
+// provider's returned ids immediately (`ledger resource -Register`), which creates one cleanup unit
+// per (owner unit, attempt token). That unit waits on a `settled` dependency of its owner, so a fix
+// round keeps the conversation alive and a halted path still owes the cleanup. `-Observe` records the
+// provider's own facts (terminal state, retained evidence, deletion of one exact id, workspace
+// listing), and `cleanup-finish` verifies those facts, removes only registered scratch paths inside
+// the staging root, and completes the unit with `content_complete` reported apart from
+// `cleanup_complete`.
+
+/// The durable evidence path of one prepared run: retained answers, transcripts and usage sit here,
+/// outside every scratch subtree that cleanup may remove (R325, R329).
+const CLEANUP_EVIDENCE: &str = "cleanup/evidence";
+
+/// The evidence folder as a canonical path inside the prepared output directory.
+fn cleanup_evidence(p: &Prepared) -> Result<PathBuf> {
+    let path = p.out.join(CLEANUP_EVIDENCE);
+    std::fs::create_dir_all(&path)?;
+    let path = std::fs::canonicalize(&path)?;
+    if !path.starts_with(&p.out) {
+        bail!("cleanup evidence path escaped the prepared output directory");
+    }
+    Ok(path)
+}
+
+/// A unit identifier in a form a logical key, a label and a folder name can all carry.
+fn unit_slug(unit: &str) -> String {
+    unit.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect()
+}
+
+/// The external label of one owned resource: the run id, the unit id and the attempt token (R322).
+/// The manager passes exactly this label to the provider, so a lost creation response is recovered
+/// only by matching it inside this run's own workspace.
+fn resource_label(run: &str, unit: &str, token: i64) -> String {
+    format!("zet-{run}-{}-t{token}", unit_slug(unit))
+}
+
+fn cleanup_key(unit: &str, token: i64) -> String {
+    format!("{}-t{token}", unit_slug(unit))
+}
+
+fn cleanup_unit_id(unit: &str, token: i64) -> String {
+    format!("cleanup/{}@1", cleanup_key(unit, token))
+}
+
+/// The recorded resources of one cleanup unit, or of every cleanup unit of the run.
+fn recorded_resources(conn: &Connection, only: Option<&str>) -> Result<Vec<Value>> {
+    let mut statement = conn.prepare(
+        "SELECT id,progress_json FROM units WHERE layer='cleanup' AND (?1='' OR id=?1) ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map([only.unwrap_or_default()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut resources = Vec::new();
+    for (unit, raw) in rows {
+        let progress: Value = serde_json::from_str(&raw)?;
+        for resource in progress["resources"].as_array().cloned().unwrap_or_default() {
+            let mut resource = resource;
+            resource["cleanup_unit"] = json!(unit);
+            resources.push(resource);
+        }
+    }
+    Ok(resources)
+}
+
+fn write_resources(tx: &Transaction, unit: &str, resources: &[Value]) -> Result<()> {
+    let progress: String = tx.query_row(
+        "SELECT progress_json FROM units WHERE id=?1",
+        [unit],
+        |r| r.get(0),
+    )?;
+    let mut progress: Value = serde_json::from_str(&progress)?;
+    if !progress.is_object() {
+        bail!("invalid unit progress object");
+    }
+    progress["resources"] = json!(resources);
+    tx.execute(
+        "UPDATE units SET progress_json=?2 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress)],
+    )?;
+    Ok(())
+}
+
+/// A bounded provider identifier: no control characters and no ambiguous emptiness.
+fn resource_id(record: &Value, key: &str) -> Result<String> {
+    let id = record[key]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("a resource record needs a nonempty {key}"))?;
+    if id.chars().count() > 200 || id.chars().any(char::is_control) {
+        bail!("resource {key} must be at most 200 readable characters");
+    }
+    Ok(id.to_string())
+}
+
+/// A canonical Windows path carries the extended-length prefix; a lexical path does not. Comparing
+/// the two needs one form, and the plain form is what a manager passes on the command line.
+fn local_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// A scratch target is declared inside the exact staging root, outside every retained subtree and
+/// never as a top-level staging file. Registration refuses a target that cannot be resolved that way
+/// (R329): the completion later re-checks the same rule with canonical paths.
+fn declared_scratch(p: &Prepared, given: &str) -> Result<()> {
+    let path = Path::new(given);
+    if !path.is_absolute() {
+        bail!("scratch target {given} must be an absolute path");
+    }
+    let root = local_path(&p.out);
+    let resolved = local_path(&std::path::absolute(path)?);
+    if !resolved.starts_with(&root) || resolved == root {
+        bail!(
+            "scratch target {} is outside the exact staging root {}",
+            resolved.display(),
+            root.display()
+        );
+    }
+    if let Some(name) = retained_subtree(p, &resolved) {
+        bail!("scratch target {} lies in the retained `{name}` subtree", resolved.display());
+    }
+    if resolved.parent() == Some(root.as_path()) {
+        bail!(
+            "scratch target {} is a top-level staging file, not compiler scratch",
+            resolved.display()
+        );
+    }
+    Ok(())
+}
+
+/// One registered resource, exactly as the manager recorded it.
+fn resource_record(
+    p: &Prepared,
+    input: &Value,
+    unit: &str,
+    token: i64,
+    label: &str,
+    cleanup_unit: &str,
+) -> Result<Value> {
+    let workspace = input["workspace"]
+        .as_object()
+        .context("a resource record names its provider workspace")?;
+    let path = workspace
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("a resource workspace needs its path")?;
+    let workspace_id = match workspace.get("id").and_then(Value::as_str) {
+        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+        _ => path.to_string(),
+    };
+    if workspace_id.chars().count() > 400 || workspace_id.chars().any(char::is_control) {
+        bail!("resource workspace id must be at most 400 readable characters");
+    }
+    let conversations = input["conversations"]
+        .as_array()
+        .filter(|list| !list.is_empty())
+        .context("a resource record names at least one conversation")?;
+    let mut recorded = Vec::new();
+    for conversation in conversations {
+        if conversation["lost"] == true {
+            // The creation response was lost: only the label this run passed can recover it.
+            recorded.push(json!({"id":Value::Null,"lost":true,"label":label,"state":Value::Null,"outcome":Value::Null,"delete":Value::Null,"evidence":Value::Null,"usage":Value::Null}));
+            continue;
+        }
+        let id = resource_id(conversation, "id")?;
+        let run_id = conversation["run"].as_str().map(str::trim).filter(|v| !v.is_empty());
+        // R325: the accepted answer is retained with its hash the moment the id is recorded, so the
+        // completion never depends on an agent's later memory of what the run produced.
+        let evidence = match conversation["answer"].as_str().filter(|text| !text.trim().is_empty()) {
+            Some(text) => evidence_written(p, &id, text)?,
+            None => Value::Null,
+        };
+        recorded.push(json!({
+            "id":id,
+            "run":run_id,
+            "lost":false,
+            "label":label,
+            "state":Value::Null,
+            "outcome":Value::Null,
+            "delete":Value::Null,
+            "evidence":if evidence.is_null() {Value::Null} else {json!({"answer":evidence})},
+            "usage":Value::Null
+        }));
+    }
+    let mut scratch = Vec::new();
+    for entry in input["scratch"].as_array().cloned().unwrap_or_default() {
+        let path = entry["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .with_context(|| format!("a scratch entry needs its path ({entry})"))?;
+        declared_scratch(p, path)?;
+        let mut retained = Vec::new();
+        for item in entry["retained"].as_array().cloned().unwrap_or_default() {
+            let from = item["from"].as_str().context("a retained item names the file it copies")?;
+            let to = item["path"].as_str().context("a retained item names its durable copy")?;
+            let sha256 = item["sha256"].as_str().context("a retained item records its hash")?;
+            if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+                bail!("a retained item hash must be 64 hexadecimal characters");
+            }
+            retained.push(json!({"from":from,"path":to,"sha256":sha256}));
+        }
+        scratch.push(json!({"path":path,"retained":retained,"removed":Value::Null}));
+    }
+    Ok(json!({
+        "id":format!("{cleanup_unit}#{workspace_id}"),
+        "cleanup_unit":cleanup_unit,
+        "owner":unit,
+        "token":token,
+        "label":label,
+        "workspace":{"id":workspace_id,"path":path},
+        "conversations":recorded,
+        "scratch":scratch,
+        "listing":Value::Null,
+        "usage":Value::Null,
+        "workspace_removed":Value::Null,
+        "registered_at":canon::utc_now_o()
+    }))
+}
+
+/// The durable state of one resource: what is still owed before its cleanup can be called complete.
+fn resource_facts(resource: &Value) -> Value {
+    let conversations: Vec<Value> = resource["conversations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|conversation| {
+            let lost = conversation["lost"] == true || conversation["id"].is_null();
+            let terminal = conversation["state"] == json!("terminal");
+            let deleted = matches!(
+                conversation["delete"].as_str(),
+                Some("confirmed") | Some("already_absent")
+            );
+            json!({
+                "id":conversation["id"],
+                "label":conversation["label"],
+                "lost":lost,
+                "terminal":terminal,
+                "outcome":conversation["outcome"],
+                "evidence":conversation["evidence"],
+                "deleted":if lost {Value::Null} else {json!(deleted)},
+                "delete":conversation["delete"]
+            })
+        })
+        .collect();
+    let unknown: Vec<Value> = resource["listing"]["unknown"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "id":resource["id"],
+        "cleanup_unit":resource["cleanup_unit"],
+        "owner":resource["owner"],
+        "label":resource["label"],
+        "workspace":resource["workspace"],
+        "conversations":conversations,
+        "usage":resource["usage"],
+        "listing":resource["listing"],
+        "unknown":unknown,
+        "workspace_removed":resource["workspace_removed"],
+        "scratch":resource["scratch"]
+    })
+}
+
+fn resource_view(resources: &[Value]) -> Vec<Value> {
+    resources.iter().map(resource_facts).collect()
+}
+
+fn resource_register(p: &Prepared, path: &str) -> Result<Value> {
+    let input = canon::read_json(path).context("invalid resource registration")?;
+    if input["schema_version"] != 1 {
+        bail!("a resource registration declares schema_version 1");
+    }
+    // `unit: "run"` marks a conversation that belongs to no single unit (a stage-wide chain): the
+    // run-level cleanup owns it, and only that unit settles it (R322).
+    let run_owned = input["unit"] == json!("run");
+    let unit = if run_owned {
+        "run".to_string()
+    } else {
+        resource_id(&input, "unit")?
+    };
+    let token = if run_owned {
+        1
+    } else {
+        input["token"]
+            .as_i64()
+            .filter(|token| *token > 0)
+            .context("a resource registration records its positive attempt token")?
+    };
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let target = meta(&tx, "target")?;
+    if !target["enabled"]
+        .as_array()
+        .is_some_and(|layers| layers.iter().any(|layer| layer == "cleanup"))
+    {
+        bail!("this run's target excludes the cleanup layer");
+    }
+    let run = meta(&tx, "run_id")?
+        .as_str()
+        .context("the ledger records no run identity")?
+        .to_string();
+    let (label, cleanup_unit) = if run_owned {
+        (
+            resource_label(&run, "run", token),
+            "cleanup/book@1".to_string(),
+        )
+    } else {
+        (resource_label(&run, &unit, token), cleanup_unit_id(&unit, token))
+    };
+    if run_owned {
+        // The run-level unit is registered by preparation: it never creates a second unit.
+        let (state, _): (String, i64) = tx
+            .query_row(
+                "SELECT state,claim_token FROM units WHERE id=?1",
+                [&cleanup_unit],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("unknown unit {cleanup_unit}"))?;
+        if matches!(state.as_str(), "done" | "failed" | "blocked") {
+            bail!("stale_claim: the run-level cleanup {cleanup_unit} has already settled");
+        }
+    } else {
+        // The ids belong to one attempt of one unit; a superseded token cannot register work (R322).
+        let (state, current): (String, i64) = tx
+            .query_row(
+                "SELECT state,claim_token FROM units WHERE id=?1",
+                [&unit],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("unknown unit {unit}"))?;
+        if !matches!(state.as_str(), "claimed" | "done") || current != token {
+            bail!("stale_claim: {unit} has no current attempt for token {token}");
+        }
+    }
+    let owner = if run_owned { "run".to_string() } else { unit.clone() };
+    let record = resource_record(p, &input, &owner, token, &label, &cleanup_unit)?;
+    let inputs = json!({"owner":owner,"token":token,"label":label});
+    let created: Option<String> = tx
+        .query_row("SELECT id FROM units WHERE id=?1", [&cleanup_unit], |r| r.get(0))
+        .optional()?;
+    let mut resources = if created.is_some() {
+        let raw: String = tx.query_row(
+            "SELECT progress_json FROM units WHERE id=?1",
+            [&cleanup_unit],
+            |r| r.get(0),
+        )?;
+        serde_json::from_str::<Value>(&raw)?["resources"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        register(
+            &tx,
+            "cleanup",
+            &cleanup_key(&unit, token),
+            1,
+            &inputs,
+            None,
+            false,
+        )?;
+        if run_owned {
+            bail!("the run-level cleanup unit vanished after it was checked");
+        }
+        dependency(&tx, &cleanup_unit, &unit, "settled")?;
+        Vec::new()
+    };
+    match resources
+        .iter()
+        .position(|resource| resource["id"] == record["id"])
+    {
+        Some(index) => {
+            // A manager may create a second conversation in the same workspace: merge the new ids
+            // and never overwrite a fact another observation already recorded.
+            let mut known: BTreeSet<String> = resources[index]["conversations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| c["id"].as_str().map(str::to_string))
+                .collect();
+            let mut merged = resources[index]["conversations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for conversation in record["conversations"].as_array().cloned().unwrap_or_default() {
+                let fresh = conversation["id"]
+                    .as_str()
+                    .map(|id| known.insert(id.to_string()))
+                    .unwrap_or(false);
+                if fresh {
+                    merged.push(conversation);
+                }
+            }
+            resources[index]["conversations"] = json!(merged);
+            let mut scratch = resources[index]["scratch"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for entry in record["scratch"].as_array().cloned().unwrap_or_default() {
+                if !scratch.iter().any(|known| known["path"] == entry["path"]) {
+                    scratch.push(entry);
+                }
+            }
+            resources[index]["scratch"] = json!(scratch);
+        }
+        None => resources.push(record),
+    }
+    resources.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    write_resources(&tx, &cleanup_unit, &resources)?;
+    event(
+        &tx,
+        &cleanup_unit,
+        None,
+        None,
+        "resource_registered",
+        &json!({"owner":unit,"token":token,"label":label,"resources":resources.len()}),
+    )?;
+    reconcile(&tx, now_seconds())?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "action":"register",
+        "run_id":run,
+        "unit":unit,
+        "token":token,
+        "label":label,
+        "cleanup_unit":cleanup_unit,
+        "resources":resource_view(&resources),
+    }))
+}
+
+/// The recorded resources and their durable state; the workflow drives deletion from this list
+/// instead of guessing at titles across the user's account (R322).
+fn resource_list(p: &Prepared, unit: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let resources = recorded_resources(&tx, (!unit.is_empty()).then_some(unit))?;
+    let label = resources
+        .first()
+        .map(|resource| resource["label"].clone())
+        .unwrap_or(Value::Null);
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "action":"list",
+        "unit":unit,
+        "label":label,
+        "resources":resource_view(&resources),
+    }))
+}
+
+/// One durable evidence file inside the run's evidence path (R325). The observation records the
+/// path and its hash; the completion re-reads and re-hashes it.
+fn evidence_file(p: &Prepared, record: &Value, current: Option<&Value>) -> Result<Value> {
+    let given = record
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("an evidence observation names its file")?;
+    let path = std::fs::canonicalize(given)
+        .with_context(|| format!("missing retained evidence {given}"))?;
+    let root = cleanup_evidence(p)?;
+    if !path.starts_with(&root) {
+        bail!(
+            "retained evidence must sit under {}; {given} is outside the durable evidence path",
+            root.display()
+        );
+    }
+    let bytes = std::fs::read(&path)?;
+    let record = json!({"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)});
+    if let Some(current) = current
+        && current["path"] == record["path"]
+        && current["sha256"] != record["sha256"]
+    {
+        bail!("retained evidence changed after it was recorded: {}", path.display());
+    }
+    Ok(record)
+}
+
+/// A readable evidence file name for one conversation.
+fn evidence_name(conversation: &str, suffix: &str) -> String {
+    let stem: String = conversation
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect();
+    format!("{stem}.{suffix}")
+}
+
+/// Write one accepted answer (or transcript) as durable evidence and record its hash (R325). The bytes
+/// are the caller's own report, so the completion can prove what the conversation produced.
+fn evidence_written(p: &Prepared, name: &str, text: &str) -> Result<Value> {
+    if text.len() > 1024 * 1024 {
+        bail!("retained evidence is at most 1 MiB");
+    }
+    let root = cleanup_evidence(p)?;
+    let path = root.join(evidence_name(name, "answer.txt"));
+    util::write_atomic(&path, text)?;
+    let path = std::fs::canonicalize(&path)?;
+    if !path.starts_with(&root) {
+        bail!("retained evidence escaped the durable evidence path");
+    }
+    let bytes = std::fs::read(&path)?;
+    Ok(json!({"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)}))
+}
+
+fn usage_facts(record: &Value) -> Result<Value> {
+    let usage = record
+        .as_object()
+        .context("usage is a JSON object of numeric fields")?;
+    if usage.is_empty() {
+        bail!("usage needs at least one numeric field");
+    }
+    let mut facts = serde_json::Map::new();
+    for (name, value) in usage {
+        let number = value
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .with_context(|| format!("usage field {name} must be a non-negative number"))?;
+        facts.insert(name.clone(), json!(number));
+    }
+    Ok(Value::Object(facts))
+}
+
+/// Record one provider fact about an already registered resource. Only the exact recorded ids are
+/// addressed: no observation may invent a conversation or a workspace member (R322, R326). Once the
+/// cleanup unit is claimed, only its current token may record another fact (T13).
+fn resource_observe(p: &Prepared, path: &str, unit: &str, token: Option<i64>) -> Result<Value> {
+    let input = canon::read_json(path).context("invalid resource observation")?;
+    if input["schema_version"] != 1 {
+        bail!("a resource observation declares schema_version 1");
+    }
+    let op = input["op"]
+        .as_str()
+        .context("a resource observation declares its op")?
+        .to_ascii_lowercase();
+    if ![
+        "terminal",
+        "evidence",
+        "usage",
+        "deleted",
+        "delete_failed",
+        "listing",
+        "workspace",
+        "recovered",
+    ]
+    .contains(&op.as_str())
+    {
+        bail!("unknown resource observation op `{op}`");
+    }
+    let key = input["resource"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("a resource observation names the recorded resource")?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let all = recorded_resources(&tx, None)?;
+    let target = all
+        .iter()
+        .find(|resource| resource["id"] == json!(key) || resource["label"] == json!(key))
+        .with_context(|| format!("unknown resource: no recorded resource `{key}`"))?
+        .clone();
+    let cleanup_unit = field(&target, "cleanup_unit")?.to_string();
+    // A claim fences later observations: while a cleanup agent holds a unit, only its current token
+    // may record another fact (T13). A resource is settled by its own unit or by the run-level one,
+    // because the shared workspace is removed there.
+    let fence = if unit.is_empty() { cleanup_unit.clone() } else { unit.to_string() };
+    if fence != cleanup_unit && fence != "cleanup/book@1" {
+        bail!("-Unit must name the resource's own cleanup unit {cleanup_unit} or cleanup/book@1");
+    }
+    match token {
+        Some(token) => {
+            claim(&tx, &fence, token)?;
+        }
+        None => {
+            let (state, owner): (String, Option<String>) = tx.query_row(
+                "SELECT state,owner FROM units WHERE id=?1",
+                [&cleanup_unit],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if state == "claimed" {
+                bail!(
+                    "claim_active: {cleanup_unit} is claimed by {}; pass -Unit and -Token",
+                    owner.unwrap_or_default()
+                );
+            }
+        }
+    }
+    let mut resources: Vec<Value> = all
+        .into_iter()
+        .filter(|resource| resource["cleanup_unit"] == json!(cleanup_unit))
+        .collect();
+    let index = resources
+        .iter()
+        .position(|resource| resource["id"] == target["id"])
+        .context("recorded resource vanished")?;
+    let known_ids: BTreeSet<String> = resources
+        .iter()
+        .flat_map(|resource| {
+            resource["conversations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|conversation| conversation["id"].as_str().map(str::to_string))
+        .collect();
+    let resource = &mut resources[index];
+    let conversation_at = |resource: &Value, id: &str| -> Result<usize> {
+        resource["conversations"]
+            .as_array()
+            .and_then(|list| list.iter().position(|conversation| conversation["id"] == json!(id)))
+            .with_context(|| format!("unknown conversation: {id} is not recorded for this resource"))
+    };
+    match op.as_str() {
+        "terminal" => {
+            let id = resource_id(&input, "conversation")?;
+            let at = conversation_at(resource, &id)?;
+            let state = input["state"]
+                .as_str()
+                .map(str::to_ascii_lowercase)
+                .context("a terminal observation records the provider state")?;
+            if !["finished", "error", "cancelled", "failed"].contains(&state.as_str()) {
+                bail!("a terminal provider state must be finished, error, cancelled or failed, not `{state}`");
+            }
+            let outcome = input["outcome"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&state)
+                .to_string();
+            if outcome.chars().count() > 200 || outcome.chars().any(char::is_control) {
+                bail!("a terminal outcome is at most 200 readable characters");
+            }
+            if resource["conversations"][at]["state"] == json!("terminal")
+                && resource["conversations"][at]["outcome"] != json!(outcome)
+            {
+                bail!("operation_conflict: this conversation already recorded another terminal outcome");
+            }
+            resource["conversations"][at]["state"] = json!("terminal");
+            resource["conversations"][at]["outcome"] = json!(outcome);
+            resource["conversations"][at]["observed_at"] = json!(canon::utc_now_o());
+        }
+        "evidence" => {
+            let id = resource_id(&input, "conversation")?;
+            let at = conversation_at(resource, &id)?;
+            let mut evidence = resource["conversations"][at]["evidence"].clone();
+            if !evidence.is_object() {
+                evidence = json!({});
+            }
+            for name in ["answer", "result"] {
+                if input[name].is_null() {
+                    continue;
+                }
+                let record = evidence_file(p, &input[name], evidence.get(name))?;
+                evidence[name] = record;
+            }
+            // A caller-supplied text (the run's own accepted answer) is written here, so the retained
+            // evidence is durable even when the caller cannot write a file itself (R325).
+            if let Some(text) = input["text"].as_str().filter(|text| !text.trim().is_empty()) {
+                let name = input["name"].as_str().unwrap_or(&id);
+                let record = evidence_written(p, name, text)?;
+                evidence["answer"] = record;
+            }
+            if !evidence.is_object() || evidence.as_object().is_some_and(|e| e.is_empty()) {
+                bail!("an evidence observation names an answer or a result file");
+            }
+            resource["conversations"][at]["evidence"] = evidence;
+        }
+        "usage" => {
+            let usage = usage_facts(&input["usage"])?;
+            if resource["usage"].is_object() && resource["usage"] != usage {
+                bail!("operation_conflict: this resource already recorded different per-run usage");
+            }
+            resource["usage"] = usage;
+        }
+        "deleted" => {
+            let id = resource_id(&input, "conversation")?;
+            let at = conversation_at(resource, &id)?;
+            let result = input["result"]
+                .as_str()
+                .map(str::to_ascii_lowercase)
+                .context("a deletion observation records its result")?;
+            if !["confirmed", "already_absent"].contains(&result.as_str()) {
+                bail!("a deletion result is confirmed or already_absent, not `{result}`");
+            }
+            resource["conversations"][at]["delete"] = json!(result);
+        }
+        "delete_failed" => {
+            let id = resource_id(&input, "conversation")?;
+            let at = conversation_at(resource, &id)?;
+            let code = input["code"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("a failed deletion records its code")?;
+            let message = input["message"].as_str().unwrap_or_default();
+            resource["conversations"][at]["delete"] = json!("failed");
+            resource["conversations"][at]["delete_error"] =
+                json!({"code":code,"message":message,"at":canon::utc_now_o()});
+        }
+        "listing" => {
+            let mut listed = Vec::new();
+            for entry in input["conversations"].as_array().cloned().unwrap_or_default() {
+                let id = resource_id(&entry, "id")?;
+                let state = entry["state"].as_str().unwrap_or("unknown");
+                listed.push(json!({"id":id,"state":state}));
+            }
+            let mut unknown = Vec::new();
+            for entry in input["unknown"].as_array().cloned().unwrap_or_default() {
+                let id = resource_id(&entry, "id")?;
+                let title = entry["title"].as_str().unwrap_or_default();
+                unknown.push(json!({"id":id,"title":title}));
+            }
+            resource["listing"] =
+                json!({"conversations":listed,"unknown":unknown,"observed_at":canon::utc_now_o()});
+        }
+        "workspace" => {
+            let removed = input["removed"]
+                .as_bool()
+                .context("a workspace observation records removed=true|false")?;
+            resource["workspace_removed"] = json!(removed);
+        }
+        _ => {
+            // A lost creation response is recovered only by this run's own label (R322).
+            let id = resource_id(&input, "conversation")?;
+            let label = input["label"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("a recovery names the label it searched for")?;
+            if label != field(resource, "label")? {
+                bail!("a recovered conversation must carry this run's own resource label");
+            }
+            if known_ids.contains(&id) {
+                bail!("operation_conflict: {id} is already recorded for this run");
+            }
+            let at = resource["conversations"]
+                .as_array()
+                .and_then(|list| list.iter().position(|conversation| conversation["lost"] == true))
+                .context("no lost creation response is recorded for this resource")?;
+            resource["conversations"][at]["id"] = json!(id);
+            resource["conversations"][at]["lost"] = json!(false);
+            resource["conversations"][at]["recovered_at"] = json!(canon::utc_now_o());
+        }
+    }
+    write_resources(&tx, &cleanup_unit, &resources)?;
+    let facts = json!({ "op": op, "resource": target["id"], "record": input });
+    event(&tx, &cleanup_unit, None, None, "resource_observed", &facts)?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "action":"observe",
+        "op":op,
+        "cleanup_unit":cleanup_unit,
+        "resources":resource_view(&resources),
+    }))
+}
+
+/// The required aggregate obligations of one run: preparation, the enabled Terms table, and every
+/// enabled aggregate publication. A run is content-complete when all of them are current.
+fn required_layers(conn: &Connection) -> Result<Vec<&'static str>> {
+    let target = meta(conn, "target")?;
+    let layers = target["enabled"]
+        .as_array()
+        .context("missing declared target")?;
+    let enabled = |layer: &str| layers.iter().any(|value| value == layer);
+    let mut required = vec!["prepare"];
+    if enabled("terms") {
+        required.push("terms");
+    }
+    required.extend(BOOK.iter().copied().filter(|layer| enabled(layer)));
+    if meta(conn, "preparation")?["variant"] == "math" {
+        required.extend(MATH_BOOK.iter().copied().filter(|layer| enabled(layer)));
+    }
+    Ok(required)
+}
+
+/// The content half of the run: every unit outside the cleanup layer is terminal and no content
+/// failure or stale required publication remains. Cleanup reports this independently of its own
+/// completion, so a cleanup failure never erases content success (R330).
+fn content_facts(tx: &Connection) -> Result<Value> {
+    let mut statement =
+        tx.prepare("SELECT id,state,fault_json FROM units WHERE layer<>'cleanup' ORDER BY id")?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut unresolved = Vec::new();
+    for (id, state, fault) in rows {
+        let superseded = parsed_fault(fault.as_deref())?["code"] == "superseded";
+        if state != "done" && !superseded {
+            unresolved.push(id);
+        }
+    }
+    let root_hash = canon::hash_value(&json!({"preparation_hash":meta(tx, "preparation_hash")?}));
+    let mut publications = Vec::new();
+    for layer in required_layers(tx)? {
+        let latest = required_publication(tx, layer)?;
+        let current = match &latest {
+            None => false,
+            Some((_, raw)) => publication_current(tx, layer, &canon::parse_json(raw)?, &root_hash)?,
+        };
+        publications.push(json!({
+            "layer":layer,
+            "unit":latest.map(|(id,_)|id),
+            "current":current
+        }));
+    }
+    let stale: Vec<Value> = publications
+        .iter()
+        .filter(|publication| publication["current"] != true)
+        .cloned()
+        .collect();
+    Ok(json!({
+        "complete":unresolved.is_empty() && stale.is_empty(),
+        "unresolved":unresolved,
+        "required_publications":publications,
+        "stale_publications":stale
+    }))
+}
+
+/// The staging subtrees a cleanup never removes: accepted plans, part maps, source spans, receipts,
+/// reports and the retained evidence itself stay for resume and audit (R328).
+fn retained_subtree(p: &Prepared, path: &Path) -> Option<&'static str> {
+    let path = local_path(path);
+    for name in ["groups", "sections", "notes", "cleanup", "locks"] {
+        let root = local_path(&p.out.join(name));
+        if path == root || path.starts_with(&root) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// A file a cleanup may remove only after an identical retained copy exists outside its subtree.
+fn protected_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "plan.json"
+        || lower == "state.json"
+        || lower == "manifest.json"
+        || lower.starts_with("part-map")
+        || lower.starts_with("source-review")
+        || lower.starts_with("accepted")
+        || lower.contains("report")
+        || lower.contains("receipt")
+        || lower.contains("completion")
+        || lower.contains("source-faults")
+        || lower.contains("self-check")
+}
+
+/// One resolved scratch target: inside the exact staging root, outside every retained subtree, and
+/// every protected file in it already copied to the durable evidence path (R328, R329).
+fn scratch_target(p: &Prepared, entry: &Value) -> Result<PathBuf> {
+    let given = field(entry, "path")?;
+    let path = std::fs::canonicalize(given)
+        .with_context(|| format!("missing scratch target {given}"))?;
+    if !path.starts_with(&p.out) || path == p.out {
+        bail!(
+            "scratch target {} is outside the exact staging root {}",
+            path.display(),
+            p.out.display()
+        );
+    }
+    if let Some(name) = retained_subtree(p, &path) {
+        bail!(
+            "scratch target {} lies in the retained `{name}` subtree; retained material never belongs to a cleanup",
+            path.display()
+        );
+    }
+    if path.parent() == Some(p.out.as_path()) {
+        bail!(
+            "scratch target {} is a top-level staging file, not compiler scratch",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+/// Every file under a target, in a stable order.
+fn tree_files(path: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        if next.is_dir() {
+            let mut entries = std::fs::read_dir(&next)?
+                .map(|entry| entry.map(|e| e.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort();
+            stack.extend(entries);
+        } else if next.is_file() {
+            files.push(next);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Validate one scratch target and remove it when asked. A protected file needs its durable copy
+/// first; nothing is ever removed because an agent named it in free text. A target that is already
+/// absent is a successful replay.
+fn scratch_settle(p: &Prepared, entry: &Value, remove: bool) -> Result<Value> {
+    declared_scratch(p, field(entry, "path")?)?;
+    let absent = !Path::new(field(entry, "path")?).exists();
+    let path = if absent {
+        PathBuf::from(std::path::absolute(Path::new(field(entry, "path")?))?)
+    } else {
+        scratch_target(p, entry)?
+    };
+    if absent {
+        return Ok(json!({"path":path.to_string_lossy(),"removed":true,"retained":[]}));
+    }
+    let retained = entry["retained"].as_array().cloned().unwrap_or_default();
+    let mut copies = Vec::new();
+    for item in &retained {
+        let source = field(item, "from")?.to_string();
+        let copy = field(item, "path")?.to_string();
+        let from = std::fs::canonicalize(&source)
+            .with_context(|| format!("missing retained source {source}"))?;
+        let to = std::fs::canonicalize(&copy)
+            .with_context(|| format!("missing retained copy {copy}"))?;
+        if !from.starts_with(&path) {
+            bail!(
+                "retained source {} does not belong to the scratch target",
+                from.display()
+            );
+        }
+        if !to.starts_with(cleanup_evidence(p)?) {
+            bail!(
+                "retained copy {} is outside the durable evidence path",
+                to.display()
+            );
+        }
+        let source = std::fs::read(&from)?;
+        let copy = std::fs::read(&to)?;
+        if canon::sha256_hex(&source) != canon::sha256_hex(&copy) {
+            bail!(
+                "retained copy {} does not hold the bytes of {}; copy it before removing the scratch",
+                to.display(),
+                from.display()
+            );
+        }
+        copies.push(json!({"from":from.to_string_lossy(),"path":to.to_string_lossy(),"sha256":canon::sha256_hex(&copy)}));
+    }
+    for file in tree_files(&path)? {
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !protected_name(&name) {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(&file)?;
+        if !copies
+            .iter()
+            .any(|copy| copy["from"].as_str() == Some(canonical.to_string_lossy().as_ref()))
+        {
+            bail!(
+                "retained_material_missing: {} holds an accepted plan, receipt or report with no durable copy",
+                canonical.display()
+            );
+        }
+    }
+    let removed = if remove {
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove scratch {}", path.display()))?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+        true
+    } else {
+        false
+    };
+    Ok(json!({"path":path.to_string_lossy(),"removed":removed,"retained":copies}))
+}
+
+/// One reason a cleanup cannot be called complete. `transient` is retryable, `operator` needs the
+/// record fixed, and `reconcile` is a terminal workspace state a human must reconcile.
+fn cleanup_issue(
+    class: &str,
+    code: &str,
+    resource: &Value,
+    conversation: Option<&Value>,
+    cause: &str,
+) -> Value {
+    json!({
+        "class":class,
+        "code":code,
+        "resource":resource["id"],
+        "cleanup_unit":resource["cleanup_unit"],
+        "owner":resource["owner"],
+        "workspace":resource["workspace"]["id"],
+        "conversation":conversation.map(|c| c["id"].clone()).unwrap_or(Value::Null),
+        "cause":cause
+    })
+}
+
+/// Verify the recorded resources of one cleanup unit (or of every unit, for the run-level unit) and
+/// settle only what the ledger can prove: the exact ids, the retained evidence, and the workspace
+/// rule that no unknown member is removed wholesale (R324–R330).
+fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let run_level = unit == "cleanup/book@1";
+    let all = recorded_resources(&tx, None)?;
+    let resources: Vec<Value> = if run_level {
+        all.clone()
+    } else {
+        all.iter()
+            .filter(|resource| resource["cleanup_unit"] == json!(unit))
+            .cloned()
+            .collect()
+    };
+    let content = content_facts(&tx)?;
+    tx.commit()?;
+    drop(conn);
+    if resources.is_empty() && !run_level {
+        bail!("cleanup_not_registered: {unit} has no recorded resource to settle");
+    }
+    let deleted_id = |resource: &Value, id: &str| -> bool {
+        resource["conversations"].as_array().is_some_and(|list| {
+            list.iter().any(|conversation| {
+                conversation["id"] == json!(id)
+                    && matches!(
+                        conversation["delete"].as_str(),
+                        Some("confirmed") | Some("already_absent")
+                    )
+            })
+        })
+    };
+    let mut issues = Vec::new();
+    let mut views = Vec::new();
+    let mut scratch_removed = Vec::new();
+    let mut retained = Vec::new();
+    for resource in &resources {
+        let facts = resource_facts(resource);
+        for conversation in resource["conversations"].as_array().cloned().unwrap_or_default() {
+            if conversation["lost"] == true || conversation["id"].is_null() {
+                issues.push(cleanup_issue(
+                    "reconcile",
+                    "lost_creation_response",
+                    resource,
+                    Some(&conversation),
+                    "the creation response was lost and this run's label found no conversation",
+                ));
+                continue;
+            }
+            if conversation["state"] != json!("terminal") {
+                issues.push(cleanup_issue(
+                    "transient",
+                    "cleanup_transient",
+                    resource,
+                    Some(&conversation),
+                    "the external run is not terminal yet; cancel it and observe it before deleting it",
+                ));
+                continue;
+            }
+            if !conversation["evidence"].is_object() {
+                issues.push(cleanup_issue(
+                    "operator",
+                    "cleanup_evidence_missing",
+                    resource,
+                    Some(&conversation),
+                    "no accepted answer or transcript evidence was retained for this conversation",
+                ));
+            }
+            if conversation["delete"] == json!("failed") {
+                let error = &conversation["delete_error"];
+                issues.push(cleanup_issue(
+                    "transient",
+                    "cleanup_transient",
+                    resource,
+                    Some(&conversation),
+                    &format!(
+                        "the deletion failed ({}); retry it for this exact id",
+                        error["code"].as_str().unwrap_or("unknown")
+                    ),
+                ));
+            } else if !matches!(
+                conversation["delete"].as_str(),
+                Some("confirmed") | Some("already_absent")
+            ) {
+                issues.push(cleanup_issue(
+                    "transient",
+                    "cleanup_transient",
+                    resource,
+                    Some(&conversation),
+                    "the recorded conversation has no confirmed deletion yet",
+                ));
+            }
+        }
+        if resource["usage"].is_null() {
+            issues.push(cleanup_issue(
+                "operator",
+                "cleanup_evidence_missing",
+                resource,
+                None,
+                "no per-run usage was retained for this resource",
+            ));
+        }
+        let unknown = resource["listing"]["unknown"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !unknown.is_empty() {
+            let ids = unknown
+                .iter()
+                .filter_map(|member| member["id"].as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            issues.push(cleanup_issue(
+                "reconcile",
+                "workspace_unknown_member",
+                resource,
+                None,
+                &format!("the workspace still holds conversations this run never recorded: {ids}"),
+            ));
+        }
+        let workspace = resource["workspace"]["id"].as_str().unwrap_or_default();
+        let same_workspace: Vec<&Value> = all
+            .iter()
+            .filter(|other| other["workspace"]["id"].as_str() == Some(workspace))
+            .collect();
+        // The workspace rule is one fact about the whole shared workspace (R327): every conversation
+        // this run recorded there is absent and no other member remains.
+        let workspace_unknown: Vec<Value> = same_workspace
+            .iter()
+            .flat_map(|other| {
+                other["listing"]["unknown"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        let workspace_settled = workspace_unknown.is_empty()
+            && same_workspace.iter().all(|other| {
+                other["conversations"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|conversation| !conversation["id"].is_null())
+                    .all(|conversation| deleted_id(other, conversation["id"].as_str().unwrap_or_default()))
+            });
+        if resource["workspace_removed"] == true {
+            if !workspace_settled {
+                issues.push(cleanup_issue(
+                    "operator",
+                    "cleanup_workspace_removed_early",
+                    resource,
+                    None,
+                    "the workspace was reported removed while a recorded conversation or an unknown member remained",
+                ));
+            }
+        } else if run_level {
+            issues.push(cleanup_issue(
+                "transient",
+                "cleanup_transient",
+                resource,
+                None,
+                "the owned workspace is not removed yet; remove it once every recorded conversation is absent",
+            ));
+        }
+        for entry in resource["scratch"].as_array().cloned().unwrap_or_default() {
+            match scratch_settle(p, &entry, remove) {
+                Ok(settled) => {
+                    scratch_removed.push(settled["path"].clone());
+                    if let Some(copies) = settled["retained"].as_array() {
+                        retained.extend(copies.iter().cloned());
+                    }
+                }
+                Err(error) => issues.push(cleanup_issue(
+                    "operator",
+                    "cleanup_scratch_refused",
+                    resource,
+                    None,
+                    &format!("{error:#}"),
+                )),
+            }
+        }
+        views.push(facts);
+    }
+    let hard = issues
+        .iter()
+        .filter(|issue| issue["class"] != "reconcile")
+        .count();
+    let reconcile: Vec<Value> = issues
+        .iter()
+        .filter(|issue| issue["class"] == "reconcile")
+        .cloned()
+        .collect();
+    let cleanup_complete = issues.is_empty();
+    Ok(json!({
+        "schema_version":1,
+        "unit":unit,
+        "run_level":run_level,
+        "content_complete":content["complete"],
+        "cleanup_complete":cleanup_complete,
+        "issues":issues,
+        "hard_issues":hard,
+        "reconciliation":reconcile,
+        "content":content,
+        "resources":views,
+        "scratch":{"removed":scratch_removed,"retained":retained},
+        "status":if content["complete"] == true && cleanup_complete {"complete"} else {"partial"}
+    }))
+}
+
+/// The checked completion of one cleanup unit. A transient or unverifiable fact refuses with its own
+/// code so the driver records a retry; a terminal reconciliation records a partial completion instead,
+/// because no retry can remove a conversation this run does not own (R327, R330).
+fn cleanup_finish(p: &Prepared, unit: &str, token: i64, check_only: bool) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, run, done) = finish_claim(p, unit, token)?;
+    if done {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let raw: String = conn.query_row(
+            "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+            params![unit, token],
+            |row| row.get(0),
+        )?;
+        let mut result: Value = serde_json::from_str(&raw)?;
+        drop(conn);
+        let current = cleanup_assessment(p, unit, false)?;
+        if current["content_complete"] != result["content_complete"]
+            || current["cleanup_complete"] != result["cleanup_complete"]
+            || current["resources"] != result["resources"]
+        {
+            bail!("completed cleanup unit changed; keep the checked result and re-run from a new claim");
+        }
+        result["reused"] = json!(true);
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let assessment = cleanup_assessment(p, unit, !check_only)?;
+    let issues = assessment["issues"].as_array().cloned().unwrap_or_default();
+    if let Some(issue) = issues.iter().find(|issue| issue["class"] != "reconcile") {
+        bail!("{}: {}", field(issue, "code")?, field(issue, "cause")?);
+    }
+    let mut result = json!({
+        "schema_version":1,
+        "kind":"cleanup_completion",
+        "unit":unit,
+        "token":token,
+        "run_id":run,
+        "owner":claimed.owner,
+        "state":"done",
+        "status":assessment["status"],
+        "content_complete":assessment["content_complete"],
+        "cleanup_complete":assessment["cleanup_complete"],
+        "partial_reasons":issues,
+        "reconciliation":assessment["reconciliation"],
+        "content":assessment["content"],
+        "resources":assessment["resources"],
+        "scratch":assessment["scratch"],
+        "input_hash":claimed.input_hash,
+        "unit_input_hash":claimed.input_hash
+    });
+    if check_only {
+        result["check_only"] = json!(true);
+        result["applied"] = json!(false);
+        return Ok(result);
+    }
+    let key = unit
+        .strip_prefix("cleanup/")
+        .and_then(|value| value.strip_suffix("@1"))
+        .with_context(|| format!("not a cleanup unit: {unit}"))?;
+    renew(p, unit, token)?;
+    let folder = p.out.join("cleanup");
+    std::fs::create_dir_all(&folder)?;
+    let completion = publish(
+        &folder.join(format!("completion-{key}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["files"] = json!({"completion":completion});
+    check_file(&completion, "cleanup completion evidence")?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        field(&completion, "path")?,
+        field(&completion, "sha256")?,
+        &completion,
+    )?;
+    for path in result["scratch"]["removed"].as_array().cloned().unwrap_or_default() {
+        let locator = path.as_str().unwrap_or_default();
+        let fingerprint = canon::sha256_hex(locator.as_bytes());
+        output(
+            &tx,
+            unit,
+            &format!("scratch/{fingerprint}"),
+            "scratch",
+            locator,
+            &fingerprint,
+            &json!({"path":path}),
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    completion_fault(p, "before_commit")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({
+            "disposition":result["status"],
+            "content_complete":result["content_complete"],
+            "cleanup_complete":result["cleanup_complete"],
+            "resources":result["resources"].as_array().map(Vec::len),
+            "completion":completion
+        }),
+    )?;
+    completion_fault(p, "after_commit")?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64, bool)> {
+        let a = Args::parse(argv, &["Out", "Unit", "Token"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        if a.required("Unit")?.trim().is_empty() {
+            bail!("-Unit is required");
+        }
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), a.str("Unit"), token, a.flag("CheckOnly")))
+    })();
+    let (out, unit, token, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest cleanup-finish: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = cleanup_finish(&p, &unit, token, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
 pub fn cli(argv: &[String]) -> Result<i32> {
     let command = argv
         .first()
@@ -11440,9 +12912,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "math"
                 | "reclaim"
                 | "job"
+                | "resource"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim or job"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim, job or resource"
             );
         }
         let params = if command == "next" {
@@ -11465,10 +12938,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Unit", "Take"]
         } else if command == "job" {
             vec!["Out", "Unit", "Token", "Register", "Observe", "Cancel"]
+        } else if command == "resource" {
+            vec!["Out", "Unit", "Token", "Register", "Observe", "Recover"]
         } else {
             vec!["Out", "Layer"]
         };
-        let a = Args::parse(&argv[1..], &params, if command == "job" { &["List"] } else { &[] })?;
+        let a = Args::parse(
+            &argv[1..],
+            &params,
+            if command == "job" || command == "resource" {
+                &["List"]
+            } else {
+                &[]
+            },
+        )?;
         a.required("Out")?;
         if a.str("Out").trim().is_empty() {
             bail!("-Out is required");
@@ -11552,11 +13035,36 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .context("-Token must be a positive integer")?;
             }
         }
+        if command == "resource" {
+            if a.has("Token") {
+                a.required("Token")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .context("-Token must be a positive integer")?;
+            }
+            let actions = ["Register", "Observe", "Recover"]
+                .iter()
+                .filter(|name| a.has(name))
+                .count()
+                + usize::from(a.flag("List"));
+            if actions != 1 {
+                bail!("resource takes exactly one of -Register, -Observe, -Recover or -List");
+            }
+            for name in ["Register", "Observe", "Recover"] {
+                if a.has(name) && a.required(name)?.trim().is_empty() {
+                    bail!("-{name} needs a file path");
+                }
+            }
+            if a.has("Unit") && a.str("Unit").trim().is_empty() {
+                bail!("-Unit must not be empty");
+            }
+        }
         if command == "fail" {
             a.choice("Class", &["retryable", "operator", "content"])?;
             a.required("Fault")?;
         }
-        if command == "done" {
+        if command == "done" && !a.str("Unit").starts_with("cleanup/") {
             a.required("Outputs")?;
         }
         if command == "notes" && a.required("Suggestions")?.trim().is_empty() {
@@ -11620,6 +13128,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else {
             job_list(&p, &unit)?
         }
+    } else if command == "resource" {
+        if a.has("Register") {
+            let mut zt = Zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_register(&p, &a.str("Register"))?
+        } else if a.has("Observe") {
+            let mut zt = Zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_observe(&p, &a.str("Observe"), &a.str("Unit"), a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?)?
+        } else {
+            let mut zt = Zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_list(&p, &a.str("Unit"))?
+        }
     } else if command == "notes" {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
@@ -11652,10 +13174,18 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 util::print_line(&serde_json::to_string(&result)?)?;
                 return Ok(0);
             }
-            let evidence = canon::read_json(&path).context("invalid completion evidence")?;
             let unit = a.str("Unit");
             let token = a.str("Token").parse::<i64>()?;
-            if unit == "terms/book@1" {                if evidence["schema_version"] != 1
+            if unit.starts_with("cleanup/") {
+                // The cleanup verifier is self-contained: it re-reads the recorded resources, the
+                // durable evidence and the staging root, so no caller-supplied record is accepted.
+                let result = cleanup_finish(&p, &unit, token, false)?;
+                util::print_line(&serde_json::to_string(&result)?)?;
+                return Ok(0);
+            }
+            let evidence = canon::read_json(&path).context("invalid completion evidence")?;
+            if unit == "terms/book@1" {
+                if evidence["schema_version"] != 1
                     || evidence["kind"] != "terms_completion"
                     || evidence["unit"] != unit
                     || evidence["token"] != token
@@ -11874,6 +13404,73 @@ mod tests {
         // The bold and list spellings the checker accepts read the same value.
         assert_eq!(stated_label("- **局限**：自报原因。", "局限").as_deref(), Some("自报原因。"));
         assert_eq!(stated_label("结果:\n- 31 家推迟投资。", "结果").as_deref(), Some("31 家推迟投资。"));
+    }
+
+    #[test]
+    fn a_resource_label_carries_the_run_unit_and_token() {
+        // R322: the label is derived from the three identifiers, never from free-form agent text.
+        assert_eq!(resource_label("r1", "digest/g001@1", 3), "zet-r1-digest-g001-1-t3");
+        assert_eq!(cleanup_key("digest/g001@1", 3), "digest-g001-1-t3");
+        assert_eq!(cleanup_unit_id("digest/g001@1", 3), "cleanup/digest-g001-1-t3@1");
+        assert!(protected_name("plan.json"));
+        assert!(protected_name("PART-MAP.json"));
+        assert!(protected_name("explain-completion-x.json"));
+        assert!(protected_name("bridge-report.json"));
+        assert!(!protected_name("notes.md"));
+    }
+
+    /// A ledger with one content obligation: the content half is reported without any cleanup unit.
+    fn ledger_with_content(state: &str, fault: Option<&str>) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        for (key, value) in [
+            ("target", json!({"enabled":[],"excluded":[]})),
+            ("preparation", json!({"variant":"econ"})),
+            ("preparation_hash", json!("abc")),
+        ] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![key, canon::canonical_json(&value)],
+            )
+            .unwrap();
+        }
+        let inputs = canon::canonical_json(&json!({"preparation_hash":"abc"}));
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_at) VALUES('prepare/book@1','prepare','book',1,?1,?2,?3,'now')",params![state,inputs,canon::hash_value(&json!({"preparation_hash":"abc"}))]).unwrap();
+        if let Some(fault) = fault {
+            conn.execute(
+                "UPDATE units SET fault_json=?1 WHERE id='prepare/book@1'",
+                params![canon::canonical_json(&json!({"code":fault}))],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    #[test]
+    fn content_completion_is_reported_apart_from_cleanup() {
+        // The content half is complete: every unit is done and every required obligation is current.
+        let (_dir, conn) = ledger_with_content("done", None);
+        let tx = conn.unchecked_transaction().unwrap();
+        let facts = content_facts(&tx).unwrap();
+        assert_eq!(facts["complete"], json!(true));
+        assert_eq!(facts["unresolved"], json!([]));
+        drop(tx);
+        // One open unit makes the content incomplete: the cleanup half is not part of that answer.
+        conn.execute("UPDATE units SET state='registered' WHERE id='prepare/book@1'", [])
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let facts = content_facts(&tx).unwrap();
+        assert_eq!(facts["complete"], json!(false));
+        assert_eq!(facts["unresolved"], json!(["prepare/book@1"]));
+        drop(tx);
+        // A superseded revision is terminal history, not an unfinished content obligation.
+        let (_dir2, superseded) = ledger_with_content("failed", Some("superseded"));
+        let tx = superseded.unchecked_transaction().unwrap();
+        let facts = content_facts(&tx).unwrap();
+        assert_eq!(facts["complete"], json!(true));
+        assert_eq!(facts["unresolved"], json!([]));
     }
 
     #[test]

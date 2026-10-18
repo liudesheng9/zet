@@ -25,7 +25,7 @@ defineModule({
         const models = units.map(u => (u.inputs && u.inputs.model) || '').filter(Boolean)
         const only = Array.isArray(A.only) && A.only.length ? ` -Models "${models.join(',')}"` : ` -Models "${models.join(',')}"`
         const chained = await Z.chain(`explain ${models.join(', ')}`, {
-          dsh: work, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, phase: 'Models', writes: `${work}\\out`,
+          dsh: work, unit: units[0].id, token: units[0].token, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, phase: 'Models', writes: `${work}\\out`,
           steps: [
             { name: 'plan', command: xstep('explain', `${only}${A.explainMax ? ` -MaxParts ${A.explainMax}` : ''}`), jobs: true },
             { name: 'apply 1', command: xstep('explain-apply'), jobs: true },

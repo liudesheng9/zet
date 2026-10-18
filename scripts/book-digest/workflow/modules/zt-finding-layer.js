@@ -23,7 +23,7 @@ defineModule({
       layer: 'findings', take: 4, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, producer: 'digest', phase: 'Findings',
       work: async (units) => {
         const chained = await Z.chain(`findings ${units.map(u => u.id).join(', ')}`, {
-          dsh: work, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Findings', writes: `${work}\\out`,
+          dsh: work, unit: units[0].id, token: units[0].token, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Findings', writes: `${work}\\out`,
           steps: [
             { name: 'plan', command: fstep('plan'), jobs: true },
             { name: 'apply', command: fstep('apply', ' -Apply'), optional: true },

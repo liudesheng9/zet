@@ -1,16 +1,16 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "b35c4f85e4375a375c0a8c7c75daaae9f388d491000e39da70bcc3f9f60cf63b",
-  "fingerprint": "af8fd59d45f26864",
-  "blueprintSha256": "46f0256ac44c985590e447bf809adea4f313145c1091635d5e945d2a51e3d85c",
+  "sha256": "05b92d13be7d783533c28d10ad3a6b73bf18de82e7fa53e3252007e234d3c14b",
+  "fingerprint": "1e8ca0a3d7cda118",
+  "blueprintSha256": "73c7257e83e931b7646a6662e4562bc770beddb1f58036122ea326dfd1afaec2",
   "modules": {
     "gate": "1",
-    "zt-digest-lib": "8",
+    "zt-digest-lib": "9",
     "zt-audit": "2",
     "zt-book-terms": "3",
     "zt-bridge": "5",
@@ -18,10 +18,10 @@
     "zt-cards-layer": "1",
     "zt-digest-prepare": "5",
     "zt-digest-report": "7",
-    "zt-dsh-cleanup": "1",
+    "zt-dsh-cleanup": "2",
     "zt-dsh-source": "1",
     "zt-event-layer": "3",
-    "zt-model-lib": "2",
+    "zt-model-lib": "3",
     "zt-explain": "4",
     "zt-figures": "2",
     "zt-finding-layer": "3",
@@ -40,7 +40,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "ba515d31e96c60be0da1cc72c78dcbf2b3ec375ac2c8a350efcf730cf4fc1008"
+      "sha256": "86bc51768b231cc6cdd9a519e2e5433351a910dd4a51989ea3063a8bd61e2cb3"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -72,7 +72,7 @@
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
-      "sha256": "ef26a73a62d3c680e71f2adde1706c9d781498e7c8cb0dcb496fb01a9ac43307"
+      "sha256": "9333c244b96ad7164ba44464027c743b8255c3efd8538c41cfedf581b9e54dcb"
     },
     "zt-dsh-source": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-source.js",
@@ -80,15 +80,15 @@
     },
     "zt-event-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-event-layer.js",
-      "sha256": "3f18dd0ac2558d6d2073eb85ee4b12c8b1f35d4370e1c9319f042088956cff58"
+      "sha256": "9716e47dabc6395e81e2ef0cdcaa09687aafa750ade7df3dcef77c39ebbdfad5"
     },
     "zt-model-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-model-lib.js",
-      "sha256": "d8fbcfdbe1ab40cbe054c02c778f7ac48ddf8f3a1299b18ba1d57e94bdbe3aab"
+      "sha256": "6827656b5c4bfbbbdc746109559924575deaae2f036196608131d2c23f95672c"
     },
     "zt-explain": {
       "file": "scripts/book-digest/workflow/modules/zt-explain.js",
-      "sha256": "46eaa474d2e5e75b934301cea1120a5831b46adf7a853e759e114519e361ef0b"
+      "sha256": "9137abfbf00af12cc699ab8c0a05f9c4b3c8800a0de2e2846576123bd4f22d47"
     },
     "zt-figures": {
       "file": "scripts/book-digest/workflow/modules/zt-figures.js",
@@ -96,7 +96,7 @@
     },
     "zt-finding-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-finding-layer.js",
-      "sha256": "4103e41358797118929a5628caac84cdc6c6faca5ac02c63d01e26b6c7a0ae29"
+      "sha256": "6759063102a95985208497e16835425944ac548a46c34e8c36b89aadfc4712e4"
     },
     "zt-group-cycle": {
       "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
@@ -130,17 +130,17 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "cb2216c3de2393ccdb375e46dcd44d0e03d1c82b9ef3f4e01d43a8232a4c0e32"
+      "sha256": "53ffc221cb25bbc9abb144ce6a8ae6126c1b1362c252a82be0847b779c1c8ad2"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "02519bf5700299f1fa92f35e4411a1e2d1ff8bd96ed858c9bffeb4923c26a4f4"
+      "sha256": "d34aca50bb5390cf67c5bd40051f50e44bf0c1ed3ec1c1af243531637fe6ae2b"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-18T15:50:13.589Z",
+  "installedAt": "2026-10-18T16:40:04.287Z",
   "dryRun": {
-    "agents": 36,
+    "agents": 33,
     "order": [
       "args",
       "source",

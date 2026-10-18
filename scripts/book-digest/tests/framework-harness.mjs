@@ -124,16 +124,16 @@ const CANNED = {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
-  const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0 }
+  const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0, resources: new Map() }
   const failedStep = []
 
   const layerEnabled = (name) => ({ econ: { terms: true, models: true, events: true, findings: true, hubs: false, figures: false, bridge: false }, math: { terms: true, models: true, events: false, findings: false, hubs: true, figures: false, bridge: false } })[kind === 'math' ? 'math' : 'econ'][name]
 
   // The ledger commands, answered by the in-memory ledger.
-  const ledgerAnswer = (cmd) => {
+  const ledgerAnswer = (cmd, extraRecord = null) => {
     const layer = (cmd.match(/-Layer (\w[\w-]*)/) || [])[1]
     if (/ group-start /.test(cmd)) {
       const group = Number((cmd.match(/-Group (\d+)/) || [])[1])
@@ -193,17 +193,66 @@ function runtime(kind, opts = {}) {
       return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     if (/ ledger job /.test(cmd)) return { ok: true, output: json({ schema_version: 1, action: 'list', jobs: [] }) }
+    // Owned provider resources (#83): the workflow records the returned ids, observes the provider's
+    // facts, and settles the cleanup unit through its checked verifier.
+    if (/ ledger resource /.test(cmd)) {
+      if (/-List/.test(cmd)) return { ok: true, output: json({ schema_version: 1, action: 'list', resources: [...state.resources.values()] }) }
+      if (/-Register/.test(cmd)) {
+        const record = extraRecord || resourceRecord(cmd)
+        if (!record) return { ok: false, exit: 1, output: 'no resource record in the command' }
+        const unit = record.unit === 'run' ? 'cleanup/book@1' : `cleanup/${String(record.unit).replace(/[^A-Za-z0-9._-]+/g, '-')}-t${record.token}@1`
+        const id = `${unit}#${record.workspace.id}`
+        const known = state.resources.get(id) || {
+          id, cleanup_unit: unit, owner: record.unit, label: `zet-r1-${String(record.unit).replace(/[^A-Za-z0-9._-]+/g, '-')}-t${record.token}`,
+          workspace: record.workspace, conversations: [], usage: null, listing: null, unknown: [], workspace_removed: null, scratch: [],
+        }
+        for (const conversation of record.conversations || []) {
+          if (!known.conversations.some((c) => c.id === conversation.id)) known.conversations.push({ id: conversation.id, lost: false, terminal: false, deleted: false, evidence: conversation.answer ? { answer: { path: `D:\\x\\Key\\cleanup\\evidence\\${conversation.id}.answer.txt`, sha256: 'a'.repeat(64) } } : null })
+        }
+        resourceRecords.push(record)
+        if (!led.find(unit)) led.add(unit, 'cleanup')
+        state.resources.set(id, known)
+        return { ok: true, output: json({ schema_version: 1, action: 'register', cleanup_unit: unit, label: known.label, resources: [...state.resources.values()] }) }
+      }
+      if (/-Observe/.test(cmd)) {
+        const record = extraRecord || resourceRecord(cmd)
+        const target = record && [...state.resources.values()].find((r) => r.id === record.resource)
+        if (target && record.op === 'terminal') for (const c of target.conversations) if (c.id === record.conversation) { c.terminal = true; c.outcome = record.outcome || record.state }
+        if (target && record.op === 'deleted') for (const c of target.conversations) if (c.id === record.conversation) c.deleted = true
+        if (target && record.op === 'usage') target.usage = record.usage
+        if (target && record.op === 'listing') { target.listing = { conversations: record.conversations || [], unknown: record.unknown || [] }; target.unknown = record.unknown || [] }
+        if (target && record.op === 'workspace') target.workspace_removed = record.removed === true
+        return { ok: true, output: json({ schema_version: 1, action: 'observe', op: record ? record.op : null, resources: [...state.resources.values()] }) }
+      }
+      return null
+    }
+    if (/zt-digest cleanup-finish /.test(cmd)) {
+      const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      led.finish(id)
+      const resources = [...state.resources.values()].filter((r) => id === 'cleanup/book@1' || r.cleanup_unit === id)
+      const cleanupComplete = resources.every((r) => r.conversations.every((c) => c.terminal && c.deleted) && (id !== 'cleanup/book@1' || r.workspace_removed === true))
+      const contentComplete = [...led.units.values()].filter((u) => u.layer !== 'cleanup').every((u) => u.state === 'done')
+      return { ok: true, output: json({ schema_version: 1, kind: 'cleanup_completion', unit: id, state: 'done', status: cleanupComplete && contentComplete ? 'complete' : 'partial', content_complete: contentComplete, cleanup_complete: cleanupComplete, reconciliation: [], partial_reasons: [], resources, scratch: { removed: [], retained: [] } }) }
+    }
     return null
   }
 
+  // The JSON record a resource command writes (a PowerShell single-quoted literal).
+  function resourceRecord(cmd) {
+    const match = String(cmd).match(/-Value '((?:[^']|'')*)'/s)
+    if (!match) return null
+    try { return JSON.parse(match[1].replace(/''/g, "'")) } catch { return null }
+  }
+
   // One script command, as a step agent would run it.
-  const commandAnswer = (raw) => {
+  const commandAnswer = (raw, extraRecord = null) => {
     const cmd = String(raw).trim()
+    if (process.env.DBG83 && /resource|cleanup/.test(cmd)) console.log('DBG', cmd.slice(0, 160))
     commands.push(cmd)
     failedStep.push(cmd)
     const denied = opts.failWhen && opts.failWhen.test(cmd) ? cmd : null
     if (opts.contentWhen && opts.contentWhen.test(cmd)) return { ok: true, exit: 0, output: json({ schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' }) }
-    const ledAns = ledgerAnswer(cmd)
+    const ledAns = ledgerAnswer(cmd, extraRecord)
     if (ledAns) return denied ? { ok: false, exit: 1, output: 'stand-in crash' } : ledAns
     const tool = cmd.match(/^zt-digest ([\w-]+) -Step ([\w-]+)/)
     if (tool) {
@@ -298,8 +347,14 @@ function runtime(kind, opts = {}) {
     }
     if (/^Run this PowerShell command once/.test(text)) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
-      if (lines.length) {
-        let r = await commandAnswer(lines[0])
+      // An owned-resource command writes its JSON first and runs one ledger command on the same line.
+      const compound = text.split('\n').map((l) => l.trim()).find((l) => / zt-digest ledger resource /.test(l))
+      if (compound) {
+        const inner = compound.slice(compound.indexOf(' zt-digest ') + 1)
+        const r = await commandAnswer(inner, resourceRecord(compound))
+        return { ok: r.ok, output: r.output }
+      }
+      if (lines.length) {        let r = await commandAnswer(lines[0])
         if (/ ledger next .* -Wait \d+/.test(lines[0])) {
           for (let i = 0; i < 200; i++) {
             const view = lastJson(r.output)
@@ -318,6 +373,7 @@ function runtime(kind, opts = {}) {
       state.groups = 2
       led.add('prepare/book@1', 'prepare').state = 'done'
       if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
+      led.add('cleanup/book@1', 'cleanup')
       for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
       if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
       return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
@@ -344,7 +400,18 @@ function runtime(kind, opts = {}) {
     }
     if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
     if (/^prepare link pass$/.test(label)) return { ok: true, ...CANNED['prepare-link']() }
-    if (/^cleanup DeepSeek/.test(label)) return { late_deleted: 0, workspace_removed: true, files_removed: 0 }
+    if (/^cleanup DeepSeek/.test(label)) {
+      // The recorded resources the prompt lists: the mock agent deletes exactly these ids.
+      const plan = JSON.parse((text.match(/Recorded resources \(JSON\):\n(.+)/) || [])[1] || '[]')
+      const workspaces = [...new Set(plan.map((r) => r.workspace && r.workspace.id))].filter(Boolean)
+      return {
+        workspaces: workspaces.map((id) => ({
+          id, removed: true, unknown: [],
+          conversations: plan.filter((r) => r.workspace.id === id).flatMap((r) => r.conversations.map((c) => ({ id: c.id, state: 'finished', outcome: 'answered', deleted: 'confirmed' }))),
+        })),
+        usage_after: { input_cache_miss: 100, cached_read: 50, output: 20, calls: 3, cost: 0.1 },
+      }
+    }
     if (/^cleanup model managers/.test(label)) return { late_deleted: 0, folders: 1 }
     if (/^show figures$/.test(label)) return { ok: true, output: json(CANNED.figures()) }
     if (/^organize: /.test(label)) {
@@ -363,7 +430,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords,
     agent: async (prompt, opts = {}) => {
       const manager = /^You run one compiler chain/.test(prompt) || /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
       if (!manager) {
@@ -510,7 +577,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: each chain starts its own group (snapshot before the job manifest)')
   check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: each chain records its checked completion with the draft bound to the start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
-  check(labels.filter((l) => /^group \d attempt 1/.test(l)).length === 2, 'group cycle: one manager chain per group item')
+  check(labels.filter((l) => /^group \d attempt 1$/.test(l)).length === 2, 'group cycle: one manager chain per group item')
   const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
   check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
   const cards = [...led.units.values()].filter((u) => u.layer === 'cards')
@@ -548,14 +615,14 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // ================================================================================================================
 for (const kind of ['econ', 'math']) {
   const mbase = { ...base, hubs: true, figures: false }
-  const { commands, calls, result, led } = await run(kind, { ...mbase, mode: 'full' })
+  const { commands, calls, result, led, resourceRecords } = await run(kind, { ...mbase, mode: 'full' })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (pattern) => labels.findIndex((l) => pattern.test(l))
   check(result && result.mode === 'full', `${kind} full: reaches the report`)
   check(at(/^prepare book$/) < at(/^math: index$/) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
   check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
-  const work = labels.filter((l) => !/^cleanup DeepSeek/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
+  const work = labels.filter((l) => !/^cleanup/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
   check(work[work.length - 1] === 'audit cards', `${kind} full: the audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
   if (kind === 'math') {
@@ -566,6 +633,22 @@ for (const kind of ['econ', 'math']) {
     check(!calls.some((c) => /^math:/.test(c.label)), 'econ full: no mathematics stage runs')
     check(cmds.some((c) => /zt-digest event -Step plan/.test(c)) && cmds.some((c) => /zt-digest finding -Step plan/.test(c)), 'econ full: the Event and Finding compiler chains run')
   }
+  // #83: the run records every created conversation with its accepted answer, and its cleanup deletes
+  // exactly those ids, observes the provider's facts and settles each cleanup unit through the verifier.
+  const registers = cmds.filter((c) => / ledger resource .*-Register /.test(c))
+  const records = resourceRecords
+  check(records.length > 0 && records.every((r) => r.workspace && r.workspace.path && Array.isArray(r.conversations) && r.conversations.every((c) => c.id && c.answer)), `${kind} full: every created conversation is recorded with its accepted answer`)
+  check(records.some((r) => r.unit !== 'run') && registers.some((c) => /-Unit "?digest\/g\d{3}@1"?/.test(c)), `${kind} full: a claimed unit owns its conversations`)
+  const listed = at(/^cleanup: list the recorded resources$/)
+  const asked = at(/^cleanup DeepSeek$/)
+  check(listed >= 0 && asked > listed, `${kind} full: the cleanup reads the recorded ids before it asks the provider (${listed} < ${asked})`)
+  const askedPrompt = (calls.find((c) => /^cleanup DeepSeek$/.test(c.label)) || {}).prompt || ''
+  check(records.every((r) => r.conversations.every((c) => askedPrompt.includes(c.id))), `${kind} full: the cleanup agent may delete only the recorded ids`)
+  check(cmds.some((c) => / ledger resource .*-Observe /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Unit "?cleanup\/book@1"?/.test(c)), `${kind} full: the provider facts are observed and the run-level cleanup is settled by its verifier`)
+  // The stand-in link units stay explicit content failures (#82), so content is incomplete while the
+  // cleanup itself settles: the two halves are reported apart and the run is partial.
+  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.content_complete === false && result.cleanup.status === 'partial', `${kind} full: the report carries content_complete apart from cleanup_complete`)
+  check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
 {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
@@ -579,7 +662,8 @@ for (const kind of ['econ', 'math']) {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
-  check(labels.length === 2 && labels[0] === 'audit cards' && /^cleanup DeepSeek/.test(labels[1]), `econ audit: the audit and its settlement cleanup, no source probe and no layer (${labels.join(', ')})`)
+  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup/.test(l)) && labels.includes('cleanup: list the recorded resources'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
+  check(!calls.some((c) => /^cleanup DeepSeek/.test(c.label)) && !commands.some((c) => /deepseek_delete/.test(c)), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
 }
 {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })

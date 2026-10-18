@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "The shared base of the ZT digest workflows: Prepare, the ledger-driven group cycle, the per-group Card checks, Link, Organize, Figures and Hubs joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages), and report-first cross-book Bridges after Figures",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -968,7 +968,7 @@
     {
       "id": "cleanup",
       "title": "Cleanup",
-      "detail": "delete leftover DeepSeek conversations, remove the workspace and scratch files, read the usage ledger",
+      "detail": "settle every DeepSeek conversation and workspace the run recorded, delete exactly those ids, remove only registered scratch inside the staging root, read the usage ledger and report content_complete apart from cleanup_complete",
       "after": [
         "after-audit"
       ],

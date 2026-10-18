@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v8 ====
+// ==== module zt-digest-lib v9 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -258,7 +258,6 @@ Return reports: one entry per group in this block with group, status, ${S.fields
   // workspace), skills, effort, sessions (continued jobs), cleanup (the last round), phase, writes, keep.
   const driveAgent = (label, o, part) => {
     const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
-    const removal = `deepseek_list with cwd "${o.dsh}"; deepseek_delete every conversation listed there that is not running, and count them in deleted; then, when none is running, deepseek_remove_workspace with cwd "${o.dsh}" and delete_conversations true. Never archive a conversation`
     const head = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
 ${RUNNER}
 Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
@@ -271,10 +270,10 @@ Its last output line is compact JSON; it may be long (tens of kilobytes). Put th
         { label, phase: o.phase || 'Models', model: 'haiku', schema: DRIVE })
     }
     if (part === 'cleanup') {
-      return zAgent(`${head}
-Clean up: ${removal}${o.keep ? '. Keep the folder and its files.' : `; then one PowerShell call: Remove-Item -LiteralPath "${o.dsh}" -Recurse -Force -ErrorAction SilentlyContinue`}
-Return ok=true, results=[], and deleted.`,
-        { label, phase: o.phase || 'Models', model: 'haiku', schema: DRIVE })
+      // R323/R327: a step no longer deletes its conversations. Every created conversation was recorded
+      // when the provider returned its id, and the run's cleanup stage deletes exactly those ids after
+      // the owning work settled. Nothing is removed on a title match or on an agent's guess.
+      return { ok: true, results: [], deleted: 0, deferred: true }
     }
     const jobs = o.jobs || []
     return dsmpSlot(() => zAgent(`${head}
@@ -307,11 +306,11 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     })
   }
   // Runs one compiler step: the command, its jobs spread over up to DSH_MANAGERS managers (one per
-  // DSH_PER_BATCH jobs, all under dsmpSlot), then the cleanup when o.cleanup.
+  // DSH_PER_BATCH jobs, all under dsmpSlot). The run ids are recorded at once; the run-level cleanup
+  // later deletes exactly those ids (R322/R323).
   const drive = async (label, o) => {
     const step = await driveAgent(label, o, 'command')
     if (!step || !step.ok) {
-      if (o.cleanup) await driveAgent(`${label}: clean up`, o, 'cleanup')
       return { ok: false, error: (step && step.error) || 'no report from the step', output: (step && step.output) || '', results: [] }
     }
     const parsed = zdLastJson(step.output)
@@ -339,12 +338,12 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
       const failedManagers = done.filter(d => !d || !d.ok).length
       if (failedManagers) log(`${label}: ${failedManagers} of ${managers} managers reported a failure.`)
     }
-    let deleted = 0
-    if (o.cleanup) {
-      const c = await driveAgent(`${label}: clean up`, o, 'cleanup')
-      deleted = (c && c.deleted) || 0
+    // R322: the provider returned these ids, so record them now, against the work that owns them.
+    if (results.length) {
+      const recorded = await registerResources(`${label}: record the run ids`, resourceOwner(o), o.dsh, results)
+      if (!recorded.ok) log(`${label}: ${recorded.error}`)
     }
-    return { ok: true, output: step.output, results, deleted }
+    return { ok: true, output: step.output, results, deleted: 0 }
   }
   const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(zdJsonIn).filter(Boolean))
 
@@ -419,12 +418,18 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const driven = run || { steps: [], results: [] }
     const steps = Array.isArray(driven.steps) ? driven.steps : []
     const results = Array.isArray(driven.results) ? driven.results : []
-    let deleted = 0
-    if (o.cleanup) {
-      const c = await driveAgent(`${label}: clean up`, o, 'cleanup')
-      deleted = (c && c.deleted) || 0
+    // R322: a claim step inside the chain names the unit that owns its conversations; a block of units
+    // claimed before the chain names its own owner; a stage-wide chain is the run's own work.
+    // A declared claim step (the chain's own first step) names the unit that owns these conversations.
+    const claimStep = (o.steps || []).find((s) => s.claim)
+    const claimRun = claimStep ? steps.find((s) => s.name === claimStep.name) : null
+    const claimed = claimRun ? ((zdLastJson(claimRun.output) || {}).units || []) : []
+    const owner = claimed[0] && claimed[0].id ? { unit: claimed[0].id, token: claimed[0].token } : resourceOwner(o)
+    if (results.length) {
+      const recorded = await registerResources(`${label}: record the run ids`, owner, o.dsh, results)
+      if (!recorded.ok) log(`${label}: ${recorded.error}`)
     }
-    return { ok: steps.every(s => s.ok), steps, results, deleted, raw: driven }
+    return { ok: steps.every(s => s.ok), steps, results, deleted: 0, raw: driven, unit: owner === 'run' ? 'run' : owner.unit }
   }
   const stepOf = (driven, name) => ((driven && driven.steps) || []).find(s => s.name === name) || null
   const jsonOf = (driven, name) => zdLastJson((stepOf(driven, name) || {}).output)
@@ -453,6 +458,8 @@ Return steps: one entry per step with name, ok (true when it exited without an e
   }
   // The phase a ledger-only call is filed under: a declared stage title of the base blueprint.
   const LEDGER_PHASE = 'Digest'
+  // The phase of the run-level cleanup: the base declares one `Cleanup` stage.
+  const CLEANUP_PHASE = 'Cleanup'
   // The ledger adapter: every call is one bounded command in a manager's own conversation. The ledger owns
   // readiness, attempts and completion evidence; a module never reads a clock or a file to decide it (R270).
   const ledgerCommand = (args) => `${ZD_LEDGER} ${args}`
@@ -490,6 +497,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     else if (/^explain\//.test(unit)) command = `${ZD_DIGEST} explain-finish -Out "${OUT}" -Model ${psQuote(model)} -Token ${token}`
     else if (/^cards-book\//.test(unit)) command = `${ZD_DIGEST} book-cards-finish -Out "${OUT}" -Work ${psQuote(extra.work || `${OUT}\\cards`)} -Unit "${unit}" -Token ${token}`
     else if (/^terms\//.test(unit)) command = `${ZD_LEDGER} done -Out "${OUT}" -Unit "${unit}" -Token ${token} -Outputs ${psQuote(`${OUT}\\terms\\completion.json`)}`
+    else if (/^cleanup\//.test(unit)) command = `${ZD_DIGEST} cleanup-finish -Out "${OUT}" -Unit "${unit}" -Token ${token}`
     else return { ok: false, error: `no checked finish command for ${unit}` }
     if (extra.checkOnly) command += ' -CheckOnly'
     const out = await runScript(label, o.phase || LEDGER_PHASE, command, ' (a checked completion; never retry it with other options)')
@@ -502,15 +510,71 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const at = `${label}: ${unit}`
     const got = await finishOf(at, unit, token, { ...extra, inputs }, { inputs })
     const done = got.ok && got.json && (got.json.state === 'done' || got.json.complete === true)
-    if (done) return { unit, status: 'done', result: got.json }
+    if (done) return { unit, status: got.json.status === 'partial' ? 'partial' : 'done', result: got.json }
     const cause = String((got.error && got.error.message) || got.error || (got.json && (got.json.fault || got.json.error)) || 'the checked completion did not complete').slice(0, 800)
-    const retryable = /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs/.test(cause)
+    const retryable = /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs|cleanup_transient/.test(cause)
     const fault = {
       schema_version: 1, unit, input_hash: (inputs && inputs.input_hash) || '',
       code: retryable ? 'provider_transient' : 'check_failed', cause,
     }
     await failUnit(`${at} fault`, unit, token, retryable ? 'retryable' : 'content', fault)
     return { unit, status: retryable ? 'retry' : 'failed', error: cause, command: got.command }
+  }
+  // --- Owned DeepSeek resources (R322–R330) -----------------------------------------------------------
+  // Every created conversation is recorded the moment the provider returns its id, against the work that
+  // created it: the unit a chain claimed, or the run-level cleanup unit for a stage-wide chain. The
+  // run-level cleanup deletes exactly the recorded ids; nothing is deleted by title.
+  const RESOURCES = `${OUT}\\resources`
+  // A monotone counter names the record files: workflow scripts have no clock and no randomness.
+  let resourceSeq = 0
+  const resourceFile = (stem) => `${RESOURCES}\\${stem}-${++resourceSeq}.json`
+  const resourceOwner = (o = {}) => {
+    if (o.unit) return { unit: o.unit, token: Number(o.token) || 0 }
+    return 'run'
+  }
+  const registerResources = async (label, owner, dsh, results) => {
+    const items = (results || []).filter((r) => r && typeof r.session_id === 'string' && r.session_id.trim())
+    if (!items.length) return { ok: true, recorded: 0 }
+    const unit = owner === 'run' ? 'run' : owner.unit
+    const token = owner === 'run' ? 1 : owner.token
+    if (unit !== 'run' && !token) return { ok: false, recorded: 0, error: 'a recorded run needs the attempt token of its unit' }
+    const file = resourceFile(`${String(unit).replace(/[^A-Za-z0-9._-]+/g, '-')}-t${token}`)
+    // R325: the accepted answer travels with the id, so the command retains it under the durable
+    // evidence path at once; a failed run keeps an explicit line instead of an empty claim.
+    const conversations = items.map((r) => ({
+      id: r.session_id,
+      answer: typeof r.answer === 'string' && r.answer.trim() ? r.answer : `no answer: ${r.status || 'failed'}`,
+    }))
+    const record = { schema_version: 1, unit, token, workspace: { id: dsh, path: dsh }, conversations }
+    const command = `New-Item -ItemType Directory -Force -LiteralPath "${RESOURCES}" | Out-Null; Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(record))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Unit "${unit}" -Token ${token} -Register "${file}"`
+    const out = await runScript(label, LEDGER_PHASE, command)
+    const parsed = out.json
+    if (!parsed || !parsed.cleanup_unit) {
+      return { ok: false, recorded: 0, error: String((out.run && out.run.output) || 'the created run ids were not recorded') }
+    }
+    return { ok: true, recorded: items.length, cleanup_unit: parsed.cleanup_unit, label: parsed.label }
+  }
+  // The recorded resources of this run, exactly as the ledger holds them (never a workspace listing alone).
+  const resourceList = async (label, unit = '') => {
+    const out = await runScript(label, LEDGER_PHASE, ledgerCommand(`resource -Out "${OUT}" -List${unit ? ` -Unit "${unit}"` : ''}`))
+    if (!out.json) return { ok: false, error: String((out.run && out.run.output) || 'no output from ledger resource'), resources: [] }
+    return { ok: true, resources: out.json.resources || [] }
+  }
+  // Record one provider fact about a recorded resource. A claimed cleanup unit fences the observation
+  // with its own token, so a late fact cannot apply to another attempt (T13).
+  const observeResource = async (label, record, unit = '', token = 0) => {
+    const file = resourceFile('observe')
+    const body = { schema_version: 1, ...record }
+    const fence = unit && token ? ` -Unit "${unit}" -Token ${token}` : ''
+    const command = `New-Item -ItemType Directory -Force -LiteralPath "${RESOURCES}" | Out-Null; Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(body))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Observe "${file}"${fence}`
+    const out = await runScript(label, LEDGER_PHASE, command)
+    return { ok: !!(out.run && out.run.ok) && !!out.json, json: out.json, error: String((out.run && out.run.output) || '') }
+  }
+  // The checked completion of one cleanup unit; a partial completion records what a human must reconcile.
+  const finishCleanup = async (label, unit, token, checkOnly = false) => {
+    const command = `${ZD_DIGEST} cleanup-finish -Out "${OUT}" -Unit "${unit}" -Token ${token}${checkOnly ? ' -CheckOnly' : ''}`
+    const out = await runScript(label, CLEANUP_PHASE, command, ' (the checked cleanup completion; never retry it with other options)')
+    return { ok: !!(out.run && out.run.ok), json: out.json, command, error: String((out.run && out.run.output) || '') }
   }
   // One unit's full attempt: claim is done by the caller; the work runs; the family finish records it.
   const drain = async (layerName, unit, token, inputs, work) => {
@@ -626,14 +690,16 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     // The command that runs a digest script: zt-digest <tool> once ported, else pwsh with the script.
     tool: name => zdTool(name, SCRIPTS),
     // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
-    cleanupDsh: (label, o) => driveAgent(label, o, 'cleanup'),
+    cleanupDsh: () => ({ ok: true, results: [], deleted: 0, deferred: true }),
+    // Owned provider resources (R322-R330): record the returned ids, observe the provider's facts, settle the unit.
+    registerResources, observeResource, resourceList, finishCleanup, resourceOwner, CLEANUP_PHASE,
     runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '8', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '9', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

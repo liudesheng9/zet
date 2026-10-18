@@ -13,6 +13,9 @@ async function run(kind,args,options={}){
   const cmd=(String(prompt).match(/pwsh -NoProfile -File[^\n]*|zt-digest bridge -[^\n]*/)||[''])[0];calls.push({prompt:String(prompt),...opts,cmd})
   if(opts.label==='choose DeepSeek source')return {source:'official',errors:''}
   if(/Run every job below/.test(prompt))return {ok:true,results:[{id:'br-001',session_id:'judge-1',status:options.failJudge?'failed':'done',answer:'{}'}]}
+  // #83: the judge conversation is recorded for the run-level cleanup, which deletes exactly its id.
+  if(/^Run this PowerShell command once/.test(prompt)&&/ledger resource .*-Register/.test(prompt))return {ok:true,output:JSON.stringify({schema_version:1,action:'register',cleanup_unit:'cleanup/run-t1@1',label:'zet-r1-run-t1',resources:[]})}
+  if(/^Run this PowerShell command once/.test(prompt)&&/ledger resource .*-Observe/.test(prompt))return {ok:true,output:JSON.stringify({schema_version:1,action:'observe',resources:[]})}
   if(/^Clean up:/m.test(prompt))return {ok:true,results:[],deleted:1}
   if(/bridge-compiler|zt-digest bridge/.test(cmd)){
    const plan=/-Step plan/.test(cmd)
@@ -32,7 +35,7 @@ for(const kind of ['econ','math']){
  assert.equal(discovery.result?.bridge?.status,'done',`${kind} returns its Bridge summary: ${JSON.stringify(discovery.result)} ${discovery.calls.map(c=>c.label)}`)
  assert(discovery.calls.some(c=>/-Step plan/.test(c.cmd)))
  assert(!discovery.calls.some(c=>/-Apply\b/.test(c.cmd)))
- assert(discovery.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} cleans judge conversations`)
+ assert(discovery.calls.some(c=>/ledger resource .*-Register/.test(c.prompt)),`${kind} records the judge conversation for the run-level cleanup`)
  const apply=await run(kind,{...args,bridgeReport:'r-frozen',bridgeApply:['b001']})
  assert(!apply.error,`${kind} apply succeeds: ${apply.error}`)
  assert.equal(apply.result?.bridge?.status,'done')
@@ -52,13 +55,13 @@ for(const kind of ['econ','math']){
   assert(r.error||r.halted||r.result?.stage==='args'||r.result?.bridge?.status==='failed',`${kind} rejects invalid Bridge argument types and bounds`)
  }
  assert(discovery.calls.filter(c=>/Run every job below/.test(c.prompt)).every(c=>/zettelkasten/.test(c.prompt)&&/never -Apply/.test(c.prompt)),`${kind} judges load the skills and have read-only approvals`)
- assert(discovery.calls.some(c=>/^Clean up:/m.test(c.prompt)&&/Keep the folder and its files/.test(c.prompt)),`${kind} retains review artifacts during cleanup`)
+ assert(!discovery.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} leaves deletion to the run-level cleanup`)
  const judged=await run(kind,args,{failJudge:true})
  assert.equal(judged.result?.bridge?.status,'failed',`${kind} fails the stage when a judge job fails`)
  assert(!judged.calls.some(c=>/-Step report/.test(c.cmd)),`${kind} publishes no report after a failed judge job`)
- assert(judged.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} cleans judge conversations after a failed judge job`)
+ assert(judged.calls.some(c=>/ledger resource .*-Register/.test(c.prompt)),`${kind} records the judge conversation even after a failed judge job`)
  const failedPlan=await run(kind,args,{failPlan:true})
- assert(!failedPlan.calls.some(c=>/-Step report/.test(c.cmd))&&failedPlan.calls.some(c=>/^Clean up:/m.test(c.prompt)),`${kind} publishes no report after failed planning and still cleans up`)
+ assert(!failedPlan.calls.some(c=>/-Step report/.test(c.cmd)),`${kind} publishes no report after failed planning`)
  const missing=await run(kind,{...args,bridgeApply:'all'})
  assert(missing.error||missing.halted||missing.result?.stage==='args'||missing.result?.bridge?.status==='failed',`${kind} refuses acceptance without report: ${JSON.stringify(missing.result)}`)
  console.log(`ok: ${kind} discovery and explicit apply are separate, bounded paths`)

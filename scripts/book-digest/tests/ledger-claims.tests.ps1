@@ -101,9 +101,11 @@ const db=new DatabaseSync(p);db.exec('pragma foreign_keys=on');let appendOnly=fa
 try{db.exec('delete from events')}catch(e){appendOnly=String(e).includes('append-only')}
 try{db.exec("insert into deps values('not-a-unit','prepare/book@1','success')")}catch(e){foreignKeys=String(e).includes('FOREIGN KEY')}
 // A publication unit now carries real readiness history, so removing it removes its
-// own events too. The append-only guard is restored before the ledger is read back.
+// own events too, and every dependency that named it as its prerequisite (the run-level
+// cleanup waits on the audit revision, R323). The append-only guard is restored before the
+// ledger is read back.
 db.exec("DROP TRIGGER events_no_delete");
-db.exec("begin;delete from deps where unit_id='audit/book@1';delete from events where unit_id='audit/book@1';delete from units where id='audit/book@1';commit");
+db.exec("begin;delete from deps where unit_id='audit/book@1' or needs_id='audit/book@1';delete from events where unit_id='audit/book@1';delete from units where id='audit/book@1';commit");
 db.exec("CREATE TRIGGER events_no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'events are append-only'); END");
 db.close();console.log(JSON.stringify({appendOnly,foreignKeys}));
 '@

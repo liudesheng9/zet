@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v2 ====
+// ==== module zt-model-lib v3 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list
 // (list-models.ps1) and the model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill,
 // derive, review, split → report and clean-up (model-compiler.ps1 does every structural step). A book type
@@ -146,22 +146,14 @@ Return plans: one entry per model, in this order.`,
     log(`Levels: ${done.filter(r => r.level === 'concept').length} concept models (level 1), ${done.filter(r => r.level === 'formal').length} formal models (level 2), ${done.filter(r => !r.level).length} without a level.`)
     log(`Models: ${done.length} structured (${done.reduce((s, r) => s + r.parts.length, 0)} parts, ${done.reduce((s, r) => s + r.parts.filter(pp => pp.emphasis === 'core').length, 0)} core, ${sum('relations')} relations (${kindTally(done)}), ${sum('neighbours')} neighbours, ${sum('loose')} loose, ${sum('charts')} charts), ${reports.filter(r => r.status === 'skipped').length} skipped, failed ${reports.filter(r => r.status === 'failed').map(r => r.model).join(', ') || 'none'}; open issues ${reports.reduce((s, r) => s + r.issues.length, 0)}.`)
   }
-  // A batch's cleanup deletes its own DeepSeek conversations; this sweep deletes any a failed batch left.
+  // R323: the model stage no longer deletes conversations or folders itself. Every batch conversation
+  // was recorded when the provider returned its id, so the run's cleanup stage deletes exactly those
+  // ids after the owning work settles; a batch folder is disposable scratch only when its accepted
+  // plan is retained first (R328/R329). This resolves that the sweep owes nothing.
   const modelCleanup = async () => {
     if (!managerFolders.length) return null
-    const c = await zAgent(
-      `Clean up after the batches of a ZET model stage (a batch deletes its own conversations; this catches a batch that failed). Load tools with ToolSearch query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
-For each folder below: deepseek_list with that cwd (a workspace that is not found needs nothing); deepseek_delete every conversation there that is not running, and count them; then, when none is running, deepseek_remove_workspace with that cwd and delete_conversations true. Never archive a conversation.
-${managerFolders.join('\n')}
-Then delete what is left of those folders with one PowerShell call: ${managerFolders.map(f => `Remove-Item -LiteralPath "${f}" -Recurse -Force -ErrorAction SilentlyContinue`).join('; ')}
-Return late_deleted (the count) and folders (how many folders you handled).`,
-      {
-        label: 'cleanup model managers', phase: 'Models', model: 'haiku',
-        schema: { type: 'object', properties: { late_deleted: { type: 'number' }, folders: { type: 'number' } }, required: ['late_deleted'] },
-      },
-    )
-    if (c) log(`Model clean-up: ${c.late_deleted} conversations deleted late.`)
-    return c
+    log(`Model clean-up: ${managerFolders.length} batch folders stay until the run-level cleanup settles their recorded conversations.`)
+    return { late_deleted: 0, folders: managerFolders.length, deferred: true }
   }
 
 
@@ -169,7 +161,7 @@ Return late_deleted (the count) and folders (how many folders you handled).`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '2', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '3', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model list and the model compiler (brief, architect plan, fill, derive, review, split) for the model layer.',
 })
 // ==== end module zt-model-lib ====

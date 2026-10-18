@@ -25,7 +25,7 @@ defineModule({
         // One compiler chain for this block: plan → its jobs → apply → report. Content failures are
         // recorded against the units they leave unfinished, not thrown out of the stage.
         const chained = await Z.chain(`events ${units.map(u => u.id).join(', ')}`, {
-          dsh: work, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Events', writes: `${work}\\out`,
+          dsh: work, unit: units[0].id, token: units[0].token, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Events', writes: `${work}\\out`,
           steps: [
             { name: 'plan', command: estep('plan'), jobs: true },
             { name: 'apply', command: estep('apply', ' -Apply'), optional: true },

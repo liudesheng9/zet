@@ -70,7 +70,7 @@ This block holds the Claude Code Workflow scripts that turn a book from the Scho
 - `Checkpoint` — a stage at which `args.until` stops the run; the base declares `digest` (stop before the layers and the link pass).
 - `DeepSeek Subagent Managed Protocol (DSMP)` — the run-wide rule: a Haiku manager runs at most 8 DeepSeek conversations, at most 8 managers are alive at once (64 conversations), conversations are deleted and never archived, and a workspace is removed when its work is done. `dsmpSlot` (the inlined DSMP block in each installed script) is the shared pool.
 - `Script command` — the command prefix that runs one digest script, from `zdTool(name)` (or `Z.tool(name)`) in `zt-digest-lib.js`: `zt-digest <tool>` for a script listed in `ZD_TOOLS` (since `zt-digest-lib` v6, every digest script), else `pwsh -NoProfile -File "<ZD_SCRIPTS>\<name>.ps1"`. Every stage module builds its commands from it, so a newly ported script needs one entry in `ZD_TOOLS` and no module change.
-- `Compiler step` — one script command with `-Step <s> ...` (`zt-digest <tool> -Step <s> ...` or `pwsh -NoProfile -File "<script>.ps1" -Step <s> ...`) whose last output line is compact JSON, often with a `jobs` list for DeepSeek. `drive()` runs it: one Haiku agent runs the command, managers run its jobs, an optional cleanup agent deletes the conversations.
+- `Compiler step` — one script command with `-Step <s> ...` (`zt-digest <tool> -Step <s> ...` or `pwsh -NoProfile -File "<script>.ps1" -Step <s> ...`) whose last output line is compact JSON, often with a `jobs` list for DeepSeek. `drive()` runs it: one Haiku agent runs the command, managers run its jobs, and the returned session ids are recorded for the run-level cleanup, which deletes exactly those ids.
 - `Card cycle` — `runCards()`: the card compiler (`zt-digest card`) plan → DeepSeek JSON → apply in shares of `applyShare` jobs → check → up to `cardFixRounds` fix rounds → report (the Card layer rules of the glossary).
 - `Model compiler` — `compileBatch()` in `zt-model-lib.js`: DeepSeek brief → Sonnet plan (`plan.json`) → script skeleton and DeepSeek fill → DeepSeek derive → DeepSeek review and script split (up to `reviewRounds`) → script report and cleanup. Concept models skip derive and review.
 - `Elaboration level` — `concept` or `formal` on a Model Card; `args.level` forces one level for the run; concept models go in batches of `perConcept`, formal and undecided ones in batches of `perSonnet`.
@@ -131,7 +131,7 @@ Every stage module calls `zdMake(ctx, params)` (directly or through `zmlMake` / 
 2. `zdLastJson(output)` parses the last JSON line; `expandJobs()` turns it into `{ id, files, prompt, continue?, fallback? }` jobs (a compact list from `zt-digest card ... -Compact` gives `dir`, `lead`, `prompts` once and `{ id, kind, file, continue? }` per job).
 3. The jobs split into shares of `dshPerBatch` (8); up to `dshManagers` (8) lanes take shares in turn; each share is one Haiku manager (`driveAgent(..., 'jobs')`) inside `dsmpSlot`, which keeps every manager of the run under the 8-manager cap. A manager starts jobs with `deepseek_run` (or continues a session with `deepseek_prompt` when the job names `continue` and the step's session table holds it), keeps at most 8 running, approves only the listed read-only checks, reads, and writes under `o.writes`, retries once with a resume prompt, and does not delete conversations.
 4. A job a manager did not report becomes `{ status: 'failed' }`.
-5. With `o.cleanup`, a last Haiku agent lists the workspace `o.dsh`, deletes every conversation that is not running, removes the workspace with `delete_conversations: true`, and deletes the folder unless `o.keep`.
+5. The step's returned session ids are recorded at once with `ledger resource -Register`, against the unit that owns the work (`o.unit`, or `run` for a stage-wide chain), together with each accepted answer. Nothing is deleted here: the run-level `cleanup` stage deletes exactly the recorded ids after the owning work settled (R322/R323).
 
 ## Interfaces
 
@@ -199,7 +199,7 @@ A stage outside the mode passes through with status `not-in-mode` once every sta
 |---|---|---|---|
 | Source probe, prepare, every script relay, list models, cleanups | one agent per command | Haiku (`manager`, effort `low`) | `zdMake().runScript`, `zt-dsh-source`, `zt-digest-prepare`, `zt-link-prepare`, `zt-dsh-cleanup`, `zmlMake().listModels`, `zmMake().runMathScript` |
 | Digest and link runs | one manager per block (digest: runs in order; link: all at once) | Haiku | `manage()` in `zt-digest-lib.js` |
-| Compiler step jobs (cards, terms, models, hubs, events, findings, explain, skeleton, math) | step agent + one manager per 8 jobs + cleanup agent | Haiku | `drive()` |
+| Compiler step jobs (cards, terms, models, hubs, events, findings, explain, skeleton, math) | step agent + one manager per 8 jobs | Haiku | `drive()` |
 | Hub limits | hub manager | Haiku | `zt-hubs.js` |
 | Model plan (`plan.json`) | one architect per batch | Sonnet (`architect`, model default effort) | `compileBatch()` in `zt-model-lib.js` |
 | Organize decisions (`decisions.json`), or the legacy single job | one agent | Opus (`organizer`) | `zt-organize.js` |
@@ -289,8 +289,8 @@ Library modules (no stage; their top-level names carry a prefix because all modu
 
 | Module | Version | Requires | Exports |
 |---|---|---|---|
-| `zt-digest-lib` | 8 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `ZD_COMMAND_TIMEOUT_MS` (600000), `ZD_EDIT_PATIENCE` (180), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, MAX_ATTEMPTS, DSH_RUN_CAP, RUNNER, LEDGER, DIGEST, CALL, DSH_SKILLS, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, chain, stepOf, jsonOf, resultLine, claim, gate, renew, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote, tool, cleanupDsh, runCards`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`zt-digest hub`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
-| `zt-model-lib` | 2 | `zt-digest-lib` | `zmlMake(ctx, p)` → `{ Z, listModels(selector, label), elaborateAll(models, label), logModels(reports), modelCleanup(), dshJobs() }`; internal `compileBatch(batch, kind)` |
+| `zt-digest-lib` | 9 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `ZD_COMMAND_TIMEOUT_MS` (600000), `ZD_EDIT_PATIENCE` (180), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, MAX_ATTEMPTS, DSH_RUN_CAP, RUNNER, LEDGER, DIGEST, CALL, DSH_SKILLS, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, chain, stepOf, jsonOf, resultLine, claim, gate, renew, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote, tool, cleanupDsh, runCards`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`zt-digest hub`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
+| `zt-model-lib` | 3 | `zt-digest-lib` | `zmlMake(ctx, p)` → `{ Z, listModels(selector, label), elaborateAll(models, label), logModels(reports), modelCleanup(), dshJobs() }`; internal `compileBatch(batch, kind)` |
 | `zt-math-lib` | 2 | `zt-digest-lib` | `zmMake(ctx, p)` → `{ Z, A, MATH_WORK, SUPPLY, UNITS_PER_JOB, MAIN_RESULTS, mstep(step, more), runMathScript(what, step, extra, phase), mathOpts(stage, phase) }`; `MATH_COMPILER` is `Z.tool('math-compiler')` |
 
 Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode}}`, required); most also take `model` (`stages.source.output.model`).
@@ -316,7 +316,7 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 | `zt-link-prepare` | 2 | `groups` | `prepare-link-pass.ps1 -Staging <out>`; usage reading in mode `link`; throws on failure | `{ pending, owned_total, unowned, usage_before }` |
 | `zt-link-pass` | 2 | `profile`, `groups`, `pending` | `runStage('link', blocks of linkPerManager)` on the pending groups, then each Link unit is recorded as an explicit `unsupported_claim` content failure (the helper transport has no receipt-bound draft yet), so the layer settles as a visible partial result (R263 Link half remains open) | `{ reports, link_units }` |
 | `zt-link-check` | 1 | — | `runCards('link check', <out>\cards-link)`: all hard rules in mode `full`, else `cardRules` or `L1,L2` | the card cycle report |
-| `zt-dsh-cleanup` | 1 | `usageBefore`, `usageBeforeLink`, `groups`, `linkRuns` | deletes leftover conversations in `<out>`, removes the workspace, deletes scratch files, reads usage | `{ cleanup, usage }` |
+| `zt-dsh-cleanup` | 2 | `usageBefore`, `usageBeforeLink`, `groups`, `linkRuns` | reads the run's recorded resources (`ledger resource -List`), asks one Haiku agent to delete exactly those conversation ids (an unknown member is reported, never removed wholesale), records every provider fact with `ledger resource -Observe` and settles each cleanup unit with `cleanup-finish`, then reads usage | `{ cleanup, usage }` (`cleanup` carries `content_complete` apart from `cleanup_complete`) |
 | `zt-organize` | 2 | `groups`, `digest`, `link`, `models`, `modelsBook` | survey → Opus `decisions.json` → `organize-apply.ps1` → notes card cycle → `book-skeleton.ps1` plan/apply; or the legacy Opus job | `{ survey, decisions, applied, notes, skeleton }` (legacy: the Opus report text) |
 | `zt-figures` | 2 | — | `attach-figures.ps1 -CitationKey -Staging [-FileId] -Report <out>\figures-report.json -Apply` | `{ status, ...summary }` |
 | `zt-bridge` | 5 | `profile` (`book` or `math`) | `bridge-compiler.ps1` `plan` → read-only judge jobs → `report` (only when every job answered); cleanup in `finally`; with a selection only `apply -Apply`; workspace `<out>\bridge` | the compiler summary (`report_id`, counts, `outcome_counts`, the report path), or `{ status: 'failed', error }` |
@@ -327,7 +327,7 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 
 ### Tools per workflow
 
-The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and a cleanup agent deletes the conversations (see Control inside one compiler step). Every digest script is listed in `ZD_TOOLS` and runs as its `zt-digest` tool (see [zt-digest](zt-digest.md)); what each step does is in [Digest scripts](digest-scripts.md). No stage starts a pwsh.
+The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and the step's returned session ids are recorded for the run-level cleanup, which deletes exactly those ids (see Control inside one compiler step). Every digest script is listed in `ZD_TOOLS` and runs as its `zt-digest` tool (see [zt-digest](zt-digest.md)); what each step does is in [Digest scripts](digest-scripts.md). No stage starts a pwsh.
 
 Tools that every workflow uses through `zt-digest-lib`:
 
@@ -351,7 +351,7 @@ Tools that every workflow uses through `zt-digest-lib`:
 | `zt-link-prepare` | a Haiku agent: `zt-digest prepare-link`, `deepseek_usage` (mode `link`) |
 | `zt-link-pass` | Haiku managers: `deepseek_run` per pending group (link prefix), the helper `zt-digest call`, `zt-check` |
 | `zt-link-check` | the card cycle: `zt-digest card` |
-| `zt-dsh-cleanup` | a Haiku agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace`, `deepseek_usage` |
+| `zt-dsh-cleanup` | `ledger resource -List`, one Haiku agent with `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace`, `deepseek_usage`, then `ledger resource -Observe` and `cleanup-finish` |
 | `zt-organize` | `zt-digest organize-survey`; Opus with the zt skills and every zt call piped to `zt-digest call -`, never the `mcp__zt__*` tools (decisions: read-only `get_card`, `get_tree`, `get_model`, `search_cards`; the legacy job also writes, for example `move_card`, `delete_card`) and Read/Write for `decisions.json`; `zt-digest organize-apply`; the card cycle for the notes; compiler steps `zt-digest skeleton` (plan, apply; DeepSeek skill `asd-ste100-zh`) |
 | `zt-figures` | `zt-digest figures` |
 | `zt-bridge` | compiler steps `zt-digest bridge` (plan, read-only judge jobs, report; apply with a selection) |
@@ -362,7 +362,7 @@ Tools that every workflow uses through `zt-digest-lib`:
 
 | Module | Tools |
 |---|---|
-| `zt-model-layer` (with `zt-model-lib`) | a Haiku agent: `zt-digest list-models`; per batch compiler steps `zt-digest model` (the model compiler, `model-compiler.ps1` ported: brief, skeleton and fill, derive, review and split, report), Sonnet for `plan.json`; a Haiku cleanup agent: `deepseek_list`, `deepseek_delete`, `deepseek_remove_workspace` |
+| `zt-model-layer` (with `zt-model-lib`) | a Haiku agent: `zt-digest list-models`; per batch compiler steps `zt-digest model` (the model compiler, `model-compiler.ps1` ported: brief, skeleton and fill, derive, review and split, report), Sonnet for `plan.json`; every batch conversation is recorded for the run-level cleanup (no per-batch cleanup agent) |
 | `zt-explain` | compiler steps `zt-digest model` (`explain`, `explain-apply`, `explain-report`) |
 | `zt-event-layer` | compiler steps `zt-digest event` (plan, apply, report) |
 | `zt-finding-layer` | compiler steps `zt-digest finding` (plan, apply, report) |
@@ -396,7 +396,7 @@ Tools that every workflow uses through `zt-digest-lib`:
 3. `digest`: one Haiku manager per block. For each group in order it snapshots the slip-box (`snapshot-topics.ps1 -Out <out>\snapshot-gNN.md`), starts `deepseek_run` with `prompt_files [<out>\shared-prefix.md, <out>\groups\gNN.md]`, waits, retries once, parses the one-line JSON, and deletes the conversation. No card cycle follows a block (R296): the cheap per-group deterministic checks are the ledger group completion's own offline check, and one whole-book card cycle runs in the `cards-book` stage after the digest and beside the model layer.
 4. `models`, `events`, `findings` start together after `digest` (they all wait only for it). `models`: `elaborateAll` batches the Model Cards that still need parts and runs `compileBatch` per batch in parallel, then the late cleanup sweep. `events`/`findings`: plan, DeepSeek JSON with SELF-CHECK, apply, report.
 5. `link-prepare` lists pending groups; `link` runs one manager per `linkPerManager` pending groups, all runs at once, each writing `<out>\linked-gNN.txt` when done; `link-check` runs the card cycle with orphans on the whole book.
-6. `cleanup` deletes leftover conversations in `<out>`, removes the workspace, deletes scratch files, and computes DeepSeek usage against the Prepare reading.
+6. `cleanup` reads the run's recorded resources, deletes exactly those conversation ids, removes the recorded workspaces once no recorded conversation and no unknown member remains, removes only registered scratch inside the staging root, and computes DeepSeek usage against the Prepare reading. It completes each cleanup unit with `content_complete` reported apart from `cleanup_complete`.
 7. `organize` (continue on failure), `figures`, `bridge` (report only, continue on failure), `hubs` (whole agent Workspace), `audit` (read-only), `report`.
 
 ### Mode full, mathematics
@@ -410,23 +410,23 @@ As economics, with: `math-skeleton` after `prepare` (index, docs, skeleton with 
 3. **Fill.** `-Step apply`; jobs at `dshEffort` with `asd-ste100-zh`. Any answer line `{"status":"split","address","need":N>1}` triggers `-Step split -Need "<addr>=<n>;..."`, continuing the same conversations.
 4. **Derive** (only when a planned model has `derivations > 0`), at `deriveEffort`, then splits.
 5. **Review** up to `reviewRounds` times (`-Changed` after the first), at `reviewEffort`; the verdict lines' `split` and `fix` counts decide whether `-Step split` runs; zero of both stops the loop.
-6. **Report** with cleanup: deletes the batch's conversations, removes its workspace, deletes its folder (`keep` is not set). The result per model merges the script's report with the plan's `notes` and `summary`; faults and `todo` (待写) parts join `issues`.
+6. **Report.** The batch's conversations were recorded when the provider returned their ids; the run-level `cleanup` stage deletes exactly them and removes their workspace, and the batch folder is not deleted by the model stage. The result per model merges the script's report with the plan's `notes` and `summary`; faults and `todo` (待写) parts join `issues`.
 
 `elaborateAll` filters out `skipForms`, keeps `only`, keeps models that need work (`rebuild`, a forced level that differs, or no parts or open issues), sorts by group number then address, and runs every batch in `parallel`. `modelCleanup` then sweeps every batch folder for conversations a failed batch left.
 
 ### The card cycle (`runCards`)
 
 1. `zt-digest card -Step plan -Work <work> -Compact -Book <key> -Staging <out> [-Rules] [-MaxCards] [-ModelReview] <extra>`; no output fails the cycle. `-ModelReview` is passed when the cycle owns the Model drafts' source review: in mode `cards` (no model chain runs) or in `full` with `args.models` false.
-2. No jobs: `report` with cleanup, status `done`.
+2. No jobs: `report`, status `done`.
 3. `applyAll`: `-Step apply -MaxJobs <applyShare>` repeated while `pending_jobs` is nonzero (at most 100 calls).
 4. Up to `cardFixRounds`: `-Step check` (its follow-up jobs continue their conversations), then `applyAll` again; stop when no follow-up jobs.
-5. `-Step report` with cleanup. Status `done` only when both the last apply and the report gave output. When an apply gave none, the result carries `error: 'apply failed: no output from the card compiler -Step apply'`. The report is the `cards_cycle` record — rules, verdicts, the deterministic Idea sample with its population, seed, addresses, spans and group coverage, the Model-draft reviews with their fingerprints, the audit folder and `quality_complete` — that `book-cards-finish` later verifies.
+5. `-Step report`. Status `done` only when both the last apply and the report gave output. When an apply gave none, the result carries `error: 'apply failed: no output from the card compiler -Step apply'`. The report is the `cards_cycle` record — rules, verdicts, the deterministic Idea sample with its population, seed, addresses, spans and group coverage, the Model-draft reviews with their fingerprints, the audit folder and `quality_complete` — that `book-cards-finish` later verifies.
 
 ### The hub stage (`zt-hubs`)
 
 1. The Haiku hub manager runs `hub-compiler.ps1 -Step survey -Work <hubWork>` and picks the limits by fixed rules: `topic_min` = `tree_cards.p25` in [5, 12]; `line_min` = `branch_cards.p90` in [6, 20] and at least `topic_min`; `max_lines` = `tree_cards.p75` in [15, 25]; `max_groups` 7 (5 when `max_lines` < 18); `min_reason` 8; `neighbour_links` = median in [2, 6] (3 when n is 0); `field_min` 3; `field_max` = √topics in [6, 15]; `per_job` 6/4/2 by median tree size (≤15, ≤30, more).
 2. `args.hubLimits` overrides those keys.
-3. `plan` (writes jobs, one is the field planner) → `apply` → `check` and fix rounds (`hubFixRounds`) → `report` with cleanup; the folder and its `state.json` stay.
+3. `plan` (writes jobs, one is the field planner) → `apply` → `check` and fix rounds (`hubFixRounds`) → `report`; the folder and its `state.json` stay.
 
 ### The Bridge stage (`zt-bridge`)
 
@@ -445,12 +445,12 @@ The stage stands after Figures and before Hubs in both workflows. Each variant p
 2. Opus reads it (read-only zt calls through the helper: a JSON array piped to `zt-digest call -`) and writes `<out>\organize\decisions.json`: `thesis` (≤ 40 characters), `merges`, `moves` (only Idea and Event Cards of Topic trees), `notes` (only Idea Cards, Event Cards, anchors). It makes no zt write.
 3. `organize-apply.ps1 -Work <out>\organize` carries out merges and moves.
 4. Notes go to a card cycle in `<out>\cards-notes` with `-Notes "<decisions.json>" -NoOrphans` (all hard rules in mode `full`, else `N1`).
-5. `book-skeleton.ps1` plan, then apply with `-Decisions ... -Apply` and cleanup: the Literature Card index, the structure Card, the Topic bodies.
+5. `book-skeleton.ps1` plan, then apply with `-Decisions ... -Apply`: the Literature Card index, the structure Card, the Topic bodies.
 6. `organize: "legacy"`: one Opus agent does all of it through the zt helper `zt-digest call` (the old job).
 
 ### Rules the code keeps
 
-- **DSMP limits.** `perManager`, `dshPerBatch`, `dshManagers`, and `linkPerManager` are capped at 8 in code. Every manager prompt (`manage`, `driveAgent` jobs) runs inside `dsmpSlot`; step agents and cleanup agents never take a slot. Managers never archive; digest and link managers delete each conversation after its answer; compiler-step managers leave conversations for later rounds and the step's cleanup deletes them.
+- **DSMP limits.** `perManager`, `dshPerBatch`, `dshManagers`, and `linkPerManager` are capped at 8 in code. Every manager prompt (`manage`, `driveAgent` jobs) runs inside `dsmpSlot`; step agents and the cleanup agent never take a slot. Managers never archive; digest and link managers delete each conversation after its answer; compiler-step managers leave conversations for later rounds and the step's cleanup deletes them.
 - **Efforts.** `atLeastHigh` turns any DeepSeek effort other than `high`/`max` into `high` and records it in `raised`; `zt-dsh-source` logs the list.
 - **Pipelines, not barriers.** Inside `digest`, blocks run in parallel; the whole-book card cycle is its own stage, so a slow block delays the cycle but never the model layer.
 - **Missing reports are failures.** A group a manager did not report becomes `{ status: 'failed', errors: 'no report from its manager' }`; a job a step manager did not report becomes `failed`.
@@ -510,13 +510,13 @@ The stage stands after Figures and before Hubs in both workflows. Each variant p
 |---|---|---|
 | `groups\gNN.md`, `shared-prefix.md`, `link-prefix.md`, the manifest, the Chinese text | `prepare-book-digest.ps1` | yes |
 | `preparation.json` (`prepare -Book`) | the resolution: the Work, the chosen file, the generated BibTeX, the heading range with every excluded section, the frozen source hash; the manifest names it as `book_resolution.preparation` | yes |
-| `snapshot-gNN.md`, `link-gNN.md`, `allow-g*.txt`, `*calls*.json` | digest managers, `prepare-link-pass.ps1`, helpers | deleted by `zt-dsh-cleanup` |
+| `snapshot-gNN.md`, `link-gNN.md`, `allow-g*.txt`, `*calls*.json` | digest managers, `prepare-link-pass.ps1`, helpers | kept: a top-level staging file is never cleanup scratch (R329) |
 | `owned-gNN.txt`, `cards-all.md` | digest runs, link preparation | yes |
 | `linked-gNN.txt` | link managers (`Set-Content ... -Value done`) | yes |
 | `dsh-probe\` | source probe | deleted by the probe |
 | `terms\`, `terms\out\` | term table step | yes |
 | `cards-gNN\` (first group of a block), `cards\`, `cards-link\`, `cards-notes\` | card cycles (`state.json`, `report.json`, `out\`) | yes |
-| `models\m-<slug>\` | model compiler batch | deleted by the batch cleanup and the sweep |
+| `models\m-<slug>\` | model compiler batch | disposable scratch: the cleanup removes it only after its accepted plan is retained under `cleanup\evidence\` (R328/R329) |
 | `explain\`, `events\`, `findings\` | explain, event, finding layers | yes |
 | `organize\survey.md`, `organize\decisions.json` | survey, Opus | yes |
 | `skeleton\` | `book-skeleton.ps1` | yes |
@@ -687,6 +687,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-18` — Base 3.1.0 settles owned DeepSeek resources from ledger evidence (#83, R231, R322–R330). `zt-digest-lib` v9 records every conversation the provider returns (`ledger resource -Register`, naming the unit that owns the chain or `run` for a stage-wide chain) together with each accepted answer, so the run retains the answer under the durable evidence path at once (R325). No step deletes its own conversations any more: the `cleanup` stage (module `zt-dsh-cleanup` v2) reads the recorded resources, asks one Haiku agent to delete exactly those ids (never a title match) and to report every unrecorded member, records each provider fact with `ledger resource -Observe` (terminal state, deletion, listing, workspace, usage) and settles every cleanup unit with `cleanup-finish`. A disposable model folder is removed by the verifier only after its accepted plan was retained outside the scratch subtree, and only inside the exact staging root (R328/R329); the model stage's own sweep and every per-step cleanup agent are gone (`zt-model-lib` v3). The report carries `cleanup.content_complete` apart from `cleanup.cleanup_complete`, so a partial or halted run stays honest. `zt-econ-digest` 4.1.0 and `zt-math-digest` 3.1.0 are installed and verified; `framework-harness.mjs` is rebuilt around the recorded resources (101 checks) and `cleanup-resources.tests.ps1` covers the command boundary. The workflow itself is not run here.
 
 - `2026-10-18` — Base 3.0.0 drives the **frozen ready-work schedule** (#82, R243–R273): the stage graph is `args → source → prepare → [after-prepare] → terms → [events, findings] → digest → cards → [after-digest: models] → [after-models: explain] → cards-book → link-prepare → link → link-check → [after-link] → organize → figures ∥ hubs → bridge → audit (joins hubs and bridge) → [after-audit] → cleanup → report`. `digest` is a per-group `foreach` chain (module `zt-group-cycle` v1) whose manager claims `digest/gNNN@1`, starts it (snapshot before the job manifest, R262), runs the one frozen job and records `group-finish -Draft`; a new `cards` stage (module `zt-cards-layer` v1) records the per-group offline checks. Every layer driver claims its ready units in bounded blocks, works each unit's own chain in one manager, records the family's checked completion and settles with the ledger gate, so a unit's failure is its own retry (`maxAttempts`) and the stage is never rerun (R252–R258). The Event and Finding layers start after terms and work from readiness while the remaining digest groups run; the model layer is released by the settled digest; the whole-book cycle waits for the Model reviews; Figures and Hubs are released together by Organize and the final audit joins both branches (R244/R246). `zt-digest-lib` v8 adds the one-manager chain (`CHAIN PLAN`, at most 8 jobs, `timeout_ms: 600000`, no terminal tabs/Monitor/handoff/sleep) and the ledger adapter (`ledger next/gate/publish/renew/fail/job`, the family `*-finish` commands, `finishOrFault`, `layer`); `zt-event-layer`/`zt-finding-layer` v3, `zt-model-layer` v2, `zt-explain` v4, `zt-cards-book` v3, `zt-book-terms` v3, `zt-digest-prepare` v5, `zt-link-pass` v2 and `zt-digest-report` v7 use it. The args gain `maxAttempts` (1–10, default 3) and `dshRunCap` (60–3600 s, default 1200), persisted by `prepare -Variant -MaxAttempts -DshRunCap -RunOptions -Apply` in the immutable contract and read back by `ledger status` on a resume. `zt-digest` gains `ledger next -Wait` (0–600 s), the provider cap facts on `ledger job` (`cap_exceeded`, `action`, `elapsed_seconds`) and `ZT_EDIT_PATIENCE` for write steps (180 s; `zt mcp` reads 1–300, default 20); the shared MCP client already bounds its transport (240 s) and reaps its own child tree. `zt-econ-digest` 4.0.0 and `zt-math-digest` 3.0.0 are installed and verified. `framework-harness.mjs` is rebuilt around the readiness graph (86 checks) and `ledger-settings.tests.ps1` covers the settings, the readiness wait and the cap. The Link draft transport (R263's Link half) remains open: the link pass keeps the helper and records its units as explicit unverified work. The workflow itself is not run here.
 
