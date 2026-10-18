@@ -9,6 +9,7 @@ defineModule({
   id: 'zt-model-layer', version: '2', requires: ['zt-model-lib'],
   summary: 'ZT digest model layer: the ledger\'s ready Model units built by the model compiler chain and recorded by model-finish.',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },

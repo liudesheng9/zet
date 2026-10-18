@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "The shared base of the ZT digest workflows: Prepare, the ledger-driven group cycle, the per-group Card checks, Link, Organize, Figures and Hubs joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages), and report-first cross-book Bridges after Figures",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -13,10 +13,10 @@
     "P2": "Inputs: the args of the removed zt-book-digest.js, one declaration each (out required; citationKey, source, bibtex, bookTitle checked per mode by the args stage, as before). 2.4.0 adds book: a Scholar Archive Work id or exact title that resolves source, bibtex, bookTitle and the file through the read-only bridge, so mode full takes book or the three explicit arguments, never a silent mix. They carry data: paths, keys, pilot filters, batch sizes (capped at the DSMP limits in code), DeepSeek efforts (raised to high), and switches that pick among declared conditional stages. architectEffort is gone: the architect role's effort is frozen. Bridge arguments select limits (60/120 sources, 5/8 candidates), target books, report id and separate new/earlier acceptance; work is out/bridge. 3.0.0 adds maxAttempts (1-10, default 3) and dshRunCap (60-3600 s, default 1200): the only new run settings, persisted in the preparation contract by zt-digest prepare, so a resume reuses them. Leases, batch sizes and heartbeat intervals stay versioned tool defaults. 3.0.0 adds maxAttempts (1-10, default 3) and dshRunCap (60-3600 s, default 1200): the only new run settings, persisted in the preparation contract by zt-digest prepare, so a resume reuses them. Leases, batch sizes and heartbeat intervals stay versioned tool defaults.",
     "P3": "Units of work: the run ledger owns readiness. Digest groups are digest/gNNN@1 units claimed one block at a time; each group chain starts its own snapshot and job (R262) and records a checked completion. The Cards layer (cards/gNNN@1), the Model units (models/gNNN-mIIII@1), the explanations (explain/<key>@1), the Events and Findings units, the Terms unit (terms/book@1) and the whole-book card cycle (cards-book/book@N) are worked by a layer driver in bounded blocks. Compiler jobs stay one Haiku manager per 8 jobs, at most 8 managers in the run (the global pool).",
     "P4": "Roles: manager = Haiku, effort low (relays commands, runs DeepSeek managers, clean-ups; reads no book, writes no Card). architect = Sonnet (writes plan.json only). organizer = Opus (writes decisions.json only). Scripts do every structural step; DeepSeek does the labour (DeepSeek Subagent Managed Protocol).",
-    "P5": "Stage graph (readiness, R244): args → source → prepare → [after-prepare] → terms → digest (one ready group per manager chain) → cards (the per-group offline checks) → [after-digest: the model layer] → [after-models: explanations] → cards-book → link-prepare → link → link-check → [after-link] → organize → figures ∥ hubs → bridge → audit (joins hubs and bridge) → finalize (the finite audit-plan → one correction cycle → publication refresh → final audit branch, R299/R300) → [after-audit] → cleanup → report. The Event and Finding layers fill [after-terms] and are worked from ledger readiness while the remaining digest groups run; the model layer is released when the digest managers settle, and the whole-book card cycle waits for the Model reviews while model compilation never waits for it.",
+    "P5": "Stage graph (readiness, R244): args → source → prepare → [after-prepare] → terms → digest (one ready group per manager chain) → cards (the per-group offline checks) → [after-digest: the model layer] → [after-models: explanations] → cards-book → link-prepare → link → link-check → [after-link] → organize → figures ∥ hubs → bridge → audit (joins hubs and bridge) → finalize (the finite audit-plan → one correction cycle → publication refresh → final audit branch, R299/R300) → [after-audit] → cleanup → report. The Event and Finding layers fill [after-terms] and are worked from ledger readiness while the remaining digest groups run; the model layer is released when the digest managers settle, and the whole-book card cycle waits for the Model reviews while model compilation never waits for it. A resume and every repair mode drain their downstream closure: mode resume runs terms, digest, Cards, every enabled layer, the whole-book cycle, link and link-check, Organize, Figures, Hubs, Bridge, audit, finalize, the mathematics tail, cleanup and the report; modes models, explain, events and findings run their own layer, then the changed-Card Link pass and check, Organize, touched Hubs, audit and the settlement (#87, R286).",
     "P6": "Modules: gate (args), zt-dsh-source, zt-digest-prepare, zt-book-terms, zt-group-cycle, zt-cards-layer, zt-cards-book, zt-hubs (hubs-first and hubs), zt-link-prepare, zt-link-pass, zt-link-check, zt-organize, zt-figures, zt-dsh-cleanup, zt-audit, zt-finalize, zt-digest-report; all share zt-digest-lib v11 (the ready-work driver, with the finalization's declared one-cycle bound). The book type installs its own prompt files and its layers in the slots.",
     "P7": "Checks: every DeepSeek job runs its SELF-CHECK (in the job files the scripts write); zt-check is the only checker; the args stage checks the required args per mode and the kernel validates the finite bounds of maxAttempts and dshRunCap; the group finish applies and checks the persisted digest outputs; each layer records its checked completion evidence and its gate; the report keeps each stage's status, the effective settings and the schedule summary. BR1–BR9 and Card checks gate reports and accepted edits.",
-    "P8": "Failure policy (R259): args, source, prepare, digest (no ready unit could be verified) and link-prepare halt. terms, organize, bridge, finalize and cleanup continue on a failure: a residual hard fault is finalize's partial result, never a halted run. A layer records a content failure against its own unit (`ledger fail -Class content`) and keeps the stage going; a transient transport, lease or provider fault is retryable and that unit is claimed again within maxAttempts, never by rerunning the stage (R258). Modes: link, cards, hubs, figures, audit and bridge; a book type adds its own (models, explain, events, findings, math, resume). Checkpoint: digest (stop before the Cards layer and the book type stages).",
+    "P8": "Failure policy (R259): args, source, prepare, digest (no ready unit could be verified) and link-prepare halt. terms, organize, bridge, finalize and cleanup continue on a failure: a residual hard fault is finalize's partial result, never a halted run. A layer records a content failure against its own unit (`ledger fail -Class content`) and keeps the stage going; a transient transport, lease or provider fault is retryable and that unit is claimed again within maxAttempts, never by rerunning the stage (R258). Modes: link, cards, hubs, figures, audit and bridge; a book type adds its own (models, explain, events, findings, math, resume). Checkpoint: digest (stop before the Cards layer and the book type stages). Mode resume accepts only out: it reads the retained identity, source choices, Citation key, enabled layers, versions and existing authorization-bound selections from the ledger, runs the one supported `ledger resume` (invocation 2, resume_count, only the unresolved units reset, blocked dependants back to dependency evaluation) and never a second resume (#87, R274-R285).",
     "P9": "Dry run: zt-econ-digest.sim.json and zt-math-digest.sim.json take mode full through every stage. Fixture: tests/framework-harness.mjs checks the readiness graph, the joins, the group cycle and layer commands, the runner restrictions, the settings on the built scripts, and the four finalization branches (3.0.0: the ledger-driven group cycle, `ledger next -Wait`, the 600000 ms command timeout, the 1200 s provider cap). Pilot: one chapter with cardMax, explainMax, hubTrees, after a database backup."
   },
   "roles": {
@@ -471,6 +471,62 @@
               }
             ],
             "message": "bridgeCandidates must be a whole number in 1..8"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "resume"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "args.book",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.source",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bibtex",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bookTitle",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.citationKey",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.groups",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.only",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeReport",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApply",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApplyEarlier",
+                    "op": "empty"
+                  }
+                ]
+              }
+            ],
+            "message": "mode resume reads the retained identity, source, Citation key, enabled layers and settings from its ledger and accepts only out: a new identity, source, group count, model list or Bridge selection needs its own preparation"
           }
         ]
       }
@@ -564,6 +620,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -610,7 +669,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -665,6 +727,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -688,6 +753,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -704,7 +772,10 @@
       "params": {
         "args": "{{args}}",
         "mode": "{{mode}}",
-        "groups": "{{stages.prepare.output.groups}}"
+        "groups": "{{stages.prepare.output.groups}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -726,6 +797,9 @@
         "pending": {
           "$ref": "stages.link-prepare.output.pending",
           "default": []
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -749,6 +823,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -773,8 +850,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume|models|explain|events|findings)$"
             },
             {
               "path": "args.organize",
@@ -796,6 +873,9 @@
         },
         "link": {
           "$ref": "stages.link.output.reports"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -826,7 +906,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -846,8 +929,8 @@
               "value": [
                 {
                   "path": "mode",
-                  "op": "==",
-                  "value": "full"
+                  "op": "matches",
+                  "value": "^(full|resume|models|explain|events|findings)$"
                 },
                 {
                   "path": "args.hubs",
@@ -866,7 +949,8 @@
                 },
                 {
                   "path": "args.hubs",
-                  "op": "true"
+                  "op": "==",
+                  "value": true
                 }
               ]
             }
@@ -878,6 +962,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -923,7 +1010,10 @@
         "model": {
           "$ref": "stages.source.output.model"
         },
-        "profile": "{{consts.profile.bridgeProfile}}"
+        "profile": "{{consts.profile.bridgeProfile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "expect": [
         {
@@ -961,7 +1051,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -979,8 +1072,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume)$"
             },
             {
               "path": "args.finalize",
@@ -992,7 +1085,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1011,7 +1107,10 @@
       "module": "zt-dsh-cleanup",
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "onFail": "continue"
     },
@@ -1074,6 +1173,9 @@
         },
         "finalize": {
           "$ref": "stages.finalize.output"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     }

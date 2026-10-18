@@ -551,7 +551,16 @@ impl Prepared {
                 .iter()
                 .map(|g| g["anchor"].as_str().unwrap().to_string()),
         );
-        let cards = zt.cards(&addresses, "text")?;
+        // T21: a prepared root or anchor that no longer sits at its frozen address is a precise
+        // conflict, never a silently re-selected Card. A structural move of a published Card has
+        // its own recorded mapping (`ledger relocate`); the prepared anchors themselves cannot move
+        // without a new preparation.
+        let cards = zt.cards(&addresses, "text").with_context(|| {
+            format!(
+                "anchor_moved: the prepared Literature root or a group anchor is no longer at its frozen address ({}); a published Card move needs `zt-digest ledger relocate`, a prepared anchor move needs a new preparation",
+                addresses.join(", ")
+            )
+        })?;
         if cards.archive_revision != observed["archive_revision"].as_u64().unwrap() {
             bail!("archive changed while checking preparation; retry");
         }
@@ -5871,7 +5880,7 @@ fn publish(path: &Path, text: &str) -> Result<Value> {
 }
 
 fn start_view(job: &Value, path: &Path, reused: bool, lease_until: i64) -> Value {
-    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"draft":job["draft"],"reused":reused,"lease_until":lease_until})
+    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"draft":job["draft"],"expected_jobs":job["expected_jobs"],"reused":reused,"recovered":job["recovery"]["reason"]==json!("receipts_committed"),"recovery":job["recovery"],"lease_until":lease_until})
 }
 
 fn read_group_job(
@@ -5888,11 +5897,21 @@ fn read_group_job(
     let accepted = &progress["group_start"]["job"];
     let path = Path::new(field(accepted, "path")?);
     let job = bound_json(accepted, "group job artifact")?;
+    // R280 (#87): a recovered group's retained accepted plan already committed, so its job offers
+    // no agent work at all. Every other job keeps the one declared draft-only job contract.
+    let recovered = job["recovery"]["reason"] == json!("receipts_committed");
     if job["schema_version"] != 1
         || job["mode"] != "draft_only"
-        || job["expected_jobs"] != 1
-        || job["jobs"].as_array().is_none_or(|jobs| jobs.len() != 1)
-        || job["jobs"][0]["permissions"]["archive_write"] != false
+        || if recovered {
+            job["expected_jobs"] != 0
+                || job["jobs"].as_array().is_none_or(|jobs| !jobs.is_empty())
+                || job["artifacts"]["rebound_draft"]["sha256"]
+                    != canon::sha256_hex(&std::fs::read(field(&job, "draft")?)?)
+        } else {
+            job["expected_jobs"] != 1
+                || job["jobs"].as_array().is_none_or(|jobs| jobs.len() != 1)
+                || job["jobs"][0]["permissions"]["archive_write"] != false
+        }
     {
         bail!("incompatible group job contract");
     }
@@ -6037,7 +6056,26 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         source.push_str(std::str::from_utf8(&bytes)?);
         source.push_str("\n\n");
     }
-    let draft = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":"cards","calls":[]});
+    // R280 (#87): a previous attempt's accepted plan whose every call already committed is the
+    // group's checked result. Rebound to this claim's token it starts no DeepSeek job: the group
+    // finishes from the archive receipts without rebuilding a Card.
+    let recovery = recover_group(p, zt, number, &unit, &run, &claimed.input_hash)?;
+    let recovered = recovery["status"] == json!("recovered");
+    let (disposition, calls) = if recovered {
+        (
+            field(&recovery["plan"], "disposition")?.to_string(),
+            recovery["plan"]["calls"].clone(),
+        )
+    } else {
+        ("cards".to_string(), json!([]))
+    };
+    let draft = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":disposition,"calls":calls});
+    let draft_record = if recovered {
+        // The rebound draft keeps the retained calls and carries this attempt's own binding.
+        Some(publish(&draft_path, &serde_json::to_string_pretty(&draft)?)?)
+    } else {
+        None
+    };
     let self_check_command = format!(
         "zt-digest group-finish -Out \"{}\" -Group {number} -Token {token} -Draft \"{}\" -CheckOnly",
         p.out.display(),
@@ -6068,7 +6106,27 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     if !terms.is_null() {
         files.push(terms["path"].clone());
     }
-    let job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":1,"draft":draft_path.to_string_lossy(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms},"jobs":[{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}]});
+    let jobs = if recovered {
+        // The recovered draft is already the group's checked result: no job is offered to an agent.
+        json!([])
+    } else {
+        json!([{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
+    };
+    let expected_jobs = if recovered { json!(0) } else { json!(1) };
+    let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"rebound_draft":draft_record},"jobs":jobs});
+    if recovered {
+        job["recovery"] = json!({
+            "reason":"receipts_committed",
+            "plan":recovery["path"],
+            "plan_hash":recovery["plan_hash"],
+            "receipts":recovery["receipts"],
+            "archive_revision":recovery["archive_revision"],
+        });
+    } else if recovery["status"] == json!("pending") {
+        // An accepted plan exists but its receipts do not all verify yet: the agent must finish the
+        // remaining calls of that same accepted plan, so the ordinary job is published unchanged.
+        job["recovery"] = json!({"reason":"receipts_pending","plan":recovery["path"]});
+    }
     let record = publish(&job_path, &serde_json::to_string_pretty(&job)?)?;
     progress["group_start"] = json!({"token":token,"input_hash":input_hash,"job":record});
     let mut conn = writer(p)?;
@@ -6086,10 +6144,103 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         Some(&claimed.owner),
         Some(token),
         "group_started",
-        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":tx_lease}),
+        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":tx_lease,"recovered":recovered}),
     )?;
+    if recovered {
+        event(
+            &tx,
+            &unit,
+            Some(&claimed.owner),
+            Some(token),
+            "group_recovered",
+            &json!({"plan":recovery["path"],"plan_hash":recovery["plan_hash"],"receipts":recovery["receipts"],"archive_revision":recovery["archive_revision"],"job":record}),
+        )?;
+    }
     tx.commit()?;
-    Ok(start_view(&job, &job_path, false, tx_lease))
+    Ok(start_view(&job, &job_path, recovered, tx_lease))
+}
+
+/// R280 (#87): reconcile the group's retained accepted plan against the archive receipts.
+///
+/// The accepted plan is immutable once `group-finish` accepted it, so a later attempt can only ever
+/// complete the same calls. When every call already has its committed receipt, the group's result
+/// exists and the attempt must not rebuild it: the plan is returned so `group-start` can rebound it
+/// to the new claim and publish a job with no work for an agent.
+fn recover_group(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    unit: &str,
+    run: &Value,
+    unit_input_hash: &str,
+) -> Result<Value> {
+    let path = p.out.join(format!("accepted-g{number:03}.json"));
+    if !path.exists() {
+        return Ok(json!({"status":"absent"}));
+    }
+    let (plan, record) = json_artifact(&path)?;
+    if plan["schema_version"] != json!(1)
+        || plan["unit"] != json!(unit)
+        || plan["unit_input_hash"] != json!(unit_input_hash)
+        || plan["run_id"] != *run
+    {
+        // An accepted plan of another unit, input or run is not this group's result.
+        return Ok(json!({"status":"pending","path":record["path"],"reason":"plan_binding_mismatch"}));
+    }
+    let disposition = plan["disposition"].as_str().unwrap_or_default();
+    if !matches!(disposition, "cards" | "no_cards") {
+        return Ok(json!({"status":"pending","path":record["path"],"reason":"plan_disposition"}));
+    }
+    let calls = plan["calls"]
+        .as_array()
+        .context("accepted plan calls must be an array")?;
+    if calls.is_empty() {
+        // A `no_cards` plan writes nothing; its completion is still verified by `group-finish`.
+        return Ok(json!({
+            "status":"recovered",
+            "path":record["path"],
+            "plan_hash":record["sha256"],
+            "plan":plan,
+            "receipts":[],
+            "archive_revision":Value::Null
+        }));
+    }
+    let prefix = format!(
+        "{}/digest-g{number:03}/1/apply",
+        run.as_str().context("missing run id")?
+    );
+    let preview = match crate::calls::preview_identified(zt, calls, &prefix, None) {
+        Ok(preview) => preview,
+        // A plan whose calls no longer replay is not recovered here: the ordinary attempt and
+        // `group-finish` report the exact conflict instead of a fabricated completion.
+        Err(_) => return Ok(json!({"status":"pending","path":record["path"],"reason":"receipts_unavailable"})),
+    };
+    let results = preview["results"]
+        .as_array()
+        .context("incomplete receipt readback")?;
+    let mut receipts = Vec::new();
+    for (index, result) in results.iter().enumerate() {
+        if result["replayed"] != true {
+            return Ok(json!({
+                "status":"pending",
+                "path":record["path"],
+                "reason":"receipts_pending",
+                "missing":index
+            }));
+        }
+        receipts.push(json!({
+            "op_key":result["op_key"],
+            "address":result["result"]["address"],
+        }));
+    }
+    Ok(json!({
+        "status":"recovered",
+        "path":record["path"],
+        "plan_hash":record["sha256"],
+        "plan":plan,
+        "receipts":receipts,
+        "archive_revision":preview["archive_revision"],
+    }))
 }
 
 pub fn group_start_cli(argv: &[String]) -> Result<i32> {
@@ -6540,6 +6691,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "model-finish-test-",
                 "model-dependencies-test-",
                 "explain-finish-test-",
+                "ledger-resume-test-",
             ]
             .iter()
             .any(|prefix| n.to_string_lossy().starts_with(prefix))
@@ -12190,6 +12342,340 @@ fn rerun_list(out: &Path) -> Result<Value> {
     )
 }
 
+// --- Resume: invocation 2 of one prepared run (R274–R285) ----------------------------------------
+//
+// A resume never prepares, never generates a file and never accepts a new configuration: it reads
+// the frozen identity, the enabled layers, the versions, the effective settings and any existing
+// authorization-bound selection from the ledger. It refuses a changed source, group manifest,
+// workflow contract or archive, a live owner, and a second resume. One `BEGIN IMMEDIATE`
+// transaction opens invocation 2, spends `resume_count`, resets the attempt budget of exactly the
+// unresolved units, and returns blocked dependants to dependency evaluation. Done builds are never
+// reopened: a completed group or model keeps its result, attempt count and completion time.
+
+/// The live claims of this run. A lease that has not expired still belongs to another invocation,
+/// so nothing may be reclaimed or reset under it (R279).
+fn live_claims(conn: &Connection, now: i64) -> Result<Vec<Value>> {
+    let mut statement = conn.prepare(
+        "SELECT id,layer,owner,claim_token,lease_until FROM units WHERE state='claimed' AND coalesce(lease_until,0)>?1 ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map([now], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "layer": r.get::<_, String>(1)?,
+                "owner": r.get::<_, Option<String>>(2)?,
+                "token": r.get::<_, i64>(3)?,
+                "lease_until": r.get::<_, Option<i64>>(4)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// The unresolved prerequisite or downstream closure of one status view: the same selection
+/// `rerun-list` reports, so a resume states exactly what the invocation drains (R283).
+fn closure_of(view: &Value, downstream: bool) -> Vec<String> {
+    let Some(units) = view["units"].as_array() else {
+        return Vec::new();
+    };
+    let unfinished = units
+        .iter()
+        .filter(|u| u["state"] != json!("done") && !is_superseded(u))
+        .filter_map(|u| u["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut seen = units
+        .iter()
+        .filter(|u| !is_superseded(u))
+        .filter(|u| {
+            matches!(
+                u["state"].as_str(),
+                Some("failed" | "blocked" | "retry" | "claimed" | "ready")
+            )
+        })
+        .filter_map(|u| u["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let Some(dependencies) = view["dependencies"].as_array() else {
+        return seen.into_iter().map(str::to_string).collect();
+    };
+    loop {
+        let before = seen.len();
+        for dependency in dependencies {
+            let (from, to) = if downstream {
+                ("needs", "unit")
+            } else {
+                ("unit", "needs")
+            };
+            let (Some(from), Some(to)) = (dependency[from].as_str(), dependency[to].as_str()) else {
+                continue;
+            };
+            if seen.contains(from) && unfinished.contains(to) {
+                seen.insert(to);
+            }
+        }
+        if before == seen.len() {
+            break;
+        }
+    }
+    seen.into_iter().map(str::to_string).collect()
+}
+
+/// R278–R285: one resume of a prepared run.
+fn resume_run(p: &Prepared) -> Result<Value> {
+    // R278: the persisted identity, sources, versions, artifacts and effective options were
+    // verified by `Prepared::read` before this call; the ledger's own binding is next.
+    let before = status(&p.out, "", None)?;
+    let spent = meta_i64(&before, "resume_count")?;
+    if spent >= 1 {
+        bail!(
+            "resume_used: this run already spent its one supported resume (resume_count {spent}); the remaining work is a manual worklist, and a later repair or rebuild is a separate preparation"
+        );
+    }
+    let now = now_seconds();
+    // R279: no live owner, and no registered external run may still be live, before anything is
+    // reclaimed. Both checks read the ledger only.
+    {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let tx = conn.unchecked_transaction()?;
+        verify_binding(&tx, p)?;
+        let active = live_claims(&tx, now)?;
+        if !active.is_empty() {
+            let names = active
+                .iter()
+                .filter_map(|unit| {
+                    Some(format!(
+                        "{} ({}, lease until {})",
+                        unit["id"].as_str()?,
+                        unit["owner"].as_str().unwrap_or("no owner"),
+                        unit["lease_until"].as_i64().unwrap_or(0)
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "run_active: another invocation still owns {names}; finish, fail or reclaim those claims before a resume"
+            );
+        }
+        tx.commit()?;
+    }
+    let unresolved = before["unresolved"].as_array().cloned().unwrap_or_default();
+    if unresolved.is_empty() {
+        // Nothing is executable or failed: a resume would only spend the one-rerun budget on no
+        // work, so it reports the retained coverage and changes nothing (R284).
+        return Ok(json!({
+            "schema_version":1,
+            "status":"nothing_to_resume",
+            "resumed":false,
+            "run_id":before["run_id"],
+            "invocation":before["invocation"],
+            "resume_count":before["resume_count"],
+            "citation_key":before["citation_key"],
+            "variant":before["variant"],
+            "archive_identity":before["archive_identity"],
+            "settings":before["settings"],
+            "reclaimed":[],
+            "reset":[],
+            "reevaluated":[],
+            "retained":{"units":[]},
+            "unresolved":[],
+            "coverage_faults":before["coverage_faults"],
+            "closure":{"prerequisites":[],"downstream":[]},
+            "ready":[],
+            "manual":[],
+            "complete":before["complete"]
+        }));
+    }
+    // R279/R182: a lost owner is reclaimed only through the existing guarded path, so a late writer
+    // is fenced by a newer token before the resume counts the unit as unresolved work again.
+    let reclaimed = reclaim(p, None, 64)?;
+    let blocked = reclaimed["blocked"].as_array().cloned().unwrap_or_default();
+    if !blocked.is_empty() {
+        let names = blocked
+            .iter()
+            .filter_map(|unit| {
+                Some(format!(
+                    "{} ({})",
+                    unit["unit"].as_str()?,
+                    unit["jobs"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|job| job.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!(
+            "run_active: {names} still own running external runs; request cancellation and observe each terminal state before a resume"
+        );
+    }
+    let reclaimed_units = reclaimed["reclaimed"].as_array().cloned().unwrap_or_default();
+    let reclaimed_ids = reclaimed_units
+        .iter()
+        .filter_map(|unit| unit["unit"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
+    // R281/R285: invocation 2 in one transaction. Every reset is recorded with the prior attempts,
+    // so the append-only history keeps what the previous invocation spent.
+    let mut reset = Vec::new();
+    let mut reevaluated = Vec::new();
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let invocation = meta(&tx, "invocation")?.as_i64().unwrap_or(1) + 1;
+    let resume_count = meta(&tx, "resume_count")?.as_i64().unwrap_or(0) + 1;
+    tx.execute(
+        "UPDATE meta SET value=?2 WHERE key='invocation'",
+        params!["invocation", canon::canonical_json(&json!(invocation))],
+    )?;
+    tx.execute(
+        "UPDATE meta SET value=?2 WHERE key='resume_count'",
+        params!["resume_count", canon::canonical_json(&json!(resume_count))],
+    )?;
+    let rows = {
+        let mut statement = tx.prepare(
+            "SELECT id,layer,state,attempts FROM units WHERE state!='done' ORDER BY id",
+        )?;
+        statement
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let superseded = before["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|unit| is_superseded(unit))
+        .filter_map(|unit| unit["id"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
+    for (unit, layer, state, attempts) in rows {
+        if superseded.contains(&unit) {
+            // A superseded revision is terminal history, never outstanding work.
+            continue;
+        }
+        if reclaimed_ids.contains(&unit) {
+            tx.execute("UPDATE units SET attempts=0 WHERE id=?1", [&unit])?;
+            event(
+                &tx,
+                &unit,
+                None,
+                None,
+                "attempt_reset",
+                &json!({"prior_state":"claimed","prior_state_recorded":"ready","prior_attempts":attempts,"invocation":invocation,"reason":"reclaimed"}),
+            )?;
+            reset.push(json!({"unit":unit,"layer":layer,"prior_state":"claimed","prior_attempts":attempts}));
+            continue;
+        }
+        match state.as_str() {
+            "failed" | "retry" => {
+                // R281: only the selected unresolved units get their invocation budget back.
+                tx.execute(
+                    "UPDATE units SET state='retry',attempts=0,owner=NULL,lease_until=NULL,retry_after=NULL WHERE id=?1",
+                    [&unit],
+                )?;
+                event(
+                    &tx,
+                    &unit,
+                    None,
+                    None,
+                    "attempt_reset",
+                    &json!({"prior_state":state,"prior_attempts":attempts,"invocation":invocation}),
+                )?;
+                reset.push(json!({"unit":unit,"layer":layer,"prior_state":state,"prior_attempts":attempts}));
+            }
+            "blocked" => {
+                // R281/AC3: a blocked dependant returns to dependency evaluation, never directly to
+                // ready. `reconcile` below decides its readiness again from the current producers.
+                tx.execute(
+                    "UPDATE units SET state='registered',fault_class=NULL,fault_json=NULL WHERE id=?1",
+                    [&unit],
+                )?;
+                event(
+                    &tx,
+                    &unit,
+                    None,
+                    None,
+                    "dependency_reevaluated",
+                    &json!({"prior_state":state,"invocation":invocation}),
+                )?;
+                reevaluated.push(json!({"unit":unit,"layer":layer,"prior_state":state}));
+            }
+            // registered/ready are already eligible; a claimed unit was reclaimed above.
+            _ => {}
+        }
+    }
+    reconcile(&tx, now)?;
+    // The run-level fact belongs to no single unit, so it carries no unit id (the column is nullable
+    // for exactly this record, as the enumeration seals already are).
+    tx.execute(
+        "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
+        params![
+            invocation,
+            canon::utc_now_o(),
+            "resumed",
+            canon::canonical_json(&json!({
+                "invocation":invocation,
+                "resume_count":resume_count,
+                "reclaimed":reclaimed_ids.iter().cloned().collect::<Vec<_>>(),
+                "reset":reset.iter().filter_map(|unit| unit["unit"].clone().as_str().map(str::to_string)).collect::<Vec<_>>(),
+                "reevaluated":reevaluated.iter().filter_map(|unit| unit["unit"].clone().as_str().map(str::to_string)).collect::<Vec<_>>(),
+                "unresolved_before":unresolved,
+            }))
+        ],
+    )?;
+    tx.commit()?;
+    drop(conn);
+    let after = status(&p.out, "", None)?;
+    let retained = after["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|unit| unit["state"] == json!("done") && !is_superseded(unit))
+        .filter_map(|unit| unit["id"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    let mut ready = std::collections::BTreeMap::<String, i64>::new();
+    for unit in after["units"].as_array().into_iter().flatten() {
+        if unit["state"] == json!("ready") {
+            *ready
+                .entry(unit["layer"].as_str().unwrap_or_default().to_string())
+                .or_default() += 1;
+        }
+    }
+    Ok(json!({
+        "schema_version":1,
+        "status":"resumed",
+        "resumed":true,
+        "run_id":after["run_id"],
+        "invocation":after["invocation"],
+        "resume_count":after["resume_count"],
+        "citation_key":after["citation_key"],
+        "variant":after["variant"],
+        "archive_identity":after["archive_identity"],
+        "settings":after["settings"],
+        "reclaimed":reclaimed_units,
+        "reset":reset,
+        "reevaluated":reevaluated,
+        "retained":{"units":retained},
+        "unresolved":after["unresolved"],
+        "closure":{"prerequisites":closure_of(&after,false),"downstream":closure_of(&after,true)},
+        "ready":ready.into_iter().map(|(layer,count)| json!({"layer":layer,"count":count})).collect::<Vec<_>>(),
+        "manual":[],
+        "complete":false
+    }))
+}
+
+/// One integer field of a status view, which carries JSON numbers where the ledger stores text.
+fn meta_i64(view: &Value, key: &str) -> Result<i64> {
+    view[key]
+        .as_i64()
+        .with_context(|| format!("incomplete run state: {key}"))
+}
+
 // --- Owned external resources and their cleanup units (R231, R322–R330) ---------------------------
 //
 // Every created external conversation belongs to the work that created it. The manager records the
@@ -13681,12 +14167,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "job"
                 | "resource"
                 | "report"
+                | "resume"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim, job, resource or report"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource or report"
             );
         }
-        let params = if command == "report" {
+        let params = if command == "report" || command == "resume" {
             vec!["Out"]
         } else if command == "next" {
             vec!["Out", "Layer", "Take", "Owner", "Wait"]
@@ -13866,7 +14353,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if !a.positional.is_empty() {
             bail!("unexpected ledger positional arguments");
         }
-        if matches!(command.as_str(), "init" | "rerun-list" | "report") && a.has("Layer") {
+        if matches!(command.as_str(), "init" | "rerun-list" | "report" | "resume") && a.has("Layer") {
             bail!("{command} does not accept -Layer");
         }
         Ok(a)
@@ -14121,6 +14608,26 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?
+    } else if command == "resume" {
+        // R278: a resume requires a prepared compatible ledger. A legacy staging folder is
+        // adoption work, so the command refuses it instead of inferring any completion.
+        let directory = std::fs::canonicalize(a.str("Out"))
+            .context("prepared output directory does not exist")?;
+        if !directory.join("manifest.json").is_file() {
+            bail!(
+                "legacy_staging: {} has no prepared manifest; a legacy staging folder needs the read-only adoption before a resume",
+                directory.display()
+            );
+        }
+        if !directory.join("ledger.sqlite3").is_file() {
+            bail!(
+                "legacy_staging: {} has a prepared manifest but no prepared run ledger; the read-only adoption must create and verify one before a resume",
+                directory.display()
+            );
+        }
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, true)?;
+        resume_run(&p)?
     } else if command == "report" {
         // R331: the run report. It reads the ledger and verifies the current placeholder state
         // through the prepared run's own client, writes its two files and prints the facts.
@@ -14404,6 +14911,69 @@ mod tests {
         assert_eq!(explained["status"], json!("none"));
         assert_eq!(explained["reason"], json!("explained"));
         assert_eq!(explained["explained"], json!(2));
+    }
+
+    #[test]
+    fn the_resume_closure_names_prerequisites_and_downstream_work_only() {
+        // R283 (#87): a resume states exactly what it will drain: the unresolved prerequisites of the
+        // failed roots and every unfinished unit that waits on them, never a done build.
+        let view = json!({
+            "units": [
+                {"id": "prepare/book@1", "state": "done"},
+                {"id": "digest/g001@1", "state": "done"},
+                {"id": "cards/g001@1", "state": "failed"},
+                {"id": "link/g001@1", "state": "blocked"},
+                {"id": "digest/g002@1", "state": "claimed"},
+                {"id": "cards/g002@1", "state": "registered"},
+                {"id": "audit/book@1", "state": "done"},
+                {"id": "audit/book@0", "state": "failed", "fault": {"code": "superseded", "replacement": "audit/book@1"}},
+            ],
+            "dependencies": [
+                {"unit": "digest/g001@1", "needs": "prepare/book@1", "state": "done"},
+                {"unit": "cards/g001@1", "needs": "digest/g001@1", "state": "done"},
+                {"unit": "link/g001@1", "needs": "cards/g001@1", "state": "failed"},
+                {"unit": "cards/g002@1", "needs": "digest/g002@1", "state": "claimed"},
+            ],
+        });
+        let prerequisites = closure_of(&view, false);
+        // Every unresolved root is a prerequisite, including the blocked dependant whose failure must
+        // be explained; a done unit above it is never part of the resume.
+        assert!(prerequisites.contains(&"digest/g002@1".to_string()));
+        assert!(prerequisites.contains(&"cards/g001@1".to_string()));
+        assert!(prerequisites.contains(&"link/g001@1".to_string()));
+        assert!(!prerequisites.contains(&"prepare/book@1".to_string()));
+        assert!(!prerequisites.contains(&"digest/g001@1".to_string()));
+        let downstream = closure_of(&view, true);
+        assert!(downstream.contains(&"cards/g002@1".to_string()));
+        assert!(downstream.contains(&"cards/g001@1".to_string()));
+        assert!(!downstream.contains(&"digest/g001@1".to_string()));
+        assert!(!downstream.contains(&"audit/book@1".to_string()));
+        // A superseded revision is terminal history: it is never offered to a resume.
+        assert!(!downstream.contains(&"audit/book@0".to_string()));
+        assert!(!prerequisites.contains(&"audit/book@0".to_string()));
+    }
+
+    #[test]
+    fn resume_requires_an_explicit_prepared_output_directory() {
+        // A resume never infers its staging folder, and a missing or empty -Out is an invalid
+        // invocation (exit 2), not an operational failure of a run.
+        assert_eq!(cli(&["resume".to_string()]).unwrap(), 2);
+        assert_eq!(
+            cli(&["resume".to_string(), "-Out".to_string(), "  ".to_string()]).unwrap(),
+            2
+        );
+        // The command surface keeps -Layer out of a resume: the run's own target comes from the ledger.
+        assert_eq!(
+            cli(&[
+                "resume".to_string(),
+                "-Out".to_string(),
+                ".".to_string(),
+                "-Layer".to_string(),
+                "digest".to_string(),
+            ])
+            .unwrap(),
+            2
+        );
     }
 }
 

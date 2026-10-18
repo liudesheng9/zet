@@ -211,6 +211,18 @@ function runtime(kind, opts = {}) {
       if (tool === 'model-finish') led.add('explain/g001-m0000@1', 'explain', { model: 'Key/2|c' })
       return { ok: true, output: json({ schema_version: 1, kind: 'digest_completion', unit: id, token: Number((cmd.match(/-Token (\d+)/) || [])[1]) || 1, state: 'done', complete: true, disposition: 'verified', owned: ['Key/1|a'], reused: false }) }
     }
+    if (/ ledger resume /.test(cmd)) {
+      // #87: the one supported resume: invocation 2, resume_count 1, only unresolved units reset.
+      return { ok: true, output: json({
+        schema_version: 1, status: 'resumed', resumed: true, run_id: 'r1', invocation: 2, resume_count: 1,
+        citation_key: 'Key', variant: kind === 'math' ? 'math' : 'econ', settings: led.settings,
+        archive_identity: { archive_id: 'a1' }, reclaimed: [],
+        reset: [{ unit: 'digest/g001@1', layer: 'digest', prior_state: 'failed', prior_attempts: 3 }],
+        reevaluated: [{ unit: 'events/g001@1', layer: 'events', prior_state: 'blocked' }],
+        retained: { units: [] }, unresolved: ['digest/g001@1'],
+        closure: { prerequisites: ['digest/g001@1'], downstream: ['events/g001@1'] }, ready: [], manual: [], complete: false,
+      }) }
+    }
     if (/ ledger next /.test(cmd)) {
       const take = Number((cmd.match(/-Take (\d+)/) || [])[1])
       const units = led.next(layer, take)
@@ -238,7 +250,7 @@ function runtime(kind, opts = {}) {
       return { ok: true, output: json({ schema_version: 1, unit: id, state: 'done', complete: true }) }
     }
     if (/ ledger status /.test(cmd)) {
-      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     // R331/R343: the verified run report the cleanup stage renders after every stage settles. Its usage is
     // per-run, never the difference of two account totals (the removed I22 shape).
@@ -452,8 +464,12 @@ function runtime(kind, opts = {}) {
       if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
       return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
     }
+    if (label === 'resume run') {
+      // #87: a resume-run agent runs `zt-digest ledger resume`, which the ledger stand-in answers (below).
+      return commandAnswer((text.match(/zt-digest ledger resume[^\n]*/) || [])[0] || 'zt-digest ledger resume')
+    }
     if (label === 'resume status') {
-      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     if (/^math: /.test(label)) {
       const key = label.replace('math: ', '')
@@ -616,6 +632,37 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(after('hubs-first') === 'explain', 'schedule: the mode-hubs preview stage sits beside the content layers')
   check(stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').foreach.items.$ref === 'stages.prepare.output.groupList', 'schedule: the digest stage is a per-group chain pipeline over the prepared group enumeration')
   check(stageOf('econ', 'digest').foreach.chain[0].module === 'zt-group-cycle', 'schedule: each group item runs the zt-group-cycle chain')
+  // #87: the resume invocation and the repair modes drain their downstream closure.
+  for (const which of ['econ', 'math']) {
+    const modes = builds[which].bp.modes
+    const resume = modes.resume || []
+    const required = ['args', 'prepare', 'digest', 'cards', 'organize', 'hubs', 'audit', 'finalize', 'cleanup', 'report']
+    check(required.every((id) => resume.includes(id)), `resume (${which}): mode resume runs the retained run's whole closure (${resume.length} stages: ${resume.join(',')})`)
+    check(resume.includes('terms') && resume.includes('link-prepare') && resume.includes('link') && resume.includes('link-check'), `resume (${which}): the term table and the changed-Card Link pass and check are part of the resume`)
+    if (which === 'econ') {
+      check(resume.includes('events') && resume.includes('findings') && resume.includes('models') && resume.includes('explain') && resume.includes('cards-book'), 'resume (econ): the economics layers and the whole-book cycle are drained')
+      check(['models', 'explain', 'events', 'findings'].every((mode) => ['link-prepare', 'link', 'link-check', 'organize', 'hubs', 'audit', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (econ): models, explain, events and findings drain the changed-Card Link work, Organize, the touched Hubs, the audit and the settlement')
+    } else {
+      check(resume.includes('math-skeleton') && resume.includes('math-boundary') && resume.includes('math-proof') && resume.includes('math-theory') && resume.includes('math-check'), 'resume (math): every mathematics obligation and the final math check are drained')
+      check(['models', 'explain'].every((mode) => ['link-prepare', 'link', 'link-check', 'math-theory', 'organize', 'hubs', 'audit', 'math-check', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (math): a repaired model reaches its Theory refresh and the math check')
+      for (const [stage, pattern] of [['math-skeleton', /resume/], ['math-boundary', /resume/], ['math-proof', /resume/], ['math-theory', /resume/], ['math-check', /resume/]]) {
+        const found = builds.math.bp.stages.find((s) => s.id === stage)
+        check(found && (found.when || []).some((c) => pattern.test(JSON.stringify(c))), `resume (math): ${stage} participates in the resume`)
+      }
+    }
+  }
+  for (const stage of ['organize', 'hubs', 'finalize']) {
+    const when = JSON.stringify(stageOf('econ', stage).when || [])
+    check(/resume/.test(when), `resume: the ${stage} stage declares mode resume in its own condition`)
+  }
+  check(builds.econ.bp.stages.concat(builds.math.bp.stages).filter((s) => s.params && !['args', 'source', 'prepare'].includes(s.id)).every((s) => s.params.key && s.params.key.$ref === 'stages.prepare.output.citation_key'), 'resume: every stage downstream of prepare reads the Citation key from the prepared run, so mode resume never repeats args.citationKey')
+  const resumeGate = await run('econ', { out: 'D:\\x\\Key', mode: 'resume', source: 'S.md' })
+  check(resumeGate.result.stage === 'args' && /accepts only out/.test(resumeGate.result.error), 'args: mode resume refuses a new source instead of reinterpreting the retained run')
+  const resumeRun = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' })
+  const resumeCommand = resumeRun.calls.find((c) => c.label === 'resume run')
+  check(!!resumeCommand && /zt-digest ledger resume -Out "D:\\x\\Key"/.test(resumeCommand.prompt), 'resume: mode resume runs the one supported ledger resume for the retained output directory')
+  check(!resumeRun.calls.some((c) => c.label === 'prepare book'), 'resume: mode resume never prepares the book again')
+  check(resumeRun.result.stage === 'prepare' && /no retained digest groups/.test(resumeRun.result.error), 'resume: a resume of a folder without a retained prepared run halts at prepare with its reason')
   const m = builds.math.bp
   const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
   check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')

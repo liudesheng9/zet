@@ -1,16 +1,18 @@
-// ==== module zt-digest-prepare v6 ====
+// ==== module zt-digest-prepare v7 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
 // account-wide usage ledger: run usage is recorded per provider run from that run's own result (R343-R346).
 // args.book (a Scholar Archive Work id or exact title) replaces the explicit source,
 // BibTeX and title: the tool resolves them through the read-only bridge, and an unresolved choice stops with its
-// candidates. A resume (mode resume) prepares nothing: it reads the retained group enumeration from the ledger,
-// so the run reuses the frozen inputs, settings and identity. Other modes take the group count from args.groups.
+// candidates. A resume (mode resume) prepares nothing and generates no file: it runs the one supported
+// `ledger resume`, which verifies the frozen identity, reconciles stranded claims and retained results, opens
+// invocation 2 and spends the one-rerun budget, then reads the retained group enumeration, settings and
+// identity from the ledger (#87, R274-R285). Other modes take the group count from args.groups.
 // The output also carries groupList, the per-group items the digest stage's chains are built from.
 defineModule({
-  id: 'zt-digest-prepare', version: '6', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), read the retained groups (mode resume) or take args.groups; output {groups, groupList}.',
+  id: 'zt-digest-prepare', version: '7', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
@@ -25,7 +27,14 @@ defineModule({
     const groupList = (count) => Array.from({ length: count || 0 }, (_, i) => ({ n: i + 1, nn: String(i + 1).padStart(2, '0') }))
     let groups = A.groups || 0
     if (p.mode === 'resume') {
-      // A resume reuses the retained preparation, its settings and its identity; it never regenerates files.
+      // R278-R285: the resume command verifies the retained identity, reclaims a lost owner, opens
+      // invocation 2, resets only the unresolved units and spends resume_count. It never prepares and
+      // never regenerates a file; a changed source, group manifest, contract or archive is refused here.
+      const resumed = await Z.runScript('resume run', 'Prepare', `${Z.LEDGER} resume -Out "${Z.OUT}"`, ' (the one supported resume of the retained prepared run)')
+      const facts = resumed.json
+      if (!facts || !['resumed', 'nothing_to_resume'].includes(facts.status)) {
+        throw new Error(`mode resume needs a resumable prepared run ledger: ${(resumed.run && resumed.run.output) || 'no ledger resume'}`)
+      }
       const status = await Z.runScript('resume status', 'Prepare', `${Z.LEDGER} status -Out "${Z.OUT}"`, ' (the retained run ledger)')
       const view = status.json
       if (!view || !Array.isArray(view.units)) throw new Error(`mode resume needs a prepared run ledger with its frozen inputs: ${(status.run && status.run.output) || 'no ledger status'}`)
@@ -33,8 +42,14 @@ defineModule({
       if (!digestUnits.length) throw new Error('mode resume found no retained digest groups; prepare the book again')
       groups = digestUnits.length
       const settings = view.settings || {}
-      log(`Resume: ${groups} retained groups, variant ${view.variant}, ${view.archive_identity && view.archive_identity.archive_id ? 'the same archive identity' : 'a retained archive identity'}; settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
-      return { groups, groupList: groupList(groups), resumed: true, settings }
+      if (facts.status === 'nothing_to_resume') {
+        log(`Resume: no executable or failed unit remains (${groups} retained groups, invocation ${facts.invocation}); the retained coverage stays what the ledger reports, and no resume was spent.`)
+      } else {
+        const reset = (facts.reset || []).length
+        const reevaluated = (facts.reevaluated || []).length
+        log(`Resume: invocation ${facts.invocation}, resume_count ${facts.resume_count}; ${reset} unresolved unit(s) reset, ${reevaluated} blocked dependant(s) back to dependency evaluation, ${(facts.reclaimed || []).length} lost claim(s) reclaimed, ${((facts.closure && facts.closure.downstream) || []).length} unit(s) in the closure to drain. ${groups} retained groups, variant ${view.variant}, settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
+      }
+      return { groups, groupList: groupList(groups), resumed: facts.status === 'resumed', resume: facts, settings, citation_key: view.citation_key }
     }
     if (p.mode === 'full') {
       // args.book names the book in the Scholar Archive; the tool resolves its Markdown, BibTeX and
@@ -70,7 +85,7 @@ Return groups = the number of entries in manifest.groups.`,
       groups = prep.groups
     }
     if (!groups && (p.needGroups || ['full', 'link']).includes(p.mode)) throw new Error(`mode "${p.mode}" needs args.groups`)
-    return { groups, groupList: groupList(groups) }
+    return { groups, groupList: groupList(groups), citation_key: Z.KEY }
   },
 })
 // ==== end module zt-digest-prepare ====

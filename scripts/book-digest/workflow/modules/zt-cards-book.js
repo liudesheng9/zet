@@ -9,6 +9,7 @@ defineModule({
   id: 'zt-cards-book', version: '3', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the claimed whole-book card cycle (modes cards and full), recorded by book-cards-finish.',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },

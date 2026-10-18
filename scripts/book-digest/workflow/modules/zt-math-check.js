@@ -5,6 +5,7 @@ defineModule({
   id: 'zt-math-check', version: '1', requires: ['zt-math-lib'],
   summary: 'ZT math digest: rules M1 to M18 on every unit and Theory Card (read-only).',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
   },

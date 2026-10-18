@@ -5,6 +5,7 @@ defineModule({
   id: 'zt-math-boundary', version: '1', requires: ['zt-math-lib'],
   summary: 'ZT math digest: hypothesis roles, counterexamples, contrast pairs (write → apply and review → settle).',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },

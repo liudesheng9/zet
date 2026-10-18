@@ -1,14 +1,18 @@
-// ==== module zt-group-cycle v1 ====
+// ==== module zt-group-cycle v2 ====
 // The Digest stage of a managed run: one ready group per chain. Each chain claims one `digest/gNNN@1` unit
 // from the ledger's ready work, starts it (the snapshot is generated before any usable job manifest exists,
 // R262), runs the one frozen DeepSeek job that start wrote, and records the checked completion with
 // `group-finish` (R250/R251/R253). The claim is the chain's first command, so a chain that waits for a free
 // manager slot never holds a stale lease. A unit that fails is recorded against its own attempt and claimed
 // again by a later attempt of this chain; the stage is never rerun as a whole (R258).
+// #87 (R280): `group-start` reconciles a retained accepted plan against the archive receipts. When every call
+// already committed, its job declares `expected_jobs: 0` and the rebound draft, so this chain runs no DeepSeek
+// job at all and completes the group from the committed result.
 defineModule({
-  id: 'zt-group-cycle', version: '1', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: one verified group per manager chain, claimed from the ledger ready work (mode full).',
+  id: 'zt-group-cycle', version: '2', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: one verified group per manager chain, claimed from the ledger ready work (mode full), recovering a group whose accepted plan already committed.',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     group: { type: 'number', required: true, description: 'the number of this chain\'s group item ({{item.n}})' },
@@ -23,7 +27,8 @@ defineModule({
       const steps = [
         // The bounded claim: one unit, and a bounded readiness wait after the first attempt.
         { name: 'claim', claim: true, command: `${Z.LEDGER} next -Out "${Z.OUT}" -Layer digest -Take 1 -Owner "${label} a${attempt}"${attempt > 1 ? ' -Wait 60' : ''}` },
-        // The start publishes the snapshot and the frozen job manifest, then the chain runs that job.
+        // The start publishes the snapshot and the frozen job manifest, then the chain runs that job. A
+        // recovered group's manifest declares no job: its accepted plan already committed.
         { name: 'start', jobs: true, command: `${Z.DIGEST} group-start -Out "${Z.OUT}" -Group {{group}} -Token {{token}}` },
         // The checked completion: revalidates, applies and checks the persisted outputs against the draft.
         { name: 'finish', command: `${Z.DIGEST} group-finish -Out "${Z.OUT}" -Group {{group}} -Token {{token}} -Draft "{{draft}}"` },
@@ -34,11 +39,13 @@ defineModule({
       const claim = Z.jsonOf(chained, 'claim')
       const unit = (claim && Array.isArray(claim.units) && claim.units[0]) || null
       if (!unit) return { status: 'idle', group: p.group, attempt, label }
+      const start = Z.jsonOf(chained, 'start')
       const finish = Z.resultLine(chained, 'finish', { unit: unit.id, token: unit.token })
       const done = finish.parsed && finish.parsed.state === 'done' && !finish.faults.length
       if (done) {
-        log(`${label}: ${unit.id} verified (${finish.parsed.disposition || 'checked'}, ${(finish.parsed.owned || []).length} owned Cards).`)
-        return { status: 'done', group: p.group, unit: unit.id, disposition: finish.parsed.disposition, owned: (finish.parsed.owned || []).length }
+        if (start && start.recovered) log(`${label}: ${unit.id} recovered from its committed receipts (${(start.recovery && start.recovery.receipts ? start.recovery.receipts.length : 0)} receipts, ${finish.parsed.disposition || 'checked'}); no DeepSeek job ran.`)
+        else log(`${label}: ${unit.id} verified (${finish.parsed.disposition || 'checked'}, ${(finish.parsed.owned || []).length} owned Cards).`)
+        return { status: 'done', group: p.group, unit: unit.id, disposition: finish.parsed.disposition, owned: (finish.parsed.owned || []).length, recovered: !!(start && start.recovered) }
       }
       // One unit's failure is recorded against its own claim, not turned into a whole-stage rerun.
       const startStep = Z.stepOf(chained, 'start')

@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -9,10 +9,10 @@
     "P2": "Inputs: the base args plus events and findings (false skips that layer). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the Model Cards of the book (model layer), the dated sentences per group (event layer), and the sentences that report data with a number per group (empirical-results layer; 3 groups per DeepSeek job each).",
     "P4": "Roles: as the base (manager Haiku low, architect Sonnet, organizer Opus).",
-    "P5": "Stage graph: the base chain; the Event and Finding layers fill after-terms, so they are worked from ledger readiness while the remaining digest groups run; after-digest: the model layer, released when the digest managers settle; after-models: explanations of the finished Derivation parts, which settle before the link pass; the whole-book card cycle waits for the Model reviews. Figures → Bridge, Hubs → Bridge, and the final audit joins Hubs and Bridge. Bridge profile book.",
+    "P5": "Stage graph: the base chain; the Event and Finding layers fill after-terms, so they are worked from ledger readiness while the remaining digest groups run; after-digest: the model layer, released when the digest managers settle; after-models: explanations of the finished Derivation parts, which settle before the link pass; the whole-book card cycle waits for the Model reviews. Figures → Bridge, Hubs → Bridge, and the final audit joins Hubs and Bridge. Bridge profile book. A resume and the repair modes drain the tail that their own layer released: modes models, explain, events and findings run their layer, the changed-Card Link pass and check, Organize, the touched Hubs and the audit before the settlement, and mode resume adds the finalization (#87, R283/R286).",
     "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md), zt-finding-layer (finding-compiler.ps1, dsh-finding-instructions.zh.md; the Card type finding of zt 0.20.0). zt-bridge v3.",
     "P7": "Checks: as the base; each event and finding job runs its SELF-CHECK (precheck: fields, supported Cards, and zt-check on the drafts: E1, E2 or F1 to F3, and the Card language); apply refuses what the precheck reports; in mode full the link check card cycle then checks every Card of the book. Bridge BR1–BR9, exact report acceptance and guarded edits.",
-    "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
+    "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report. Mode resume accepts only out and spends the one supported resume; the repair modes keep their own layers and drain their dependent outputs instead of rebuilding unrelated groups or models (#87, R286).",
     "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs checks the readiness graph, the ledger commands of the group cycle and every layer, the runner restrictions and the joins on the built script; tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 use scratch archives. Run with zt 0.20.0 deployed. Pilot: one chapter after a database backup."
   },
   "roles": {
@@ -485,6 +485,62 @@
               }
             ],
             "message": "bridgeCandidates must be a whole number in 1..8"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "resume"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "args.book",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.source",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bibtex",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bookTitle",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.citationKey",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.groups",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.only",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeReport",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApply",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApplyEarlier",
+                    "op": "empty"
+                  }
+                ]
+              }
+            ],
+            "message": "mode resume reads the retained identity, source, Citation key, enabled layers and settings from its ledger and accepts only out: a new identity, source, group count, model list or Bridge selection needs its own preparation"
           }
         ]
       }
@@ -572,6 +628,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -597,6 +656,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -625,6 +687,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -668,7 +733,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -714,7 +782,10 @@
         "model": {
           "$ref": "stages.source.output.model"
         },
-        "profile": "{{consts.profile}}"
+        "profile": "{{consts.profile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "after": [
         "cards"
@@ -762,6 +833,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -808,6 +882,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -831,6 +908,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -848,7 +928,10 @@
       "params": {
         "args": "{{args}}",
         "mode": "{{mode}}",
-        "groups": "{{stages.prepare.output.groups}}"
+        "groups": "{{stages.prepare.output.groups}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -870,6 +953,9 @@
         "pending": {
           "$ref": "stages.link-prepare.output.pending",
           "default": []
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -893,6 +979,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -911,8 +1000,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume|models|explain|events|findings)$"
             },
             {
               "path": "args.organize",
@@ -934,6 +1023,9 @@
         },
         "link": {
           "$ref": "stages.link.output.reports"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         },
         "models": {
           "$ref": "stages.models.output.models"
@@ -967,7 +1059,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -987,8 +1082,8 @@
               "value": [
                 {
                   "path": "mode",
-                  "op": "==",
-                  "value": "full"
+                  "op": "matches",
+                  "value": "^(full|resume|models|explain|events|findings)$"
                 },
                 {
                   "path": "args.hubs",
@@ -1007,7 +1102,8 @@
                 },
                 {
                   "path": "args.hubs",
-                  "op": "true"
+                  "op": "==",
+                  "value": true
                 }
               ]
             }
@@ -1019,6 +1115,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -1064,7 +1163,10 @@
         "model": {
           "$ref": "stages.source.output.model"
         },
-        "profile": "{{consts.profile.bridgeProfile}}"
+        "profile": "{{consts.profile.bridgeProfile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "expect": [
         {
@@ -1102,7 +1204,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1120,8 +1225,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume)$"
             },
             {
               "path": "args.finalize",
@@ -1133,7 +1238,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1146,7 +1254,10 @@
       "module": "zt-dsh-cleanup",
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "onFail": "continue"
     },
@@ -1217,6 +1328,9 @@
         "finalize": {
           "$ref": "stages.finalize.output"
         },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
         "models": {
           "$ref": "stages.models.output"
         },
@@ -1280,7 +1394,13 @@
       "prepare",
       "models",
       "explain",
+      "link-prepare",
+      "link",
+      "link-check",
       "organize",
+      "hubs",
+      "audit",
+      "cleanup",
       "report"
     ],
     "explain": [
@@ -1288,6 +1408,13 @@
       "source",
       "prepare",
       "explain",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "hubs",
+      "audit",
+      "cleanup",
       "report"
     ],
     "events": [
@@ -1295,6 +1422,13 @@
       "source",
       "prepare",
       "events",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "hubs",
+      "audit",
+      "cleanup",
       "report"
     ],
     "findings": [
@@ -1302,11 +1436,19 @@
       "source",
       "prepare",
       "findings",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "hubs",
+      "audit",
+      "cleanup",
       "report"
     ],
     "resume": [
       "args",
       "prepare",
+      "terms",
       "digest",
       "cards",
       "events",
@@ -1322,6 +1464,7 @@
       "hubs",
       "bridge",
       "audit",
+      "finalize",
       "cleanup",
       "report"
     ]
@@ -1334,6 +1477,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "3.3.0"
+    "version": "3.4.0"
   }
 }

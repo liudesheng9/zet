@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -9,10 +9,10 @@
     "P2": "Inputs: the base's args plus supply, unitsPerJob, mainResults, coreBudget, notation, boundary, proof, theory (data and declared switches). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the numbered statements (math-compiler.ps1 index) and unitsPerJob units per boundary or proof job, one Theory Card per chapter.",
     "P4": "Roles: as the base. Every math step and its DeepSeek managers run as the Haiku manager role.",
-    "P5": "Stage graph: the base chain with the slots filled: after-prepare: math-skeleton; cards-book (one whole-book card cycle, base 2.5.0, R296) after the digest and before the link pass; after-digest: models (the model layer with the math supplements) → math-boundary → math-proof, and explain (mode explain), never queued behind the card cycle; after-link: math-theory (the cited premises are complete after the link pass); after-audit: math-check. Figures → Bridge → Hubs; Bridge profile math.",
+    "P5": "Stage graph: the base chain with the slots filled: after-prepare: math-skeleton; cards-book (one whole-book card cycle, base 2.5.0, R296) after the digest and before the link pass; after-digest: models (the model layer with the math supplements) → math-boundary → math-proof, and explain (mode explain), never queued behind the card cycle; after-link: math-theory (the cited premises are complete after the link pass); after-audit: math-check. Figures → Bridge → Hubs; Bridge profile math. A resume drains every mathematics obligation and then the tail (link pass and check, Theory, Organize, Hubs, audit, finalization, math check, cleanup); modes models and explain drain the same tail so a repaired model reaches its Theory and math check (#87, R283/R286).",
     "P6": "Modules (the mathematics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md, then math-prefix.md and math-link-prefix.md from math-compiler.ps1 -Step docs; -BriefDoc, -FillDoc, -ReviewDoc; model-architect-math.md; Theory Cards out of the model compiler), zt-model-layer and zt-explain (zt-model-lib), zt-math-skeleton, zt-math-boundary, zt-math-proof, zt-math-theory, zt-math-check (zt-math-lib). No Event Card: the event layer is the economics set's. zt-bridge v3.",
     "P7": "Checks: as the base; the boundary review job checks each supplied counterexample; the proof review checks every step; math-check reports M1-M18. Bridge BR1–BR9, exact report acceptance and guarded edits.",
-    "P8": "Failure policy: a failed index, docs, or skeleton step halts the run; a failed notation table is logged and the digest goes on. Switches: models, notation, boundary, proof, theory. Modes: the base modes plus models, explain, math. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
+    "P8": "Failure policy: a failed index, docs, or skeleton step halts the run; a failed notation table is logged and the digest goes on. Switches: models, notation, boundary, proof, theory. Modes: the base modes plus models, explain, math. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report. Mode resume accepts only out and spends the one supported resume; the mathematics layers and Theory are drained from ledger readiness instead of being rebuilt (#87, R274-R285).",
     "P9": "Dry run: zt-math-digest.sim.json. Fixture: tests/framework-harness.mjs runs all checks of the removed math-workflow-harness.mjs on the built script (2.3.0: base 2.2.0, the ported scripts run as zt-digest tools; 2.4.0: base 2.3.0, every digest script runs as its zt-digest tool, math-compiler as zt-digest math; 2.6.0: base 2.5.0, one whole-book card cycle instead of a cycle per block), and checks that the shared stages build the same commands in both book types. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
   },
   "roles": {
@@ -526,6 +526,62 @@
               }
             ],
             "message": "bridgeCandidates must be a whole number in 1..8"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "resume"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "args.book",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.source",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bibtex",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bookTitle",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.citationKey",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.groups",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.only",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeReport",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApply",
+                    "op": "empty"
+                  },
+                  {
+                    "path": "args.bridgeApplyEarlier",
+                    "op": "empty"
+                  }
+                ]
+              }
+            ],
+            "message": "mode resume reads the retained identity, source, Citation key, enabled layers and settings from its ledger and accepts only out: a new identity, source, group count, model list or Bridge selection needs its own preparation"
           }
         ]
       }
@@ -600,8 +656,8 @@
       "when": [
         {
           "path": "mode",
-          "op": "==",
-          "value": "full"
+          "op": "matches",
+          "value": "^(full|resume)$"
         }
       ],
       "params": {
@@ -609,6 +665,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -636,6 +695,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -676,7 +738,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -722,7 +787,10 @@
         "model": {
           "$ref": "stages.source.output.model"
         },
-        "profile": "{{consts.profile}}"
+        "profile": "{{consts.profile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "after": [
         "cards"
@@ -737,7 +805,7 @@
         {
           "path": "mode",
           "op": "matches",
-          "value": "^(full|math)$"
+          "value": "^(full|math|resume|models)$"
         },
         {
           "path": "args.boundary",
@@ -750,6 +818,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -768,7 +839,7 @@
         {
           "path": "mode",
           "op": "matches",
-          "value": "^(full|math)$"
+          "value": "^(full|math|resume|models)$"
         },
         {
           "path": "args.proof",
@@ -781,6 +852,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -826,6 +900,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -872,6 +949,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -895,6 +975,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -911,7 +994,10 @@
       "params": {
         "args": "{{args}}",
         "mode": "{{mode}}",
-        "groups": "{{stages.prepare.output.groups}}"
+        "groups": "{{stages.prepare.output.groups}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -933,6 +1019,9 @@
         "pending": {
           "$ref": "stages.link-prepare.output.pending",
           "default": []
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -956,6 +1045,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -968,7 +1060,7 @@
         {
           "path": "mode",
           "op": "matches",
-          "value": "^(full|math)$"
+          "value": "^(full|math|resume|models|explain)$"
         },
         {
           "path": "args.theory",
@@ -981,6 +1073,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       },
       "after": [
@@ -1002,8 +1097,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume|models|explain|events|findings)$"
             },
             {
               "path": "args.organize",
@@ -1025,6 +1120,9 @@
         },
         "link": {
           "$ref": "stages.link.output.reports"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         },
         "models": {
           "$ref": "stages.models.output.models"
@@ -1058,7 +1156,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1078,8 +1179,8 @@
               "value": [
                 {
                   "path": "mode",
-                  "op": "==",
-                  "value": "full"
+                  "op": "matches",
+                  "value": "^(full|resume|models|explain|events|findings)$"
                 },
                 {
                   "path": "args.hubs",
@@ -1098,7 +1199,8 @@
                 },
                 {
                   "path": "args.hubs",
-                  "op": "true"
+                  "op": "==",
+                  "value": true
                 }
               ]
             }
@@ -1110,6 +1212,9 @@
         "mode": "{{mode}}",
         "model": {
           "$ref": "stages.source.output.model"
+        },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
         }
       }
     },
@@ -1155,7 +1260,10 @@
         "model": {
           "$ref": "stages.source.output.model"
         },
-        "profile": "{{consts.profile.bridgeProfile}}"
+        "profile": "{{consts.profile.bridgeProfile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "expect": [
         {
@@ -1193,7 +1301,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1211,8 +1322,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "full"
+              "op": "matches",
+              "value": "^(full|resume)$"
             },
             {
               "path": "args.finalize",
@@ -1224,7 +1335,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -1238,8 +1352,8 @@
           "value": [
             {
               "path": "mode",
-              "op": "==",
-              "value": "math"
+              "op": "matches",
+              "value": "^(math|resume|models|explain)$"
             },
             {
               "op": "and",
@@ -1260,7 +1374,10 @@
       ],
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "after": [
         "finalize"
@@ -1276,7 +1393,10 @@
       "module": "zt-dsh-cleanup",
       "params": {
         "args": "{{args}}",
-        "mode": "{{mode}}"
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       },
       "onFail": "continue"
     },
@@ -1367,6 +1487,9 @@
         "finalize": {
           "$ref": "stages.finalize.output"
         },
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
         "models": {
           "$ref": "stages.models.output"
         },
@@ -1428,9 +1551,19 @@
       "args",
       "source",
       "prepare",
+      "math-boundary",
+      "math-proof",
       "models",
       "explain",
+      "link-prepare",
+      "link",
+      "link-check",
+      "math-theory",
       "organize",
+      "hubs",
+      "audit",
+      "math-check",
+      "cleanup",
       "report"
     ],
     "explain": [
@@ -1438,6 +1571,15 @@
       "source",
       "prepare",
       "explain",
+      "link-prepare",
+      "link",
+      "link-check",
+      "math-theory",
+      "organize",
+      "hubs",
+      "audit",
+      "math-check",
+      "cleanup",
       "report"
     ],
     "math": [
@@ -1455,6 +1597,7 @@
     "resume": [
       "args",
       "prepare",
+      "terms",
       "digest",
       "cards",
       "math-skeleton",
@@ -1472,6 +1615,7 @@
       "hubs",
       "bridge",
       "audit",
+      "finalize",
       "math-check",
       "cleanup",
       "report"
@@ -1485,6 +1629,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "3.3.0"
+    "version": "3.4.0"
   }
 }

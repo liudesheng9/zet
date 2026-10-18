@@ -11,6 +11,7 @@ defineModule({
   id: 'zt-link-pass', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the cross-part link runs on the pending groups, with the Link units recorded as unverified legacy-transport work.',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },

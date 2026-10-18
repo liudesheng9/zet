@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v11 ====
+// ==== module zt-digest-lib v12 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -7,7 +7,9 @@
 // One card cycle per book, not one per block (R296): `runCards` runs the whole-book cycle, and its
 // `-ModelReview` option lets that cycle own the source review of a Model draft no model chain elaborates (R247).
 // 11 adds `fixRounds`: the finalization's one correction cycle is declared, not inherited from the pilot
-// setting (#86, R299).
+// setting (#86, R299). 12 resolves the run's Citation key from the prepared run (parameter `key`, from
+// `stages.prepare.output.citation_key`), so mode resume uses the ledger's retained key instead of requiring
+// the operator to repeat args.citationKey (#87, R274/R276).
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
@@ -68,7 +70,7 @@ function zdDefaultModel(A) {
 function zdMake(ctx, p) {
   const A = p.args || {}
   const MODE = p.mode || 'full'
-  const KEY = A.citationKey
+  const KEY = (p && p.key) || A.citationKey
   const OUT = A.out
   const profile = p.profile || {}
   const SCRIPTS = ZD_SCRIPTS
@@ -736,7 +738,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '11', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '12', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

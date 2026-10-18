@@ -10,6 +10,7 @@ defineModule({
   id: 'zt-finalize', version: '1', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the finite finalization (audit plan, one scoped correction cycle, the changed-Card manifest, dependency-scoped publication refresh, final read-only audit).',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
   },

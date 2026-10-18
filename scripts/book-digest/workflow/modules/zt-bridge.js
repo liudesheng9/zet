@@ -3,6 +3,7 @@ defineModule({
   id: 'zt-bridge', version: '5', requires: ['zt-digest-lib'],
   summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
   params: {
+    key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'run arguments' },
     mode: { type: 'string', required: true, description: 'run mode' },
     model: { type: 'any', description: 'resolved judge model; unused for apply' },
