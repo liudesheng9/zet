@@ -9,8 +9,8 @@ This is the deployment and pilot package for the last qualification slice of [PR
 | 1. Service/archive/run activity, authorization, consistent backup, no digest stopped implicitly | §2: activity record, expired run marker, no ledger, `VACUUM INTO` backup with `integrity_check` `ok` | done |
 | 2. Matching binaries/integrations/frozen variants installed, installed identity, scratch read/batch smoke tests, rollback evidence | §3, §4, §5: four artifact hashes, service identity, skill parity, three `verify` results, the new `install-smoke` suite, rollback copies | done |
 | 3. Bounded source with a formal model, a shared premise and declared historical/empirical work, with exact persisted source/versions | §6: source SHA-256, the prepared run contract, 3 groups, 3 Event candidates, `base_version`/`variant_version` | done |
-| 4. Actual provider results, process lifetimes, receipt recovery, explanation/source coverage, owned cleanup through completion or one resume | §7: the run is the user's authorized Claude Code run; the exact invocation, injection and resume are fixed here | **handed over** |
-| 5. A completed neighbour's substantive build fingerprints/receipts unchanged, every partial outcome named | §7.4: the before/after ledger comparison | **handed over** |
+| 4. Actual provider results, process lifetimes, receipt recovery, explanation/source coverage, owned cleanup through completion or one resume | §7: the run is the user's authorized Claude Code run; the exact invocation, injection and resume are fixed here, and every ledger command of the sequence is rehearsed on a consistent copy (§7.5) | **handed over** |
+| 5. A completed neighbour's substantive build fingerprints/receipts unchanged, every partial outcome named | §7.4: the before/after ledger comparison; §7.5 already shows it holds across a real resume | **handed over** |
 | 6. Actual pilot usage/latency separate from whole-book targets; no Bridge proposal applied without its exact selection | §7.4: `ledger report` usage/timing, `bridge` report with no apply | **handed over** |
 | 7. Demonstration through the actual command/MCP/compiler/workflow boundary, with T20/T25/T27/T29/T32 | §8: the suites and their results at this release | done |
 
@@ -179,23 +179,26 @@ Do not add `until: "digest"` to this run. The checkpoint is a legitimate stop fo
 
 ### 7.2 The injected recoverable failure
 
-While the digest stage runs, poll the run's ledger and fail one group's claimed unit once:
+The failure is injected into the run's own ledger while the digest stage runs. `ledger fail` takes a fault file whose code, unit and input hash must match the claim, and its class must be the class that code belongs to (a mismatch is refused before anything changes). `check_failed` is a `content` fault, so it leaves the unit `failed` until the resume; a `retryable` fault would instead put the unit back into `retry`, where the run's own attempt budget retries it and the pilot would reach its resume with nothing to reset.
 
 ```powershell
+# 1. The claim the run holds: its manager claimed the group, and the ledger shows the token.
 zt-digest ledger status -Out D:\zt-digest\pilot-90 |
   ConvertFrom-Json | Select-Object -ExpandProperty units |
   Where-Object { $_.state -eq 'claimed' } |
-  Select-Object id, layer, owner, token, lease_until
-```
+  Select-Object id, layer, owner, token, input_hash, lease_until
 
-Then, with the claimed unit's real token:
+# 2. The fault file: the code, the unit and that claim's own input hash.
+@{ schema_version = 1; unit = 'digest/g002@1'; input_hash = '<input_hash>';
+   code = 'check_failed'; cause = 'pilot injected failure: the group fails once so the run reaches its one resume' } |
+  ConvertTo-Json | Set-Content -Encoding utf8 D:\zt-digest\pilot-90\pilot-fault.json
 
-```powershell
+# 3. The one injected failure: `content` is the class of `check_failed`.
 zt-digest ledger fail -Out D:\zt-digest\pilot-90 -Unit digest/g002@1 -Token <token> `
-  -Class transient -Message "pilot injected failure"
+  -Class content -Fault D:\zt-digest\pilot-90\pilot-fault.json
 ```
 
-The failure is class `transient`, so the run records the attempt, keeps the group unresolved, and continues: the other groups and the layers they release still complete. Prefer a middle group (`g002`) so a completed neighbour exists on both sides. If the claim window is missed, the same injection works on any later claimed unit (a `models`, `explain` or `link` unit is equally recoverable and equally real); take the next claimed unit rather than a second resume.
+The unit records one attempt and stays `failed`; the run keeps the other groups and the layers they release and completes, and its report names the failed group and its blocked downstream work. Prefer a middle group (`g002`) so a completed neighbour exists on both sides. If the claim window is missed, the same injection works on any later claimed unit (a `models`, `explain` or `link` unit is equally recoverable and equally real); take the next claimed unit rather than a second resume.
 
 ### 7.3 One resume
 
@@ -218,7 +221,7 @@ Expected: the prepare stage runs the one supported `ledger resume` — invocatio
 | the Event and Finding candidates each have a disposition | `events.json`, `findings.json`, the `events-finish`/`findings-finish` results |
 | the formal model's parts, closure and explanation obligations | `zt mcp` `get_model` on the Model Card, the `explain-finish` result |
 | the shared premise is one Card linked by both models (where the source yields two) | `get_model` neighbours, `zt status --check-links` |
-| the injected failure and its one resume | `ledger report`, the `attempt_reset`/`retry` events, `resume.status` |
+| the injected failure and its one resume | `ledger report`, the `claimed`/`faulted`/`attempt_reset`/`resumed` ledger events, `resume.status` |
 | **nothing done was rebuilt** | run `zt-digest ledger status -Out <out> -Verify` before the resume and after it, then compare the done units' `result` and `completed_at` |
 | coverage, placeholders and usage | `zt-digest ledger report -Out <out>` (usage per run, stage timing, gaps, placeholders) |
 | latency separate from whole-book targets | the same `run-report.json` timing block: wall/queue/tool seconds and the critical path; the pilot's numbers are pilot numbers, never the whole-book R354 targets |
@@ -243,7 +246,18 @@ Compare-Object -ReferenceObject $before -DifferenceObject $after -Property unit,
 
 An empty comparison is the AC5 result: every completed unit kept its result and completion time. Any row is a defect to report with the unit name.
 
-### 7.5 After the pilot
+### 7.5 The ledger commands, rehearsed
+
+[`scripts/book-digest/tests/pilot-rehearsal.ps1`](../scripts/book-digest/tests/pilot-rehearsal.ps1) rehearses every command of §7.1–§7.4 except the provider work, on a consistent copy of the live archive with the installed binaries. It is not part of the aggregate runner (it needs a copy of the archive, like `qualify-release.ps1`):
+
+- it copies `-Archive` with `VACUUM INTO`, starts an isolated service and prepares the bounded source with `-Variant econ -Apply` (3 groups, the same source SHA-256 `c9b20dca…`);
+- it claims the run's next ready unit with the run's own `ledger next`, refuses a class the fault code does not permit, then injects the `check_failed`/`content` failure and asserts the unit stays `failed` with one attempt and 11 unresolved units;
+- it runs the one supported `ledger resume`: invocation 2, `resume_count` 1, the failed unit reset, the three digest groups published as its downstream closure, the reset unit ready again, and the done `prepare/book@1` result, attempts and completion time unchanged;
+- it asserts a second resume is refused as `resume_used` with nothing spent, that `ledger report` records invocation 2 and the resume and names 11 gaps instead of claiming completion, and that the copy still passes the full-parser Link check.
+
+Result: **20 assertions, 0 failed** (`pilot-rehearsal-committed.log`); the RED run with `-Digest` pointed at `zt.exe` fails at prepare and names the checks that did not run (`pilot-rehearsal-red.log`). Two defects in this document's earlier draft were found this way and are fixed above: `ledger fail` takes `-Fault <file>` rather than a message, and its class must be the code's own class — `provider_transient`/`retryable` is retried inside the attempt budget, so it would not reach the resume.
+
+### 7.6 After the pilot
 
 The pilot's Literature tree stays in the agent Workspace as evidence. To remove it afterwards, delete that tree with the normal confirmed delete (the GUI tree menu, or the shell `del` on `Pilot2026`), then run `zt status --check-links`. Keeping it is harmless: it is a normal Literature tree named `Pilot2026`.
 
@@ -256,6 +270,7 @@ The pilot's Literature tree stays in the agent Workspace as evidence. To remove 
 | Digest, release, locked | `CARGO_TARGET_DIR=D:\zt-digest-target cargo test --release --locked` | **132 passed, 0 failed** | `issue90\digest-tests.log` |
 | Aggregate public runner, throttle 3 | `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1 -Throttle 3` | **63 suites, 0 failed, 301 s** (the 62 existing suites passed first, 302 s; the new installation smoke suite is the 63rd and ran inside this runner) | `issue90\public-summary.log`, `issue90\public2-summary.log` + `issue90\public\`, `issue90\public2\` |
 | Installation smoke | `pwsh -NoProfile -File scripts\book-digest\tests\install-smoke.tests.ps1` | **9 assertions, 0 failed**; the RED run exits 1 | `install-smoke-green.log`, `install-smoke-red.log` |
+| Pilot ledger rehearsal | `pwsh -NoProfile -File scripts\book-digest\tests\pilot-rehearsal.ps1 -Work D:\zt-target\qualification\issue90\rehearsal` | **20 assertions, 0 failed** (prepare, claim, refused class, injected content failure, one resume with invocation 2 / esume_count 1 and its closure, unchanged done neighbour, refused second resume, report, Link parity); the RED run with a wrong digest binary exits 1 | `pilot-rehearsal-committed.log`, `pilot-rehearsal-red.log` |
 | Frozen framework harness | inside the runner (`framework-harness.mjs`) | pass, 172 checks | `public\framework-harness.mjs.log` |
 | Bridge workflow harness | inside the runner (`bridge-workflow-harness.mjs`) | pass, 2 checks | `public\bridge-workflow-harness.mjs.log` |
 | Workflow tools (no workflow run) | `node scripts/issue-dev/tests/issue-relay.tests.mjs` | **16 scenarios passed** | `workflow-tools.log` |
@@ -276,7 +291,7 @@ Named scenarios of this issue, all exercised through the public command/MCP/comp
 
 The first repeat of the isolated timing suite failed 2 of 141 checks, both in the math variant's lock-contention trial: the measured write waited 11.8 ms instead of more than 5 s, and the daemon recorded no `edit wait done` line. The write had not contended at all. The cause is a race in the harness, not in the product: the trial started a PowerShell child that holds `zt.edit.lock` for 6.5 s and then slept a fixed 600 ms before measuring, but on a loaded host that child's startup can take longer than 600 ms, so the measured write took the lock before the holder did. The econ variant's identical trial passed in the same run.
 
-The fix is in `qualify-release.ps1`: the trial now removes any stale lock file, starts the holder, and polls for `zt.edit.lock` to exist (at most 15 s) before the measured write, with its own assertion naming how long the holder took to acquire it. The holder's 6.5 s hold starts when it creates the file, so detecting the file leaves the hold at nearly its full length. A probe confirmed that a `FileShare.None` lock file is visible to `Test-Path` and refuses an open while it is held. The repeat then passed all 141 checks (§9); the failure and the fix are both retained.
+The fix is in `qualify-release.ps1`: the trial now removes any stale lock file, starts the holder, and polls for `zt.edit.lock` to exist (at most 15 s) before the measured write, with its own assertion naming how long the holder took to acquire it (one per variant, which is why the repeat reports 143 checks rather than 141). The holder's 6.5 s hold starts when it creates the file, so detecting the file leaves the hold at nearly its full length. A probe confirmed that a `FileShare.None` lock file is visible to `Test-Path` and refuses an open while it is held. The repeat then passed all 143 checks (§9); the failure and the fix are both retained.
 
 ## 9. T32: the isolated timing suite, repeated at the installed release
 
