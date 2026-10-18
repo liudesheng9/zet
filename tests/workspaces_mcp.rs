@@ -1149,6 +1149,75 @@ fn a_failed_batch_rolls_back_earlier_creates_and_topic_allocation() {
 }
 
 #[test]
+fn a_failed_batch_commits_no_receipt_and_its_corrected_retry_applies_once() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let key = |i: usize| format!("run-corrected/group-1/1/apply/item-{i}");
+    let invalid = json!({"items":[
+        {"op_key":key(0),"client_ref":"topic","tool":"create_topic","arguments":{"title":"Corrected batch"}},
+        {"op_key":key(1),"client_ref":"claim","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":"参照 [[MissingBook]]。"}}
+    ]});
+    let error = mcp.err("apply_batch", invalid);
+    assert!(
+        error.contains("link target `MissingBook` does not exist"),
+        "{error}"
+    );
+    // The receipts belong to the same transaction as the Cards: a rolled-back
+    // batch leaves no authority to replay, so the corrected request starts over.
+    assert_eq!(
+        home.receipt_count(),
+        0,
+        "a rolled-back batch must not leave a receipt"
+    );
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    let corrected = json!({"items":[
+        {"op_key":key(0),"client_ref":"topic","tool":"create_topic","arguments":{"title":"Corrected batch"}},
+        {"op_key":key(1),"client_ref":"claim","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":"依赖 [[@@topic]]。"}}
+    ]});
+    let applied = mcp.ok("apply_batch", corrected.clone());
+    assert_eq!(applied["results"][0]["replayed"], false);
+    assert_eq!(applied["results"][0]["result"]["address"], "0/0");
+    assert_eq!(applied["results"][1]["result"]["address"], "0/1");
+    let (hash, stored, committed) = home.receipt(&key(1));
+    assert_eq!(hash.len(), 64, "{hash}");
+    assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()), "{hash}");
+    let stored: Value = serde_json::from_str(&stored).expect("stored result");
+    assert_eq!(stored["address"], "0/1");
+    assert_eq!(
+        stored["after_fingerprint"],
+        applied["results"][1]["result"]["after_fingerprint"]
+    );
+    assert!(
+        committed.ends_with('Z') && committed.len() >= 20,
+        "commit time is UTC: {committed}"
+    );
+    assert_eq!(home.receipt_count(), 2);
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let replay = mcp.ok("apply_batch", corrected);
+    assert_eq!(replay["results"][0]["replayed"], true);
+    assert_eq!(replay["results"][1]["replayed"], true);
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert_eq!(
+        mcp.ok("get_tree", json!({"tree":"0"}))["cards"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let output = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .output()
+        .expect("status");
+    assert!(output.status.success());
+}
+
+#[test]
 fn bulk_text_has_the_summary_facts_needed_by_scoped_digest_checks() {
     let home = TestHome::new();
     home.configure_and_up();
@@ -2638,6 +2707,34 @@ impl TestHome {
             )
             .expect("exists")
             == 1
+    }
+
+    /// Rows in the archive's authoritative operation receipts, if the table exists yet.
+    fn receipt_count(&self) -> i64 {
+        let db = self.db();
+        let present: i64 = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='applied_ops')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("applied_ops presence");
+        if present == 0 {
+            return 0;
+        }
+        db.query_row("SELECT COUNT(*) FROM applied_ops", [], |row| row.get(0))
+            .expect("receipt count")
+    }
+
+    /// One receipt's canonical request hash, stored result and commit time.
+    fn receipt(&self, op_key: &str) -> (String, String, String) {
+        self.db()
+            .query_row(
+                "SELECT request_hash, result_json, committed_at FROM applied_ops WHERE op_key = ?1",
+                [op_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("operation receipt")
     }
 
     /// A human Topic `0/0` with one Card `0/1`, made with shell commands.
