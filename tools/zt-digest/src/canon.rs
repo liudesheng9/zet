@@ -241,6 +241,19 @@ pub fn read_json(path: &str) -> Result<Value> {
     parse_json(&text)
 }
 
+/// A JSON argument that a caller may give either as a file path (`-Fault <file>`) or as JSON text
+/// (`-RunOptions '{"terms":false}'`). The frozen workflow modules pass text, while the tests, the
+/// runbook and hand-run commands pass a file, and neither form may break the other caller. Text is
+/// recognized by its opening brace or bracket; anything else is a path, so a missing file still
+/// fails as `Read-Json` did.
+pub fn read_json_arg(value: &str) -> Result<Value> {
+    let text = value.strip_prefix('\u{FEFF}').unwrap_or(value).trim_start();
+    if text.starts_with('{') || text.starts_with('[') {
+        return parse_json(value);
+    }
+    read_json(value)
+}
+
 /// Parse one already-read UTF-8 artifact without rereading it for its hash.
 pub(crate) fn parse_json(text: &str) -> Result<Value> {
     let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
@@ -373,6 +386,23 @@ mod tests {
         assert_eq!(repeated_key(r#"{"a":1,"b":{"c":[1,{"d":2,"d":3}]}}"#).as_deref(), Some("d"));
         assert_eq!(repeated_key(r#"{"a":1,"a":2}"#).as_deref(), Some("a"));
         assert_eq!(repeated_key(r#"[{"a":"}\"{"},{"a":1}]"#), None);
+    }
+
+    /// A JSON argument accepts the text the workflow modules pass and the file the tests and the
+    /// runbook pass, and a missing path still fails as the file form always did.
+    #[test]
+    fn a_json_argument_accepts_text_or_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fault.json");
+        std::fs::write(&file, r#"{"code":"check_failed"}"#).unwrap();
+        assert_eq!(read_json_arg(file.to_str().unwrap()).unwrap(), json!({ "code": "check_failed" }));
+        assert_eq!(read_json_arg(r#" {"terms":false,"figures":false}"#).unwrap(), json!({ "terms": false, "figures": false }));
+        assert_eq!(read_json_arg("[\"a\"]").unwrap(), json!(["a"]));
+        assert_eq!(
+            read_json_arg(dir.path().join("missing.json").to_str().unwrap()).unwrap_err().to_string(),
+            format!("Cannot find path '{}' because it does not exist.", dir.path().join("missing.json").display())
+        );
+        assert!(read_json_arg(r#"{"code":"#).unwrap_err().to_string().starts_with("invalid JSON: "));
     }
 
     #[test]

@@ -14640,11 +14640,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 )?
             }
         } else if command == "fail" {
-            let path = a.str("Fault");
-            if std::fs::metadata(&path)?.len() > 65536 {
+            let given = a.str("Fault");
+            // The value is a file path or, as the workflow modules pass it, the fault document as JSON
+            // text; the 64 KiB bound applies to either form.
+            let size = match std::fs::metadata(&given) {
+                Ok(meta) => meta.len(),
+                Err(_) => given.len() as u64,
+            };
+            if size > 65536 {
                 bail!("fault evidence exceeds 64 KiB");
             }
-            let fault = util::read_json(&path)?;
+            let fault = crate::canon::read_json_arg(&given)?;
             fail(
                 &p,
                 &a.str("Unit"),

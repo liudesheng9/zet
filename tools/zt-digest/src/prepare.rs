@@ -536,7 +536,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let declared=if a.has("RunOptions") {Some(crate::canon::read_json(&a.str("RunOptions"))?)}else{None};
+    // The workflow modules pass the switches as JSON text; a hand-run prepare may name a file.
+    let declared=if a.has("RunOptions") {Some(crate::canon::read_json_arg(&a.str("RunOptions"))?)}else{None};
     let run_options=if variant.is_empty(){Value::Null}else{crate::ledger::run_options(&variant,no_figures,declared.as_ref())?};
     let scripts = scripts_dir();
 

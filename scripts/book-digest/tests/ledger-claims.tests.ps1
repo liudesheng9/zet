@@ -75,6 +75,7 @@ try {
     [IO.File]::WriteAllText($fault,(@{code='access_refused';unit=$claim.id;input_hash=$claim.input_hash;cause='the fixture refuses this access'} | ConvertTo-Json),$utf8)
     Refuses @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)",'-Class','retryable','-Fault',$fault) 'fault classification mismatch'
     Refuses @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token+1)",'-Class','operator','-Fault',$fault) 'stale_claim'
+    Refuses @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token+1)",'-Class','operator','-Fault',(@{code='access_refused';unit=$claim.id;input_hash=$claim.input_hash;cause='a stale token with an inline fault document'} | ConvertTo-Json -Compress)) 'stale_claim'
     $failed = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)",'-Class','operator','-Fault',$fault)
     Assert ($failed.state -eq 'failed' -and $failed.fault.code -eq 'access_refused') 'permission faults are final even when presented through a transport caller'
     $partial = Run-Digest @('ledger','gate','-Out',$out,'-Layer','digest')
@@ -99,8 +100,11 @@ db.exec("begin;insert into units(id,layer,logical_key,revision,state,inputs_json
     $other = Run-Digest @('ledger','next','-Out',$out,'-Layer','models','-Take','1','-Owner','other-manager')
     Assert ($other.units.Count -eq 1) 'independent ready work remains claimable after another prerequisite fails'
     $other = $other.units[0]
-    [IO.File]::WriteAllText($fault,(@{code='invalid_plan';unit=$other.id;input_hash=$other.input_hash;cause='the independent fixture plan is invalid'} | ConvertTo-Json),$utf8)
-    $otherFailed = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$other.id,'-Token',"$($other.token)",'-Class','content','-Fault',$fault)
+    # The frozen workflow modules pass the fault document as JSON text (zt-digest-lib.js ailUnit),
+    # while the tests and the runbook may name a file: both forms must record the same failure.
+    $otherFault = (@{code='invalid_plan';unit=$other.id;input_hash=$other.input_hash;cause='the independent fixture plan is invalid'} | ConvertTo-Json -Compress)
+    $otherFailed = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$other.id,'-Token',"$($other.token)",'-Class','content','-Fault',$otherFault)
+    Assert ($otherFailed.state -eq 'failed' -and $otherFailed.fault.code -eq 'invalid_plan') 'a fault document given as JSON text records the same failure as a file'
     $blockedAgain = Run-Digest @('ledger','status','-Out',$out,'-Layer','digest')
     $firstGroup = @($blockedAgain.units | Where-Object id -EQ 'digest/g001@1')[0]
     Assert ($firstGroup.fault.prerequisites.Count -eq 2 -and 'terms/book@1' -in $firstGroup.fault.prerequisites -and 'models/other@1' -in $firstGroup.fault.prerequisites) 'an already blocked unit updates its exact prerequisite list when another producer fails'

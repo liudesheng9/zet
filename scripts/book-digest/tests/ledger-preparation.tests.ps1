@@ -38,6 +38,16 @@ try {
     foreach ($group in $contract.groups) {
         Assert ($group.sha256 -ceq (Get-FileHash -LiteralPath $group.path -Algorithm SHA256).Hash.ToLowerInvariant()) "group $($group.n) binds the actual prepared file"
     }
+    # The frozen workflow modules pass -RunOptions as JSON text (zt-digest-prepare.js writes
+    # `-RunOptions '{"terms":false,...}'`), while a hand-run prepare may name a file. Both forms must
+    # prepare the same run contract, so a workflow's declared layer switches cannot be dropped.
+    $inlineOut = Join-Path $scratch 'inline-prepared'
+    $switches = '{"terms":false,"events":false,"findings":false,"figures":false}'
+    $inline = @(& $Digest prepare -Source $source -Out $inlineOut -CitationKey InlineBook -BibTeX '@book{InlineBook,title={Inline book}}' -BookTitle 'Inline book' -StartHeading '导论' -EndHeading '参考' -MaxUnits 1 -MinUnitChars 1 -Variant econ -RunOptions $switches -Apply 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $inlineOut 'manifest.json'))) "a prepare given -RunOptions as JSON text binds the declared switches: $($inline[-1])"
+    $inlineManifest = Get-Content (Join-Path $inlineOut 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $inlineOptions = $inlineManifest.run_contract.options.run_options
+    Assert (-not $inlineOptions.terms -and -not $inlineOptions.events -and -not $inlineOptions.findings -and -not $inlineOptions.figures) 'the declared switches are frozen into the run contract'
     $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
     foreach ($fault in @('missing','incomplete')) {
         $env:ZT_IDENTITY_FAULT = $fault

@@ -93,9 +93,12 @@ console.log(JSON.stringify({ integrity, cards, links, archive_id: meta.archive_i
     $env:ZT_GUI_PORT = '0'
     zt config set archive_root (Join-Path $root 'archive') | Out-Null
     zt up | Out-Null
+    # The frozen workflow's own prepare form (zt-digest-prepare.js): the declared layer switches as
+    # JSON text in -RunOptions, which is what a real pilot run passes.
+    $switches = '{"terms":true,"models":true,"events":true,"findings":true,"hubs":true,"figures":false,"bridge":true}'
     $prep = Digest @('prepare', '-Variant', 'econ', '-Source', $Source, '-Out', $out, '-CitationKey', 'Pilot2026',
         '-BookTitle', 'Release qualification book', '-BibTeX', '@book{Pilot2026,title={Release qualification book},author={Qualification, Ada},year={2026}}',
-        '-MinUnitChars', '200', '-MaxUnits', '2', '-NoFigures', '-Apply')
+        '-RunOptions', $switches, '-Apply')
     $prepared = $prep.exit -eq 0 -and $null -ne $prep.json -and @($prep.json.groups).Count -eq 3
     $groupCount = if ($prep.json) { @($prep.json.groups).Count } else { 0 }
     $sourceShown = if ($prep.json -and $prep.json.source_sha256) { $prep.json.source_sha256.Substring(0, 12) } else { 'none' }
@@ -111,11 +114,15 @@ console.log(JSON.stringify({ integrity, cards, links, archive_id: meta.archive_i
     # 2. The claim, the refused mismatched class and the injected content failure.
     $claim = (Digest @('ledger', 'next', '-Out', $out, '-Layer', 'terms', '-Take', '1', '-Owner', 'pilot-rehearsal')).json.units[0]
     Assert ($claim.id -eq 'terms/book@1' -and $claim.token -ge 1) "ledger next claims the run's next ready unit with its own token ($($claim.id), token $($claim.token))"
+    # The frozen workflow's own fault form (zt-digest-lib.js `failUnit`): the fault document as JSON
+    # text, not a path, with the class that its code belongs to.
     $fault = [ordered]@{ schema_version = 1; unit = $claim.id; input_hash = $claim.input_hash; code = 'check_failed'; cause = 'pilot rehearsal: the unit fails once so the run reaches its one resume' }
-    [IO.File]::WriteAllText($faultPath, ($fault | ConvertTo-Json -Depth 6), $utf8)
-    $bad = Digest @('ledger', 'fail', '-Out', $out, '-Unit', $claim.id, '-Token', "$($claim.token)", '-Class', 'retryable', '-Fault', $faultPath)
+    $faultText = $fault | ConvertTo-Json -Depth 6 -Compress
+    $bad = Digest @('ledger', 'fail', '-Out', $out, '-Unit', $claim.id, '-Token', "$($claim.token)", '-Class', 'retryable', '-Fault', $faultText)
     Assert ($bad.exit -ne 0 -and $bad.text -match 'fault classification mismatch') 'a class that the fault code does not permit is refused before any change'
-    $failedOnce = Digest @('ledger', 'fail', '-Out', $out, '-Unit', $claim.id, '-Token', "$($claim.token)", '-Class', 'content', '-Fault', $faultPath)
+    $fileFault = Join-Path $root 'pilot-fault.json'
+    [IO.File]::WriteAllText($fileFault, ($fault | ConvertTo-Json -Depth 6), $utf8)
+    $failedOnce = Digest @('ledger', 'fail', '-Out', $out, '-Unit', $claim.id, '-Token', "$($claim.token)", '-Class', 'content', '-Fault', $faultText)
     Assert ($failedOnce.exit -eq 0 -and $failedOnce.json.state -eq 'failed') "the content failure is recorded and the unit stays failed until the resume ($($failedOnce.json.state))"
     Assert ((Unit 'terms/book@1').attempts -eq 1) 'the failed unit holds one attempt'
     Assert (@((Status).unresolved).Count -ge 4) "the failure leaves the unit and its downstream work unresolved ($(@((Status).unresolved).Count) units)"
