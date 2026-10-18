@@ -30,7 +30,7 @@ Every base stage runs a `zt-digest <tool>` (`tools/zt-digest`, installed beside 
 | Tool | Use it to | Writes |
 | --- | --- | --- |
 | `zt-digest call` (the old path `skills/zt/scripts/zt-mcp.ps1` forwards to it) | The zt helper: a JSON array of calls on stdin or in a file, with `-Allow`, `-Log`, `-SrcLog`, `-TopicGate`, `-Moves`, and `-From`/`-Addresses` to resume. DeepSeek writes through it; the tools run it in-process. | as called |
-| `zt-check` (`tools/zt-check`, `scripts/install-zt-check.ps1`) | The one checker for every agent: `--cards` (a writer's own Cards, classified as the audit does), `--addresses`, `--model`, `--json` (drafts, offline). Rules R2 to R17 and I, E, F, L. | no |
+| `zt-check` (`tools/zt-check`, `scripts/install-zt-check.ps1`) | The one checker for every agent: `--cards` (a writer's own Cards, classified as the audit does), `--addresses`, `--model`, `--json` (drafts, offline). Rules R2 to R19 (R18/R19 are the exact repeated-paragraph and repeated-title corruption rules) and I, E, F, L. | no |
 | `zt-digest audit` (`digest-audit.ps1`) | Read-only audit of one book or the whole Workspace, over both Workspaces: faults per rule and category, Topic trees, orphans, Cards without a source line or kinded Link, figures, missing hubs, broken Links, and distinct Bridge pairs in and out per book. `island` is true when a book has no Bridge; an incomplete tree read gives `complete: false` and `island: null`. Writes `audit.json`, `audit.md`, `audit-faults.txt`. | no |
 | `zt-calls.ps1`, `book-of.ps1`, `relatedness.ps1` | PowerShell libraries kept for PowerShell callers and their tests (`Invoke-Zt`, `Invoke-ZtCheck`; book attribution; TF-IDF relatedness). The tools use their Rust ports. | as called |
 

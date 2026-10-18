@@ -16,7 +16,7 @@
                  "unattributed".
     topics       the Topic trees that hold Cards of the book, and the trees where the book holds
                  most of the Cards.
-    style        the Card language faults (zt-check, rules R2 to R17) per rule and per
+    style        the Card language faults (zt-check, rules R2 to R19) per rule and per
                  category. A model is checked with its own term table and level, the other Cards of
                  a book with the book's term table (a Literature-tree Card titled 术语表…) when it
                  has one.

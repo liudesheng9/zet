@@ -770,7 +770,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 - `math-compiler.ps1` declares `-CoreBudget` but no step reads it.
 - `hub-compiler.ps1` (`Get-LimitArgs`) and `math-compiler.ps1` (`boundary-apply`) assign to `$args`, a PowerShell automatic variable; it works here but is fragile.
-- `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests, and describes zt-check rules as "R2 to R17, I, E, L" without the F rules; the code (and `docs/zt-digest-framework.md`) has both layers.
+- `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
 

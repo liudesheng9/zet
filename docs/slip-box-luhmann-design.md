@@ -220,7 +220,7 @@ Each practice below has five fields:
 - **Decision**: Reject (2026-10-16).
 - **Feature**: the Card language (`CONTEXT.md` **Card language**): ASD-STE100, adapted for Chinese. Each model and each book has a term table.
 - **Writer's rule**: the twelve rules of the zettelkasten skill (*Card language*).
-- **Check**: `zt-check` R2 to R17, and R6 against the book's term table.
+- **Check**: `zt-check` R2 to R19, and R6 against the book's term table.
 - **Change**: none. C2 applies the same rules to each bridge sentence.
 
 ### Literature

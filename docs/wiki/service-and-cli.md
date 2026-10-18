@@ -257,7 +257,7 @@ Location helpers (all pure except where a `conn` is taken):
 
 ## Behaviour
 
-`validate_card_text` refuses a newly authored body/title combination whose first nonblank body line repeats its Card title. The check runs after the legitimate envelope is parsed and is shared by ordinary, GUI/terminal and identified writes. An unchanged legacy authored title/body may survive an unrelated type/metadata update; a new bad content write is refused. The ordinary transaction and identified batch roll back their prior writes/allocation on this error. The guard does not remove old text or rewrite repeated Chinese characters.
+`validate_card_text` refuses a newly authored body/title combination whose first nonblank body line repeats its Card title. The check runs after the legitimate envelope is parsed and is shared by ordinary, GUI/terminal and identified writes. An unchanged legacy authored title/body may survive an unrelated type/metadata update; a new bad content write is refused. The ordinary transaction and identified batch roll back their prior writes/allocation on this error. The guard does not remove old text or rewrite repeated Chinese characters. The GUI boundary is public too: `tests/cli_service.rs` `gui_serves_a_token_guarded_api_backed_by_the_same_card_rules` sends `/api/create` and `/api/edit` a body that repeats its own title, gets HTTP 400 with `duplicate leading title`, and sees no allocated address or changed Card.
 
 
 ### Start the service (`zt up`)

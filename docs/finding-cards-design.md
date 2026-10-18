@@ -54,7 +54,7 @@ The system stores only the type. The digest and the `zettelkasten` skill teach t
 
 ## zt-check rules (F rules)
 
-`zt-check` reads a Finding Card as category `finding` (in `--cards` mode, from the Card's type). It checks the Card language rules R2 to R17, the shared rules I5, L1, L2, and L3, and these rules:
+`zt-check` reads a Finding Card as category `finding` (in `--cards` mode, from the Card's type). It checks the Card language rules R2 to R19, the shared rules I5, L1, L2, and L3, and these rules:
 
 | Rule | Check | Default |
 | --- | --- | --- |

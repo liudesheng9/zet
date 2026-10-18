@@ -3873,6 +3873,22 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
         rejected["error"],
         "card text must start with a `# Title` heading"
     );
+    // The GUI shares the storage guard with the ordinary and identified writes:
+    // a newly supplied body may not repeat its own Card title, and a refused
+    // create leaves no allocated address behind.
+    let (status, duplicate) = api(
+        "POST",
+        "/api/create",
+        Some(r##"{"kind":"side","at":"0/1","text":"# Branch\n\n# Branch\n\nsecond branch.\n"}"##),
+    );
+    assert_eq!(status, 400);
+    assert!(
+        duplicate["error"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate leading title"),
+        "{duplicate}"
+    );
 
     assert_eq!(
         home.card_text("0/0"),
@@ -3979,6 +3995,25 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
             .as_str()
             .unwrap()
             .contains("changed since it was opened")
+    );
+    let before_duplicate_edit = home.card_text("0/1");
+    let (status, duplicate) = api(
+        "POST",
+        "/api/edit",
+        Some(r##"{"at":"0/1","text":"# Idea\n\n# Idea\n\nchanged\n"}"##),
+    );
+    assert_eq!(status, 400);
+    assert!(
+        duplicate["error"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate leading title"),
+        "{duplicate}"
+    );
+    assert_eq!(
+        home.card_text("0/1"),
+        before_duplicate_edit,
+        "a refused GUI edit changes no Card"
     );
 
     let (_, plan) = api("POST", "/api/delete", Some(r#"{"at":"0/1"}"#));

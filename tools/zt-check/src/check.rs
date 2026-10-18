@@ -1,4 +1,4 @@
-//! `zt-check`: the Card language rules (R2 to R17) and the Card layer rules
+//! `zt-check`: the Card language rules (R2 to R19) and the Card layer rules
 //! (I, E, F, L) of the book digest, run in-process on Cards read straight from
 //! the archive. It is the one Card quality check of the digest workflows and
 //! the only source of truth: every agent and script calls it. It replaced the

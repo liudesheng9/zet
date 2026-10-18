@@ -136,7 +136,7 @@ zt-check --addresses <a,b,...>
 zt-check --json <file>                                                      # drafts, offline
 ```
 
-Output: one line per fault `<address> <rule> <text>`, then `faults: N`. A run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R17 (Card language and size) and the Card layer rules I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links).
+Output: one line per fault `<address> <rule> <text>`, then `faults: N`. A run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R19 (Card language, size and exact corruption) and the Card layer rules I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links).
 
 The SELF-CHECK of each base task:
 

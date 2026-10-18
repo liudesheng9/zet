@@ -2493,7 +2493,7 @@ impl Compiler {
         if r.candidates.is_empty() {
             return Ok(r);
         }
-        // The new bodies pass R2 to R17; the setting gives the term table (R6). Only a fault the
+        // The new bodies pass R2 to R19; the setting gives the term table (R6). Only a fault the
         // explanation adds counts: a fault the old body already has stays and is reported as kept.
         let setting = s(&self.state["explain"]["settings"][&s(&j["model"])]);
         let setting_card = if setting.is_empty() { Value::Null } else { self.card(&json!(setting))? };
