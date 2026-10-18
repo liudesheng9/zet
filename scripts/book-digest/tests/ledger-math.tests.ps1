@@ -119,6 +119,8 @@ try {
     Assert (@($status.dependencies | Where-Object { $_.unit -eq $role -and $_.needs -eq 'math-skeleton/book@1' }).Count -eq 1) 'the skeleton is a prerequisite of its unit obligations'
     $again = Run-Digest @('ledger','math','-Out',$out)
     Assert ($again.reused -eq $true -and @($again.units).Count -eq @($registered.units).Count) 'the same plan registers no second obligation'
+    $declared = Run-Digest @('ledger','status','-Out',$out)
+    Assert (('events' -in $declared.excluded_layers) -and ('findings' -in $declared.excluded_layers) -and (@($declared.units | Where-Object { $_.layer -in @('events','findings') }).Count -eq 0)) 'the mathematics profile declares no Event or Finding layer and registers none of their work'
 
     # --- a done model build stays done while its own obligations are open ---------------------------
     # A stopped-local fixture supplies the finished Model unit (#72 owns its own verifier); the
