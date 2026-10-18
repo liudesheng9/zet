@@ -19,7 +19,7 @@ args → source → prepare → [after-prepare] → terms → cards-book → dig
 
 | Stage | Module | Runs | On failure |
 | --- | --- | --- | --- |
-| args | `gate` | always: citationKey (not in modes hubs, audit); source, bibtex, bookTitle (mode full) | halt |
+| args | `gate` | always: citationKey (not in modes hubs, audit); in mode full either `book` (a Scholar Archive Work id or exact title, base 2.4.0) or source, bibtex, bookTitle | halt |
 | source | `zt-dsh-source` | ordinary model modes and Bridge discovery; skipped for figures, audit and accepted Bridge apply | halt |
 | prepare | `zt-digest-prepare` | mode full: prepare-book-digest.ps1 with the profile's instruction files; else args.groups | halt |
 | terms | `zt-book-terms` | mode full, `terms` not false | continue |

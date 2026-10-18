@@ -44,7 +44,7 @@ The workflow uses the scripts in `E:\zet\scripts\book-digest`. Merge the `math-c
 ```
 Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-math-digest.js", args: {
   source: "<the book's Chinese bilingual Markdown>", out: "D:\\zt-digest\\<key>",
-  citationKey: "<key>", bibtex: "@book{<key>, title={…}}", bookTitle: "<中文书名>",
+  citationKey: "<key>", book: <Work id or exact title>, // or bibtex + bookTitle instead of book
   startHeading: "<first chapter heading>", endHeading: "参考" } })
 ```
 
