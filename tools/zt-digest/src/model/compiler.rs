@@ -3,7 +3,7 @@
 //! DeepSeek writes briefs, Card bodies, charts, Derivation parts, and reviews;
 //! this tool does everything between them without a model.
 //!
-//!   zt-digest model -Step brief|validate|apply|derive|review|split|report
+//!   zt-digest model -Step brief|validate|apply|derive|review|split|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
 //!                   [-Changed] [-Rebuild] [-Level concept|formal] [-MaxSentences 12] [-MaxChars 400]
@@ -24,7 +24,7 @@ use crate::calls;
 use crate::check::Check;
 use crate::util;
 use crate::zt::Zt;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -54,8 +54,10 @@ pattern!(REFUSED, r"(?i)^(\S+): ");
 pattern!(LIST_ITEM, r"(?i)^\s*-");
 pattern!(COMMA, r",");
 
-const STEPS: [&str; 11] =
-    ["brief", "validate", "apply", "derive", "review", "split", "report", "explain", "explain-check", "explain-apply", "explain-report"];
+const STEPS: [&str; 12] = [
+    "brief", "validate", "apply", "derive", "review", "split", "report", "resume", "explain", "explain-check",
+    "explain-apply", "explain-report",
+];
 /// A premise that states a mathematical unit (a Model Card with a unit form) is cited, not taken in.
 const UNIT_FORMS: [&str; 6] = ["definition", "axiom", "theorem", "proposition", "lemma", "corollary"];
 
@@ -240,6 +242,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "review" => c.step_review(),
         "split" => c.step_split(),
         "report" => c.step_report(),
+        "resume" => c.step_resume(),
         "explain" => c.step_explain(),
         "explain-check" => c.step_explain_check(),
         "explain-apply" => c.step_explain_apply(),
@@ -275,6 +278,16 @@ impl Compiler {
 
     fn card(&mut self, at: &Value) -> Result<Value> {
         get_card(self.zt()?, at)
+    }
+
+    /// A Card that the archive does not hold is `None`, not a transport failure.
+    fn card_or_missing(&mut self, address: &str) -> Result<Option<Value>> {
+        match self.card(&json!(address)) {
+            Ok(card) if truthy(&card) => Ok(Some(card)),
+            Ok(_) => Ok(None),
+            Err(error) if format!("{error:#}").contains("does not exist") => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn model_of(&mut self, at: &Value) -> Result<Value> {
@@ -385,6 +398,32 @@ impl Compiler {
 
     fn order(&self) -> Vec<String> {
         list(&self.state["order"]).into_iter().map(s).collect()
+    }
+
+    /// The command evidence of one step: which command ran, when, and its exact facts.
+    /// A completion verifier reads these facts instead of trusting an agent's prose.
+    fn record_step(&mut self, model: &str, name: &str, facts: Value) {
+        let mut facts = facts;
+        facts["at"] = json!(crate::canon::utc_now_o());
+        if !self.state["models"][model]["steps"].is_object() {
+            self.state["models"][model]["steps"] = json!({});
+        }
+        self.state["models"][model]["steps"][name] = facts;
+    }
+
+    /// The SHA-256 of one file's actual bytes (the accepted plan's identity).
+    fn file_hash(path: &str) -> Result<String> {
+        Ok(crate::canon::sha256_hex(&std::fs::read(path)?))
+    }
+
+    /// The plan's parts, by id, from the model's own plan.json.
+    fn plan(&mut self, model: &str) -> Result<Value> {
+        let path = ps::join(&self.dir(model), "plan.json");
+        if !self.plans.contains_key(&path) {
+            let plan = util::read_json(&path)?;
+            self.plans.insert(path.clone(), plan);
+        }
+        Ok(self.plans[&path].clone())
     }
 
     fn next_seq(&mut self) -> String {
@@ -620,7 +659,6 @@ impl Compiler {
             }
             position.insert(&s(&p["id"]), k);
         }
-        let order = self.order();
         for p in &parts {
             let id = s(&p["id"]);
             if truthy(&p["of"]) && !ids.contains(&s(&p["of"])) && !members.contains(&s(&p["of"])) {
@@ -638,9 +676,13 @@ impl Compiler {
                         faults.push(format!("forward: {id} rests on {reference}, which comes later in the build order"));
                     }
                 } else if reference.contains('#') {
-                    let other = reference.split('#').next().unwrap_or_default();
-                    if !ps::is_in(other, &order) || ps::index_of(&order, other) >= ps::index_of(&order, model) {
-                        faults.push(format!("{id}: {reference} must name a model planned earlier in this batch"));
+                    // R233: the reference is a producer dependency, not a source-order preference.
+                    // It resolves after `model-deps` registers the producer and its checked part;
+                    // an earlier batch's model is as valid as one planned in this batch.
+                    if self.resolve(&Value::String(reference.clone()), model).is_err() {
+                        faults.push(format!(
+                            "{id}: {reference} names no checked part; register the producer dependency with model-deps before fill"
+                        ));
                     }
                 } else if !members.contains(&reference) && !ps::eq(&reference, model) && !self.unit(&reference) {
                     faults.push(format!(
@@ -1018,8 +1060,13 @@ impl Compiler {
         let mut skipped = Vec::new();
         for model in self.model_list() {
             let st = self.model_of(&json!(model))?;
-            let built =
-                !list(&st["parts"]).is_empty() && truthy(&st["build"]["self_sufficient"]) && list(&st["build"]["beyond_level"]).is_empty();
+            // An unwritten placeholder keeps a model unbuilt even when it has many parts (R235).
+            let todo = TODO_LINE.is_match(&s(&st["head"]["body"]))
+                || pipe(&st["parts"]).into_iter().any(|p| TODO_LINE.is_match(&s(&p["body"])));
+            let built = !list(&st["parts"]).is_empty()
+                && truthy(&st["build"]["self_sufficient"])
+                && list(&st["build"]["beyond_level"]).is_empty()
+                && !todo;
             let same_level = self.p.level.is_empty() || (!st["level"].is_null() && ps::eq(&s(&st["level"]), &self.p.level));
             if built && !self.p.rebuild && same_level {
                 skipped.push(model);
@@ -1031,11 +1078,12 @@ impl Compiler {
                 self.state["order"] = plus(&self.state["order"], [json!(model)]);
             }
             *self.m_mut(&model) =
-                json!({ "level": st["level"], "status": "brief", "ids": {}, "titles": {}, "derive": [], "main": [], "split": 0 });
+                json!({ "level": st["level"], "status": "brief", "ids": {}, "titles": {}, "derive": [], "main": [], "split": 0, "steps": {} });
             let context = ps::join(&dir, "context.md");
             if self.context(&model, &context).is_err() {
                 bail!("model-context.ps1 failed for {model}");
             }
+            let context_hash = Self::file_hash(&context)?;
             let read_only = ps::join(&dir, "read-only.allow.txt");
             util::write_text(&read_only, "")?;
             let brief = ps::join(&dir, "brief.md");
@@ -1055,6 +1103,13 @@ impl Compiler {
                 "files": [self.docs.brief, job],
                 "prompt": format!("按以上说明写出简报文件 {brief}，最后只回复一行 JSON。"),
             }));
+            // The source review is part of the brief: its evidence is the exact context pack,
+            // which carries the selected source sections, and the instruction file the writer read.
+            self.record_step(
+                &model,
+                "brief",
+                json!({"context":context,"context_hash":context_hash,"job":job,"job_hash":Self::file_hash(&job)?,"level":st["level"]}),
+            );
         }
         self.save_state()?;
         self.out_last(&json!({ "jobs": jobs, "skipped": skipped }))
@@ -1105,7 +1160,8 @@ impl Compiler {
     /// and returns the round-1 fill jobs.
     fn build_model(&mut self, model: &str) -> Result<Vec<Value>> {
         let dir = self.dir(model);
-        let plan = util::read_json(ps::join(&dir, "plan.json"))?;
+        let plan_path = ps::join(&dir, "plan.json");
+        let plan = util::read_json(&plan_path)?;
         let st = self.model_of(&json!(model))?;
         let faults = self.test_plan(&plan, &st, model)?;
         if !faults.is_empty() {
@@ -1118,6 +1174,11 @@ impl Compiler {
             self.m_mut(model)["status"] = json!("skipped");
             return Ok(Vec::new());
         }
+        // The accepted plan's identity: a later completion verifier binds its own evidence to it.
+        let plan_hash = Self::file_hash(&plan_path)?;
+        self.m_mut(model)["plan_hash"] = json!(plan_hash);
+        self.m_mut(model)["plan"] = json!({"path":plan_path,"sha256":plan_hash});
+        self.record_step(model, "plan", json!({"plan":plan_path,"plan_hash":plan_hash,"faults":0,"level":plan["level"]}));
         self.m_mut(model)["level"] = plan["level"].clone();
         let mut parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
         let mut known: CiMap<Value> = CiMap::new();
@@ -1131,7 +1192,10 @@ impl Compiler {
             let id = s(&p["id"]);
             let r = ref_of(p);
             if r != "new" {
-                ids.insert(id.clone(), json!(s(&p[r])));
+                // A take of another model's part (`X#A`) is stored as the real address: the
+                // dependent's part map must name Cards, not unresolved references (R233).
+                let address = self.resolve(&Value::String(s(&p[r])), model)?;
+                ids.insert(id.clone(), json!(address));
             }
             let was = if truthy(&p["existing"]) { known.get(&s(&p["existing"])).cloned() } else { None };
             let pick = |field: &str| {
@@ -1355,33 +1419,7 @@ impl Compiler {
 
         // Round 1: the Model Card, then every part that is not a Derivation part, at most three per job.
         let mut jobs = Vec::new();
-        let id_values: Vec<String> = self.m(model)["ids"].as_object().map(|ids| ids.values().map(s).collect()).unwrap_or_default();
-        let outside: Vec<String> = pipe(&card["outbound"])
-            .into_iter()
-            .filter(|o| !truthy(&o["broken"]) && !ps::is_in(&s(&o["address"]), &id_values))
-            .map(|o| format!("- [[{}]] {}", s(&o["address"]), s(&o["title"])))
-            .collect();
-        let mut card_text =
-            format!("## 模型卡：[[{model}]]\n\n- 要写：问题、概要（三到五句）、结构、关联、来源。保留 **结构** 一节原样。\n- 内容：{}\n", s(&plan["card"]));
-        if !outside.is_empty() {
-            card_text += &format!("- 保留这些模型外的链接，每个放进一句说明关系的话：\n{}\n", outside.join("\n"));
-        }
-        if ps::eq(&s(&plan["level"]), "concept") {
-            card_text += "- 概念模型：用文字说清问题、机制和结论，不写推导。\n";
-        }
-        // The writer rewrites the Model Card from its current body; the 结构 section is the script's.
-        let mut current = text::set_section(&s(&card["body"]), "结构", "").trim().to_string();
-        if !current.is_empty() {
-            if ps::len16(&current) > 4000 {
-                current = ps::cut16(&current, 4000) + "……";
-            }
-            card_text += &format!("\n### 模型卡现在的正文（结构一节除外）\n{current}\n");
-        }
-        let job = self.new_job(model, "f", Vec::new(), &card_text, "按以上说明完成你的任务，最后每张卡回复一行 JSON。")?;
-        let job_id = s(&job["id"]);
-        self.state["jobs"][&job_id]["addresses"] = json!([model]);
-        let allow = s(&self.state["jobs"][&job_id]["allow"]);
-        util::write_text(&allow, &format!("{model}\n"))?;
+        let job = self.fill_head_job(model, &plan)?;
         jobs.push(job);
         let todo: Vec<Value> = parts
             .iter()
@@ -1398,6 +1436,12 @@ impl Compiler {
             let ids = group.iter().map(|p| p["id"].clone()).collect();
             jobs.push(self.new_job(model, "f", ids, &blocks.join("\n"), "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?);
         }
+        let fill_addresses = todo.iter().filter_map(|p| self.m(model)["ids"].get(s(&p["id"])).map(s)).collect::<Vec<_>>();
+        self.record_step(
+            model,
+            "apply",
+            json!({"plan_hash":plan_hash,"parts":parts.len(),"fill":fill_addresses,"jobs":jobs.len(),"faults":0}),
+        );
         Ok(jobs)
     }
 
@@ -1423,6 +1467,7 @@ impl Compiler {
                     chains.push(std::mem::take(&mut chain));
                 }
             }
+            let before = jobs.len();
             for c in chains {
                 for group in c.chunks(3) {
                     let mut blocks = Vec::new();
@@ -1433,7 +1478,9 @@ impl Compiler {
                     jobs.push(self.new_job(&model, "d", ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?);
                 }
             }
+            let jobs_now = jobs.len() - before;
             self.m_mut(&model)["status"] = json!("derived");
+            self.record_step(&model, "derive", json!({"jobs":jobs_now,"parts":list(&self.m(&model)["derive"]).len()}));
         }
         self.save_state()?;
         self.out_last(&json!({ "jobs": jobs }))
@@ -1463,6 +1510,7 @@ impl Compiler {
                     own.push(self.id_address(&model, &id));
                 }
             }
+            let before = jobs.len();
             for c in list(&st["build"]["chains"]) {
                 let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
                 if parts.is_empty() {
@@ -1501,6 +1549,7 @@ impl Compiler {
                 }
             }
             self.m_mut(&model)["status"] = json!("reviewed");
+            self.record_step(&model, "review", json!({"jobs":jobs.len()-before,"changed":self.p.changed,"rounds":1}));
         }
         self.state["rereview"] = json!([]);
         self.save_state()?;
@@ -1672,6 +1721,7 @@ impl Compiler {
             let m = self.m_mut(model);
             m["split"] = json!(ps::int(&m["split"]).unwrap_or(0) + 1);
         }
+        self.record_step(model, "split", json!({"id":id,"parts":count,"added":new.len()}));
         let mut again = vec![json!(format!("{model}#{id}"))];
         again.extend(new.iter().map(|n| json!(format!("{model}#{n}"))));
         self.state["rereview"] = plus(&self.state["rereview"], again);
@@ -1928,8 +1978,246 @@ impl Compiler {
                 "issues": issues,
                 "notes": list(&m["notes"]),
             }));
+            self.record_step(
+                &model,
+                "report",
+                json!({
+                    "status":s(&self.m(&model)["status"]),
+                    "parts":reports.last().map(|r| list(&r["parts"]).len()).unwrap_or(0),
+                    "todo":todo.len(),
+                    "derivations":total,
+                    "explained":Self::explained_of(&st).len(),
+                    "style":style,
+                    "build_faults":count(&build["closure"])+count(&build["forward"])+count(&build["unanchored"])+count(&build["beyond_level"])
+                }),
+            );
         }
+        self.save_state()?;
         self.out_last(&json!({ "models": reports }))
+    }
+
+    // --- resume ---------------------------------------------------------------------------------
+
+    /// R235/R236: finish a model that a stopped batch left partly written. The accepted plan
+    /// and its part map are reused; only the first missing step's own work is offered, in build
+    /// order, so a later fill never starts from a premise that is still `待写`.
+    fn step_resume(&mut self) -> Result<()> {
+        let mut jobs = Vec::new();
+        let mut reports = Vec::new();
+        for model in self.model_list() {
+            let report = self.resume_model(&model, &mut jobs)?;
+            reports.push(report);
+            self.save_state()?;
+        }
+        self.save_state()?;
+        self.out_last(&json!({ "models": reports, "jobs": jobs }))
+    }
+
+    fn resume_model(&mut self, model: &str, jobs: &mut Vec<Value>) -> Result<Value> {
+        let plan_path = ps::join(&self.dir(model), "plan.json");
+        if !ps::exists(&plan_path) {
+            bail!("{model}: no accepted plan at {plan_path}; plan and build the model first");
+        }
+        let state = self.m(model).clone();
+        let status = s(&state["status"]);
+        if !ps::is_in(&status, &["built", "derived", "reviewed"]) {
+            bail!(
+                "{model}: no accepted build in state.json (status `{status}`); plan and build the model first"
+            );
+        }
+        let ids = state["ids"]
+            .as_object()
+            .filter(|ids| !ids.is_empty())
+            .with_context(|| format!("{model}: no accepted part map; plan and build the model first"))?;
+        let plan = self.plan(model)?;
+        if !ps::eq(&s(&plan["model"]), model) {
+            bail!("{model}: the accepted plan describes `{}`", s(&plan["model"]));
+        }
+        let plan_hash = Self::file_hash(&plan_path)?;
+        if truthy(&state["plan_hash"]) && !ps::eq(&s(&state["plan_hash"]), &plan_hash) {
+            bail!("{model}: plan.json changed after the accepted build; keep the accepted plan or start a deliberate rebuild");
+        }
+        let structure = self.model_of(&json!(model))?;
+        let order: Vec<String> = list(&structure["build"]["order"])
+            .into_iter()
+            .map(|o| s(&o["address"]))
+            .collect();
+        let mut reused = serde_json::Map::new();
+        let mut missing: Vec<String> = Vec::new();
+        let mut fill: Vec<String> = Vec::new();
+        let mut derive: Vec<String> = Vec::new();
+        let mut missing_id = std::collections::BTreeMap::new();
+        let plan_parts = list(&plan["parts"]).into_iter().cloned().collect::<Vec<_>>();
+        for part in &plan_parts {
+            let id = s(&part["id"]);
+            if id.is_empty() {
+                continue;
+            }
+            let address = match ids.get(&id) {
+                Some(value) => s(value),
+                None => String::new(),
+            };
+            if address.is_empty() {
+                bail!("{model}: plan id `{id}` has no address in the part map");
+            }
+            let card = match self.card_or_missing(&address)? {
+                Some(card) => card,
+                None => bail!("missing part: plan id `{id}` names `{address}`, which the archive does not hold; keep the accepted part map or rebuild the model as a new revision"),
+            };
+            let expected = if truthy(&state["facets"][&id]) { s(&state["facets"][&id]) } else { s(&part["facet"]) };
+            let actual = s(&card["facet"]);
+            if !expected.trim().is_empty() && !ps::eq(actual.trim(), expected.trim()) {
+                bail!("stale part: `{address}` has facet `{actual}`, the accepted plan says `{expected}`; keep the accepted plan's part or re-plan the model");
+            }
+            let written = !TODO_LINE.is_match(&s(&card["body"]));
+            if written {
+                reused.insert(address.clone(), json!(crate::calls::authored_fingerprint(&card)));
+                continue;
+            }
+            missing.push(address.clone());
+            missing_id.insert(address.clone(), id);
+            if truthy(&part["take"]) {
+                continue;
+            }
+            if derives(part) {
+                derive.push(address);
+            } else {
+                fill.push(address);
+            }
+        }
+        // A shared part belongs to its home model: this model waits instead of writing it.
+        for address in &missing {
+            if let Some(id) = missing_id.get(address)
+                && plan_parts.iter().any(|p| ps::eq(&s(&p["id"]), id) && truthy(&p["take"]))
+            {
+                bail!("shared part {address} (plan id `{id}`) is still unwritten in its home model; finish that model instead of writing its Card here");
+            }
+        }
+        let head_card = match self.card_or_missing(model)? {
+            Some(card) => card,
+            None => bail!("missing part: the Model Card `{model}` is gone; keep the accepted part map or rebuild the model as a new revision"),
+        };
+        let head_missing = TODO_LINE.is_match(&s(&head_card["body"])) || s(&head_card["body"]).trim().is_empty();
+        if !head_missing {
+            reused.insert(model.to_string(), json!(crate::calls::authored_fingerprint(&head_card)));
+        }
+        let from = if head_missing {
+            Some(model.to_string())
+        } else {
+            order.iter().find(|address| missing.iter().any(|m| m == *address)).cloned()
+        };
+        if from.is_none() && !missing.is_empty() {
+            bail!("{model}: the part map names Cards the checked model does not hold; rebuild the model as a new revision");
+        }
+        let mut emitted = Vec::new();
+        let mut round = "none";
+        let mut emitted_fill: Vec<String> = Vec::new();
+        let mut emitted_derive: Vec<String> = Vec::new();
+        if head_missing {
+            round = "fill";
+            let mut job = self.fill_head_job(model, &plan)?;
+            job["addresses"] = json!([model]);
+            emitted_fill.push(model.to_string());
+            emitted.push(json!({"tool":"head","job":job["id"],"addresses":[model]}));
+            jobs.push(job);
+        } else if let Some(first) = from.clone() {
+            if fill.iter().any(|a| *a == first) {
+                round = "fill";
+                let start = fill.iter().position(|a| *a == first).unwrap_or(0);
+                for group in fill[start..].chunks(3) {
+                    let mut blocks = Vec::new();
+                    let mut plan_ids = Vec::new();
+                    for (n, address) in group.iter().enumerate() {
+                        let key: &str = address;
+                        let id = missing_id.get(key).context("missing part map id")?;
+                        let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
+                        plan_ids.push(json!(id));
+                        blocks.push(self.part_block(n + 1, part, model, false)?);
+                    }
+                    let job = self.new_job(model, "f", plan_ids, &blocks.join("\n"), "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
+                    let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
+                    for address in list(&addresses) {
+                        emitted_fill.push(s(address));
+                    }
+                    emitted.push(json!({"tool":"fill","job":job["id"],"addresses":addresses}));
+                    jobs.push(job);
+                }
+            } else {
+                round = "derive";
+                let start = derive.iter().position(|a| *a == first).unwrap_or(0);
+                let group: Vec<&String> = derive.iter().skip(start).take(3).collect();
+                let mut blocks = Vec::new();
+                let mut plan_ids = Vec::new();
+                for (n, address) in group.iter().enumerate() {
+                    let key: &str = address;
+                    let id = missing_id.get(key).context("missing part map id")?;
+                    let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
+                    plan_ids.push(json!(id));
+                    blocks.push(self.part_block(n + 1, part, model, true)?);
+                }
+                let job = self.new_job(model, "d", plan_ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?;
+                let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
+                for address in list(&addresses) {
+                    emitted_derive.push(s(address));
+                }
+                emitted.push(json!({"tool":"derive","job":job["id"],"addresses":addresses}));
+                jobs.push(job);
+            }
+        }
+        let complete = !head_missing && missing.is_empty();
+        let status_now = if round == "derive" { "derived".to_string() } else { status.clone() };
+        if status_now != status {
+            self.m_mut(model)["status"] = json!(status_now);
+        }
+        self.record_step(
+            model,
+            "resume",
+            json!({"round":round,"from":from,"missing":missing.len(),"fill":emitted_fill.len(),"derive":emitted_derive.len(),"reused":reused.len(),"complete":complete,"jobs":emitted.len()}),
+        );
+        Ok(json!({
+            "model": model,
+            "status": self.m(model)["status"],
+            "plan_hash": plan_hash,
+            "from": from,
+            "missing": missing,
+            "fill": emitted_fill,
+            "derive": emitted_derive,
+            "reused": reused,
+            "complete": complete,
+            "round": round,
+            "jobs": emitted,
+        }))
+    }
+
+    /// The Model Card's own fill job (round 1), as `apply` writes it for a fresh model.
+    fn fill_head_job(&mut self, model: &str, plan: &Value) -> Result<Value> {
+        let card = self.card(&json!(model))?;
+        let id_values: Vec<String> = self.m(model)["ids"].as_object().map(|ids| ids.values().map(s).collect()).unwrap_or_default();
+        let outside: Vec<String> = pipe(&card["outbound"])
+            .into_iter()
+            .filter(|o| !truthy(&o["broken"]) && !ps::is_in(&s(&o["address"]), &id_values))
+            .map(|o| format!("- [[{}]] {}", s(&o["address"]), s(&o["title"])))
+            .collect();
+        let mut card_text = format!("## 模型卡：[[{model}]]\n\n- 要写：问题、概要（三到五句）、结构、关联、来源。保留 **结构** 一节原样。\n- 内容：{}\n", s(&plan["card"]));
+        if !outside.is_empty() {
+            card_text += &format!("- 保留这些模型外的链接，每个放进一句说明关系的话：\n{}\n", outside.join("\n"));
+        }
+        if ps::eq(&s(&plan["level"]), "concept") {
+            card_text += "- 概念模型：用文字说清问题、机制和结论，不写推导。\n";
+        }
+        let mut current = text::set_section(&s(&card["body"]), "结构", "").trim().to_string();
+        if !current.is_empty() {
+            if ps::len16(&current) > 4000 {
+                current = ps::cut16(&current, 4000) + "……";
+            }
+            card_text += &format!("\n### 模型卡现在的正文（结构一节除外）\n{current}\n");
+        }
+        let job = self.new_job(model, "f", Vec::new(), &card_text, "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
+        let job_id = s(&job["id"]);
+        self.state["jobs"][&job_id]["addresses"] = json!([model]);
+        let allow = s(&self.state["jobs"][&job_id]["allow"]);
+        util::write_text(&allow, &format!("{model}\n"))?;
+        Ok(job)
     }
 
     // --- explain --------------------------------------------------------------------------------

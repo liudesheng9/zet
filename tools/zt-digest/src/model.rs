@@ -12,7 +12,7 @@ mod compiler;
 mod context;
 mod list;
 
-mod text;
+pub(crate) mod text;
 
 use crate::zt::Zt;
 use anyhow::Result;

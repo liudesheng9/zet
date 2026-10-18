@@ -8,7 +8,13 @@
 //! address is in owned-gNN.txt). With -All, every Model Card in the agent
 //! Literature tree of -CitationKey counts, plus every Model Card any group
 //! wrote. Model parts are never listed. Prints one compact JSON line:
-//! {"models":[{"address","title","group","level","form","parts","issues","faults"}]}.
+//! {"models":[{"address","title","group","level","form","parts","todo","placeholders",
+//! "issues","faults"}]}.
+//!
+//! `todo` and `placeholders` are the checked unwritten state of the model: a
+//! Model Card or part whose body still holds `待写`. Selection by "parts
+//! greater than zero" would call such a model built (R235): a partly written
+//! model has many parts and no fault yet.
 
 use crate::ps::{self, CiMap, pipe, s, truthy};
 use super::read_calls;
@@ -18,6 +24,9 @@ use crate::zt::Zt;
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
+use std::sync::LazyLock;
+
+static TODO_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(^|\n)\s*待写\s*($|\n)").unwrap());
 
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(argv, &["Staging", "Groups", "CitationKey"], &["All"])?;
@@ -95,6 +104,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let st = structures.get(i).cloned().unwrap_or(Value::Null);
             let build = &st["build"];
             let count = |v: &Value| pipe(v).len();
+            // The unwritten state, not the part count, says whether a model still needs work.
+            let mut placeholders: Vec<String> = Vec::new();
+            if TODO_LINE.is_match(&s(&st["head"]["body"])) {
+                placeholders.push(s(&head["address"]));
+            }
+            for part in pipe(&st["parts"]).into_iter().filter(|p| TODO_LINE.is_match(&s(&p["body"]))) {
+                placeholders.push(s(&part["address"]));
+            }
             models.push(json!({
                 "address": head["address"],
                 "title": head["title"],
@@ -102,6 +119,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 "level": st["level"],
                 "form": st["form"],
                 "parts": count(&st["parts"]),
+                "todo": placeholders.len(),
+                "placeholders": placeholders,
                 "issues": count(&st["issues"]),
                 "faults": count(&build["closure"]) + count(&build["forward"]) + count(&build["unanchored"]) + count(&build["beyond_level"]),
             }));

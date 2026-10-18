@@ -1,4 +1,5 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
+use crate::ps::{self, list, pipe, s, truthy};
 use crate::{args::Args, canon, util, zt::Zt};
 use anyhow::{Context, Result, bail};
 use rusqlite::{
@@ -6,6 +7,7 @@ use rusqlite::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -4396,7 +4398,8 @@ fn fault_class(code: &str) -> Result<&'static str> {
         | "owned_paragraph_conflict"
         | "unreconciled_move" => "operator",
         "invalid_plan" | "dependency_cycle" | "source_unavailable" | "unsupported_claim"
-        | "stale_content" | "check_failed" => "content",
+        | "stale_content" | "check_failed" | "unknown_producer" | "named_part_missing"
+        | "named_part_changed" => "content",
         _ => bail!("unknown fault code `{code}`"),
     })
 }
@@ -5090,6 +5093,8 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "ledger-terms-test-",
                 "ledger-prepare-recovery-test-",
                 "ledger-publication-test-",
+                "model-finish-test-",
+                "model-dependencies-test-",
             ]
             .iter()
             .any(|prefix| n.to_string_lossy().starts_with(prefix))
@@ -7660,6 +7665,874 @@ pub fn cards_finish_cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+// ==== The Models/model unit (R218, R235, R236) =============================================
+
+const MODEL_STATES: [&str; 3] = ["built", "derived", "reviewed"];
+
+/// One registered Model unit and its frozen inputs, by the Model Card it builds.
+fn model_unit_for_header(conn: &Connection, header: &str) -> Result<Option<(String, Value)>> {
+    let mut statement = conn.prepare("SELECT id,inputs_json FROM units WHERE layer='models' ORDER BY id")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, raw) in rows {
+        let inputs: Value = serde_json::from_str(&raw)?;
+        if inputs["header"] == json!(header) {
+            return Ok(Some((id, inputs)));
+        }
+    }
+    Ok(None)
+}
+
+/// The compiler's own work folder for one model: `<out>/models/<batch>/<slug>/plan.json`.
+fn model_plan_dir(p: &Prepared, header: &str) -> Result<PathBuf> {
+    let slug: String = header
+        .chars()
+        .map(|c| if matches!(c, '/' | '|' | '\\') { '_' } else { c })
+        .collect();
+    let root = p.out.join("models");
+    let mut dirs = Vec::new();
+    if root.is_dir() {
+        for batch in std::fs::read_dir(&root)? {
+            let dir = batch?.path().join(&slug);
+            if dir.join("plan.json").is_file() {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs.sort();
+    match dirs.len() {
+        1 => Ok(dirs.remove(0)),
+        0 => bail!("no accepted plan for `{header}` under {}; plan and build the model first", root.display()),
+        _ => bail!(
+            "more than one accepted plan for `{header}` under {}; keep one work folder",
+            root.display()
+        ),
+    }
+}
+
+/// The accepted plan (its exact bytes and hash) and the batch's compiler state.
+fn model_plan_state(p: &Prepared, header: &str) -> Result<(PathBuf, String, Value, Value)> {
+    let dir = model_plan_dir(p, header)?;
+    let bytes = std::fs::read(dir.join("plan.json"))?;
+    let plan_hash = canon::sha256_hex(&bytes);
+    let plan: Value = serde_json::from_str(
+        std::str::from_utf8(&bytes).context("plan.json must be strict UTF-8")?,
+    )
+    .context("invalid plan.json")?;
+    let batch = dir.parent().context("plan folder outside a model batch")?;
+    let state_path = batch.join("state.json");
+    if !state_path.is_file() {
+        bail!("no compiler state at {}; build the model first", state_path.display());
+    }
+    let state = util::read_json(state_path.to_string_lossy().as_ref())?;
+    Ok((dir, plan_hash, plan, state))
+}
+
+fn model_todo(body: &str) -> bool {
+    body.replace('\r', "").split('\n').any(|line| line.trim() == "待写")
+}
+
+fn require_step(entry: &Value, name: &str) -> Result<Value> {
+    let step = &entry["steps"][name];
+    if !step.is_object() {
+        bail!("missing `{name}` command evidence in the model's step state");
+    }
+    Ok(step.clone())
+}
+
+/// The `**结构**` section of the Model Card: the compiler's structure contribution.
+fn structure_lines(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in body.replace('\r', "").split('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("**结构**") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("**") || trimmed.starts_with('#') || trimmed.starts_with("来源") {
+            break;
+        }
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+/// R218: the complete checked outcome of one Model unit, from its own compiler's step
+/// state and the authored Cards. It writes nothing; the caller publishes and commits.
+fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Value) -> Result<Value> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let header = field(inputs, "header")?;
+    let base = &inputs["producer"];
+    let producer = field(base, "producer")?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT state,input_hash FROM units WHERE id=?1",
+            [producer],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (state, hash) = row.with_context(|| format!("Model unit producer {producer} is not registered"))?;
+    if state != "done" {
+        bail!("Model unit producer {producer} is {state}, not a checked completion");
+    }
+    if base["producer_input_hash"] != json!(hash) {
+        bail!("Model unit producer input hash changed");
+    }
+    let (_dir, plan_hash, plan, compiler) = model_plan_state(p, header)?;
+    if !ps::eq(&s(&plan["model"]), header) {
+        bail!("the accepted plan describes `{}`, not `{header}`", s(&plan["model"]));
+    }
+    let entry = &compiler["models"][header];
+    if !entry.is_object() {
+        bail!("no compiler state for `{header}`; plan and build the model first");
+    }
+    let status = s(&entry["status"]);
+    if !ps::is_in(&status, &MODEL_STATES) {
+        bail!("the model's build is `{status}`, not a completed build; plan and build the model first");
+    }
+    if s(&entry["plan_hash"]) != plan_hash {
+        bail!("plan.json changed after the accepted build; keep the accepted plan or rebuild the model as a new revision");
+    }
+    let ids = entry["ids"]
+        .as_object()
+        .context("the model's part map is missing; plan and build the model first")?;
+    let added = entry["added"].as_object().cloned().unwrap_or_default();
+    let plan_parts = plan["parts"].as_array().context("the accepted plan has no parts")?.clone();
+    let plan_ids: BTreeSet<String> = plan_parts.iter().map(|part| s(&part["id"])).filter(|id| !id.is_empty()).collect();
+    for id in ids.keys() {
+        if !plan_ids.contains(id) && !added.contains_key(id) {
+            bail!("part id `{id}` is neither in the accepted plan nor a recorded split addition");
+        }
+    }
+    // The step chain every built model must show, with a level-specific no-op.
+    let brief = require_step(entry, "brief")?;
+    let context_hash = field(&brief, "context_hash")?;
+    let context_path = Path::new(field(&brief, "context")?);
+    if canon::sha256_hex(&std::fs::read(context_path).context("missing brief context pack")?) != context_hash {
+        bail!("the brief's context pack changed after the brief; a source review cannot be claimed from different bytes");
+    }
+    let plan_step = require_step(entry, "plan")?;
+    if field(&plan_step, "plan_hash")? != plan_hash || plan_step["faults"] != json!(0) {
+        bail!("the accepted plan's validation evidence does not describe plan.json");
+    }
+    let apply = require_step(entry, "apply")?;
+    if field(&apply, "plan_hash")? != plan_hash || apply["faults"] != json!(0) {
+        bail!("the apply evidence does not describe the accepted plan");
+    }
+    let report = require_step(entry, "report")?;
+    if report["todo"] != json!(0) {
+        bail!("the last report names unwritten parts; report again after the fill");
+    }
+    let derived = plan_parts.iter().any(|part| truthy(&part["derive"]));
+    let derive_evidence = entry["steps"]["derive"].is_object()
+        || (entry["steps"]["resume"]["round"] == json!("derive"));
+    if derived && !derive_evidence {
+        bail!("missing derive evidence: the plan has Derivation parts but no derive job was commanded");
+    }
+    if derived && !entry["steps"]["review"].is_object() {
+        bail!("missing review evidence: the plan has Derivation parts but review was not commanded");
+    }
+    if ps::int(&entry["split"]).unwrap_or(0) > 0 && !entry["steps"]["split"].is_object() {
+        bail!("missing split evidence: the model was split but no split command is recorded");
+    }
+    // The exact part map: every planned id, no unwritten Card, no Card outside the model.
+    let mut addresses = vec![header.to_string()];
+    let mut part_map = serde_json::Map::new();
+    for (id, value) in ids {
+        let address = s(value);
+        if address.is_empty() {
+            bail!("part id `{id}` has no address in the model's part map");
+        }
+        addresses.push(address.clone());
+        part_map.insert(id.clone(), json!(address));
+    }
+    for part in &plan_parts {
+        let id = s(&part["id"]);
+        if !id.is_empty() && !ids.contains_key(&id) {
+            bail!("the accepted plan's part `{id}` has no address in the model's part map");
+        }
+    }
+    let read = zt.cards(&addresses, "text")?;
+    let cards: BTreeMap<String, Value> = read
+        .cards
+        .iter()
+        .map(|card| Ok((field(card, "address")?.to_string(), card.clone())))
+        .collect::<Result<_>>()?;
+    let head_card = cards
+        .get(header)
+        .with_context(|| format!("the Model Card `{header}` does not exist"))?;
+    if head_card["workspace"] != "agent" {
+        bail!("the Model Card `{header}` is not in the agent Workspace");
+    }
+    // The frozen fingerprint is the group's starting point: the model compiler is meant to
+    // rewrite the Model Card, so completion records the current text without pretending the
+    // Card is unchanged.
+    let model = zt.call("get_model", json!({"at":header}))?;
+    let order: BTreeMap<String, Value> = model["build"]["order"]
+        .as_array()
+        .context("incomplete model build order")?
+        .iter()
+        .map(|o| (s(&o["address"]), o.clone()))
+        .collect();
+    let mut part_ids = BTreeMap::new();
+    for (id, address) in &part_map {
+        let address = s(address);
+        let card = cards
+            .get(&address)
+            .with_context(|| format!("part id `{id}` names `{address}`, which the archive does not hold"))?;
+        if card["workspace"] != "agent" {
+            bail!("part `{address}` is not in the agent Workspace");
+        }
+        if !order.contains_key(&address) {
+            bail!("part `{address}` (id `{id}`) is mapped but belongs to no model; keep the accepted part map or rebuild the model");
+        }
+        if model_todo(&s(&card["body"])) {
+            bail!("part `{address}` (id `{id}`) is still 待写; resume the model from its first missing part");
+        }
+        let expected = s(&entry["facets"][id]);
+        let actual = s(&card["facet"]);
+        if !expected.trim().is_empty() && !ps::eq(expected.trim(), actual.trim()) {
+            bail!("part `{address}` has facet `{actual}`, the accepted plan says `{expected}`");
+        }
+        part_ids.insert(address.clone(), id.clone());
+    }
+    for address in order.keys() {
+        if !part_ids.contains_key(address) {
+            bail!("the model holds a part `{address}` that its accepted plan does not map; rebuild the model as a new revision");
+        }
+    }
+    if model_todo(&s(&head_card["body"])) || s(&head_card["body"]).trim().is_empty() {
+        bail!("the Model Card is still unwritten; resume the model from its first missing part");
+    }
+    let level = s(&model["level"]);
+    if !ps::eq(&level, &s(&plan["level"])) || level.is_empty() {
+        bail!("the model's level is `{level}`, the accepted plan says `{}`", s(&plan["level"]));
+    }
+    let build = &model["build"];
+    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in"] {
+        if build[name].as_array().is_some_and(|faults| !faults.is_empty()) {
+            bail!("the model has build faults ({name}); repair the model before completing it");
+        }
+    }
+    let structure = structure_lines(&s(&head_card["body"]));
+    for (address, id) in &part_ids {
+        if !structure.iter().any(|line| line.contains(&format!("[[{address}]]"))) {
+            bail!("the 结构 list does not name part `{address}` (id `{id}`); keep the compiler's structure contribution");
+        }
+    }
+    // Semantic Link requirements: each planned rests-on/of relation of a part this build
+    // wrote must be authored in the Card.
+    let pairs: BTreeSet<(String, String)> = model["relations"]
+        .as_array()
+        .context("incomplete model relations")?
+        .iter()
+        .map(|r| (s(&r["from"]), s(&r["to"])))
+        .collect();
+    let resolve = |reference: &str| -> Option<String> {
+        if let Some(address) = ids.get(reference).map(s).filter(|address| !address.is_empty()) {
+            return Some(address);
+        }
+        if let Some((other, part)) = reference.split_once('#') {
+            let from_state = compiler["models"].get(other).and_then(|m| m["ids"].get(part)).map(s);
+            if let Some(address) = from_state.filter(|address| !address.is_empty()) {
+                return Some(address);
+            }
+            let from_refs = entry["refs"].get(reference).and_then(|r| r["address"].as_str()).map(str::to_string);
+            if from_refs.is_some() {
+                return from_refs;
+            }
+            return None;
+        }
+        Some(reference.to_string())
+    };
+    let mut requirements = Vec::new();
+    for part in &plan_parts {
+        let id = s(&part["id"]);
+        if id.is_empty() || truthy(&part["take"]) || truthy(&part["existing"]) {
+            continue;
+        }
+        let address = ids.get(&id).map(s).unwrap_or_default();
+        if address.is_empty() {
+            continue;
+        }
+        let mut wanted = Vec::new();
+        for rest in list(&part["rests"]) {
+            let reference = s(&ps::at(&pipe(rest), 0));
+            if reference.is_empty() {
+                continue;
+            }
+            if let Some(target) = resolve(&reference) {
+                wanted.push(json!({"ref":reference,"to":target,"why":ps::at(&pipe(rest), 1)}));
+            }
+        }
+        if truthy(&part["of"])
+            && let Some(target) = resolve(&s(&part["of"]))
+        {
+            wanted.push(json!({"ref":s(&part["of"]),"to":target,"why":"of"}));
+        }
+        for want in &wanted {
+            let target = field(want, "to")?;
+            if target == header || !part_ids.contains_key(target) {
+                continue;
+            }
+            if !pairs.contains(&(address.clone(), target.to_string())) {
+                bail!("part `{address}` does not author the Link to `{target}` its accepted plan requires");
+            }
+            requirements.push(json!({"from":address,"to":target,"ref":want["ref"],"why":want["why"]}));
+        }
+    }
+    // Explanation needs: the exact own Derivation parts that still lack 思路 or 解读.
+    let mut needs = Vec::new();
+    for (address, order_entry) in &order {
+        if order_entry["derivation"] != json!(true) || order_entry["line"] == json!("shared") {
+            continue;
+        }
+        let card = cards.get(address);
+        let body = card.map(|c| s(&c["body"])).unwrap_or_default();
+        if crate::model::text::explained(&body) {
+            continue;
+        }
+        let sections = crate::model::text::split_sections(&body);
+        let mut missing = Vec::new();
+        for name in ["思路", "解读"] {
+            if crate::model::text::section_text(&sections, name).is_empty() {
+                missing.push(name);
+            }
+        }
+        needs.push(json!({"address":address,"missing":missing}));
+    }
+    let needs_at: BTreeSet<String> = needs.iter().map(|n| s(&n["address"])).collect();
+    let chains: Vec<Value> = build["chains"]
+        .as_array()
+        .context("incomplete derivation chains")?
+        .iter()
+        .filter(|chain| {
+            chain["parts"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|p| needs_at.contains(&s(p))))
+        })
+        .cloned()
+        .collect();
+    // Style faults are the whole-book Card cycle's work: retained as a tolerance, not a
+    // second quality gate that would hide the model's own build facts.
+    let check = crate::check::Check {
+        model: header.to_string(),
+        skip_shared: true,
+        ..Default::default()
+    };
+    let lines = check.run(zt)?;
+    let style: Vec<String> = lines
+        .iter()
+        .filter(|line| !line.starts_with("faults: "))
+        .cloned()
+        .collect();
+    let split = ps::int(&entry["split"]).unwrap_or(0);
+    let steps: serde_json::Map<String, Value> = ["brief", "plan", "apply", "derive", "review", "split", "report", "resume"]
+        .iter()
+        .filter(|name| entry["steps"][**name].is_object())
+        .map(|name| ((*name).to_string(), entry["steps"][*name].clone()))
+        .collect();
+    let trees: BTreeSet<String> = cards
+        .values()
+        .map(|card| field(card, "tree").map(str::to_string))
+        .collect::<Result<_>>()?;
+    let fingerprints: BTreeMap<String, String> = cards
+        .iter()
+        .map(|(address, card)| (address.clone(), crate::calls::authored_fingerprint(card)))
+        .collect();
+    let part_order: Vec<Value> = order
+        .iter()
+        .map(|(address, o)| {
+            json!({"address":address,"id":part_ids.get(address),"line":o["line"],"facet":o["facet"],"derivation":o["derivation"]})
+        })
+        .collect();
+    Ok(json!({
+        "schema_version": 1,
+        "kind": "model_completion",
+        "unit": unit,
+        "token": token,
+        "state": "done",
+        "complete": true,
+        "reused": false,
+        "model": header,
+        "level": level,
+        "plan_hash": plan_hash,
+        "producer": producer,
+        "producer_input_hash": field(base, "producer_input_hash")?,
+        "plan_parts": plan_parts.len(),
+        "parts": part_map,
+        "part_order": part_order,
+        "head_fingerprint": crate::calls::authored_fingerprint(head_card),
+        "start_fingerprint": field(inputs, "fingerprint")?,
+        "card_fingerprints": fingerprints,
+        "structure": {"lines":structure,"fingerprint":canon::hash_value(&json!(structure))},
+        "steps": steps,
+        "split": split,
+        "explanation": if needs.is_empty() {
+            json!({"status":"none","reason":if derived {"explained"} else {"no_derivations"},"needs":[],"chains":[]})
+        } else {
+            json!({"status":"required","reason":"unexplained","needs":needs,"chains":chains})
+        },
+        "notes": entry["notes"],
+        "links": {"requirements":requirements},
+        "build": {"order":part_order.len(),"tolerated":build["tolerated"],"cited":build["cited"]},
+        "style": {"count":style.len(),"lines":style},
+        "trees": trees,
+        "archive_revision": read.archive_revision,
+    }))
+}
+
+/// Repeating a completed Model unit re-reads its Cards and its step state; a changed
+/// Card or plan makes the retained completion stale.
+fn model_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |row| row.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows = tx
+        .prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?
+        .query_map([unit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != field(&result, "unit_input_hash").unwrap_or("") {
+        bail!("Model unit input hash mismatch");
+    }
+    let current = model_evidence(p, zt, unit, token, &inputs)?;
+    for key in ["parts", "card_fingerprints", "plan_hash", "steps", "explanation", "structure"] {
+        if current[key] != result[key] {
+            bail!("completed Model unit changed ({key}); keep the checked result and re-run from a new claim");
+        }
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if result["files"][key]["path"] != *locator || result["files"][key]["sha256"] != *fingerprint {
+                    bail!("changed Model evidence registration");
+                }
+                check_file(&json!({"path":locator,"sha256":fingerprint}), "Model completion evidence")?;
+            }
+            "part" | "card" => {}
+            _ => bail!("unknown Model evidence kind"),
+        }
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: bool) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Model unit input hash mismatch");
+    }
+    if done {
+        let mut result = model_done(p, zt, unit, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let mut result = model_evidence(p, zt, unit, token, &inputs)?;
+    result["input_hash"] = json!(claimed.input_hash);
+    result["unit_input_hash"] = json!(claimed.input_hash);
+    if check_only {
+        result["check_only"] = json!(true);
+        result["applied"] = json!(false);
+        return Ok(result);
+    }
+    // Newly discovered explanation work becomes its own registered unit; the model's
+    // build still completes when explanations remain open (R302 keeps them visible).
+    let key = unit
+        .strip_prefix("models/")
+        .and_then(|v| v.strip_suffix("@1"))
+        .with_context(|| format!("not a Model unit: {unit}"))?;
+    let explain = if result["explanation"]["status"] == json!("required") {
+        let wanted = json!({
+            "schema_version":1,
+            "model":field(&inputs, "header")?,
+            "unit":unit,
+            "plan_hash":result["plan_hash"],
+            "parts":result["explanation"]["needs"].as_array().unwrap().iter().map(|n| n["address"].clone()).collect::<Vec<_>>(),
+            "chains":result["explanation"]["chains"],
+        });
+        Some((format!("explain/{key}@1"), wanted))
+    } else {
+        None
+    };
+    renew(p, unit, token)?;
+    let check_record = publish(
+        &p.out.join(format!("model-check-{key}.json")),
+        &serde_json::to_string_pretty(&json!({
+            "schema_version":1,"unit":unit,"token":token,"model":result["model"],"plan_hash":result["plan_hash"],
+            "steps":result["steps"],"parts":result["parts"],"build":result["build"],"style":result["style"],
+            "explanation":result["explanation"],"links":result["links"],"archive_revision":result["archive_revision"]
+        }))?,
+    )?;
+    result["files"] = json!({"check": check_record.clone()});
+    let completion = publish(
+        &p.out.join(format!("model-completion-{key}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["files"]["completion"] = completion.clone();
+    for record in [&check_record, &completion] {
+        check_file(record, "Model completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64() != Some(result["archive_revision"].as_u64().unwrap())
+    {
+        bail!("read_view_changed: Model completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    for (name, record) in [("check", &check_record), ("completion", &completion)] {
+        output(&tx, unit, name, "file", field(record, "path")?, field(record, "sha256")?, record)?;
+    }
+    for (id, address) in result["parts"].as_object().context("missing part map")? {
+        let address = address.as_str().context("invalid part address")?;
+        let fingerprint = result["card_fingerprints"][address]
+            .as_str()
+            .with_context(|| format!("missing Card fingerprint for `{address}`"))?;
+        output(&tx, unit, &format!("part/{id}"), "part", address, fingerprint, &json!({"id":id,"address":address}))?;
+    }
+    for (address, fingerprint) in result["card_fingerprints"].as_object().context("missing Card fingerprints")? {
+        output(&tx, unit, &format!("card/{address}"), "card", address, fingerprint.as_str().unwrap_or_default(), &json!({"address":address}))?;
+    }
+    completion_fault(p, "after_outputs")?;
+    if let Some((explain_unit, inputs)) = &explain {
+        let id = register(&tx, "explain", key, 1, inputs, Some(unit), false)?;
+        if id != *explain_unit {
+            bail!("the registered explanation unit id changed");
+        }
+        dependency(&tx, &id, unit, "success")?;
+        event(&tx, &id, Some(&claimed.owner), Some(token), "registered", &json!({"producer":unit,"input_hash":canon::hash_value(inputs)}))?;
+        result["explain_unit"] = json!(id);
+    }
+    completion_fault(p, "before_commit")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":"verified","plan_hash":result["plan_hash"],"parts":result["parts"].as_object().map(|p| p.len()),"explanation":result["explanation"]["status"],"trees":result["trees"],"completion":completion,"check":check_record}),
+    )?;
+    completion_fault(p, "after_commit")?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn model_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64, bool)> {
+        let a = Args::parse(argv, &["Out", "Model", "Token"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), a.required("Model")?, token, a.flag("CheckOnly")))
+    })();
+    let (out, model, token, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest model-finish: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let unit = model_unit_for_header(&conn, &model)?.map(|(unit, _)| unit);
+    drop(conn);
+    let unit = unit.with_context(|| format!("no registered Model unit names `{model}`"))?;
+    let result = model_finish(&p, &mut zt, &unit, token, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+/// Every `X#A` reference the accepted plan makes: a part of another model, or a shared
+/// part taken in from it. The producer of `A` must be registered before dependent fill.
+fn plan_cross_refs(plan: &Value) -> Result<Vec<String>> {
+    let mut refs = BTreeSet::new();
+    let Some(parts) = plan["parts"].as_array() else {
+        return Ok(Vec::new());
+    };
+    for part in parts {
+        let mut push = |value: &Value| -> Result<()> {
+            let text = s(value);
+            if let Some((other, name)) = text.split_once('#') {
+                if other.trim().is_empty() || name.trim().is_empty() {
+                    bail!("incomplete model reference `{text}` in the accepted plan");
+                }
+                if !other.contains('/') {
+                    bail!("reference `{text}` must name a Model Card address before `#`");
+                }
+                refs.insert(text);
+            }
+            Ok(())
+        };
+        push(&part["take"])?;
+        push(&part["of"])?;
+        for rest in list(&part["rests"]) {
+            push(&ps::at(&pipe(rest), 0))?;
+        }
+    }
+    Ok(refs.into_iter().collect())
+}
+
+/// R233/R234: register the explicit producer dependency of every `X#A` reference before
+/// any dependent fill/apply. A producer that is not done makes the dependent wait without
+/// spending an attempt; a completed producer without the named part is a content fault.
+fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    if done {
+        bail!("Model unit {unit} is already complete; its dependencies need no registration");
+    }
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Model unit input hash mismatch");
+    }
+    let header = field(&inputs, "header")?.to_string();
+    let (dir, plan_hash, plan, compiler) = model_plan_state(p, &header)?;
+    if !ps::eq(&s(&plan["model"]), &header) {
+        bail!("the plan for `{header}` describes `{}`", s(&plan["model"]));
+    }
+    let refs = plan_cross_refs(&plan)?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let mut wanted = Vec::new();
+    let mut resolutions = Vec::new();
+    let mut fault: Option<Value> = None;
+    for reference in &refs {
+        let (other, part) = reference.split_once('#').context("incomplete model reference")?;
+        if other == header {
+            bail!("`{header}` cannot depend on its own part `{part}`");
+        }
+        let Some((producer, producer_inputs)) = model_unit_for_header(&conn, other)? else {
+            fault = Some(json!({
+                "code":"unknown_producer","unit":unit,"input_hash":claimed.input_hash,
+                "cause":format!("reference `{reference}` names no registered Model unit for `{other}`"),
+                "reference":reference,"model":other,"part":part
+            }));
+            break;
+        };
+        wanted.push((reference.clone(), producer, producer_inputs));
+    }
+    drop(conn);
+    if fault.is_none() {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        for (reference, producer, _) in &wanted {
+            let (part, other) = (reference.split_once('#').context("incomplete model reference")?.1, reference.split_once('#').context("incomplete model reference")?.0);
+            let state: String = conn.query_row("SELECT state FROM units WHERE id=?1", [producer], |row| row.get(0))?;
+            if state != "done" {
+                continue;
+            }
+            let part_row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT locator,fingerprint FROM outputs WHERE unit_id=?1 AND output_key=?2",
+                    params![producer, format!("part/{part}")],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let Some((address, fingerprint)) = part_row else {
+                fault = Some(json!({
+                    "code":"named_part_missing","unit":unit,"input_hash":claimed.input_hash,
+                    "cause":format!("`{other}` completed without part `{part}`; reference `{reference}` cannot be resolved"),
+                    "reference":reference,"model":other,"part":part,"producer":producer
+                }));
+                break;
+            };
+            let card = zt.cards(&[address.clone()], "text")?;
+            let Some(card) = card.cards.first() else {
+                fault = Some(json!({
+                    "code":"named_part_changed","unit":unit,"input_hash":claimed.input_hash,
+                    "cause":format!("part `{part}` of `{other}` was checked at `{address}`, which is gone"),
+                    "reference":reference,"model":other,"part":part,"producer":producer,"address":address
+                }));
+                break;
+            };
+            if crate::calls::authored_fingerprint(card) != fingerprint {
+                fault = Some(json!({
+                    "code":"named_part_changed","unit":unit,"input_hash":claimed.input_hash,
+                    "cause":format!("part `{part}` of `{other}` changed after its accepted output"),
+                    "reference":reference,"model":other,"part":part,"producer":producer,"address":address
+                }));
+                break;
+            }
+            resolutions.push(json!({"ref":reference,"model":other,"part":part,"producer":producer,"address":address,"fingerprint":fingerprint}));
+        }
+        drop(conn);
+    }
+    if let Some(fault) = fault {
+        // A precise content fault, recorded through the same checked fault path as a
+        // compiler failure; the caller does not spend another attempt guessing.
+        let recorded = fail(p, unit, token, "content", &fault)?;
+        return Ok(json!({"ok":false,"unit":unit,"fault":fault,"recorded":recorded}));
+    }
+    let waiting: Vec<Value> = wanted
+        .iter()
+        .filter(|(reference, producer, _)| !resolutions.iter().any(|r| r["ref"] == json!(reference) && r["producer"] == json!(producer)))
+        .map(|(reference, producer, _)| json!({"ref":reference,"producer":producer}))
+        .collect();
+    // The dependency graph must see this unit, so release the claim for cycle detection
+    // inside the same transaction; no attempt is spent while a prerequisite is incomplete.
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claim = claim(&tx, unit, token)?;
+    for (_, producer, _) in &wanted {
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT condition FROM deps WHERE unit_id=?1 AND needs_id=?2",
+                params![unit, producer],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match existing.as_deref() {
+            Some("success") => {}
+            Some(other) => bail!("the Model unit's dependency on {producer} is `{other}`, not `success`"),
+            None => dependency(&tx, unit, producer, "success")?,
+        }
+    }
+    let lease_until = now_seconds() + lease_seconds();
+    tx.execute(
+        "UPDATE units SET state='registered',owner=NULL,lease_until=NULL WHERE id=?1",
+        params![unit],
+    )?;
+    detect_cycles(&tx)?;
+    let after: Option<(String, Option<String>)> = tx
+        .query_row("SELECT state,fault_json FROM units WHERE id=?1", [unit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
+    let (state, fault_json) = after.context("the Model unit disappeared during dependency registration")?;
+    if state == "failed" {
+        tx.commit()?;
+        let fault: Value = fault_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or(Value::Null);
+        return Ok(json!({"ok":false,"unit":unit,"cycle":fault["cycle"],"fault":fault}));
+    }
+    let result = if waiting.is_empty() {
+        tx.execute(
+            "UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4 WHERE id=?1",
+            params![unit, claim.owner, token, lease_until],
+        )?;
+        let progress_raw: String = tx.query_row("SELECT progress_json FROM units WHERE id=?1", [unit], |row| row.get(0))?;
+        let mut progress: Value = serde_json::from_str(&progress_raw)?;
+        progress["model_plan"] = json!({"plan_hash":plan_hash,"refs":resolutions,"unit":unit});
+        tx.execute(
+            "UPDATE units SET progress_json=?2 WHERE id=?1",
+            params![unit, canon::canonical_json(&progress)],
+        )?;
+        event(&tx, unit, Some(&claim.owner), Some(token), "model_dependencies", &json!({"resolved":resolutions,"waiting":[],"plan_hash":plan_hash}))?;
+        json!({"ok":true,"unit":unit,"waiting":false,"refs":resolutions,"plan_hash":plan_hash,"state":"claimed","lease_until":lease_until})
+    } else {
+        tx.execute(
+            "UPDATE units SET state='registered',owner=NULL,lease_until=NULL,retry_after=NULL,attempts=MAX(attempts-1,0) WHERE id=?1",
+            params![unit],
+        )?;
+        event(&tx, unit, Some(&claim.owner), Some(token), "deferred_waiting", &json!({"prerequisites":waiting,"resolved":resolutions,"attempts_returned":1}))?;
+        json!({"ok":true,"unit":unit,"waiting":true,"prerequisites":waiting,"refs":resolutions,"plan_hash":plan_hash,"state":"registered"})
+    };
+    tx.commit()?;
+    drop(conn);
+    // The compiler resolves `X#A` from the same part map the batch uses; a ref that waited
+    // is written only once its producer has checked the named part.
+    if waiting.is_empty() {
+        let mut state = compiler.clone();
+        for r in &resolutions {
+            let (other, part) = (field(r, "model")?, field(r, "part")?);
+            if !state["models"][other].is_object() {
+                state["models"][other] = json!({"ids":{}});
+            }
+            if !state["models"][other]["ids"].is_object() {
+                state["models"][other]["ids"] = json!({});
+            }
+            state["models"][other]["ids"][part] = r["address"].clone();
+            state["models"][&header]["refs"][field(r, "ref")?] = r.clone();
+        }
+        let state_path = dir.parent().context("model folder outside a batch")?.join("state.json");
+        canon::save_json(state_path.to_string_lossy().as_ref(), &state)?;
+        let key = unit.strip_prefix("models/").and_then(|v| v.strip_suffix("@1")).unwrap_or("model");
+        let record = publish(
+            &p.out.join(format!("model-refs-{key}.json")),
+            &serde_json::to_string_pretty(&json!({"schema_version":1,"unit":unit,"model":header,"plan_hash":plan_hash,"refs":resolutions}))?,
+        )?;
+        let mut result = result;
+        result["refs_file"] = record;
+        return Ok(result);
+    }
+    Ok(result)
+}
+
+pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64)> {
+        let a = Args::parse(argv, &["Out", "Model", "Token"], &[])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), a.required("Model")?, token))
+    })();
+    let (out, model, token) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest model-deps: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let unit = model_unit_for_header(&conn, &model)?.map(|(unit, _)| unit);
+    drop(conn);
+    let unit = unit.with_context(|| format!("no registered Model unit names `{model}`"))?;
+    let result = model_deps(&p, &mut zt, &unit, token)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
 fn terms_view(job: &Value, path: &Path, reused: bool) -> Value {
     json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"answer":job["answer"],"expected_jobs":job["expected_jobs"],"jobs":job["jobs"],"candidate_count":job["inputs"]["candidate_count"],"counts":job["inputs"]["counts"],"no_op":job["no_op"],"reused":reused})
 }
@@ -8597,6 +9470,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     bail!("completion evidence locator mismatch");
                 }
                 cards_finish(&p, &mut zt, number, token, false)?
+            } else if let Some(key) = unit
+                .strip_prefix("models/")
+                .and_then(|value| value.strip_suffix("@1"))
+            {
+                // The Model unit's checked output is its own compiler's step state and part
+                // map: caller-supplied addresses cannot establish it.
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != "model_completion"
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                {
+                    bail!("invalid Model completion evidence");
+                }
+                if std::fs::canonicalize(&path)?
+                    != std::fs::canonicalize(p.out.join(format!("model-completion-{key}.json")))?
+                {
+                    bail!("completion evidence locator mismatch");
+                }
+                model_finish(&p, &mut zt, &unit, token, false)?
             } else {
                 let number = unit
                     .strip_prefix("digest/g")
