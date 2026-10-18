@@ -6,7 +6,7 @@ paths:
   - "src/artifact.rs"
   - "tests/scholar_bridge.rs"
 synced: fe5d77864def
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Scholar Archive bridge and artifacts
@@ -78,6 +78,8 @@ flowchart TD
 ```
 
 Control always enters through `Bridge::connect`; there is no long-lived bridge object. Each CLI command, each MCP tool call, and each GUI request makes a new `Bridge` (and a new HTTP agent) and drops it after the call.
+
+On Windows, `run_archive_command(["start"])` has a narrow independent-service path when `ZT_MCP_OWNED_JOB=1`. The shared service must outlive that short-lived client's process job. `src/main.rs::start_independent_service_command` launches only the configured program's fixed `start` verb, leaves the owned MCP job and disables all handle inheritance. Batch launchers use the quoted `cmd /d /s /c` form; executable launchers run directly. The helper waits at most 20 seconds, terminates its exact start-command handle on timeout and closes returned handles. Its stdout/stderr are not captured, so a detached service cannot keep an MCP client's pipe open. The bridge still checks the service's actual availability and signed response after startup. Ordinary CLI starts and credential pair/revoke commands keep their existing command/output path; pairing credentials are not passed through the native command line.
 
 ## Interfaces
 
@@ -468,6 +470,8 @@ Gaps: no test of the re-pair path after a 401, of the server-start path and `wai
 - **Run the tests with `ZT_GUI_PORT=0`.** The figure test runs `zt up`; without it a test daemon could take the live GUI port 4717 (`tests/scholar_bridge.rs` sets it).
 
 ## Change history
+
+- `2026-10-17` — Preserve a shared archive service started from a contained MCP client without inherited capture handles. The isolated lifecycle test uses a spaced/apostrophe batch path, confirms service survival and verifies that an unsigned fixture response still fails.
 
 - `2026-10-16` `63d77d1` — The bridge specification moved from `doc/` to `docs/scholar-archive-bridge-design.md`.
 - `2026-10-15` `6b36918` — `zt scholar keep-figures` and `keep_figures`; Document links (`DOCUMENT_SCHEME`, `document_target`, `document_markdown`); `Bridge::document` with the size-checked cache for the GUI reading page; `scholar_archive_file` returns `link` (zt 0.18.0).

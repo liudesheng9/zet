@@ -424,8 +424,10 @@ name = "zt-check"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "regex",
  "serde_json",
+ "windows-sys",
 ]
 
 [[package]]

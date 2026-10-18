@@ -265,7 +265,7 @@ Location helpers (all pure except where a `conn` is taken):
 1. `cmd_up` → `start_service`: read the root; if `zt.restart` is fresh, `wait_for_service` first (a second daemon would only wait for the daemon lock).
 2. `start_service_at`: create the root; `clear_stale_legacy_service` (a zt 0.7 record with no lock file is cleared when its pid is gone, via `session::process_exists`); `is_service_recorded_up` (clears a stale record without restarting). If up, return `service already running pid: <pid>` without touching the database.
 3. `initialize_database` (see "Open and migrate the database"), then create `zt.log` if missing.
-4. `spawn_daemon`: starts the current `zt` executable directly with separate `__daemon` and archive-path arguments. Windows uses `CreateProcessW` with `CREATE_NO_WINDOW` and handle inheritance disabled; other platforms use null stdio. No shell or execution-policy override is required; the child pid is available immediately. The normal service-record readiness check still waits for daemon initialization.
+4. `spawn_daemon`: starts the current `zt` executable directly with separate `__daemon` and archive-path arguments. Windows uses `CreateProcessW` with `CREATE_NO_WINDOW` and handle inheritance disabled; other platforms use null stdio. `independent_service_flags` adds `CREATE_BREAKAWAY_FROM_JOB` only when an owned MCP's `ZT_MCP_OWNED_JOB=1` marker is present. Thus a stale-service restart from inside a contained MCP outlives that client's cleanup. Ordinary starts keep their existing flags. No shell or execution-policy override is required; the child pid is available immediately. The normal service-record readiness check still waits for daemon initialization.
 5. Poll for `zt.pid` every 20 ms for up to 15 s; fail `daemon did not start`. Print `service started pid: <pid>`, then `print_gui_line`.
 
 ### The daemon (`cmd_daemon`)
@@ -659,6 +659,8 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+
+- `2026-10-17` — Keep a daemon restarted inside an owned MCP outside the client's kill-on-close job. Add the narrow no-inherited-handle service-start helper used by Scholar Archive; the public lifecycle fixture verifies actual service survival before status repair and absence of capture-pipe leaks.
 
 - `2026-10-17` — Windows service launch calls `CreateProcessW` directly, preserving archive-path arguments and isolating caller handles. The public no-shell/path regression replaces the hidden PowerShell execution-policy override. Defender scans and the classifier limitations are recorded in [the build investigation](../windows-defender-build-investigation.md).
 

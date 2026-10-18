@@ -35,6 +35,13 @@ const send = message => process.stdout.write(JSON.stringify(message) + '\n')
 const failed = reply => !!(reply.error || (reply.result && reply.result.isError))
 const fault = (id, text) => ({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } })
 const flag = path => !!path && fs.existsSync(path)
+const hangBatch = async filename => {
+  const target = path.resolve(filename)
+  const relative = path.relative(os.tmpdir(), target)
+  if (relative.startsWith('..') || !relative.split(path.sep)[0].startsWith('mcp-lifecycle-test-')) throw new Error('hung batch must stay in the isolated lifecycle fixture')
+  fs.writeFileSync(target, JSON.stringify({ proxy: process.pid, writer: real.pid }))
+  await new Promise(() => {})
+}
 
 async function handle(line) {
   let message
@@ -58,12 +65,14 @@ async function handle(line) {
     await call('edit_card', { at: at.at, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   if (tool === 'apply_batch' && !at.preview && env.ZT_FAIL_BATCH_BEFORE_WRITE) return send(fault(message.id, 'injected failure before the archive write'))
+  if (tool === 'apply_batch' && !at.preview && env.ZT_HANG_BATCH_BEFORE_WRITE_FLAG && !flag(env.ZT_HANG_BATCH_BEFORE_WRITE_FLAG)) await hangBatch(env.ZT_HANG_BATCH_BEFORE_WRITE_FLAG)
   if (tool === 'apply_batch' && !at.preview && env.ZT_RESERVE_BATCH_PARENT && env.ZT_RESERVE_BATCH_FLAG && !flag(env.ZT_RESERVE_BATCH_FLAG)) {
     const reserved = await call('create_successor', { at: env.ZT_RESERVE_BATCH_PARENT, kind: 'side', title: '并行写入占据这个位置', body: '另一位写作者独立创建了这张卡片。' })
     if (failed(reserved)) return send(fault(message.id, 'concurrent reservation failed'))
     fs.writeFileSync(env.ZT_RESERVE_BATCH_FLAG, JSON.stringify(reserved.result.structuredContent))
   }
   const reply = await ask(message)
+  if (tool === 'apply_batch' && !at.preview && env.ZT_HANG_BATCH_REPLY_FLAG && !flag(env.ZT_HANG_BATCH_REPLY_FLAG) && !failed(reply)) await hangBatch(env.ZT_HANG_BATCH_REPLY_FLAG)
   if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent
     identityViews++

@@ -2,6 +2,8 @@
 
 This records implementation evidence for [PRD #64](https://github.com/liudesheng9/zet/issues/64) and the [27-slice issue plan](digest-run-stiglitz2014-issue-plan.md). The publication coverage JSON describes requirements coverage, not implementation completion.
 
+Current status at the user's stop request: **five of 27 issues are verified/closed (#65, #66, #67, #75, #76); 22 remain open**. The [2026-10-17 pause checkpoint](digest-reliability-checkpoint-2026-10-17.md) gives an issue-by-issue table, final regression evidence and the installation boundary. Earlier sections below record progress at their respective checkpoints, rather than overriding that current table.
+
 ## Scope
 
 The authorized work is implementation and verification of the tools, compilers and workflow integration. Actual book-digest workflow execution and Stiglitz recovery remain for the user's later Claude Code run. Do not infer those results from isolated tests. The production archive and running installation remain unchanged until a separately verified deployment step.
@@ -250,6 +252,16 @@ The public `ledger-prepare-recovery.tests.ps1` uses an actual 67-operation setup
 All 81 digest unit tests pass (`issue70-prepare-digest-unit.log`). The sequential 16-suite public run retained in `issue70-prepare-public-summary.log` passes 15 suites, including 25 new preparation-recovery assertions. Its one failure was the existing group-start fixture assuming exactly one lock file in the entire staging folder; preparation now has its own guard too. The fixture now observes the new group guard separately, preserving its actual concurrent-lock/stale-token/failure tests. That suite passes all 17 assertions in `issue70-prepare-guard-final-summary.log`. Together these results qualify all 16 affected suites (353 assertions); no implementation change followed that public run. The root executable is unchanged and its separate native-startup regression also passes.
 
 This completes the current-token, initialized-preparation recovery path. It does not establish expired-owner reclamation, parent-death handling, complete invocation recovery, checked downstream lineage or live workflow acceptance; #70/#71 remain open. Production binaries/services and the actual Stiglitz workflow were not changed by these isolated tests.
+
+## #71: bounded MCP transport and Windows process ownership
+
+The existing checker library client, shared by all digest compilers, now owns one I/O worker and imposes a 240-second production exchange deadline, including initialize and blocked stdin writes. Wrong-id/noise replies do not reset it. Strict UTF-8, a 32 MiB transport line cap, finite EOF/termination/worker waits and typed `command_timeout`/`transport_closed` facts replace the unbounded paths. A timeout reports the exact owned child and whether cleanup was confirmed; it does not assert that a possible write rolled back.
+
+Windows starts the MCP suspended, attaches it to a kill-on-close Job Object, then resumes it. Tests kill only the compiler and observe its contained descendants disappear while an independent control process remains. Normal timeout cleanup observes both actual proxy and archive-writer termination before retrying the same receipt keys, separately before and after a real archive commit. Exactly one final revision/address results. Independent ZT daemon restart and a mock Scholar Archive service survive client shutdown, without retaining capture pipes. Service launch is a narrow fixed `start` path; no new service, queue or writer is added. Unix process-group support is present, but its runtime and parent-death equivalence were not qualified on this Windows host.
+
+Final evidence is the [pause checkpoint](digest-reliability-checkpoint-2026-10-17.md): 361 root tests, ten checker unit tests, 81 digest unit tests and passing evidence for all 42 public suites. The new lifecycle suite passes 50 assertions. The initial all-suite run had one Bridge fixture failure: its direct SQL human seed bypassed Link-index maintenance. Public `zt reindex` now completes the isolated setup and the unchanged final audit assertion passes on rerun. The initial failure log remains retained; no production audit behavior was weakened.
+
+This finishes the current transport/process-lifetime foundation only. Internal thirty-second heartbeats, safe expired-owner reclaim under the unit guard, registered command/provider-job cancellation/observation, structural-map recovery and complete manager-loss recovery remain open. #71 is not closed. No actual workflow, live provider or production upgrade was performed.
 
 ## Remaining slices
 

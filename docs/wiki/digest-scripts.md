@@ -15,6 +15,12 @@ updated: 2026-10-17
 
 ## Purpose
 
+`tests/bridge-human.tests.ps1` seeds human Cards only through direct SQL in its stopped scratch archive, then runs public `zt reindex` before exercising the agent interfaces. This fixture setup must refresh the derived index; direct SQL is outside normal Card-write maintenance. The final audit checks actual incoming human and unattributed Links as well as outgoing human Links.
+
+`tests/mcp-lifecycle.tests.ps1` exercises the shared checker/compiler transport through both public binaries. Temporary fixtures hang during initialize, receive, unrelated reply noise, a large blocked stdin write or EOF shutdown; each command must return within a finite test deadline, remove its owned descendants and preserve an independent control process. Killing only the compiler tests Windows job ownership. Real proxy cases hang before/after an actual archive batch commit and retry the original receipt keys. An independently restarted ZT daemon and mock Scholar Archive service must survive client cleanup; the latter also checks that no capture pipe is retained and that unsigned responses are rejected. This runs no provider or book workflow and only its namespaced temp config can shorten production transport deadlines.
+
+Its optional `-Python <executable>` (or `ZT_TEST_PYTHON`) additionally checks that a Python-based external service starter has valid stdout. The Windows checkpoint enables this probe explicitly; the ordinary Node-based suite has no machine-specific Python path dependency.
+
 `tests/ledger-core.tests.ps1` exercises the real opt-in prepared-ledger path through a temporary archive: complete group registration, placeholder/open coverage, five-table WAL storage, success/settled prerequisites, stable retry identity, input/contract/archive mismatch refusal without ledger-row changes, protected prepared files and offline read-only `ledger status`. It inspects retained SQL facts through the existing Node SQLite seam. `ledger-preparation.tests.ps1` also requires reliable prepare to initialize that ledger before returning. These tests do not launch provider jobs or an actual digest workflow.
 
 `tests/ledger-prepare-recovery.tests.ps1` interrupts actual identified setup after its first 64-operation chunk commits. The existing MCP proxy loses the reply; the retained prepare token and plan recover three remaining anchors, keeping the original run, 66 groups and all frozen files. Its 25 assertions include current-token renewal before the tail exists, source/setup changes, an edited committed Card, a missing prerequisite and missing completion registration. Fault injection before/after the ledger commit checks atomic worker release and read-only receipt recovery. A mismatched BibTeX key creates neither tree. `ledger-group-start.tests.ps1` observes the group's newly created guard separately from preparation's existing guard, then tests actual lock contention. These test the tool path and existing temporary-archive/SQLite seams, not a digest workflow or expired-owner reclamation.
@@ -745,6 +751,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests, and describes zt-check rules as "R2 to R17, I, E, L" without the F rules; the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+- `2026-10-17` — Add public MCP lifetime/timeout qualification for owned process trees, compiler death, real interrupted archive commits and independent service/capture-handle preservation.
 
 - `2026-10-17` — Add the public reliable-prepare recovery suite for lost native-batch replies, exact source/setup binding, prefix conflicts, target/output reconciliation and ledger-commit failure recovery.
 

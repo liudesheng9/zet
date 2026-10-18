@@ -160,6 +160,13 @@ fn archive_command() -> Result<PathBuf> {
 
 fn run_archive_command(args: &[&str]) -> Result<String> {
     let program = archive_command()?;
+    #[cfg(any(windows, unix))]
+    if args == ["start"]
+        && env::var_os("ZT_MCP_OWNED_JOB").as_deref() == Some(std::ffi::OsStr::new("1"))
+    {
+        crate::start_independent_service_command(&program)?;
+        return Ok(String::new());
+    }
     let mut command = Command::new(&program);
     command.args(args);
     #[cfg(windows)]

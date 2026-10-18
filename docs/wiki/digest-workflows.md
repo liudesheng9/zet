@@ -15,6 +15,8 @@ updated: 2026-10-17
 
 ## Purpose
 
+The existing real-MCP proxy has two additional lifecycle-only seams: `ZT_HANG_BATCH_BEFORE_WRITE_FLAG` stops before forwarding an actual batch, and `ZT_HANG_BATCH_REPLY_FLAG` stops after the real archive reply. Each writes the actual proxy/writer PIDs and then withholds the response. `hangBatch` refuses flag paths outside a temporary `mcp-lifecycle-test-*` folder. The public lifecycle suite observes timeout and owned-process exit, then retries unchanged operation keys against the actual committed state. These fault switches do not change ordinary or frozen workflow behavior.
+
 The proxy's `ZT_FAIL_BATCH_BEFORE_WRITE` rejects an actual identified write before forwarding it, retaining the compiler's accepted plan without an archive commit. `ZT_RESERVE_BATCH_PARENT` with `ZT_RESERVE_BATCH_FLAG` independently creates one real Side successor before forwarding the planned batch and records its actual result. The group test then verifies that the owned manifest uses committed receipt addresses and excludes the independently reserved Card. These switches are used only by isolated fixtures; ordinary/frozen workflow code is unchanged.
 
 The real-MCP proxy also supports `ZT_REPLACE_PREVIEW_INPUT` and `ZT_PREVIEW_REPLACEMENT_FILE`: after a successful native preview, it copies a fixture replacement over the input file. Both paths must resolve under the temporary directory, including Windows namespace normalization. Group completion must detect that the original checked draft bytes changed before accepting/applying the plan. This exercises a late-output race without launching a provider or modifying frozen workflow stages.
@@ -665,6 +667,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-17` — Add namespaced real-batch hang seams before/after archive commit for bounded transport cleanup and exact receipt-recovery qualification.
 
 - `2026-10-17` — Extend the real-MCP compiler seam with named model-read failure and an edit after a bulk response; global audit tests reject missing inputs and mixed revisions without running workflow agents.
 

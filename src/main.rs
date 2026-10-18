@@ -598,11 +598,109 @@ fn start_service_at(root: &Path) -> Result<String> {
 }
 
 #[cfg(windows)]
+fn independent_service_flags() -> u32 {
+    use windows_sys::Win32::System::Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW};
+    CREATE_NO_WINDOW
+        | if env::var_os("ZT_MCP_OWNED_JOB").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            CREATE_BREAKAWAY_FROM_JOB
+        } else {
+            0
+        }
+}
+
+#[cfg(windows)]
+fn start_independent_service_command(program: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        System::Threading::{
+            CreateProcessW, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW,
+            TerminateProcess, WaitForSingleObject,
+        },
+    };
+    let script = program
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    let executable = if script {
+        PathBuf::from(
+            env::var_os("COMSPEC").unwrap_or_else(|| "C:\\Windows\\System32\\cmd.exe".into()),
+        )
+    } else {
+        program.to_path_buf()
+    };
+    // The only argument is the established service verb. Windows paths cannot
+    // contain a quote; cmd needs one extra outer pair around a quoted script.
+    let line = if script {
+        format!("cmd /d /s /c \"\"{}\" start\"", program.display())
+    } else {
+        format!("\"{}\" start", program.display())
+    };
+    let exe: Vec<u16> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut line: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    // A shared service must inherit neither a client's job nor capture pipes.
+    if unsafe {
+        CreateProcessW(
+            exe.as_ptr(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            independent_service_flags(),
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error())
+            .context("failed to launch independent service command");
+    }
+    unsafe {
+        CloseHandle(process.hThread);
+    }
+    let waited = unsafe { WaitForSingleObject(process.hProcess, 20000) };
+    let result = if waited == WAIT_OBJECT_0 {
+        let mut code = 1;
+        if unsafe { GetExitCodeProcess(process.hProcess, &mut code) } == 0 {
+            Err(io::Error::last_os_error()).context("read service-start exit status")
+        } else if code != 0 {
+            Err(anyhow::anyhow!(
+                "independent service start exited with status {code}"
+            ))
+        } else {
+            Ok(())
+        }
+    } else {
+        unsafe {
+            TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, 2000);
+        }
+        Err(anyhow::anyhow!(
+            "independent service start exceeded its 20-second deadline"
+        ))
+    };
+    unsafe {
+        CloseHandle(process.hProcess);
+    }
+    result
+}
+
+#[cfg(windows)]
 fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+        CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
 
     let exe: Vec<u16> = env::current_exe()?
@@ -627,6 +725,10 @@ fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
         ..Default::default()
     };
     let mut process = PROCESS_INFORMATION::default();
+    // A short-lived owned MCP may restart a disappeared service. The daemon
+    // has an independent lifetime; it must not join that client's kill-on-close
+    // job. Ordinary starts retain their existing flags.
+    let flags = independent_service_flags();
     // No inherited handles: a long-lived daemon must not keep its caller's
     // capture pipes or file locks alive. All buffers live through this call.
     let started = unsafe {
@@ -636,7 +738,7 @@ fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
             std::ptr::null(),
             std::ptr::null(),
             0,
-            CREATE_NO_WINDOW,
+            flags,
             std::ptr::null(),
             std::ptr::null(),
             &startup,
@@ -653,16 +755,52 @@ fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
     Ok(Some(process.dwProcessId))
 }
 
+#[cfg(unix)]
+fn start_independent_service_command(program: &Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut child = Command::new(program)
+        .arg("start")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .context("failed to launch independent service command")?;
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("independent service start exited with status {status}");
+        }
+        if std::time::Instant::now() >= until {
+            let _ = child.kill();
+            let reap = std::time::Instant::now() + Duration::from_secs(2);
+            while child.try_wait()?.is_none() && std::time::Instant::now() < reap {
+                thread::sleep(Duration::from_millis(10));
+            }
+            bail!("independent service start exceeded its 20-second deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg(not(windows))]
 fn spawn_daemon(root: &Path) -> Result<Option<u32>> {
-    let child = Command::new(env::current_exe()?)
+    let mut command = Command::new(env::current_exe()?);
+    command
         .arg("__daemon")
         .arg(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to start daemon")?;
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    if env::var_os("ZT_MCP_OWNED_JOB").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let child = command.spawn().context("failed to start daemon")?;
     Ok(Some(child.id()))
 }
 

@@ -16,7 +16,7 @@ function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$
 function Audit($out){$lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $out -SkipModels);if($LASTEXITCODE){throw "$lines"};Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String}
 try{
  zt config set archive_root $archive|Out-Null;zt up|Out-Null;zt down|Out-Null
- # node:sqlite (Node 22.5+) seeds the stopped scratch database: this machine has no Python.
+ # node:sqlite (Node 22.5+) seeds the stopped scratch database.
  $seed=@'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os')
 const p=path.resolve(process.argv[2])
@@ -33,6 +33,9 @@ c.close()
  & node $seedFile (Join-Path $archive 'zt.sqlite3')
  if($LASTEXITCODE){throw 'human fixture seed failed'}
  zt up|Out-Null
+ # Direct fixture SQL bypasses ordinary writes; rebuild its derived Link index.
+ zt reindex|Out-Null
+ if($LASTEXITCODE){throw 'human fixture reindex failed'}
  $made=Calls @(
   @{tool='create_literature';arguments=@{bibtex='@book{New2026,title={New},year={2026}}'}},
   @{tool='create_successor';arguments=@{at='New2026';title='第一组';body='§1 控制权'}},
