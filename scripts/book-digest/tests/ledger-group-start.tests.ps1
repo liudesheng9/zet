@@ -22,6 +22,7 @@ try {
     [IO.File]::WriteAllText($source,"# 导论`n`n企业的融资约束影响生产选择。`n`n# 参考`n未选择。",$utf8)
     [IO.File]::WriteAllText($options,'{"terms":false}',$utf8)
     $manifest=Run-Digest @('prepare','-Source',$source,'-Out',$out,'-CitationKey','StartBook','-BibTeX','@book{StartBook,title={Start book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-NoFigures','-Variant','econ','-RunOptions',$options,'-Apply')
+    $preparationGuards=@(Get-ChildItem -LiteralPath (Join-Path $out 'locks') -Filter '*.lock' | ForEach-Object FullName)
     $next=Run-Digest @('ledger','next','-Out',$out,'-Layer','digest','-Take','1','-Owner','group-manager')
     $claim=$next.units[0]
     $shortLease=@'
@@ -55,7 +56,7 @@ const db=new DatabaseSync(p);db.prepare("update units set lease_until=? where id
     $beforeHash=(Get-FileHash -LiteralPath $started.job -Algorithm SHA256).Hash
     $again=Run-Digest @('group-start','-Out',$out,'-Group','1','-Token',"$($claim.token)")
     Assert ($again.reused -and $again.input_hash -ceq $started.input_hash -and (Get-FileHash -LiteralPath $started.job -Algorithm SHA256).Hash -ceq $beforeHash) 'repeating the same accepted start retains its exact frozen files and inputs'
-    $guardPaths=@(Get-ChildItem -LiteralPath (Join-Path $out 'locks') -Filter '*.lock')
+    $guardPaths=@(Get-ChildItem -LiteralPath (Join-Path $out 'locks') -Filter '*.lock' | Where-Object FullName -NotIn $preparationGuards)
     Assert ($guardPaths.Count -eq 1) 'the group publishes a persistent per-unit OS guard location'
     $held=[IO.File]::Open($guardPaths[0].FullName,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
     try {

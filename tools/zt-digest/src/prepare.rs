@@ -391,6 +391,10 @@ fn run_contract(
         "events".into(),
         file(&join_path(&s(&manifest["staging"]), "events.json"))?,
     );
+    artifacts.insert(
+        "setup_calls".into(),
+        file(&join_path(&s(&manifest["staging"]), "setup-calls.json"))?,
+    );
     Ok(
         json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts}),
     )
@@ -630,7 +634,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
 
     // --- agent Literature tree ---
-    let mut prepared_zt = None;
     if apply {
         let mut zt = Zt::start()?;
         let z = &mut zt;
@@ -654,6 +657,19 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             } }));
         }
         write(&join_path(&staging, "setup-calls.json"), &ps::json_pretty(&Value::Array(setup.clone())))?;
+        if !variant.is_empty() {
+            let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures,"run_options":run_options});
+            let contract = run_contract(&manifest, &variant, &source_hash, options, archive)?;
+            manifest.insert("run_contract".into(), contract);
+            write(
+                &join_path(&staging, "manifest.json"),
+                &ps::json_pretty(&Value::Object(manifest)),
+            )?;
+            crate::ledger::prepare_setup(&staging, z)?;
+            let complete = crate::util::read_json(join_path(&staging, "manifest.json"))?;
+            util::print_line(&ps::json_compact(&complete))?;
+            return Ok(0);
+        }
         let (done, failure) = calls::run(z, &setup, &mut calls::Options::new())?;
         let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
         if let Some(failure) = failure {
@@ -661,21 +677,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             bail!("zt setup failed: {}", lines.join(" | "));
         }
         manifest.insert("created".into(), json!(lines));
-        if !variant.is_empty() {
-            let observed=z.archive_view()?["archive_identity"].clone();
-            if !archive.is_object() || archive!=observed {bail!("archive identity changed during preparation");}
-            let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures,"run_options":run_options});
-            let contract=run_contract(&manifest,&variant,&source_hash,options,archive)?;
-            manifest.insert("run_contract".into(),contract);
-            prepared_zt = Some(zt);
-        }
     }
 
     let manifest = Value::Object(manifest);
     write(&join_path(&staging, "manifest.json"), &ps::json_pretty(&manifest))?;
-    if let Some(mut zt) = prepared_zt {
-        crate::ledger::init_prepared(&staging, &mut zt)?;
-    }
     util::print_line(&ps::json_compact(&manifest))?;
     Ok(0)
 }

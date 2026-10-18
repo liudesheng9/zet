@@ -231,6 +231,10 @@ fn bound_json(record: &Value, label: &str) -> Result<Value> {
 impl Prepared {
     /// All filesystem and MCP checks finish before opening a write transaction.
     fn read(out: &str, zt: &mut Zt) -> Result<Self> {
+        Self::read_mode(out, zt, true)
+    }
+
+    fn read_mode(out: &str, zt: &mut Zt, require_cards: bool) -> Result<Self> {
         let out = std::fs::canonicalize(out).context("prepared output directory does not exist")?;
         let manifest = util::read_json(out.join("manifest.json"))?;
         let contract = manifest["run_contract"].clone();
@@ -346,9 +350,25 @@ impl Prepared {
             }
             check_file(artifact, key)?;
         }
+        if let Some(setup) = contract["artifacts"].get("setup_calls") {
+            if std::fs::canonicalize(out.join("setup-calls.json"))?
+                != Path::new(field(setup, "path")?)
+            {
+                bail!("setup artifact locator mismatch");
+            }
+            check_file(setup, "setup")?;
+        }
         let observed = zt.archive_view()?;
         if observed["archive_identity"] != contract["archive_identity"] {
             bail!("archive identity mismatch; use the original archive or a new output directory");
+        }
+        if !require_cards {
+            let hash = canon::hash_value(&contract);
+            return Ok(Self {
+                out,
+                contract,
+                hash,
+            });
         }
         let mut addresses = vec![field(&contract, "citation_key")?.to_string()];
         addresses.extend(
@@ -568,6 +588,10 @@ fn dependency(tx: &Transaction, id: &str, needs: &str, condition: &str) -> Resul
 }
 
 fn init(p: &Prepared) -> Result<Value> {
+    initialize(p, true)
+}
+
+fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
     let path = p.out.join("ledger.sqlite3");
     // Existing ledgers are verified read-only: init is not an invocation/resume.
     if path.exists() {
@@ -575,6 +599,20 @@ fn init(p: &Prepared) -> Result<Value> {
         verify_binding(&conn, p)?;
         return Ok(json!({"schema_version":1,"run_id":meta(&conn,"run_id")?,"initialized":false}));
     }
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("create run identity: {e}"))?;
+    let run = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    // Publish the immutable plan before the transaction: every durable pending
+    // preparation has both its run identity and a recoverable plan locator.
+    let setup_plan = if prepared {
+        Value::Null
+    } else {
+        setup_calls(p)?;
+        accept_plan(
+            &p.out.join("prepare-plan.json"),
+            &json!({"schema_version":1,"kind":"prepare_setup","unit":"prepare/book@1","token":1,"preparation_hash":p.hash,"operation_prefix":format!("{run}/prepare-book/1/setup"),"setup":p.contract["artifacts"]["setup_calls"]}),
+        )?
+    };
     let mut conn = connect(&path, true)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Another initializer may have committed between the existence check and this lock.
@@ -601,9 +639,6 @@ fn init(p: &Prepared) -> Result<Value> {
         bail!("refusing a non-ledger database");
     }
     tx.execute_batch(SCHEMA)?;
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("create run identity: {e}"))?;
-    let run = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let target = target(&p.contract)?;
     for (k, v) in [
         ("schema_version", json!(1)),
@@ -632,8 +667,11 @@ fn init(p: &Prepared) -> Result<Value> {
         "book",
         &json!({"preparation_hash":p.hash}),
         None,
-        true,
+        prepared,
     )?;
+    if !prepared {
+        tx.execute("UPDATE units SET state='claimed',owner='prepare',claim_token=1,attempts=1,lease_until=?2,progress_json=?3 WHERE id=?1", params![prepare, now_seconds()+120, canon::canonical_json(&json!({"prepare_setup":{"plan":setup_plan}}))])?;
+    }
     let terms = if target["enabled"]
         .as_array()
         .unwrap()
@@ -720,15 +758,22 @@ fn init(p: &Prepared) -> Result<Value> {
             &json!({"sealed":matches!(layer.as_str(),Some("prepare"|"terms"|"digest"))}),
         )?;
     }
-    if let Some(terms) = terms {
+    if let Some(terms) = terms.filter(|_| prepared) {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
     }
-    tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,'preparation','manifest',?2,?3,?4)",params![prepare,p.out.join("manifest.json").to_string_lossy(),p.hash,canon::canonical_json(&json!({"group_count":groups.len(),"preparation_hash":p.hash}))])?;
+    if prepared {
+        tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,'preparation','manifest',?2,?3,?4)",params![prepare,p.out.join("manifest.json").to_string_lossy(),p.hash,canon::canonical_json(&json!({"group_count":groups.len(),"preparation_hash":p.hash}))])?;
+    }
     tx.execute(
-        "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(?1,1,?2,'prepared',?3)",
+        "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(?1,1,?2,?3,?4)",
         params![
             prepare,
             canon::utc_now_o(),
+            if prepared {
+                "prepared"
+            } else {
+                "prepare_started"
+            },
             canon::canonical_json(&json!({"groups":groups.len(),"target":target}))
         ],
     )?;
@@ -737,8 +782,10 @@ fn init(p: &Prepared) -> Result<Value> {
 }
 
 /// Preparation shares its existing MCP process; no nested transaction or client.
-pub fn init_prepared(out: &str, zt: &mut Zt) -> Result<Value> {
-    init(&Prepared::read(out, zt)?)
+pub fn prepare_setup(out: &str, zt: &mut Zt) -> Result<Value> {
+    let p = Prepared::read_mode(out, zt, false)?;
+    initialize(&p, false)?;
+    prepare_finish(&p, zt, 1, &p.out.join("prepare-plan.json"))
 }
 
 fn status(out: &Path, layer: &str) -> Result<Value> {
@@ -1665,6 +1712,30 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut faults = Vec::new();
+    let preparation = meta(conn, "preparation")?;
+    if preparation["artifacts"].get("setup_calls").is_some() {
+        let hash = meta(conn, "preparation_hash")?;
+        if let Err(e) = preparation_registration(
+            conn,
+            &preparation,
+            hash.as_str().context("invalid preparation hash")?,
+        ) {
+            faults.push(json!({"code":"preparation_registration_mismatch","unit":"prepare/book@1","cause":e.to_string()}));
+        }
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT result_json FROM units WHERE id='prepare/book@1' AND state='done'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(raw) = raw {
+            let result: Value = serde_json::from_str(&raw)?;
+            if let Err(e) = preparation_outputs(conn, &result) {
+                faults.push(json!({"code":"preparation_outputs_mismatch","unit":"prepare/book@1","cause":e.to_string()}));
+            }
+        }
+    }
     for (producer, raw) in producers {
         let result: Value = serde_json::from_str(&raw)?;
         let Some(emitted) = result["emitted"].as_array() else {
@@ -1890,9 +1961,13 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
         && p.out
             .starts_with(std::fs::canonicalize(std::env::temp_dir())?)
         && p.out.parent().and_then(Path::file_name).is_some_and(|n| {
-            ["ledger-group-finish-test-", "ledger-terms-test-"]
-                .iter()
-                .any(|prefix| n.to_string_lossy().starts_with(prefix))
+            [
+                "ledger-group-finish-test-",
+                "ledger-terms-test-",
+                "ledger-prepare-recovery-test-",
+            ]
+            .iter()
+            .any(|prefix| n.to_string_lossy().starts_with(prefix))
         })
     {
         bail!("injected completion fault: {point}");
@@ -1983,6 +2058,501 @@ fn verify_archive_receipts(
         .iter()
         .map(|r| field(&r["result"], "address").map(str::to_string))
         .collect()
+}
+
+/// Setup creates only the frozen Literature root and its exact Direct anchors.
+/// No address allocation, edit, alias, or caller-selected replacement is allowed.
+fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
+    let calls = bound_json(&p.contract["artifacts"]["setup_calls"], "setup")?;
+    let calls = calls.as_array().context("setup must be a call array")?;
+    let groups = p.contract["groups"].as_array().unwrap();
+    let key = field(&p.contract, "citation_key")?;
+    if calls.len() != groups.len() + 1 {
+        bail!("setup does not enumerate every prepared anchor");
+    }
+    for (i, call) in calls.iter().enumerate() {
+        let a = &call["arguments"];
+        let allowed: &[&str] = if i == 0 {
+            &["workspace", "bibtex", "body"]
+        } else {
+            &["at", "kind", "title", "body"]
+        };
+        if call.as_object().is_none_or(|v| v.len() != 2)
+            || a.as_object().is_none_or(|v| {
+                v.len() != allowed.len() || v.keys().any(|k| !allowed.contains(&k.as_str()))
+            })
+        {
+            bail!("invalid retained setup operation {i}");
+        }
+        if i == 0 {
+            if call["tool"] != "create_literature"
+                || a["workspace"] != "agent"
+                || canon::sha256_hex(field(a, "bibtex")?.as_bytes())
+                    != p.contract["options"]["bibtex_sha256"]
+            {
+                bail!("setup Literature metadata mismatch");
+            }
+        } else if call["tool"] != "create_successor"
+            || a["kind"] != "direct"
+            || a["at"]
+                != if i == 1 {
+                    key.to_string()
+                } else {
+                    format!("{key}/{}", i - 1)
+                }
+        {
+            bail!("setup anchor target mismatch at group {i}");
+        }
+        field(a, "body")?;
+        if i > 0 {
+            field(a, "title")?;
+        }
+    }
+    Ok(calls.clone())
+}
+
+fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let target = target(contract)?;
+    let enabled = |name: &str| {
+        target["enabled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == name)
+    };
+    let root = "prepare/book@1";
+    let terms = "terms/book@1";
+    let mut units = BTreeMap::from([(
+        root.to_string(),
+        (
+            json!({"preparation_hash":hash}),
+            Vec::<(String, String)>::new(),
+        ),
+    )]);
+    if enabled("terms") {
+        units.insert(
+            terms.into(),
+            (
+                json!({"preparation_hash":hash}),
+                vec![(root.into(), "success".into())],
+            ),
+        );
+    }
+    let groups = contract["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            let id = format!("digest/g{:03}@1", g["n"].as_u64().unwrap());
+            let mut needs = vec![(root.to_string(), "success".to_string())];
+            if enabled("terms") {
+                needs.push((terms.to_string(), "success".to_string()));
+            }
+            units.insert(id.clone(), (g.clone(), needs));
+            id
+        })
+        .collect::<Vec<_>>();
+    for layer in BOOK.iter().copied().filter(|l| enabled(l)) {
+        units.insert(
+            format!("{layer}/book@1"),
+            (
+                json!({"preparation_hash":hash}),
+                groups
+                    .iter()
+                    .map(|id| (id.clone(), "settled".into()))
+                    .collect(),
+            ),
+        );
+    }
+    if contract["variant"] == "math" {
+        for layer in MATH_BOOK.iter().copied().filter(|l| enabled(l)) {
+            units.insert(
+                format!("{layer}/book@1"),
+                (
+                    json!({"preparation_hash":hash}),
+                    vec![(root.into(), "success".into())],
+                ),
+            );
+        }
+    }
+    for (id, (inputs, needs)) in &units {
+        let row: Option<(String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT input_hash,inputs_json,created_by FROM units WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((stored, raw, by)) = row else {
+            bail!("preparation registration: missing unit {id}");
+        };
+        if stored != canon::hash_value(inputs)
+            || canon::parse_json(&raw)? != *inputs
+            || by.as_deref() != if id == root { None } else { Some(root) }
+        {
+            bail!("preparation registration: changed unit {id}");
+        }
+        let actual = conn
+            .prepare("SELECT needs_id,condition FROM deps WHERE unit_id=?1")?
+            .query_map([id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        if actual != needs.iter().cloned().collect() {
+            bail!("preparation registration: changed prerequisites for {id}");
+        }
+    }
+    let children = conn
+        .prepare("SELECT id FROM units WHERE created_by=?1")?
+        .query_map([root], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    if children
+        != units
+            .keys()
+            .filter(|id| id.as_str() != root)
+            .cloned()
+            .collect()
+    {
+        bail!("preparation registration: changed root enumeration");
+    }
+    Ok(())
+}
+
+fn preparation_outputs(conn: &Connection, result: &Value) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let contract = meta(conn, "preparation")?;
+    let run = meta(conn, "run_id")?;
+    let expected_addresses = std::iter::once(contract["citation_key"].clone())
+        .chain(
+            contract["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["anchor"].clone()),
+        )
+        .collect::<Vec<_>>();
+    let expected_receipts = (0..expected_addresses.len())
+        .map(|i| {
+            json!(format!(
+                "{}/prepare-book/1/setup/item-{i:06}",
+                run.as_str().unwrap()
+            ))
+        })
+        .collect::<Vec<_>>();
+    if result["schema_version"] != 1
+        || result["kind"] != "prepare_completion"
+        || result["unit"] != "prepare/book@1"
+        || result["preparation_hash"] != meta(conn, "preparation_hash")?
+        || result["root"] != expected_addresses[0]
+        || result["anchors"] != json!(&expected_addresses[1..])
+        || result["receipt_keys"] != json!(expected_receipts)
+        || result["card_fingerprints"]
+            .as_object()
+            .is_none_or(|v| v.len() != expected_addresses.len())
+    {
+        bail!("preparation output registration: invalid typed completion");
+    }
+    let mut expected = BTreeMap::new();
+    for name in ["plan", "completion"] {
+        expected.insert(
+            name.to_string(),
+            (
+                "file".to_string(),
+                field(&result[name], "path")?.to_string(),
+                field(&result[name], "sha256")?.to_string(),
+            ),
+        );
+    }
+    for at in &expected_addresses {
+        let at = at.as_str().unwrap();
+        expected.insert(
+            format!("card/{at}"),
+            (
+                "card".into(),
+                at.to_string(),
+                field(&result["card_fingerprints"], at)?.to_string(),
+            ),
+        );
+    }
+    let rows = conn.prepare("SELECT output_key,kind,locator,fingerprint,data_json FROM outputs WHERE unit_id='prepare/book@1'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut receipt_addresses = BTreeSet::new();
+    for (i, key) in expected_receipts.iter().enumerate() {
+        let key = key.as_str().unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.0 == format!("receipt/{key}"))
+            .context("preparation output registration: missing receipt")?;
+        let data = canon::parse_json(&row.4)?;
+        let address = field(&data, "address")?;
+        if data["address"] != expected_addresses[i]
+            || data["after_fingerprint"] != result["card_fingerprints"][address]
+        {
+            bail!("preparation output registration: changed receipt result");
+        }
+        receipt_addresses.insert(address.to_string());
+        expected.insert(
+            format!("receipt/{key}"),
+            (
+                "archive_receipt".into(),
+                key.to_string(),
+                canon::hash_value(&data),
+            ),
+        );
+    }
+    let actual = rows
+        .into_iter()
+        .map(|(k, t, p, h, _)| (k, (t, p, h)))
+        .collect::<BTreeMap<_, _>>();
+    if actual != expected || receipt_addresses.len() != expected_addresses.len() {
+        bail!("preparation output registration: missing or changed evidence");
+    }
+    Ok(())
+}
+
+/// Reconcile committed setup receipts before any unseen chunk is written.
+/// Stop at the first missing chunk during recovery; its simulated writes roll
+/// back. Complete readback uses these same ordinary 64-item/1-MiB bounds.
+fn setup_readback(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    complete: bool,
+) -> Result<Vec<Value>> {
+    let before = zt.archive_view()?;
+    let mut receipts = Vec::new();
+    while receipts.len() < calls.len() {
+        let start = receipts.len();
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        for (i, call) in calls.iter().enumerate().skip(start).take(64) {
+            let size: usize = ["title", "body", "bibtex"]
+                .iter()
+                .map(|k| call["arguments"][k].as_str().map(str::len).unwrap_or(0))
+                .sum();
+            if size > 1024 * 1024 {
+                bail!("setup operation exceeds 1048576 authored bytes");
+            }
+            if bytes + size > 1024 * 1024 {
+                break;
+            }
+            bytes += size;
+            items.push(json!({"op_key":format!("{prefix}/item-{i:06}"),"client_ref":i.to_string(),"tool":call["tool"],"arguments":call["arguments"]}));
+        }
+        let reply = zt.call("apply_batch", json!({"preview":true,"items":items}))?;
+        if reply["preview"] != true
+            || reply["complete"] != true
+            || reply["archive_revision"] != before["archive_revision"]
+        {
+            bail!("read_view_changed: setup receipt reconciliation");
+        }
+        let results = reply["results"]
+            .as_array()
+            .context("missing setup receipt readback")?;
+        if results.len() != items.len() {
+            bail!("incomplete setup receipt readback");
+        }
+        let mut missing = false;
+        for (offset, result) in results.iter().enumerate() {
+            let i = start + offset;
+            if result["op_key"] != format!("{prefix}/item-{i:06}")
+                || result["client_ref"] != i.to_string()
+                || !result["replayed"].is_boolean()
+            {
+                bail!("invalid setup receipt identity");
+            }
+            missing |= result["replayed"] != true;
+            receipts.push(result.clone());
+        }
+        if missing {
+            if complete {
+                bail!("missing retained setup receipt");
+            }
+            break;
+        }
+    }
+    if zt.archive_view()? != before {
+        bail!("read_view_changed: setup receipt reconciliation");
+    }
+    Ok(receipts)
+}
+
+fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<Value> {
+    let unit = "prepare/book@1";
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, progress, run, done) = finish_claim(p, unit, token)?;
+    preparation_registration(
+        &connect(&p.out.join("ledger.sqlite3"), false)?,
+        &p.contract,
+        &p.hash,
+    )?;
+    let record = &progress["prepare_setup"]["plan"];
+    if std::fs::canonicalize(path)? != Path::new(field(record, "path")?) {
+        bail!("preparation plan locator mismatch");
+    }
+    let plan = bound_json(record, "preparation plan")?;
+    let prefix = format!(
+        "{}/prepare-book/1/setup",
+        run.as_str().context("invalid run identity")?
+    );
+    if plan["schema_version"] != 1
+        || plan["kind"] != "prepare_setup"
+        || plan["unit"] != unit
+        || plan["token"] != token
+        || plan["preparation_hash"] != p.hash
+        || plan["operation_prefix"] != prefix
+        || plan["setup"] != p.contract["artifacts"]["setup_calls"]
+    {
+        bail!("preparation plan identity mismatch");
+    }
+    let calls = setup_calls(p)?;
+    // A mismatched BibTeX key must fail before creating even the root.
+    let root = crate::calls::preview_identified(zt, &calls[..1], &prefix, None)?;
+    if root["results"][0]["result"]["address"] != p.contract["citation_key"] {
+        bail!("setup BibTeX Citation key differs from prepared Citation key");
+    }
+    let reconciled = setup_readback(zt, &calls, &prefix, done)?;
+    bound_json(record, "preparation plan")?;
+    Prepared::read_mode(&p.out.to_string_lossy(), zt, false)?;
+    let receipts = if done {
+        reconciled
+    } else {
+        renew(p, unit, token)?;
+        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+    };
+    let key = field(&p.contract, "citation_key")?;
+    let addresses = std::iter::once(key.to_string())
+        .chain(
+            p.contract["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["anchor"].as_str().unwrap().to_string()),
+        )
+        .collect::<Vec<_>>();
+    if receipts.len() != addresses.len()
+        || receipts
+            .iter()
+            .zip(&addresses)
+            .any(|(r, a)| r["result"]["address"] != *a)
+    {
+        bail!("persisted setup addresses differ from prepared target");
+    }
+    Prepared::read(&p.out.to_string_lossy(), zt)?;
+    let read = zt.cards(&addresses, "text")?;
+    let mut fingerprints = serde_json::Map::new();
+    for (card, receipt) in read.cards.iter().zip(&receipts) {
+        let fp = crate::calls::authored_fingerprint(card);
+        if fp != field(&receipt["result"], "after_fingerprint")? {
+            bail!("prepared Card differs from its setup receipt");
+        }
+        fingerprints.insert(field(card, "address")?.to_string(), json!(fp));
+    }
+    if done {
+        let conn = writer(p)?;
+        let result: String =
+            conn.query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| {
+                r.get(0)
+            })?;
+        let mut result: Value = serde_json::from_str(&result)?;
+        preparation_outputs(&conn, &result)?;
+        check_file(&result["completion"], "preparation completion")?;
+        if result["plan"] != *record || result["card_fingerprints"] != json!(fingerprints) {
+            bail!("preparation completion differs from verified outputs");
+        }
+        result["reused"] = json!(true);
+        return Ok(result);
+    }
+    // The manifest may gain actual setup lines; the run contract and all inputs
+    // stay byte-bound. A crash here is recovered from archive receipts.
+    let mut manifest = util::read_json(p.out.join("manifest.json"))?;
+    manifest["created"] = json!(
+        addresses
+            .iter()
+            .enumerate()
+            .map(|(i, a)| format!("{i} ok {a}"))
+            .collect::<Vec<_>>()
+    );
+    publish(
+        &p.out.join("manifest.json"),
+        &serde_json::to_string_pretty(&manifest)?,
+    )?;
+    let receipt_keys = receipts
+        .iter()
+        .map(|r| r["op_key"].clone())
+        .collect::<Vec<_>>();
+    let mut result = json!({"schema_version":1,"kind":"prepare_completion","unit":unit,"token":token,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"preparation_hash":p.hash,"plan":record,"root":key,"anchors":&addresses[1..],"card_fingerprints":fingerprints,"receipt_keys":receipt_keys});
+    let completion = publish(
+        &p.out.join("prepare-completion.json"),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["completion"] = completion.clone();
+    bound_json(record, "preparation plan")?;
+    Prepared::read(&p.out.to_string_lossy(), zt)?;
+    let after = zt.archive_view()?;
+    if after["archive_identity"] != p.contract["archive_identity"]
+        || after["archive_revision"].as_u64() != Some(read.archive_revision)
+    {
+        bail!("read_view_changed: preparation completion");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    preparation_registration(&tx, &p.contract, &p.hash)?;
+    for (name, file) in [("plan", record), ("completion", &completion)] {
+        output(
+            &tx,
+            unit,
+            name,
+            "file",
+            field(file, "path")?,
+            field(file, "sha256")?,
+            file,
+        )?;
+    }
+    for (at, fp) in fingerprints {
+        output(
+            &tx,
+            unit,
+            &format!("card/{at}"),
+            "card",
+            &at,
+            fp.as_str().unwrap(),
+            &json!({"purpose":"preparation"}),
+        )?;
+    }
+    for receipt in receipts {
+        let key = field(&receipt, "op_key")?;
+        output(
+            &tx,
+            unit,
+            &format!("receipt/{key}"),
+            "archive_receipt",
+            key,
+            &canon::hash_value(&receipt["result"]),
+            &receipt["result"],
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    tx.execute(
+        "UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL WHERE id=?1",
+        params![unit, canon::canonical_json(&result), canon::utc_now_o()],
+    )?;
+    preparation_outputs(&tx, &result)?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "prepared",
+        &json!({"anchors":addresses.len()-1,"completion":completion}),
+    )?;
+    reconcile(&tx, now_seconds())?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
 }
 
 fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
@@ -3414,13 +3984,21 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "init" | "next" | "renew" | "done" | "fail"
     ) {
         let mut zt = Zt::start()?;
-        let p = Prepared::read(&a.str("Out"), &mut zt)?;
+        let preparing = matches!(command.as_str(), "done" | "renew" | "fail")
+            && a.str("Unit") == "prepare/book@1";
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, !preparing)?;
         if command == "init" {
             init(&p)?
         } else if command == "renew" {
             renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
         } else if command == "done" {
             let path = a.str("Outputs");
+            if preparing {
+                let result =
+                    prepare_finish(&p, &mut zt, a.str("Token").parse()?, Path::new(&path))?;
+                util::print_line(&serde_json::to_string(&result)?)?;
+                return Ok(0);
+            }
             let evidence = canon::read_json(&path).context("invalid completion evidence")?;
             let unit = a.str("Unit");
             let token = a.str("Token").parse::<i64>()?;
