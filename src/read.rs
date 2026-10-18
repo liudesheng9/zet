@@ -68,7 +68,7 @@ fn existing(conn: &Connection, at: &str) -> Result<bool> {
 
 /// Cheap authored-body/index facts for scoped clients, without model or hub
 /// projections and without fetching a whole tree to recover its summaries.
-fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
+pub(crate) fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
     let mut value = text_value(card)?;
     value["excerpt"] = json!(crate::ops::excerpt(
         value["body"].as_str().unwrap_or_default()

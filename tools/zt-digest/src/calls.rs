@@ -144,9 +144,9 @@ pub fn similarity(a: &str, b: &str) -> f64 {
 }
 
 /// The Topic gate's lock: the file opened with no sharing, for at most 120 seconds of waiting.
-struct Gate(#[allow(dead_code)] std::fs::File);
+pub(crate) struct Gate(#[allow(dead_code)] std::fs::File);
 
-fn lock_gate(path: &str) -> Result<Gate> {
+pub(crate) fn lock_gate(path: &str) -> Result<Gate> {
     let full = std::path::absolute(path)?;
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
@@ -330,6 +330,53 @@ pub(crate) fn invoke_identified(
     Ok(execute_identified(zt, calls, prefix, allow, false)?.0)
 }
 
+/// Validate a complete accepted sequence against real archive validators. The
+/// server simulates normal write chunks, then rolls back before returning.
+pub(crate) fn preview_identified(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+) -> Result<Value> {
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true)?;
+    let draft = draft.context("incomplete identified preview: no draft")?;
+    if draft["preview"] != true
+        || draft["applied"] != false
+        || draft["complete"] != true
+        || !draft["archive_revision"].is_u64()
+    {
+        bail!("incomplete identified preview");
+    }
+    let mut expected = BTreeMap::new();
+    for receipt in &receipts {
+        expected.insert(
+            receipt["result"]["address"]
+                .as_str()
+                .context("incomplete preview address")?,
+            receipt["result"]["after_fingerprint"]
+                .as_str()
+                .context("incomplete preview fingerprint")?,
+        );
+    }
+    let cards = draft["cards"]
+        .as_array()
+        .context("incomplete preview Cards")?;
+    if cards.len() != expected.len() {
+        bail!("incomplete preview Card count");
+    }
+    for card in cards {
+        let at = card["address"]
+            .as_str()
+            .context("incomplete preview Card address")?;
+        if card["workspace"] != "agent"
+            || expected.remove(at) != Some(authored_fingerprint(card).as_str())
+        {
+            bail!("incomplete preview authored output at {at}");
+        }
+    }
+    Ok(draft)
+}
+
 fn execute_identified(
     zt: &mut Zt,
     calls: &[Value],
@@ -398,21 +445,8 @@ fn execute_identified(
                 .map(str::len)
                 .unwrap_or(0)
     }
-    if preview
-        && (calls.is_empty()
-            || calls.len() > 64
-            || calls
-                .iter()
-                .map(|call| authored_bytes(&call["arguments"]))
-                .sum::<usize>()
-                > 1024 * 1024
-            || calls.iter().any(|call| {
-                call["tool"] != "edit_card" || !call["arguments"]["owned_paragraph"].is_object()
-            }))
-    {
-        bail!(
-            "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
-        );
+    if preview && (calls.is_empty() || calls.len() > 1024) {
+        bail!("identified preview requires 1 through 1024 operations");
     }
     // Reject unsupported operations, forward dependencies and oversized single
     // items before committing any chunk. No placeholder makes a target exist.
@@ -480,7 +514,11 @@ fn execute_identified(
         let start = done.len();
         let mut items = Vec::new();
         let mut bytes = 0;
-        for index in start..calls.len().min(start + 64) {
+        for index in start..if preview {
+            calls.len()
+        } else {
+            calls.len().min(start + 64)
+        } {
             let mut args = arguments(&calls[index]["arguments"], &resolved, index, start)?;
             if calls[index]["tool"] == "edit_card"
                 && args.get("base_fingerprint").is_none()
@@ -494,7 +532,7 @@ fn execute_identified(
                 args["base_receipt"] = json!(format!("{prefix}/item-{n:06}"));
             }
             let size = authored_bytes(&args);
-            if bytes + size > 1024 * 1024 {
+            if !preview && bytes + size > 1024 * 1024 {
                 if items.is_empty() {
                     bail!("identified call {index}: resolved input exceeds 1048576 authored bytes");
                 }
@@ -504,13 +542,11 @@ fn execute_identified(
             items.push(json!({"op_key":format!("{prefix}/item-{index:06}"),"client_ref":index.to_string(),"tool":calls[index]["tool"],"arguments":args}));
         }
         let count = items.len();
-        if preview && count != calls.len() {
-            bail!("CheckOnly resolved draft exceeds one 1048576-byte batch");
-        }
-        let mut request = json!({"items":items});
-        if preview {
-            request["preview"] = json!(true);
-        }
+        let request = if preview {
+            json!({"preview":true,"preview_items":items})
+        } else {
+            json!({"items":items})
+        };
         let reply=zt.call("apply_batch",request).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
         let results = reply["results"]
             .as_array()
@@ -556,6 +592,30 @@ fn precheck_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
 ) -> Result<Vec<String>> {
+    let bytes: usize = calls
+        .iter()
+        .map(|c| {
+            ["title", "body", "text", "bibtex", "base"]
+                .iter()
+                .map(|k| c["arguments"][k].as_str().map(str::len).unwrap_or(0))
+                .sum::<usize>()
+                + c["arguments"]["owned_paragraph"]["text"]
+                    .as_str()
+                    .map(str::len)
+                    .unwrap_or(0)
+        })
+        .sum();
+    if calls.is_empty()
+        || calls.len() > 64
+        || bytes > 1024 * 1024
+        || calls
+            .iter()
+            .any(|c| c["tool"] != "edit_card" || !c["arguments"]["owned_paragraph"].is_object())
+    {
+        bail!(
+            "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
+        );
+    }
     let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true)?;
     let draft = draft.context("incomplete Link draft: no preview")?;
     if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {

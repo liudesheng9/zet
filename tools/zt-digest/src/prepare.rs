@@ -143,11 +143,52 @@ struct Unit {
 /// Units at `#` and `##` headings from -StartHeading up to -EndHeading; a unit under a heading of
 /// `skip` is left out up to the next other heading.
 fn split_units(kept: &[String], start: &str, end: &str, skip: &[String]) -> Vec<Unit> {
+    // ATX headings do not require a blank line before/after them. Separate
+    // them before selecting the range, while leaving fenced examples intact.
+    let mut blocks = Vec::new();
+    let mut fence: Option<(u8, usize)> = None;
+    for block in kept {
+        let mut prose = Vec::new();
+        for line in block.split('\n') {
+            let trim = line.trim_start_matches(' ');
+            let indentation = line.len() - trim.len();
+            let marker = trim
+                .as_bytes()
+                .first()
+                .copied()
+                .filter(|b| matches!(b, b'`' | b'~'));
+            let run = marker
+                .map(|m| trim.bytes().take_while(|b| *b == m).count())
+                .unwrap_or(0);
+            let was_fenced = fence.is_some();
+            if indentation <= 3 && run >= 3 {
+                if let Some((kind, size)) = fence {
+                    if marker == Some(kind) && run >= size && trim[run..].trim().is_empty() {
+                        fence = None;
+                    }
+                } else {
+                    fence = Some((marker.unwrap(), run));
+                }
+            }
+            if !was_fenced && fence.is_none() && HEADING.is_match(line) {
+                if !prose.is_empty() {
+                    blocks.push(prose.join("\n"));
+                    prose.clear();
+                }
+                blocks.push(line.to_string());
+            } else {
+                prose.push(line);
+            }
+        }
+        if !prose.is_empty() {
+            blocks.push(prose.join("\n"));
+        }
+    }
     let mut units: Vec<Unit> = Vec::new();
     let mut chapter = String::new();
     let mut current: Option<usize> = None;
     let mut inside = false;
-    for block in kept {
+    for block in &blocks {
         if !block.contains('\n')
             && let Some(caps) = HEADING.captures(block)
         {
@@ -169,7 +210,12 @@ fn split_units(kept: &[String], start: &str, end: &str, skip: &[String]) -> Vec<
             if level == 1 {
                 chapter = heading.clone();
             }
-            units.push(Unit { chapter: chapter.clone(), heading, headings: Vec::new(), text: format!("{block}{NL}{NL}") });
+            units.push(Unit {
+                chapter: chapter.clone(),
+                heading,
+                headings: Vec::new(),
+                text: format!("{block}{NL}{NL}"),
+            });
             current = Some(units.len() - 1);
             continue;
         }
@@ -929,6 +975,25 @@ mod tests {
         figures.insert("a.jpg", Figure { line: "![图 1](artifact:aa)".into(), ..Figure::default() });
         let kept = chinese_blocks("![](x/A.jpg)\nFigure 1\n\n![](x/a.jpg)\n图 1\n\n![](x/b.jpg)\n\n正文。", &figures);
         assert_eq!(kept, vec!["![图 1](artifact:aa)\nFigure 1", "图 1", "正文。"]);
+    }
+
+    #[test]
+    fn headings_without_blank_lines_still_bound_the_selected_range() {
+        let units = units_of("# 导论\n正文。\n## 小节\n第二段。\n# 参考\n未选择。");
+        assert_eq!(
+            units.iter().map(|u| u.heading.as_str()).collect::<Vec<_>>(),
+            vec!["导论", "小节"]
+        );
+        assert!(units[0].text.contains("正文。"));
+        assert!(units[1].text.contains("第二段。"));
+        assert!(units.iter().all(|u| !u.text.contains("未选择")));
+        let code = units_of(
+            "# 导论\n\n```markdown\n# 参考\n代码示例。\n```\n\n仍是正文。\n\n# 参考\n未选择。",
+        );
+        assert_eq!(code.len(), 1);
+        assert!(code[0].text.contains("# 参考\n代码示例。"));
+        assert!(code[0].text.contains("仍是正文。"));
+        assert!(!code[0].text.contains("未选择"));
     }
 
     #[test]

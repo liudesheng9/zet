@@ -847,6 +847,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
             coverage_faults.push(json!({"code":"prepared_group_missing_or_changed","unit":id}));
         }
     }
+    coverage_faults.extend(emission_faults(&tx)?);
     let settled = sealed && counts["open"] == 0;
     let complete = settled
         && !excluded
@@ -1263,6 +1264,53 @@ fn start_view(job: &Value, path: &Path, reused: bool, lease_until: i64) -> Value
     json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"draft":job["draft"],"reused":reused,"lease_until":lease_until})
 }
 
+fn read_group_job(
+    p: &Prepared,
+    unit: &str,
+    token: i64,
+    input_hash: &str,
+    progress: &Value,
+    run: &Value,
+) -> Result<(PathBuf, Value)> {
+    if progress["group_start"]["token"] != token {
+        bail!("missing current group-start binding");
+    }
+    let accepted = &progress["group_start"]["job"];
+    check_file(accepted, "group job artifact")?;
+    let path = Path::new(field(accepted, "path")?);
+    let job = util::read_json(path)?;
+    if job["schema_version"] != 1
+        || job["mode"] != "draft_only"
+        || job["expected_jobs"] != 1
+        || job["jobs"].as_array().is_none_or(|jobs| jobs.len() != 1)
+        || job["jobs"][0]["permissions"]["archive_write"] != false
+    {
+        bail!("incompatible group job contract");
+    }
+    if job["unit"] != unit
+        || job["token"] != token
+        || job["run_id"] != *run
+        || job["unit_input_hash"] != input_hash
+        || job["input_hash"] != canon::hash_value(&job["inputs"])
+        || job["input_hash"] != progress["group_start"]["input_hash"]
+    {
+        bail!("group job binding mismatch");
+    }
+    for record in job["artifacts"]
+        .as_object()
+        .context("missing group job artifacts")?
+        .values()
+        .filter(|r| !r.is_null())
+    {
+        check_file(record, "group job artifact")?;
+    }
+    let path = std::fs::canonicalize(path)?;
+    if !path.starts_with(&p.out) {
+        bail!("group job path escaped prepared output directory");
+    }
+    Ok((path, job))
+}
+
 fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
     let group = p.contract["groups"]
         .as_array()
@@ -1293,39 +1341,11 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         bail!("group input hash mismatch");
     }
     if progress["group_start"]["token"] == token {
-        let accepted = &progress["group_start"]["job"];
-        check_file(accepted, "group job artifact")?;
-        let path = Path::new(field(accepted, "path")?);
-        let job = util::read_json(path)?;
-        if job["schema_version"] != 1
-            || job["mode"] != "draft_only"
-            || job["expected_jobs"] != 1
-            || job["jobs"].as_array().is_none_or(|jobs| jobs.len() != 1)
-            || job["jobs"][0]["permissions"]["archive_write"] != false
-        {
-            bail!("incompatible group job contract");
-        }
-        if job["unit"] != unit
-            || job["token"] != token
-            || job["run_id"] != run
-            || job["unit_input_hash"] != claimed.input_hash
-            || job["input_hash"] != canon::hash_value(&job["inputs"])
-            || job["input_hash"] != progress["group_start"]["input_hash"]
-        {
-            bail!("group job binding mismatch");
-        }
-        for record in job["artifacts"]
-            .as_object()
-            .context("missing group job artifacts")?
-            .values()
-            .filter(|r| !r.is_null())
-        {
-            check_file(record, "group job artifact")?;
-        }
+        let (path, job) = read_group_job(p, &unit, token, &claimed.input_hash, &progress, &run)?;
         let renewed = renew(p, &unit, token)?;
         return Ok(start_view(
             &job,
-            path,
+            &path,
             true,
             renewed["lease_until"].as_i64().unwrap(),
         ));
@@ -1409,8 +1429,13 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         source.push_str("\n\n");
     }
     let draft = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":"cards","calls":[]});
+    let self_check_command = format!(
+        "zt-digest group-finish -Out \"{}\" -Group {number} -Token {token} -Draft \"{}\" -CheckOnly",
+        p.out.display(),
+        draft_path.display()
+    );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
         snapshot_path.display(),
@@ -1496,6 +1521,961 @@ pub fn group_start_cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, Value, bool)> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let row:Option<(String,i64,String,String,i64,String)>=tx.query_row("SELECT state,claim_token,coalesce(owner,''),input_hash,attempts,progress_json FROM units WHERE id=?1",[unit],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+    let (state, current, owner, input_hash, attempts, progress) =
+        row.with_context(|| format!("stale_claim: unknown unit {unit}"))?;
+    if current != token || !matches!(state.as_str(), "claimed" | "done") {
+        bail!("stale_claim: {unit} has no current completion for token {token}");
+    }
+    if state == "claimed" {
+        claim(&tx, unit, token)?;
+    }
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok((
+        Claim {
+            owner,
+            input_hash,
+            attempts,
+        },
+        serde_json::from_str(&progress)?,
+        run,
+        state == "done",
+    ))
+}
+
+fn completion_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    let mut keys = std::collections::BTreeSet::from(
+        ["accepted", "owned", "source", "self_check", "completion"].map(str::to_string),
+    );
+    for at in result["owned"]
+        .as_array()
+        .context("missing completion owned set")?
+    {
+        keys.insert(format!(
+            "card/{}",
+            at.as_str().context("invalid owned output")?
+        ));
+    }
+    for key in result["receipt_keys"]
+        .as_array()
+        .context("missing completion receipt enumeration")?
+    {
+        keys.insert(format!(
+            "receipt/{}",
+            key.as_str().context("invalid receipt key")?
+        ));
+    }
+    Ok(keys)
+}
+
+/// Read-only ledger reconciliation. File/Card checks remain a typed verifier's job.
+fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
+    let producers = conn
+        .prepare(
+            "SELECT id,result_json FROM units WHERE layer='digest' AND state='done' ORDER BY id",
+        )?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut faults = Vec::new();
+    for (producer, raw) in producers {
+        let result: Value = serde_json::from_str(&raw)?;
+        let Some(emitted) = result["emitted"].as_array() else {
+            faults.push(json!({"code":"producer_enumeration_missing","unit":producer}));
+            continue;
+        };
+        let mut expected = std::collections::BTreeSet::new();
+        for child in emitted {
+            let id = field(child, "id")?;
+            expected.insert(id.to_string());
+            let row: Option<(String, Option<String>, String)> = conn
+                .query_row(
+                    "SELECT input_hash,created_by,inputs_json FROM units WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let matches = if let Some((hash, by, inputs)) = &row {
+                child["input_hash"] == *hash
+                    && by.as_deref() == Some(&producer)
+                    && canon::hash_value(&serde_json::from_str(inputs)?) == *hash
+            } else {
+                false
+            };
+            if !matches {
+                faults.push(
+                    json!({"code":"emitted_unit_missing_or_changed","unit":id,"producer":producer}),
+                );
+            }
+            for edge in child["dependencies"]
+                .as_array()
+                .context("incomplete producer dependency enumeration")?
+            {
+                let condition: Option<String> = conn
+                    .query_row(
+                        "SELECT condition FROM deps WHERE unit_id=?1 AND needs_id=?2",
+                        params![field(edge, "unit")?, field(edge, "needs")?],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if condition.as_deref() != edge["condition"].as_str() {
+                    faults.push(json!({"code":"emitted_dependency_missing_or_changed","producer":producer,"unit":edge["unit"],"needs":edge["needs"]}));
+                }
+            }
+        }
+        let actual = conn
+            .prepare("SELECT id FROM units WHERE created_by=?1 ORDER BY id")?
+            .query_map([&producer], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+        if actual != expected {
+            faults.push(json!({"code":"producer_children_mismatch","unit":producer,"expected":expected,"actual":actual}));
+        }
+        let expected_outputs = completion_output_keys(&result)?;
+        let actual_outputs = conn
+            .prepare("SELECT output_key FROM outputs WHERE unit_id=?1")?
+            .query_map([&producer], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+        if expected_outputs != actual_outputs {
+            faults.push(json!({"code":"producer_outputs_mismatch","unit":producer,"missing":expected_outputs.difference(&actual_outputs).collect::<Vec<_>>(),"unexpected":actual_outputs.difference(&expected_outputs).collect::<Vec<_>>()}));
+        }
+    }
+    Ok(faults)
+}
+
+fn group_quality(cards: &[Value], p: &Prepared) -> Result<Value> {
+    use std::collections::{HashMap, HashSet};
+    let book = field(&p.contract, "citation_key")?;
+    let literature = HashSet::from([book.to_string()]);
+    let anchors = HashMap::from([(
+        book.to_string(),
+        p.contract["groups"].as_array().unwrap().len(),
+    )]);
+    let mut entries = Vec::new();
+    for card in cards {
+        if !card["links"].is_array() || !card["kinds"].is_object() {
+            bail!("incomplete group checker Link facts");
+        }
+        let mut entry = card.clone();
+        entry["category"] = json!(zt_check::graph::category(card, &literature, &anchors));
+        entry["parent"] = card["parent_address"].clone();
+        entry["kinds"] = json!(
+            card["kinds"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        entry["book"] = json!(book);
+        entries.push(entry);
+    }
+    let mut file = tempfile::NamedTempFile::new()?;
+    serde_json::to_writer(&mut file, &entries)?;
+    std::io::Write::flush(&mut file)?;
+    let check = crate::check::Check {
+        json: file.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let lines = zt_check::check::run_lines(&check.args(), None)
+        .context("group draft checker did not run")?;
+    checked_lines(lines, true)
+}
+
+fn checked_lines(lines: Vec<String>, advisories_counted: bool) -> Result<Value> {
+    let count = lines
+        .last()
+        .and_then(|l| l.strip_prefix("faults: "))
+        .and_then(|n| n.parse::<usize>().ok())
+        .context("group checker did not report completeness")?;
+    let fault_line = regex::Regex::new(r"^\S+ [A-Z][0-9]+ ")?;
+    let observations = &lines[..lines.len() - 1];
+    if observations.iter().any(|line| !fault_line.is_match(line)) {
+        bail!("incomplete group checker fault format");
+    }
+    let (advisories, faults): (Vec<_>, Vec<_>) = observations
+        .iter()
+        .partition(|line| line.contains("(advisory)"));
+    if count
+        != if advisories_counted {
+            observations.len()
+        } else {
+            faults.len()
+        }
+    {
+        bail!("incomplete group checker fault count");
+    }
+    if let Some(fault) = faults.iter().find(|line| {
+        line.split_whitespace()
+            .nth(1)
+            .is_some_and(|r| matches!(r, "R18" | "R19"))
+    }) {
+        bail!("group draft corruption: {fault}");
+    }
+    Ok(
+        json!({"ran":true,"count":faults.len(),"reported_count":count,"faults":faults,"advisories":advisories,"lines":lines}),
+    )
+}
+
+fn source_is_empty(group: &Value) -> Result<Value> {
+    let heading = regex::Regex::new(r"^#{1,6}(?:\s|$)")?;
+    let mut sections = Vec::new();
+    for section in group["sections"]
+        .as_array()
+        .context("missing source sections")?
+    {
+        check_file(section, "group source")?;
+        let source = util::read_text(field(section, "path")?)?;
+        if let Some((index, line)) = source
+            .lines()
+            .enumerate()
+            .find(|(_, line)| !line.trim().is_empty() && !heading.is_match(line.trim()))
+        {
+            bail!(
+                "no_cards source enumeration contains authored body text at {}:{}: {}",
+                field(section, "path")?,
+                index + 1,
+                line.chars().take(120).collect::<String>()
+            );
+        }
+        sections.push(section.clone());
+    }
+    if sections.is_empty() {
+        bail!("no_cards has no source enumeration");
+    }
+    Ok(json!({"reason":"source_has_no_body","sections":sections,"body_lines":0}))
+}
+
+fn verify_group_consumers(p: &Prepared, cards: &[Value], check: &Value) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+    let declared = target(&p.contract)?;
+    let models = declared["enabled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "models");
+    let book = field(&p.contract, "citation_key")?.to_string();
+    let literature = HashSet::from([book.clone()]);
+    let anchors = HashMap::from([(book, p.contract["groups"].as_array().unwrap().len())]);
+    for fault in check["faults"]
+        .as_array()
+        .context("missing checked group faults")?
+    {
+        let at = fault
+            .as_str()
+            .and_then(|f| f.split_whitespace().next())
+            .context("incomplete group fault address")?;
+        let card = cards
+            .iter()
+            .find(|c| c["address"] == at)
+            .context("group fault has no owned Card")?;
+        if card["type"] == "model" {
+            if !models {
+                bail!("group quality fault has no enabled Model consumer: {fault}");
+            }
+        } else if !["idea", "anchor", "event", "finding"]
+            .contains(&zt_check::graph::category(card, &literature, &anchors).as_str())
+        {
+            bail!("group quality fault has no writable Card consumer: {fault}");
+        }
+    }
+    Ok(())
+}
+
+fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
+    if std::env::var("ZT_LEDGER_COMPLETE_FAULT").ok().as_deref() == Some(point)
+        && p.out
+            .starts_with(std::fs::canonicalize(std::env::temp_dir())?)
+        && p.out
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n.to_string_lossy().starts_with("ledger-group-finish-test-"))
+    {
+        bail!("injected completion fault: {point}");
+    }
+    Ok(())
+}
+
+fn accept_group_plan(path: &Path, plan: &Value) -> Result<Value> {
+    if path.exists() {
+        let old = canon::read_json(&path.to_string_lossy())?;
+        if old != *plan {
+            bail!(
+                "accepted_plan_changed: keep the immutable accepted group calls; a correction needs a new plan revision"
+            );
+        }
+    } else {
+        let mut temp = tempfile::NamedTempFile::new_in(
+            path.parent().context("accepted plan has no directory")?,
+        )?;
+        std::io::Write::write_all(&mut temp, serde_json::to_string_pretty(plan)?.as_bytes())?;
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(path).map_err(|e| e.error)?;
+    }
+    let record = json!({"path":std::fs::canonicalize(path)?.to_string_lossy(),"sha256":canon::sha256_hex(&std::fs::read(path)?)});
+    check_file(&record, "accepted group plan")?;
+    Ok(record)
+}
+
+fn output(
+    tx: &Transaction,
+    unit: &str,
+    key: &str,
+    kind: &str,
+    locator: &str,
+    fingerprint: &str,
+    data: &Value,
+) -> Result<()> {
+    tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,?2,?3,?4,?5,?6)",params![unit,key,kind,locator,fingerprint,canon::canonical_json(data)])?;
+    Ok(())
+}
+
+fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |r| r.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    if emission_faults(&tx)?.iter().any(|fault| {
+        fault["code"] != "producer_outputs_mismatch"
+            && (fault["producer"] == unit || fault["unit"] == unit)
+    }) {
+        bail!(
+            "incomplete group completion: registered child contracts differ from accepted enumeration"
+        );
+    }
+    let rows=tx.prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?.query_map([unit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let children = tx
+        .prepare("SELECT id FROM units WHERE created_by=?1 ORDER BY id")?
+        .query_map([unit], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut expected = result["children"]
+        .as_array()
+        .context("incomplete group completion children")?
+        .iter()
+        .map(|c| c.as_str().context("invalid child id").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    expected.sort();
+    if children != expected {
+        bail!("incomplete group completion: registered children differ from accepted enumeration");
+    }
+    if rows
+        .iter()
+        .map(|(key, _, _, _)| key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        != completion_output_keys(&result)?
+    {
+        bail!("incomplete group completion: required output registration is missing or changed");
+    }
+    tx.commit()?;
+    drop(conn);
+    check_file(&result["draft"], "group completion evidence")?;
+    let mut cards = std::collections::BTreeMap::new();
+    for (_, kind, locator, fingerprint) in rows {
+        match kind.as_str() {
+            "file" => check_file(
+                &json!({"path":locator,"sha256":fingerprint}),
+                "group completion evidence",
+            )?,
+            "card" => {
+                if result["card_fingerprints"][&locator] != fingerprint {
+                    bail!("incomplete group completion: Card fingerprint registration changed");
+                }
+                cards.insert(locator, fingerprint);
+            }
+            "archive_receipt" => {}
+            _ => bail!("unknown group completion evidence kind"),
+        }
+    }
+    if cards.is_empty() {
+        bail!("incomplete group completion Card outputs");
+    }
+    let read = zt.cards(&cards.keys().cloned().collect::<Vec<_>>(), "text")?;
+    for card in &read.cards {
+        if card["workspace"] != "agent"
+            || cards.get(field(card, "address")?) != Some(&crate::calls::authored_fingerprint(card))
+        {
+            bail!("completed group output changed: {}", card["address"]);
+        }
+    }
+    if zt.archive_view()?["archive_revision"].as_u64() != Some(read.archive_revision) {
+        bail!("read_view_changed: group completion verification");
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn group_finish(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    token: i64,
+    draft_path: &str,
+    check_only: bool,
+) -> Result<Value> {
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+    let unit = format!("digest/g{number:03}@1");
+    finish_claim(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let (claimed, progress, run, done) = finish_claim(p, &unit, token)?;
+    let group = p.contract["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["n"].as_u64() == Some(number))
+        .context("prepared group does not exist")?;
+    let (_, job) = read_group_job(p, &unit, token, &claimed.input_hash, &progress, &run)?;
+    if claimed.input_hash != canon::hash_value(group) {
+        bail!("group input hash mismatch");
+    }
+    let path = std::fs::canonicalize(draft_path).context("missing group draft JSON")?;
+    if path != std::fs::canonicalize(field(&job, "draft")?)? || !path.starts_with(&p.out) {
+        bail!("group draft binding path mismatch");
+    }
+    if std::fs::metadata(&path)?.len() > 16 * 1024 * 1024 {
+        bail!("group draft exceeds 16 MiB encoded input");
+    }
+    let draft = canon::read_json(&path.to_string_lossy())?;
+    if draft["schema_version"] != 1
+        || draft["unit"] != unit
+        || draft["token"] != token
+        || draft["input_hash"] != job["input_hash"]
+    {
+        bail!("group draft binding mismatch: schema, unit, token or input hash");
+    }
+    if draft
+        .as_object()
+        .context("group draft must be an object")?
+        .keys()
+        .any(|k| {
+            ![
+                "schema_version",
+                "unit",
+                "token",
+                "input_hash",
+                "disposition",
+                "calls",
+            ]
+            .contains(&k.as_str())
+        })
+    {
+        bail!("unknown group draft field");
+    }
+    let disposition = field(&draft, "disposition")?;
+    if !matches!(disposition, "cards" | "no_cards") {
+        bail!("group draft disposition must be cards or no_cards");
+    }
+    let mut calls = draft["calls"]
+        .as_array()
+        .context("group draft calls must be an array")?
+        .clone();
+    let anchor = field(group, "anchor")?;
+    let mut source_notes = BTreeMap::new();
+    for (i, call) in calls.iter_mut().enumerate() {
+        if call.as_object().is_none_or(|v| {
+            v.keys()
+                .any(|k| !["tool", "arguments"].contains(&k.as_str()))
+        }) {
+            bail!("group call {i} must contain only tool and arguments");
+        }
+        let tool = call["tool"].as_str().unwrap_or_default();
+        let args = call["arguments"]
+            .as_object()
+            .context("group call arguments must be an object")?;
+        let at = args.get("at").and_then(Value::as_str).unwrap_or_default();
+        if tool == "create_literature" {
+            bail!("group call cannot create another Literature root");
+        }
+        if tool == "edit_card" {
+            let earlier = at
+                .strip_prefix("@@")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n < i);
+            if at != anchor && !earlier {
+                bail!("group edit {i} is outside the owned anchor and earlier accepted outputs");
+            }
+            if args.contains_key("owned_paragraph") {
+                bail!(
+                    "group drafts use content edits; receipt-owned Link paragraphs have their own checker"
+                );
+            }
+        }
+        if tool == "create_successor"
+            && at == anchor
+            && args.get("kind").and_then(Value::as_str) != Some("side")
+        {
+            bail!(
+                "create a Side successor beneath the group anchor to preserve direct group positions"
+            );
+        }
+        if let Some(src) = call["arguments"].as_object_mut().unwrap().remove("src") {
+            let src = src.as_str().context("group source note must be text")?;
+            if src.contains(['\n', '\r', '\t']) {
+                bail!("group source note must be one line");
+            }
+            source_notes.insert(i.to_string(), src.to_string());
+        }
+    }
+    let no_cards = if disposition == "no_cards" {
+        if !calls.is_empty() {
+            bail!("no_cards requires no proposed writes");
+        }
+        source_is_empty(group)?
+    } else {
+        Value::Null
+    };
+    if disposition == "cards" && calls.is_empty() {
+        bail!(
+            "group coverage requires substantive owned Cards; an empty answer is not a completion"
+        );
+    }
+    let plan = json!({"schema_version":1,"run_id":run,"unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"disposition":disposition,"calls":calls,"source_notes":source_notes,"no_cards":no_cards});
+    let accepted_path = p.out.join(format!("accepted-g{number:03}.json"));
+    if accepted_path.exists() && canon::read_json(&accepted_path.to_string_lossy())? != plan {
+        bail!("accepted_plan_changed: group calls differ from the immutable accepted plan");
+    }
+    if done {
+        let mut result = verify_done_group(p, zt, &unit, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let prefix = format!(
+        "{}/digest-g{number:03}/1/apply",
+        run.as_str().context("missing run id")?
+    );
+    let _topic_guard = if calls.iter().any(|c| c["tool"] == "create_topic") {
+        Some(crate::calls::lock_gate(
+            &p.out.join("topic-gate.lock").to_string_lossy(),
+        )?)
+    } else {
+        None
+    };
+    let preview = if calls.is_empty() {
+        let read = zt.cards(&[anchor.to_string()], "text")?;
+        json!({"results":[],"cards":read.cards,"archive_revision":read.archive_revision})
+    } else {
+        crate::calls::preview_identified(zt, &calls, &prefix, None)?
+    };
+    let cards = preview["cards"]
+        .as_array()
+        .context("incomplete group preview Cards")?;
+    for (i, call) in calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c["tool"] == "create_successor")
+    {
+        let at = call["arguments"]["at"].as_str().unwrap_or_default();
+        let at = if let Some(n) = at.strip_prefix("@@").and_then(|n| n.parse::<usize>().ok()) {
+            field(&preview["results"][n]["result"], "address")?
+        } else {
+            at
+        };
+        if at == anchor && call["arguments"]["kind"] != "side" {
+            bail!(
+                "create a Side successor beneath the group anchor, including references to its earlier edit"
+            );
+        }
+        let address = field(&preview["results"][i]["result"], "address")?;
+        if address.starts_with(&format!("{}/", field(&p.contract, "citation_key")?))
+            && !address.starts_with(&format!("{anchor}|"))
+        {
+            bail!(
+                "new group Cards must use the anchor's Side branch; direct Literature anchor locations are reserved"
+            );
+        }
+    }
+    // Replayed Topic roots do not compete with themselves. New roots use the
+    // same title normalization and Dice threshold as the existing helper gate.
+    if _topic_guard.is_some() {
+        let trees = crate::snapshot::read_title_trees(zt)?;
+        let mut titles = trees
+            .iter()
+            .filter(|t| t["workspace"] == "agent" && t["kind"] == "topic")
+            .flat_map(|t| {
+                t["cards"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c["kind"] == "topic")
+            })
+            .map(|c| {
+                (
+                    c["address"].as_str().unwrap_or_default().to_string(),
+                    crate::calls::title_key(c["title"].as_str().unwrap_or_default()),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (i, call) in calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c["tool"] == "create_topic")
+        {
+            let address = field(&preview["results"][i]["result"], "address")?;
+            let key =
+                crate::calls::title_key(call["arguments"]["title"].as_str().unwrap_or_default());
+            if titles.iter().any(|(at, other)| {
+                at != address && (other == &key || crate::calls::similarity(other, &key) >= 0.8)
+            }) {
+                bail!("Topic gate refuses duplicate/similar Topic title at call {i}");
+            }
+            titles.push((address.to_string(), key));
+        }
+    }
+    let literature = HashSet::from([field(&p.contract, "citation_key")?.to_string()]);
+    let anchors = HashMap::from([(
+        field(&p.contract, "citation_key")?.to_string(),
+        p.contract["groups"].as_array().unwrap().len(),
+    )]);
+    let owned = cards
+        .iter()
+        .map(|c| field(c, "address").map(str::to_string))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let substantive = cards
+        .iter()
+        .filter(|c| {
+            c["address"] != anchor
+                && zt_check::graph::SUBSTANTIVE
+                    .contains(&zt_check::graph::category(c, &literature, &anchors).as_str())
+                && c["body"].as_str().is_some_and(|s| !s.trim().is_empty())
+        })
+        .map(|c| field(c, "address").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    if disposition == "cards" && (!owned.contains(anchor) || substantive.is_empty()) {
+        bail!("group coverage requires its checked anchor plus substantive owned Cards");
+    }
+    let self_check = group_quality(cards, p)?;
+    verify_group_consumers(p, cards, &self_check)?;
+    if zt.archive_view()?["archive_revision"] != preview["archive_revision"] {
+        bail!("read_view_changed: group draft preview");
+    }
+    if check_only {
+        return Ok(
+            json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"check_only":true,"applied":false,"complete":true,"owned":owned,"substantive":substantive,"self_check":self_check,"no_cards":no_cards}),
+        );
+    }
+    renew(p, &unit, token)?;
+    let accepted = accept_group_plan(&accepted_path, &plan)?;
+    let receipts = if calls.is_empty() {
+        Vec::new()
+    } else {
+        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+    };
+    let owned_path = p.out.join(format!("owned-{}.txt", field(group, "id")?));
+    let owned_record = publish(
+        &owned_path,
+        &format!("{}\n", owned.iter().cloned().collect::<Vec<_>>().join("\n")),
+    )?;
+    let mut src = BTreeMap::new();
+    let sections = group["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| field(s, "path"))
+        .collect::<Result<Vec<_>>>()?
+        .join("; ");
+    for (i, receipt) in receipts.iter().enumerate() {
+        src.insert(
+            field(&receipt["result"], "address")?.to_string(),
+            source_notes
+                .get(&i.to_string())
+                .map(|s| format!("{sections}; {s}"))
+                .unwrap_or_else(|| sections.clone()),
+        );
+    }
+    src.entry(anchor.to_string()).or_insert(sections);
+    let source_record = publish(
+        &p.out.join(format!("src-{}.txt", field(group, "id")?)),
+        &src.iter()
+            .map(|(a, s)| format!("{a}\t{s}\n"))
+            .collect::<String>(),
+    )?;
+    let read = zt.cards(&owned.iter().cloned().collect::<Vec<_>>(), "text")?;
+    let check = crate::check::Check {
+        cards: owned.iter().cloned().collect::<Vec<_>>().join(","),
+        book: field(&p.contract, "citation_key")?.to_string(),
+        ..Default::default()
+    };
+    let self_check = checked_lines(check.run(zt)?, false)?;
+    verify_group_consumers(p, &read.cards, &self_check)?;
+    if zt.archive_view()?["archive_revision"].as_u64() != Some(read.archive_revision) {
+        bail!("read_view_changed: persisted group check");
+    }
+    let mut expected = BTreeMap::new();
+    for r in &receipts {
+        expected.insert(
+            field(&r["result"], "address")?.to_string(),
+            field(&r["result"], "after_fingerprint")?.to_string(),
+        );
+    }
+    for c in &read.cards {
+        let at = field(c, "address")?;
+        let fp = crate::calls::authored_fingerprint(c);
+        if c["workspace"] != "agent"
+            || expected.get(at).is_some_and(|v| v != &fp)
+            || (calls.is_empty() && job["inputs"]["anchor"]["fingerprint"] != fp)
+        {
+            bail!("persisted group output changed at {at}");
+        }
+    }
+    let check_record = publish(
+        &p.out.join(format!("self-check-g{number:03}.json")),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"plan_hash":canon::hash_value(&plan),"archive_revision":read.archive_revision,"owned":owned,"self_check":self_check}),
+        )?,
+    )?;
+    let base = json!({"group":group,"producer":unit,"producer_input_hash":claimed.input_hash,"plan_hash":canon::hash_value(&plan),"owned":owned_record,"source":source_record,"self_check":check_record});
+    let declared = target(&p.contract)?;
+    let enabled = declared["enabled"].as_array().unwrap();
+    let mut children = Vec::new();
+    for layer in ["cards", "events", "findings", "link"] {
+        if enabled.iter().any(|v| v == layer) {
+            children.push(json!({"layer":layer,"key":format!("g{number:03}"),"inputs":base}));
+        }
+    }
+    let mut model_consumers = BTreeMap::new();
+    let mut model_headers = BTreeSet::new();
+    if enabled.iter().any(|v| v == "models") {
+        for (i, r) in receipts.iter().enumerate() {
+            let at = field(&r["result"], "address")?;
+            if read
+                .cards
+                .iter()
+                .any(|c| c["address"] == at && c["type"] == "model")
+            {
+                let model = zt.call("get_model", json!({"at":at}))?;
+                let header = field(&model["head"], "address")
+                    .context("incomplete Model candidate header")?;
+                let consumer = if model_headers.insert(header.to_string()) {
+                    let key = format!("g{number:03}-m{i:04}");
+                    let consumer = format!("models/{key}@1");
+                    let head = zt.cards(&[header.to_string()], "text")?;
+                    children.push(json!({"layer":"models","key":key,"inputs":{"producer":base,"header":header,"fingerprint":crate::calls::authored_fingerprint(&head.cards[0])}}));
+                    consumer
+                } else {
+                    model_consumers
+                        .get(header)
+                        .cloned()
+                        .context("missing Model consumer binding")?
+                };
+                model_consumers.insert(header.to_string(), consumer.clone());
+                model_consumers.insert(at.to_string(), consumer.clone());
+                for part in model["parts"]
+                    .as_array()
+                    .context("incomplete Model candidate parts")?
+                {
+                    model_consumers.insert(field(part, "address")?.to_string(), consumer.clone());
+                }
+            }
+        }
+    }
+    let child_ids = children
+        .iter()
+        .map(|c| {
+            format!(
+                "{}/{}@1",
+                c["layer"].as_str().unwrap(),
+                c["key"].as_str().unwrap()
+            )
+        })
+        .collect::<Vec<_>>();
+    let emitted=children.iter().zip(&child_ids).map(|(child,id)|{
+        let mut dependencies=vec![json!({"unit":id,"needs":unit,"condition":"success"})];
+        if child["layer"]=="link" {dependencies.push(json!({"unit":id,"needs":format!("cards/g{number:03}@1"),"condition":"success"}));}
+        let book=match child["layer"].as_str(){Some("cards")=>Some("cards-book"),Some("link")=>Some("link-check"),_=>None};
+        if let Some(layer)=book {dependencies.push(json!({"unit":format!("{layer}/book@1"),"needs":id,"condition":"settled"}));}
+        json!({"id":id,"input_hash":canon::hash_value(&child["inputs"]),"dependencies":dependencies})
+    }).collect::<Vec<_>>();
+    let deferrals=self_check["faults"].as_array().unwrap().iter().map(|fault| {
+        let text=fault.as_str().unwrap();let at=text.split_whitespace().next().unwrap_or_default();
+        let model=model_consumers.get(at).cloned();
+        json!({"fault":fault,"consumer":model.unwrap_or_else(||format!("cards/g{number:03}@1"))})
+    }).collect::<Vec<_>>();
+    let trees = read
+        .cards
+        .iter()
+        .map(|c| field(c, "tree").map(str::to_string))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let card_fingerprints = read
+        .cards
+        .iter()
+        .map(|c| {
+            Ok((
+                field(c, "address")?.to_string(),
+                crate::calls::authored_fingerprint(c),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let receipt_keys = receipts
+        .iter()
+        .map(|r| field(r, "op_key").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    let result = json!({"schema_version":1,"kind":"digest_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":job["input_hash"],"unit_input_hash":claimed.input_hash,"plan_hash":canon::hash_value(&plan),"draft":{"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&std::fs::read(&path)?)},"disposition":if disposition=="no_cards"{"no_cards"}else if deferrals.is_empty(){"verified"}else{"deferred"},"no_cards":no_cards,"accepted":accepted,"owned":owned,"substantive":substantive,"trees":trees,"self_check":self_check,"deferred":deferrals,"children":child_ids,"emitted":emitted,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"files":{"owned":owned_record,"source":source_record,"self_check":check_record}});
+    let result_record = publish(
+        &p.out.join(format!("completion-g{number:03}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    for record in [
+        accepted.clone(),
+        owned_record.clone(),
+        source_record.clone(),
+        check_record.clone(),
+        result_record.clone(),
+    ] {
+        check_file(&record, "group completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64() != Some(read.archive_revision)
+    {
+        bail!("read_view_changed: group completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    for (key, record) in [
+        ("accepted", &accepted),
+        ("owned", &owned_record),
+        ("source", &source_record),
+        ("self_check", &check_record),
+        ("completion", &result_record),
+    ] {
+        output(
+            &tx,
+            &unit,
+            key,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    for c in &read.cards {
+        let at = field(c, "address")?;
+        output(
+            &tx,
+            &unit,
+            &format!("card/{at}"),
+            "card",
+            at,
+            &crate::calls::authored_fingerprint(c),
+            &json!({"tree":c["tree"],"type":c["type"],"facet":c["facet"]}),
+        )?;
+    }
+    for receipt in &receipts {
+        let key = field(receipt, "op_key")?;
+        output(
+            &tx,
+            &unit,
+            &format!("receipt/{key}"),
+            "archive_receipt",
+            key,
+            &canon::hash_value(&receipt["result"]),
+            &receipt["result"],
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    completion_fault(p, "before_children")?;
+    for child in &children {
+        let id = register(
+            &tx,
+            field(child, "layer")?,
+            field(child, "key")?,
+            &child["inputs"],
+            Some(&unit),
+            false,
+        )?;
+        dependency(&tx, &id, &unit, "success")?;
+        if child["layer"] == "link" {
+            dependency(&tx, &id, &format!("cards/g{number:03}@1"), "success")?;
+        }
+        let book = match field(child, "layer")? {
+            "cards" => Some("cards-book"),
+            "link" => Some("link-check"),
+            _ => None,
+        };
+        if let Some(layer) = book {
+            dependency(&tx, &format!("{layer}/book@1"), &id, "settled")?;
+        }
+        event(
+            &tx,
+            &id,
+            Some(&claimed.owner),
+            Some(token),
+            "registered",
+            &json!({"producer":unit,"input_hash":canon::hash_value(&child["inputs"])}),
+        )?;
+    }
+    completion_fault(p, "after_children")?;
+    for deferred in &deferrals {
+        if !child_ids.iter().any(|id| deferred["consumer"] == *id) {
+            bail!("hard group fault has no registered consumer");
+        }
+    }
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":result["disposition"],"children":child_ids,"plan_hash":result["plan_hash"],"completion":result_record,"touched_trees":trees}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64, String, bool)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token", "Draft"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Group must be positive")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Token must be positive")?;
+        Ok((
+            a.str("Out"),
+            group,
+            token,
+            a.required("Draft")?,
+            a.flag("CheckOnly"),
+        ))
+    })();
+    let (out, group, token, draft, check_only) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("zt-digest group-finish: {e}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = group_finish(&p, &mut zt, group, token, &draft, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
 fn rerun_list(out: &Path) -> Result<Value> {
     let view = status(out, "")?;
     let units = view["units"].as_array().unwrap();
@@ -1549,9 +2529,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let parsed = (|| -> Result<Args> {
         if !matches!(
             command.as_str(),
-            "init" | "status" | "gate" | "next" | "renew" | "fail" | "rerun-list"
+            "init" | "status" | "gate" | "next" | "renew" | "done" | "fail" | "rerun-list"
         ) {
-            bail!("ledger requires init, status, gate, next, renew, fail or rerun-list");
+            bail!("ledger requires init, status, gate, next, renew, done, fail or rerun-list");
         }
         let params = if command == "next" {
             vec!["Out", "Layer", "Take", "Owner"]
@@ -1559,6 +2539,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Unit", "Token"]
         } else if command == "fail" {
             vec!["Out", "Unit", "Token", "Class", "Fault"]
+        } else if command == "done" {
+            vec!["Out", "Unit", "Token", "Outputs"]
         } else {
             vec!["Out", "Layer"]
         };
@@ -1580,7 +2562,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 bail!("-Owner must be nonempty and at most 256 bytes");
             }
         }
-        if matches!(command.as_str(), "renew" | "fail") {
+        if matches!(command.as_str(), "renew" | "fail" | "done") {
             if a.required("Unit")?.trim().is_empty() {
                 bail!("-Unit is required");
             }
@@ -1593,6 +2575,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if command == "fail" {
             a.choice("Class", &["retryable", "operator", "content"])?;
             a.required("Fault")?;
+        }
+        if command == "done" {
+            a.required("Outputs")?;
         }
         if a.has("Layer")
             && !COMMON.contains(&a.str("Layer").as_str())
@@ -1627,13 +2612,52 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let result = if matches!(command.as_str(), "init" | "next" | "renew" | "fail") {
+    let result = if matches!(
+        command.as_str(),
+        "init" | "next" | "renew" | "done" | "fail"
+    ) {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         if command == "init" {
             init(&p)?
         } else if command == "renew" {
             renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
+        } else if command == "done" {
+            let path = a.str("Outputs");
+            let evidence = canon::read_json(&path).context("invalid completion evidence")?;
+            let unit = a.str("Unit");
+            let token = a.str("Token").parse::<i64>()?;
+            let number = unit
+                .strip_prefix("digest/g")
+                .and_then(|v| v.strip_suffix("@1"))
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|n| *n > 0);
+            if evidence["schema_version"] != 1
+                || evidence["kind"] != "digest_completion"
+                || evidence["unit"] != unit
+                || evidence["token"] != token
+                || number.is_none()
+            {
+                bail!(
+                    "completion evidence requires the layer's deterministic checked output; addresses alone are insufficient"
+                );
+            }
+            if std::fs::canonicalize(&path)?
+                != std::fs::canonicalize(
+                    p.out
+                        .join(format!("completion-g{:03}.json", number.unwrap())),
+                )?
+            {
+                bail!("completion evidence locator mismatch");
+            }
+            group_finish(
+                &p,
+                &mut zt,
+                number.unwrap(),
+                token,
+                field(&evidence["draft"], "path")?,
+                false,
+            )?
         } else if command == "fail" {
             let path = a.str("Fault");
             if std::fs::metadata(&path)?.len() > 65536 {

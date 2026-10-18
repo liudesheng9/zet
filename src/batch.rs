@@ -675,7 +675,7 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                     observed_fingerprint: observed,
                 }));
             }
-            cards.push(crate::read::text_value(&crate::load_card(&tx, address)?)?);
+            cards.push(crate::read::text_facts(&tx, &crate::load_card(&tx, address)?)?);
         }
         tx.rollback()?;
         return Ok(

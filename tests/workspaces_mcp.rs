@@ -44,6 +44,15 @@ fn a_sequence_preview_matches_real_chunk_boundaries_and_recovers_partial_receipt
     assert_eq!(draft["results"].as_array().unwrap().len(), 67);
     assert_eq!(draft["cards"].as_array().unwrap().len(), 66);
     assert_eq!(draft["results"][64]["result"]["address"], "0/64");
+    let card = draft["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["address"] == "0/64")
+        .unwrap();
+    assert_eq!(card["links"], json!(["0/1"]));
+    assert_eq!(card["parent_address"], "0/63");
+    assert!(card["kinds"].is_object());
     assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
     assert_eq!(
         mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],

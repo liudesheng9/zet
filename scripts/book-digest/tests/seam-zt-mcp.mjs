@@ -71,7 +71,7 @@ async function handle(line) {
     if (env.ZT_DRAFT_FAULT === 'complete') value.complete = false
     reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
   }
-  if (tool === 'apply_batch' && env.ZT_DROP_BATCH_REPLY_FLAG && !flag(env.ZT_DROP_BATCH_REPLY_FLAG) && !failed(reply)) {
+  if (tool === 'apply_batch' && !at.preview && env.ZT_DROP_BATCH_REPLY_FLAG && !flag(env.ZT_DROP_BATCH_REPLY_FLAG) && !failed(reply)) {
     fs.writeFileSync(env.ZT_DROP_BATCH_REPLY_FLAG, 'committed; reply not delivered\n')
     real.stdin.end()
     process.exit(86)
