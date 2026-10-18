@@ -470,9 +470,18 @@ try {
         Assert ($afterWrites.ok -eq $true -and @($afterWrites.faults).Count -eq 0) "the $v full-parser Link check passes after the ordinary reads and writes"
 
         # --- one bounded contention trial: a live lock holder (R348 queue/lock evidence) --------
+        # The measured write starts only after the holder actually holds the lock: a fixed startup
+        # sleep raced a slow pwsh start on a loaded host, so the write took the lock first and the
+        # trial measured no contention (issue #90). The holder's own 6.5 s hold begins when it creates
+        # the file, so detecting the file leaves the hold near its full length.
         $logMark = (Get-LogLines $vroot).Count
+        $lockPath = Join-Path $vroot 'zt.edit.lock'
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
         $holder = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $lockHelperPath, '-Root', $vroot, '-HoldMs', '6500') -PassThru -WindowStyle Hidden
-        Start-Sleep -Milliseconds 600
+        $holderReady = [Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $lockPath) -and $holderReady.ElapsedMilliseconds -lt 15000) { Start-Sleep -Milliseconds 50 }
+        $holderReadyMs = [int]$holderReady.ElapsedMilliseconds
+        Assert ($holderReadyMs -lt 15000) "the live lock holder acquires zt.edit.lock before the measured write ($holderReadyMs ms after start)"
         $contendedWatch = [Diagnostics.Stopwatch]::StartNew()
         $contended = Invoke-Warm 'edit_card' @{ at = $target; body = '第三版正文，在一位真实的锁持有者之后写入。' }
         $contendedWatch.Stop()
