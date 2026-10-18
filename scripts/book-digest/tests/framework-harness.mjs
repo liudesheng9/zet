@@ -192,6 +192,26 @@ function runtime(kind, opts = {}) {
     if (/ ledger status /.test(cmd)) {
       return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
+    // R331/R343: the verified run report the cleanup stage renders after every stage settles. Its usage is
+    // per-run, never the difference of two account totals (the removed I22 shape).
+    if (/ ledger report /.test(cmd)) {
+      return { ok: true, output: json({
+        schema_version: 1, kind: 'run_report',
+        report: {
+          'run-report.json': { path: 'D:\\x\\Key\\run-report.json', sha256: 'a'.repeat(64), changed: true },
+          'run-report.md': { path: 'D:\\x\\Key\\run-report.md', sha256: 'b'.repeat(64), changed: true },
+        },
+        identity: { run_id: 'r1', invocation: 1, resume_count: 0 },
+        completeness: { settled: true, content_complete: true, quality_complete: true, cleanup_complete: true, complete: true },
+        counts: { declared: 3, done: 3, noop: 0, refused: 0, failed: 0, blocked: 0, open: 0 },
+        gaps: [], placeholders: { status: 'verified', count: 0, models: [], revision: 7 },
+        timing: { wall_seconds: 1, queue_wait_seconds: 0, tool_seconds: 0, external_run_seconds: 0, critical_path: { seconds: 1, units: ['prepare/book@1'] }, stages: [] },
+        resume: { available: false, reason: 'no unresolved work remains', manual: [] },
+        bridge: null,
+        publications: [],
+        usage: { status: 'complete', source: 'per-run', known_runs: 1, missing_runs: 0, missing: [], totals: { input_tokens: 100, output_tokens: 20 }, estimates: null, by_phase: { initial: { runs: 1, usage: { input_tokens: 100 } } }, data_faults: [] },
+      }) }
+    }
     if (/ ledger job /.test(cmd)) return { ok: true, output: json({ schema_version: 1, action: 'list', jobs: [] }) }
     // Owned provider resources (#83): the workflow records the returned ids, observes the provider's
     // facts, and settles the cleanup unit through its checked verifier.
@@ -624,7 +644,7 @@ for (const kind of ['econ', 'math']) {
   check(result && result.mode === 'full', `${kind} full: reaches the report`)
   check(at(/^prepare book$/) < at(/^math: index$/) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
   check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
-  const work = labels.filter((l) => !/^cleanup/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
+  const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
   check(work[work.length - 1] === 'audit cards', `${kind} full: the audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
   if (kind === 'math') {
@@ -664,7 +684,7 @@ for (const kind of ['econ', 'math']) {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
-  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup/.test(l)) && labels.includes('cleanup: list the recorded resources'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
+  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: list the recorded resources') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
   check(!calls.some((c) => /^cleanup DeepSeek/.test(c.label)) && !commands.some((c) => /deepseek_delete/.test(c)), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
 }
 {

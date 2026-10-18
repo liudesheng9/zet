@@ -1,7 +1,7 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 use crate::event::layer::prop;
 use crate::ps::{self, list, pipe, s, truthy};
-use crate::{args::Args, canon, util, zt::Zt};
+use crate::{args::Args, canon, report, util, zt::Zt};
 use anyhow::{Context, Result, bail};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -3950,14 +3950,599 @@ fn publications(conn: &Connection, root_hash: &str) -> Result<Vec<Value>> {
     Ok(result)
 }
 
-fn status(out: &Path, layer: &str) -> Result<Value> {
+/// The checked dispositions of work that was deliberately not done. A no-op is named,
+/// never counted as success without its evidence (R333).
+const NOOP_DISPOSITIONS: &[&str] = &[
+    "no_cards",
+    "no_work",
+    "no_link",
+    "no_terms",
+    "no_build",
+    "no_change",
+    "not_applicable",
+    "disabled",
+];
+
+/// What a non-terminal unit or a reported fault costs the run, in the words of R335.
+fn gap_kind(layer: &str) -> &'static str {
+    match layer {
+        "prepare" => "preparation",
+        "terms" => "terms",
+        "digest" => "group_gap",
+        "cards" | "cards-book" => "quality",
+        "models" => "model_build",
+        "explain" => "explanation",
+        "events" | "findings" => "empirical_layer",
+        "link" | "link-check" => "link_fault",
+        "notes" => "note",
+        "organize" => "organize",
+        "skeleton" => "skeleton_gap",
+        "hubs" => "hub_fault",
+        "figures" => "figure",
+        "bridge" => "bridge",
+        "audit" => "audit",
+        "cleanup" => "cleanup",
+        "theory" | "math-index" | "math-docs" | "math-skeleton" | "notation" | "boundary"
+        | "proof" | "math-check" => "math",
+        _ => "unit",
+    }
+}
+
+fn is_noop(result: &Value) -> bool {
+    result["noop"] == true
+        || result["disposition"]
+            .as_str()
+            .is_some_and(|value| NOOP_DISPOSITIONS.contains(&value))
+}
+
+/// Refusals the checked result itself records (a note it declined, a Bridge proposal, a
+/// set of coverage entries): a deliberate refusal is a disposition, never outstanding work.
+fn refused_of(result: &Value) -> u64 {
+    let mut count = 0u64;
+    for key in ["coverage", "outcomes", "dispositions", "notes"] {
+        if let Some(list) = result[key].as_array() {
+            count += list
+                .iter()
+                .filter(|item| {
+                    item["outcome"] == json!("refused") || item["disposition"] == json!("refused")
+                })
+                .count() as u64;
+        }
+    }
+    count
+}
+
+/// R333: declared obligations and the state/disposition counts of each layer. `declared`
+/// is one per logical key (a superseded revision is history, not declared work).
+fn counts_of(units: &[Value]) -> (Value, Value) {
+    let mut per_layer: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    let mut total = json!({
+        "declared":0,"done":0,"noop":0,"refused":0,"failed":0,"blocked":0,
+        "registered":0,"ready":0,"claimed":0,"retry":0,"superseded":0,"open":0,"total":0
+    });
+    let mut declared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for unit in units {
+        let layer = unit["layer"].as_str().unwrap_or_default();
+        let entry = per_layer.entry(layer.to_string()).or_insert_with(|| {
+            json!({
+                "declared":0,"done":0,"noop":0,"refused":0,"failed":0,"blocked":0,
+                "registered":0,"ready":0,"claimed":0,"retry":0,"superseded":0,"open":0,"total":0
+            })
+        });
+        let bump = |value: &mut Value, key: &str| {
+            value[key] = json!(value[key].as_u64().unwrap_or(0) + 1);
+        };
+        bump(entry, "total");
+        bump(&mut total, "total");
+        let state = unit["state"].as_str().unwrap_or_default();
+        let superseded = is_superseded(unit);
+        if !superseded {
+            let key = format!("{layer}\u{1}{}", unit["logical_key"].as_str().unwrap_or_default());
+            if declared.insert(key) {
+                bump(entry, "declared");
+                bump(&mut total, "declared");
+            }
+        }
+        let bucket = if superseded {
+            "superseded"
+        } else {
+            match state {
+                "done" | "failed" | "blocked" | "registered" | "ready" | "claimed" | "retry" => state,
+                _ => "open",
+            }
+        };
+        bump(entry, bucket);
+        bump(&mut total, bucket);
+        if state == "done" && !superseded {
+            if is_noop(&unit["result"]) {
+                bump(entry, "noop");
+                bump(&mut total, "noop");
+            }
+            let refused = refused_of(&unit["result"]);
+            if refused > 0 {
+                entry["refused"] = json!(entry["refused"].as_u64().unwrap_or(0) + refused);
+                total["refused"] = json!(total["refused"].as_u64().unwrap_or(0) + refused);
+            }
+        }
+    }
+    total["open"] = json!(
+        total["registered"].as_u64().unwrap_or(0)
+            + total["ready"].as_u64().unwrap_or(0)
+            + total["claimed"].as_u64().unwrap_or(0)
+            + total["retry"].as_u64().unwrap_or(0)
+    );
+    (total, Value::Object(per_layer.into_iter().collect()))
+}
+
+/// R335: every gap with its exact unit, address or file and reason. Nothing here is an
+/// agent's summary: each entry names the recorded evidence that produced it.
+fn gaps_of(units: &[Value], coverage_faults: &[Value], placeholders: &Value) -> Vec<Value> {
+    let mut gaps = Vec::new();
+    for unit in units {
+        if is_superseded(unit) {
+            continue;
+        }
+        let layer = unit["layer"].as_str().unwrap_or_default();
+        let state = unit["state"].as_str().unwrap_or_default();
+        let fault = &unit["fault"];
+        if state != "done" {
+            let reason = fault["cause"]
+                .as_str()
+                .or_else(|| fault["code"].as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("the unit is {state} and has not settled"));
+            gaps.push(json!({
+                "kind": gap_kind(layer), "layer": layer, "unit": unit["id"],
+                "state": state, "address": Value::Null,
+                "code": fault["code"], "class": unit["fault_class"],
+                "reason": reason
+            }));
+        }
+        // A registered external run that never reached a terminal state still owns its unit.
+        for job in unit["progress"]["jobs"].as_array().cloned().unwrap_or_default() {
+            if job["state"] == json!("terminal") {
+                continue;
+            }
+            gaps.push(json!({
+                "kind": "pending_job", "layer": layer, "unit": unit["id"],
+                "address": job["id"], "job_kind": job["kind"], "state": job["state"],
+                "started_at": job["started_at"], "cap_seconds": job["cap_seconds"],
+                "reason": "the external run is not terminal, so its work cannot settle"
+            }));
+        }
+    }
+    for fault in coverage_faults {
+        gaps.push(json!({
+            "kind": "coverage", "unit": fault["unit"], "address": Value::Null,
+            "code": fault["code"], "reason": fault["code"].as_str().unwrap_or("recorded coverage fault")
+        }));
+    }
+    // A publication names the exact work it could not resolve, and the exact coverage it
+    // checked as a gap, an unmatched figure or an unresolved entry.
+    for unit in units {
+        if unit["state"] != json!("done") || is_superseded(unit) {
+            continue;
+        }
+        let layer = unit["layer"].as_str().unwrap_or_default();
+        let result = &unit["result"];
+        if result["disposition"] == json!("partial") {
+            for entry in result["unresolved"].as_array().cloned().unwrap_or_default() {
+                gaps.push(json!({
+                    "kind": "publication_unresolved", "layer": layer, "unit": unit["id"],
+                    "address": entry["unit"].as_str().or_else(|| entry["ref"].as_str()),
+                    "code": "unresolved", "reason": "this publication input has no resolved disposition"
+                }));
+            }
+        }
+        for entry in result["coverage"].as_array().cloned().unwrap_or_default() {
+            let outcome = entry["outcome"].as_str().unwrap_or_default();
+            if !["gap", "unresolved", "unmatched", "open"].contains(&outcome) {
+                continue;
+            }
+            gaps.push(json!({
+                "kind": gap_kind(layer), "layer": layer, "unit": unit["id"],
+                "address": entry["ref"], "code": outcome,
+                "reason": entry["reason"].as_str().filter(|text| !text.is_empty())
+                    .unwrap_or("the checked coverage records no reason")
+            }));
+        }
+    }
+    // R336: a placeholder is current verified work, so its count is a gap only when the read
+    // succeeded; an unknown count is reported by the completeness and placeholder sections.
+    for model in placeholders["models"].as_array().cloned().unwrap_or_default() {
+        for address in model["placeholders"].as_array().cloned().unwrap_or_default() {
+            gaps.push(json!({
+                "kind": "placeholder", "layer": "models", "unit": Value::Null,
+                "address": address, "code": "still_written",
+                "reason": "this part still holds 待写 in the checked model"
+            }));
+        }
+    }
+    // A cleanup unit settles its own resources; its remaining issues are named here.
+    for unit in units {
+        if unit["layer"] != json!("cleanup") || unit["state"] != json!("done") {
+            continue;
+        }
+        for issue in unit["result"]["partial_reasons"].as_array().cloned().unwrap_or_default() {
+            gaps.push(json!({
+                "kind": "cleanup", "layer": "cleanup", "unit": unit["id"],
+                "address": issue["resource"].as_str().or_else(|| issue["conversation"].as_str()),
+                "code": issue["code"], "class": issue["class"], "reason": issue["cause"]
+            }));
+        }
+    }
+    gaps
+}
+
+/// R337: stage elapsed, queue wait, tool time, external-run time and the critical path.
+/// A stage's elapsed time is wall clock, and parallel stages overlap, so they are never
+/// added into a claimed total.
+fn timing_of(conn: &Connection, units: &[Value]) -> Result<Value> {
+    let mut claims: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut terminal: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    {
+        let mut statement = conn.prepare(
+            "SELECT unit_id,event,utc FROM events WHERE unit_id IS NOT NULL ORDER BY seq",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (unit, event, utc) = row?;
+            if event == "claimed" {
+                claims.entry(unit).or_default().push(utc);
+            } else if matches!(event.as_str(), "completed" | "failed") {
+                terminal.insert(unit, utc);
+            }
+        }
+    }
+    let mut per_layer: std::collections::BTreeMap<String, (f64, f64, f64, f64, usize, Option<i64>, Option<i64>)> =
+        std::collections::BTreeMap::new();
+    let mut wall_first: Option<i64> = None;
+    let mut wall_last: Option<i64> = None;
+    let mut queue_total = 0.0;
+    let mut tool_total = 0.0;
+    let mut external_total = 0.0;
+    let mut spans: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    let mut layers: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for unit in units {
+        let id = unit["id"].as_str().unwrap_or_default().to_string();
+        let layer = unit["layer"].as_str().unwrap_or_default().to_string();
+        layers.insert(id.clone(), layer.clone());
+        let created = unit["created_at"].as_str().and_then(report::epoch_millis);
+        let finished = unit["completed_at"]
+            .as_str()
+            .and_then(report::epoch_millis)
+            .or_else(|| terminal.get(&id).and_then(|utc| report::epoch_millis(utc)));
+        // Queue wait: from registration to the first claim of this unit.
+        let first_claim = claims
+            .get(&id)
+            .and_then(|list| list.first())
+            .and_then(|utc| report::epoch_millis(utc));
+        let queue = match (created, first_claim) {
+            (Some(created), Some(claim)) => ((claim - created).max(0) as f64) / 1_000.0,
+            _ => 0.0,
+        };
+        // Tool time: each claimed attempt to its recorded terminal event.
+        let mut tool = 0.0;
+        if let Some(list) = claims.get(&id) {
+            for claim in list {
+                if let Some(end) = terminal.get(&id) {
+                    tool += report::span_seconds(claim, end).unwrap_or(0.0);
+                }
+            }
+        }
+        let span = match (created, finished) {
+            (Some(created), Some(finished)) => ((finished - created).max(0) as f64) / 1_000.0,
+            _ => 0.0,
+        };
+        spans.insert(id.clone(), span);
+        // External-run time: each registered provider run from its start to its observation.
+        let mut external = 0.0;
+        for job in unit["progress"]["jobs"].as_array().cloned().unwrap_or_default() {
+            let started = job["started_at"].as_i64();
+            let observed = job["observed_at"]
+                .as_str()
+                .and_then(report::epoch_millis)
+                .map(|millis| millis as f64 / 1_000.0);
+            if let (Some(started), Some(observed)) = (started, observed) {
+                external += (observed - started as f64).max(0.0);
+            }
+        }
+        queue_total += queue;
+        tool_total += tool;
+        external_total += external;
+        let entry = per_layer.entry(layer).or_insert((0.0, 0.0, 0.0, 0.0, 0, None, None));
+        entry.0 += queue;
+        entry.1 += tool;
+        entry.2 += external;
+        entry.4 += 1;
+        if let Some(created) = created {
+            entry.5 = Some(entry.5.map_or(created, |value| value.min(created)));
+            wall_first = Some(wall_first.map_or(created, |value| value.min(created)));
+        }
+        if let Some(finished) = finished {
+            entry.6 = Some(entry.6.map_or(finished, |value| value.max(finished)));
+            wall_last = Some(wall_last.map_or(finished, |value| value.max(finished)));
+        }
+    }
+    // Critical path: the longest chain through the recorded dependency graph. A path is a
+    // sequence, so adding its spans is exact; unrelated parallel work is not folded in.
+    let edges: Vec<(String, String)> = {
+        let mut statement = conn.prepare("SELECT unit_id,needs_id FROM deps ORDER BY unit_id")?;
+        statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let (critical, path) = critical_path(&spans, &edges);
+    let mut stages = Vec::new();
+    for (layer, (queue, tool, external, elapsed, count, first, last)) in per_layer {
+        let wall = match (first, last) {
+            (Some(first), Some(last)) => ((last - first).max(0) as f64) / 1_000.0,
+            _ => elapsed,
+        };
+        stages.push(json!({
+            "layer":layer, "units":count,
+            "elapsed_seconds":report::number_json(wall),
+            "queue_wait_seconds":report::number_json(queue),
+            "tool_seconds":report::number_json(tool),
+            "external_run_seconds":report::number_json(external)
+        }));
+    }
+    let wall = match (wall_first, wall_last) {
+        (Some(first), Some(last)) => ((last - first).max(0) as f64) / 1_000.0,
+        _ => 0.0,
+    };
+    Ok(json!({
+        "wall_seconds": report::number_json(wall),
+        "queue_wait_seconds": report::number_json(queue_total),
+        "tool_seconds": report::number_json(tool_total),
+        "external_run_seconds": report::number_json(external_total),
+        "stages": stages,
+        "critical_path": {"seconds": report::number_json(critical), "units": path},
+        "parallel_stages_not_summed": true
+    }))
+}
+
+/// The longest dependency chain by recorded unit span, with its units in order.
+fn critical_path(spans: &std::collections::BTreeMap<String, f64>, edges: &[(String, String)]) -> (f64, Vec<String>) {
+    let mut children: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    let mut indegree: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for id in spans.keys() {
+        indegree.insert(id.as_str(), 0);
+    }
+    for (unit, needs) in edges {
+        if !spans.contains_key(unit) || !spans.contains_key(needs) {
+            continue;
+        }
+        children.entry(needs.as_str()).or_default().push(unit.as_str());
+        *indegree.entry(unit.as_str()).or_insert(0) += 1;
+    }
+    let mut best: std::collections::BTreeMap<&str, (f64, Option<&str>)> = std::collections::BTreeMap::new();
+    for id in spans.keys() {
+        best.insert(id.as_str(), (spans[id], None));
+    }
+    let mut ready: std::collections::BTreeSet<&str> = indegree
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| *id)
+        .collect();
+    while let Some(id) = ready.iter().next().copied() {
+        ready.remove(id);
+        let (value, _) = *best.get(id).unwrap();
+        for child in children.get(id).cloned().unwrap_or_default() {
+            let candidate = value + spans[child];
+            if candidate > best[child].0 {
+                best.insert(child, (candidate, Some(id)));
+            }
+            if let Some(degree) = indegree.get_mut(child) {
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    ready.insert(child);
+                }
+            }
+        }
+    }
+    let (end, value) = best
+        .iter()
+        .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(id, (value, _))| (*id, *value))
+        .unwrap_or(("", 0.0));
+    let mut path = Vec::new();
+    let mut at = Some(end);
+    while let Some(id) = at {
+        path.push(id.to_string());
+        at = best.get(id).and_then(|(_, parent)| *parent);
+    }
+    path.reverse();
+    (value, path)
+}
+
+/// R340: the supported resume invocation, printed only while the one resume is unused.
+/// After it is consumed the report lists the manual decisions instead of suggesting another.
+fn resume_facts(preparation: &Value, out: &Path, unresolved: &[Value], gaps: &[Value], resume_count: i64) -> Value {
+    if unresolved.is_empty() {
+        return json!({"available":false,"reason":"no unresolved work remains","manual":[]});
+    }
+    if resume_count > 0 {
+        let manual: Vec<Value> = gaps
+            .iter()
+            .filter(|gap| gap["kind"] != json!("cleanup"))
+            .take(20)
+            .map(|gap| {
+                json!(format!(
+                    "{} {}: {}",
+                    gap["kind"].as_str().unwrap_or("gap"),
+                    gap["unit"].as_str().or_else(|| gap["address"].as_str()).unwrap_or("run"),
+                    gap["reason"].as_str().unwrap_or("no recorded reason")
+                ))
+            })
+            .collect();
+        return json!({
+            "available":false,
+            "reason":"the one supported resume has already been used; the remaining work needs a manual decision",
+            "manual": manual
+        });
+    }
+    let variant = preparation["variant"].as_str().unwrap_or("");
+    let scripts = crate::model::Scripts::find();
+    let repo = std::path::Path::new(&scripts.dir)
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|path| path.to_path_buf())
+        .unwrap_or_default();
+    let script = repo
+        .join(".claude")
+        .join("workflows")
+        .join(format!("zt-{variant}-digest.js"));
+    let out = report::plain_path(&out.display().to_string());
+    let invocation = format!(
+        "Workflow({{scriptPath: \"{}\", args: {{mode: \"resume\", out: \"{}\"}}}})",
+        script.display().to_string().replace('\\', "\\\\"),
+        out.replace('\\', "\\\\")
+    );
+    if !script.is_file() {
+        return json!({
+            "available":false,
+            "reason":format!("the installed {} workflow was not found at {}", variant, script.display()),
+            "manual":[]
+        });
+    }
+    json!({"available":true,"script":script,"invocation":invocation,"manual":[]})
+}
+
+/// The immutable Bridge report of this run, with its open proposals labelled as review
+/// decisions rather than missing digest writes (R339).
+fn bridge_facts(units: &[Value]) -> Result<Value> {
+    let Some(unit) = units
+        .iter()
+        .filter(|unit| unit["layer"] == json!("bridge") && unit["state"] == json!("done"))
+        .max_by_key(|unit| unit["revision"].as_i64().unwrap_or(0))
+    else {
+        return Ok(Value::Null);
+    };
+    let result = &unit["result"];
+    let coverage = result["coverage"].as_array().cloned().unwrap_or_default();
+    let count = |name: &str| coverage.iter().filter(|entry| entry["outcome"] == json!(name)).count();
+    let report_id = result["artifacts"]["report"]["path"]
+        .as_str()
+        .and_then(|path| util::read_json(path).ok())
+        .and_then(|report| report["report_id"].as_str().map(str::to_string));
+    Ok(json!({
+        "report_id": report_id,
+        "unit": unit["id"],
+        "revision": unit["revision"],
+        "open": count("open"),
+        "accepted": count("accepted"),
+        "refused": count("refused"),
+        "state": "awaiting_optional_review"
+    }))
+}
+
+/// R331/R332: the run report, from the ledger and the verified reads, with its two files.
+///
+/// Rendering is read-only with respect to Cards: the two files under the prepared output
+/// directory are the only writes. The same facts give the same bytes, so a second render
+/// changes nothing (R331).
+fn run_report(p: &Prepared, verified: Value) -> Result<Value> {
+    let base = status(&p.out, "", Some(verified.clone()))?;
+    let manifest = util::read_json(p.out.join("manifest.json")).unwrap_or(Value::Null);
+    let contract = &p.contract;
+    let observed = zt_check::mcp::observed_service();
+    let verified_read = verified["status"] == json!("verified");
+    let revision = if verified_read {
+        verified["revision"].clone()
+    } else {
+        observed
+            .as_ref()
+            .and_then(|facts| facts.revision)
+            .map(|revision| json!(revision))
+            .unwrap_or(Value::Null)
+    };
+    let units = base["units"].as_array().cloned().unwrap_or_default();
+    let mut publications = base["publications"].as_array().cloned().unwrap_or_default();
+    for publication in &mut publications {
+        let latest = publication["latest"].as_str().unwrap_or_default();
+        if let Some(unit) = units.iter().find(|unit| unit["id"] == json!(latest)) {
+            publication["unit"] = unit["id"].clone();
+            publication["disposition"] = unit["result"]["disposition"].clone();
+        }
+    }
+    let identity = json!({
+        "run_id": base["run_id"],
+        "invocation": base["invocation"],
+        "resume_count": base["resume_count"],
+        "citation_key": contract["citation_key"],
+        "variant": contract["variant"],
+        "book_title": manifest["book_title"],
+        "source": {
+            "path": contract["source"]["path"],
+            "sha256": contract["source"]["sha256"],
+            "file_id": contract["source"]["file_id"]
+        },
+        "range": {
+            "groups": contract["groups"].as_array().map(Vec::len),
+            "group_manifest_hash": contract["group_manifest_hash"],
+            "book_sha256": contract["artifacts"]["book"]["sha256"]
+        },
+        "archive": {
+            "id": contract["archive_identity"]["id"],
+            "path": report::plain_path(contract["archive_identity"]["path"].as_str().unwrap_or_default()),
+            "revision": revision,
+            "verified": verified_read,
+            "service": {
+                "up": observed.as_ref().map(|facts| facts.up),
+                "pid": observed.as_ref().and_then(|facts| facts.pid.clone()),
+                "last_exit_abnormal": observed.as_ref().map(|facts| facts.last_exit_abnormal)
+            }
+        },
+        "workflow": {
+            "base_version": contract["contracts"]["base_version"],
+            "variant_version": contract["contracts"]["variant_version"],
+            "artifact_schema": contract["contracts"]["artifact_schema"]
+        },
+        "binaries": {
+            "zt_digest": env!("CARGO_PKG_VERSION"),
+            "zt_check": zt_check::VERSION,
+            "zt": observed.as_ref().and_then(|facts| facts.version.clone())
+        },
+        "settings": base["settings"],
+        "enabled_layers": base["enabled_layers"],
+        "excluded_layers": base["excluded_layers"],
+        "source_faults": manifest["source_faults"]
+    });
+    Ok(json!({
+        "schema_version": 1,
+        "kind": "run_report",
+        "identity": identity,
+        "counts": base["counts"],
+        "completeness": base["completeness"],
+        "gaps": base["gaps"],
+        "placeholders": base["placeholders"],
+        "timing": base["timing"],
+        "usage": base["usage"],
+        "resume": base["resume"],
+        "bridge": base["bridge"],
+        "publications": publications,
+        "cleanup": base["cleanup"]
+    }))
+}
+
+fn status(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value> {
     let conn = connect(&out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_schema(&tx)?;
     if meta(&tx, "preparation_hash")? != canon::hash_value(&meta(&tx, "preparation")?) {
         bail!("ledger preparation hash mismatch");
     }
-    let mut statement=tx.prepare("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,inputs_json,fault_json,progress_json,result_json,lease_until,retry_after FROM units WHERE (?1='' OR layer=?1) ORDER BY id")?;
+    let mut statement=tx.prepare("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,inputs_json,fault_json,progress_json,result_json,lease_until,retry_after,created_at,completed_at,fault_class FROM units WHERE (?1='' OR layer=?1) ORDER BY id")?;
     let units = statement
         .query_map([layer], |r| {
             Ok(json!({
@@ -3975,7 +4560,10 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
                 "progress_json":r.get::<_,String>(11)?,
                 "result_json":r.get::<_,Option<String>>(12)?,
                 "lease_until":r.get::<_,Option<i64>>(13)?,
-                "retry_after":r.get::<_,Option<i64>>(14)?
+                "retry_after":r.get::<_,Option<i64>>(14)?,
+                "created_at":r.get::<_,String>(15)?,
+                "completed_at":r.get::<_,Option<String>>(16)?,
+                "fault_class":r.get::<_,Option<String>>(17)?
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -4020,24 +4608,38 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
             sealed &= required_publication(&tx, name)?.is_some();
         }
     }
-    let mut counts = json!({"total":units.len(),"done":0,"failed":0,"blocked":0,"open":0,"superseded":0});
+    let (mut counts, per_layer) = counts_of(&units);
     let mut unresolved = Vec::new();
     for unit in &units {
-        let state = unit["state"].as_str().unwrap();
         // A superseded revision is terminal history: it is neither a failure of
         // this run nor outstanding work, and it is never offered to a resume.
-        let bucket = if is_superseded(unit) {
-            "superseded"
-        } else if matches!(state, "done" | "failed" | "blocked") {
-            state
-        } else {
-            "open"
-        };
-        counts[bucket] = json!(counts[bucket].as_u64().unwrap() + 1);
-        if state != "done" && bucket != "superseded" {
+        if unit["state"] != json!("done") && !is_superseded(unit) {
             unresolved.push(unit["id"].clone());
         }
     }
+    counts["per_layer"] = per_layer;
+    counts["open"] = json!(
+        counts["registered"].as_u64().unwrap_or(0)
+            + counts["ready"].as_u64().unwrap_or(0)
+            + counts["claimed"].as_u64().unwrap_or(0)
+            + counts["retry"].as_u64().unwrap_or(0)
+    );
+    counts["invocations"] = {
+        let mut statement = tx.prepare(
+            "SELECT invocation,SUM(event='claimed'),SUM(event='completed'),SUM(event='failed'),MIN(utc),MAX(utc) FROM events GROUP BY invocation ORDER BY invocation",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok(json!({
+                "invocation":r.get::<_,i64>(0)?,
+                "claimed":r.get::<_,Option<i64>>(1)?,
+                "completed":r.get::<_,Option<i64>>(2)?,
+                "failed":r.get::<_,Option<i64>>(3)?,
+                "first_event":r.get::<_,Option<String>>(4)?,
+                "last_event":r.get::<_,Option<String>>(5)?
+            }))
+        })?;
+        Value::Array(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    };
     let mut coverage_faults = Vec::new();
     let root_hash = canon::hash_value(&json!({"preparation_hash":meta(&tx,"preparation_hash")?}));
     for layer in required {
@@ -4074,11 +4676,6 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
     }
     coverage_faults.extend(emission_faults(&tx)?);
     let settled = sealed && counts["open"] == 0;
-    let complete = settled
-        && !excluded
-        && counts["failed"] == 0
-        && counts["blocked"] == 0
-        && coverage_faults.is_empty();
     // Cleanup reports its own half of the run beside the content half (R330): content success is
     // never erased by a cleanup failure, and a cleanup failure still makes the whole run partial.
     let cleanup_facts = {
@@ -4114,7 +4711,8 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
                 "status":result["status"],
                 "content_complete":result["content_complete"],
                 "cleanup_complete":result["cleanup_complete"],
-                "resources":result["resources"].as_array().map(Vec::len)
+                "resources":result["resources"].as_array().map(Vec::len),
+                "issues":result["partial_reasons"].as_array().map(Vec::len)
             }));
         }
         let content = content_facts(&tx)?;
@@ -4129,9 +4727,60 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
             "reconciliation":[]
         })
     };
+    // R334: the four halves stay separate. An unverified placeholder count is unknown, so it
+    // can never certify quality (R336).
+    let placeholders = match placeholders {
+        Some(value) => value,
+        None => json!({
+            "status":"not_read","count":Value::Null,"models":[],"revision":Value::Null,
+            "reason":"ledger status reads no archive Card; run `zt-digest ledger report` for the verified count"
+        }),
+    };
+    let gaps = gaps_of(&units, &coverage_faults, &placeholders);
+    let content_gaps = gaps
+        .iter()
+        .filter(|gap| gap["kind"] != json!("cleanup"))
+        .count();
+    // The layer's own completion keeps the pre-existing meaning the gates and their callers use: the
+    // enumeration settled, nothing failed or blocked, and every required publication current.
+    let content_complete = settled
+        && !excluded
+        && counts["failed"] == json!(0)
+        && counts["blocked"] == json!(0)
+        && coverage_faults.is_empty();
+    // Quality needs the verified current placeholder count: an unread count cannot certify it.
+    let quality_reason = if placeholders["status"] != json!("verified") {
+        Value::String("placeholders_not_verified".into())
+    } else if placeholders["count"] != json!(0) {
+        Value::String("placeholders_present".into())
+    } else if !content_complete {
+        Value::String("content_incomplete".into())
+    } else if content_gaps > 0 {
+        Value::String("content_gaps".into())
+    } else {
+        Value::Null
+    };
+    let quality_complete = quality_reason.is_null();
+    let cleanup_complete = cleanup_facts["cleanup_complete"] == true;
+    let fully_complete = content_complete
+        && quality_complete
+        && cleanup_complete;
+    let completeness = json!({
+        "settled":settled,
+        "content_complete":content_complete,
+        "quality_complete":quality_complete,
+        "quality_reason":quality_reason,
+        "cleanup_complete":cleanup_complete,
+        "placeholders_verified":placeholders["status"] == json!("verified"),
+        "complete":fully_complete
+    });
+    let usage = report::usage_facts(&recorded_resources(&tx, None)?);
+    let resume = resume_facts(&preparation, out, &unresolved, &gaps, meta(&tx, "resume_count")?.as_i64().unwrap_or(0));
+    let timing = timing_of(&tx, &units)?;
+    let bridge = bridge_facts(&units)?;
     let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
     let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"settings":settings_of(&preparation)?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"],"cleanup":cleanup_facts});
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"settings":settings_of(&preparation)?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":content_complete,"excluded":excluded,"counts":counts,"completeness":completeness,"gaps":gaps,"placeholders":placeholders,"timing":timing,"usage":usage,"resume":resume,"bridge":bridge,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"],"cleanup":cleanup_facts});
     drop(deps_query);
     drop(statement);
     tx.commit()?;
@@ -4636,8 +5285,16 @@ fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value>
         claimed.push(claim);
     }
     tx.commit()?;
-    let mut result = status(&p.out, layer)?;
+    let mut result = status(&p.out, layer, None)?;
     result["units"] = json!(claimed);
+    // A claim reply is relayed verbatim by one manager: it carries the claim and the layer's
+    // scheduling state, not the run report. Those sections belong to `ledger status -Verify`
+    // and `ledger report` (R331), so they are not repeated on every claim.
+    if let Some(object) = result.as_object_mut() {
+        for key in ["gaps", "timing", "usage", "resume", "bridge", "placeholders"] {
+            object.remove(key);
+        }
+    }
     Ok(result)
 }
 
@@ -11472,7 +12129,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
 }
 
 fn rerun_list(out: &Path) -> Result<Value> {
-    let view = status(out, "")?;
+    let view = status(out, "", None)?;
     let units = view["units"].as_array().unwrap();
     let unfinished = units
         .iter()
@@ -11773,6 +12430,8 @@ fn resource_facts(resource: &Value) -> Value {
                 "terminal":terminal,
                 "outcome":conversation["outcome"],
                 "evidence":conversation["evidence"],
+                "run":conversation["run"],
+                "usage":conversation["usage"],
                 "deleted":if lost {Value::Null} else {json!(deleted)},
                 "delete":conversation["delete"]
             })
@@ -12077,6 +12736,7 @@ fn resource_observe(p: &Prepared, path: &str, unit: &str, token: Option<i64>) ->
         "terminal",
         "evidence",
         "usage",
+        "usage_unavailable",
         "deleted",
         "delete_failed",
         "listing",
@@ -12209,10 +12869,83 @@ fn resource_observe(p: &Prepared, path: &str, unit: &str, token: Option<i64>) ->
         }
         "usage" => {
             let usage = usage_facts(&input["usage"])?;
-            if resource["usage"].is_object() && resource["usage"] != usage {
-                bail!("operation_conflict: this resource already recorded different per-run usage");
+            if let Some(conversation) = input["conversation"].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                // R343: exact per-run usage, keyed by the provider run id (and, when the provider
+                // reports requests, by request id). The same run recorded again replaces its own
+                // numbers, so retrieving one result twice or continuing a run adds no double count.
+                let at = conversation_at(resource, conversation)?;
+                let run = input["run"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| resource["conversations"][at]["run"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| conversation.to_string());
+                if run.chars().count() > 200 || run.chars().any(char::is_control) {
+                    bail!("a provider run id is at most 200 readable characters");
+                }
+                let mut record = match resource["conversations"][at]["usage"].as_object() {
+                    Some(existing) if existing.get("run") == Some(&json!(run)) => Value::Object(existing.clone()),
+                    _ => json!({"run":run,"recorded_at":canon::utc_now_o()}),
+                };
+                if let Some(request) = input["request"].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                    if !record["requests"].is_object() {
+                        record["requests"] = json!({});
+                    }
+                    record["requests"][request] = usage;
+                } else {
+                    record["total"] = usage;
+                    record["requests"] = Value::Null;
+                }
+                if let Some(estimate) = input.get("estimate").filter(|value| !value.is_null()) {
+                    record["estimate"] = usage_facts(estimate)?;
+                }
+                for key in ["phase", "state", "currency"] {
+                    if let Some(value) = input[key].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                        if value.chars().count() > 40 || value.chars().any(char::is_control) {
+                            bail!("a usage {key} is at most 40 readable characters");
+                        }
+                        record[key] = json!(value.to_ascii_lowercase());
+                    }
+                }
+                // The invocation is server-owned, so usage can be separated into initial work,
+                // retries, fixes and the supported resume without trusting agent prose (R339).
+                record["invocation"] = meta(&tx, "invocation")?;
+                record["observed_at"] = json!(canon::utc_now_o());
+                resource["conversations"][at]["usage"] = record;
+            } else {
+                // A resource-wide reading is a measurement, not a run cost: a later reading of the
+                // rolling total replaces it, and the report still keeps it apart from per-run usage
+                // (R344). Only the last reading is retained as this resource's evidence.
+                resource["usage"] = usage;
             }
-            resource["usage"] = usage;
+        }
+        "usage_unavailable" => {
+            // R345: a provider that exposes only account-wide aggregates leaves this run's usage
+            // unknown. The report states the known subtotal and the missing count; it never
+            // differences two rolling totals to invent one.
+            let id = resource_id(&input, "conversation")?;
+            let at = conversation_at(resource, &id)?;
+            let reason = input["reason"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("a missing usage record names its reason")?;
+            if reason.chars().count() > 200 || reason.chars().any(char::is_control) {
+                bail!("a usage reason is at most 200 readable characters");
+            }
+            let run = input["run"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| resource["conversations"][at]["run"].as_str().map(str::to_string));
+            resource["conversations"][at]["usage"] = json!({
+                "run":run,
+                "unavailable":reason,
+                "invocation":meta(&tx, "invocation")?,
+                "observed_at":canon::utc_now_o()
+            });
         }
         "deleted" => {
             let id = resource_id(&input, "conversation")?;
@@ -12636,7 +13369,12 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
                 ));
             }
         }
-        if resource["usage"].is_null() {
+        let has_run_usage = resource["conversations"].as_array().is_some_and(|list| {
+            list.iter().any(|conversation| {
+                conversation["usage"].is_object() && conversation["usage"]["unavailable"].is_null()
+            })
+        });
+        if resource["usage"].is_null() && !has_run_usage {
             issues.push(cleanup_issue(
                 "operator",
                 "cleanup_evidence_missing",
@@ -12926,12 +13664,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "reclaim"
                 | "job"
                 | "resource"
+                | "report"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim, job or resource"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim, job, resource or report"
             );
         }
-        let params = if command == "next" {
+        let params = if command == "report" {
+            vec!["Out"]
+        } else if command == "next" {
             vec!["Out", "Layer", "Take", "Owner", "Wait"]
         } else if command == "renew" {
             vec!["Out", "Unit", "Token"]
@@ -12961,6 +13702,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             &params,
             if command == "job" || command == "resource" {
                 &["List"]
+            } else if command == "status" {
+                &["Verify"]
             } else {
                 &[]
             },
@@ -13107,7 +13850,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if !a.positional.is_empty() {
             bail!("unexpected ledger positional arguments");
         }
-        if matches!(command.as_str(), "init" | "rerun-list") && a.has("Layer") {
+        if matches!(command.as_str(), "init" | "rerun-list" | "report") && a.has("Layer") {
             bail!("{command} does not accept -Layer");
         }
         Ok(a)
@@ -13362,7 +14105,24 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?
+    } else if command == "report" {
+        // R331: the run report. It reads the ledger and verifies the current placeholder state
+        // through the prepared run's own client, writes its two files and prints the facts.
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        let verified = report::placeholders(&mut zt, field(&p.contract, "citation_key")?);
+        let mut facts = run_report(&p, verified)?;
+        facts["report"] = report::publish(&p.out, &facts)?;
+        util::print_line(&serde_json::to_string(&facts)?)?;
+        return Ok(0);
     } else {
+        let verified = if command == "status" && a.flag("Verify") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            Some(report::placeholders(&mut zt, field(&p.contract, "citation_key")?))
+        } else {
+            None
+        };
         if command == "gate" {
             // Settlement is a recorded fact, not a guess: close the dynamic layers whose
             // producers have all settled before reporting the gate (R167, R200).
@@ -13374,7 +14134,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             close_enumerations(&tx)?;
             tx.commit()?;
         }
-        status(Path::new(&a.str("Out")), &a.str("Layer"))?
+        status(Path::new(&a.str("Out")), &a.str("Layer"), verified)?
     };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(if command == "gate" && result["settled"] != true {
@@ -13387,6 +14147,108 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_done_bridge_publication_names_its_report_and_counts_its_proposals() {
+        // R339: an open proposal is a review decision with the immutable report id beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge-report.json");
+        std::fs::write(
+            &path,
+            json!({"schema":1,"report_id":"r-abc","proposals":[{"id":"b001"},{"id":"b002"}]}).to_string(),
+        )
+        .unwrap();
+        let units = vec![json!({
+            "id":"bridge/book@1","layer":"bridge","revision":1,"state":"done",
+            "result":{
+                "artifacts":{"report":{"path":path.to_string_lossy()}},
+                "coverage":[
+                    {"ref":"b001","outcome":"open"},
+                    {"ref":"b002","outcome":"accepted"}
+                ]
+            }
+        })];
+        let facts = bridge_facts(&units).unwrap();
+        assert_eq!(facts["report_id"], json!("r-abc"));
+        assert_eq!(facts["open"], json!(1));
+        assert_eq!(facts["accepted"], json!(1));
+        assert_eq!(facts["refused"], json!(0));
+        assert_eq!(facts["state"], json!("awaiting_optional_review"));
+        assert_eq!(bridge_facts(&[]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn counts_separate_declared_work_from_a_deliberate_no_op_and_a_refusal() {
+        // R333: declared work is one obligation per logical key; a superseded revision is history.
+        let units = vec![
+            json!({"id":"digest/g001@1","layer":"digest","logical_key":"g001","revision":1,"state":"done",
+                   "fault":Value::Null,"progress":{},"result":{"disposition":"no_cards"}}),
+            json!({"id":"digest/g002@1","layer":"digest","logical_key":"g002","revision":1,"state":"failed",
+                   "fault":{"code":"check_failed"},"progress":{},"result":Value::Null}),
+            json!({"id":"digest/g002@2","layer":"digest","logical_key":"g002","revision":2,"state":"failed",
+                   "fault":{"code":"superseded"},"progress":{},"result":Value::Null}),
+            json!({"id":"notes/n1@1","layer":"notes","logical_key":"n1","revision":1,"state":"done",
+                   "fault":Value::Null,"progress":{},"result":{"coverage":[{"ref":"s1","outcome":"refused"},{"ref":"s2","outcome":"applied"}]}}),
+        ];
+        let (total, per_layer) = counts_of(&units);
+        assert_eq!(per_layer["digest"]["declared"], json!(2));
+        assert_eq!(per_layer["digest"]["done"], json!(1));
+        assert_eq!(per_layer["digest"]["noop"], json!(1));
+        assert_eq!(per_layer["digest"]["failed"], json!(1));
+        assert_eq!(per_layer["digest"]["superseded"], json!(1));
+        assert_eq!(per_layer["notes"]["refused"], json!(1));
+        assert_eq!(total["declared"], json!(3));
+        assert_eq!(total["noop"], json!(1));
+        assert_eq!(total["refused"], json!(1));
+        assert_eq!(total["open"], json!(0));
+    }
+
+    #[test]
+    fn a_pending_external_run_and_a_placeholder_are_named_gaps() {
+        // R335/R336: the report names the exact unit, job or address that is still owed.
+        let units = vec![json!({
+            "id":"models/m1@1","layer":"models","logical_key":"m1","revision":1,"state":"claimed",
+            "fault":Value::Null,"fault_class":Value::Null,
+            "progress":{"jobs":[{"id":"dsh-run-2","kind":"dsh","state":"running","started_at":1,"cap_seconds":60}]},
+            "result":Value::Null
+        })];
+        let placeholders = json!({"status":"verified","count":1,"models":[{"model":"K/1|a","placeholders":["K/1|a"]}]});
+        let gaps = gaps_of(&units, &[json!({"code":"prepared_group_missing_or_changed","unit":"digest/g005@1"})], &placeholders);
+        assert_eq!(gaps[0]["kind"], json!("model_build"));
+        assert_eq!(gaps[0]["unit"], json!("models/m1@1"));
+        assert_eq!(gaps[1]["kind"], json!("pending_job"));
+        assert_eq!(gaps[1]["address"], json!("dsh-run-2"));
+        assert_eq!(gaps[2]["kind"], json!("coverage"));
+        assert_eq!(gaps[2]["unit"], json!("digest/g005@1"));
+        assert_eq!(gaps[3]["kind"], json!("placeholder"));
+        assert_eq!(gaps[3]["address"], json!("K/1|a"));
+        // An unknown placeholder read yields no placeholder gap and no false count.
+        let unknown = gaps_of(&units, &[], &json!({"status":"unknown","count":Value::Null,"models":[]}));
+        assert_eq!(unknown.len(), 2);
+    }
+
+    #[test]
+    fn the_resume_invocation_is_offered_once_and_a_manual_list_afterwards() {
+        // R340: after the one resume, the report lists the decisions instead of suggesting another.
+        let preparation = json!({"variant":"econ"});
+        let out = Path::new("D:\\zt-digest\\book");
+        let unresolved = vec![json!("digest/g001@1")];
+        let gaps = vec![json!({"kind":"group_gap","unit":"digest/g001@1","reason":"the group draft held an unsourced claim"})];
+        let before = resume_facts(&preparation, out, &unresolved, &gaps, 0);
+        assert_eq!(before["available"], json!(true));
+        let text = before["invocation"].as_str().unwrap();
+        assert!(text.contains("zt-econ-digest.js"));
+        assert!(text.contains("mode: \"resume\""));
+        assert!(text.contains(r"D:\\zt-digest\\book"));
+        assert!(!text.contains(r"\\?\"));
+        let after = resume_facts(&preparation, out, &unresolved, &gaps, 1);
+        assert_eq!(after["available"], json!(false));
+        assert!(after["reason"].as_str().unwrap().contains("already been used"));
+        assert_eq!(after["manual"][0], json!("group_gap digest/g001@1: the group draft held an unsourced claim"));
+        let done = resume_facts(&preparation, out, &[], &[], 0);
+        assert_eq!(done["available"], json!(false));
+        assert_eq!(done["reason"], json!("no unresolved work remains"));
+    }
 
     #[test]
     fn an_empirical_unit_names_its_layer_and_group() {

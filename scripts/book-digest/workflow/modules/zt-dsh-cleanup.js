@@ -1,4 +1,4 @@
-// ==== module zt-dsh-cleanup v2 ====
+// ==== module zt-dsh-cleanup v3 ====
 // R231/R322–R330: the run's cleanup is settled from ledger evidence, never from a workspace listing's
 // titles. The module reads every resource this run recorded, asks one Haiku agent to delete exactly those
 // conversation ids (an unknown member is reported, never removed wholesale), records each provider fact
@@ -6,22 +6,22 @@
 // retained when the ids were recorded; a disposable model folder is removed by the verifier only after
 // its accepted plan sits under the durable evidence path. A partial cleanup keeps the run partial; a
 // provider fault stays retryable and rebuilds no content.
+// The run report (#85, R331–R346) is rendered here, after cleanup settles: every stage of the run has
+// finished, so the report describes the whole invocation. Its usage section is the exact per-run usage
+// the ledger recorded from each run's own result; this module never reads or differences the account-wide
+// usage ledger, because the difference of two rolling totals is not a run's cost (R344).
 defineModule({
-  id: 'zt-dsh-cleanup', version: '2', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence, then report usage.',
+  id: 'zt-dsh-cleanup', version: '3', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence, then render the verified run report.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
-    usageBefore: { type: 'any', description: 'the usage reading from Prepare (mode full)' },
-    usageBeforeLink: { type: 'any', description: 'the usage reading from the link preparation (mode link)' },
-    groups: { type: 'any', description: 'the group count (digest runs in mode full)' },
-    linkRuns: { type: 'any', description: 'the link run reports, for the per-run averages' },
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
     const OUT = Z.OUT
     const listed = await Z.resourceList('cleanup: list the recorded resources')
-    if (!listed.ok) return { status: 'failed', cleanup: null, usage: null, error: listed.error }
+    if (!listed.ok) return { status: 'failed', cleanup: null, usage: null, report: null, error: listed.error }
     const resources = listed.resources || []
     const workspaces = [...new Set(resources.map((r) => r.workspace && r.workspace.id).filter(Boolean))]
     let report = { workspaces: [] }
@@ -34,7 +34,7 @@ defineModule({
       }))
       const asked = await Z.zAgent(
         `Settle the DeepSeek Harness (DSH) conversations this digest run recorded. Work only with the recorded ids below: never delete a conversation because its title looks like this run's, and never delete one that is not recorded here.
-Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace,mcp__deepseek__deepseek_usage".
+Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
 For each workspace below, in order:
 1. deepseek_list with cwd = that workspace path. If the workspace is not found, treat every recorded conversation of it as absent.
 2. For each recorded conversation id of that workspace:
@@ -46,8 +46,7 @@ For each workspace below, in order:
 3. When no recorded id of that workspace remains and there is no unknown member, deepseek_remove_workspace with cwd = that workspace path and delete_conversations true. removed=true only when it succeeded. Otherwise removed=false.
 Recorded resources (JSON):
 ${JSON.stringify(plan)}
-Then deepseek_usage with days=1 and sum each field over the rows for the last day listed (usage_after).
-Return one entry per workspace with its id, removed, unknown (the unrecorded members) and conversations (id, state, outcome, deleted), plus usage_after.`,
+Return one entry per workspace with its id, removed, unknown (the unrecorded members) and conversations (id, state, outcome, deleted). Do not read or sum account-wide usage totals: the run's per-run usage was recorded with each run.`,
         {
           label: 'cleanup DeepSeek', phase: 'Cleanup', model: 'haiku',
           schema: {
@@ -73,13 +72,12 @@ Return one entry per workspace with its id, removed, unknown (the unrecorded mem
                   required: ['id', 'removed', 'conversations'],
                 },
               },
-              usage_after: ZD_USAGE,
             },
             required: ['workspaces'],
           },
         },
       )
-      if (!asked) return { status: 'failed', cleanup: null, usage: null, error: 'no report from the cleanup agent' }
+      if (!asked) return { status: 'failed', cleanup: null, usage: null, report: null, error: 'no report from the cleanup agent' }
       report = asked
       // Record the provider's own facts, then settle each cleanup unit through its checked verifier.
       const seen = new Map()
@@ -114,16 +112,6 @@ Return one entry per workspace with its id, removed, unknown (the unrecorded mem
           conversations: (workspace.conversations || []).map((c) => ({ id: c.id, state: String(c.state || 'unknown') })),
           unknown: workspace.unknown || [],
         })
-        const b = p.usageBefore || p.usageBeforeLink
-        const usage = asked.usage_after && b
-          ? {
-              input_cache_miss: Math.max(0, asked.usage_after.input_cache_miss - b.input_cache_miss),
-              cached_read: Math.max(0, asked.usage_after.cached_read - b.cached_read),
-              output: Math.max(0, asked.usage_after.output - b.output),
-              calls: Math.max(0, asked.usage_after.calls - b.calls),
-            }
-          : { calls: 0 }
-        await Z.observeResource(`cleanup: usage ${resource.id}`, { op: 'usage', resource: resource.id, usage })
         await Z.observeResource(`cleanup: workspace removed ${resource.workspace.id}`, {
           op: 'workspace', resource: resource.id, removed: workspace.removed === true,
         })
@@ -162,21 +150,38 @@ Return one entry per workspace with its id, removed, unknown (the unrecorded mem
       status: run ? run.json.status : 'unsettled',
     }
     if (cleanup.status === 'partial') log(`Cleanup is partial: ${JSON.stringify((run.json && run.json.partial_reasons) || [])}`)
-    let usage = null
-    const b = p.usageBefore || p.usageBeforeLink
-    if (b && report.usage_after) {
-      const a = report.usage_after
-      const miss = a.input_cache_miss - b.input_cache_miss, hit = a.cached_read - b.cached_read
-      const runs = Math.max(1, (p.mode === 'full' ? (p.groups || 0) : 0) + (p.linkRuns || []).length)
-      usage = {
-        input_cache_miss: miss, cached_read: hit, output: a.output - b.output,
-        calls: a.calls - b.calls, cost: Math.round((a.cost - b.cost) * 10000) / 10000,
-        cache_hit_rate: miss + hit > 0 ? Math.round((hit / (miss + hit)) * 1000) / 1000 : null,
-        per_run: { input: Math.round((miss + hit) / runs), output: Math.round((a.output - b.output) / runs), calls: Math.round(((a.calls - b.calls) / runs) * 10) / 10 },
-      }
-      log(`DeepSeek usage for this batch: ${JSON.stringify(usage)}`)
+    // R331: the verified run report. Every stage has settled, so the report describes this invocation:
+    // completeness, gaps, current placeholders, timings and exact per-run usage. A failed render leaves the
+    // run partial and names why; it never substitutes an agent's summary for the report.
+    const rendered = await Z.ledgerReport('report the run from the ledger')
+    let facts = null
+    if (!rendered.ok) {
+      log(`The run report failed: ${rendered.error}`)
+    } else {
+      facts = rendered.json
+      const c = facts.completeness || {}
+      const u = facts.usage || {}
+      log(`Run report: settled ${c.settled}, content ${c.content_complete}, quality ${c.quality_complete}, cleanup ${c.cleanup_complete}, complete ${c.complete}; ${(facts.gaps || []).length} gap(s); placeholders ${facts.placeholders && facts.placeholders.count}; usage ${u.known_runs} run(s) known, ${u.missing_runs} missing. Report: ${OUT}\\run-report.md`)
     }
-    return { cleanup, usage }
+    const usage = facts ? facts.usage : null
+    return {
+      status: facts ? (facts.completeness && facts.completeness.complete ? 'complete' : 'partial') : (cleanup.status === 'complete' ? 'partial' : cleanup.status),
+      cleanup,
+      usage,
+      report: facts ? {
+        json: (facts.report && facts.report['run-report.json'] && facts.report['run-report.json'].path) || `${OUT}\\run-report.json`,
+        markdown: (facts.report && facts.report['run-report.md'] && facts.report['run-report.md'].path) || `${OUT}\\run-report.md`,
+        completeness: facts.completeness,
+        counts: facts.counts,
+        gaps: facts.gaps,
+        placeholders: facts.placeholders,
+        timing: facts.timing,
+        resume: facts.resume,
+        bridge: facts.bridge,
+        publications: facts.publications,
+      } : null,
+      error: facts ? undefined : rendered.error,
+    }
   },
 })
 // ==== end module zt-dsh-cleanup ====

@@ -31,6 +31,7 @@ mod model;
 mod organize;
 mod prepare;
 mod ps;
+mod report;
 mod skeleton;
 mod snapshot;
 mod terms;

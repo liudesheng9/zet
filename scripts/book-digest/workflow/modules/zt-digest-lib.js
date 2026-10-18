@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v9 ====
+// ==== module zt-digest-lib v10 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -40,15 +40,8 @@ const ZD_DSH_SOURCES = {
 }
 const ZD_PER_MANAGER_MAX = 8
 const ZD_MAX_MANAGERS = 8
-const ZD_USAGE = {
-  type: 'object',
-  properties: {
-    input_cache_miss: { type: 'number' }, cached_read: { type: 'number' },
-    output: { type: 'number' }, cost: { type: 'number' }, calls: { type: 'number' },
-  },
-  required: ['input_cache_miss', 'cached_read', 'output', 'cost', 'calls'],
-}
-const ZD_USAGE_STEP = 'Load the DeepSeek tools with ToolSearch query "select:mcp__deepseek__deepseek_usage" and call deepseek_usage with days=1. Sum each field over the rows for the last day listed.'
+// R343–R346: run usage is per provider run, recorded from that run's own result. This framework never
+// reads the account-wide usage ledger: the difference of two rolling totals is not a run's cost (I22/R344).
 const ZD_RUN_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
 
 // The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}").
@@ -170,6 +163,7 @@ Return ok (true when it exits without an error) and output = its last output lin
       cards: { type: 'number' }, models: { type: 'number' }, events: { type: 'number' }, links: { type: 'number' }, topics: { type: 'array', items: { type: 'string' } },
       errors: { type: 'string' }, deleted: { type: 'boolean' },
       tool_calls: { type: 'number' }, context_used: { type: 'number' },
+      usage: { type: 'object', description: 'the numbers the run\'s own result reported for its tokens or cost' },
     },
     required: ['group', 'status', 'errors', 'deleted'],
   }
@@ -210,6 +204,7 @@ Then follow "status" until the run ends:
   - "finished": parse its JSON ${S.answer}.
   Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
   Record tool_calls = the sum of the counts in the last turn report's tools_used, and context_used = context.used.
+  When the last turn report or the run's own result states this run's token usage or cost, copy those numbers into the result's usage object (for example {"input_tokens": 1200, "output_tokens": 300}). Never call deepseek_usage or subtract account-wide totals: a difference of two rolling totals is not this run's cost.
 
 Return reports: one entry per group in this block with group, status, ${S.fields}, errors, deleted, tool_calls, context_used.`,
       {
@@ -249,7 +244,7 @@ Return reports: one entry per group in this block with group, status, ${S.fields
     type: 'object',
     properties: {
       ok: { type: 'boolean' }, error: { type: 'string' }, output: { type: 'string' },
-      results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, session_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'failed'] }, answer: { type: 'string' } }, required: ['id', 'status'] } },
+      results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, session_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'failed'] }, answer: { type: 'string' }, usage: { type: 'object' } }, required: ['id', 'status'] } },
       deleted: { type: 'number' },
     },
     required: ['ok', 'results'],
@@ -290,6 +285,7 @@ Follow "status" until each job ends:
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup agent deletes them.
+When the run's own result or its last turn report states this run's token usage or cost, copy those numbers into that result's usage object. Never call deepseek_usage or subtract account-wide totals: a difference of two rolling totals is not this run's cost.
 Return ok=true, output="", and results: one entry per job with id, session_id, status ("done" or "failed"), and answer.`,
       { label, phase: o.phase || 'Models', model: 'haiku', schema: DRIVE }))
   }
@@ -368,6 +364,7 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
           properties: {
             id: { type: 'string' }, step: { type: 'string' }, session_id: { type: 'string' },
             status: { type: 'string', enum: ['done', 'failed'] }, answer: { type: 'string' },
+            usage: { type: 'object' },
           },
           required: ['id', 'status'],
         },
@@ -408,6 +405,7 @@ Follow "status" until each job ends:
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 Do not close, archive, or delete conversations: later rounds continue them, and the step's cleanup deletes them.
+When the run's own result or its last turn report states this run's token usage or cost, copy those numbers into that result's usage object. Never call deepseek_usage or subtract account-wide totals: a difference of two rolling totals is not this run's cost.
 Return steps: one entry per step with name, ok (true when it exited without an error), exit (its exit code when known), output (its last line unchanged) or error (the failure text); and results: one entry per job with id, step, session_id, status ("done" or "failed"), and answer.`
   }
   // Runs one declared chain in ONE manager. o: label, dsh, skills, effort, phase, writes, steps, sessions, cleanup, keep.
@@ -532,6 +530,18 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     if (o.unit) return { unit: o.unit, token: Number(o.token) || 0 }
     return 'run'
   }
+  // R343–R345: exact per-run usage. A manager copies the numbers the provider attached to that run's own
+  // result; the ledger deduplicates them by run id, so reading one result twice or continuing a run never
+  // adds its cost twice. The account-wide usage ledger is never read here: the difference of two rolling
+  // totals is not a run's cost (R344).
+  const measuredUsage = (value) => {
+    if (!value || typeof value !== 'object') return null
+    const usage = {}
+    for (const [name, number] of Object.entries(value)) {
+      if (typeof number === 'number' && Number.isFinite(number) && number >= 0) usage[name] = number
+    }
+    return Object.keys(usage).length ? usage : null
+  }
   const registerResources = async (label, owner, dsh, results) => {
     const items = (results || []).filter((r) => r && typeof r.session_id === 'string' && r.session_id.trim())
     if (!items.length) return { ok: true, recorded: 0 }
@@ -552,7 +562,29 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     if (!parsed || !parsed.cleanup_unit) {
       return { ok: false, recorded: 0, error: String((out.run && out.run.output) || 'the created run ids were not recorded') }
     }
-    return { ok: true, recorded: items.length, cleanup_unit: parsed.cleanup_unit, label: parsed.label }
+    // The provider's own per-run numbers, when the manager had them. A run without them stays
+    // missing coverage in the report; nothing is estimated from the account total.
+    const resourceId = (parsed.resources || [])[0] && parsed.resources[0].id
+    let usageRuns = 0
+    if (resourceId) {
+      for (const r of items) {
+        const usage = measuredUsage(r.usage)
+        if (!usage) continue
+        const got = await observeResource(`${label}: usage ${r.session_id}`, {
+          op: 'usage', resource: resourceId, conversation: r.session_id, usage,
+          ...(r.usage_currency ? { currency: r.usage_currency } : {}),
+        })
+        if (got.ok) usageRuns += 1
+      }
+    }
+    return { ok: true, recorded: items.length, cleanup_unit: parsed.cleanup_unit, label: parsed.label, usage_runs: usageRuns }
+  }
+  // R331: the run report. It reads the ledger and verifies the current placeholder state, writes
+  // run-report.json and run-report.md, and prints the same facts ledger status reports.
+  const ledgerReport = async (label) => {
+    const out = await runScript(label, CLEANUP_PHASE, ledgerCommand(`report -Out "${OUT}"`), ' (it writes run-report.json and run-report.md)')
+    if (!out.json) return { ok: false, error: String((out.run && out.run.output) || 'no output from ledger report') }
+    return { ok: true, json: out.json }
   }
   // The recorded resources of this run, exactly as the ledger holds them (never a workspace listing alone).
   const resourceList = async (label, unit = '') => {
@@ -692,14 +724,14 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
     cleanupDsh: () => ({ ok: true, results: [], deleted: 0, deferred: true }),
     // Owned provider resources (R322-R330): record the returned ids, observe the provider's facts, settle the unit.
-    registerResources, observeResource, resourceList, finishCleanup, resourceOwner, CLEANUP_PHASE,
+    registerResources, observeResource, resourceList, finishCleanup, resourceOwner, CLEANUP_PHASE, ledgerReport,
     runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '9', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '10', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

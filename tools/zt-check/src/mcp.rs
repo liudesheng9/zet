@@ -109,6 +109,8 @@ pub struct ServiceFacts {
     pub pid: Option<String>,
     pub archive_root: Option<std::path::PathBuf>,
     pub revision: Option<u64>,
+    /// The version the running daemon reports, when `zt status` names it (R332).
+    pub version: Option<String>,
     /// R319: the previous daemon ended without a normal exit record.
     pub last_exit_abnormal: bool,
 }
@@ -144,6 +146,13 @@ pub fn observe_service(program: &str) -> Result<Option<ServiceFacts>> {
         pid: field("pid: "),
         archive_root: field("archive_root: ").map(std::path::PathBuf::from),
         revision: field("revision: ").and_then(|value| value.parse().ok()),
+        // The daemon line carries the version the running service reports (`daemon: version=0.20.0 ...`).
+        version: text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("daemon: "))
+            .and_then(|rest| rest.split_whitespace().find_map(|part| part.strip_prefix("version=")))
+            .map(str::to_string)
+            .filter(|value| !value.is_empty()),
         last_exit_abnormal: text
             .lines()
             .any(|line| line.trim_start().starts_with("last_exit: abnormal")),

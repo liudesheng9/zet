@@ -1,13 +1,16 @@
-// ==== module zt-digest-report v7 ====
+// ==== module zt-digest-report v8 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
 // other modes the extra reports join the whole report (e.g. math: {...}). 4.0.0 adds the effective settings
 // (maxAttempts, dshRunCap), the Cards layer's gate, and a schedule summary of what every group chain and layer
 // driver settled: verified, failed, retrying and open work, never a claim of work that no gate confirmed.
+// 8 adds run_report: the verified ledger report (completeness, gaps, current placeholders, timings, exact
+// per-run usage and the supported resume invocation), so a run's result carries the report's own facts
+// instead of an agent's summary (#85, R331-R346).
 defineModule({
-  id: 'zt-digest-report', version: '7', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings and the schedule summary.',
+  id: 'zt-digest-report', version: '8', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
@@ -22,7 +25,7 @@ defineModule({
     hubsFirst: { type: 'any', description: 'the hub stage output in mode hubs' },
     link: { type: 'any', description: 'the link pass output' },
     linkCheck: { type: 'any', description: 'the link check card cycle' },
-    cleanup: { type: 'any', description: 'the cleanup stage output' },
+    cleanup: { type: 'any', description: 'the cleanup stage output, with the verified run report' },
     organize: { type: 'any', description: 'the Organize stage output' },
     figures: { type: 'any', description: 'the figures stage output' },
     bridge: { type: 'any', description: 'Bridge report or explicit apply summary' },
@@ -36,6 +39,10 @@ defineModule({
     const dshModel = p.model || Z.DSH_MODEL
     const extra = p.extra || {}
     const or = (v, d) => (v === undefined ? d : v)
+    // The verified ledger report every mode carries: the run's own completeness, gaps, placement, timings,
+    // exact per-run usage and one supported resume. It never substitutes for a stage's own checked output.
+    const runReport = (p.cleanup && p.cleanup.report) || null
+    const runUsage = (p.cleanup && p.cleanup.usage) || (runReport && runReport.usage) || null
     // The group stage is a per-item chain pipeline now: each item's Digest chain is its own report.
     const digestReports = Array.isArray(p.digest && p.digest.items)
       ? p.digest.items.map(i => ({ group: (i.item && i.item.n) ?? null, ...(i.steps && i.steps.group ? i.steps.group : {}), status: i.ok ? ((i.steps && i.steps.group && i.steps.group.status) || 'done') : 'failed', errors: i.error || null }))
@@ -53,14 +60,14 @@ defineModule({
       findings: layerSummary((extra && extra.findings) || null),
     }
     if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
-    if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule }
+    if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
     // One whole-book card cycle (R296): book is that cycle's report, link the link check's, groups the per-group checks.
     const cardsReport = { book: or(p.cardsBook, null), link: or(p.linkCheck, null), groups: layerSummary(p.cards) }
-    if (MODE === 'explain') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, explain: or(p.explain, null), schedule }
-    if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null) }
-    if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null) }
-    if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule }
-    if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null) }
+    if (MODE === 'explain') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, explain: or(p.explain, null), schedule, run_report: runReport }
+    if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null), run_report: runReport }
+    if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null), run_report: runReport }
+    if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule, run_report: runReport }
+    if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null), run_report: runReport }
     if (!['full', 'link', 'models', 'hubs', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
     const modelReports = (p.models && p.models.models) || []
     const linkReports = (p.link && p.link.reports) || []
@@ -72,7 +79,7 @@ defineModule({
       model_cleanup: (p.models && p.models.model_cleanup) || null,
       link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
-      deepseek_usage: (p.cleanup && p.cleanup.usage) || null, cleanup: (p.cleanup && p.cleanup.cleanup) || null,
+      deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null),
       schedule,
       ...extra,

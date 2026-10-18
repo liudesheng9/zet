@@ -47,8 +47,12 @@ try {
     $workers = @((Start-Claim 'manager-a'),(Start-Claim 'manager-b'))
     $claims = @()
     foreach ($worker in $workers) {
+        # Read both pipes while the claim runs: a reply larger than the pipe buffer must never
+        # deadlock the child behind the parent's WaitForExit.
+        $stdoutTask = $worker.StandardOutput.ReadToEndAsync()
+        $stderrTask = $worker.StandardError.ReadToEndAsync()
         if (-not $worker.WaitForExit(30000)) { $worker.Kill($true); throw 'claim process timed out' }
-        $stdout = $worker.StandardOutput.ReadToEnd(); $stderr = $worker.StandardError.ReadToEnd()
+        $stdout = $stdoutTask.Result; $stderr = $stderrTask.Result
         if ($worker.ExitCode) { throw "claim failed: $stderr" }
         $claims += @((ConvertFrom-Json -InputObject $stdout -AsHashtable).units)
         $worker.Dispose()
