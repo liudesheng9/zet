@@ -1994,6 +1994,63 @@ fn legacy_link_migration_names_a_bad_card_and_can_be_retried_after_repair() {
         .success();
 }
 
+#[test]
+fn an_unknown_link_index_version_is_refused_without_changing_the_archive() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_topic",
+        json!({"title":"Guarded index","body":"An entry."}),
+    );
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","kind":"direct","title":"Claim","body":"依赖 [[0/0]]。"}),
+    );
+    drop(mcp);
+    home.cmd().arg("down").assert().success();
+    let rows = || -> Vec<(String, String)> {
+        let conn = home.db();
+        let mut stmt = conn
+            .prepare("SELECT COALESCE(location, citation_key), text FROM cards ORDER BY 1")
+            .expect("cards query");
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("card rows")
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            .expect("card rows")
+    };
+    let before = rows();
+    let db = home.db();
+    db.execute(
+        "UPDATE metadata SET value='999' WHERE key='links_index_version'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    // A binary that does not know this index version must not write the archive:
+    // mixed old/new writers and an unsafe downgrade stay prohibited.
+    home.cmd()
+        .arg("up")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported Link index version"));
+    assert_eq!(rows(), before, "the refused start changed no Card");
+    let marker: String = home
+        .db()
+        .query_row(
+            "SELECT value FROM metadata WHERE key='links_index_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("marker");
+    assert_eq!(marker, "999", "the unknown marker is left for its owner");
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not initialized"));
+}
+
 #[cfg(windows)]
 #[test]
 fn a_live_lock_holder_is_reported_busy_promptly_and_its_lock_file_is_kept() {

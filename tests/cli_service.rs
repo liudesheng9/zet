@@ -3520,6 +3520,23 @@ fn up_converts_pre_markdown_cards_after_backing_up_the_archive() {
 
     home.cmd().arg("up").assert().success();
 
+    // Conversion is a writer: the derived Link index is built from the
+    // converted authored text and matches the full parser at once.
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&checked).expect("Link report");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(
+        report["links"], 2,
+        "one occurrence to the Topic and one to the Literature Card: {report}"
+    );
+
     assert_eq!(
         home.card_text("0/0"),
         "# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[0/1]] Idea\n"
