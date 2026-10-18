@@ -745,7 +745,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         sample: a.int_or("Sample", 15)?,
         skip_models: a.flag("SkipModels"),
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let outcome = run(&mut zt, &p, &mut |line| {
         let _ = util::print_line(line);
     })?;

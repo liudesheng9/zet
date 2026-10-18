@@ -20,25 +20,47 @@ const ACCESS: Access = Access::Agent;
 const SERVER_NAME: &str = "zt";
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// How long a write waits for a busy edit lock before refusing (R269).
+/// How long a write waits for a busy edit lock before refusing (R269/R315).
 ///
 /// A person's editor holds the lock while it is open, so an ordinary agent write
 /// gives up quickly instead of hanging. A digest batch client needs long patience
 /// and sets `ZT_EDIT_PATIENCE=180` for its child `zt mcp`. The value is validated as
-/// whole seconds from 1 through 300; anything else keeps the default 20.
+/// whole seconds from 1 through 300; anything else keeps the default 20 and is
+/// reported once in the archive's log, so a silent fallback cannot hide a
+/// misconfigured batch client.
 const DEFAULT_EDIT_PATIENCE_SECONDS: u64 = 20;
+const EDIT_PATIENCE_SECONDS: std::ops::RangeInclusive<u64> = 1..=300;
 
-fn edit_patience() -> std::time::Duration {
-    patience_seconds(std::env::var("ZT_EDIT_PATIENCE").ok().as_deref())
+pub(crate) fn edit_patience() -> std::time::Duration {
+    patience_seconds(std::env::var("ZT_EDIT_PATIENCE").ok().as_deref()).0
 }
 
-/// The patience a declared value asks for: whole seconds from 1 through 300, else the default 20.
-fn patience_seconds(declared: Option<&str>) -> std::time::Duration {
-    let seconds = declared
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|seconds| (1..=300).contains(seconds))
-        .unwrap_or(DEFAULT_EDIT_PATIENCE_SECONDS);
-    std::time::Duration::from_secs(seconds)
+/// The one note a child with an invalid declared value writes at its start.
+pub(crate) fn patience_note() -> Option<String> {
+    patience_seconds(std::env::var("ZT_EDIT_PATIENCE").ok().as_deref()).1
+}
+
+/// The patience a declared value asks for, and why a declared value was refused: whole seconds
+/// from 1 through 300, else the default 20.
+fn patience_seconds(declared: Option<&str>) -> (std::time::Duration, Option<String>) {
+    let default = std::time::Duration::from_secs(DEFAULT_EDIT_PATIENCE_SECONDS);
+    let Some(declared) = declared else {
+        return (default, None);
+    };
+    match declared.trim().parse::<u64>() {
+        Ok(seconds) if EDIT_PATIENCE_SECONDS.contains(&seconds) => {
+            (std::time::Duration::from_secs(seconds), None)
+        }
+        _ => (
+            default,
+            Some(format!(
+                "edit patience: ZT_EDIT_PATIENCE={declared} is not a whole number of seconds from {} through {}; using the default {}",
+                EDIT_PATIENCE_SECONDS.start(),
+                EDIT_PATIENCE_SECONDS.end(),
+                DEFAULT_EDIT_PATIENCE_SECONDS
+            )),
+        ),
+    }
 }
 
 const INSTRUCTIONS: &str = "ZT is a slip-box of addressable Markdown Cards split into two Workspaces: \
@@ -91,6 +113,13 @@ repeat the call with the `confirm` text the plan names to apply it. The scholar_
 bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns. To point a reader at the source document itself (a PDF or Markdown the archive manages), write a Document link `[label](scholar:<file_id>)` (add `#page=12` for a PDF page); scholar_archive_file returns one as `link`.";
 
 pub(crate) fn run() -> Result<()> {
+    // R315: a declared value outside the documented range is reported once, here, instead of
+    // quietly turning a batch client's long patience back into the ordinary short bound.
+    if let Some(note) = patience_note()
+        && let Ok(root) = crate::require_archive_root()
+    {
+        crate::log_event(&root, &note).ok();
+    }
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut server = Server::default();
@@ -383,7 +412,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         ),
         "list_broken_links" => crate::read::broken(&root, optional_workspace(args)?),
         "create_topic" | "create_literature" | "create_successor" | "edit_card" => {
-            let _lock=crate::acquire_edit_lock_within(&root,edit_patience())?;
+            // R316: the wait line names the tool that waited.
+            let operation = match name {
+                "create_topic" => "create_topic",
+                "create_literature" => "create_literature",
+                "create_successor" => "create_successor",
+                _ => "edit_card",
+            };
+            let _lock=crate::acquire_edit_lock_within(&root,edit_patience(),operation)?;
             let mut conn=crate::open_db(&root)?;
             let tx=conn.transaction()?;
             let (result,changed)=write_card_tx(&root,&tx,name,args)?;
@@ -1311,13 +1347,29 @@ mod tests {
 
     #[test]
     fn edit_patience_is_a_bounded_whole_number_of_seconds() {
-        assert_eq!(patience_seconds(None), std::time::Duration::from_secs(20));
-        assert_eq!(patience_seconds(Some("180")), std::time::Duration::from_secs(180));
-        assert_eq!(patience_seconds(Some(" 1 ")), std::time::Duration::from_secs(1));
-        assert_eq!(patience_seconds(Some("300")), std::time::Duration::from_secs(300));
-        // An unreadable or out-of-range value keeps the ordinary short bound instead of hanging a write.
+        let default = std::time::Duration::from_secs(20);
+        assert_eq!(patience_seconds(None), (default, None));
+        assert_eq!(
+            patience_seconds(Some("180")),
+            (std::time::Duration::from_secs(180), None)
+        );
+        assert_eq!(
+            patience_seconds(Some(" 1 ")),
+            (std::time::Duration::from_secs(1), None)
+        );
+        assert_eq!(
+            patience_seconds(Some("300")),
+            (std::time::Duration::from_secs(300), None)
+        );
+        // An unreadable or out-of-range value keeps the ordinary short bound instead of hanging
+        // a write, and its one note repeats the refused value and the default that applied.
         for value in ["0", "301", "-5", "1.5", "abc", ""] {
-            assert_eq!(patience_seconds(Some(value)), std::time::Duration::from_secs(20), "{value}");
+            let (patience, note) = patience_seconds(Some(value));
+            assert_eq!(patience, default, "{value}");
+            let note = note.unwrap_or_else(|| panic!("{value} is refused with a note"));
+            assert!(note.contains(&format!("ZT_EDIT_PATIENCE={value}")), "{note}");
+            assert!(note.contains("1 through 300"), "{note}");
+            assert!(note.contains("default 20"), "{note}");
         }
     }
 

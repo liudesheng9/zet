@@ -20,7 +20,6 @@ use crate::ps::{self, CiMap, pipe, s, truthy};
 use super::read_calls;
 use crate::args::Args;
 use crate::util;
-use crate::zt::Zt;
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -69,7 +68,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     }
 
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     // Read whole trees, not search_cards: a search stops at 200 results. The trees are the
     // book's and those the groups wrote into, in Sort-Object -Unique order.
     let mut trees: Vec<String> = owner.keys().iter().map(|a| a.split('/').next().unwrap_or_default().to_string()).collect();

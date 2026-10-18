@@ -37,6 +37,74 @@ mod terms;
 mod util;
 mod zt;
 
+use anyhow::{Context, Result};
+
+/// `zt-digest service-wait [-Wait <0..120>] [-Out <staging>]`: R320's stage health check.
+///
+/// It asks `zt status` at bounded intervals and waits at most `-Wait` seconds for the configured
+/// restart/autostart path. It never launches a daemon of its own: `zt status` is the one path
+/// that clears a stale record and starts one service, so concurrent stages share one restart.
+/// After a valid restart it reconnects one client, which reports the archive revision the stage
+/// continues on; the stage's own receipt replay is what reconciles writes the disappearance
+/// interrupted. A service that stays down is one infrastructure fault (exit 4) that leaves the
+/// run's units and files exactly as they are.
+fn service_wait_cli(argv: &[String]) -> Result<i32> {
+    let a = args::Args::parse(argv, &["Wait", "Out"], &[])?;
+    let wait: u64 = if a.has("Wait") {
+        a.required("Wait")?
+            .parse()
+            .ok()
+            .filter(|seconds| *seconds <= 120)
+            .context("-Wait must be a whole number of seconds from 0 through 120")?
+    } else {
+        120
+    };
+    let program = std::env::var("ZT_CHECK_ZT").unwrap_or_else(|_| "zt".to_string());
+    let started = std::time::Instant::now();
+    match zt_check::mcp::ensure_service(&program, std::time::Duration::from_secs(wait)) {        Ok(Some(facts)) => {
+            // One client, opened after the restart: this is the reconnection the stage continues on.
+            let reconnected = zt::start().is_ok();
+            let archive = zt_check::mcp::observed_service().unwrap_or(facts);
+            let value = serde_json::json!({
+                "schema_version": 1,
+                "ok": true,
+                "state": "up",
+                "waited_ms": started.elapsed().as_millis() as u64,
+                "pid": archive.pid.clone(),
+                "archive_root": archive.archive_root.as_ref().map(|root| root.display().to_string()),
+                "archive_revision": archive.revision,
+                "last_exit_abnormal": archive.last_exit_abnormal,
+                "reconnected": reconnected,
+                "stage": zt::staging().map(|out| out.display().to_string()),
+            });
+            util::print_line(&util::compact(&value))?;
+            Ok(0)
+        }
+        Ok(None) => {
+            // The program is not a `zt` that answers `status` (an isolated stand-in): nothing was
+            // observed, so nothing is asserted about the service.
+            let value = serde_json::json!({
+                "schema_version": 1, "ok": true, "state": "unobserved",
+                "waited_ms": started.elapsed().as_millis() as u64, "reconnected": false,
+            });
+            util::print_line(&util::compact(&value))?;
+            Ok(0)
+        }
+        Err(error) => {
+            let value = serde_json::json!({
+                "schema_version": 1,
+                "ok": false,
+                "code": "infrastructure_fault",
+                "waited_ms": started.elapsed().as_millis() as u64,
+                "error": format!("{error:#}"),
+                "stage": zt::staging().map(|out| out.display().to_string()),
+            });
+            util::print_line(&util::compact(&value))?;
+            Ok(4)
+        }
+    }
+}
+
 fn main() {
     let mut argv = std::env::args().skip(1);
     let tool = argv.next().unwrap_or_default();
@@ -49,8 +117,11 @@ fn main() {
     } else {
         0
     });
+    // R318: the invocation's staging folder ties its archive active-run marker to one run.
+    zt::note_invocation(&rest);
     let result = match tool.to_ascii_lowercase().as_str() {
         "call" => calls::cli(&rest),
+        "service-wait" => service_wait_cli(&rest),
         "audit" => audit::cli(&rest),
         "card" => card::cli(&rest),
         "model" => model::cli(&rest),
@@ -87,7 +158,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
        terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }

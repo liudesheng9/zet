@@ -327,7 +327,7 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 
 ### Tools per workflow
 
-The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and the step's returned session ids are recorded for the run-level cleanup, which deletes exactly those ids (see Control inside one compiler step). Every digest script is listed in `ZD_TOOLS` and runs as its `zt-digest` tool (see [zt-digest](zt-digest.md)); what each step does is in [Digest scripts](digest-scripts.md). No stage starts a pwsh.
+The tools each framework workflow uses, by the module that uses them. "Compiler step" means `drive()`: a Haiku agent runs the step's command, Haiku managers run its DeepSeek jobs, and the step's returned session ids are recorded for the run-level cleanup, which deletes exactly those ids (see Control inside one compiler step). Every digest script is listed in `ZD_TOOLS` and runs as its `zt-digest` tool (see [zt-digest](zt-digest.md)); what each step does is in [Digest scripts](digest-scripts.md). No stage starts a pwsh. Because every stage command is a `zt-digest` tool, every stage and every retry resolves the archive service before its work (`zt::start`, at most 120 seconds for the configured restart path, one restart and one infrastructure fault when it stays down); the harness checks that no stage bypasses that tool, so the stage health check needs no separate workflow command (R320).
 
 Tools that every workflow uses through `zt-digest-lib`:
 

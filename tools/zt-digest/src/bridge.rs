@@ -218,7 +218,7 @@ fn read_retry(zt: &mut Option<Zt>, calls: &[Value]) -> std::result::Result<Vec<V
     for attempt in 0..2 {
         if zt.is_none() || attempt == 1 {
             *zt = None;
-            match Zt::start() {
+            match crate::zt::start() {
                 Ok(started) => *zt = Some(started),
                 Err(e) => return Err(format!("{e:#}")),
             }
@@ -256,7 +256,7 @@ impl Bridge {
     /// The one `zt mcp` of the run, started on first use.
     fn zt(&mut self) -> Result<&mut Zt> {
         if self.zt.is_none() {
-            self.zt = Some(Zt::start()?);
+            self.zt = Some(crate::zt::start()?);
         }
         Ok(self.zt.as_mut().expect("started"))
     }

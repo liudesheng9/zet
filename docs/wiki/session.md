@@ -217,7 +217,7 @@ n
 
 1. The front end hands the line to `command::execute` with its `Interaction`.
 2. `execute` saves `before = (pointer, workspace)`, calls `execute_command`, which pattern-matches the whitespace-split tokens.
-3. Write commands take `crate::acquire_edit_lock(root)?` first (fail at once with `edit in progress` if another writer holds it), open the database, plan, and ask through `Interaction`. The `save` closure passed to `edit` performs the write; a refused save returns its error to the editor, which shows it and lets the human retry.
+3. Write commands take `crate::acquire_edit_lock(root, "session <command>")?` first (fail at once with `edit in progress` if another writer holds it; the command name is the `op=` of the lock's diagnostic lines), open the database, plan, and ask through `Interaction`. The `save` closure passed to `edit` performs the write; a refused save returns its error to the editor, which shows it and lets the human retry.
 4. After `execute_command`, `execute` calls `state.sync_workspace(root)` (the Workspace becomes that of the Pointer's Card) and, unless the first token is `back` or `fwd`, `state.remember(before)`: if the Pointer changed, push `before` on `back` (dropping the oldest beyond 100) and clear `forward`.
 5. `back`/`fwd` (`SessionState::step`) pop the stack, skip places whose Card no longer exists, push the current place on the other stack, and restore both Pointer and Workspace.
 

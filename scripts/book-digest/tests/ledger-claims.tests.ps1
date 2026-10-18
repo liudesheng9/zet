@@ -55,6 +55,13 @@ try {
     }
     Assert ($claims.Count -eq 1 -and $claims[0].id -eq 'terms/book@1' -and $claims[0].token -gt 0) 'two actual processes receive exactly one current claim for the same queue'
     $claim = $claims[0]
+    # R318: the claiming command refreshed the archive's active-run marker for this prepared run.
+    $marker = Join-Path (Join-Path $scratch 'archive') 'zt.digest.run'
+    Assert (Test-Path -LiteralPath $marker) 'a claimed unit refreshes the archive active-run marker'
+    $markerFacts = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json -AsHashtable
+    $runId = (Run-Digest @('ledger','status','-Out',$out)).run_id
+    Assert ($markerFacts.run_id -eq $runId -and $markerFacts.out -eq $out) 'the marker names the run and staging folder whose command renewed it'
+    Assert ($markerFacts.ttl_s -eq 300 -and $markerFacts.pid -gt 0) 'the marker carries a finite lifetime and the renewing process'
     $status = Run-Digest @('ledger','status','-Out',$out,'-Layer','terms')
     Assert ($status.units[0].state -eq 'claimed' -and $status.units[0].owner -eq $claim.owner -and $status.units[0].attempts -eq 1 -and $claim.input_hash -eq $status.units[0].input_hash -and $status.units[0].lease_until -eq $claim.lease_until) 'claim ownership, input hash, lease and attempt reservation are durable'
     $renew = Run-Digest @('ledger','renew','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)")

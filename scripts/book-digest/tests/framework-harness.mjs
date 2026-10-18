@@ -561,6 +561,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const loose = managerPrompts.filter((p) => !/Keep at most 8 jobs running at a time|never start more than 8 in one manager/.test(p))
   check(!loose.length, `runner: every manager keeps at most eight DeepSeek jobs (${loose.length} without: ${loose.slice(0, 1).map((p) => p.slice(0, 120)).join('')})`)
   check(!calls.some((c) => /\{"out":/.test(c.prompt) && /"citationKey"/.test(c.prompt)), 'runner: no stage relays the whole args object (each step carries its own instructions)')
+  const stageCommands = commands.filter((c) => /^(zt-digest|pwsh -NoProfile -File) /.test(c))
+  check(stageCommands.length > 0 && stageCommands.every((c) => /^zt-digest [a-z-]+ /.test(c)), `service: every stage command is a zt-digest tool, so the stage resolves the service before its archive work and its retries do too (R320; ${stageCommands.filter((c) => !/^zt-digest [a-z-]+ /.test(c)).length} other)`)
   check(pool.peak <= 8, `runner: at most eight managers are alive at once (peak ${pool.peak})`)
   check(report && Object.values(report.stages).every((s) => s.status !== 'failed'), `runner: a full stand-in run has no failed stage${report ? Object.entries(report.stages).filter(([, s]) => s.status === 'failed').map(([k, s]) => ` (${k}: ${s.error})`).join('') : ''}`)
 }

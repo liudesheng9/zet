@@ -787,7 +787,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs, moves or Topic-gate options");
         }
         let options=Options::new().allow_file(&a.str("Allow"))?;
-        let mut zt=Zt::start()?;
+        let mut zt=crate::zt::start()?;
         if a.flag("CheckOnly") {
             let lines=precheck_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?;
             let code=if lines.last().is_some_and(|line|line=="faults: 0") {0}else{1};
@@ -807,7 +807,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     options.src_log = a.str("SrcLog");
     options.topic_gate = a.str("TopicGate");
     options.topic_similarity = a.float_or("TopicSimilarity", 0.8)?;
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let (done, failure) = run(&mut zt, &calls, &mut options)?;
     let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
     let code = match &failure {

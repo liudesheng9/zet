@@ -12,7 +12,6 @@ use super::common::{self, Sb, prop, pstr};
 use crate::args::Args;
 use crate::ps::{self, CiMap, eq, field};
 use crate::util;
-use crate::zt::Zt;
 use anyhow::Result;
 use regex::Regex;
 use serde_json::{Value, json};
@@ -50,7 +49,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let manifest = common::manifest(&p.staging)?;
     let key = pstr(&manifest, "citation_key");
     let audit_dir = ps::join(&p.work, "audit");
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     common::run_audit(&mut zt, &key, &audit_dir)?;
     let audit = common::read_json(&ps::join(&audit_dir, "audit.json"))?;
     let book = ps::at(&ps::pipe(&audit["books"]), 0);

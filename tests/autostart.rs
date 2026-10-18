@@ -607,6 +607,218 @@ fn commands_that_find_the_same_dead_daemon_start_one_service() {
 }
 
 #[test]
+fn a_normal_stop_records_pid_version_archive_and_revision_and_leaves_no_abnormal_record() {
+    let machine = Machine::new();
+    machine.configure();
+    machine.zt().arg("up").assert().success();
+    machine.zt().arg("down").assert().success();
+    let first = machine
+        .log()
+        .lines()
+        .find(|line| line.contains("daemon started"))
+        .expect("a start line")
+        .to_string();
+    for field in ["pid=", "version=", "archive=", "revision="] {
+        assert!(
+            first.contains(field),
+            "the start line records {field}: {first}"
+        );
+    }
+    machine.wait_until("the daemon stops", || {
+        machine.log().contains("exit=normal")
+    });
+    let log = machine.log();
+    let exit = log
+        .lines()
+        .find(|line| line.contains("daemon stopped"))
+        .expect("an exit line");
+    for field in ["pid=", "version=", "archive=", "revision=", "exit=normal"] {
+        assert!(
+            exit.contains(field),
+            "the normal exit line records {field}: {exit}"
+        );
+    }
+    assert!(
+        !log.contains("daemon abnormal exit"),
+        "a normal stop leaves no abnormal record: {log}"
+    );
+    // The next start finds a normal exit record and says nothing about it.
+    machine.zt().arg("up").assert().success();
+    assert!(
+        !machine.log().contains("daemon abnormal exit"),
+        "the normal exit record is consumed once: {}",
+        machine.log()
+    );
+}
+
+#[test]
+fn a_force_killed_daemon_is_reported_as_an_unknown_abnormal_exit_at_the_next_start() {
+    let machine = Machine::new();
+    machine.configure();
+    machine.zt().arg("up").assert().success();
+    let first = machine.pid();
+    kill_daemon(&machine);
+
+    machine
+        .zt()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: up"));
+    let restarted = machine.pid();
+    assert_ne!(restarted, first);
+    let log = machine.log();
+    let abnormal = log
+        .lines()
+        .find(|line| line.contains("daemon abnormal exit"))
+        .unwrap_or_else(|| panic!("an abnormal exit record: {log}"));
+    assert!(
+        abnormal.contains(&format!("pid={first}")),
+        "the abnormal record names the daemon that disappeared: {abnormal}"
+    );
+    assert!(
+        abnormal.contains("exit_info=none") && abnormal.contains("cause=unknown"),
+        "a force kill leaves no exit code, so the cause stays unknown: {abnormal}"
+    );
+    for field in ["version=", "archive=", "revision=", "last_heartbeat="] {
+        assert!(
+            abnormal.contains(field),
+            "the abnormal record preserves {field}: {abnormal}"
+        );
+    }
+    // The operator's view: the last exit was abnormal, and the log holds the details.
+    machine
+        .zt()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("last_exit: abnormal"))
+        .stdout(predicate::str::contains(format!("pid {first}")));
+    // A later normal stop clears the abnormal record.
+    machine.zt().arg("down").assert().success();
+    machine.wait_until("the daemon stops", || {
+        machine.log().matches("exit=normal").count() == 1
+    });
+    machine.zt().arg("up").assert().success();
+    let status = machine.stdout(&["status"]);
+    assert!(
+        !status.contains("last_exit: abnormal"),
+        "a normal exit clears the abnormal record: {status}"
+    );
+}
+
+#[test]
+fn a_panicking_daemon_records_the_panic_and_the_next_start_reports_it() {
+    let machine = Machine::new();
+    machine.configure();
+    // An isolated test may provoke the fault; an ordinary installation cannot.
+    machine
+        .zt()
+        .env("ZT_DAEMON_TEST_FAULT", "panic")
+        .arg("up")
+        .assert()
+        .success();
+    let first = machine.pid();
+    machine.wait_until("the panicking daemon exits", || !process_exists(&first));
+    let log = machine.log();
+    let panic = log
+        .lines()
+        .find(|line| line.contains("daemon panic"))
+        .unwrap_or_else(|| panic!("a panic record: {log}"));
+    assert!(
+        panic.contains(&format!("pid={first}")),
+        "the panic record names the daemon: {panic}"
+    );
+    assert!(
+        panic.contains("message=") && panic.contains("location="),
+        "the panic record carries what and where: {panic}"
+    );
+
+    // The daemon left no normal exit record, so the next start reports it as a panic.
+    machine
+        .zt()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: up"));
+    assert_ne!(machine.pid(), first);
+    let log = machine.log();
+    let abnormal = log
+        .lines()
+        .find(|line| line.contains("daemon abnormal exit"))
+        .unwrap_or_else(|| panic!("an abnormal exit record: {log}"));
+    assert!(
+        abnormal.contains(&format!("pid={first}")) && abnormal.contains("panicked="),
+        "the next start reports the recorded panic: {abnormal}"
+    );
+}
+
+#[test]
+fn a_heartbeat_names_the_active_digest_run_and_stops_when_its_marker_expires() {
+    let machine = Machine::new();
+    machine.configure();
+    machine
+        .zt()
+        .env("ZT_DAEMON_TEST_HEARTBEAT_MS", "120")
+        .arg("up")
+        .assert()
+        .success();
+    let marker = machine.archive_root.join("zt.digest.run");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    fs::write(
+        &marker,
+        serde_json::json!({
+            "schema_version": 1, "run_id": "run-84", "unit": "digest/g001@1",
+            "out": "D:\\x", "pid": 4242, "renewed": now, "ttl_s": 300,
+        })
+        .to_string(),
+    )
+    .expect("write the active-run marker");
+    machine.wait_until("a heartbeat names the run", || {
+        machine.log().contains("run=run-84")
+    });
+    let heartbeat = machine
+        .log()
+        .lines()
+        .find(|line| line.contains("daemon heartbeat") && line.contains("run=run-84"))
+        .expect("a heartbeat line")
+        .to_string();
+    for field in [
+        "pid=",
+        "version=",
+        "archive=",
+        "revision=",
+        "unit=digest/g001@1",
+        "marker_age_s=",
+    ] {
+        assert!(
+            heartbeat.contains(field),
+            "the heartbeat records {field}: {heartbeat}"
+        );
+    }
+    // A killed run stops renewing its marker; the marker expires and the heartbeat stops.
+    fs::write(
+        &marker,
+        serde_json::json!({
+            "schema_version": 1, "run_id": "run-84", "unit": "digest/g001@1",
+            "out": "D:\\x", "pid": 4242, "renewed": now - 4000, "ttl_s": 300,
+        })
+        .to_string(),
+    )
+    .expect("expire the marker");
+    let before = machine.log().matches("daemon heartbeat").count();
+    thread::sleep(Duration::from_millis(900));
+    let after = machine.log().matches("daemon heartbeat").count();
+    assert_eq!(
+        before, after,
+        "an expired marker stops the heartbeat instead of staying active for ever"
+    );
+}
+
+#[test]
 fn a_record_left_by_an_older_daemon_does_not_block_the_next_start() {
     let machine = Machine::new();
     machine.configure();

@@ -532,7 +532,7 @@ fn execute_command(
             if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
                 bail!("topic title must be non-empty single-line text");
             }
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session Topic")?;
             let mut conn = crate::open_db(root)?;
             let workspace = state.workspace;
             let mut created = None;
@@ -549,7 +549,7 @@ fn execute_command(
         }
         ["n"] => {
             let at = state.current_card("n")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session n")?;
             let mut conn = crate::open_db(root)?;
             let parent = crate::load_card(&conn, &at)?;
             let location = crate::direct_successor(&parent.address)?;
@@ -574,7 +574,7 @@ fn execute_command(
         }
         ["b"] => {
             let at = state.current_card("b")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session b")?;
             let mut conn = crate::open_db(root)?;
             let parent = crate::load_card(&conn, &at)?;
             crate::ensure_side_parent(&parent)?;
@@ -596,7 +596,7 @@ fn execute_command(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["l"] => {
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session l")?;
             let mut conn = crate::open_db(root)?;
             let mut accepted = None;
             let mut save_metadata = |text: &str| {
@@ -627,7 +627,7 @@ fn execute_command(
         }
         ["e"] => {
             let at = state.current_card("e")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session e")?;
             let mut conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
             if card.is_lit {
@@ -697,7 +697,7 @@ fn execute_command(
         }
         ["del"] => {
             let at = state.current_card("del")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session del")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::delete_plan(&conn, &at)?;
             interaction.confirm(&plan.confirmation, &crate::delete_verification_lines(&plan))?;
@@ -720,7 +720,7 @@ fn execute_command(
                 }
                 _ => bail!("usage: mv [alone] <new-location> | mv [alone] before <location>"),
             };
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session mv")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::place::move_plan(&conn, &at, &target, alone)?;
             interaction.confirm("move", &crate::move_verification_lines(&plan))?;
@@ -732,7 +732,7 @@ fn execute_command(
         ["mv"] => bail!("usage: mv [alone] <new-location> | mv [alone] before <location>"),
         ["ins"] => {
             let at = state.current_card("ins")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session ins")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::place::insert_plan(&conn, &at)?;
             interaction.confirm("insert", &crate::place::insert_verification_lines(&plan))?;
@@ -755,7 +755,7 @@ fn execute_command(
                 }
                 _ => bail!("only Model Cards can have a Model facet"),
             };
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session ty")?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
             // A part keeps its emphasis while it stays a part.
@@ -773,7 +773,7 @@ fn execute_command(
         ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session lv")?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
             let tx = conn.unchecked_transaction()?;
@@ -801,7 +801,7 @@ fn execute_command(
         ["mf", value] => {
             let at = state.current_card("mf")?;
             let form = crate::math::parse_optional_form(value)?;
-            let _lock = crate::acquire_edit_lock(root)?;
+            let _lock = crate::acquire_edit_lock(root, "session mf")?;
             let conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
             let tx = conn.unchecked_transaction()?;

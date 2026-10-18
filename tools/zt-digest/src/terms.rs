@@ -460,7 +460,7 @@ fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
     let mut address = Value::Null;
     let mut receipt_keys = Vec::new();
     if p.apply {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         if p.operation_prefix.is_empty() {
             let call = term_call(&mut zt, key, &title, &body, false)?;
             let lines = common::write_all(&mut zt, &[call])?;

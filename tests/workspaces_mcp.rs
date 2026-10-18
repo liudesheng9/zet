@@ -2219,6 +2219,292 @@ fn stale_lock_sharing_violation_is_retried_until_the_handle_is_released() {
         .success();
 }
 
+#[cfg(windows)]
+#[test]
+fn a_contended_batch_write_logs_one_wait_event_and_one_completion_with_both_durations() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.mcp()
+        .ok("create_topic", json!({"title": "Contended topic"}));
+    let path = home.archive_root.join("zt.edit.lock");
+    fs::write(&path, "zt edit lock\npid 424242\n").unwrap();
+    let (ready, opened) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        // Opened without delete sharing, so a competing writer cannot remove the stale file
+        // (Windows sharing violation, os error 32) while the file stays readable: the
+        // observable holder in the wait event is its pid.
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(path)
+            .expect("hold the stale lock file");
+        ready.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(6500));
+        drop(handle);
+    });
+    opened.recv().unwrap();
+    // R315: the batch client's child `zt mcp` gets 180 seconds of patience.
+    let mut mcp = home.mcp_with(&[("ZT_EDIT_PATIENCE", "180")]);
+    let started = std::time::Instant::now();
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","title":"Waited","body":"A Card written after the wait."}),
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(5),
+        "the write waited for the holder"
+    );
+    holder.join().unwrap();
+    assert!(home.exists("0/1"), "the write committed after the wait");
+    assert!(
+        !home.archive_root.join("zt.edit.lock").exists(),
+        "the released lock file is gone"
+    );
+
+    let log = home.log();
+    let waits: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("edit wait: "))
+        .collect();
+    assert_eq!(waits.len(), 1, "exactly one wait event, never one per poll: {log}");
+    let wait = waits[0];
+    assert!(wait.contains("op=create_successor"), "{wait}");
+    assert!(wait.contains("waiter_pid="), "{wait}");
+    assert!(
+        wait.contains("holder=pid:424242"),
+        "the observable holder is named: {wait}"
+    );
+    assert!(
+        wait.contains("patience_s=180"),
+        "the wait event records the waiting budget: {wait}"
+    );
+    let elapsed = number_after(wait, "elapsed_ms=");
+    assert!(
+        elapsed >= 5000,
+        "the wait event comes only after five seconds: {wait}"
+    );
+    let done: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("edit wait done: "))
+        .collect();
+    assert_eq!(done.len(), 1, "exactly one completion: {log}");
+    assert!(done[0].contains("outcome=acquired"), "{}", done[0]);
+    assert!(
+        number_after(done[0], "queue_wait_ms=") >= 5000,
+        "the completion records the queue wait: {}",
+        done[0]
+    );
+    assert!(
+        done[0].contains("held_ms=") && number_after(done[0], "held_ms=") < 60_000,
+        "the completion records the lock-held duration: {}",
+        done[0]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_lock_fault_is_reported_instead_of_being_waited_out_as_if_it_were_busy() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("# Topic\n\nentry\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    // A directory where the guard file belongs: opening it fails with access denied, which is
+    // a fault, not contention (R314).
+    let guard = home.archive_root.join("zt.edit.guard");
+    let _ = fs::remove_file(&guard);
+    fs::create_dir(&guard).unwrap();
+    let started = std::time::Instant::now();
+    let output = home
+        .cmd_with_editor("# Blocked\n\nbody\n")
+        .args(["n", "--at", "0/0"])
+        .output()
+        .expect("run the blocked writer");
+    assert!(!output.status.success(), "the fault refuses the write");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("edit in progress"),
+        "an access fault is not reported as a busy lock: {stderr}"
+    );
+    assert!(
+        stderr.contains("zt.edit.guard"),
+        "the fault names the lock file it could not use: {stderr}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a fault fails at once instead of waiting out the patience"
+    );
+    assert!(!home.exists("0/1"), "the refused write created no Card");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_wait_that_overruns_the_declared_patience_logs_one_timeout_and_keeps_the_live_holder() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.mcp()
+        .ok("create_topic", json!({"title": "Refused topic"}));
+    let path = home.archive_root.join("zt.edit.lock");
+    fs::write(&path, "zt edit lock\npid 515151\n").unwrap();
+    let (ready, opened) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(path)
+            .expect("hold the stale lock file");
+        ready.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(10_000));
+        drop(handle);
+    });
+    opened.recv().unwrap();
+    // A finite wait: eight seconds of declared patience end in one refusal, not in a hang.
+    let mut mcp = home.mcp_with(&[("ZT_EDIT_PATIENCE", "8")]);
+    let started = std::time::Instant::now();
+    let (value, failed) = mcp.call(
+        "create_successor",
+        json!({"at":"0/0","title":"Never written","body":"body"}),
+    );
+    let elapsed = started.elapsed();
+    assert!(failed, "the write is refused after its patience");
+    let refusal = value["error"].as_str().expect("error message");
+    assert!(
+        refusal.contains("edit in progress"),
+        "the refusal names the busy lock: {refusal}"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(7) && elapsed < Duration::from_secs(20),
+        "the wait is finite and bounded by the declared patience: {elapsed:?}"
+    );
+    holder.join().unwrap();
+    assert!(!home.exists("0/1"), "the refused write created no Card");
+    assert!(
+        home.archive_root.join("zt.edit.lock").exists(),
+        "the holder's lock file is never removed for it"
+    );
+    let log = home.log();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("edit wait: "))
+            .count(),
+        1,
+        "exactly one wait event: {log}"
+    );
+    let timeouts: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("edit wait done: "))
+        .collect();
+    assert_eq!(timeouts.len(), 1, "exactly one timeout: {log}");
+    assert!(timeouts[0].contains("outcome=timeout"), "{}", timeouts[0]);
+    assert!(
+        timeouts[0].contains("patience_s=8"),
+        "the timeout records its patience: {}",
+        timeouts[0]
+    );
+    assert!(
+        timeouts[0].contains("holder=pid:515151"),
+        "the timeout keeps the observable holder: {}",
+        timeouts[0]
+    );
+    assert!(
+        number_after(timeouts[0], "waited_ms=") >= 7000,
+        "the timeout records the wait: {}",
+        timeouts[0]
+    );
+}
+
+#[test]
+fn a_malformed_lock_file_is_a_fault_that_keeps_the_file_for_its_owner() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("# Topic\n\nentry\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let path = home.archive_root.join("zt.edit.lock");
+    let bytes = [0xffu8, 0xfe, 0x00];
+    fs::write(&path, bytes).unwrap();
+    let output = home
+        .cmd_with_editor("# Blocked\n\nbody\n")
+        .args(["n", "--at", "0/0"])
+        .output()
+        .expect("run the blocked writer");
+    assert!(!output.status.success(), "a malformed lock refuses the write");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("edit in progress"),
+        "a malformed lock file is not reported as a live holder: {stderr}"
+    );
+    assert!(
+        stderr.contains("malformed edit lock"),
+        "the fault names the malformed lock: {stderr}"
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        bytes,
+        "the unreadable lock file is kept for its owner"
+    );
+    assert!(!home.exists("0/1"), "the refused write created no Card");
+}
+
+#[test]
+fn an_invalid_edit_patience_is_reported_once_and_the_documented_default_applies() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    for value in ["0", "abc", "301"] {
+        let mut mcp = home.mcp_with(&[("ZT_EDIT_PATIENCE", value)]);
+        mcp.ok("create_topic", json!({"title": format!("Topic {value}")}));
+    }
+    let log = home.log();
+    let notes: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("edit patience:"))
+        .collect();
+    assert_eq!(
+        notes.len(),
+        3,
+        "one note per child that declared an invalid value: {log}"
+    );
+    for (note, value) in notes.iter().zip(["0", "abc", "301"]) {
+        assert!(
+            note.contains(value),
+            "the note repeats the declared value: {note}"
+        );
+        assert!(
+            note.contains("20"),
+            "the note names the default it used: {note}"
+        );
+    }
+    // A declared value inside the documented range is used without a note.
+    let mut mcp = home.mcp_with(&[("ZT_EDIT_PATIENCE", "180")]);
+    mcp.ok("create_topic", json!({"title": "Topic 180"}));
+    assert_eq!(
+        home.log()
+            .lines()
+            .filter(|line| line.contains("edit patience:"))
+            .count(),
+        3,
+        "a valid patience logs no note"
+    );
+}
+
+/// The integer that follows `key` in one structured log line.
+fn number_after(line: &str, key: &str) -> u64 {
+    line.split(key)
+        .nth(1)
+        .and_then(|rest| {
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|digits| digits.parse().ok())
+        })
+        .unwrap_or_else(|| panic!("`{key}` with a number in {line}"))
+}
+
 #[test]
 fn structural_changes_keep_the_link_index_in_step_and_protect_human_authorship() {
     let home = TestHome::new();
@@ -2751,16 +3037,28 @@ impl TestHome {
             .stdout("0/1\n");
     }
 
+    /// The archive's `zt.log`, which records service events and lock diagnostics.
+    fn log(&self) -> String {
+        fs::read_to_string(self.archive_root.join("zt.log")).unwrap_or_default()
+    }
+
     fn mcp(&self) -> Mcp {
-        let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        self.mcp_with(&[])
+    }
+
+    fn mcp_with(&self, environment: &[(&str, &str)]) -> Mcp {
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"));
+        command
             .arg("mcp")
             .env("ZT_CONFIG_DIR", &self.config_dir)
             .env("ZT_GUI_PORT", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start zt mcp");
+            .stderr(Stdio::null());
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("start zt mcp");
         let stdin = child.stdin.take().expect("mcp stdin");
         let stdout = BufReader::new(child.stdout.take().expect("mcp stdout"));
         let mut mcp = Mcp {

@@ -818,7 +818,11 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
         .with_context(|| format!("failed to open {}", daemon_lock_path(&root).display()))?;
     lock.lock()
         .with_context(|| format!("failed to lock {}", daemon_lock_path(&root).display()))?;
-    log_event(&root, "daemon started")?;
+    // R318/R319: this run's record, and what the previous run left. A previous record without
+    // a normal exit record is the abnormal disappearance, reported here with every preserved fact.
+    let run = begin_daemon_run(&root);
+    log_event(&root, &daemon_start_line(&run))?;
+    install_daemon_panic_hook(&root);
     // The GUI lives as long as the daemon. It is up before the service record, so a service
     // that reads as up already shows where its GUI listens.
     let gui = gui::start(&root)
@@ -836,6 +840,12 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
         .append(true)
         .open(sessions_path(&root))
         .ok();
+    // An isolated test provokes the panic hook here, after `zt up` could see the service record.
+    panic_probe();
+    // R318: one heartbeat a minute while a ledger-aware digest command keeps a fresh
+    // active-run marker, so a disappearance during a run leaves a trace in the log.
+    STARTED_AT.store(unix_seconds(), std::sync::atomic::Ordering::Relaxed);
+    let heartbeat = start_daemon_heartbeat(root.clone(), run.clone());
     let ended = shutdown::watch(
         {
             let (root, pid) = (root.clone(), pid.clone());
@@ -849,11 +859,280 @@ fn cmd_daemon(root: PathBuf) -> Result<()> {
     if let Some(gui) = gui {
         gui.stop();
     }
-    if ended.is_none() {
-        log_event(&root, "daemon stopped")?;
-    }
+    stop_daemon_heartbeat(heartbeat);
+    end_daemon_run(&root, &run, ended);
     drop(lock);
     Ok(())
+}
+
+/// The daemon's record of its own run: written at start, refreshed by each heartbeat, removed by
+/// a normal exit. What is left behind is the evidence of an abnormal end (R318/R319).
+fn daemon_run_path(root: &Path) -> PathBuf {
+    root.join("zt.daemon.run")
+}
+
+/// The retained abnormal exit of the latest run, cleared by the next normal exit.
+fn daemon_last_exit_path(root: &Path) -> PathBuf {
+    root.join("zt.daemon.last")
+}
+
+/// The active-run marker that ledger-aware digest commands refresh while a digest invocation is
+/// active; it expires after the renewals stop (R318).
+fn active_run_path(root: &Path) -> PathBuf {
+    root.join("zt.digest.run")
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// A field of a parsed record for a log line, or `unknown` when the record lacks it.
+fn record_field(record: &serde_json::Value, name: &str) -> String {
+    match record.get(name) {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Null) | None => "unknown".to_string(),
+        Some(value) => value.to_string(),
+    }
+}
+
+fn read_record(path: &Path) -> Option<serde_json::Value> {
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Publishes a small record atomically, so a reader never sees half of it.
+fn write_record(path: &Path, record: &serde_json::Value) {
+    let temporary = path.with_extension("tmp");
+    if fs::write(&temporary, record.to_string()).is_ok() {
+        let _ = fs::rename(&temporary, path);
+    }
+}
+
+/// The archive's persisted identity and current revision for a diagnostic record. Diagnostics
+/// never fail because the archive is unavailable: they report what they could observe.
+fn archive_facts(root: &Path) -> (String, String) {
+    let opened = Connection::open_with_flags(
+        db_path(root),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    );
+    match opened {
+        Ok(conn) => {
+            let id: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='archive_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let revision = link_index::revision(&conn)
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            (id.unwrap_or_else(|| "unknown".to_string()), revision)
+        }
+        Err(_) => ("unavailable".to_string(), "unknown".to_string()),
+    }
+}
+
+/// Writes this run's record and reports a previous record that has no normal exit record. The
+/// report keeps every fact the previous run left and states plainly what the OS could not tell
+/// us: a force kill or a power cut leaves no exit code (R319).
+fn begin_daemon_run(root: &Path) -> serde_json::Value {
+    if let Some(previous) = read_record(&daemon_run_path(root)) {
+        let line = format!(
+            "daemon abnormal exit: pid={} version={} archive={} revision={} started={} last_heartbeat={} panicked={} exit_info=none cause=unknown",
+            record_field(&previous, "pid"),
+            record_field(&previous, "version"),
+            record_field(&previous, "archive_id"),
+            record_field(&previous, "revision"),
+            record_field(&previous, "started"),
+            record_field(&previous, "last_heartbeat"),
+            record_field(&previous, "panicked"),
+        );
+        let _ = log_event(root, &line);
+        write_record(&daemon_last_exit_path(root), &previous);
+    }
+    let (archive_id, revision) = archive_facts(root);
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "pid": std::process::id(),
+        "version": VERSION,
+        "archive_id": archive_id,
+        "revision": revision,
+        "started": unix_seconds(),
+        "last_heartbeat": serde_json::Value::Null,
+        "panicked": serde_json::Value::Null,
+    });
+    write_record(&daemon_run_path(root), &record);
+    record
+}
+
+fn daemon_start_line(run: &serde_json::Value) -> String {
+    format!(
+        "daemon started pid={} version={} archive={} revision={}",
+        record_field(run, "pid"),
+        record_field(run, "version"),
+        record_field(run, "archive_id"),
+        record_field(run, "revision"),
+    )
+}
+
+/// The daemon's normal exit paths, all of them: `zt down`, the machine ending the session, and
+/// the daemon finding another service record. Each removes this run's record so the next start
+/// does not mistake it for a disappearance (R318/R319).
+fn end_daemon_run(root: &Path, run: &serde_json::Value, ended: Option<shutdown::SystemEnd>) {
+    let reason = match ended {
+        None => "requested",
+        Some(shutdown::SystemEnd::LogOff) => "system-logoff",
+        Some(shutdown::SystemEnd::Shutdown) => "system-shutdown",
+    };
+    let (_, revision) = archive_facts(root);
+    let started = STARTED_AT.load(std::sync::atomic::Ordering::Relaxed);
+    let uptime = unix_seconds().saturating_sub(started);
+    let _ = log_event(
+        root,
+        &format!(
+            "daemon stopped pid={} version={} archive={} revision={} exit=normal reason={reason} uptime_s={uptime}",
+            record_field(run, "pid"),
+            record_field(run, "version"),
+            record_field(run, "archive_id"),
+            revision,
+        ),
+    );
+    let _ = fs::remove_file(daemon_run_path(root));
+    let _ = fs::remove_file(daemon_last_exit_path(root));
+}
+
+/// The daemon's start time, shared with the exit line for its uptime.
+static STARTED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Set when the daemon is stopping, so the heartbeat thread ends before the exit record.
+static DAEMON_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One heartbeat a minute while a digest run is active (R318). An isolated test shortens it.
+fn daemon_heartbeat_interval() -> Duration {
+    let declared = isolated_test_switch("ZT_DAEMON_TEST_HEARTBEAT_MS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| (50..=60_000).contains(millis));
+    match declared {
+        Some(millis) => Duration::from_millis(millis),
+        None => Duration::from_secs(60),
+    }
+}
+
+/// A switch that only an isolated test host may set: a temporary configuration directory and one
+/// explicit test switch. An ordinary installation can never make the daemon panic or beat faster.
+fn isolated_test_switch(name: &str) -> Option<String> {
+    let config_dir = env::var_os("ZT_CONFIG_DIR")?;
+    let config_dir = fs::canonicalize(&config_dir).ok()?;
+    let temporary = fs::canonicalize(env::temp_dir()).ok()?;
+    config_dir.starts_with(&temporary)
+        .then(|| env::var(name).ok())
+        .flatten()
+}
+
+/// The active-run marker a ledger-aware digest command refreshed, while its renewals are fresh.
+fn fresh_active_run(root: &Path) -> Option<serde_json::Value> {
+    let marker = read_record(&active_run_path(root))?;
+    let renewed = marker
+        .get("renewed")
+        .or_else(|| marker.get("renewed_unix"))
+        .and_then(serde_json::Value::as_u64)?;
+    let ttl = marker
+        .get("ttl_s")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(300)
+        .clamp(30, 3600);
+    (unix_seconds() <= renewed.saturating_add(ttl)).then_some(marker)
+}
+
+fn start_daemon_heartbeat(root: PathBuf, run: serde_json::Value) -> thread::JoinHandle<()> {
+    DAEMON_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+    let interval = daemon_heartbeat_interval();
+    thread::spawn(move || {
+        while !DAEMON_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+            // Sleep in slices, so a stopping daemon waits at most one slice for its exit record.
+            let mut slept = Duration::ZERO;
+            while slept < interval && !DAEMON_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                let slice = Duration::from_millis(100).min(interval - slept);
+                thread::sleep(slice);
+                slept += slice;
+            }
+            if DAEMON_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            let Some(marker) = fresh_active_run(&root) else {
+                continue;
+            };
+            let now = unix_seconds();
+            let renewed = marker
+                .get("renewed")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(now);
+            let (archive_id, revision) = archive_facts(&root);
+            let mut current = run.clone();
+            current["last_heartbeat"] = serde_json::json!(now);
+            write_record(&daemon_run_path(&root), &current);
+            let _ = log_event(
+                &root,
+                &format!(
+                    "daemon heartbeat pid={} version={} archive={archive_id} revision={revision} run={} unit={} marker_age_s={}",
+                    record_field(&run, "pid"),
+                    record_field(&run, "version"),
+                    record_field(&marker, "run_id"),
+                    record_field(&marker, "unit"),
+                    now.saturating_sub(renewed),
+                ),
+            );
+        }
+    })
+}
+
+fn stop_daemon_heartbeat(handle: thread::JoinHandle<()>) {
+    DAEMON_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = handle.join();
+}
+
+/// R318: a panic is logged with the daemon's identity and where it happened, the run record is
+/// marked as panicked, and the default hook still runs so the message is not lost.
+fn install_daemon_panic_hook(root: &Path) {
+    let previous = std::panic::take_hook();
+    let root = root.to_path_buf();
+    std::panic::set_hook(Box::new(move |info| {
+        let (archive_id, revision) = archive_facts(&root);
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        let location = info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let _ = log_event(
+            &root,
+            &format!(
+                "daemon panic: pid={} version={} archive={archive_id} revision={revision} message={} location={location}",
+                std::process::id(),
+                VERSION,
+                message.replace(['\n', '\r'], " "),
+            ),
+        );
+        if let Some(mut run) = read_record(&daemon_run_path(&root)) {
+            run["panicked"] = serde_json::json!(unix_seconds());
+            write_record(&daemon_run_path(&root), &run);
+        }
+        previous(info);
+    }));
+}
+
+/// An isolated test may provoke the daemon's panic hook; an ordinary host cannot.
+fn panic_probe() {
+    if isolated_test_switch("ZT_DAEMON_TEST_FAULT").as_deref() == Some("panic") {
+        panic!("daemon fault probe");
+    }
 }
 
 fn owns_service(root: &Path, pid: &str) -> bool {
@@ -1360,6 +1639,27 @@ fn cmd_status() -> Result<()> {
     }
     println!("archive_root: {}", root.display());
     println!("sqlite: {}", db_path(&root).display());
+    println!("revision: {}", archive_facts(&root).1);
+    if let Some(run) = read_record(&daemon_run_path(&root)) {
+        println!(
+            "daemon: version={} started={} last_heartbeat={}",
+            record_field(&run, "version"),
+            record_field(&run, "started"),
+            record_field(&run, "last_heartbeat"),
+        );
+    }
+    // R319: the last run that ended without a normal exit record, with its preserved facts. A
+    // normal exit clears this, so an operator sees the abnormal end until it is explained.
+    if let Some(previous) = read_record(&daemon_last_exit_path(&root)) {
+        println!(
+            "last_exit: abnormal pid {} version {} revision {} started {} panicked {} (no normal exit record; see zt.log)",
+            record_field(&previous, "pid"),
+            record_field(&previous, "version"),
+            record_field(&previous, "revision"),
+            record_field(&previous, "started"),
+            record_field(&previous, "panicked"),
+        );
+    }
     println!(
         "cards: {}",
         card_counts(&root).map(|c| c.total).unwrap_or(0)
@@ -1406,7 +1706,7 @@ fn cmd_workspaces() -> Result<()> {
 
 fn cmd_dump() -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "dump")?;
     let conn = open_db(&root)?;
     let cards = load_cards(&conn)?
         .into_iter()
@@ -1439,7 +1739,7 @@ fn cmd_clear() -> Result<()> {
     if sessions > 0 {
         bail!("cannot clear while {sessions} session(s) are open");
     }
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "clear")?;
     print!("type clear to confirm: ");
     io::stdout().flush()?;
     let mut confirmation = String::new();
@@ -1992,7 +2292,7 @@ fn run_editor_with_suffix(initial_text: &str, suffix: &str) -> Result<EditOutcom
 
 fn shell_create_literature(workspace: Workspace) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "create_literature")?;
     let mut conn = open_db(&root)?;
     let mut metadata_buffer = String::new();
     let (bibtex, metadata) = loop {
@@ -2091,23 +2391,97 @@ fn insert_literature_card_tx(
 /// The first line of an edit lock file whose holder also keeps the file's OS lock.
 const EDIT_LOCK_MARKER: &str = "zt edit lock";
 
+/// A wait longer than this is worth one diagnostic line; the poll loop itself stays silent.
+const EDIT_WAIT_LOG_AFTER: Duration = Duration::from_secs(5);
+
+/// A hold longer than this is worth one line that attributes the write to its queue wait and
+/// its lock-held duration, so a slow apply can be told apart from a slow wait (R317).
+const EDIT_HOLD_LOG_AFTER: Duration = Duration::from_secs(5);
+
+/// What the diagnostic line can observe of the process that keeps the edit lock: the marker and
+/// pid of a zt holder, the marker of an older zt that kept no OS lock, or only the marker line.
+fn observed_holder(text: &str) -> String {
+    if !text.starts_with(EDIT_LOCK_MARKER) {
+        return "legacy-marker".to_string();
+    }
+    match text.lines().find_map(|line| line.trim().strip_prefix("pid ")) {
+        Some(pid) if !pid.is_empty() => format!("pid:{pid}"),
+        _ => "marker-only".to_string(),
+    }
+}
+
+/// Why an edit-lock attempt found the lock held: contention that is worth waiting for, as
+/// distinct from every other failure (R314).
 #[derive(Debug)]
-struct EditBusy;
+enum EditConflict {
+    /// The lock file of another holder is there; `holder` is what could be observed of it.
+    Held { holder: String },
+    /// The operating system's contention error while opening, reading or removing the lock
+    /// file: Windows `ERROR_SHARING_VIOLATION` (os error 32) or the byte-range
+    /// `ERROR_LOCK_VIOLATION` (os error 33) that a live holder's `LockFileEx` produces. The
+    /// holder that could still be observed is kept, so the line names both facts.
+    Sharing {
+        code: i32,
+        step: &'static str,
+        holder: String,
+    },
+}
+
+impl EditConflict {
+    fn holder(&self) -> String {
+        match self {
+            EditConflict::Held { holder } => holder.clone(),
+            EditConflict::Sharing { code, step, holder } => {
+                format!("{holder}({step} refused with os error {code})")
+            }
+        }
+    }
+}
+
+/// The operating system's contention codes. Only Windows defines them as sharing/lock
+/// violations; elsewhere the same numbers mean unrelated errors, so they are never contention.
+fn contention_code(error: &io::Error) -> Option<i32> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match error.raw_os_error() {
+        Some(code @ (32 | 33)) => Some(code),
+        _ => None,
+    }
+}
+
+/// A refused or failed edit-lock attempt. Contention is retryable within the patience; every
+/// other error is a fault that is reported instead of being mistaken for a busy lock (R314).
+enum EditLockError {
+    Busy(EditConflict, Duration),
+    Fault(anyhow::Error),
+}
+
+#[derive(Debug)]
+struct EditBusy {
+    operation: &'static str,
+    holder: String,
+    waited: Duration,
+    patience: Option<Duration>,
+}
+
 impl std::fmt::Display for EditBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("edit in progress")
+        write!(
+            f,
+            "edit in progress: {} is held by {}",
+            self.operation, self.holder
+        )?;
+        if !self.waited.is_zero() {
+            write!(f, " after {} ms of waiting", self.waited.as_millis())?;
+        }
+        if let Some(patience) = self.patience {
+            write!(f, " (patience {} s)", patience.as_secs())?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for EditBusy {}
-
-fn edit_busy(error: &anyhow::Error) -> bool {
-    error.is::<EditBusy>()
-        || error.chain().any(|cause| {
-            cause
-                .downcast_ref::<io::Error>()
-                .is_some_and(|e| e.raw_os_error() == Some(32))
-        })
-}
 
 /// The edit lock: `zt.edit.lock`, created new by its holder and removed when the holder is done.
 /// The holder also keeps the file's OS lock, which the system releases however the holder ends,
@@ -2117,6 +2491,11 @@ fn edit_busy(error: &anyhow::Error) -> bool {
 struct EditLock {
     root: PathBuf,
     file: Option<fs::File>,
+    /// The operation the lock was taken for, so a slow hold names what it slowed down.
+    operation: &'static str,
+    /// How long the acquisition waited for another holder before it got the lock.
+    queue_wait: Duration,
+    acquired: Instant,
 }
 
 impl Drop for EditLock {
@@ -2127,6 +2506,31 @@ impl Drop for EditLock {
         fs::remove_file(edit_lock_path(&self.root)).ok();
         drop(self.file.take());
         drop(guard);
+        let held = self.acquired.elapsed();
+        // One line per slow wait or slow hold (R316/R317): the fast path stays silent, and the
+        // line records both durations so a slow apply is attributable to waiting or to writing.
+        let line = if self.queue_wait > EDIT_WAIT_LOG_AFTER {
+            Some(format!(
+                "edit wait done: op={} waiter_pid={} outcome=acquired queue_wait_ms={} held_ms={}",
+                self.operation,
+                std::process::id(),
+                self.queue_wait.as_millis(),
+                held.as_millis()
+            ))
+        } else if held > EDIT_HOLD_LOG_AFTER {
+            Some(format!(
+                "edit lock held: op={} waiter_pid={} queue_wait_ms={} held_ms={}",
+                self.operation,
+                std::process::id(),
+                self.queue_wait.as_millis(),
+                held.as_millis()
+            ))
+        } else {
+            None
+        };
+        if let Some(line) = line {
+            let _ = log_event(&self.root, &line);
+        }
     }
 }
 
@@ -2145,82 +2549,222 @@ fn lock_edit_guard(root: &Path) -> Result<fs::File> {
     Ok(guard)
 }
 
-fn acquire_edit_lock(root: &Path) -> Result<EditLock> {
+/// Takes the edit lock at once, or reports why it could not: contention, which another client
+/// may wait out, or a fault, which waiting cannot fix. The caller holds the guard across the
+/// stale-file takeover and the caller's own `EditLock` drop holds it across removal.
+fn try_acquire_edit_lock(
+    root: &Path,
+    operation: &'static str,
+) -> std::result::Result<EditLock, EditLockError> {
     let path = edit_lock_path(root);
-    let _guard = lock_edit_guard(root)?;
+    let _guard = lock_edit_guard(root).map_err(EditLockError::Fault)?;
     // A second try follows only after a stale lock file was removed.
-    for _ in 0..2 {
-        let file = fs::OpenOptions::new()
+    for attempt in 0..2 {
+        let opened = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(&path);
-        match file {
+        match opened {
             Ok(mut file) => {
-                writeln!(file, "{EDIT_LOCK_MARKER}\npid {}", std::process::id())
+                let marked = writeln!(file, "{EDIT_LOCK_MARKER}\npid {}", std::process::id())
                     .and_then(|()| file.lock())
-                    .with_context(|| format!("failed to lock {}", path.display()))?;
-                return Ok(EditLock {
-                    root: root.to_path_buf(),
-                    file: Some(file),
-                });
+                    .with_context(|| format!("failed to lock {}", path.display()));
+                return match marked {
+                    Ok(()) => Ok(EditLock {
+                        root: root.to_path_buf(),
+                        file: Some(file),
+                        operation,
+                        queue_wait: Duration::ZERO,
+                        acquired: Instant::now(),
+                    }),
+                    Err(error) => Err(EditLockError::Fault(error)),
+                };
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                if !remove_stale_edit_lock(&path)? {
-                    break;
+                match remove_stale_edit_lock(&path) {
+                    Ok(StaleLock::Removed) if attempt == 0 => continue,
+                    Ok(StaleLock::Removed) => {
+                        return Err(EditLockError::Fault(anyhow::anyhow!(
+                            "the edit lock file {} could not be taken over",
+                            path.display()
+                        )));
+                    }
+                    Ok(StaleLock::Held(conflict)) => return Err(EditLockError::Busy(conflict, Duration::ZERO)),
+                    Err(EditLockError::Busy(conflict, waited)) => {
+                        return Err(EditLockError::Busy(conflict, waited));
+                    }
+                    Err(EditLockError::Fault(error)) => return Err(EditLockError::Fault(error)),
                 }
             }
             Err(err) => {
-                return Err(err).with_context(|| format!("failed to create {}", path.display()));
+                return match contention_code(&err) {
+                    Some(code) => Err(EditLockError::Busy(
+                        EditConflict::Sharing {
+                            code,
+                            step: "create",
+                            holder: "unobserved".to_string(),
+                        },
+                        Duration::ZERO,
+                    )),
+                    None => Err(EditLockError::Fault(
+                        anyhow::Error::new(err).context(format!("failed to create {}", path.display())),
+                    )),
+                };
             }
         }
     }
-    Err(EditBusy.into())
+    Err(EditLockError::Fault(anyhow::anyhow!(
+        "the edit lock file {} could not be taken over",
+        path.display()
+    )))
+}
+
+/// Whether a held lock file was removed, or what keeps it: the caller holds the guard.
+enum StaleLock {
+    Removed,
+    Held(EditConflict),
 }
 
 /// Removes the lock file of a holder that ended without removing it: the file has the marker
-/// and nobody keeps its OS lock. Returns whether the lock file is gone. The caller holds the guard.
-fn remove_stale_edit_lock(path: &Path) -> Result<bool> {
+/// and nobody keeps its OS lock. A file that cannot be read, opened or removed for any reason
+/// other than contention is a fault, not a busy lock (R314).
+fn remove_stale_edit_lock(path: &Path) -> std::result::Result<StaleLock, EditLockError> {
     let mut file = match fs::OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(err) if err.raw_os_error() == Some(32) => return Ok(false),
-        Err(err) => return Err(err).with_context(|| format!("failed to open {}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(StaleLock::Removed),
+        Err(err) => return Err(classify_lock_step(err, "open", path, "unobserved")),
     };
-    if file.try_lock().is_err() {
-        return Ok(false);
-    }
+    // Read before taking the file's lock: a live holder's byte-range lock makes its own marker
+    // unreadable, which is itself the observation that the holder is alive.
     let mut text = String::new();
-    io::Read::read_to_string(&mut file, &mut text).ok();
+    match io::Read::read_to_string(&mut file, &mut text) {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::InvalidData => {
+            return Err(EditLockError::Fault(anyhow::anyhow!(
+                "malformed edit lock file {}: it is not UTF-8 text, so it cannot be classified as a live or a stale holder; remove it by hand if no edit is open",
+                path.display()
+            )));
+        }
+        Err(err) => return Err(classify_lock_step(err, "read", path, "unreadable")),
+    }
+    let holder = observed_holder(&text);
+    if file.try_lock().is_err() {
+        return Ok(StaleLock::Held(EditConflict::Held { holder }));
+    }
     if !text.starts_with(EDIT_LOCK_MARKER) {
-        return Ok(false);
+        return Ok(StaleLock::Held(EditConflict::Held { holder }));
     }
     // The guard serializes stale cleanup; release this handle before Windows deletion.
     drop(file);
-    fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
-    Ok(true)
+    match fs::remove_file(path) {
+        Ok(()) => Ok(StaleLock::Removed),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(StaleLock::Removed),
+        Err(err) => Err(classify_lock_step(err, "remove", path, &holder)),
+    }
 }
 
-/// The edit lock for clients that make many short writes at once (the MCP server and the GUI):
-/// wait up to `patience` for another short write to finish instead of refusing at once. A
-/// Session holds the lock while its editor is open, so after `patience` the refusal stands.
-fn acquire_edit_lock_within(root: &Path, patience: Duration) -> Result<EditLock> {
+/// Times out of a wait for another client's short write instead of refusing at once. A Session
+/// holds the lock while its editor is open, so after `patience` the refusal stands. A fault is
+/// reported at once: waiting cannot repair it.
+fn acquire_edit_lock_within(
+    root: &Path,
+    patience: Duration,
+    operation: &'static str,
+) -> Result<EditLock> {
     let start = Instant::now();
     let mut pause = Duration::from_millis(20);
+    let mut logged = false;
     loop {
-        match acquire_edit_lock(root) {
-            Err(err) if edit_busy(&err) && start.elapsed() < patience => {
+        match try_acquire_edit_lock(root, operation) {
+            Ok(mut lock) => {
+                lock.queue_wait = start.elapsed();
+                lock.acquired = Instant::now();
+                return Ok(lock);
+            }
+            Err(EditLockError::Fault(error)) => return Err(error),
+            Err(EditLockError::Busy(conflict, _)) => {
+                let waited = start.elapsed();
+                let holder = conflict.holder();
+                if waited >= patience {
+                    // One timeout line, with the wait and the patience it overran.
+                    let _ = log_event(
+                        root,
+                        &format!(
+                            "edit wait done: op={operation} waiter_pid={} outcome=timeout waited_ms={} patience_s={} holder={holder}",
+                            std::process::id(),
+                            waited.as_millis(),
+                            patience.as_secs()
+                        ),
+                    );
+                    return Err(EditBusy {
+                        operation,
+                        holder,
+                        waited,
+                        patience: Some(patience),
+                    }
+                    .into());
+                }
+                if !logged && waited > EDIT_WAIT_LOG_AFTER {
+                    // One wait event after five seconds, never one line per poll.
+                    let _ = log_event(
+                        root,
+                        &format!(
+                            "edit wait: op={operation} waiter_pid={} elapsed_ms={} patience_s={} holder={holder}",
+                            std::process::id(),
+                            waited.as_millis(),
+                            patience.as_secs()
+                        ),
+                    );
+                    logged = true;
+                }
                 thread::sleep(pause);
                 pause = (pause * 2).min(Duration::from_millis(400));
             }
-            other => return other,
         }
+    }
+}
+
+/// Turns a lock-file IO error into contention or a fault that names the file and the step.
+fn classify_lock_step(
+    err: io::Error,
+    step: &'static str,
+    path: &Path,
+    holder: &str,
+) -> EditLockError {
+    match contention_code(&err) {
+        Some(code) => EditLockError::Busy(
+            EditConflict::Sharing {
+                code,
+                step,
+                holder: holder.to_string(),
+            },
+            Duration::ZERO,
+        ),
+        None => EditLockError::Fault(
+            anyhow::Error::new(err).context(format!("failed to {step} {}", path.display())),
+        ),
+    }
+}
+
+/// Takes the edit lock for a shell command or a Session edit, refusing at once when it is held.
+fn acquire_edit_lock(root: &Path, operation: &'static str) -> Result<EditLock> {
+    match try_acquire_edit_lock(root, operation) {
+        Ok(lock) => Ok(lock),
+        Err(EditLockError::Fault(error)) => Err(error),
+        Err(EditLockError::Busy(conflict, waited)) => Err(EditBusy {
+            operation,
+            holder: conflict.holder(),
+            waited,
+            patience: None,
+        }
+        .into()),
     }
 }
 
 fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "create_topic")?;
     if title.trim().is_empty() || title.contains('\n') || title.contains('\r') {
         bail!("topic title must be non-empty single-line text");
     }
@@ -2237,7 +2781,7 @@ fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
 
 fn shell_create_direct(at: &str) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "create_direct")?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
     let location = direct_successor(&parent.address)?;
@@ -2264,7 +2808,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
 
 fn shell_create_side(at: &str) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "create_side")?;
     let mut conn = open_db(&root)?;
     let parent = load_card(&conn, at)?;
     ensure_side_parent(&parent)?;
@@ -2289,7 +2833,7 @@ fn shell_create_side(at: &str) -> Result<()> {
 
 fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "edit")?;
     let mut conn = open_db(&root)?;
     let card = load_card(&conn, at)?;
     if card.is_lit {
@@ -2583,7 +3127,7 @@ fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Res
 
 fn shell_delete(at: &str) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "delete")?;
     let mut conn = open_db(&root)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -2891,7 +3435,7 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
 
 fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "move")?;
     let mut conn = open_db(&root)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -2909,7 +3453,7 @@ fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
 /// Insert a new Card at `at`: confirm the renumbering, then write the Card.
 fn shell_insert(at: &str) -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root)?;
+    let _lock = acquire_edit_lock(&root, "insert")?;
     let mut conn = open_db(&root)?;
     let plan = place::insert_plan(&conn, at)?;
     for line in place::insert_verification_lines(&plan) {

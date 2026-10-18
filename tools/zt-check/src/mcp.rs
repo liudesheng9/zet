@@ -90,6 +90,129 @@ pub fn child_edit_patience(seconds: u64) {
     CHILD_EDIT_PATIENCE.store(seconds, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How long a command waits for the configured service restart path before it reports an
+/// infrastructure fault (R320). Every stage's archive work begins with this resolution.
+pub const SERVICE_WAIT: Duration = Duration::from_secs(120);
+
+/// The interval of the bounded service checks: short enough to notice a restart promptly,
+/// long enough not to spin.
+const SERVICE_POLL: Duration = Duration::from_millis(500);
+
+/// One observation may wait for `zt status`'s own bounded restart attempt (at most 30 seconds)
+/// before it counts as no observation at all.
+const SERVICE_OBSERVATION: Duration = Duration::from_secs(45);
+
+/// What one `zt status` observation reported about the service and the archive it serves.
+#[derive(Clone, Debug)]
+pub struct ServiceFacts {
+    pub up: bool,
+    pub pid: Option<String>,
+    pub archive_root: Option<std::path::PathBuf>,
+    pub revision: Option<u64>,
+    /// R319: the previous daemon ended without a normal exit record.
+    pub last_exit_abnormal: bool,
+}
+
+/// The service this process last resolved, for a caller that needs the archive it serves.
+static SERVICE: std::sync::Mutex<Option<ServiceFacts>> = std::sync::Mutex::new(None);
+
+/// The service observation this process last made, if it made one.
+pub fn observed_service() -> Option<ServiceFacts> {
+    SERVICE.lock().ok().and_then(|facts| facts.clone())
+}
+
+/// One observation of the service, from the same program this client starts. `None` when the
+/// program did not answer like `zt status` at all (an isolated seam standing in for the MCP
+/// server, for example, or one that does not answer within the observation bound), so a
+/// stand-in never turns into a false service state.
+pub fn observe_service(program: &str) -> Result<Option<ServiceFacts>> {
+    let Some(output) = run_bounded(program, "status", SERVICE_OBSERVATION)? else {
+        return Ok(None);
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(name))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty() && value != "<unset>")
+    };
+    let Some(state) = field("state: ") else {
+        return Ok(None);
+    };
+    let facts = ServiceFacts {
+        up: state == "up",
+        pid: field("pid: "),
+        archive_root: field("archive_root: ").map(std::path::PathBuf::from),
+        revision: field("revision: ").and_then(|value| value.parse().ok()),
+        last_exit_abnormal: text
+            .lines()
+            .any(|line| line.trim_start().starts_with("last_exit: abnormal")),
+    };
+    if facts.up {
+        if let Ok(mut current) = SERVICE.lock() {
+            *current = Some(facts.clone());
+        }
+    }
+    Ok(Some(facts))
+}
+
+/// One bounded run of `<program> <argument>`: `None` when it did not finish in time, so a program
+/// that is not `zt` can never stall the caller. The child is killed and reaped, never left behind.
+fn run_bounded(
+    program: &str,
+    argument: &str,
+    timeout: Duration,
+) -> Result<Option<std::process::Output>> {
+    let mut child = Command::new(program)
+        .arg(argument)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to query `{program} {argument}`"))?;
+    let until = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(Some(child.wait_with_output()?));
+        }
+        if Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// R320: resolves the service before archive work and waits at most `wait` for the configured
+/// restart/autostart path, checking at bounded intervals. It never launches a daemon itself:
+/// `zt status` is the one path that clears a stale record and starts one service, so concurrent
+/// clients share a single restart. A service that stays down is one infrastructure fault whose
+/// units and files are left exactly as they are.
+pub fn ensure_service(program: &str, wait: Duration) -> Result<Option<ServiceFacts>> {
+    let started = Instant::now();
+    loop {
+        let Some(facts) = observe_service(program)? else {
+            return Ok(None);
+        };
+        if facts.up {
+            return Ok(Some(facts));
+        }
+        if facts.archive_root.is_none() {
+            bail!(
+                "infrastructure_fault: the archive root is not configured, so the service cannot be started; run `zt config set archive_root <path>`"
+            );
+        }
+        if started.elapsed() >= wait {
+            bail!(
+                "infrastructure_fault: the service is still down after {} seconds; the configured restart/autostart path did not bring it up, so the run's units and files are left as they are (see `zt status` and the archive's zt.log)",
+                wait.as_secs()
+            );
+        }
+        std::thread::sleep(SERVICE_POLL);
+    }
+}
+
 /// A complete required-address read from one archive revision.
 pub struct CardRead {
     pub cards: Vec<Value>,

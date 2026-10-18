@@ -51,7 +51,7 @@ pub(crate) fn create_topic(
     text: &str,
 ) -> Result<String> {
     access.ensure_writable(workspace)?;
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_topic")?;
     let mut conn = crate::open_db(root)?;
     crate::create_topic(&mut conn, workspace, text)
 }
@@ -65,7 +65,7 @@ pub(crate) fn create_successor(
     part: Option<Part>,
     text: &str,
 ) -> Result<String> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_successor")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let address = create_successor_tx(&tx, access, kind, at, card_type, part.as_ref(), text)?;
@@ -132,7 +132,7 @@ pub(crate) fn create_literature(
     text: &str,
 ) -> Result<String> {
     access.ensure_writable(workspace)?;
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_literature")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let address = create_literature_tx(&tx, access, workspace, bibtex, text)?;
@@ -275,7 +275,7 @@ pub(crate) fn edit(
     change: TypeChange,
     base: Option<&str>,
 ) -> Result<String> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "edit")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let (address, changed) = edit_tx(&tx, access, at, text, change, base)?;
@@ -355,7 +355,7 @@ pub(crate) fn edit_metadata(
     base: Option<&str>,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "edit_metadata")?;
     let mut conn = crate::open_db(root)?;
     let card = unchanged_card(&conn, at, base)?;
     access.ensure_writable(card.workspace)?;
@@ -404,7 +404,7 @@ pub(crate) fn delete(
     into: Option<&str>,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "delete")?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, at)?;
     access.ensure_writable(card.workspace)?;
@@ -441,7 +441,7 @@ pub(crate) fn move_card(
     alone: bool,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "move_card")?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, at)?;
     access.ensure_writable(card.workspace)?;
@@ -476,7 +476,7 @@ pub(crate) fn insert_card(
     text: &str,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
-    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE)?;
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "insert_card")?;
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, before)?;
     access.ensure_writable(card.workspace)?;
@@ -1867,7 +1867,7 @@ The model"
     fn a_change_waits_for_another_short_write_to_finish() {
         let temp = archive();
         let root = temp.path().to_path_buf();
-        let lock = crate::acquire_edit_lock(&root).unwrap();
+        let lock = crate::acquire_edit_lock(&root, "test").unwrap();
         let release = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
             drop(lock);

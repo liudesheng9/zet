@@ -54,7 +54,7 @@ pub(crate) fn ensure(root: &Path, conn: &mut Connection) -> Result<()> {
     if ready(conn) {
         return Ok(());
     }
-    let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20))?;
+    let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20), "reindex")?;
     if ready(conn) {
         return Ok(());
     }
@@ -321,7 +321,7 @@ pub(crate) fn command(reindex: bool) -> Result<()> {
     let root = crate::require_archive_root()?;
     let mut conn = crate::open_db(&root)?;
     if reindex {
-        let _lock = crate::acquire_edit_lock_within(&root, std::time::Duration::from_secs(20))?;
+        let _lock = crate::acquire_edit_lock_within(&root, std::time::Duration::from_secs(20), "migrate")?;
         if !ready(&conn) {
             bail!("Link index is not initialized; run `zt up` first");
         }

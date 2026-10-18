@@ -508,7 +508,13 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             );
         }
     }
-    let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20))?;
+    // R315: a batch client's declared patience applies to its batch writes too, not only to the
+    // single-Card tools; a read or precheck keeps the ordinary short bound.
+    let _lock = crate::acquire_edit_lock_within(
+        root,
+        crate::mcp::edit_patience(),
+        "apply_batch",
+    )?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let archive_revision = crate::link_index::revision(&tx)?;

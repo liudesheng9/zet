@@ -109,7 +109,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         bail!("Cannot bind argument to parameter 'Out' because it is an empty string.");
     }
     let title_chars = a.int_or("TitleChars", 40)?.max(0) as usize;
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let details = read_title_trees(&mut zt)?;
 
     let (text, count) = render(&details, title_chars);

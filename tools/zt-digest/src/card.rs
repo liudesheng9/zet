@@ -207,7 +207,7 @@ fn unique_temp(prefix: &str) -> String {
 impl Compiler {
     fn zt(&mut self) -> Result<&mut Zt> {
         if self.zt.is_none() {
-            self.zt = Some(Zt::start()?);
+            self.zt = Some(crate::zt::start()?);
         }
         Ok(self.zt.as_mut().unwrap())
     }

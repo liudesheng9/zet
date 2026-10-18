@@ -3119,7 +3119,7 @@ pub fn book_cards_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let unit = cards_book_unit(&p, &declared)?;
     let result = book_cards_finish(&p, &mut zt, &unit, token, &work, check_only)?;
@@ -4318,7 +4318,20 @@ fn heartbeat_renew(
         "renewed",
         &json!({"lease_until":until,"heartbeat":{"pid":std::process::id(),"interval_ms":interval.as_millis() as u64,"seq":seq,"utc":canon::utc_now_o()}}),
     )?;
+    // R318: the same beat keeps the archive's active-run marker fresh, so the daemon's heartbeat
+    // still names a run whose command is busy for minutes (an apply), and stops once the run is
+    // gone because no command renews the marker any more.
+    let archive = tx
+        .query_row("SELECT value FROM meta WHERE key='archive_identity'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|identity| identity["path"].as_str().map(std::path::PathBuf::from));
     tx.commit()?;
+    if let Some(archive) = archive {
+        crate::zt::renew_active_run(&archive, out, Some(unit));
+    }
     Ok(())
 }
 
@@ -5437,7 +5450,7 @@ pub fn group_start_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = group_start(&p, &mut zt, group, token)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -7154,7 +7167,7 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = group_finish(&p, &mut zt, group, token, &draft, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -7932,7 +7945,7 @@ pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = link_finish(&p, &mut zt, group, token, &draft, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -8417,7 +8430,7 @@ pub fn cards_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = cards_finish(&p, &mut zt, group, token, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -9451,7 +9464,7 @@ fn empirical_finish_cli(argv: &[String], layer: &Empirical, name: &str) -> Resul
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = empirical_finish(&p, &mut zt, layer, group, token, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -10170,7 +10183,7 @@ pub fn model_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let unit = model_unit_for_header(&conn, &model)?.map(|(unit, _)| unit);
@@ -10419,7 +10432,7 @@ pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let unit = model_unit_for_header(&conn, &model)?.map(|(unit, _)| unit);
@@ -10841,7 +10854,7 @@ pub fn explain_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let unit = explain_unit_for_model(&conn, &model)?;
@@ -11432,7 +11445,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
     let config = &progress["terms_config"];
@@ -12883,7 +12896,7 @@ pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = cleanup_finish(&p, &unit, token, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
@@ -13107,16 +13120,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     };
     let result = if command == "publish" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), &a.str("Scope"))?
     } else if command == "reclaim" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
         let only = a.has("Unit").then(|| a.str("Unit"));
         reclaim(&p, only.as_deref(), a.int_or("Take", 64)?)?
     } else if command == "job" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
         let unit = a.str("Unit");
         if a.has("Register") {
@@ -13130,35 +13143,35 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     } else if command == "resource" {
         if a.has("Register") {
-            let mut zt = Zt::start()?;
+            let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             resource_register(&p, &a.str("Register"))?
         } else if a.has("Observe") {
-            let mut zt = Zt::start()?;
+            let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             resource_observe(&p, &a.str("Observe"), &a.str("Unit"), a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?)?
         } else {
-            let mut zt = Zt::start()?;
+            let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             resource_list(&p, &a.str("Unit"))?
         }
     } else if command == "notes" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         register_notes(&p, &mut zt, &a.str("Suggestions"))?
     } else if command == "relocate" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         relocate(&p, &mut zt, &a.str("Moves"))?
     } else if command == "math" {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         math_register(&p, &mut zt)?
     } else if matches!(
         command.as_str(),
         "init" | "next" | "renew" | "done" | "fail"
     ) {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let preparing = matches!(command.as_str(), "done" | "renew" | "fail")
             && a.str("Unit") == "prepare/book@1";
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, !preparing)?;
@@ -13353,7 +13366,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if command == "gate" {
             // Settlement is a recorded fact, not a guess: close the dynamic layers whose
             // producers have all settled before reporting the gate (R167, R200).
-            let mut zt = Zt::start()?;
+            let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             let mut conn = writer(&p)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

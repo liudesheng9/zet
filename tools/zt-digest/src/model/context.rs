@@ -28,7 +28,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let staging = a.required("Staging")?;
     let model = a.required("Model")?;
     let out = a.required("Out")?;
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let summary = build(&mut zt, &staging, &model, &out)?;
     util::print_line(&ps::json_compact(&summary))?;
     Ok(0)

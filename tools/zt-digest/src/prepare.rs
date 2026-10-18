@@ -460,7 +460,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let resolved = if book.trim().is_empty() {
         None
     } else {
-        let mut zt = Zt::start()?;
+        let mut zt = crate::zt::start()?;
         let explicit = resolve::Explicit {
             source: a.str("Source"),
             source_given: a.has("Source"),
@@ -794,7 +794,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // --- agent Literature tree ---
     if apply {
         if held.is_none() {
-            held = Some(Zt::start()?);
+            held = Some(crate::zt::start()?);
         }
         let z = held.as_mut().context("no zt mcp process for the Literature tree")?;
         let archive=if !variant.is_empty() {
@@ -914,7 +914,7 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let groups = ps::each(&manifest["groups"]);
 
     // --- every tree, both Workspaces ---
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     let details = snapshot::read_title_trees(&mut zt)?;
     let mut text = String::new();
     text.push_str("# 全部卡片快照（地址与标题；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");

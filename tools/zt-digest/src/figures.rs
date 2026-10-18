@@ -471,7 +471,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         figures = book_figures(&text, file_id, min_bytes)?;
     }
 
-    let mut zt = Zt::start()?;
+    let mut zt = crate::zt::start()?;
     // One entry per label; a label two images share keeps the first.
     let mut ordered: Vec<(Figure, Vec<Mention>)> = figures
         .iter()

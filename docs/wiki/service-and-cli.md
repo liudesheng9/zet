@@ -43,7 +43,7 @@ This block is the `zt` binary's front door and its storage base. It parses every
 | | `tests/fixtures/fake_tar.rs`, `tests/fixtures/fake_7z.rs` — fake compressors compiled by tests |
 | Depends on | [Cards, Workspaces and Links](cards-and-links.md) (`card::parse_card_text`, `compose_card_text`, templates, `from_legacy_text`; `link::LinkLifecycle`, `LinkBody`; `literature::validate_citation_key`, `parse_metadata`; `workspace::tree_workspace`, `ensure_same_workspace`, `counts`), [Card operations](card-operations.md) (`place::move_plan`, `insert_plan`, `apply_insert_plan`), [Models and math](models-and-math.md) (`model::Facet::MAX_CHARS`, `model::ensure_allowed`, `math::MathForm::ALL`), [Hub Cards](hub-cards.md) (`hub::HubLevel`), [Terminal Session](session.md) (`run_session`, `session_count`, `process_exists`), [GUI](gui.md) (`gui::start`, `Running::stop`, `recorded_url`, `clear_record`, `gui::run`; `spread::follow`), [MCP server](mcp-server.md) (`mcp::run`), [Scholar bridge](scholar-bridge.md) (`scholar::run_cli`, `artifact::references`, `artifact::path`). Libraries: `rusqlite` (bundled SQLite), `anyhow`, `tempfile`, `sha2`, `getrandom`, `serde_json`, `windows-sys` (process creation, registry, window messages). Host programs: the `EDITOR` command, and `tar.exe` / `zip` / `gzip` / `zstd` / `7z` / `7zz` for dumps |
 | Used by | Every other Rust block calls the crate-root helpers: [Terminal Session](session.md) (`use crate::*`), [Card operations](card-operations.md) (`move_plan`, `apply_move_plan`, `delete_plan`, `apply_delete_plan`, `insert_card`), [GUI](gui.md) (`require_service_up`, `log_event`, `load_cards`, `ensure_markdown_cards`), [MCP server](mcp-server.md) (`require_service_up`, `acquire_edit_lock_within`), [Models and math](models-and-math.md) and [Hub Cards](hub-cards.md) (`load_card`, `tree_id`, `parent_location`), [Scholar bridge](scholar-bridge.md) (`config_file`) |
-| Tests | `tests/cli_service.rs`, `tests/autostart.rs`, unit tests in `src/main.rs`, `src/dump.rs`, `src/autostart.rs`; harness in `tests/support/`, `tests/fixtures/` |
+| Tests | `tests/cli_service.rs`, `tests/autostart.rs`, `tests/workspaces_mcp.rs` (lock contention, fault classification, wait diagnostics), unit tests in `src/main.rs`, `src/dump.rs`, `src/autostart.rs`; harness in `tests/support/`, `tests/fixtures/` |
 
 ## Concepts
 
@@ -56,6 +56,11 @@ This block is the `zt` binary's front door and its storage base. It parses every
 - `Restart marker` — `zt.restart`, made with create-new by the one process that restarts a dead service (`RestartMarker`); ignored after 30 seconds (`RESTART_TIMEOUT`).
 - `Session` — an interactive terminal view ([Terminal Session](session.md)); open Sessions are listed by pid in `zt.sessions` and counted by `session::session_count`. `zt down` and `zt clear` refuse while any is open.
 - `Edit lock` — `zt.edit.lock`, made with create-new for every write (`acquire_edit_lock`, `EditLock` removes it on drop). Its holder writes `zt edit lock` and its pid into it and keeps the file's OS lock, which the system releases however the holder ends; the next writer removes a marked file whose OS lock is free (`remove_stale_edit_lock`) and takes the lock. A second writer gets `edit in progress`. The short-held `zt.edit.guard` OS lock orders creating, taking over, and removing the lock file.
+- `Edit conflict` — the only retryable edit-lock outcome: another holder's marked file (`EditConflict::Held`, with the pid or marker that could be observed of it), or the operating system's contention errors while opening, reading or removing the lock file (`EditConflict::Sharing`: Windows `ERROR_SHARING_VIOLATION`, os error 32, and the byte-range `ERROR_LOCK_VIOLATION`, os error 33, which is what a live holder's `LockFileEx` makes a reader or a remover hit). Every other failure is an `EditLockError::Fault`: access denied, a full disk, a lock file that is not UTF-8 text, and anything else. A fault fails at once instead of being waited out as a busy lock (R314).
+- `Edit wait diagnostics` — one `edit wait:` line in `zt.log` after a wait passes five seconds (`EDIT_WAIT_LOG_AFTER`), one `edit wait done:` line for its completion (`outcome=acquired` with `queue_wait_ms` and `held_ms`, or `outcome=timeout` with `waited_ms` and `patience_s`), and one `edit lock held:` line for a hold longer than five seconds with no wait. Never one line per poll. Both durations are recorded so a slow apply is attributable to waiting or to writing (R316/R317).
+- `Daemon run record` — `zt.daemon.run`, JSON written by the daemon at start (`pid`, `version`, `archive_id`, `revision`, `started`, `last_heartbeat`, `panicked`), refreshed by each heartbeat, and removed by a normal exit. What is left behind at the next start is the evidence of a disappearance (R318/R319).
+- `Abnormal exit record` — `zt.daemon.last`, the run record of a daemon that ended without a normal exit record, written by the next start's `begin_daemon_run`. `zt status` reports it as `last_exit: abnormal`; a normal exit removes it. The log line is `daemon abnormal exit: pid=… version=… archive=… revision=… started=… last_heartbeat=… panicked=… exit_info=none cause=unknown`, because a force kill or a power cut leaves no OS exit information.
+- `Active-run marker` — `zt.digest.run`, JSON `{schema_version, run_id, out, unit, pid, renewed, ttl_s}` written by ledger-aware `zt-digest` commands (`zt::renew_active_run`) and their claim heartbeats. The daemon's heartbeat reads it and appends one `daemon heartbeat:` line a minute while it is fresh; a killed run stops renewing it and it expires after `ttl_s` (300 s), so it never stays active indefinitely (R318).
 - `SystemEnd` — why Windows ended the daemon: `LogOff` or `Shutdown` (`src/shutdown.rs`).
 - `Login command` — the Run-key value `zt` that starts `zt-boot` at sign-in (`src/autostart.rs`).
 - `Card` (the storage row) — the private struct `Card` in `src/main.rs`: `row_id`, `address` (a Location or a Citation key), `citation_key`, `is_topic`, `is_lit`, `bibtex`, `text`, `workspace`, `card_type`, and the optional `facet`, `emphasis`, `level` (elaboration level), `hub_level`, `form` (Math form). `Card::level_id` gives a Model Card's or Hub Card's level as clients see it.
@@ -144,7 +149,7 @@ Commands marked "up" call `require_service_up` and fail with `service is not up`
 | `zt help` | — | `cmd_help` | Lifecycle and `scholar` lines always; Card commands only when the service is up (it calls `is_service_up`, which may restart a dead daemon). |
 | `zt up` | config | `cmd_up` → `start_service` | `service started pid: <pid>` or `service already running pid: <pid>`, then `gui: <url>` or `gui: not running (see <zt.log>)`. |
 | `zt down` | — | `cmd_down` | `service stopped` / `service already stopped`; fails `cannot stop service while N session(s) are open`. |
-| `zt status` | — | `cmd_status` | `state: up\|down`, `pid:`, `gui:` (when up), `archive_root:`, `sqlite:`, `cards:`, `sessions:`, and on Windows `autostart: on\|off\|unknown (…)`. Calls `is_service_up`, so it restarts a dead daemon. |
+| `zt status` | — | `cmd_status` | `state: up\|down`, `pid:`, `gui:` (when up), `archive_root:`, `sqlite:`, `revision:` (the archive's current revision), `daemon:` (the run record's version, start time and last heartbeat), `last_exit: abnormal …` while the latest run ended without a normal exit record, `cards:`, `sessions:`, and on Windows `autostart: on\|off\|unknown (…)`. Calls `is_service_up`, so it restarts a dead daemon; `zt-digest`'s service resolution polls this output before archive work (R320). |
 | `zt stats` | up | `cmd_stats` | `total:`, `topics:`, `regular:`, `literature:` |
 | `zt ws` | up | `cmd_workspaces` | One line per Workspace: `<id> (<label>): N topic trees, N literature trees, N cards; MCP access: read-only\|read-write`. |
 | `zt lsbk` | up | `cmd_lsbk` | One line per Broken link: `<source> <source title> -> <target>: <source line>`. |
@@ -210,8 +215,11 @@ Archive and service:
 | `db_path`, `log_path`, `service_path`, `sessions_path`, `sessions_lock_path`, `edit_lock_path`, `edit_guard_path`, `daemon_lock_path`, `restart_marker_path` | Archive-root file paths (see Data and storage). |
 | `log_event(root, event) -> Result<()>` | Appends `<unix-seconds> <event>` to `zt.log`. |
 | `is_service_up(root) -> bool` | Up check that restarts a dead daemon. |
-| `acquire_edit_lock(root) -> Result<EditLock>` | Under the `zt.edit.guard` lock: create-new `zt.edit.lock`, write the marker and pid, keep its OS lock. If the file exists, `remove_stale_edit_lock` removes it when it has the marker and its OS lock is free, and the create is tried once more; otherwise `edit in progress`. A file without the marker (from a zt before this change, or a test) always counts as held. |
-| `acquire_edit_lock_within(root, patience) -> Result<EditLock>` | Retries with backoff 20 ms → 400 ms until `patience` runs out (MCP server and GUI). |
+| `acquire_edit_lock(root, operation) -> Result<EditLock>` | Under the `zt.edit.guard` lock: create-new `zt.edit.lock`, write the marker and pid, keep its OS lock. If the file exists, `remove_stale_edit_lock` removes it when it has the marker and its OS lock is free, and the create is tried once more; a marked file with a live holder, a file without the marker (from an older zt), and the two Windows contention errors are `edit in progress` with the observable holder named. Every other failure is a fault. `operation` names the caller in the diagnostic lines. |
+| `acquire_edit_lock_within(root, patience, operation) -> Result<EditLock>` | Retries with backoff 20 ms → 400 ms while the conflict is contention and `patience` has not run out (MCP server, batch writes, reindex); a fault returns at once. Logs the one wait event, and its one completion or timeout (see Edit wait diagnostics). |
+| `try_acquire_edit_lock(root, operation) -> Result<EditLock, EditLockError>` | One acquisition attempt with the typed outcome: `EditLockError::Busy(EditConflict, waited)` or `EditLockError::Fault(anyhow::Error)`. |
+| `remove_stale_edit_lock(path) -> Result<StaleLock, EditLockError>` | `StaleLock::Removed` or `StaleLock::Held(EditConflict)`; reads the holder's marker before taking the file lock, so a live byte-range holder is reported as contention, and a file that is not UTF-8 text is a fault that keeps the file for its owner. |
+| `classify_lock_step(err, step, path, holder) -> EditLockError` | Maps one lock-file IO error to contention (os error 32/33, Windows only) or to a fault naming the file and the step. |
 | `initialize_database(root) -> Result<()>` | Schema + all migrations (also used by unit tests in other modules on a temp dir). |
 | `ensure_markdown_cards(root) -> Result<()>` | Runs on every `require_service_up` and GUI snapshot read. |
 | `open_db(root) -> Result<Connection>` | Plain connection to `zt.sqlite3`. |
@@ -270,11 +278,21 @@ Location helpers (all pure except where a `conn` is taken):
 
 ### The daemon (`cmd_daemon`)
 
-1. Open `zt.daemon.lock` and block on `lock()` (a daemon still stopping holds it a moment longer). Log `daemon started`.
-2. `gui::start(root)`; on failure clear `zt.gui` and log `gui did not start: …`. The GUI comes up before the record, so an "up" service already names its GUI.
-3. Write `zt.pid` = own pid; create `zt.sessions` if missing (append mode, so a file a Session wrote meanwhile is not truncated).
-4. `shutdown::watch(|| owns_service(root, pid), |end| stop_for_system(root, pid, end))`. `owns_service` is true while `zt.pid` holds this pid.
-5. After `watch` returns: stop the GUI (`Running::stop` clears `zt.gui`, logs `gui stopped`); log `daemon stopped` only when the end was not a system end; drop the lock.
+1. Open `zt.daemon.lock` and block on `lock()` (a daemon still stopping holds it a moment longer).
+2. `begin_daemon_run`: if `zt.daemon.run` is still there, the previous daemon ended without a normal exit record, so log `daemon abnormal exit: … exit_info=none cause=unknown` with every fact that record kept and retain it as `zt.daemon.last`; then write this run's record and log `daemon started pid=… version=… archive=… revision=…`. `install_daemon_panic_hook` logs `daemon panic: … message=… location=…` and marks the record as panicked before the default hook runs.
+3. `gui::start(root)`; on failure clear `zt.gui` and log `gui did not start: …`. The GUI comes up before the record, so an "up" service already names its GUI.
+4. Write `zt.pid` = own pid; create `zt.sessions` if missing (append mode, so a file a Session wrote meanwhile is not truncated). An isolated test host (`ZT_CONFIG_DIR` under the temp folder) may provoke the panic hook here with `ZT_DAEMON_TEST_FAULT=panic`.
+5. `start_daemon_heartbeat`: once a minute (`ZT_DAEMON_TEST_HEARTBEAT_MS` shortens it only for an isolated test), read `zt.digest.run`; while a digest command keeps it fresh, append one `daemon heartbeat: pid=… version=… archive=… revision=… run=… unit=… marker_age_s=…` line and refresh the run record's `last_heartbeat`. An absent or expired marker writes nothing.
+6. `shutdown::watch(|| owns_service(root, pid), |end| stop_for_system(root, pid, end))`. `owns_service` is true while `zt.pid` holds this pid.
+7. After `watch` returns: stop the GUI (`Running::stop` clears `zt.gui`, logs `gui stopped`); stop and join the heartbeat; `end_daemon_run` logs `daemon stopped pid=… version=… archive=… revision=… exit=normal reason=requested|system-logoff|system-shutdown uptime_s=…` and removes `zt.daemon.run` and `zt.daemon.last`; drop the lock.
+
+### Edit-lock waits and failures
+
+1. `try_acquire_edit_lock` takes `zt.edit.guard`, then creates `zt.edit.lock` with create-new and writes `zt edit lock` and `pid <n>` into it and keeps its OS lock.
+2. `AlreadyExists` → `remove_stale_edit_lock` opens the file, reads it (before locking it), tries the OS lock, and if the marker is there removes it and the caller tries once more. A live holder's byte-range lock makes the read itself fail (os error 33) and a holder that opened the file without delete sharing makes removal fail (os error 32): both are contention, and both keep the live holder's file.
+3. Contention with no patience (`acquire_edit_lock`) refuses at once with `edit in progress: <operation> is held by <holder>`. With patience (`acquire_edit_lock_within`) the caller retries with backoff 20 ms → 400 ms, logs one `edit wait:` line once the wait passes five seconds, and either acquires (a completion line at release with `queue_wait_ms` and `held_ms`) or refuses at the patience (one `outcome=timeout` line with `waited_ms` and `patience_s`).
+4. A fault (access denied, disk full, non-UTF-8 lock text, any other IO error) returns at once as an error naming the file and the step; it is never waited out and never removes the file.
+5. `zt mcp` validates `ZT_EDIT_PATIENCE` as whole seconds from 1 through 300 (default 20) at its start; an unreadable or out-of-range value keeps 20 and writes one `edit patience: …` line, so a batch client's misconfiguration cannot silently fall back. A digest write step sets 180 for its child `zt mcp` ([zt-digest](zt-digest.md)).
 
 ### Stop the service (`zt down`)
 
@@ -314,7 +332,7 @@ flowchart TD
 - `wait_for_service` polls every 50 ms up to `RESTART_TIMEOUT` (30 s) until a live record appears or the marker is gone.
 - `RestartMarker::claim` removes a marker older than 30 s, then create-new; its `Drop` removes it however the restart ends.
 - `is_service_up` is used by `require_service_up`, `zt status`, `zt help`, and the Session on every input line, so any of them restarts a dead service. `zt up`, `zt down`, and `zt config set` use `is_service_recorded_up` instead: they clear a stale record but never restart.
-- Logged lines: `service record of daemon <pid> cleared: the daemon ended without \`zt down\``, then `service restarted: daemon <pid> ended without \`zt down\`` or `service did not restart: <error>`.
+- Logged lines: `service record of daemon <pid> cleared: the daemon ended without \`zt down\``, then `service restarted: daemon <pid> ended without \`zt down\`` or `service did not restart: <error>`. The restarted daemon adds its own `daemon abnormal exit: …` line and its start line, so one disappearance leaves exactly one restart and one abnormal record (R319).
 
 ### Sign-in start (`zt-boot` → `zt __boot`)
 
@@ -430,6 +448,9 @@ archive_root=D:\zt-archive
 | `zt.log` | `log_event` | `<unix-seconds> <event>` lines. |
 | `zt.pid` | `cmd_daemon` | Service record: the daemon pid. |
 | `zt.daemon.lock` | `cmd_daemon` | Locked for the daemon's life. |
+| `zt.daemon.run` | `cmd_daemon` | This run's JSON record (`pid`, `version`, `archive_id`, `revision`, `started`, `last_heartbeat`, `panicked`); removed by a normal exit, so what is left is the evidence of a disappearance. |
+| `zt.daemon.last` | `begin_daemon_run` | The previous run's record while the latest exit was abnormal; `zt status` reports it, and the next normal exit removes it. |
+| `zt.digest.run` | `zt-digest` (`zt::renew_active_run`, claim heartbeats) | Active-run marker `{schema_version, run_id, out, unit, pid, renewed, ttl_s}` that the daemon's heartbeat reads; it expires after `ttl_s`. |
 | `zt.restart` | `RestartMarker` | Present only while one process restarts the service. |
 | `zt.sessions` | [Terminal Session](session.md) | Open Session pids, one per line, pruned by `session_count`. |
 | `zt.sessions.lock` | [Terminal Session](session.md) | Empty; its OS lock serializes every change to `zt.sessions`. |
@@ -440,11 +461,15 @@ archive_root=D:\zt-archive
 | `dump/zt-archive-<s>.<ext>`, `dump/.tmp/` | `dump::run` | Dumps and their temporary staging. |
 
 ```text
-1760600000 daemon started
-1760600000 gui started on http://127.0.0.1:4717/
+1760600000 daemon started pid=78732 version=0.20.0 archive=0f4c… revision=57
+1760600001 gui started on http://127.0.0.1:4717/
+1760600060 daemon heartbeat pid=78732 version=0.20.0 archive=0f4c… revision=57 run=abc… unit=digest/g001@1 marker_age_s=12
 1760600512 service stop requested
 1760600512 gui stopped
-1760600512 daemon stopped
+1760600512 daemon stopped pid=78732 version=0.20.0 archive=0f4c… revision=58 exit=normal reason=requested uptime_s=512
+1760600900 daemon abnormal exit: pid=78732 version=0.20.0 archive=0f4c… revision=58 started=1760600000 last_heartbeat=1760600060 panicked=unknown exit_info=none cause=unknown
+1760600990 edit wait: op=create_successor waiter_pid=86488 elapsed_ms=5032 patience_s=180 holder=pid:26112(remove refused with os error 32)
+1760600995 edit wait done: op=create_successor waiter_pid=86488 outcome=acquired queue_wait_ms=7438 held_ms=11
 ```
 
 ### `cards` table (`cards_table`)

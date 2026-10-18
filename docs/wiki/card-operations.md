@@ -189,7 +189,7 @@ The GUI returns `Outcome::into_value()` as it is: `{confirm, lines}` or the resu
 
 ### Gated write (every `ops` change)
 
-1. Take `zt.edit.lock` with `acquire_edit_lock_within(root, EDIT_PATIENCE)`. While the lock exists, the call retries with a pause that doubles from 20 ms to at most 400 ms, for up to 20 s, then fails with `edit in progress`. A Session holds the lock while its editor is open.
+1. Take `zt.edit.lock` with `acquire_edit_lock_within(root, EDIT_PATIENCE, <operation>)`, where `<operation>` is the function's own name (`create_topic`, `create_successor`, `edit`, `apply_batch`, …). While the lock is held the call retries with a pause that doubles from 20 ms to at most 400 ms, for up to 20 s, then fails with `edit in progress`. Only contention is retried: a fault (access denied, a full disk, an unreadable lock file) returns at once ([Service, CLI and storage](service-and-cli.md)). A wait past five seconds writes one `edit wait:` line and its completion records both the queue wait and the lock-held duration. A Session holds the lock while its editor is open.
 2. Open a connection and load the Card (`crate::load_card`). For `create_topic`/`create_literature`, which have no Card yet, `access.ensure_writable(workspace)` runs before the lock.
 3. `access.ensure_writable(card.workspace)`. For `create_successor` this is the parent's Workspace.
 4. Plan the change. For any change that renames addresses, call `access.ensure_link_rewrites_allowed(conn, mapping)`. For Agent Access this refuses the change if any human Card outside the mapping holds a `[[target]]` that the mapping would rewrite. Owner Access always passes. Rewriting a human Card's Reverse link section is not counted.
@@ -296,7 +296,7 @@ Every whitespace-separated term of the lower-cased query must occur in the addre
 
 ### Rules the code keeps
 
-- One edit lock for every writer. GUI and MCP writes wait up to 20 s. Session and shell writes fail at once with `edit in progress`. A two-step operation releases the lock between the plan call and the confirmed call.
+- One edit lock for every writer. GUI and MCP writes wait up to 20 s (a digest batch client declares 180 s for its child `zt mcp`, and `apply_batch` honours it). Session and shell writes fail at once with `edit in progress`. A two-step operation releases the lock between the plan call and the confirmed call.
 - Every applied rename is one SQLite transaction: Locations, Link bodies, Spreads, and Reverse links commit together.
 - Cards never change Workspace or leave a Literature tree, and Topic tree Cards never enter one, for every client.
 - A Card's type, facet, emphasis, level, and form stay with its row through moves, inserts, side compaction, and Citation key renames (test `types_stay_with_cards_through_moves_side_compaction_and_citation_renames`).
@@ -335,7 +335,7 @@ None of these settings is read from a flag, an environment variable, or a config
 
 | Name | Where | Value | Effect |
 |---|---|---|---|
-| `EDIT_PATIENCE` | `src/ops.rs` | 20 s | how long a GUI/MCP write waits for `zt.edit.lock` before `edit in progress` |
+| `EDIT_PATIENCE` | `src/ops.rs` | 20 s | how long a GUI/MCP write waits for `zt.edit.lock` before `edit in progress`; `apply_batch` uses the client's declared `ZT_EDIT_PATIENCE` instead (20 s ordinary, 180 s from a digest write step) |
 | retry pause | `acquire_edit_lock_within` in `src/main.rs` | 20 ms, doubling to 400 ms | the poll interval while waiting |
 | `ACCESS` | `src/gui.rs` / `src/mcp.rs` | `Access::Owner` / `Access::Agent` | which Workspaces each client may change |
 | search limits | `src/gui.rs` (`find(..., 80)`), `src/mcp.rs` (`limit` argument) | 80 / caller's | how many hits a search returns |
@@ -383,7 +383,7 @@ mv 0/2|a
 ```
 
 To add a new operation:
-1. Write it in `src/ops.rs` with the same shape: `acquire_edit_lock_within(root, EDIT_PATIENCE)`, `load_card`, `access.ensure_writable`, then `access.ensure_link_rewrites_allowed` for every mapping it applies. Return `Outcome::Confirm` before any write if the operation renames or removes Cards.
+1. Write it in `src/ops.rs` with the same shape: `acquire_edit_lock_within(root, EDIT_PATIENCE, <operation>)`, `load_card`, `access.ensure_writable`, then `access.ensure_link_rewrites_allowed` for every mapping it applies. Return `Outcome::Confirm` before any write if the operation renames or removes Cards.
 2. Put any Location arithmetic in `src/place.rs` as a pure function over `BTreeSet<String>` and unit-test it there with `set(...)`/`pairs(...)`/`after(...)`.
 3. Apply through `crate::apply_location_mapping_tx` and `crate::regenerate_reverse_links_tx` inside one transaction, so Links, Spreads, and Reverse links follow.
 4. Add the HTTP route in `src/gui.rs` (`into_value()`) and the MCP tool schema and handler in `src/mcp.rs` (`plan_or_done`), and the Session or shell command if the human needs it.
