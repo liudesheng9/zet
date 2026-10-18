@@ -1287,10 +1287,128 @@ fn publication_coverage(p: &Prepared, layer: &str) -> Result<Option<Vec<Value>>>
     }
 }
 
+/// Verify one immutable Bridge report and its exact proposal set (R229). Its id
+/// must recompute from its own content, and every proposal must reach an explicit
+/// outcome: an open proposal is a review decision, never a missing digest write.
+fn verify_bridge_report(p: &Prepared, report_path: &str, plan: &Value) -> Result<Value> {
+    let report = util::read_json(report_path).context("invalid Bridge report")?;
+    let key = field(&p.contract, "citation_key")?;
+    let id = field(&report, "report_id").context("Bridge report has no report_id")?;
+    if report["schema"] != 1
+        || report["citation_key"] != key
+        || id.len() != 66
+        || !id.starts_with("r-")
+        || !id[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        bail!("a Bridge publication requires an immutable report for `{key}`");
+    }
+    if id != format!("r-{}", canon::content_hash(&report, &["report_id", "created_at"])) {
+        bail!("the Bridge report `{id}` does not match its own content");
+    }
+    let proposals = report["proposals"]
+        .as_array()
+        .context("Bridge report is missing its proposals")?;
+    let mut members = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for proposal in proposals {
+        let proposal_id = field(proposal, "id")?;
+        if proposal_id.len() != 4
+            || !proposal_id.starts_with('b')
+            || !proposal_id[1..].chars().all(|c| c.is_ascii_digit())
+            || !seen.insert(proposal_id.to_string())
+        {
+            bail!("Bridge report proposal `{proposal_id}` is not one unique readable id");
+        }
+        members.push(proposal_id.to_string());
+    }
+    let entries = plan["coverage"]
+        .as_array()
+        .context("publication completion is missing its checked coverage")?;
+    if entries.len() != members.len() {
+        bail!("Bridge coverage must classify every proposal in the report exactly once");
+    }
+    let mut checked = Vec::new();
+    let mut recorded = std::collections::BTreeSet::new();
+    for entry in entries {
+        let reference = field(entry, "ref")?.to_string();
+        if !members.contains(&reference) || !recorded.insert(reference.clone()) {
+            bail!("Bridge coverage names `{reference}`, which is not one unclassified proposal");
+        }
+        let outcome = field(entry, "outcome")?;
+        let reason = entry["reason"].as_str().unwrap_or_default().trim().to_string();
+        match outcome {
+            "accepted" | "open" => {}
+            "refused" if !reason.is_empty() => {}
+            "refused" => bail!("Bridge coverage must give a reason for the refused proposal `{reference}`"),
+            _ => bail!("unknown bridge coverage outcome `{outcome}`"),
+        }
+        checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason}));
+    }
+    Ok(json!(checked))
+}
+
 /// Verify the layer's checked coverage: every required member exactly once, no
 /// invented member, and no fabricated coverage for a producer that did not
 /// produce substantive work.
-fn verify_coverage(p: &Prepared, layer: &str, manifest: &Value, plan: &Value) -> Result<Value> {
+fn verify_coverage(
+    p: &Prepared,
+    layer: &str,
+    manifest: &Value,
+    plan: &Value,
+    artifacts: &serde_json::Map<String, Value>,
+) -> Result<Value> {
+    if layer == "bridge" {
+        let report = artifacts
+            .get("report")
+            .and_then(|record| record["path"].as_str())
+            .context("a Bridge publication requires its immutable report")?;
+        return verify_bridge_report(p, report, plan);
+    }
+    if layer == "figures" {
+        let prepared = util::read_json(field(&p.contract["artifacts"]["figures_file"], "path")?)?;
+        let recognized = prepared["figures"]
+            .as_array()
+            .context("the prepared figures file is missing its references")?;
+        let entries = plan["coverage"]
+            .as_array()
+            .context("publication completion is missing its checked coverage")?;
+        if entries.len() != recognized.len() {
+            bail!("figure coverage must classify every recognized reference exactly once");
+        }
+        let mut checked = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            let reference = field(entry, "ref")?.to_string();
+            if !seen.insert(reference.clone()) {
+                bail!("figure coverage names `{reference}` twice");
+            }
+            let figure = recognized
+                .iter()
+                .find(|figure| figure["name"] == json!(reference))
+                .with_context(|| {
+                    format!("figure coverage names `{reference}`, which no source reference matches")
+                })?;
+            let outcome = field(entry, "outcome")?;
+            let reason = entry["reason"].as_str().unwrap_or_default().trim().to_string();
+            match outcome {
+                "shown" => {
+                    // Artifact integrity: a shown reference must be the prepared one, unchanged.
+                    for field_name in ["sha256", "path"] {
+                        if entry[field_name] != figure[field_name] {
+                            bail!("figure coverage shows `{reference}` with a changed {field_name}");
+                        }
+                    }
+                }
+                "unmatched" | "unresolved" if !reason.is_empty() => {}
+                "unmatched" | "unresolved" => {
+                    bail!("figure coverage must give a reason for `{reference}`")
+                }
+                _ => bail!("unknown figure coverage outcome `{outcome}`"),
+            }
+            checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason,"path":figure["path"],"sha256":figure["sha256"]}));
+        }
+        return Ok(json!(checked));
+    }
     let Some(groups) = publication_coverage(p, layer)? else {
         return Ok(json!([]));
     };
@@ -1459,7 +1577,7 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
             .with_context(|| format!("{artifact} artifact path must be a string"))?;
         artifacts.insert((*artifact).to_string(), bind_file(at, artifact)?);
     }
-    let coverage = verify_coverage(p, &layer, &manifest, &plan)?;
+    let coverage = verify_coverage(p, &layer, &manifest, &plan, &artifacts)?;
     let mut result = json!({"schema_version":1,"kind":"publication_completion","unit":unit,"token":token,"layer":layer,"key":key,"revision":revision,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"disposition":disposition,"consumed":consumed,"unresolved":unresolved,"coverage":coverage,"artifacts":artifacts});
     let completion_path = p.out.join(format!("publication-completion-{layer}-{key}-{revision}.json"));
     if done {
@@ -1500,12 +1618,17 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
         &completion,
     )?;
     for record in result["coverage"].as_array().unwrap() {
+        let reference = field(record, "ref")?;
+        let locator = match field(record, "producer") {
+            Ok(producer) => producer,
+            Err(_) => reference,
+        };
         output(
             &tx,
             unit,
-            &format!("coverage/{}", field(record, "ref")?),
+            &format!("coverage/{reference}"),
             "coverage",
-            field(record, "producer")?,
+            locator,
             &canon::hash_value(record),
             record,
         )?;
@@ -1573,6 +1696,15 @@ fn hub_scope(key: &str, path: &str) -> Result<Value> {
 fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<Value> {
     if !PUBLICATION.contains(&layer) {
         bail!("`{layer}` is not an aggregate publication layer");
+    }
+    // A layer the prepared run deliberately excluded can never gain work here.
+    if !target(&p.contract)?["enabled"]
+        .as_array()
+        .context("missing declared target")?
+        .iter()
+        .any(|enabled| enabled == layer)
+    {
+        bail!("`{layer}` is an excluded layer of this prepared run; it cannot publish a revision");
     }
     let scope = if layer == "hubs" {
         hub_scope(key, declared)?

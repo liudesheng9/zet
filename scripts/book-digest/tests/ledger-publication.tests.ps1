@@ -19,6 +19,24 @@ function Refuses([string[]]$Arguments,[string]$Expected) {
     $lines = @(& $Digest @Arguments 2>&1)
     Assert ($LASTEXITCODE -eq 1 -and ($lines -join ' ').Contains($Expected)) "refuses $Expected"
 }
+# The same Content-Hash the bridge compiler and the ledger use: SHA-256 over the
+# compact canonical JSON of the object without its excluded keys.
+function Get-ContentHash($value,[string[]]$except) {
+    function Sort-Keys($v) {
+        if ($v -is [System.Collections.IDictionary]) {
+            $sorted = [ordered]@{}
+            foreach ($key in ([string[]]$v.Keys | Sort-Object -CaseSensitive)) { $sorted[$key] = Sort-Keys $v[$key] }
+            return $sorted
+        }
+        if ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { return ,@($v | ForEach-Object { Sort-Keys $_ }) }
+        return $v
+    }
+    $filtered = [ordered]@{}
+    foreach ($key in $value.Keys) { if ($except -notcontains $key) { $filtered[$key] = $value[$key] } }
+    $json = (Sort-Keys $filtered) | ConvertTo-Json -Compress -Depth 40
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
 $inspect = @'
 const {DatabaseSync}=require('node:sqlite');
 const db=new DatabaseSync(process.argv[1],{readOnly:true});
@@ -235,7 +253,7 @@ try {
     $secondSource = Join-Path $scratch 'second.md'
     [IO.File]::WriteAllText($secondSource,"# 导论`n`n# 参考`n未选择。",$utf8)
     $secondOptions = Join-Path $scratch 'second-options.json'
-    [IO.File]::WriteAllText($secondOptions,'{"terms":false,"models":false,"events":false,"findings":false,"figures":false,"bridge":false}',$utf8)
+    [IO.File]::WriteAllText($secondOptions,'{"terms":false,"models":false,"events":false,"findings":false,"figures":false}',$utf8)
     $second = Run-Digest @('prepare','-Source',$secondSource,'-Out',$skeletonOut,'-CitationKey','FaultBook','-BibTeX','@book{FaultBook,title={Fault book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-NoFigures','-Variant','econ','-RunOptions',$secondOptions,'-Apply')
     $group = (Run-Digest @('ledger','next','-Out',$skeletonOut,'-Layer','digest','-Take','1','-Owner','fault-manager')).units[0]
     $started = Run-Digest @('group-start','-Out',$skeletonOut,'-Group','1','-Token',"$($group.token)")
@@ -261,6 +279,69 @@ try {
     Assert ($rolledBackUnit.state -eq 'claimed' -and $rolledBackUnit.result -eq $null -and $rolledBack.counts.done -eq 0) 'a publication completion fault rolls its outputs, done state and evidence back together'
     $retried = Run-Digest @('ledger','done','-Out',$skeletonOut,'-Unit',$faultClaim.id,'-Token',"$($faultClaim.token)",'-Outputs',$faultPlan)
     Assert ($retried.state -eq 'done' -and $retried.disposition -eq 'published' -and $retried.unit -ceq $faultPublication.unit) 'the same publication claim completes after the fault is removed'
+
+    # R229: a Bridge publication binds one immutable report and accounts for its
+    # exact proposal set. An open proposal is a review decision, not missing work.
+    $bridgeOut = $skeletonOut
+    $bridge = Run-Digest @('ledger','publish','-Out',$bridgeOut,'-Layer','bridge')
+    $bridgeClaim = (Run-Digest @('ledger','next','-Out',$bridgeOut,'-Layer','bridge','-Take','1','-Owner','bridge-manager')).units[0]
+    $reportPath = Join-Path $bridgeOut 'bridge-report.json'
+    [IO.File]::WriteAllText($reportPath,(@{
+        schema = 1; citation_key = 'FaultBook'; created_at = '2026-01-01T00:00:00.0000000Z'
+        proposals = @(
+            @{ id = 'b001'; carrier = 'FaultBook/1'; status = 'open'; detail = 'Not accepted or applied.' },
+            @{ id = 'b002'; carrier = 'FaultBook/1'; status = 'refused'; detail = 'no earlier book' }
+        )
+    } | ConvertTo-Json -Depth 8 -Compress),$utf8)
+    $report = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $report['report_id'] = 'r-' + (Get-ContentHash $report @('report_id','created_at'))
+    [IO.File]::WriteAllText($reportPath,($report | ConvertTo-Json -Depth 8 -Compress),$utf8)
+    $bridgePlan = Join-Path $bridgeOut ("publication-{0}.json" -f ($bridgeClaim.id -replace '[/@]','-'))
+    function Bridge-Plan($coverage) {
+        [IO.File]::WriteAllText($bridgePlan,(@{
+            schema_version = 1; kind = 'publication_completion'; unit = $bridgeClaim.id; token = $bridgeClaim.token
+            layer = 'bridge'; key = 'book'; input_hash = $bridgeClaim.input_hash
+            disposition = 'published'; consumed = @($bridgeClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+            unresolved = @(); coverage = $coverage; artifacts = @{ report = $reportPath }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $bridgePlan
+    }
+    $intact = [IO.File]::ReadAllBytes($reportPath)
+    $tampered = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $tampered['status'] = 'done'
+    [IO.File]::WriteAllText($reportPath,($tampered | ConvertTo-Json -Depth 8 -Compress),$utf8)
+    Refuses @('ledger','done','-Out',$bridgeOut,'-Unit',$bridgeClaim.id,'-Token',"$($bridgeClaim.token)",'-Outputs',(Bridge-Plan @(@{ref='b001';outcome='open';reason=''},@{ref='b002';outcome='refused';reason='no earlier book'}))) 'does not match its own content'
+    [IO.File]::WriteAllBytes($reportPath,$intact)
+    Refuses @('ledger','done','-Out',$bridgeOut,'-Unit',$bridgeClaim.id,'-Token',"$($bridgeClaim.token)",'-Outputs',(Bridge-Plan @(@{ref='b001';outcome='open';reason=''}))) 'classify every proposal in the report exactly once'
+    $bridgeDone = Run-Digest @('ledger','done','-Out',$bridgeOut,'-Unit',$bridgeClaim.id,'-Token',"$($bridgeClaim.token)",'-Outputs',(Bridge-Plan @(@{ref='b001';outcome='open';reason=''},@{ref='b002';outcome='refused';reason='no earlier book'})))
+    Assert ($bridgeDone.state -eq 'done' -and @($bridgeDone.coverage).Count -eq 2 -and @($bridgeDone.coverage | Where-Object { $_.ref -eq 'b001' -and $_.outcome -eq 'open' }).Count -eq 1) 'an immutable Bridge report completes with every proposal explicitly accepted, open or refused'
+
+    # An excluded layer can never gain a publication revision, and a figures
+    # revision must classify every recognized source reference it was given.
+    Refuses @('ledger','publish','-Out',$bridgeOut,'-Layer','figures') 'excluded layer of this prepared run'
+    $figureOut = Join-Path $scratch 'figures-enabled'
+    $figureOptions = Join-Path $scratch 'figure-options.json'
+    [IO.File]::WriteAllText($figureOptions,'{"terms":false,"models":false,"events":false,"findings":false,"bridge":false}',$utf8)
+    $null = Run-Digest @('prepare','-Source',$secondSource,'-Out',$figureOut,'-CitationKey','FigureBook','-BibTeX','@book{FigureBook,title={Figure book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-Variant','econ','-RunOptions',$figureOptions,'-Apply')
+    $figureGroup = (Run-Digest @('ledger','next','-Out',$figureOut,'-Layer','digest','-Take','1','-Owner','figure-manager')).units[0]
+    [IO.File]::WriteAllText($fault,(@{code='source_unavailable';unit=$figureGroup.id;input_hash=$figureGroup.input_hash;cause='the fixture refuses this group'} | ConvertTo-Json),$utf8)
+    $null = Run-Digest @('ledger','fail','-Out',$figureOut,'-Unit',$figureGroup.id,'-Token',"$($figureGroup.token)",'-Class','content','-Fault',$fault)
+    $figurePublication = Run-Digest @('ledger','publish','-Out',$figureOut,'-Layer','figures')
+    $figureClaim = (Run-Digest @('ledger','next','-Out',$figureOut,'-Layer','figures','-Take','1','-Owner','figure-manager')).units[0]
+    [IO.File]::WriteAllText((Join-Path $figureOut 'figure-plan.json'),(@{ fixture = 'figures' } | ConvertTo-Json),$utf8)
+    $figurePlanPath = Join-Path $figureOut ("publication-{0}.json" -f ($figureClaim.id -replace '[/@]','-'))
+    function Figure-Plan($coverage) {
+        [IO.File]::WriteAllText($figurePlanPath,(@{
+            schema_version = 1; kind = 'publication_completion'; unit = $figureClaim.id; token = $figureClaim.token
+            layer = 'figures'; key = 'book'; input_hash = $figureClaim.input_hash
+            disposition = 'partial'; consumed = @(); unresolved = @($figureClaim.inputs.dispositions | ForEach-Object { @{ unit = $_.unit } })
+            coverage = $coverage; artifacts = @{ report = (Join-Path $figureOut 'figure-plan.json') }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $figurePlanPath
+    }
+    Refuses @('ledger','done','-Out',$figureOut,'-Unit',$figureClaim.id,'-Token',"$($figureClaim.token)",'-Outputs',(Figure-Plan @(@{ref='图1-1';outcome='shown';reason='';sha256=('0'*64);path='x.png'}))) 'classify every recognized reference exactly once'
+    $figureDone = Run-Digest @('ledger','done','-Out',$figureOut,'-Unit',$figureClaim.id,'-Token',"$($figureClaim.token)",'-Outputs',(Figure-Plan @()))
+    Assert ($figureDone.state -eq 'done' -and @($figureDone.coverage).Count -eq 0 -and $figureDone.unit -ceq $figurePublication.unit) 'a source with no recognized reference completes with an empty checked figure coverage'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
