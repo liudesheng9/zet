@@ -22,10 +22,6 @@ function Run-Digest([string[]]$Arguments) {
     if ($LASTEXITCODE) { throw "digest failed ($LASTEXITCODE): $($lines -join ' ')" }
     return $lines[-1] | ConvertFrom-Json -AsHashtable
 }
-function Refuses([string[]]$Arguments,[string]$Expected) {
-    $lines = @(& $Digest @Arguments 2>&1)
-    Assert ($LASTEXITCODE -eq 1 -and ($lines -join ' ').Contains($Expected)) "refuses $Expected"
-}
 function Math([string]$Step,[string[]]$more = @()) { Run-Digest (@('math','-Step',$Step,'-Staging',$out) + $more) }
 function Claim([string]$Layer) { Run-Digest @('ledger','next','-Out',$out,'-Layer',$Layer,'-Take','4','-Owner',"math-$Layer") }
 function Complete([string]$Layer,[string]$Unit,[string]$Outputs) {
