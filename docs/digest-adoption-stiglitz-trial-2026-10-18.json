@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "kind": "adoption_trial",
+  "trial": "read-only adoption plan over a copy of D:/zt-digest/stiglitz2014learning",
+  "ran_at": "2026-10-18T20:34:22.1952407Z",
+  "tool": "zt-digest 0.1.0",
+  "archive": {
+    "id": "806009944a966daad513b2aacabddc5f",
+    "path": "\\\\?\\D:\\zt",
+    "revision": 0
+  },
+  "citation_key": "stiglitz2014learning",
+  "title": "Creating a Learning Society: A New Approach to Growth, Development, and Social Progress",
+  "variant": "econ",
+  "status": "ready",
+  "provenance": {
+    "live_folder_mutated": false,
+    "archive_written": false,
+    "evidence": "the folder's retained evidence was copied to a temporary directory; only that copy holds adoption/plan.json"
+  },
+  "counts": {
+    "groups": 171,
+    "group_states": {
+      "verified": 160,
+      "incomplete": 11
+    },
+    "models": 170,
+    "model_states": {
+      "incomplete": 116,
+      "verified": 54
+    },
+    "verified": 214,
+    "incomplete": 127,
+    "unknown": 397,
+    "adopted": 214,
+    "unresolved": 127,
+    "by_layer": {
+      "digest": 171,
+      "models": 170
+    }
+  },
+  "facts": {
+    "owned_logs_retained": 0,
+    "reconstructed_groups": 160,
+    "incomplete_groups": [
+      {
+        "n": 10,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 18,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 92,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 93,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 94,
+        "state": "incomplete",
+        "reason": "a skeleton anchor exists and no substantive Card does: the group was prepared and never digested",
+        "substantive": 0
+      },
+      {
+        "n": 95,
+        "state": "incomplete",
+        "reason": "a skeleton anchor exists and no substantive Card does: the group was prepared and never digested",
+        "substantive": 0
+      },
+      {
+        "n": 127,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 163,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 168,
+        "state": "incomplete",
+        "reason": "a skeleton anchor exists and no substantive Card does: the group was prepared and never digested",
+        "substantive": 0
+      },
+      {
+        "n": 169,
+        "state": "incomplete",
+        "reason": "the anchor carries no substantive Card of its group",
+        "substantive": 0
+      },
+      {
+        "n": 170,
+        "state": "incomplete",
+        "reason": "a skeleton anchor exists and no substantive Card does: the group was prepared and never digested",
+        "substantive": 0
+      }
+    ],
+    "verified_models": 54,
+    "models_with_placeholders": 42,
+    "model_fault_kinds": {
+      "closure": 81,
+      "unanchored": 17
+    },
+    "verified_models_with_explanation_need": 0,
+    "recovered_note_suggestions": 0,
+    "model_compiler_states": 0
+  },
+  "derived": [
+    {
+      "artifact": "shared-prefix.md",
+      "reason": "the legacy folder retained no shared instruction prefix; the adopted run derives it from the frozen instruction files of its variant"
+    },
+    {
+      "artifact": "link-prefix.md",
+      "reason": "the legacy folder retained no Link instruction prefix; the adopted run derives it from the frozen Link instruction file"
+    },
+    {
+      "artifact": "events.json",
+      "reason": "the legacy folder retained no Event candidate list; the adopted run records an empty candidate set and schedules no per-group Event enumeration"
+    },
+    {
+      "artifact": "setup-calls.json",
+      "reason": "the legacy folder retained no setup calls; the adopted run derives the list its Literature tree needs and writes no Card from it"
+    }
+  ],
+  "missing": []
+}
