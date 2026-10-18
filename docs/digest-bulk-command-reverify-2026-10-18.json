@@ -1,0 +1,511 @@
+{
+  "generated_utc": "2026-10-18T03:35:54.701704-05:00",
+  "scope": "Reverification of issue #67 T32 on the retained 10,895-Card fixture: read-only CLI/MCP commands against one isolated consistent copy; no apply, provider call or digest workflow ran.",
+  "issue": 67,
+  "published_evidence": "E:\\zet\\docs\\digest-bulk-command-benchmark.json",
+  "published_candidate_source": "b9a5ce5dbb12d4bee3327cafc0a6d284b12adb36",
+  "fixture": {
+    "source": "D:\\zt-target\\qualification-indexed-reads-O6rotV\\after\\archive\\zt.sqlite3",
+    "source_file_sha256": "73188c33b07bc373b7ff0fca9138a16a8f35b042316e85b2bb52f9f9ddf58e68",
+    "input": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "book": "stiglitz2014learning",
+    "book_cards": 1565,
+    "groups": 171
+  },
+  "deployed_binaries": {
+    "backend": {
+      "path": "C:\\Users\\chenx\\.cargo\\bin\\zt.exe",
+      "sha256": "202dcffef772619cb879e6c567d4602a99f0f93f628a5581c758b270deb6999e"
+    },
+    "client": {
+      "path": "C:\\Users\\chenx\\.cargo\\bin\\zt-digest.exe",
+      "sha256": "1cfd26e1e1cb5cc0d3c2d1227f6e1dca8e23afdc9ca338a3eb7a7a5b6ae8d678"
+    }
+  },
+  "sampling": "One warm-up and three measured invocations per command, run sequentially on an otherwise idle host. Each invocation starts one zt mcp through the public test seam, which forwards every call to the real server and records tool, address count and process id.",
+  "results": [
+    {
+      "command": "snapshot",
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "samples_ms": [
+        701.9,
+        689.6,
+        690.3
+      ],
+      "median_ms": 690.3,
+      "max_observed_ms": 701.9,
+      "calls": {
+        "export_titles": 1
+      },
+      "call_count": 1,
+      "mcp_processes": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "bulk_addresses_requested": 0,
+      "projection": {
+        "bytes": 1193031,
+        "sha256": "b9b2570b2fb88d0a71c7171e269b551b81b37666d7a37cb8a8aa0ca6382dde15"
+      },
+      "published_projection": {
+        "bytes": 1193031,
+        "sha256": "b9b2570b2fb88d0a71c7171e269b551b81b37666d7a37cb8a8aa0ca6382dde15"
+      },
+      "published_median_ms": 591.6137999738567,
+      "published_calls": {
+        "export_titles": 1
+      }
+    },
+    {
+      "command": "plan",
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "samples_ms": [
+        2735.8,
+        2749.2,
+        2717.2
+      ],
+      "median_ms": 2735.8,
+      "max_observed_ms": 2749.2,
+      "calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "call_count": 18,
+      "mcp_processes": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "bulk_addresses_requested": 2671,
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "08bb6264ccb322c9ceb1722cfd42035df9a082d4b45c0f7e8fd48aaaceadf275",
+        "fault_count": 119,
+        "faults_sha256": "6d6caaf52d9dc7b4356194d4b60d655de247bf95cd2cbd01e9ecc7d3a45f8d16"
+      },
+      "published_projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "published_median_ms": 2623.62219998613,
+      "published_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      }
+    },
+    {
+      "command": "check",
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "samples_ms": [
+        2599.1,
+        2686.9,
+        2605.8
+      ],
+      "median_ms": 2605.8,
+      "max_observed_ms": 2686.9,
+      "calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "call_count": 18,
+      "mcp_processes": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "bulk_addresses_requested": 2671,
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "08bb6264ccb322c9ceb1722cfd42035df9a082d4b45c0f7e8fd48aaaceadf275",
+        "fault_count": 119,
+        "faults_sha256": "6d6caaf52d9dc7b4356194d4b60d655de247bf95cd2cbd01e9ecc7d3a45f8d16"
+      },
+      "published_projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "published_median_ms": 2422.9112999746576,
+      "published_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      }
+    },
+    {
+      "command": "report",
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "samples_ms": [
+        2648.4,
+        2720.2,
+        2658.3
+      ],
+      "median_ms": 2658.3,
+      "max_observed_ms": 2720.2,
+      "calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      },
+      "call_count": 18,
+      "mcp_processes": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "bulk_addresses_requested": 2671,
+      "projection": {
+        "picked": 1445,
+        "state_sha256": "08bb6264ccb322c9ceb1722cfd42035df9a082d4b45c0f7e8fd48aaaceadf275",
+        "fault_count": 119,
+        "faults_sha256": "6d6caaf52d9dc7b4356194d4b60d655de247bf95cd2cbd01e9ecc7d3a45f8d16"
+      },
+      "published_projection": {
+        "picked": 1445,
+        "state_sha256": "d1f7eab424a8f694fde439a36d3ff172f8bbae195ff7f09166b56674f2bd862a",
+        "fault_count": 83,
+        "faults_sha256": "2e2cfc67bff0a6d29754e2957578730898ba15e72c402e14f5bacaac490da125"
+      },
+      "published_median_ms": 2469.5452000014484,
+      "published_calls": {
+        "get_cards": 16,
+        "export_titles": 1,
+        "list_links": 1
+      }
+    },
+    {
+      "command": "prepare-link",
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "samples_ms": [
+        10907.8,
+        11018.2,
+        10728.8
+      ],
+      "median_ms": 10907.8,
+      "max_observed_ms": 11018.2,
+      "calls": {
+        "export_titles": 1,
+        "get_cards": 55
+      },
+      "call_count": 56,
+      "mcp_processes": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "bulk_addresses_requested": 10895,
+      "projection": {
+        "file_count": 343,
+        "bytes": 3995753,
+        "sha256": "d0574151a93c67341112f7bf90c0c67e8a89f44949148aaabc24c56804db518f"
+      },
+      "published_projection": {
+        "file_count": 343,
+        "bytes": 3991649,
+        "sha256": "8a83b76fb1a44e30542e044d0e845ce0718df95f9cc0b1e7d154451117058cc4"
+      },
+      "published_median_ms": 7963.3481000200845,
+      "published_calls": {
+        "export_titles": 1,
+        "get_cards": 55
+      }
+    }
+  ],
+  "documented_output_differences_from_published_benchmark": [
+    {
+      "source": "#75 added the R18/R19 content-corruption rules after the published candidate (b9a5ce5)",
+      "effect": "29 R19 lines, 7 R18 lines and 34 additional repair Cards (5 fix jobs) in the Card plan/check/report scope"
+    },
+    {
+      "source": "#76 reworded the I5 orphan sentence",
+      "effect": "the two published I5 lines read \"no Card other than the parent links here\" and now read \"no other Card has an authored Link here\""
+    }
+  ],
+  "preservation": {
+    "unchanged_cards": true,
+    "unchanged_source_file": true,
+    "after": {
+      "count": 10895,
+      "revision": "0",
+      "sha256": "c4877f06f0e0c7815675bea0a31d0ab3907f4348f1f958195f9e052f56cf3361"
+    },
+    "check_links_exit": 0,
+    "check_links": "{\"archive_revision\":0,\"cards\":10895,\"faults\":[],\"last_write\":{\"changed_reverse_sections\":0,\"indexed_cards\":10895,\"refreshed_cards\":10895},\"links\":56994,\"ok\":true}"
+  },
+  "checks": {
+    "total": 57,
+    "failed": 0
+  },
+  "parity_checks": [
+    {
+      "check": "snapshot: every trial exited 0",
+      "ok": true
+    },
+    {
+      "check": "snapshot: one MCP process per command (R107)",
+      "ok": true
+    },
+    {
+      "check": "snapshot: median under 1500 ms",
+      "ok": true
+    },
+    {
+      "check": "snapshot: every trial produced the same projection",
+      "ok": true
+    },
+    {
+      "check": "snapshot: stable projection facts match the published benchmark evidence",
+      "ok": true
+    },
+    {
+      "check": "snapshot: call shape identical in every trial",
+      "ok": true
+    },
+    {
+      "check": "snapshot: byte-identical to the published candidate output",
+      "ok": true
+    },
+    {
+      "check": "plan: every trial exited 0",
+      "ok": true
+    },
+    {
+      "check": "plan: one MCP process per command (R107)",
+      "ok": true
+    },
+    {
+      "check": "plan: median under 10000 ms",
+      "ok": true
+    },
+    {
+      "check": "plan: every trial produced the same projection",
+      "ok": true
+    },
+    {
+      "check": "plan: stable projection facts match the published benchmark evidence",
+      "ok": true
+    },
+    {
+      "check": "plan: call shape identical in every trial",
+      "ok": true
+    },
+    {
+      "check": "plan: no whole-archive per-Card get_card/get_tree loop",
+      "ok": true
+    },
+    {
+      "check": "plan: `picked` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "plan: `orphan_links` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "plan: `orphan_none` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "plan: every added fault line is a new #75 R18/R19 rule or the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "plan: every published in-scope fault line is retained except the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "plan: no published repair plan entry was removed or changed, and every added entry is a new R18/R19 repair",
+      "ok": true
+    },
+    {
+      "check": "plan: the new R18/R19 repair work is the only reason the job list and sequence grew",
+      "ok": true
+    },
+    {
+      "check": "check: every trial exited 0",
+      "ok": true
+    },
+    {
+      "check": "check: one MCP process per command (R107)",
+      "ok": true
+    },
+    {
+      "check": "check: median under 10000 ms",
+      "ok": true
+    },
+    {
+      "check": "check: every trial produced the same projection",
+      "ok": true
+    },
+    {
+      "check": "check: stable projection facts match the published benchmark evidence",
+      "ok": true
+    },
+    {
+      "check": "check: call shape identical in every trial",
+      "ok": true
+    },
+    {
+      "check": "check: no whole-archive per-Card get_card/get_tree loop",
+      "ok": true
+    },
+    {
+      "check": "check: `picked` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "check: `orphan_links` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "check: `orphan_none` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "check: every added fault line is a new #75 R18/R19 rule or the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "check: every published in-scope fault line is retained except the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "check: no published repair plan entry was removed or changed, and every added entry is a new R18/R19 repair",
+      "ok": true
+    },
+    {
+      "check": "check: the new R18/R19 repair work is the only reason the job list and sequence grew",
+      "ok": true
+    },
+    {
+      "check": "report: every trial exited 0",
+      "ok": true
+    },
+    {
+      "check": "report: one MCP process per command (R107)",
+      "ok": true
+    },
+    {
+      "check": "report: median under 10000 ms",
+      "ok": true
+    },
+    {
+      "check": "report: every trial produced the same projection",
+      "ok": true
+    },
+    {
+      "check": "report: stable projection facts match the published benchmark evidence",
+      "ok": true
+    },
+    {
+      "check": "report: call shape identical in every trial",
+      "ok": true
+    },
+    {
+      "check": "report: no whole-archive per-Card get_card/get_tree loop",
+      "ok": true
+    },
+    {
+      "check": "report: `picked` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "report: `orphan_links` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "report: `orphan_none` identical to the published candidate state",
+      "ok": true
+    },
+    {
+      "check": "report: every added fault line is a new #75 R18/R19 rule or the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "report: every published in-scope fault line is retained except the documented #76 I5 wording",
+      "ok": true
+    },
+    {
+      "check": "report: no published repair plan entry was removed or changed, and every added entry is a new R18/R19 repair",
+      "ok": true
+    },
+    {
+      "check": "report: the new R18/R19 repair work is the only reason the job list and sequence grew",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: every trial exited 0",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: one MCP process per command (R107)",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: median under 20000 ms",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: every trial produced the same projection",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: stable projection facts match the published benchmark evidence",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: call shape identical in every trial",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: retained file set names identical",
+      "ok": true
+    },
+    {
+      "check": "prepare-link: every retained file identical after normalizing the embedded staging path",
+      "ok": true
+    }
+  ],
+  "limits": "Local command measurements on a preserved archive copy, not whole-workflow throughput. Both working directories keep the same 10,895 rows and revision 0; status --check-links was ok before and after."
+}

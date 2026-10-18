@@ -103,7 +103,7 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 
 ## Architecture
 
-Every step is one `zt-digest` process: the script, when it is called at all, only starts it. A tool opens one `zt mcp` for all its reads and writes (a few read on worker threads, one `zt mcp` each), runs zt-check and the audit in-process, and shares data with the other steps only through files in the staging folder (and through the archive). No step calls a model: each step that needs one prints jobs, and the workflow runs them.
+Every step is one `zt-digest` process: the script, when it is called at all, only starts it. A tool opens one `zt mcp` for all its reads and writes (`bridge` alone still reads above 40 calls on up to six worker threads, one `zt mcp` each), runs zt-check and the audit in-process, and shares data with the other steps only through files in the staging folder (and through the archive). No step calls a model: each step that needs one prints jobs, and the workflow runs them.
 
 ```mermaid
 flowchart TD
@@ -118,7 +118,7 @@ flowchart TD
 
 How a tool reaches the archive:
 
-- **Reads** go to the tool's one `zt mcp` (`calls::invoke`, `model::read_calls`); a failed read fails the step with `zt-mcp failed: <i> error <message>`, the text `Invoke-Zt` used. `audit`, `bridge`, and `prepare-link` read large batches on worker threads, each with its own `zt mcp`.
+- **Reads** go to the tool's one `zt mcp` (`calls::invoke`, `model::read_calls`); a failed read fails the step with `zt-mcp failed: <i> error <message>`, the text `Invoke-Zt` used. `audit`, `prepare-link` and every Card cycle read their complete required scope through that one client in bounded chunks. Only `bridge` reads above 40 calls on up to six worker threads, each with its own `zt mcp`.
 - **Writes** go through `calls::run`, the helper in-process, with the options the scripts gave the helper (`-Log`, `-SrcLog`, `-Allow`, `-Moves`); the per-call `N ok <address>` lines and the stop at the first failed call are the helper's. `model` and `organize-apply` send renumbering calls one at a time and follow each `moved` map.
 - **A PowerShell caller** (a test, a script of your own) dot-sources `zt-calls.ps1`: `Invoke-Zt` sends read batches straight to one long-lived `zt mcp` (direct reads; `ZT_CALLS_DIRECT=0` turns them off) and any other batch to the helper.
 
@@ -335,7 +335,7 @@ Every insert, move, and delete runs as the only call of its helper run with `-Mo
 ### The link pass preparation (`prepare-link-pass.ps1`)
 
 1. Writes `cards-all.md`: every tree of both Workspaces (agent first), each Card with its address, a type mark (`[模型]`, `[模型·<facet>]`, `[事件]`), and its cut title.
-2. Reads every agent Card that is not a Topic root with `get_card`, in up to 12 parallel helper processes; throws when a Card is missing.
+2. Reads every Card of both Workspaces through one `export_titles` and one bounded bulk text `get_cards` read in the same `zt mcp` process; a missing Card, a changing revision or an incomplete export stops the command instead of shrinking the catalogue.
 3. Ownership: a group owns its anchor and its `owned-gNN.txt` entries. When a group has no owned file, a Card is inferred: a Literature tree Card under `<key>/<n>|…` that mentions `§` or `来源`, or a Topic tree Card whose source line or first `§` reference names a section of the group (section ids `Intro.N`, `AN`, `N.N`, `第X章`, `导论`). Hub Cards and Cards with 8 or more Links stay unowned.
 4. For each group writes `allow-gNN.txt` (its Cards) and `link-gNN.md`: the anchor, source files, index paths, the write command with `-Allow`, `SELF-CHECK: zt-check --log "<allow>" --cards "" --book <key> --rules L1,L2,R2,R3,R4,R5,R7,R9`, and each owned Card with its body and up to five candidate targets (most similar Cards owned by another group, not linked yet, not a Topic root).
 5. Prints `{"pending":[n…],"groups":[{n,owned,done}],"unowned":N,"cards_all":…}`; a group with `linked-gNN.txt` (written by the workflow) is `done`.
@@ -416,8 +416,8 @@ The Bridge stage of all three workflows runs this script (`docs/slip-box-luhmann
 - **Reruns are safe.** `state.json` records applied jobs (`card-compiler.ps1` after every job); `card-compiler.ps1` records an edit already written and makes a missing split Card once; `event-compiler.ps1`, `finding-compiler.ps1`, `book-terms.ps1`, `book-skeleton.ps1`, `notation-apply`, `math-compiler.ps1 skeleton`, `attach-figures.ps1`, and `hub-compiler.ps1 apply` rewrite or skip what exists.
 - **Finished models stay.** `card-compiler.ps1` writes only `idea`, `event`, and `anchor` Cards; `organize-apply.ps1` refuses Model and Hub Cards; `model-compiler.ps1` never splits, reviews, or fixes a shared part (`take`).
 - **Renumbering is serial.** `insert_card`, `move_card`, and `delete_card` run as the only call of a helper run, and the script follows the `moved` map.
-- **Read-only scripts stay read-only.** `zt-digest audit` calls only `list_trees`, `get_tree`, `get_card`, `get_model`, `list_hubs`, and `list_broken_links`; it has no write path. `snapshot-topics.ps1`, `list-models.ps1`, `model-context.ps1`, `prepare-link-pass.ps1`, `organize-survey.ps1`, and every precheck make only reads.
-- **Whole trees, not searches.** `list-models.ps1`, `model-context.ps1`, and the audit read trees with `get_tree`, because `search_cards` stops at 200 results. `attach-figures.ps1` is the exception (limit 200 per label query).
+- **Read-only scripts stay read-only.** `zt-digest audit` calls only `export_titles`, `get_cards`, `get_model`, `list_hubs`, and `list_broken_links`; it has no write path. `snapshot-topics.ps1`, `list-models.ps1`, `model-context.ps1`, `prepare-link-pass.ps1`, `organize-survey.ps1`, and every precheck make only reads.
+- **Whole trees, not searches.** `list-models.ps1` and `model-context.ps1` read trees with `get_tree`; `snapshot-topics.ps1`, `prepare-link-pass.ps1`, the Card cycles and the audit read their complete scope through one `export_titles` plus bounded `get_cards` batches (the whole-book Card cycle adds one indexed `list_links` for relationship facts). No step uses `search_cards` for completeness, because it stops at 200 results; `attach-figures.ps1` is the exception (limit 200 per label query).
 
 ## Data and storage
 
@@ -800,5 +800,3 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `2026-10-12`–`2026-10-13` `7a878da`, `7d636e4`, `1bec685`, `eaf854c`, `b61f2c4`, `96def45` — self-sufficient models, Elaboration levels, Derivation chains, the UTF-8 fix in `zt-calls.ps1`, and `zt-calls.tests.ps1`.
 - `2026-10-10`–`2026-10-12` `fcc5226`, `eec0940`, `2b05ba6`, `d92f367`, `c9b01a2`, `6ad10ed` — the first digest scripts (`prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-link-pass.ps1`, `list-models.ps1`, `model-context.ps1`, `zt-calls.ps1`) and Model parts.
 - `2026-10-16` — Wiki doc created.
-</content>
-</invoke>

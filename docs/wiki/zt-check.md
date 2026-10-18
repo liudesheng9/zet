@@ -205,10 +205,9 @@ On Windows, `owned::Owned` creates the child suspended, assigns it to one Job Ob
 
 | Tool called | Arguments | Used by | Fields read |
 |---|---|---|---|
-| `get_card` | `{ at }` | all zt modes | `address`, `title`, `body`, `facet`, `type`, `tree`, `parent.address`, `model.head.address`, `model.level`, `model.build.setting` |
-| `get_model` | `{ at }` | `--model` | `head.address`, `parts[]`, `level`, `build.setting`, `build.order[].line`, `build.order[].address` |
-| `list_trees` | `{ workspace: "agent" }` | `--cards` | `trees[].kind`, `trees[].tree` |
-| `get_tree` | `{ tree }` | `--cards` | `cards[].address`, `cards[].kind`, `cards[].links[]`, `cards[].kinds` (object keys) |
+| `get_cards` | `{ addresses, view: "text" }` | every live mode (`--model`, `--addresses`, `--cards`; never `--json`) | `cards[].address`, `title`, `body`, `facet`, `type`, `tree`, `links[]`, `kinds`, `archive_revision`, `complete`, `missing` |
+| `get_model` | `{ at }` | `--model`, `--addresses` (the first Card when it is a model), `--cards` (each model it checks) | `head`, `parts[]`, `level`, `build.setting`, `build.order[].line`, `build.order[].address` |
+| `export_titles` | `{}` | `--cards` | `titles[].address`, `titles[].tree`, `count`, `complete`, `archive_revision` |
 
 ### Install script (`scripts/install-zt-check.ps1`)
 
@@ -236,20 +235,20 @@ R19 reports every authored level-one heading that repeats the Card title, with i
 
 ### A `--model` run
 
-1. `Zt::start` launches `zt mcp`. `check_model` calls `get_model { at }`; `head.address` must exist.
-2. The entries are the head (`get_card`) and every `parts[]` item, reduced to `address`, `title`, `body`, `facet` (`card_entry`).
+1. `Zt::start` launches `zt mcp`. `check_model` calls `get_model { at }`; `head.address` must exist. It first probes the revision with one empty `get_cards` text read.
+2. The entries are the `get_model` head and every `parts[]` item, reduced to `address`, `title`, `body`, `facet` (`card_entry`).
 3. The setting and level come from the flags, else from `build.setting` and `level`. Shared parts are the `build.order` items with `line: shared`; `--skip-shared` removes them.
-4. `setting_body` takes the setting's body from the entries, else from `get_card`. `Check::run` runs; no entry has a category, so only R rules apply.
+4. `setting_body` takes the setting's body from the entries, else from one required lean `get_cards` read for that external setting. `Check::run` runs; no entry has a category, so only R rules apply.
 
 ### A `--addresses` run
 
-1. `get_card` for each address. The first Card's `model` gives the default setting and level for all of them.
+1. One bounded text `get_cards` read for every address. When the first Card is a Model Card, one `get_model` read gives its default setting and level; otherwise the flags (else empty) apply.
 2. As `--model` from step 4, with no shared list (R6 applies to every Card).
 
 ### A `--cards` run (self-check, as the audit sees it)
 
 1. The addresses of `--cards` and of the `--log` file (one per line, BOM stripped) are de-duplicated (case counts, ignorable characters do not). An empty list prints `no Cards to check`.
-2. `check_cards` calls `get_card` for each, `list_trees { workspace: agent }` to know the Literature trees, and `get_tree` once per tree to read each Card's `links` and `kinds`.
+2. `check_cards` makes one bounded text `get_cards` read of those Cards, one complete `export_titles` catalogue for classification, and one `get_model` read per distinct model it must check. Each lean row carries its indexed `links` and `kinds`, so no per-Card or per-tree read remains.
 3. Each Card gets a category: `root` (the tree entry's kind is `topic` or `literature`), `hub`, `event`, `finding`, `part` (type `model` with a facet), `model`, then in an agent Literature tree `anchor` (`<key>/<n>`), `terms` (title starts with `术语表`), `structure` (body starts with `本卡是《…》的结构卡`), else `idea`.
 4. `part` and `model` Cards with a model head are grouped by head; each group runs as one `Check` with its model's setting, level, and `require_explain = true`.
 5. The rest run together; `idea`, `anchor`, `event`, `finding` entries get `category`, `parent`, `links`, `kinds`, and `book` (`--book`, else the tree when it is a Literature tree).
@@ -402,7 +401,7 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 - **`--addresses` takes the setting and level from the first Card's model** for all Cards; mixing models gives the wrong term table and level.
 - **`PLACEHOLDERS` is `(?i)F|C`:** it removes every `F`, `f`, `C`, `c`, not only the formula and code placeholders, before counting Chinese sentence size, I1 titles, L2 reasons, and bigrams. This mirrors the PowerShell `-replace`; changing it changes counts.
 - **English prose counts zero characters.** `measure` gives words for a sentence without CJK, and `language` adds only character sizes, so R13's character limit and I2 see English Cards as empty (I2 then reports a merge candidate).
-- **No timeout on `zt mcp`.** `Zt::receive` blocks until a line with the id arrives; `zt mcp` stderr is discarded, so a stuck or failing server shows only as a hang or `zt mcp closed`. The ZT service must be up for tool calls.
+- **One 240-second exchange deadline.** `Zt::receive` waits for a line with the id inside the configured deadline (240 s in production, shorter only in an isolated lifecycle fixture) and reports `command_timeout` with the owned child and cleanup fact; `zt mcp` stderr is discarded, so ordinary server failures show only as the deadline or `zt mcp closed`. The ZT service must be up for tool calls.
 - **`--help` exits 1** (it is reported as an error) and `--log` with a missing file is ignored silently.
 - **Rule-letter filters in callers.** `card-compiler.ps1` (`Invoke-StyleCheck`) and `digest-audit.ps1` (`Invoke-Check`) keep only lines matching `[RIEL]\d+`, so F lines are dropped there; `model-compiler.ps1` explain-check keeps only `R\d+`. A new rule letter must be added to those patterns too.
 - **Install before testing.** `Invoke-ZtCheck` resolves `zt-check` from PATH once, when `zt-calls.ps1` is dot-sourced; a changed PATH after that has no effect.
