@@ -238,11 +238,19 @@ pub fn read_json(path: &str) -> Result<Value> {
     }
     let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("{e}"))?;
     let text = String::from_utf8_lossy(&bytes);
-    let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+    parse_json(&text)
+}
+
+/// Parse one already-read UTF-8 artifact without rereading it for its hash.
+pub(crate) fn parse_json(text: &str) -> Result<Value> {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     if text.is_empty() {
-        return Err(refuse("invalid JSON: Value cannot be null. (Parameter 'json')"));
+        return Err(refuse(
+            "invalid JSON: Value cannot be null. (Parameter 'json')",
+        ));
     }
-    let value: Value = serde_json::from_str(text).map_err(|e| refuse(format!("invalid JSON: {e}")))?;
+    let value: Value =
+        serde_json::from_str(text).map_err(|e| refuse(format!("invalid JSON: {e}")))?;
     if let Some(key) = repeated_key(text) {
         return Err(refuse(format!("invalid JSON: duplicate JSON key {key}")));
     }

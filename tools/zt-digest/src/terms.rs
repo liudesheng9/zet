@@ -57,8 +57,18 @@ struct Params {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let names = ["Step", "Staging", "MaxTerms", "MaxCandidates", "OperationPrefix"];
+    let names = [
+        "Step",
+        "Staging",
+        "MaxTerms",
+        "MaxCandidates",
+        "OperationPrefix",
+        "Token",
+    ];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
+    if a.has("Token") {
+        return crate::ledger::terms_cli(&a);
+    }
     let step = a.choice("Step", &["plan", "apply"])?;
     let p = Params {
         step,
@@ -68,13 +78,26 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         apply: a.flag("Apply"),
         operation_prefix: a.str("OperationPrefix"),
     };
+    if std::path::Path::new(&p.staging)
+        .join("ledger.sqlite3")
+        .exists()
+    {
+        bail!("prepared ledger Terms steps require -Token");
+    }
     let manifest = common::manifest(&p.staging)?;
+    if manifest.get("run_contract").is_some_and(|v| !v.is_null()) {
+        bail!("prepared ledger Terms steps require -Token");
+    }
     let key = pstr(&manifest, "citation_key");
     let work = ps::join(&p.staging, "terms");
     let out = ps::join(&work, "out");
     std::fs::create_dir_all(&work)?;
     std::fs::create_dir_all(&out)?;
-    if p.step == "plan" { plan(&p, &manifest, &key, &work, &out) } else { apply(&p, &manifest, &key, &out) }
+    if p.step == "plan" {
+        plan(&p, &manifest, &key, &work, &out)
+    } else {
+        apply(&p, &manifest, &key, &out)
+    }
 }
 
 /// `Get-Content -Raw -Encoding utf8`: the text without a BOM, or None for an empty file ($null).
@@ -163,14 +186,24 @@ fn frequent_groups(texts: &[String]) -> Vec<(String, i64)> {
     kept
 }
 
-fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Result<i32> {
+fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Result<Value> {
     let mut sb = Sb::new();
-    sb.line(format!("# 术语任务：《{}》", pstr(manifest, "book_title"))).blank();
-    sb.line(format!("把结果写入 `{}`。", ps::join(out, "terms.json"))).blank();
+    sb.line(format!("# 术语任务：《{}》", pstr(manifest, "book_title")))
+        .blank();
+    sb.line(format!("把结果写入 `{}`。", ps::join(out, "terms.json")))
+        .blank();
     sb.line("## 小节标题").blank();
     for g in ps::pipe(prop(manifest, "groups")) {
-        let headings: Vec<String> = ps::pipe(prop(g, "headings")).into_iter().map(ps::s).collect();
-        sb.line(format!("- 第 {} 组：{}：{}", pstr(g, "n"), pstr(g, "chapter"), headings.join("；")));
+        let headings: Vec<String> = ps::pipe(prop(g, "headings"))
+            .into_iter()
+            .map(ps::s)
+            .collect();
+        sb.line(format!(
+            "- 第 {} 组：{}：{}",
+            pstr(g, "n"),
+            pstr(g, "chapter"),
+            headings.join("；")
+        ));
     }
     sb.blank();
     let sections = ps::join(&p.staging, "sections");
@@ -187,7 +220,10 @@ fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Resul
                     bold.insert(&t, format!("sections/{name}:{n}"));
                 }
             }
-            if (defs.len() as i64) < p.max_candidates && HAN.is_match(&line) && DEFINES.is_match(&line) {
+            if (defs.len() as i64) < p.max_candidates
+                && HAN.is_match(&line)
+                && DEFINES.is_match(&line)
+            {
                 let mut clip = SPACES.replace_all(&line, " ").trim().to_string();
                 if ps::len16(&clip) > 140 {
                     clip = ps::cut16(&clip, 140) + "…";
@@ -201,7 +237,9 @@ fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Resul
     let mut texts: Vec<String> = Vec::new();
     for name in &files {
         let Some(text) = raw(&ps::join(&sections, name))? else {
-            bail!("Exception calling \"Matches\" with \"2\" argument(s): \"Value cannot be null. (Parameter 'input')\"");
+            bail!(
+                "Exception calling \"Matches\" with \"2\" argument(s): \"Value cannot be null. (Parameter 'input')\""
+            );
         };
         for m in GLOSSED.captures_iter(&text) {
             let t = m[1].to_string();
@@ -222,7 +260,12 @@ fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Resul
     }
     sb.blank().line("## 高频词组（出现次数）").blank();
     if !kept.is_empty() {
-        sb.line(kept.iter().map(|(k, v)| format!("{k}（{v}）")).collect::<Vec<_>>().join("、"));
+        sb.line(
+            kept.iter()
+                .map(|(k, v)| format!("{k}（{v}）"))
+                .collect::<Vec<_>>()
+                .join("、"),
+        );
     } else {
         sb.line("（没有）");
     }
@@ -243,17 +286,51 @@ fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Resul
         sb.line("（没有）");
     }
     let job = ps::join(work, "job.md");
-    util::write_text(&job, &sb.0)?;
     let doc_copy = ps::join(work, "dsh-terms-instructions.zh.md");
     let doc = ps::join(&common::scripts_dir(), "dsh-terms-instructions.zh.md");
     let text = raw(&doc)?.unwrap_or_default();
-    util::write_text(&doc_copy, &text.replace("{{KEY}}", key).replace("{{STAGING}}", &p.staging))?;
     let last = json!({
         "bold": bold.len(), "definitions": defs.len(),
         "jobs": [{ "id": "terms", "files": [doc_copy, job], "prompt": PROMPT }]
     });
-    util::print_line(&ps::json_compact(&last))?;
+    let candidate_count = bold.len() + defs.len() + glossed.len() + kept.len();
+    Ok(
+        json!({"summary":last,"job_text":sb.0,"instructions_text":text.replace("{{KEY}}", key).replace("{{STAGING}}", &p.staging),"candidate_count":candidate_count,"counts":{"bold":bold.len(),"definitions":defs.len(),"glossed":glossed.len(),"frequent":kept.len()}}),
+    )
+}
+
+fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Result<i32> {
+    let data = plan_data(p, manifest, key, work, out)?;
+    util::write_atomic(
+        ps::join(work, "job.md"),
+        data["job_text"]
+            .as_str()
+            .context("missing Terms job text")?,
+    )?;
+    util::write_atomic(
+        ps::join(work, "dsh-terms-instructions.zh.md"),
+        data["instructions_text"]
+            .as_str()
+            .context("missing Terms instructions")?,
+    )?;
+    util::print_line(&ps::json_compact(&data["summary"]))?;
     Ok(0)
+}
+
+pub(crate) fn claimed_plan(staging: &str, max_terms: i64, max_candidates: i64) -> Result<Value> {
+    let manifest = common::manifest(staging)?;
+    let key = pstr(&manifest, "citation_key");
+    let work = ps::join(staging, "terms");
+    let out = ps::join(&work, "out");
+    let p = Params {
+        step: "plan".into(),
+        staging: staging.into(),
+        max_terms,
+        max_candidates,
+        apply: false,
+        operation_prefix: String::new(),
+    };
+    plan_data(&p, &manifest, &key, &work, &out)
 }
 
 /// One entry of the table.
@@ -301,6 +378,68 @@ fn table(book_title: &str, key: &str, terms: &[Term]) -> String {
     }
     sb.blank().line(format!("来源：[[{key}]]"));
     sb.0.trim_end().to_string()
+}
+
+/// Claimed runs reject incomplete/ambiguous rows instead of silently dropping them.
+pub(crate) fn claimed_table(raw: &Value, max: i64, book_title: &str, key: &str) -> Result<Value> {
+    let rows = raw["terms"]
+        .as_array()
+        .context("Terms answer requires an array of terms")?;
+    if rows.len() > max as usize {
+        bail!("Terms answer exceeds the frozen MaxTerms");
+    }
+    let mut seen = HashSet::new();
+    for row in rows {
+        let fields = row.as_object().context("Terms row must be an object")?;
+        if fields
+            .keys()
+            .any(|name| !["term", "avoid", "meaning", "section"].contains(&name.as_str()))
+        {
+            bail!("unknown Terms row field");
+        }
+        for name in ["term", "meaning", "section"] {
+            let value = row[name]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .with_context(|| format!("Terms row requires {name}"))?;
+            if value.contains(['|', '`', '\n', '\r', '\t']) {
+                bail!("Terms row {name} must be safe one-line table text");
+            }
+        }
+        let term = row["term"].as_str().unwrap().trim();
+        if !seen.insert(ps::key(term)) {
+            bail!("duplicate Terms definition: {term}");
+        }
+        let avoid = row["avoid"]
+            .as_array()
+            .context("Terms avoid must be an array")?;
+        for value in avoid {
+            let word = value.as_str().context("Terms avoid entries must be text")?;
+            if word.contains(['|', '`', '、', '\n', '\r', '\t']) {
+                bail!("Terms avoid entries must be safe one-line words");
+            }
+        }
+    }
+    for row in rows {
+        let term = row["term"].as_str().unwrap().trim();
+        for word in row["avoid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            if !ps::eq(word.trim(), term) && seen.contains(&ps::key(word.trim())) {
+                bail!("Terms avoid entry names another selected term: {word}");
+            }
+        }
+    }
+    let terms = valid_terms(raw, max);
+    if terms.len() != rows.len() {
+        bail!("Terms answer contains an invalid or skipped row");
+    }
+    Ok(
+        json!({"terms":terms.len(),"with_avoid":terms.iter().filter(|t|!t.avoid.is_empty()).count(),"title":format!("术语表：《{book_title}》的 {} 个术语",terms.len()),"body":table(book_title,key,&terms)}),
+    )
 }
 
 fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
@@ -381,7 +520,7 @@ fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
     Ok(0)
 }
 
-fn term_call(zt: &mut Zt, key: &str, title: &str, body: &str, guarded: bool) -> Result<Value> {
+pub(crate) fn term_call(zt: &mut Zt, key: &str, title: &str, body: &str, guarded: bool) -> Result<Value> {
     let tree = common::read_first(zt, "get_tree", json!({"tree":key}))?;
     let existing = ps::each(prop(&tree, "cards"))
         .into_iter()

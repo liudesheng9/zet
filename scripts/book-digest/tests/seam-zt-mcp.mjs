@@ -13,6 +13,8 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import readline from 'node:readline'
+import path from 'node:path'
+import os from 'node:os'
 
 const env = process.env
 const real = spawn('zt', process.argv.slice(2).length ? process.argv.slice(2) : ['mcp'], { stdio: ['pipe', 'pipe', 'ignore'] })
@@ -55,6 +57,12 @@ async function handle(line) {
     const card = JSON.parse(read.result.content.map(c => c.text).join('\n'))
     await call('edit_card', { at: at.at, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
+  if (tool === 'apply_batch' && !at.preview && env.ZT_FAIL_BATCH_BEFORE_WRITE) return send(fault(message.id, 'injected failure before the archive write'))
+  if (tool === 'apply_batch' && !at.preview && env.ZT_RESERVE_BATCH_PARENT && env.ZT_RESERVE_BATCH_FLAG && !flag(env.ZT_RESERVE_BATCH_FLAG)) {
+    const reserved = await call('create_successor', { at: env.ZT_RESERVE_BATCH_PARENT, kind: 'side', title: '并行写入占据这个位置', body: '另一位写作者独立创建了这张卡片。' })
+    if (failed(reserved)) return send(fault(message.id, 'concurrent reservation failed'))
+    fs.writeFileSync(env.ZT_RESERVE_BATCH_FLAG, JSON.stringify(reserved.result.structuredContent))
+  }
   const reply = await ask(message)
   if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent
@@ -70,6 +78,13 @@ async function handle(line) {
     if (env.ZT_DRAFT_FAULT === 'cards') value.cards = []
     if (env.ZT_DRAFT_FAULT === 'complete') value.complete = false
     reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
+  }
+  if (tool === 'apply_batch' && at.preview && env.ZT_REPLACE_PREVIEW_INPUT && env.ZT_PREVIEW_REPLACEMENT_FILE && !failed(reply)) {
+    const target = path.toNamespacedPath(path.resolve(env.ZT_REPLACE_PREVIEW_INPUT))
+    const source = path.toNamespacedPath(path.resolve(env.ZT_PREVIEW_REPLACEMENT_FILE))
+    const temp = path.toNamespacedPath(path.resolve(os.tmpdir())) + path.sep
+    if (!target.startsWith(temp) || !source.startsWith(temp)) throw new Error('input replacement must stay in isolated temp fixtures')
+    fs.copyFileSync(source, target)
   }
   if (tool === 'apply_batch' && !at.preview && env.ZT_DROP_BATCH_REPLY_FLAG && !flag(env.ZT_DROP_BATCH_REPLY_FLAG) && !failed(reply)) {
     fs.writeFileSync(env.ZT_DROP_BATCH_REPLY_FLAG, 'committed; reply not delivered\n')

@@ -206,6 +206,28 @@ fn check_file(record: &Value, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn json_artifact(path: &Path) -> Result<(Value, Value)> {
+    let path = std::fs::canonicalize(path)?;
+    let mut bytes = Vec::new();
+    let mut input = std::io::Read::take(std::fs::File::open(&path)?, 16 * 1024 * 1024 + 1);
+    std::io::Read::read_to_end(&mut input, &mut bytes)?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        bail!("JSON artifact exceeds 16 MiB");
+    }
+    let value =
+        canon::parse_json(std::str::from_utf8(&bytes).context("artifact must be strict UTF-8")?)?;
+    let record = json!({"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)});
+    Ok((value, record))
+}
+
+fn bound_json(record: &Value, label: &str) -> Result<Value> {
+    let (value, observed) = json_artifact(Path::new(field(record, "path")?))?;
+    if observed["path"] != record["path"] || observed["sha256"] != record["sha256"] {
+        bail!("{label} hash mismatch");
+    }
+    Ok(value)
+}
+
 impl Prepared {
     /// All filesystem and MCP checks finish before opening a write transaction.
     fn read(out: &str, zt: &mut Zt) -> Result<Self> {
@@ -1276,9 +1298,8 @@ fn read_group_job(
         bail!("missing current group-start binding");
     }
     let accepted = &progress["group_start"]["job"];
-    check_file(accepted, "group job artifact")?;
     let path = Path::new(field(accepted, "path")?);
-    let job = util::read_json(path)?;
+    let job = bound_json(accepted, "group job artifact")?;
     if job["schema_version"] != 1
         || job["mode"] != "draft_only"
         || job["expected_jobs"] != 1
@@ -1573,6 +1594,68 @@ fn completion_output_keys(result: &Value) -> Result<std::collections::BTreeSet<S
     Ok(keys)
 }
 
+fn terms_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    if result["schema_version"] != 1
+        || result["kind"] != "terms_completion"
+        || result["unit"] != "terms/book@1"
+        || result["self_check"]["ran"] != true
+        || result["self_check"]["count"] != 0
+    {
+        bail!("incomplete typed Terms completion evidence");
+    }
+    let evidence = result["evidence"]
+        .as_object()
+        .context("missing Terms evidence enumeration")?;
+    if evidence.len() != 5
+        || evidence.keys().any(|key| {
+            !["plan", "accepted", "answer", "terms", "self_check"].contains(&key.as_str())
+        })
+    {
+        bail!("incomplete Terms evidence enumeration");
+    }
+    let mut keys = std::collections::BTreeSet::from(
+        ["plan", "accepted", "terms", "self_check", "completion"].map(str::to_string),
+    );
+    for name in ["plan", "accepted", "terms", "self_check"] {
+        field(&evidence[name], "path")?;
+        field(&evidence[name], "sha256")?;
+    }
+    let receipts = result["receipt_keys"]
+        .as_array()
+        .context("missing Terms receipt enumeration")?;
+    match result["disposition"].as_str() {
+        Some("terms") => {
+            if result["terms"].as_u64().is_none_or(|n| n == 0)
+                || result["candidate_count"].as_u64().is_none_or(|n| n == 0)
+                || receipts.len() != 1
+            {
+                bail!("incomplete applied Terms table evidence");
+            }
+            field(&evidence["answer"], "path")?;
+            field(&evidence["answer"], "sha256")?;
+            keys.insert("answer".into());
+            keys.insert(format!("card/{}", field(result, "card")?));
+            keys.insert(format!(
+                "receipt/{}",
+                receipts[0].as_str().context("invalid Terms receipt key")?
+            ));
+        }
+        Some("no_terms") => {
+            if result["terms"] != 0
+                || result["candidate_count"] != 0
+                || result["no_op"]["reason"] != "no_terms_candidates"
+                || !receipts.is_empty()
+                || !result["card"].is_null()
+                || !evidence["answer"].is_null()
+            {
+                bail!("incomplete no-terms enumeration evidence");
+            }
+        }
+        _ => bail!("invalid Terms disposition"),
+    }
+    Ok(keys)
+}
+
 /// Read-only ledger reconciliation. File/Card checks remain a typed verifier's job.
 fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
     let producers = conn
@@ -1641,6 +1724,24 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
             .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
         if expected_outputs != actual_outputs {
             faults.push(json!({"code":"producer_outputs_mismatch","unit":producer,"missing":expected_outputs.difference(&actual_outputs).collect::<Vec<_>>(),"unexpected":actual_outputs.difference(&expected_outputs).collect::<Vec<_>>()}));
+        }
+    }
+    let terms: Option<String> = conn
+        .query_row(
+            "SELECT result_json FROM units WHERE id='terms/book@1' AND state='done'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(raw) = terms {
+        let result: Value = serde_json::from_str(&raw)?;
+        let expected = terms_output_keys(&result)?;
+        let actual = conn
+            .prepare("SELECT output_key FROM outputs WHERE unit_id='terms/book@1'")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+        if actual != expected {
+            faults.push(json!({"code":"producer_outputs_mismatch","unit":"terms/book@1","missing":expected.difference(&actual).collect::<Vec<_>>(),"unexpected":actual.difference(&expected).collect::<Vec<_>>()}));
         }
     }
     Ok(faults)
@@ -1788,34 +1889,37 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
     if std::env::var("ZT_LEDGER_COMPLETE_FAULT").ok().as_deref() == Some(point)
         && p.out
             .starts_with(std::fs::canonicalize(std::env::temp_dir())?)
-        && p.out
-            .parent()
-            .and_then(Path::file_name)
-            .is_some_and(|n| n.to_string_lossy().starts_with("ledger-group-finish-test-"))
+        && p.out.parent().and_then(Path::file_name).is_some_and(|n| {
+            ["ledger-group-finish-test-", "ledger-terms-test-"]
+                .iter()
+                .any(|prefix| n.to_string_lossy().starts_with(prefix))
+        })
     {
         bail!("injected completion fault: {point}");
     }
     Ok(())
 }
 
-fn accept_group_plan(path: &Path, plan: &Value) -> Result<Value> {
-    if path.exists() {
-        let old = canon::read_json(&path.to_string_lossy())?;
+fn accept_plan(path: &Path, plan: &Value) -> Result<Value> {
+    let record = if path.exists() {
+        let (old, record) = json_artifact(path)?;
         if old != *plan {
             bail!(
-                "accepted_plan_changed: keep the immutable accepted group calls; a correction needs a new plan revision"
+                "accepted_plan_changed: keep the immutable accepted calls; a correction needs a new plan revision"
             );
         }
+        record
     } else {
+        let bytes = serde_json::to_string_pretty(plan)?.into_bytes();
         let mut temp = tempfile::NamedTempFile::new_in(
             path.parent().context("accepted plan has no directory")?,
         )?;
-        std::io::Write::write_all(&mut temp, serde_json::to_string_pretty(plan)?.as_bytes())?;
+        std::io::Write::write_all(&mut temp, &bytes)?;
         temp.as_file().sync_all()?;
         temp.persist_noclobber(path).map_err(|e| e.error)?;
-    }
-    let record = json!({"path":std::fs::canonicalize(path)?.to_string_lossy(),"sha256":canon::sha256_hex(&std::fs::read(path)?)});
-    check_file(&record, "accepted group plan")?;
+        json!({"path":std::fs::canonicalize(path)?.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)})
+    };
+    check_file(&record, "accepted plan")?;
     Ok(record)
 }
 
@@ -1830,6 +1934,55 @@ fn output(
 ) -> Result<()> {
     tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,?2,?3,?4,?5,?6)",params![unit,key,kind,locator,fingerprint,canon::canonical_json(data)])?;
     Ok(())
+}
+
+fn verify_archive_receipts(
+    zt: &mut Zt,
+    plan: &Value,
+    keys: &Value,
+) -> Result<std::collections::BTreeSet<String>> {
+    let calls = plan["calls"]
+        .as_array()
+        .context("accepted plan is missing calls")?;
+    let keys = keys
+        .as_array()
+        .context("completion is missing receipt enumeration")?;
+    if calls.len() != keys.len() {
+        bail!("incomplete archive receipt enumeration");
+    }
+    if calls.is_empty() {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    let prefix = keys[0]
+        .as_str()
+        .and_then(|key| key.rsplit_once('/'))
+        .map(|v| v.0)
+        .context("invalid archive receipt key")?;
+    if let Some(expected) = plan["operation_prefix"].as_str() {
+        if expected != prefix {
+            bail!("accepted receipt prefix changed");
+        }
+    }
+    let preview = crate::calls::preview_identified(zt, calls, prefix, None)
+        .context("archive receipt verification failed")?;
+    let results = preview["results"]
+        .as_array()
+        .context("incomplete archive receipt readback")?;
+    for (index, (result, key)) in results.iter().zip(keys).enumerate() {
+        if key != &format!("{prefix}/item-{index:06}")
+            || result["op_key"] != *key
+            || result["replayed"] != true
+        {
+            bail!("missing retained archive receipt: {key}");
+        }
+    }
+    if zt.archive_view()?["archive_revision"] != preview["archive_revision"] {
+        bail!("read_view_changed: archive receipt verification");
+    }
+    results
+        .iter()
+        .map(|r| field(&r["result"], "address").map(str::to_string))
+        .collect()
 }
 
 fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
@@ -1876,6 +2029,26 @@ fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Resul
     tx.commit()?;
     drop(conn);
     check_file(&result["draft"], "group completion evidence")?;
+    let accepted = bound_json(&result["accepted"], "group completion evidence")?;
+    if canon::hash_value(&accepted) != result["plan_hash"] {
+        bail!("completed group plan hash changed");
+    }
+    let receipt_addresses = verify_archive_receipts(zt, &accepted, &result["receipt_keys"])?;
+    if result["disposition"] != "no_cards"
+        && receipt_addresses
+            != result["owned"]
+                .as_array()
+                .context("missing owned set")?
+                .iter()
+                .map(|a| {
+                    a.as_str()
+                        .context("invalid owned address")
+                        .map(str::to_string)
+                })
+                .collect::<Result<std::collections::BTreeSet<_>>>()?
+    {
+        bail!("completed group ownership differs from archive receipts");
+    }
     let mut cards = std::collections::BTreeMap::new();
     for (_, kind, locator, fingerprint) in rows {
         match kind.as_str() {
@@ -1941,7 +2114,7 @@ fn group_finish(
     if std::fs::metadata(&path)?.len() > 16 * 1024 * 1024 {
         bail!("group draft exceeds 16 MiB encoded input");
     }
-    let draft = canon::read_json(&path.to_string_lossy())?;
+    let (draft, draft_record) = json_artifact(&path)?;
     if draft["schema_version"] != 1
         || draft["unit"] != unit
         || draft["token"] != token
@@ -2139,16 +2312,19 @@ fn group_finish(
         .iter()
         .map(|c| field(c, "address").map(str::to_string))
         .collect::<Result<BTreeSet<_>>>()?;
-    let substantive = cards
-        .iter()
-        .filter(|c| {
-            c["address"] != anchor
-                && zt_check::graph::SUBSTANTIVE
-                    .contains(&zt_check::graph::category(c, &literature, &anchors).as_str())
-                && c["body"].as_str().is_some_and(|s| !s.trim().is_empty())
-        })
-        .map(|c| field(c, "address").map(str::to_string))
-        .collect::<Result<Vec<_>>>()?;
+    let substantive_for = |cards: &[Value]| -> Result<Vec<String>> {
+        cards
+            .iter()
+            .filter(|c| {
+                c["address"] != anchor
+                    && zt_check::graph::SUBSTANTIVE
+                        .contains(&zt_check::graph::category(c, &literature, &anchors).as_str())
+                    && c["body"].as_str().is_some_and(|s| !s.trim().is_empty())
+            })
+            .map(|c| field(c, "address").map(str::to_string))
+            .collect::<Result<Vec<_>>>()
+    };
+    let substantive = substantive_for(cards)?;
     if disposition == "cards" && (!owned.contains(anchor) || substantive.is_empty()) {
         bail!("group coverage requires its checked anchor plus substantive owned Cards");
     }
@@ -2157,18 +2333,34 @@ fn group_finish(
     if zt.archive_view()?["archive_revision"] != preview["archive_revision"] {
         bail!("read_view_changed: group draft preview");
     }
+    check_file(&draft_record, "group draft")?;
     if check_only {
         return Ok(
             json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"check_only":true,"applied":false,"complete":true,"owned":owned,"substantive":substantive,"self_check":self_check,"no_cards":no_cards}),
         );
     }
     renew(p, &unit, token)?;
-    let accepted = accept_group_plan(&accepted_path, &plan)?;
+    let accepted = accept_plan(&accepted_path, &plan)?;
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
         crate::calls::invoke_identified(zt, &calls, &prefix, None)?
     };
+    // Allocation can change between the rolled-back preview and the commit.
+    // Receipt results are the authority for the actual owned set and locators.
+    let owned = if receipts.is_empty() {
+        BTreeSet::from([anchor.to_string()])
+    } else {
+        receipts
+            .iter()
+            .map(|r| field(&r["result"], "address").map(str::to_string))
+            .collect::<Result<BTreeSet<_>>>()?
+    };
+    let read = zt.cards(&owned.iter().cloned().collect::<Vec<_>>(), "text")?;
+    let substantive = substantive_for(&read.cards)?;
+    if disposition == "cards" && (!owned.contains(anchor) || substantive.is_empty()) {
+        bail!("persisted group is missing its anchor or substantive owned Cards");
+    }
     let owned_path = p.out.join(format!("owned-{}.txt", field(group, "id")?));
     let owned_record = publish(
         &owned_path,
@@ -2198,7 +2390,6 @@ fn group_finish(
             .map(|(a, s)| format!("{a}\t{s}\n"))
             .collect::<String>(),
     )?;
-    let read = zt.cards(&owned.iter().cloned().collect::<Vec<_>>(), "text")?;
     let check = crate::check::Check {
         cards: owned.iter().cloned().collect::<Vec<_>>().join(","),
         book: field(&p.contract, "citation_key")?.to_string(),
@@ -2220,7 +2411,7 @@ fn group_finish(
         let at = field(c, "address")?;
         let fp = crate::calls::authored_fingerprint(c);
         if c["workspace"] != "agent"
-            || expected.get(at).is_some_and(|v| v != &fp)
+            || (!calls.is_empty() && expected.get(at) != Some(&fp))
             || (calls.is_empty() && job["inputs"]["anchor"]["fingerprint"] != fp)
         {
             bail!("persisted group output changed at {at}");
@@ -2318,12 +2509,13 @@ fn group_finish(
         .iter()
         .map(|r| field(r, "op_key").map(str::to_string))
         .collect::<Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"kind":"digest_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":job["input_hash"],"unit_input_hash":claimed.input_hash,"plan_hash":canon::hash_value(&plan),"draft":{"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&std::fs::read(&path)?)},"disposition":if disposition=="no_cards"{"no_cards"}else if deferrals.is_empty(){"verified"}else{"deferred"},"no_cards":no_cards,"accepted":accepted,"owned":owned,"substantive":substantive,"trees":trees,"self_check":self_check,"deferred":deferrals,"children":child_ids,"emitted":emitted,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"files":{"owned":owned_record,"source":source_record,"self_check":check_record}});
+    let result = json!({"schema_version":1,"kind":"digest_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":job["input_hash"],"unit_input_hash":claimed.input_hash,"plan_hash":canon::hash_value(&plan),"draft":draft_record,"disposition":if disposition=="no_cards"{"no_cards"}else if deferrals.is_empty(){"verified"}else{"deferred"},"no_cards":no_cards,"accepted":accepted,"owned":owned,"substantive":substantive,"trees":trees,"self_check":self_check,"deferred":deferrals,"children":child_ids,"emitted":emitted,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"files":{"owned":owned_record,"source":source_record,"self_check":check_record}});
     let result_record = publish(
         &p.out.join(format!("completion-g{number:03}.json")),
         &serde_json::to_string_pretty(&result)?,
     )?;
     for record in [
+        draft_record.clone(),
         accepted.clone(),
         owned_record.clone(),
         source_record.clone(),
@@ -2472,6 +2664,611 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
     let mut zt = Zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = group_finish(&p, &mut zt, group, token, &draft, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+fn terms_view(job: &Value, path: &Path, reused: bool) -> Value {
+    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"answer":job["answer"],"expected_jobs":job["expected_jobs"],"jobs":job["jobs"],"candidate_count":job["inputs"]["candidate_count"],"counts":job["inputs"]["counts"],"no_op":job["no_op"],"reused":reused})
+}
+
+fn terms_data_hash(data: &Value) -> String {
+    canon::hash_value(
+        &json!({"job":data["job_text"],"instructions":data["instructions_text"],"candidate_count":data["candidate_count"],"counts":data["counts"]}),
+    )
+}
+
+fn read_terms_job(
+    p: &Prepared,
+    claimed: &Claim,
+    progress: &Value,
+    run: &Value,
+    token: i64,
+    data: &Value,
+) -> Result<(PathBuf, Value)> {
+    if progress["terms_start"]["token"] != token {
+        bail!("missing current Terms planning evidence");
+    }
+    let record = &progress["terms_start"]["job"];
+    let path = std::fs::canonicalize(field(record, "path")?)?;
+    if !path.starts_with(&p.out) {
+        bail!("Terms plan escaped prepared output directory");
+    }
+    let job = bound_json(record, "Terms plan artifact")?;
+    let expected = if data["candidate_count"].as_u64() == Some(0) {
+        0
+    } else {
+        1
+    };
+    if job["schema_version"] != 1
+        || job["unit"] != "terms/book@1"
+        || job["token"] != token
+        || job["run_id"] != *run
+        || job["unit_input_hash"] != claimed.input_hash
+        || job["input_hash"] != canon::hash_value(&job["inputs"])
+        || job["input_hash"] != progress["terms_start"]["input_hash"]
+        || job["inputs"]["plan_data_hash"] != terms_data_hash(data)
+        || job["expected_jobs"] != expected
+        || job["jobs"]
+            .as_array()
+            .is_none_or(|jobs| jobs.len() != expected as usize)
+    {
+        bail!("Terms job binding or candidate enumeration mismatch");
+    }
+    if job["answer"].as_str()
+        != Some(
+            p.out
+                .join("terms/out/terms.json")
+                .to_string_lossy()
+                .as_ref(),
+        )
+    {
+        bail!("Terms answer locator mismatch");
+    }
+    for record in job["artifacts"]
+        .as_object()
+        .context("missing Terms artifacts")?
+        .values()
+    {
+        check_file(record, "Terms plan artifact")?;
+    }
+    if expected == 1 && job["jobs"][0]["permissions"]["archive_write"] != false {
+        bail!("Terms job cannot have archive write permission");
+    }
+    Ok((path, job))
+}
+
+fn terms_plan(
+    p: &Prepared,
+    token: i64,
+    max_terms: i64,
+    max_candidates: i64,
+    zt: &mut Zt,
+) -> Result<Value> {
+    let unit = "terms/book@1";
+    finish_claim(p, unit, token)?;
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, mut progress, run, done) = finish_claim(p, unit, token)?;
+    if !progress.is_object() {
+        bail!("invalid Terms progress object");
+    }
+    if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
+        bail!("Terms unit input hash mismatch");
+    }
+    let parameters = json!({"max_terms":max_terms,"max_candidates":max_candidates});
+    if !progress["terms_config"].is_null() && progress["terms_config"] != parameters {
+        bail!("Terms options are frozen for this prepared unit");
+    }
+    let data = crate::terms::claimed_plan(&p.out.to_string_lossy(), max_terms, max_candidates)?;
+    if progress["terms_start"]["token"] == token {
+        let (path, job) = read_terms_job(p, &claimed, &progress, &run, token, &data)?;
+        if !done {
+            renew(p, unit, token)?;
+        }
+        return Ok(terms_view(&job, &path, true));
+    }
+    if done {
+        bail!("completed Terms unit has no accepted planning evidence");
+    }
+    renew(p, unit, token)?;
+    let work = p.out.join("terms");
+    let directory = work.join(format!("claim-{token}"));
+    std::fs::create_dir_all(&directory)?;
+    std::fs::create_dir_all(work.join("out"))?;
+    let directory = std::fs::canonicalize(directory)?;
+    if !directory.starts_with(&p.out) {
+        bail!("Terms job escaped prepared output directory");
+    }
+    // Keep the legacy plan locations and freeze the actual files consumed by this claim.
+    publish(&work.join("job.md"), field(&data, "job_text")?)?;
+    publish(
+        &work.join("dsh-terms-instructions.zh.md"),
+        field(&data, "instructions_text")?,
+    )?;
+    let inputs = json!({"schema_version":1,"prompt_contract":1,"run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"parameters":parameters,"plan_data_hash":terms_data_hash(&data),"candidate_count":data["candidate_count"],"counts":data["counts"]});
+    let input_hash = canon::hash_value(&inputs);
+    let expected = if data["candidate_count"].as_u64() == Some(0) {
+        0
+    } else {
+        1
+    };
+    let answer_path = work.join("out/terms.json");
+    let envelope = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":if expected==0{"no_terms"}else{"terms"},"terms":[]});
+    let text = format!(
+        "{}\n\n## 当前任务绑定\n\n只写 JSON，不写入归档。结果文件：`{}`。保留以下绑定字段，并填写 terms。最多选择 {max_terms} 个术语。每行包含 term、avoid 字符串数组、非空 meaning 和 section。一个术语只有一个定义。不得用空对象或空 terms 代替缺失的作业。\n\n```json\n{}\n```",
+        field(&data, "job_text")?,
+        answer_path.display(),
+        serde_json::to_string_pretty(&envelope)?
+    );
+    let prompt = publish(&directory.join("job.md"), &text)?;
+    let instructions = publish(
+        &directory.join("instructions.md"),
+        field(&data, "instructions_text")?,
+    )?;
+    let jobs = if expected == 0 {
+        json!([])
+    } else {
+        json!([{"id":"terms","files":[instructions["path"],prompt["path"]],"prompt":"按术语任务生成保留绑定字段的 JSON 文件。","output":answer_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
+    };
+    let job = json!({"schema_version":1,"run_id":run,"unit":unit,"token":token,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"expected_jobs":expected,"jobs":jobs,"no_op":if expected==0{json!({"reason":"no_terms_candidates","enumeration_hash":terms_data_hash(&data),"candidate_count":0,"counts":data["counts"]})}else{Value::Null},"answer":answer_path.to_string_lossy(),"artifacts":{"prompt":prompt,"instructions":instructions}});
+    let path = directory.join("job.json");
+    let record = publish(&path, &serde_json::to_string_pretty(&job)?)?;
+    progress["terms_config"] = parameters;
+    progress["terms_start"] = json!({"token":token,"input_hash":input_hash,"job":record});
+    let after = zt.archive_view()?;
+    if after["archive_identity"] != p.contract["archive_identity"] {
+        bail!("archive identity changed during Terms planning");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    tx.execute(
+        "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress), now_seconds() + 120],
+    )?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "terms_planned",
+        &json!({"job":record,"input_hash":input_hash,"candidate_count":data["candidate_count"],"expected_jobs":expected}),
+    )?;
+    tx.commit()?;
+    Ok(terms_view(&job, &path, false))
+}
+
+fn terms_done(p: &Prepared, zt: &mut Zt, token: i64) -> Result<Value> {
+    let unit = "terms/book@1";
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |r| r.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows=tx.prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?.query_map([unit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    let expected = terms_output_keys(&result)?;
+    for record in result["evidence"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|r| !r.is_null())
+    {
+        check_file(record, "Terms completion evidence")?;
+    }
+    if rows
+        .iter()
+        .map(|(key, _, _, _)| key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        bail!("incomplete Terms completion output registration");
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if key != "completion"
+                    && (result["evidence"][key]["path"] != *locator
+                        || result["evidence"][key]["sha256"] != *fingerprint)
+                {
+                    bail!("changed Terms evidence registration");
+                }
+                check_file(
+                    &json!({"path":locator,"sha256":fingerprint}),
+                    "Terms completion evidence",
+                )?;
+            }
+            "card" => {
+                let card = zt.cards(&[locator.clone()], "text")?;
+                let book = field(&p.contract, "citation_key")?;
+                if card.cards[0]["workspace"] != "agent"
+                    || card.cards[0]["kind"] != "regular"
+                    || card.cards[0]["type"] != "idea"
+                    || card.cards[0]["tree"] != book
+                    || card.cards[0]["edge"] != "side"
+                    || card.cards[0]["parent_address"] != format!("{book}/1")
+                    || crate::calls::authored_fingerprint(&card.cards[0]) != *fingerprint
+                    || result["card_fingerprint"] != *fingerprint
+                {
+                    bail!("completed Terms Card changed");
+                }
+            }
+            "archive_receipt" => {}
+            _ => bail!("unknown Terms output evidence kind"),
+        }
+    }
+    let accepted = bound_json(&result["evidence"]["accepted"], "Terms completion evidence")?;
+    if canon::hash_value(&accepted) != result["plan_hash"] {
+        bail!("completed Terms plan hash changed");
+    }
+    let receipt_addresses = verify_archive_receipts(zt, &accepted, &result["receipt_keys"])?;
+    if let Some(card) = result["card"].as_str() {
+        if receipt_addresses != std::collections::BTreeSet::from([card.to_string()]) {
+            bail!("completed Terms Card differs from archive receipts");
+        }
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn terms_apply(
+    p: &Prepared,
+    zt: &mut Zt,
+    token: i64,
+    max_terms: i64,
+    max_candidates: i64,
+) -> Result<Value> {
+    let unit = "terms/book@1";
+    finish_claim(p, unit, token)?;
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, progress, run, done) = finish_claim(p, unit, token)?;
+    if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
+        bail!("Terms unit input hash mismatch");
+    }
+    if progress["terms_config"] != json!({"max_terms":max_terms,"max_candidates":max_candidates}) {
+        bail!("Terms options differ from the frozen planning evidence");
+    }
+    let data = crate::terms::claimed_plan(&p.out.to_string_lossy(), max_terms, max_candidates)?;
+    let (_, job) = read_terms_job(p, &claimed, &progress, &run, token, &data)?;
+    if done {
+        return terms_done(p, zt, token);
+    }
+    let work = p.out.join("terms");
+    let answer_path = work.join("out/terms.json");
+    let no_terms = job["expected_jobs"] == 0;
+    let (answer, answer_record) = if no_terms {
+        if answer_path.exists() {
+            bail!("unexpected Terms answer for a zero-candidate plan");
+        }
+        (json!({"terms":[]}), Value::Null)
+    } else {
+        if !answer_path.is_file() {
+            bail!("missing Terms answer for the expected job");
+        }
+        if std::fs::metadata(&answer_path)?.len() > 16 * 1024 * 1024 {
+            bail!("Terms answer exceeds 16 MiB encoded input");
+        }
+        let (answer, record) = json_artifact(&answer_path)?;
+        if !Path::new(field(&record, "path")?).starts_with(&p.out) {
+            bail!("Terms answer escaped the prepared output directory");
+        }
+        if answer["schema_version"] != 1
+            || answer["unit"] != unit
+            || answer["token"] != token
+            || answer["input_hash"] != job["input_hash"]
+        {
+            bail!("Terms answer binding mismatch");
+        }
+        if answer
+            .as_object()
+            .context("Terms answer must be an object")?
+            .keys()
+            .any(|k| {
+                ![
+                    "schema_version",
+                    "unit",
+                    "token",
+                    "input_hash",
+                    "disposition",
+                    "terms",
+                ]
+                .contains(&k.as_str())
+            })
+        {
+            bail!("unknown Terms answer field");
+        }
+        if answer["disposition"] != "terms" {
+            bail!("enumerated Terms candidates require a nonempty terms answer");
+        }
+        if answer["terms"].as_array().is_none_or(Vec::is_empty) {
+            bail!("enumerated Terms candidates require nonempty terms");
+        }
+        (answer, record)
+    };
+    let manifest = util::read_json(p.out.join("manifest.json"))?;
+    let key = field(&p.contract, "citation_key")?;
+    let rendered = crate::terms::claimed_table(
+        &answer,
+        max_terms,
+        manifest["book_title"].as_str().unwrap_or_default(),
+        key,
+    )?;
+    let prefix = format!(
+        "{}/terms-book/1/apply",
+        run.as_str().context("missing run id")?
+    );
+    let path = work.join("accepted-ledger.json");
+    let calls = if path.exists() {
+        let saved = canon::read_json(&path.to_string_lossy())?;
+        saved["calls"]
+            .as_array()
+            .context("missing accepted Terms calls")?
+            .clone()
+    } else if no_terms {
+        Vec::new()
+    } else {
+        let call = crate::terms::term_call(
+            zt,
+            key,
+            field(&rendered, "title")?,
+            field(&rendered, "body")?,
+            true,
+        )?;
+        if call["tool"] == "edit_card" {
+            bail!(
+                "legacy_adoption_required: an existing unreceipted Terms Card cannot be overwritten"
+            );
+        }
+        vec![call]
+    };
+    if (no_terms && !calls.is_empty()) || (!no_terms && calls.len() != 1) {
+        bail!("incomplete accepted Terms operation list");
+    }
+    let expected_calls = if no_terms {
+        Vec::new()
+    } else {
+        vec![
+            json!({"tool":"create_successor","arguments":{"at":format!("{key}/1"),"kind":"side","title":rendered["title"],"body":rendered["body"]}}),
+        ]
+    };
+    if calls != expected_calls {
+        bail!("accepted Terms calls differ from the required table and Side-successor placement");
+    }
+    let plan = json!({"schema_version":1,"unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"operation_prefix":prefix,"input":rendered,"terms":answer["terms"],"disposition":if no_terms{"no_terms"}else{"terms"},"calls":calls});
+    if path.exists() && canon::read_json(&path.to_string_lossy())? != plan {
+        bail!("accepted_plan_changed: Terms answer differs from accepted input");
+    }
+    let check = if no_terms {
+        let mut file = tempfile::NamedTempFile::new()?;
+        serde_json::to_writer(
+            &mut file,
+            &json!([{"address":"terms.md","title":rendered["title"],"body":rendered["body"],"category":"terms"}]),
+        )?;
+        std::io::Write::flush(&mut file)?;
+        let check = crate::check::Check {
+            json: file.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        checked_lines(zt_check::check::run_lines(&check.args(), None)?, true)?
+    } else {
+        let preview = crate::calls::preview_identified(zt, &calls, &prefix, None)?;
+        group_quality(
+            preview["cards"].as_array().context("missing Terms draft")?,
+            p,
+        )?
+    };
+    if check["count"] != 0 {
+        bail!("Terms table did not pass its checker: {}", check["faults"]);
+    }
+    if !answer_record.is_null() {
+        check_file(&answer_record, "Terms answer")?;
+    }
+    renew(p, unit, token)?;
+    let accepted = accept_plan(&path, &plan)?;
+    let receipts = if no_terms {
+        Vec::new()
+    } else {
+        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+    };
+    let card = receipts
+        .first()
+        .map(|r| r["result"]["address"].clone())
+        .unwrap_or(Value::Null);
+    let (self_check, card_fingerprint, revision) = if let Some(address) = card.as_str() {
+        let read = zt.cards(&[address.to_string()], "text")?;
+        let c = &read.cards[0];
+        if c["workspace"] != "agent"
+            || c["kind"] != "regular"
+            || c["type"] != "idea"
+            || c["tree"] != key
+            || c["edge"] != "side"
+            || c["parent_address"] != format!("{key}/1")
+            || c["title"] != rendered["title"]
+            || c["body"].as_str().unwrap_or_default().replace("\r\n", "\n")
+                != field(&rendered, "body")?.replace("\r\n", "\n")
+            || crate::calls::authored_fingerprint(c)
+                != field(&receipts[0]["result"], "after_fingerprint")?
+        {
+            bail!("persisted Terms table differs from accepted input");
+        }
+        let check = crate::check::Check {
+            cards: address.to_string(),
+            book: key.to_string(),
+            ..Default::default()
+        };
+        (
+            checked_lines(check.run(zt)?, false)?,
+            json!(crate::calls::authored_fingerprint(c)),
+            read.archive_revision,
+        )
+    } else {
+        (
+            check,
+            Value::Null,
+            zt.archive_view()?["archive_revision"]
+                .as_u64()
+                .context("missing archive revision")?,
+        )
+    };
+    if self_check["count"] != 0 {
+        bail!("persisted Terms table did not pass its checker");
+    }
+    let terms = publish(&p.out.join("terms.md"), field(&rendered, "body")?)?;
+    let checked = publish(
+        &work.join("self-check.json"),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"plan_hash":canon::hash_value(&plan),"scope":if no_terms{"term_table_file"}else{"persisted_term_card"},"self_check":self_check}),
+        )?,
+    )?;
+    let evidence = json!({"plan":progress["terms_start"]["job"],"accepted":accepted,"answer":answer_record,"terms":terms,"self_check":checked});
+    let receipt_keys = receipts
+        .iter()
+        .map(|r| r["op_key"].clone())
+        .collect::<Vec<_>>();
+    let result = json!({"schema_version":1,"kind":"terms_completion","plan_hash":canon::hash_value(&plan),"unit":unit,"token":token,"input_hash":job["input_hash"],"state":"done","complete":true,"reused":false,"disposition":if no_terms{"no_terms"}else{"terms"},"terms":rendered["terms"],"with_avoid":rendered["with_avoid"],"card":card,"card_fingerprint":card_fingerprint,"file":terms["path"],"receipt_keys":receipt_keys,"self_check":self_check,"candidate_count":data["candidate_count"],"no_op":job["no_op"],"evidence":evidence});
+    terms_output_keys(&result)?;
+    let completion = publish(
+        &work.join("completion.json"),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    for record in evidence
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|r| !r.is_null())
+    {
+        check_file(record, "Terms completion evidence")?;
+    }
+    let after = zt.archive_view()?;
+    if after["archive_identity"] != p.contract["archive_identity"]
+        || after["archive_revision"].as_u64() != Some(revision)
+    {
+        bail!("read_view_changed: Terms completion");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    for (key, record) in evidence
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, r)| !r.is_null())
+    {
+        output(
+            &tx,
+            unit,
+            key,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        field(&completion, "path")?,
+        field(&completion, "sha256")?,
+        &completion,
+    )?;
+    if let Some(card) = card.as_str() {
+        output(
+            &tx,
+            unit,
+            &format!("card/{card}"),
+            "card",
+            card,
+            card_fingerprint.as_str().unwrap(),
+            &json!({"type":"idea","purpose":"terms"}),
+        )?;
+    }
+    for receipt in &receipts {
+        let key = field(receipt, "op_key")?;
+        output(
+            &tx,
+            unit,
+            &format!("receipt/{key}"),
+            "archive_receipt",
+            key,
+            &canon::hash_value(&receipt["result"]),
+            &receipt["result"],
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":result["disposition"],"completion":completion,"terms":rendered["terms"],"candidate_count":data["candidate_count"]}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64)> {
+        let out = a.required("Staging")?;
+        if out.trim().is_empty() || !a.positional.is_empty() {
+            bail!("explicit -Staging is required");
+        }
+        let step = a.choice("Step", &["plan", "apply"])?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Token must be positive")?;
+        if a.has("OperationPrefix") {
+            bail!("claimed Terms operations derive their receipt prefix from the ledger");
+        }
+        if (step == "apply") != a.flag("Apply") {
+            bail!("claimed Terms apply requires -Apply; plan does not accept it");
+        }
+        Ok((out, step, token))
+    })();
+    let (out, step, token) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("zt-digest terms: {e}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
+    let config = &progress["terms_config"];
+    let max_terms = if a.has("MaxTerms") {
+        a.int_or("MaxTerms", 60)?
+    } else {
+        config["max_terms"].as_i64().unwrap_or(60)
+    };
+    let max_candidates = if a.has("MaxCandidates") {
+        a.int_or("MaxCandidates", 160)?
+    } else {
+        config["max_candidates"].as_i64().unwrap_or(160)
+    };
+    if max_terms < 1 || max_candidates < 1 {
+        bail!("claimed Terms require positive MaxTerms and MaxCandidates");
+    }
+    let result = if step == "plan" {
+        terms_plan(&p, token, max_terms, max_candidates, &mut zt)?
+    } else {
+        terms_apply(&p, &mut zt, token, max_terms, max_candidates)?
+    };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
@@ -2627,37 +3424,58 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let evidence = canon::read_json(&path).context("invalid completion evidence")?;
             let unit = a.str("Unit");
             let token = a.str("Token").parse::<i64>()?;
-            let number = unit
-                .strip_prefix("digest/g")
-                .and_then(|v| v.strip_suffix("@1"))
-                .and_then(|v| v.parse::<u64>().ok())
-                .filter(|n| *n > 0);
-            if evidence["schema_version"] != 1
-                || evidence["kind"] != "digest_completion"
-                || evidence["unit"] != unit
-                || evidence["token"] != token
-                || number.is_none()
-            {
-                bail!(
-                    "completion evidence requires the layer's deterministic checked output; addresses alone are insufficient"
-                );
-            }
-            if std::fs::canonicalize(&path)?
-                != std::fs::canonicalize(
-                    p.out
-                        .join(format!("completion-g{:03}.json", number.unwrap())),
+            if unit == "terms/book@1" {
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != "terms_completion"
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                    || std::fs::canonicalize(&path)?
+                        != std::fs::canonicalize(p.out.join("terms/completion.json"))?
+                {
+                    bail!("invalid Terms completion evidence");
+                }
+                // The library verifier performs the same claim/job/output checks; no address shortcut.
+                let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
+                let terms = progress["terms_config"]["max_terms"]
+                    .as_i64()
+                    .context("missing Terms planning options")?;
+                let candidates = progress["terms_config"]["max_candidates"]
+                    .as_i64()
+                    .context("missing Terms planning options")?;
+                terms_apply(&p, &mut zt, token, terms, candidates)?
+            } else {
+                let number = unit
+                    .strip_prefix("digest/g")
+                    .and_then(|v| v.strip_suffix("@1"))
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .filter(|n| *n > 0);
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != "digest_completion"
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                    || number.is_none()
+                {
+                    bail!(
+                        "completion evidence requires the layer's deterministic checked output; addresses alone are insufficient"
+                    );
+                }
+                if std::fs::canonicalize(&path)?
+                    != std::fs::canonicalize(
+                        p.out
+                            .join(format!("completion-g{:03}.json", number.unwrap())),
+                    )?
+                {
+                    bail!("completion evidence locator mismatch");
+                }
+                group_finish(
+                    &p,
+                    &mut zt,
+                    number.unwrap(),
+                    token,
+                    field(&evidence["draft"], "path")?,
+                    false,
                 )?
-            {
-                bail!("completion evidence locator mismatch");
             }
-            group_finish(
-                &p,
-                &mut zt,
-                number.unwrap(),
-                token,
-                field(&evidence["draft"], "path")?,
-                false,
-            )?
         } else if command == "fail" {
             let path = a.str("Fault");
             if std::fs::metadata(&path)?.len() > 65536 {

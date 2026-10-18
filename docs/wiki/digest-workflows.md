@@ -15,6 +15,10 @@ updated: 2026-10-17
 
 ## Purpose
 
+The proxy's `ZT_FAIL_BATCH_BEFORE_WRITE` rejects an actual identified write before forwarding it, retaining the compiler's accepted plan without an archive commit. `ZT_RESERVE_BATCH_PARENT` with `ZT_RESERVE_BATCH_FLAG` independently creates one real Side successor before forwarding the planned batch and records its actual result. The group test then verifies that the owned manifest uses committed receipt addresses and excludes the independently reserved Card. These switches are used only by isolated fixtures; ordinary/frozen workflow code is unchanged.
+
+The real-MCP proxy also supports `ZT_REPLACE_PREVIEW_INPUT` and `ZT_PREVIEW_REPLACEMENT_FILE`: after a successful native preview, it copies a fixture replacement over the input file. Both paths must resolve under the temporary directory, including Windows namespace normalization. Group completion must detect that the original checked draft bytes changed before accepting/applying the plan. This exercises a late-output race without launching a provider or modifying frozen workflow stages.
+
 The existing MCP reply seam's `ZT_IDENTITY_FAULT=after_read` preserves the first empty-address identity probe and changes the next one. `ledger-core.tests.ps1` uses it to test archive replacement during preparation verification; the command must refuse before recording a claim. Missing/incomplete identity modes remain available. This seam changes replies in isolated tests and does not alter the archive or frozen workflow.
 
 `ZT_FAIL_EXPORT_TITLES` makes the same proxy refuse the title export for `ledger-group-start.tests.ps1`. Startup must retain open group coverage and publish no accepted job on that failure. The native `group-start` manifest now declares one draft-only job and its archive read/write scope; provider permission enforcement and consumption by frozen stages remain #82 work. Existing frozen workflows have not been rewritten or run by these tests.

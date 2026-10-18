@@ -63,6 +63,30 @@ try {
     )
     Save-Json $disabled.start.draft $disabled.draft
     Refused ($disabled.args+@('-CheckOnly')) 'no enabled Model consumer' 'a disabled Model layer cannot hide a hard fault behind an incapable Card consumer'
+    $changed=Prepared 'ChangedDraftGroup' '企业的融资约束影响生产选择。'
+    $changed.draft.calls=@(
+        @{tool='edit_card';arguments=@{at='ChangedDraftGroup/1';title='融资约束影响企业投资';body='融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。';base_fingerprint=$changed.job.inputs.anchor.fingerprint}},
+        @{tool='create_successor';arguments=@{at='ChangedDraftGroup/1';kind='side';title='贷款收紧限制企业投入';body='融资成本影响企业的生产选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ChangedDraftGroup/1]]'}}
+    )
+    Save-Json $changed.start.draft $changed.draft
+    $replacement=Join-Path $scratch 'late-draft.json'
+    $changed.draft.calls[1].arguments.body+='企业推迟下一期的投资。';Save-Json $replacement $changed.draft
+    $env:ZT_CHECK_ZT=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd';$env:ZT_REPLACE_PREVIEW_INPUT=$changed.start.draft;$env:ZT_PREVIEW_REPLACEMENT_FILE=$replacement
+    Refused $changed.args 'group draft hash mismatch' 'a late draft replacement cannot be hashed as if it were the checked input'
+    Remove-Item Env:ZT_CHECK_ZT,Env:ZT_REPLACE_PREVIEW_INPUT,Env:ZT_PREVIEW_REPLACEMENT_FILE
+    $reserved=Prepared 'ReservationGroup' '企业的融资约束影响生产选择。'
+    $reserved.draft.calls=@(
+        @{tool='edit_card';arguments=@{at='ReservationGroup/1';title='融资约束影响企业投资';body='融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。';base_fingerprint=$reserved.job.inputs.anchor.fingerprint}},
+        @{tool='create_successor';arguments=@{at='ReservationGroup/1';kind='side';title='贷款收紧限制企业投入';body='融资成本影响企业的生产选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ReservationGroup/1]]'}}
+    )
+    Save-Json $reserved.start.draft $reserved.draft
+    $env:ZT_CHECK_ZT=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd';$env:ZT_RESERVE_BATCH_PARENT='ReservationGroup/1';$env:ZT_RESERVE_BATCH_FLAG=Join-Path $scratch 'reserved-slot.json'
+    $owned=Run-Digest $reserved.args
+    $other=Get-Content -LiteralPath $env:ZT_RESERVE_BATCH_FLAG -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Remove-Item Env:ZT_CHECK_ZT,Env:ZT_RESERVE_BATCH_PARENT,Env:ZT_RESERVE_BATCH_FLAG
+    $tree=Invoke-Zt @(@{tool='get_tree';arguments=@{tree='ReservationGroup'}})
+    $actual=@($tree.cards | Where-Object title -EQ '贷款收紧限制企业投入')[0].address
+    Assert ($owned.owned.Count -eq 2 -and $owned.owned -contains $actual -and $owned.owned -notcontains $other.address -and $owned.substantive[0] -eq $actual) 'completion derives ownership from real receipts after another writer reserves the previewed slot'
     $large=Prepared 'LargeGroup' '企业的融资约束影响生产选择。' @{models=$false;events=$false;findings=$false}
     $large.draft.calls=@(@{tool='edit_card';arguments=@{at='LargeGroup/1';title='融资约束影响企业投资';body='融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。';base_fingerprint=$large.job.inputs.anchor.fingerprint}})
     for($i=0;$i -lt 65;$i++) {$large.draft.calls+=@{tool='create_successor';arguments=@{at='LargeGroup/1';kind='side';title="融资条件影响第${i}项投入";body='融资成本影响企业的生产选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[LargeGroup/1]]'}}}
@@ -81,7 +105,7 @@ try {
     $noCards=Run-Digest $empty.args
     Assert ($noCards.state -eq 'done' -and $noCards.disposition -eq 'no_cards' -and $noCards.no_cards.body_lines -eq 0 -and $noCards.substantive.Count -eq 0 -and -not $noCards.applied -and $noCards.self_check.count -eq 0 -and $noCards.self_check.advisories.Count -ge 1 -and (Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})).archive_revision -eq $emptyBefore) 'a heading-only source has an explicit checked no_cards disposition and separate advisory observations without archive writes'
 } finally {
-    Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT,Env:ZT_CHECK_ZT,Env:ZT_DRAFT_FAULT,Env:ZT_DROP_BATCH_REPLY_FLAG -ErrorAction SilentlyContinue
+    Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT,Env:ZT_CHECK_ZT,Env:ZT_DRAFT_FAULT,Env:ZT_DROP_BATCH_REPLY_FLAG,Env:ZT_REPLACE_PREVIEW_INPUT,Env:ZT_PREVIEW_REPLACEMENT_FILE,Env:ZT_RESERVE_BATCH_PARENT,Env:ZT_RESERVE_BATCH_FLAG -ErrorAction SilentlyContinue
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
