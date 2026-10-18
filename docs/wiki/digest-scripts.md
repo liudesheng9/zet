@@ -7,8 +7,8 @@ paths:
   - "scripts/book-digest/tests/*.json"
   - "scripts/book-digest/tests/*.cmd"
   - "scripts/book-digest/tests/audit-bulk-faults-fixture.txt"
-synced: b1953a1
-updated: 2026-10-17
+synced: 10b6f0d50381
+updated: 2026-10-18
 ---
 
 # Digest scripts
