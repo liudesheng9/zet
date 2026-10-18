@@ -55,7 +55,7 @@ static ALT3: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[一二三四五�
 /// `图\s?((?:\d+(?:\.[0-9A-Za-z]+)*)|[IVXL]+|[一二三四五六七八九十]+(?![㐀-鿿]))(?![0-9A-Za-z.])`.
 /// Each alternative can only succeed at its longest run (a shorter one leaves a character the
 /// look-ahead refuses), so the look-aheads are tested on the next character.
-fn figure_labels(text: &str) -> Vec<String> {
+pub(crate) fn figure_labels(text: &str) -> Vec<String> {
     let after_ok = |rest: &str| !rest.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '.');
     let mut out = Vec::new();
     let mut at = 0;

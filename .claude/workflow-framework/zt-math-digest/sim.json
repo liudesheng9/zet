@@ -351,6 +351,34 @@
         "output": "{\"counts\":{},\"faults\":{},\"mirror\":0,\"missing_count\":0}",
         "results": []
       }
+    },
+    {
+      "label": "^finalize plan$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"audit_plan\",\"step\":\"plan\",\"run_id\":\"r-sim\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"graph_revision\":7,\"audit\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"faults\":{\"total\":2,\"hard\":1,\"advisory\":1,\"by_rule\":{\"R3\":1,\"I1\":1},\"list\":[{\"address\":\"Key/1|a\",\"rule\":\"R3\",\"outcome\":\"fix\",\"reason\":\"\",\"card\":\"Key/1|a\",\"tree\":\"Key\",\"rules\":[\"R3\"]},{\"address\":\"Key/1\",\"rule\":\"I1\",\"outcome\":\"advisory\",\"reason\":\"an advisory rule: it never blocks the run, and the bounded correction does not rewrite for it\"}]},\"counts\":{\"fix\":1,\"conflict\":0,\"blocked\":0,\"stale\":0,\"advisory\":1},\"branch\":\"fix\",\"fix_cycle\":{\"permitted\":1,\"used\":0,\"rules\":[\"R3\"],\"cards\":[\"Key/1|a\"],\"card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\"},\"refresh\":[]}"
+      }
+    },
+    {
+      "label": "^finalize scope$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"finalize_changes\",\"step\":\"scope\",\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":[{\"address\":\"Key/1|a\",\"kinds\":[\"structure\"],\"category\":\"idea\",\"tree\":\"Key\",\"fingerprint_before\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"fingerprint_after\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}],\"touched_trees\":[\"Key\"],\"kinds\":[\"structure\"],\"counts\":{\"cards\":1,\"trees\":1},\"refresh\":[{\"layer\":\"link-check\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true},{\"layer\":\"theory\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"the math variant owns this layer\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"skeleton\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"figures\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (figures), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"hubs\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"bridge\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (links), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true}]}"
+      }
+    },
+    {
+      "label": "^finalize refresh link-check$",
+      "answer": {
+        "ok": true,
+        "output": "{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[],\"changed_cards\":1,\"touched_trees\":[\"Key\"]}"
+      }
+    },
+    {
+      "label": "^finalize final$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"}}"
+      }
     }
   ]
 }

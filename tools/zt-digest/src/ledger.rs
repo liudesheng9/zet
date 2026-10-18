@@ -271,6 +271,10 @@ pub(crate) fn settings_of(contract: &Value) -> Result<Value> {
 }
 
 /// Date extraction is not an Event-layer switch. Disabled work stays explicit.
+pub(crate) fn target_of(contract: &Value) -> Result<Value> {
+    target(contract)
+}
+
 fn target(contract: &Value) -> Result<Value> {
     let mut enabled = COMMON.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut excluded = Vec::new();
@@ -310,10 +314,10 @@ fn target(contract: &Value) -> Result<Value> {
     Ok(json!({"enabled":enabled,"excluded":excluded}))
 }
 
-struct Prepared {
-    out: PathBuf,
-    contract: Value,
-    hash: String,
+pub(crate) struct Prepared {
+    pub(crate) out: PathBuf,
+    pub(crate) contract: Value,
+    pub(crate) hash: String,
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
@@ -397,11 +401,11 @@ fn bound_json(record: &Value, label: &str) -> Result<Value> {
 
 impl Prepared {
     /// All filesystem and MCP checks finish before opening a write transaction.
-    fn read(out: &str, zt: &mut Zt) -> Result<Self> {
+    pub(crate) fn read(out: &str, zt: &mut Zt) -> Result<Self> {
         Self::read_mode(out, zt, true)
     }
 
-    fn read_mode(out: &str, zt: &mut Zt, require_cards: bool) -> Result<Self> {
+    pub(crate) fn read_mode(out: &str, zt: &mut Zt, require_cards: bool) -> Result<Self> {
         let out = std::fs::canonicalize(out).context("prepared output directory does not exist")?;
         let manifest = util::read_json(out.join("manifest.json"))?;
         let contract = manifest["run_contract"].clone();
@@ -577,7 +581,7 @@ impl Prepared {
     }
 }
 
-fn connect(path: &Path, writable: bool) -> Result<Connection> {
+pub(crate) fn connect(path: &Path, writable: bool) -> Result<Connection> {
     let flags = if writable {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     } else {
@@ -593,7 +597,7 @@ fn connect(path: &Path, writable: bool) -> Result<Connection> {
     Ok(conn)
 }
 
-fn meta(conn: &Connection, key: &str) -> Result<Value> {
+pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Value> {
     let value: String = conn
         .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
         .with_context(|| format!("ledger metadata missing: {key}"))?;
@@ -2359,7 +2363,7 @@ fn relocate(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
 
 /// The compiler artifacts that carry one publication layer's checked result. The
 /// workflow names the real files; the ledger binds their canonical path and hash.
-fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
     Some(match layer {
         "organize" => &["decisions", "applied"],
         "skeleton" => &["skeleton"],
@@ -2370,7 +2374,7 @@ fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
 }
 
 /// A publication unit id as its layer, logical key and revision.
-fn publication_unit(unit: &str) -> Result<(String, String, i64)> {
+pub(crate) fn publication_unit(unit: &str) -> Result<(String, String, i64)> {
     let (layer, rest) = unit.split_once('/').context("invalid publication unit id")?;
     let (key, revision) = rest.rsplit_once('@').context("invalid publication unit id")?;
     if !PUBLICATION.contains(&layer) {
@@ -2391,7 +2395,7 @@ fn bind_file(path: &str, label: &str) -> Result<Value> {
     Ok(json!({"path":canonical.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)}))
 }
 
-fn unit_inputs(p: &Prepared, unit: &str) -> Result<Value> {
+pub(crate) fn unit_inputs(p: &Prepared, unit: &str) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let raw: String = conn.query_row("SELECT inputs_json FROM units WHERE id=?1", [unit], |r| {
         r.get(0)
@@ -2414,7 +2418,7 @@ fn unit_result(p: &Prepared, unit: &str) -> Result<Value> {
 }
 
 /// Every registered note suggestion with the outcome its own unit retained.
-fn registered_notes(p: &Prepared) -> Result<std::collections::BTreeMap<String, Value>> {
+pub(crate) fn registered_notes(p: &Prepared) -> Result<std::collections::BTreeMap<String, Value>> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let mut statement =
         conn.prepare("SELECT id,result_json FROM units WHERE layer='notes' ORDER BY id")?;
@@ -3267,7 +3271,7 @@ fn links_of(section: &str) -> Vec<String> {
 }
 
 
-fn publication_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Path) -> Result<Value> {
+pub(crate) fn publication_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Path) -> Result<Value> {
     let (layer, key, revision) = publication_unit(unit)?;
     let _guard = unit_guard(p, unit)?;
     let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
@@ -3484,6 +3488,26 @@ fn hub_scope(key: &str, path: &str) -> Result<Value> {
 /// sorted input manifest always returns the same revision; a changed manifest
 /// registers the next one and makes every older open revision terminal.
 fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<Value> {
+    let scope = if layer == "hubs" {
+        hub_scope(key, declared)?
+    } else {
+        if !declared.trim().is_empty() {
+            bail!("only a `hubs` publication declares -Scope");
+        }
+        Value::Null
+    };
+    publish_revision(p, layer, key, scope)
+}
+
+/// A finalization refresh publishes a new revision whose declared scope is the exact
+/// changed-Card/touched-tree manifest it consumes (R299): the same manifest reuses the
+/// registered revision and a changed one derives the next, so the refresh is idempotent
+/// and never an undeclared loop.
+pub(crate) fn publication_refresh(p: &Prepared, layer: &str, scope: &Value) -> Result<Value> {
+    publish_revision(p, layer, "book", scope.clone())
+}
+
+fn publish_revision(p: &Prepared, layer: &str, key: &str, scope: Value) -> Result<Value> {
     if !PUBLICATION.contains(&layer) {
         bail!("`{layer}` is not an aggregate publication layer");
     }
@@ -3496,14 +3520,6 @@ fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<V
     {
         bail!("`{layer}` is an excluded layer of this prepared run; it cannot publish a revision");
     }
-    let scope = if layer == "hubs" {
-        hub_scope(key, declared)?
-    } else {
-        if !declared.trim().is_empty() {
-            bail!("only a `hubs` publication declares -Scope");
-        }
-        Value::Null
-    };
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -3876,7 +3892,7 @@ fn publication_current(
 }
 
 /// The latest registered revision of one layer's book-level obligation.
-fn required_publication(conn: &Connection, layer: &str) -> Result<Option<(String, String)>> {
+pub(crate) fn required_publication(conn: &Connection, layer: &str) -> Result<Option<(String, String)>> {
     Ok(conn
         .query_row(
             "SELECT id,inputs_json FROM units WHERE layer=?1 AND logical_key='book' ORDER BY revision DESC LIMIT 1",
@@ -4878,7 +4894,7 @@ fn close_enumerations(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
-fn now_seconds() -> i64 {
+pub(crate) fn now_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -5025,7 +5041,7 @@ fn event(
     Ok(())
 }
 
-fn writer(p: &Prepared) -> Result<Connection> {
+pub(crate) fn writer(p: &Prepared) -> Result<Connection> {
     // Refuse a changed binding before opening a connection that can change WAL mode.
     verify_binding(&connect(&p.out.join("ledger.sqlite3"), false)?, p)?;
     connect(&p.out.join("ledger.sqlite3"), true)
@@ -5235,7 +5251,7 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
 /// settles, or the deadline passes. Timekeeping lives here, never in a workflow
 /// module. The wait never spends an attempt and never changes a unit state except
 /// by the ordinary bounded claim.
-fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64) -> Result<Value> {
+pub(crate) fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64) -> Result<Value> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait.max(0) as u64);
     loop {
         let claimed = next_once(p, layer, take, owner)?;

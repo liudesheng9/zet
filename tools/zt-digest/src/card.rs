@@ -73,6 +73,9 @@ struct Params {
     file: String,
     /// R247: this whole-book cycle also reviews the Model drafts no model chain owns.
     model_review: bool,
+    /// R299: the finalization plan's exact Card scope, one address per line. The one
+    /// correction cycle picks only these Cards instead of the whole book.
+    cards: String,
 }
 
 /// The audit's view: faults per Card and the Cards the layer rules read (audit-cards.json).
@@ -1140,6 +1143,23 @@ impl Compiler {
             "applied": {}, "refused": {}, "merges": [], "splits": [], "orphan_links": [], "orphan_none": [],
             "src": {}, "notes": {}, "reviews": {}, "models": {}, "sampled": {}
         });
+        // R299: the finalization plan's exact Card scope. One line per address; a Card outside
+        // the plan is never picked, so the one correction cycle cannot widen into the book.
+        let mut scope: Option<HashSet<String>> = None;
+        if !p.cards.is_empty() {
+            let addresses: Vec<String> = file_lines(&p.cards)?
+                .into_iter()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect();
+            if addresses.is_empty() {
+                bail!("-Cards names no Card");
+            }
+            let set: HashSet<String> = addresses.iter().map(|address| ci(address)).collect();
+            self.state["cards_scope"] = json!(addresses);
+            self.state["cards_scope_file"] = json!(p.cards);
+            scope = Some(set);
+        }
         let mut audit = self.invoke_audit(&join_path(&self.p.work, "before"))?;
         let p = &self.p;
         if !p.notes.is_empty() && Path::new(&p.notes).exists() {
@@ -1210,6 +1230,7 @@ impl Compiler {
                     && !c["book"].is_null()
                     && is_in(&field(c, "category"), WRITABLE)
                     && owned.as_ref().is_none_or(|o| o.contains(&field(c, "address")))
+                    && scope.as_ref().is_none_or(|o| o.contains(&ci(&field(c, "address"))))
             })
             .cloned()
             .collect();
@@ -1320,7 +1341,9 @@ impl Compiler {
         let mut out = json!({
             "book": self.p.book, "picked": picked.len(), "with_faults": with_faults.len(), "review": review.len(),
             "models": models.len(), "sample": self.state["sampled"],
-            "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len(), "faults": faults, "jobs": jobs
+            "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len(), "faults": faults, "jobs": jobs,
+            // R299: the exact Card scope a finalization plan declared, or null for the whole book.
+            "cards_scope": if self.p.cards.is_empty() { Value::Null } else { self.state["cards_scope"].clone() }
         });
         self.add_compact(&mut out, &jobs);
         Self::print_last(&out)
@@ -2085,7 +2108,7 @@ pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,
 
 /// `zt-digest card`.
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["Step", "Work", "Book", "Staging", "Groups", "PerJob", "Sample", "Seed", "Rules", "MaxCards", "Notes", "MaxJobs", "Job", "File"];
+    let params = ["Step", "Work", "Book", "Staging", "Groups", "PerJob", "Sample", "Seed", "Rules", "MaxCards", "Notes", "MaxJobs", "Job", "File", "Cards"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoOrphans", "Compact", "ModelReview"])?;
     let seed = a.int_or("Seed", 1)?;
     let p = Params {
@@ -2106,6 +2129,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         job: a.str("Job"),
         file: a.str("File"),
         model_review: a.flag("ModelReview"),
+        cards: a.str("Cards"),
     };
     let out_dir = join_path(&p.work, "out");
     // precheck writes nothing, not even the folders.

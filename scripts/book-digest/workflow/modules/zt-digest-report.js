@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v8 ====
+// ==== module zt-digest-report v9 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -7,9 +7,10 @@
 // driver settled: verified, failed, retrying and open work, never a claim of work that no gate confirmed.
 // 8 adds run_report: the verified ledger report (completeness, gaps, current placeholders, timings, exact
 // per-run usage and the supported resume invocation), so a run's result carries the report's own facts
-// instead of an agent's summary (#85, R331-R346).
+// instead of an agent's summary (#85, R331-R346). 9 adds finalize: the finite finalization's plan, one
+// correction cycle, changed-Card manifest, refreshed publications and final audit (#86, R299/R300).
 defineModule({
-  id: 'zt-digest-report', version: '8', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -31,6 +32,7 @@ defineModule({
     bridge: { type: 'any', description: 'Bridge report or explicit apply summary' },
     hubs: { type: 'any', description: 'the hub stage output' },
     audit: { type: 'any', description: 'the audit stage output' },
+    finalize: { type: 'any', description: 'the finite finalization branch output (#86)' },
     extra: { type: 'object', default: {}, description: 'a variant\'s own reports, added to the result (e.g. {"math": {...}})' },
   },
   run: async (ctx, p) => {
@@ -80,7 +82,7 @@ defineModule({
       link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
-      organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null),
+      organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,
       ...extra,
     }

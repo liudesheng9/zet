@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v10 ====
+// ==== module zt-digest-lib v11 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -6,6 +6,8 @@
 // call zdMake(ctx, params) and use what it returns.
 // One card cycle per book, not one per block (R296): `runCards` runs the whole-book cycle, and its
 // `-ModelReview` option lets that cycle own the source review of a Model draft no model chain elaborates (R247).
+// 11 adds `fixRounds`: the finalization's one correction cycle is declared, not inherited from the pilot
+// setting (#86, R299).
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
@@ -684,8 +686,11 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const max = A.cardMax ? ` -MaxCards ${A.cardMax}` : ''
     const models = o.modelReview ? ' -ModelReview' : ''
     const applyStep = (n) => ({ name: `apply ${n}`, command: cstep('apply', ` -MaxJobs ${APPLY_SHARE}`), repeat: { path: 'pending_jobs', value: 0, max: 100 } })
+    // R299: the finalization spends its one declared correction cycle, so it passes fixRounds 1
+    // whatever the run's cardFixRounds pilot setting is.
+    const rounds = o.fixRounds === undefined ? CARD_FIX_ROUNDS : Math.max(0, Math.min(12, o.fixRounds))
     const steps = [{ name: 'plan', command: cstep('plan', ` -Book ${KEY} -Staging "${OUT}"${rules}${max}${models}${extra}`), jobs: true }, applyStep(1)]
-    for (let round = 1; round <= CARD_FIX_ROUNDS; round++) {
+    for (let round = 1; round <= rounds; round++) {
       steps.push({ name: `check ${round}`, command: cstep('check'), jobs: true })
       steps.push(applyStep(round + 1))
     }
@@ -731,7 +736,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '10', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '11', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

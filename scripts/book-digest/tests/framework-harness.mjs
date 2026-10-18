@@ -123,6 +123,54 @@ const CANNED = {
   'math theory-apply': () => ({ ok: true, theories: 2, answered: 2 }),
 }
 
+// The finite finalization's answers (#86): the four branches, and the plan's own shape.
+const FINALIZE_BRANCHES = {
+  fix: { branch: 'fix', cards: ['Key/1|a'], rules: ['R3'], counts: { fix: 1, conflict: 0, blocked: 0, stale: 0, advisory: 1 } },
+  no_fix: { branch: 'no_fix', cards: [], rules: [], counts: { fix: 0, conflict: 0, blocked: 0, stale: 0, advisory: 2 } },
+  conflict: { branch: 'conflict', cards: [], rules: [], counts: { fix: 0, conflict: 1, blocked: 0, stale: 0, advisory: 1 } },
+  unresolved: { branch: 'unresolved', cards: [], rules: [], counts: { fix: 0, conflict: 0, blocked: 1, stale: 0, advisory: 1 } },
+}
+const finalizeBranch = (name) => FINALIZE_BRANCHES[name] || FINALIZE_BRANCHES.fix
+const finalizePlan = (name) => {
+  const b = finalizeBranch(name)
+  return {
+    schema_version: 1, kind: 'audit_plan', step: 'plan', run_id: 'r1', citation_key: 'Key', variant: 'econ', graph_revision: 7,
+    audit: { unit: 'audit/book@1', revision: 1, graph_revision: 7 },
+    faults: {
+      total: b.counts.fix + b.counts.conflict + b.counts.blocked + b.counts.advisory, hard: b.counts.fix + b.counts.conflict + b.counts.blocked, advisory: b.counts.advisory,
+      by_rule: {}, list: [],
+    },
+    counts: b.counts, branch: b.branch,
+    fix_cycle: { permitted: 1, used: 0, rules: b.rules, cards: b.cards, card_list: b.cards.length ? 'D:\\x\\Key\\finalize\\fix-cards.txt' : null },
+    refresh: [],
+  }
+}
+const finalizeScope = () => ({
+  schema_version: 1, kind: 'finalize_changes', step: 'scope', graph_revision: 8, change_hash: 'a'.repeat(64),
+  changed: [{ address: 'Key/1|a', kinds: ['structure'], category: 'idea', tree: 'Key', fingerprint_before: 'b'.repeat(64), fingerprint_after: 'c'.repeat(64) }],
+  touched_trees: ['Key'], kinds: ['structure'], counts: { cards: 1, trees: 1 },
+  refresh: [
+    { layer: 'link-check', applicable: true, artifacts: ['report'], coverage: 'none', reason: '', branch_refreshable: true },
+    { layer: 'organize', applicable: false, stage_owned: true, reason: 'its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here' },
+    { layer: 'audit', applicable: true, artifacts: ['report'], coverage: 'none', reason: '', branch_refreshable: true },
+  ],
+})
+const finalizeRefresh = (layer) => ({ layer, unit: `${layer}/book@2`, revision: 2, state: 'done', complete: true, disposition: 'published', reused: false, superseded: [], changed_cards: 1, touched_trees: ['Key'] })
+const finalizeFinal = (name) => {
+  const b = finalizeBranch(name)
+  const residual = b.counts.fix + b.counts.conflict + b.counts.blocked
+  return {
+    schema_version: 1, kind: 'finalize_report', step: 'final', citation_key: 'Key', variant: 'econ',
+    status: residual ? 'partial' : 'done', complete: !residual, branch: b.branch, graph_revision: 8,
+    audit: { scheduled: { unit: 'audit/book@1', revision: 1, graph_revision: 7 }, final: { unit: 'audit/book@2', revision: 2, graph_revision: 8 } },
+    changes: { cards: b.counts.fix ? 1 : 0, trees: b.counts.fix ? 1 : 0, kinds: b.counts.fix ? ['structure'] : [], graph_revision: 8, change_hash: 'a'.repeat(64) },
+    refresh: [{ layer: 'link-check', unit: 'link-check/book@2', revision: 2, state: 'done', refreshed: true, applicable: true, reason: '' }, { layer: 'audit', unit: 'audit/book@2', revision: 2, state: 'done', refreshed: true, applicable: true, reason: '' }],
+    faults: { total: 0, residual, advisory: b.counts.advisory, by_class: residual ? { hard: residual } : {}, list: [] },
+    infrastructure: [], audit_book: { cards: 9, orphans: 0, figures_missing: 0, models_not_self_sufficient: 0 },
+    report: { path: 'D:\\x\\Key\\finalize\\final-report.json' },
+  }
+}
+
 function runtime(kind, opts = {}) {
   const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = []
   const pool = { alive: 0, peak: 0, prompts: [] }
@@ -348,12 +396,18 @@ function runtime(kind, opts = {}) {
     return { steps, results }
   }
 
-  const answer = async (prompt, opts) => {
+  const answer = async (prompt, callOpts) => {
     const text = String(prompt)
-    const label = opts.label || ''
+    const label = callOpts.label || ''
     const cmd = text.match(/zt-digest [a-z-]+ -[A-Za-z][^\n]*/) || text.match(/pwsh -NoProfile -File[^\n]*/)
-    calls.push({ label, phase: opts.phase, model: opts.model, cmd: cmd ? cmd[0] : '', prompt: text })
-    if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, opts)
+    calls.push({ label, phase: callOpts.phase, model: callOpts.model, cmd: cmd ? cmd[0] : '', prompt: text })
+    // The finite finalization (#86): the plan's branch decides whether the one correction cycle
+    // runs, and the final audit reports the fresh revision.
+    if (/^finalize plan$/.test(label)) return { ok: true, output: json(finalizePlan(opts.finalize || 'fix')) }
+    if (/^finalize scope$/.test(label)) return { ok: true, output: json(finalizeScope()) }
+    if (/^finalize refresh /.test(label)) return { ok: true, output: json(finalizeRefresh(label.replace('finalize refresh ', ''))) }
+    if (/^finalize final$/.test(label)) return { ok: true, output: json(finalizeFinal(opts.finalize || 'fix')) }
+    if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, callOpts)
     if (text.startsWith('You drive DeepSeek Harness')) {
       if (/Run every job below/.test(text)) {
         const given = JSON.parse(text.split('\n').find((l) => l.startsWith('[{')) || '[]')
@@ -556,14 +610,17 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(after('figures') === 'organize' && after('hubs') === 'organize', 'schedule: Figures and Hubs are released together by Organize')
   check(after('bridge') === 'figures', 'schedule: Bridge follows Figures (report-only discovery)')
   check(after('audit') === 'hubs,bridge', 'schedule: the final audit joins the Hubs branch and the Figures→Bridge branch')
-  check(after('cleanup') === 'audit' && after('report') === 'cleanup', 'schedule: the settlement is audit, then cleanup, then report')
+  check(after('finalize') === 'audit', 'schedule: the finite finalization follows the audit it plans from (#86)')
+  check(after('cleanup') === 'finalize' && after('report') === 'cleanup', 'schedule: the settlement waits for the finalization, then cleanup, then report')
+  check(stageOf('econ', 'finalize').onFail === 'continue', 'schedule: a residual finalization fault leaves a partial result, never a halted run')
   check(after('hubs-first') === 'explain', 'schedule: the mode-hubs preview stage sits beside the content layers')
   check(stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').foreach.items.$ref === 'stages.prepare.output.groupList', 'schedule: the digest stage is a per-group chain pipeline over the prepared group enumeration')
   check(stageOf('econ', 'digest').foreach.chain[0].module === 'zt-group-cycle', 'schedule: each group item runs the zt-group-cycle chain')
   const m = builds.math.bp
   const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
   check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')
-  check(mathAfter('audit') === 'hubs,bridge' && mathAfter('math-check') === 'audit' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics audit joins both branches before its own check and the settlement')
+  check(mathAfter('audit') === 'hubs,bridge' && mathAfter('math-check') === 'finalize' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics check describes the final audit revision, then the settlement')
+  check(m.stages.some((s) => s.id === 'finalize'), 'schedule: the mathematics variant holds the finalization stage its base declares')
 }
 
 // ================================================================================================================
@@ -633,6 +690,38 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 }
 
 // ================================================================================================================
+// The finite finalization (#86, R299/R300)
+// ================================================================================================================
+for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
+  const { calls, commands, result, report, logs } = await run('econ', { ...base, figures: false }, { finalize: branch })
+  const labels = calls.map((c) => c.label)
+  const prompts = calls.map((c) => c.prompt).join('\n')
+  const finalizeLabels = labels.filter((l) => /^finalize/.test(l))
+  check(finalizeLabels[0] === 'finalize plan', `finalize ${branch}: the audit plan comes first (${finalizeLabels[0]})`)
+  check(result && result.finalize && result.finalize.final, `finalize ${branch}: the result carries the final audit`)
+  const expected = branch === 'no_fix' ? 'done' : 'partial'
+  check(result.finalize.status === expected, `finalize ${branch}: the branch ends ${expected} (${result.finalize.status})`)
+  check(result.finalize.final.graph_revision > result.finalize.plan.graph_revision, `finalize ${branch}: the final audit is at a later graph revision than the one it planned from`)
+  if (branch === 'fix') {
+    const scoped = commands.filter((c) => /zt-digest card -Step plan .*-Cards /.test(c))
+    check(scoped.length === 1 && /finalize[\\/]fix/.test(scoped[0]), `finalize fix: the one correction cycle is scoped to the plan's Cards (${scoped.length})`)
+    check(/ -Rules "R3"/.test(scoped[0]), `finalize fix: the cycle checks exactly the plan rules (${scoped[0]})`)
+    check(commands.filter((c) => /zt-digest card -Step plan .*finalize[\\\\/]fix/.test(c)).length === 1, `finalize fix: exactly one compiler correction cycle runs (${commands.filter((c) => /zt-digest card -Step plan /.test(c)).length} plan steps)`)
+    check(finalizeLabels.join(',') === 'finalize plan,finalize scope,finalize refresh link-check,finalize final', `finalize fix: plan → cycle → scope → refresh → final (${finalizeLabels.join(',')})`)
+    const refreshes = (prompts.match(/[^\n]*finalize -Step refresh[^\n]*/g) || [])
+    check(refreshes.length === 1 && /-Layer link-check -Report /.test(refreshes[0]), `finalize fix: only the publication this branch re-derives is refreshed (${refreshes.length}: ${refreshes[0] || ''})`)
+    check(!/-Step refresh .*-Layer (organize|hubs|bridge|figures|skeleton|theory)/.test(prompts), 'finalize fix: a stage-owned publication is never republished from a stale artifact')
+  } else {
+    check(finalizeLabels.join(',') === 'finalize plan,finalize final', `finalize ${branch}: no correction cycle and no refresh of unchanged publications (${finalizeLabels.join(',')})`)
+    check(!commands.some((c) => /finalize[\\/]fix/.test(c)), `finalize ${branch}: no Card-scoped cycle runs`)
+  }
+  check(finalizeLabels[finalizeLabels.length - 1] === 'finalize final', `finalize ${branch}: the final read-only audit is the branch's last step`)
+  check(report.stages.finalize && report.stages.finalize.status !== 'failed', `finalize ${branch}: the stage never fails on a residual fault`)
+  check(/finalize -Step final -Out/.test(prompts), 'finalize: the final step is the tool\'s own read-only audit, never a re-used report')
+  check(logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), `finalize ${branch}: the branch reports its own outcome and revision`)
+}
+
+// ================================================================================================================
 // Modes and the book-type layers
 // ================================================================================================================
 for (const kind of ['econ', 'math']) {
@@ -645,7 +734,8 @@ for (const kind of ['econ', 'math']) {
   check(at(/^prepare book$/) < at(/^math: index$/) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
   check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
   const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
-  check(work[work.length - 1] === 'audit cards', `${kind} full: the audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
+  check(work[work.length - 1] === 'finalize final', `${kind} full: the finalization's final audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
+  check(work.includes('finalize plan') && work.indexOf('finalize plan') === work.indexOf('audit cards') + 1, `${kind} full: the finalization starts from its audit plan right after the audit (${work.slice(-5).join(', ')})`)
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
   if (kind === 'math') {
     check(cmds.some((c) => /zt-digest math -Step index/.test(c)) && cmds.some((c) => /zt-digest math -Step boundary/.test(c)), 'math full: the mathematics compiler steps run through zt-digest tools')

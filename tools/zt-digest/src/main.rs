@@ -6,6 +6,7 @@
 //!   zt-digest card  -Step plan|apply|check|report|precheck -Work <folder> ...   (card-compiler.ps1)
 //!   zt-digest model -Step <step> ...                          (model-compiler.ps1)
 //!   zt-digest model-context / list-models ...                 (model-context.ps1, list-models.ps1)
+//!   zt-digest finalize -Step plan|scope|refresh|final -Out <out> ...   (the finite finalization, #86)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -23,6 +24,7 @@ mod check;
 mod event;
 mod faults;
 mod figures;
+mod finalize;
 mod finding;
 mod hub;
 mod ledger;
@@ -141,6 +143,7 @@ fn main() {
         "prepare" => prepare::cli(&rest),
         "source-faults" => faults::cli(&rest),
         "ledger" => ledger::cli(&rest),
+        "finalize" => finalize::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
         "link-finish" => ledger::link_finish_cli(&rest),
@@ -160,7 +163,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
-       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }
     };

@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -242,6 +242,11 @@
     "audit": {
       "type": "boolean",
       "description": "mode full: false skips the audit"
+    },
+    "finalize": {
+      "type": "boolean",
+      "default": true,
+      "description": "mode full: false skips the finite finalization branch (audit plan, one scoped correction cycle, publication refresh, final read-only audit)"
     },
     "figures": {
       "type": "boolean",
@@ -1192,6 +1197,37 @@
       }
     },
     {
+      "id": "finalize",
+      "title": "Finalize",
+      "detail": "the finite finalization: the audit plan, at most one compiler correction cycle scoped to its Cards, the changed-Card/touched-tree manifest, the dependency-scoped publication refresh, and the final read-only audit",
+      "after": [
+        "audit"
+      ],
+      "module": "zt-finalize",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "full"
+            },
+            {
+              "path": "args.finalize",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}"
+      }
+    },
+    {
       "id": "math-check",
       "title": "Audit",
       "detail": "math-compiler.ps1 check: rules M1 to M18 on every unit and Theory Card",
@@ -1227,7 +1263,7 @@
         "mode": "{{mode}}"
       },
       "after": [
-        "audit"
+        "finalize"
       ]
     },
     {
@@ -1327,6 +1363,9 @@
         },
         "cards": {
           "$ref": "stages.cards.output"
+        },
+        "finalize": {
+          "$ref": "stages.finalize.output"
         },
         "models": {
           "$ref": "stages.models.output"
@@ -1446,6 +1485,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "3.2.0"
+    "version": "3.3.0"
   }
 }

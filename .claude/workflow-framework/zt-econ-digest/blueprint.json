@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -242,6 +242,11 @@
     "audit": {
       "type": "boolean",
       "description": "mode full: false skips the audit"
+    },
+    "finalize": {
+      "type": "boolean",
+      "default": true,
+      "description": "mode full: false skips the finite finalization branch (audit plan, one scoped correction cycle, publication refresh, final read-only audit)"
     },
     "figures": {
       "type": "boolean",
@@ -1101,11 +1106,42 @@
       }
     },
     {
+      "id": "finalize",
+      "title": "Finalize",
+      "detail": "the finite finalization: the audit plan, at most one compiler correction cycle scoped to its Cards, the changed-Card/touched-tree manifest, the dependency-scoped publication refresh, and the final read-only audit",
+      "after": [
+        "audit"
+      ],
+      "module": "zt-finalize",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "full"
+            },
+            {
+              "path": "args.finalize",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}"
+      }
+    },
+    {
       "id": "cleanup",
       "title": "Cleanup",
       "detail": "settle every DeepSeek conversation and workspace the run recorded, delete exactly those ids, remove only registered scratch inside the staging root, then render the verified run report (completeness, gaps, current placeholders, timings, exact per-run usage), reporting content_complete apart from cleanup_complete",
       "after": [
-        "audit"
+        "finalize"
       ],
       "module": "zt-dsh-cleanup",
       "params": {
@@ -1177,6 +1213,9 @@
         },
         "cards": {
           "$ref": "stages.cards.output"
+        },
+        "finalize": {
+          "$ref": "stages.finalize.output"
         },
         "models": {
           "$ref": "stages.models.output"
@@ -1295,6 +1334,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "3.2.0"
+    "version": "3.3.0"
   }
 }
