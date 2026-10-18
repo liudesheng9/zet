@@ -1,0 +1,51 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-issue-dev",
+  "version": "1.0.0",
+  "scope": "project",
+  "script": ".claude/workflows/zt-issue-dev.js",
+  "scriptRel": "workflows/zt-issue-dev.js",
+  "sha256": "12400a455c8bfbb1eae6eed778e6408100bc4a78dbba1f4b92b924c97ba44dae",
+  "fingerprint": "b7866382899c9de7",
+  "blueprintSha256": "0e0b44f84b5a0c44d38068b20574c2e3d3717b885c721408727e134df48bcc45",
+  "modules": {
+    "gate": "1",
+    "script": "1",
+    "value": "1",
+    "zt-issue-relay": "1"
+  },
+  "moduleFiles": {
+    "gate": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\gate.js",
+      "sha256": "815c5e2f1436500333cd43f30f53b09f6f13d6a27f26a89eb475ab16ceec6c05"
+    },
+    "script": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\script.js",
+      "sha256": "92fbec13df7ea00d3d65af7f01b85e077116df0d5560fb8bd95689eb3186fd99"
+    },
+    "value": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\value.js",
+      "sha256": "91e330a4ee5a5bb46a58363fcaa7297d55ed60334dc2996d37424b54fc8fc5ce"
+    },
+    "zt-issue-relay": {
+      "file": "scripts/issue-dev/workflow/modules/zt-issue-relay.js",
+      "sha256": "2e6149cb4fd4bb3c934bfdb00ae9db3fef1bb5a5a8d6e8ef11b2c57d2dd0be2b"
+    }
+  },
+  "sources": [
+    {
+      "file": "scripts/issue-dev/workflow/zt-issue-dev.blueprint.json",
+      "sha256": "342ac1bb695c9812394bc5b8be0de3aea104d2bd1a4b250f6a4397fe4a801d3c"
+    }
+  ],
+  "installedAt": "2026-10-18T07:23:07.003Z",
+  "dryRun": {
+    "agents": 12,
+    "order": [
+      "prepare",
+      "develop",
+      "check",
+      "report"
+    ]
+  }
+}

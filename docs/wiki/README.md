@@ -65,6 +65,7 @@ Each block doc's **Testing** section names its own suites.
 | [Digest workflows](digest-workflows.md) | The book, econ, and math digest Workflows: stages, modes, modules, blueprints, and the frozen install | `scripts/book-digest/workflow/`, `.claude/workflows/`, `.claude/workflow-framework/` |
 | [Digest scripts](digest-scripts.md) | The PowerShell stage scripts and compilers (card, model, event, finding, math, hub, organize, figures, audit) and their tests | `scripts/book-digest/*.ps1`, `scripts/book-digest/tests/` |
 | [Digest prompts](digest-prompts.md) | The DeepSeek instruction files and the model-architect briefs that the digest stages send | `scripts/book-digest/*.md` |
+| [Issue development workflow](issue-dev-workflow.md) | The zt-issue-dev Workflow: GitHub issues developed one at a time by DeepSeek agents through Haiku managers, with the main agent fulfilling their asks | `scripts/issue-dev/`, `.claude/workflows/zt-issue-dev.js` |
 
 ## Architecture
 
