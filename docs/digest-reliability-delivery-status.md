@@ -153,6 +153,18 @@ A real MCP/CLI regression first failed because identity was unavailable, then pa
 
 This establishes the archive identity transport only. The per-preparation five-table ledger, source/manifest/contracts binding, claims, deterministic group completion and downstream registration remain unfinished; #70 stays open. No production archive was migrated or rebound.
 
+## #75: exact content-corruption checks
+
+The shared checker now reserves R18 for repeated substantive prose paragraphs and R19 for authored title headings repeated inside a Card body. R18 normalizes line endings and outer paragraph whitespace only, retaining interior text/spacing and reporting both first/current body-line spans for each repetition. R19 names every repeated title's body line. The checks exclude code/chart fences, display formulas, explicit quotations (including nested blockquotes), generated Reverse sections and non-prose metadata/placeholders. Indented continuation text remains part of its original paragraph rather than becoming a falsely repeated fragment. An embedded source label cannot hide repeated substantive prose. Uncertain 向向/价价 text is neither rewritten nor declared corrupt from repeated characters alone.
+
+The ordinary storage validator checks after parsing the legitimate Card envelope and refuses a newly authored body/title combination with a duplicated first body title. Plain-title and decorated heading forms are covered. It does not reject literal indented/fenced code or quotations. An unrelated metadata/type update may retain a legacy authored fault, and a subsequent real body repair succeeds. Identified batches share the guard and roll back earlier unseen writes/allocation on failure.
+
+The default Card cycle includes both rules as repair work. Link draft checking also retains R18/R19 and uses the verified draft Card's real title, so a title-only paragraph cannot receive a clean preview. Audit and standalone checker fault lines/counts match exactly on the actual temporary archive, and read-only checks leave content unchanged.
+
+All 358 root tests pass with zero failures and one intentionally ignored real-clipboard test (`D:/zt-target/qualification/issue75-root-regression.log`); the final added literal-code/quote guard cases also pass (`issue75-leading-title-exclusions.log`). All ten checker and 80 digest unit tests pass (`issue75-checker-unit-final.log`, `issue75-digest-unit-final.log`). All 18 affected public suites pass sequentially, including 14 corruption assertions, Card/Model/Math/Event/Finding/Hub/Bridge/terms/figure tools, scoped reads, orphan comparisons and identified/owned-paragraph recovery. Logs: `issue75-public-final/` and `issue75-public-final-summary.log`.
+
+The initial broad run retained one fixture failure: its term table copied its title into its leading body line. The fixture now uses the term compiler's explanatory-prefix format while retaining its original R6 assertions; no guard was weakened. Focused RED/GREEN evidence includes the core title guard, missing corruption rules, source-labelled prose, nested quote exclusion, indented continuation, default Card-cycle inclusion and Link-title preview under `issue75-*.log`. This qualifies T09 through real command/MCP/compiler boundaries. No actual workflow or real archive cleanup ran.
+
 ## #76: shared orphan scope and predicate
 
 `tools/zt-check/src/graph.rs` now owns shared purpose classification, the orphan predicate and complete revision-scoped report assembly. Audit, the Card cycle and standalone Card checks use that classification. Standalone checks read one complete fresh title catalogue for the anchor denominator rather than mistaking three links for a whole-book majority in a requested subset.
@@ -171,4 +183,4 @@ The original pre-migration audit fixtures are retained. Their comparison adapts 
 
 ## Remaining slices
 
-#68–#75 and #77–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.
+#68–#74 and #77–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status must be checked against actual installed hashes and running process paths before the parent can be reported complete.

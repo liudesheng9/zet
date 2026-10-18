@@ -12,7 +12,7 @@ updated: 2026-10-17
 
 ## Purpose
 
-`zt-check` is the Card quality check of the book digest, built as one fast Rust binary. It reads Cards (from a JSON file of drafts, or from the live archive through `zt mcp`) and prints one line per fault against the Card language rules (R2 to R17) and the Card layer rules (I, E, F, L). Every agent that writes digest Cards calls it: Claude sessions, workflow agents, Haiku managers, DeepSeek Harness runs, and the digest scripts through `Invoke-ZtCheck`. It is the only source of truth for Card quality (`tools/zt-check/src/main.rs`, `tools/zt-check/src/check.rs`). It exists as a crate of its own so that it builds and installs without building zt or stopping the ZT service (`tools/zt-check/Cargo.toml`, `scripts/install-zt-check.ps1`).
+`zt-check` is the Card quality check of the book digest, built as one fast Rust binary. It reads Cards (from a JSON file of drafts, or from the live archive through `zt mcp`) and prints one line per fault against the Card language and structural rules (R2 to R19) and the Card layer rules (I, E, F, L). Every agent that writes digest Cards calls it: Claude sessions, workflow agents, Haiku managers, DeepSeek Harness runs, and the digest scripts through `Invoke-ZtCheck`. It is the only source of truth for Card quality (`tools/zt-check/src/main.rs`, `tools/zt-check/src/check.rs`). It exists as a crate of its own so that it builds and installs without building zt or stopping the ZT service (`tools/zt-check/Cargo.toml`, `scripts/install-zt-check.ps1`).
 
 **Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the library entry points (`tools/zt-check/src/lib.rs`: `check::run_lines`, `mcp::Zt`), and the build and install of `zt-check.exe`.
 
@@ -64,7 +64,7 @@ flowchart TD
     ca & cm & cc --> zt["mcp::Zt (spawns zt mcp)"]
     zt -->|get_cards, get_model| server[("zt mcp → ZT service archive")]
     cj & ca & cm & cc --> run["Check::run"]
-    run --> lang["Check::language + Check::sentence (R2–R17)"]
+    run --> lang["Check::language + Check::sentence (R2–R19)"]
     run --> layer["Check::layer + finding_rules (I, E, F, L)"]
     lang & layer --> faults["Faults::add (fault lines)"]
     cc --> filter["filter_rules (--rules / DEFAULT_RULES)"]
@@ -165,6 +165,8 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 | R15 | The sections are exactly `思路, 起点, 步骤, 结果, 解读`, in that order | Derivation parts that have 思路 or 解读 (all of them with `--require-explain`), not in a concept model | yes | `sections <found>; want 思路, 起点, 步骤, 结果, 解读` |
 | R16 | 思路 at most 5 sentences; 解读 at most 6 (`待写` does not count) | as R15 | yes | `(思路 has N sentences > 5)` |
 | R17 | One `说明` line per numbered step, not before the first step, of at most 2 sentences; 思路 + 说明 + 解读 together at most `max-explain-sentences` sentences, else at most `max-explain-chars` characters | as R15 (the position errors are reported in every Derivation part) | yes | `a second 说明 line under step N: …`, `(N explanation sentences > 16) shorten the explanation` |
+| R18 | Exact repeated substantive prose paragraph, after only line-ending/outer-whitespace normalization | every authored body outside excluded regions | yes | `repeated prose paragraph at lines A-B and C-D` |
+| R19 | A repeated Card title heading in authored body text | every authored body outside excluded regions | yes | `repeated Card title at body line N` |
 | I1 | Advisory: a title of at most 6 characters with no claim verb (`CLAIM_VERB`) | `idea`, `anchor` | yes | `(advisory) the title states no claim: <title>` |
 | I2 | Prose size: over `max-idea-chars` is a split candidate, under `min-idea-chars` a merge candidate | `idea` | yes | `(N characters > 300) split candidate` |
 | I3 | A Link to the book's Literature Card or one of its anchors (`<key>/<n>`) | `idea`, `event` with `book` and `links` | yes | `no source line: no Link to [[key]] or one of its anchors` |
@@ -206,6 +208,13 @@ It sets `CARGO_TARGET_DIR` to `-TargetDir`, runs `cargo build --release` in `too
 
 ## Behaviour
 
+### Exact corruption checks
+
+`check.rs::corruption` runs for every checked body before the sentence rules. R18 compares substantive prose paragraphs after CRLF/lone-CR normalization and outer paragraph trimming only. Interior whitespace, indented paragraph continuation, Markdown and inline formula content remain part of exact equality. Each repeated occurrence reports the first and current body-line ranges; three copies yield two paired faults. Source-only lines, known unwritten placeholders and text without prose letters are not substantive paragraphs. A source label followed by substantive prose cannot hide a repeated paragraph.
+
+R19 reports every authored level-one heading that repeats the Card title, with its body line. Valid closing ATX hash decoration is recognized. Both checks exclude code/chart fences, display formulas (`$$`, `\[...\]` and supported equation/align/gather environments), indented code, Markdown block quotations including lazy continuation, nested HTML blockquotes, whole explicitly quoted paragraphs and generated Reverse content. Heading/section labels and tables do not become repeated prose. These rules report; they do not remove duplicates, compare paraphrases or rewrite uncertain Chinese characters such as 向向/价价. Source review decides those cases.
+
+
 ### A `--json` run (drafts, offline)
 
 1. `run_cli` reads the file; `check_json` strips a BOM and parses an array (or wraps one object).
@@ -243,7 +252,7 @@ It sets `CARGO_TARGET_DIR` to `-TargetDir`, runs `cargo build --release` in `too
 
 ### Rules the code keeps
 
-- Fault order: per Card in input order: R12, then per sentence R2, R3, R4, R5, R6, R7, R9 (R17 position faults inline), then R15, R16, R17, then R13, R14. Layer faults follow all language faults: per Card I1, I2, I3, I4, I5, E1, E2, E4, F1–F4, L1, L2, L3; then I6 per tree (trees in culture order), then E5. In `--cards` mode the model groups come before the other Cards. Callers and tests compare lines in this order.
+- Fault order: per Card in input order: structural R18/R19 in body scan order, R12, then per sentence R2, R3, R4, R5, R6, R7, R9 (R17 position faults inline), then R15, R16, R17, then R13, R14. Layer faults follow all language faults: per Card I1, I2, I3, I4, I5, E1, E2, E4, F1–F4, L1, L2, L3; then I6 per tree (trees in culture order), then E5. In `--cards` mode the model groups come before the other Cards. Callers and tests compare lines in this order.
 - R13 and R14 apply only when the level is not `concept`; R15 to R17 likewise. R13 applies only to Cards with a facet, so a Model Card is never size-checked.
 - One `Zt` process per run; calls are sequential. zt-check never writes: it calls only read tools.
 - Every mode except `--cards` counts advisory lines in `faults: N`.

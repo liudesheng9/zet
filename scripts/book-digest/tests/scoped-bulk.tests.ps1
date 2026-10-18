@@ -34,7 +34,7 @@ try {
         @{tool='create_literature';arguments=@{bibtex='@book{ScopeBook,title={Scoped book}}'}},
         @{tool='create_successor';arguments=@{at='ScopeBook';title='第一组';body='§1 生产'}},
         @{tool='create_successor';arguments=@{at='ScopeBook/1';kind='side';title='资金提高生产能力';body="资金被企业投入生产。`n`n见 [[OtherBook/1|a]]。`n`n来源：[[ScopeBook]] §1"}},
-        @{tool='create_successor';arguments=@{at='ScopeBook/1';kind='side';title='术语表';body="术语表`n`n| 术语 | 不用 |`n| --- | --- |`n| 资本 | 资金 |"}}
+        @{tool='create_successor';arguments=@{at='ScopeBook/1';kind='side';title='术语表';body="本表统一本书用词。`n`n术语表`n`n| 术语 | 不用 |`n| --- | --- |`n| 资本 | 资金 |"}}
     )
     $staging = Join-Path $scratch 'staging'
     New-Item -ItemType Directory -Force $staging | Out-Null

@@ -223,6 +223,8 @@ A plan result is `{ applied: false, confirm, plan: [lines], next: "nothing chang
 
 ## Behaviour
 
+Ordinary and identified writes share the storage guard against an extra leading Card title in a newly supplied body. The one legitimate envelope heading is parsed first. A new bad write returns `duplicate leading title` and rolls back allocation/prior unseen batch writes. An unrelated metadata/type edit may preserve a legacy authored title/body fault for review; quality rules R18/R19 still report existing corruption. Public cases are in `tests/workspaces_mcp.rs`.
+
 ### Start-up and handshake
 
 1. `run()` locks stdout, makes a `Server::default()`, and reads stdin lines until EOF. Blank lines are skipped. A read failure ends the process with "failed to read an MCP message".

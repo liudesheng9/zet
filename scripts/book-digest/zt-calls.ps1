@@ -16,7 +16,7 @@
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 # zt-check (tools/zt-check, installed by scripts/install-zt-check.ps1) is the one Card quality
-# check: the Card language rules R2 to R17 and the Card layer rules I, E, L. Invoke-ZtCheck takes
+# check: the Card language/structural rules R2 to R19 and the Card layer rules I, E, L. Invoke-ZtCheck takes
 # the parameter names the scripts use (-Json, -Model, -Addresses, -Cards, -Log, -Book, -Rules,
 # -Setting, -Level, -RequireExplain, -SkipShared, -MaxSentences, ...) and returns zt-check's
 # lines: one per fault, then `faults: N`. It throws when zt-check does not run.

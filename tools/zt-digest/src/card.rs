@@ -1835,7 +1835,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         per_job: a.int_or("PerJob", 8)?,
         sample: a.float_or("Sample", 0.0)?,
         seed: i32::try_from(seed).with_context(|| format!("-Seed: `{seed}` is not an Int32"))?,
-        rules: a.str_or("Rules", "R2,R3,R4,R5,R7,R9,R12,I1,I2,I3,I4,L1,L2,E1,E2"),
+        rules: a.str_or("Rules", "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2"),
         max_cards: a.int_or("MaxCards", 0)?,
         no_orphans: a.flag("NoOrphans"),
         notes: a.str("Notes"),

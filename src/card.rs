@@ -28,6 +28,18 @@ pub(crate) struct ParsedCard {
     pub(crate) reverse: String,
 }
 
+/// Reject an extra authored title after the legitimate Card envelope. An
+/// indented code line is literal code, not another title or claim paragraph.
+pub(crate) fn body_starts_with_title(title: &str, body: &str) -> bool {
+    body.lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| {
+            !line.starts_with("    ")
+                && !line.starts_with('\t')
+                && (line.trim() == title
+                    || title_from_heading(line.trim()).as_deref() == Some(title))
+        })
+}
 /// Parse a Topic or Regular Card, which must open with a `# Title` heading.
 pub(crate) fn parse_card_text(text: &str) -> Result<ParsedCard> {
     parse(text, true)

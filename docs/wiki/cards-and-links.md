@@ -90,6 +90,9 @@ flowchart LR
 
 ## Interfaces
 
+`card::body_starts_with_title(title, body)` recognizes an exact repeated first nonblank body line, either plain title text or a level-one heading with valid closing ATX decoration. An indented code line is literal content. The storage validator calls it after parsing the one legitimate Card envelope; parsing alone still accepts legacy Cards so they can be read/reviewed.
+
+
 `src/card.rs::authored_body_range` validates a Card and locates its original authored body bytes without normalizing line endings, heading decoration, whitespace or the generated section. `with_reverse_section` changes only the generated suffix, preserving the authored prefix and existing marker line. The indexed Reverse-link refresh uses this helper, including when an unrelated inbound Link changes during an owned paragraph correction. Ordinary authored creates/saves still normalize their own text explicitly through `compose_card_text`; generated maintenance is not an implicit whole-Card formatter.
 
 

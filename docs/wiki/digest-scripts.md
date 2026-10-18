@@ -604,6 +604,9 @@ A new layer is a `zt-digest` tool. Follow `event` and `finding` (`tools/zt-diges
 
 ## Testing
 
+`tests/content-corruption.tests.ps1` exercises the actual checker, audit, Card compiler and Link draft helper. It checks repeated paragraph spans/title lines, outer/line-ending normalization without fuzzy interior normalization, uncertain repeated Chinese characters, code/chart/math/quotation/generated exclusions (including nested quotes), parity of audit fault lines/counts, default Card-cycle repair inclusion, no authored rewrite and actual-title validation in a Link preview. `tests/workspaces_mcp.rs` covers ordinary/identified leading-title refusal, batch rollback and legacy metadata-only preservation.
+
+
 `tests/orphan-scope.tests.ps1` compares the actual `audit` and `card` commands on identical revisions and target sets. It covers self-Links, outbound source citations, generated Reverse/navigation/filing, authored parent Links, human inbound sources, separate Idea-kinded evidence from a human carrier, every excluded purpose, substantive models/parts, an authored later revision and changed-target facts. It also compares an explicit audit target file with the Card cycle's owned Topic manifest, injects missing human graph/carrier inputs, and checks that standalone classification uses the full anchor denominator.
 
 The original `audit-bulk-report-fixture.json` and fault fixture remain retained. `digest-audit.tests.ps1` adapts only the documented #76 changes before comparing: notation gets its own classification, anchors leave the orphan target set, and I5's wording names another authored source. The new explicit `orphan_check` is verified by the dedicated public suite; all other historical graph/Bridge/quality fields remain compared to the original fixture.

@@ -257,6 +257,9 @@ Location helpers (all pure except where a `conn` is taken):
 
 ## Behaviour
 
+`validate_card_text` refuses a newly authored body/title combination whose first nonblank body line repeats its Card title. The check runs after the legitimate envelope is parsed and is shared by ordinary, GUI/terminal and identified writes. An unchanged legacy authored title/body may survive an unrelated type/metadata update; a new bad content write is refused. The ordinary transaction and identified batch roll back their prior writes/allocation on this error. The guard does not remove old text or rewrite repeated Chinese characters.
+
+
 ### Start the service (`zt up`)
 
 1. `cmd_up` → `start_service`: read the root; if `zt.restart` is fresh, `wait_for_service` first (a second daemon would only wait for the daemon lock).

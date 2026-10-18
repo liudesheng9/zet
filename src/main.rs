@@ -1479,6 +1479,12 @@ fn validate_card_text(
 ) -> Result<ParsedCard> {
     let parsed = parse_card_text(text)?;
     let old = old_text.map(parse_card_text).transpose()?;
+    let authored_changed = old
+        .as_ref()
+        .is_none_or(|before| before.title != parsed.title || before.body != parsed.body);
+    if authored_changed && card::body_starts_with_title(&parsed.title, &parsed.body) {
+        bail!("duplicate leading title in Card body; keep the title only in its Card heading");
+    }
     link_index::validate(
         conn,
         &parsed.body,
@@ -1486,7 +1492,6 @@ fn validate_card_text(
     )?;
     Ok(parsed)
 }
-
 fn is_valid_location(location: &str) -> bool {
     is_valid_topic_location(location) || is_valid_regular_location(location)
 }

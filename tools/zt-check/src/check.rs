@@ -459,6 +459,209 @@ fn prose_lines(body: &str) -> Vec<ProseLine> {
     out
 }
 
+/// Exact structural checks retain authored text and original body line numbers.
+/// They do not rewrite Chinese characters or compare paraphrases.
+fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
+    fn whole_quote(text: &str) -> bool {
+        [
+            ("“", "”"),
+            ("「", "」"),
+            ("『", "』"),
+            ("«", "»"),
+            ("\"", "\""),
+            ("'", "'"),
+        ]
+        .iter()
+        .any(|(open, close)| {
+            text.starts_with(open) && text.ends_with(close) && text.len() > open.len() + close.len()
+        })
+    }
+    fn heading(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("# ")?.trim();
+        let without = rest.trim_end_matches('#');
+        if without.len() < rest.len() && without.chars().last().is_some_and(char::is_whitespace) {
+            Some(without.trim_end())
+        } else {
+            Some(rest)
+        }
+    }
+    fn flush(
+        paragraph: &mut Vec<(usize, &str)>,
+        seen: &mut HashMap<String, (usize, usize)>,
+        address: &str,
+        faults: &mut Faults,
+    ) {
+        if paragraph.is_empty() {
+            return;
+        }
+        let start = paragraph.first().unwrap().0;
+        let end = paragraph.last().unwrap().0;
+        let text = paragraph
+            .iter()
+            .map(|(_, line)| *line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        paragraph.clear();
+        let probe = INLINE_MATH.replace_all(&text, "");
+        let probe = LINK.replace_all(&probe, "");
+        let probe = CODE.replace_all(&probe, "");
+        let probe = BOLD.replace_all(&probe, "");
+        if matches!(probe.trim(), "待写" | "待补" | "TODO" | "TBD" | "..." | "…")
+            || (text.lines().count() == 1
+                && (text.starts_with("来源：")
+                    || text.starts_with("来源:")
+                    || text.to_ascii_lowercase().starts_with("source:")))
+            || !(CJK.is_match(&probe) || WORD.is_match(&probe))
+        {
+            return;
+        }
+        if let Some((first, last)) = seen.get(&text) {
+            faults.add(
+                address,
+                "R18",
+                &format!("repeated prose paragraph at lines {first}-{last} and {start}-{end}"),
+            );
+        } else {
+            seen.insert(text, (start, end));
+        }
+    }
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<_> = normalized.split('\n').collect();
+    let mut quoted = HashSet::new();
+    let mut start = 0;
+    for end in 0..=lines.len() {
+        if end == lines.len() || lines[end].trim().is_empty() {
+            if whole_quote(lines[start..end].join("\n").trim()) {
+                quoted.extend(start..end);
+            }
+            start = end + 1;
+        }
+    }
+    let mut paragraph = Vec::new();
+    let mut seen = HashMap::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut math: Option<String> = None;
+    let mut html_quote = 0usize;
+    let mut lazy_quote = false;
+    for (index, line) in lines.iter().enumerate() {
+        let trim = line.trim();
+        if let Some((mark, length)) = fence {
+            let run = trim.chars().take_while(|c| *c == mark).count();
+            if run >= length && trim.chars().skip(run).all(char::is_whitespace) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(end) = &math {
+            if trim.contains(end.as_str()) {
+                math = None;
+            }
+            continue;
+        }
+        let lower = trim.to_ascii_lowercase();
+        if html_quote > 0 {
+            html_quote = (html_quote + lower.matches("<blockquote").count())
+                .saturating_sub(lower.matches("</blockquote").count());
+            continue;
+        }
+        if trim.is_empty() {
+            flush(&mut paragraph, &mut seen, address, faults);
+            lazy_quote = false;
+            continue;
+        }
+        if trim == "<!-- zt:reverse-links -->" {
+            break;
+        }
+        if lazy_quote {
+            continue;
+        }
+        if quoted.contains(&index) {
+            flush(&mut paragraph, &mut seen, address, faults);
+            continue;
+        }
+        if let Some(mark) = trim.chars().next().filter(|c| *c == '`' || *c == '~') {
+            let length = trim.chars().take_while(|c| *c == mark).count();
+            if length >= 3 {
+                flush(&mut paragraph, &mut seen, address, faults);
+                fence = Some((mark, length));
+                continue;
+            }
+        }
+        let ending = if trim.starts_with("$$") {
+            Some(("$$".to_string(), 2))
+        } else if trim.starts_with("\\[") {
+            Some(("\\]".to_string(), 2))
+        } else if let Some(rest) = trim.strip_prefix("\\begin{") {
+            rest.split_once('}').and_then(|(env, _)| {
+                [
+                    "equation",
+                    "equation*",
+                    "align",
+                    "align*",
+                    "aligned",
+                    "gather",
+                    "gather*",
+                    "displaymath",
+                    "math",
+                    "split",
+                    "eqnarray",
+                    "eqnarray*",
+                ]
+                .contains(&env)
+                .then(|| (format!("\\end{{{env}}}"), env.len() + 8))
+            })
+        } else {
+            None
+        };
+        if let Some((end, offset)) = ending {
+            flush(&mut paragraph, &mut seen, address, faults);
+            if !trim.get(offset..).unwrap_or_default().contains(&end) {
+                math = Some(end);
+            }
+            continue;
+        }
+        if lower.starts_with("<blockquote") {
+            flush(&mut paragraph, &mut seen, address, faults);
+            html_quote = lower
+                .matches("<blockquote")
+                .count()
+                .saturating_sub(lower.matches("</blockquote").count());
+            continue;
+        }
+        if trim.starts_with('>') {
+            flush(&mut paragraph, &mut seen, address, faults);
+            lazy_quote = true;
+            continue;
+        }
+        if line.starts_with("    ") || line.starts_with('\t') {
+            if !paragraph.is_empty() {
+                paragraph.push((index + 1, *line));
+            }
+            continue;
+        }
+        if trim.starts_with('|') || trim.starts_with("<!--") || trim.starts_with("![") {
+            flush(&mut paragraph, &mut seen, address, faults);
+            continue;
+        }
+        if !title.is_empty() && heading(trim) == Some(title) {
+            flush(&mut paragraph, &mut seen, address, faults);
+            faults.add(
+                address,
+                "R19",
+                &format!("repeated Card title at body line {}", index + 1),
+            );
+            continue;
+        }
+        if HEADING.is_match(trim) || SECTION.is_match(trim) {
+            flush(&mut paragraph, &mut seen, address, faults);
+            continue;
+        }
+        paragraph.push((index + 1, *line));
+    }
+    flush(&mut paragraph, &mut seen, address, faults);
+}
 /// The sentences of a line; formulas and Links split nothing.
 fn split_sentences(line: &str) -> Vec<String> {
     let mut hidden = Vec::new();
@@ -652,9 +855,10 @@ impl Check {
         faults.lines
     }
 
-    /// R2 to R17 for one Card; returns its prose characters (I2 reads them).
+    /// R2 to R19 for one Card; returns its prose characters (I2 reads them).
     fn language(&self, card: &Value, address: &str, faults: &mut Faults) -> i64 {
         let title = text(prop(card, "title"));
+        corruption(&text(prop(card,"body")),&title,address,faults);
         let facet = text(prop(card, "facet"));
         let shared = ps_in(address, &self.shared);
         let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);

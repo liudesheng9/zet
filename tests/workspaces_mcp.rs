@@ -23,6 +23,87 @@ struct TestHome {
 }
 
 #[test]
+fn ordinary_and_identified_writes_refuse_a_duplicate_leading_title_but_preserve_legacy_metadata_edits()
+ {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let title = "税率提高会限制交易";
+    let (error, failed) = mcp.call(
+        "create_topic",
+        json!({"title":title,"body":format!("# {title}\n\n这是说明。") }),
+    );
+    assert!(
+        failed && error.to_string().contains("duplicate leading title"),
+        "{error}"
+    );
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    mcp.ok("create_topic", json!({"title":"税收"}));
+    mcp.ok(
+        "create_successor",
+        json!({"at":"0/0","title":title,"body":"税率改变了交易双方的选择。"}),
+    );
+    for body in [
+        format!("{title}\n\n这是说明。"),
+        format!("# {title} ###\n\n这是说明。"),
+    ] {
+        let (error, failed) = mcp.call("edit_card", json!({"at":"0/1","body":body}));
+        assert!(
+            failed && error.to_string().contains("duplicate leading title"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        "税率改变了交易双方的选择。"
+    );
+    let (error,failed)=mcp.call("apply_batch",json!({"items":[
+        {"op_key":"duplicate/group/1/create/good","client_ref":"good","tool":"create_successor","arguments":{"at":"0/1","title":"暂时的新卡"}},
+        {"op_key":"duplicate/group/1/create/bad","client_ref":"bad","tool":"create_successor","arguments":{"at":"@@good","title":title,"body":format!("# {title}\n\n这是说明。")}}
+    ]}));
+    assert!(failed && error.to_string().contains("duplicate leading title"));
+    assert_eq!(
+        mcp.ok("get_tree", json!({"tree":"0"}))["cards"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let legacy =
+        format!("# {title}\n\n# {title}\n\n原有的待审内容。\n\n<!-- zt:reverse-links -->\n");
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    conn.execute("UPDATE cards SET text=?1 WHERE location='0/1'", [&legacy])
+        .unwrap();
+    drop(conn);
+    mcp.ok("edit_card", json!({"at":"0/1","type":"event"}));
+    let preserved = mcp.ok("get_card", json!({"at":"0/1"}));
+    assert_eq!(preserved["type"], "event");
+    assert_eq!(preserved["body"], format!("# {title}\n\n原有的待审内容。"));
+    mcp.ok(
+        "edit_card",
+        json!({"at":"0/1","body":"修复后的正文陈述一个完整论点。"}),
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        "修复后的正文陈述一个完整论点。"
+    );
+    for body in [
+        format!("    # {title}"),
+        format!("> # {title}"),
+        format!("```text\n# {title}\n```"),
+    ] {
+        let made = mcp.ok(
+            "create_successor",
+            json!({"at":"0/1","kind":"side","title":title,"body":body}),
+        );
+        assert_eq!(
+            mcp.ok("get_card", json!({"at":made["address"]}))["body"],
+            body,
+            "literal code/quotation is not an authored leading title"
+        );
+    }
+}
+#[test]
 fn a_ledger_can_distinguish_archive_replacement_from_a_consistent_restore_at_the_same_path() {
     let home = TestHome::new();
     home.configure_and_up();

@@ -611,7 +611,12 @@ fn precheck_identified(
         {
             bail!("incomplete Link draft: paragraph identity or Link facts mismatch");
         }
-        entries.push(json!({"address":address,"title":"","body":paragraph["body"],"links":paragraph["links"],"kinds":paragraph["kinds"],"category":"idea"}));
+        let title = cards
+            .iter()
+            .find(|card| card["address"] == address)
+            .and_then(|card| card["title"].as_str())
+            .context("incomplete Link draft: missing Card title")?;
+        entries.push(json!({"address":address,"title":title,"body":paragraph["body"],"links":paragraph["links"],"kinds":paragraph["kinds"],"category":"idea"}));
     }
     if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete Link draft: archive revision changed");
@@ -635,7 +640,7 @@ fn precheck_identified(
         .into_iter()
         .filter(|line| {
             line.split_whitespace().nth(1).is_some_and(|rule| {
-                ["L1", "L2", "R2", "R3", "R4", "R5", "R7", "R9"].contains(&rule)
+                ["L1", "L2", "R2", "R3", "R4", "R5", "R7", "R9", "R18", "R19"].contains(&rule)
             })
         })
         .collect();
