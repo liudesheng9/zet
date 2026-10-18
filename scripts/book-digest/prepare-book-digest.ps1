@@ -20,6 +20,15 @@
     (at most -MaxChars characters per group unless a single unit is larger). Units under a heading
     in -SkipHeadings (comma-separated, e.g. a chapter's '参考文献,习题') are left out up to the next
     other heading.
+  - Extracts the book's collected notes (注释 / 尾注 / notes) that stand outside that range: one
+    read-only file per chapter under `<Out>\notes\<chapter-id>.md`, mapped to the digest's chapters
+    by explicit headings and note labels. manifest.json records each chapter's chapter id, original
+    source line spans, note ids and hashes. Every group file (and every model context pack) carries
+    its chapter's notes, inline or, when they exceed -NoteMaxChars, the labelled part files with
+    their note ids; notes never make a group or a Card. An ambiguous mapping is a preparation fault,
+    and the notes a chapter cites but the book never defines stay visible. Those faults, with the
+    architects' source observations, are retained in `<Out>\source-faults.json` and rendered to
+    `<Out>\source-faults.md` (see `zt-digest source-faults`).
   - Writes to -Out: book.zh.md, groups/gNN.md, shared-prefix.md (identical for every run, so the
     DeepSeek prompt cache can reuse it), and manifest.json.
   - -Instructions (comma-separated instruction files of this folder, default dsh-instructions.zh.md)
@@ -50,7 +59,7 @@
   Parameters: -Source, -Out, -CitationKey, -BibTeX (required unless -Book resolves them); -Book,
   -BookTitle '', -StartHeading 导论, -EndHeading 参考, -SkipHeadings '', -MaxChars 20000,
   -MaxUnits 3, -MinUnitChars 1000, -FileId 0, -MinFigureBytes 3000, -MaxEventCandidates 12,
-  -Instructions dsh-instructions.zh.md, -NoEventCandidates, -NoFigures, -Apply.
+  -NoteMaxChars 6000, -Instructions dsh-instructions.zh.md, -NoEventCandidates, -NoFigures, -Apply.
 
   This script forwards every argument to `zt-digest prepare` (tools/zt-digest/src/prepare.rs),
   which does the work in one process with one `zt mcp`; callers should call the tool directly. It

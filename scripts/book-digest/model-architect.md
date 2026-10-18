@@ -9,12 +9,14 @@ Keep your work small. Read only what the plan needs. Do not load skills.
 - `COMPILER`: the model compiler command, `zt-digest model`. `WORK`: the batch folder.
 - For each model: `MODEL` (the Model Card's address) and `DIR` (its folder). `DIR` holds:
   - `brief.md`: DeepSeek's brief of the source: the question, the actors, the symbols, each equation in book order with its number, file, and lines, whether the book shows or skips each derivation step, the numerical examples, the diagrams, the outside premises, and the existing parts.
-  - `context.md`: the context pack: the Model Card as the digest wrote it, its existing parts, its neighbours, and the book's other models.
+  - `context.md`: the context pack: the Model Card as the digest wrote it, its existing parts, its neighbours, the book's other models, and the chapter's endnotes (`## 本章注释`) as read-only reference text.
 - `LEVEL`: when present, the level of every model.
 - `REBUILD`: when present, rebuild models that already have parts.
 - `LIMITS`: `MaxSteps` is the most numbered steps one Derivation part holds.
 
 Read `brief.md` and `context.md`. Read a source line range only when the brief leaves a structural question open (which step uses which equation, where a result comes from). Never read a whole section file.
+
+The chapter's endnotes in `context.md` are source text: use a definition the body leaves out (a symbol, a sign, a missing condition). If the pack names a note the book never defines (`缺失的注释`), plan the part so it does not depend on that definition, and say so in the plan's `notes`.
 
 ## Decide the level
 
@@ -93,6 +95,34 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `take`, `use` | take in a shared part, with one line on what this model uses from it |
 | `merge` | `[{"from": address, "into": id}]` |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
+| `source_faults` | the source's own faults you observed (see below) |
+
+## Report the source's faults
+
+The book's Markdown came through OCR, and it prints things it should not: a denominator with a term missing, a line printed twice, a sign that contradicts the surrounding argument. Report each one; do not silently work around it and do not rewrite the source.
+
+Add `source_faults` to `plan.json`, one entry per fault:
+
+```json
+"source_faults": [
+  {"start_line": 812, "end_line": 814, "chapter": "第十二章 风险", "equation": "(A.66)",
+   "observed": "分母印刷为 $1+\\rho$", "proposed": "分母应为 $1+\\rho+\\lambda$，印刷漏了 $\\lambda$",
+   "confidence": "high", "affected": ["Key/12|a", "Key/12|b"]}
+]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `start_line`, `end_line` | the original lines of the book's Markdown (`file:line` of the brief and `context.md`); 1-based |
+| `chapter` | the chapter heading as the book writes it |
+| `equation`, `note` | the equation number or the note id, when the fault is about one |
+| `observed` | the text the source prints there, copied, not paraphrased: the compiler checks it is really at those lines |
+| `proposed` | the interpretation or correction you propose; it is never applied to the source |
+| `confidence` | `high`, `medium`, or `low` |
+| `affected` | the Cards the fault touches (addresses; the list may be empty) |
+| `verified` | only when something verified the correction: `{"text": "...", "evidence": "printed copy p. 203 matches the English edition p. 188"}`. Without evidence the compiler refuses it |
+
+Report only what you saw in this book's text now. Do not repeat a fault from an earlier digest or from the design notes: the compiler records each entry against the prepared source, and an observation the source does not print at those lines is kept as unconfirmed, never as a fault. `validate` writes every entry into `<out>\source-faults.md`, one entry per source location, merging a second architect's observation of the same lines.
 
 ## Check the plan
 

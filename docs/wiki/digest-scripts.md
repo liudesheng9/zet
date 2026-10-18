@@ -63,7 +63,7 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 |---|---|
 | Entry points | One `zt-digest <tool> [-Step <step>] …` per stage step, or the same arguments to `pwsh -NoProfile -File scripts/book-digest/<script>.ps1` (a forwarder; the tool of each script is in [zt-digest](zt-digest.md)); dot-sourced libraries `zt-calls.ps1`, `relatedness.ps1`, `book-of.ps1` for PowerShell callers; the tests `scripts/book-digest/tests/*.tests.ps1` |
 | Key files | Every script below forwards to its `zt-digest` tool, except `book-of.ps1`, `relatedness.ps1`, and `zt-calls.ps1` |
-| | `prepare-book-digest.ps1` — Chinese-only text, section groups, group files, shared prefixes, manifest, and (`-Apply`) the Literature tree with its anchors |
+| | `prepare-book-digest.ps1` — Chinese-only text, section groups, group files, shared prefixes, manifest, the chapter endnotes (`notes/`, design 11.6) and (`-Apply`) the Literature tree with its anchors; its notes faults, and the architects' source faults, go into the run's `source-faults.json` and `source-faults.md` ([zt-digest](zt-digest.md)) |
 | | `snapshot-topics.ps1` — a compact list of every tree for one digest run |
 | | `book-terms.ps1` — the Book term table (术语表) |
 | | `card-compiler.ps1` — the card layer cycle: fix, review, orphan Links, Organize notes. A forwarder to `zt-digest card` (`tools/zt-digest/src/card.rs`, [zt-digest](zt-digest.md)) |
@@ -91,7 +91,7 @@ The digest scripts are the deterministic half of the book digest workflows (`zt-
 
 ## Concepts
 
-- `Staging folder` — the digest's output folder (`-Out` of `prepare-book-digest.ps1`, `-Staging` everywhere else): `manifest.json`, `book.zh.md`, `sections/`, `groups/`, the logs, and one sub-folder per stage. Every later script reads `manifest.json` from it.
+- `Staging folder` — the digest's output folder (`-Out` of `prepare-book-digest.ps1`, `-Staging` everywhere else): `manifest.json`, `book.zh.md`, `sections/`, `groups/`, `notes/` (the chapter endnotes), `source-faults.json` and `source-faults.md` (the retained source-fault record), the logs, and one sub-folder per stage. Every later script reads `manifest.json` from it.
 - `Group` — one or more consecutive section units of one chapter (at most `-MaxUnits`, at most `-MaxChars` characters) handled by one DeepSeek digest run; numbered `n` from 1, id `gNN`. Built in `prepare-book-digest.ps1`.
 - `Anchor` — the Literature tree Card `<key>/<n>` of group `n`, a Direct successor chain under the Literature Card. `digest-audit.ps1` gives it the category `anchor`.
 - `Owned Cards` — the Cards a group wrote: `owned-gNN.txt`, written by the helper's `-Log` during the digest, extended by `card-compiler.ps1` (split Cards) and `math-compiler.ps1` (unit skeletons). Read by `list-models.ps1`, `model-context.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`.
@@ -775,6 +775,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+- `2026-10-18` — `prepare-book-digest.ps1` extracts the book's chapter endnotes outside the digest range (`notes/<chapter-id>.md`, `-NoteMaxChars`), records each chapter's id, original line spans, note ids and hashes in `manifest.json`, appends the chapter's notes (or their labelled parts and the missing-note warning) to every group file, and keeps the notes faults in the run's `source-faults.json` and `source-faults.md`. New public suite `source-notes.tests.ps1` (54 assertions) covers the notes, the group and model context packs, the mapping faults, the source-fault report and the compiler's plan recording.
 
 - `2026-10-18` — `prepare-book-digest.ps1 -Book <Work id|title>` resolves the book through the read-only Scholar Archive bridge: the Work, its ranked Chinese/bilingual Markdown, the generated BibTeX with the collision-checked Citation key, and the proposed start/end/skip headings, with `preparation.json` (source hash and every excluded section) written before any group work and exit 3 when a choice stays open. New public suite `book-preparation.tests.ps1` (50 assertions) covers the resolution, the selections, the conflicts and the bridge faults on a scratch archive with a fixture in the MCP seam.
 

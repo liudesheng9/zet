@@ -175,15 +175,17 @@ enum Found<T> {
     Choose { message: String, candidates: Vec<Value> },
 }
 
-/// One heading of the resolved source, in reading order.
+/// One heading of the resolved source, in reading order. The notes extractor reads the same scan,
+/// so a heading means the same thing to the range and to the notes outside it.
 #[derive(Clone, Debug)]
-struct Heading {
-    title: String,
-    level: usize,
+pub(crate) struct Heading {
+    pub(crate) title: String,
+    pub(crate) level: usize,
     /// 1-based line of the resolved source file.
-    line: usize,
+    pub(crate) line: usize,
     /// UTF-16 characters from this heading to the next heading of the same or a higher level.
-    chars: usize,
+    #[allow(dead_code)]
+    pub(crate) chars: usize,
 }
 
 /// What the heading scan proposes when the caller named no range.
@@ -843,7 +845,7 @@ fn read_source(path: &str) -> Result<String> {
 
 /// `#` and `##` headings of the source in reading order, with the characters of each section.
 /// A heading line inside a fenced code block is text, as in the digest's own split.
-fn scan_headings(raw: &str) -> Vec<Heading> {
+pub(crate) fn scan_headings(raw: &str) -> Vec<Heading> {
     let lines = raw.split('\n').collect::<Vec<_>>();
     let mut positions: Vec<(usize, usize, String)> = Vec::new();
     let mut fence: Option<(u8, usize)> = None;
@@ -901,7 +903,7 @@ fn is_skippable(title: &str) -> bool {
 /// `References and Notes`, `参考文献与索引`. A qualifier is a numbering or a connector, so
 /// `Reference prices in a market` is no back matter. A Chinese heading is also matched with
 /// its spaces removed (`前 言` is `前言`), as Chinese headings are often typeset spaced.
-fn heading_matches(title: &str, list: &[&str]) -> bool {
+pub(crate) fn heading_matches(title: &str, list: &[&str]) -> bool {
     let title = normalize_title(title);
     let tight = title.split_whitespace().collect::<String>();
     list.iter().any(|entry| {

@@ -101,6 +101,8 @@ struct Compiler {
     limits: String,
     unit_cache: HashMap<String, bool>,
     figures: Option<CiMap<Value>>,
+    /// What the accepted plan's source faults recorded, for the step's own report line.
+    source_report: Option<Value>,
     /// plan.json per model folder, as Get-PlanPart reads it (the step never writes it).
     plans: HashMap<String, Value>,
 }
@@ -232,6 +234,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         limits,
         unit_cache: HashMap::new(),
         figures: None,
+        source_report: None,
         plans: HashMap::new(),
     };
     match c.p.step.as_str() {
@@ -1126,10 +1129,64 @@ impl Compiler {
             self.state["order"] = plus(&self.state["order"], [plan["model"].clone()]);
             *self.m_mut(&model) = json!({ "ids": {}, "titles": {} });
         }
-        let faults = self.test_plan(&plan, &st, &model)?;
-        let mut lines = faults.clone();
+        // The architect's source observations go into the run's retained record before the plan's
+        // own structure is judged: a bad observation names its entry and counts as a plan fault.
+        let path = self.p.plan.clone();
+        let mut faults = self.record_source_faults(&plan, &path);
+        faults.extend(self.test_plan(&plan, &st, &model)?);
+        let mut lines = Vec::new();
+        if let Some(report) = &self.source_report {
+            lines.push(format!(
+                "source-faults: {} recorded, {} source faults in {}",
+                s(&report["recorded"]),
+                s(&report["faults"]),
+                s(&report["report"])
+            ));
+        }
+        lines.extend(faults.clone());
         lines.push(format!("faults: {}", faults.len()));
         util::print_lines(&lines)
+    }
+
+    /// The folder of the prepared run: `-Staging`, or the nearest folder above `-Work` that holds
+    /// its manifest.json (the architect validates without `-Staging`).
+    fn run_folder(&self) -> String {
+        if !self.p.staging.is_empty() {
+            return self.p.staging.clone();
+        }
+        let mut dir = ps::parent(&self.p.work);
+        while !dir.is_empty() && !ps::exists(&ps::join(&dir, "manifest.json")) {
+            dir = ps::parent(&dir);
+        }
+        dir
+    }
+
+    /// Records one plan's `source_faults` in the run's retained source-fault record and renders
+    /// its report (design 11.6, R312). Returns one plan fault per reason it could not.
+    fn record_source_faults(&mut self, plan: &Value, origin: &str) -> Vec<String> {
+        let entries: Vec<Value> = list(&plan["source_faults"]).into_iter().cloned().collect();
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let folder = self.run_folder();
+        if folder.is_empty() {
+            return vec!["source_faults: no prepared run folder holds manifest.json, so the fault record has no staging folder".into()];
+        }
+        let identity = match crate::faults::identity(&folder) {
+            Ok(identity) => identity,
+            Err(error) => return vec![format!("source_faults: {error:#}")],
+        };
+        let normalized = match crate::faults::entries(&identity, &entries, origin) {
+            Ok(entries) => entries,
+            Err(error) => return vec![format!("source_faults: {error:#}")],
+        };
+        match crate::faults::record(&folder, &identity, normalized) {
+            Ok(summary) => {
+                self.source_report = Some(summary);
+                Vec::new()
+            }
+            Err(error) => vec![format!("source_faults: {error:#}")],
+        }
     }
 
     fn step_apply(&mut self) -> Result<()> {
@@ -1168,6 +1225,16 @@ impl Compiler {
             let m = self.m_mut(model);
             m["status"] = json!("failed");
             m["error"] = json!(format!("plan faults: {}", faults.join("; ")));
+            return Ok(Vec::new());
+        }
+        // An accepted plan's source observations are recorded here too, so a run whose architect
+        // skipped `validate` still keeps them.
+        let plan_path = plan_path.clone();
+        let source_faults = self.record_source_faults(&plan, &plan_path);
+        if !source_faults.is_empty() {
+            let m = self.m_mut(model);
+            m["status"] = json!("failed");
+            m["error"] = json!(format!("source faults: {}", source_faults.join("; ")));
             return Ok(Vec::new());
         }
         if ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null() {

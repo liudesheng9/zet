@@ -227,12 +227,29 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         Some(m) => s(&m["source"]),
         None => String::new(),
     };
-    for (label, path) in [("全书索引", index), ("全书合并文本", ps::join(staging, "book.zh.md")), ("双语原文（只读）", source)] {
+    for (label, path) in [("全书索引", index), ("全书合并文本", ps::join(staging, "book.zh.md")), ("双语原文（只读）", source.clone())] {
         if !path.is_empty() && ps::exists(&path) {
             line(&format!("- {label}：`{path}`"));
         }
     }
     line("");
+    // The chapter's endnotes: the definitions a model may need but the digest range leaves out
+    // (R310). Read-only reference text, with the chapter's missing notes kept visible.
+    let chapter = entry.as_ref().map(|e| s(&e["chapter"])).unwrap_or_default();
+    let notes_block = if chapter.is_empty() {
+        None
+    } else {
+        manifest
+            .as_ref()
+            .and_then(|m| m["notes"]["chapters"].as_array())
+            .and_then(|list| list.iter().find(|c| ps::eq(&s(&c["chapter"]), &chapter) && c["present"] == true))
+            .and_then(|record| crate::prepare::notes::reference_block(record, &source))
+    };
+    if let Some(block) = notes_block {
+        for text in block.lines() {
+            line(text);
+        }
+    }
 
     if let Some(anchor_card) = &anchor_card {
         line(&format!("## 本组锚点卡 [[{anchor_text}]]：这一部分在全书中的位置"));

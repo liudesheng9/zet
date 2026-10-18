@@ -14,6 +14,15 @@
 //! and manifest.json. -Apply creates the agent Literature tree with one anchor Card per group
 //! (refused when the tree exists). Prints the manifest as compact JSON.
 //!
+//! The book's collected notes (注释 / 尾注 / notes) stand outside that range: `notes::extract`
+//! maps them to the digest's chapters and writes one read-only file per chapter under
+//! `notes\<chapter-id>.md` (design 11.6, R310/R311). The manifest records each chapter's chapter
+//! id, original source line spans, note ids and hashes; every group file and model context pack
+//! carries its chapter's notes, inline or, when they exceed -NoteMaxChars, as the labelled part
+//! files with their note ids. Notes never create a group or a Card, an ambiguous mapping is a
+//! preparation fault, and the notes a chapter cites but the book never defines stay visible.
+//! Those faults go into the run's retained `source-faults.json` and its `source-faults.md`.
+//!
 //! prepare-link: reads manifest.json in -Staging and every tree; writes cards-all.md, and per
 //! group link-gNN.md (the Cards it owns, with bodies and candidate targets) and allow-gNN.txt.
 //! Prints `{pending, groups, unowned, cards_all}`.
@@ -36,6 +45,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
+pub(crate) mod notes;
 mod resolve;
 
 static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
@@ -432,6 +442,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "FileId",
         "MinFigureBytes",
         "MaxEventCandidates",
+        "NoteMaxChars",
         "Instructions",
         "Variant",
         "RunOptions",
@@ -502,6 +513,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     let min_figure_bytes = a.int_or("MinFigureBytes", 3000)?;
     let max_event_candidates = a.int_or("MaxEventCandidates", 12)?;
+    let note_max_chars = a.int_or("NoteMaxChars", 6000)?;
     let instructions = a.str_or("Instructions", "dsh-instructions.zh.md");
     let no_event_candidates = a.flag("NoEventCandidates");
     let no_figures = a.flag("NoFigures");
@@ -515,7 +527,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     // --- Chinese-only blocks ---
     let source_bytes=std::fs::read(&source).with_context(||format!("Cannot find path '{source}' because it does not exist."))?;
-    let source_hash=if variant.is_empty() {String::new()} else {crate::canon::sha256_hex(&source_bytes)};
+    let source_file_hash=crate::canon::sha256_hex(&source_bytes);
+    let source_hash=if variant.is_empty() {String::new()} else {source_file_hash.clone()};
     if !variant.is_empty() {std::str::from_utf8(&source_bytes).context("prepared-run source must be valid UTF-8")?;}
     let raw=String::from_utf8_lossy(&source_bytes);
     let raw=raw.strip_prefix('\u{FEFF}').unwrap_or(&raw).replace("\r\n","\n");
@@ -545,7 +558,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let merged = merge_units(units, min_unit_chars)?;
     let groups = group_units(&merged, max_units, max_chars);
 
-    for dir in ["groups", "sections"] {
+    for dir in ["groups", "sections", "notes"] {
         let path = join_path(&out, dir);
         std::fs::create_dir_all(&path).with_context(|| format!("failed to make {path}"))?;
         for entry in std::fs::read_dir(&path)?.flatten() {
@@ -556,6 +569,34 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     }
     let staging = ps::full_name(&out);
+
+    // The chapter endnotes stand outside the digest range: read-only reference text for the
+    // groups and model context packs, never a group or a Card (design 11.6, R310/R311).
+    let chapter_titles: Vec<String> = merged.iter().map(|unit| unit.chapter.clone()).collect::<Vec<_>>().into_iter().fold(Vec::new(), |mut list, chapter| {
+        if list.last() != Some(&chapter) {
+            list.push(chapter);
+        }
+        list
+    });
+    let chapter_titles = chapter_titles.into_iter().filter(|chapter| !chapter.is_empty()).collect::<Vec<_>>();
+    let notes = notes::extract(
+        &raw,
+        &source,
+        &staging,
+        &chapter_titles,
+        &start,
+        &end,
+        &notes::Options { title: title.clone(), max_chars: note_max_chars },
+    )?;
+    // The preparation's own notes faults go into the same retained source-fault record the
+    // architects add to, so the person who keeps the Scholar Archive reads one report.
+    let identity = crate::faults::Identity {
+        path: source.clone(),
+        file_id,
+        sha256: source_file_hash.clone(),
+        lines: raw.split('\n').map(str::to_string).collect(),
+    };
+    let source_report = crate::faults::record_preparation(&staging, &identity, &notes.faults)?;
 
     // The book stays on disk: one file per unit plus an index. A resolved run that found no
     // back matter has no end heading, so its header names only the start.
@@ -595,17 +636,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     manifest.insert("book".into(), json!(join_path(&staging, "book.zh.md")));
     manifest.insert("index".into(), json!(index_path));
     manifest.insert("source".into(), json!(source));
+    manifest.insert("source_sha256".into(), json!(source_file_hash));
     manifest.insert("groups".into(), json!([]));
     manifest.insert("file_id".into(), json!(file_id));
     manifest.insert("figures".into(), json!(figure_map.len()));
     manifest.insert("figures_file".into(), json!(join_path(&staging, "figures.json")));
     manifest.insert("documents".into(), json!(documents_line));
+    manifest.insert("notes".into(), notes.summary.clone());
     // The resolution was frozen (and persisted with every excluded section) before this
     // staging folder held any group work.
     if let Some(resolved) = &resolved {
         manifest.insert("preparation".into(), json!(resolved.preparation));
         manifest.insert("book_resolution".into(), resolved.summary.clone());
     }
+    manifest.insert("source_faults".into(), json!({
+        "store": source_report["store"].clone(),
+        "report": source_report["report"].clone(),
+    }));
 
     // Every kept figure with its labels: the model compiler hands a part the figure its plan names.
     let mut listed: Vec<(String, Figure)> = figure_map.iter().map(|(k, f)| (k.clone(), f.clone())).collect();
@@ -687,11 +734,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             String::new(),
         ]
         .join(NL);
-        write(&file, &format!("{head}{text}"))?;
+        // The chapter's own endnotes: read-only reference text, and the chapter's missing notes
+        // stay visible. A group of a chapter without notes carries no block.
+        let notes_block = notes
+            .record(&chapter)
+            .and_then(|record| notes::reference_block(&record, &source))
+            .unwrap_or_default();
+        write(&file, &format!("{head}{text}{notes_block}"))?;
         outline.push_str(&format!("- 第 {n} 组 `{anchor}`：{chapter} | {}{NL}", headings.join("；")));
         group_entries.push(json!({
             "n": n, "id": id, "anchor": anchor, "chapter": chapter, "headings": headings,
             "sections": sections, "chars": len16(&text), "file": file,
+            "notes": notes.record(&chapter).map(|record| json!({
+                "chapter_id":record["chapter_id"].clone(),
+                "files":record["files"].as_array().map(|files| files.iter().map(|f| f["path"].clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                "note_ids":record["note_ids"].clone(),
+                "missing":record["missing"].clone(),
+            })).unwrap_or(Value::Null),
         }));
     }
     manifest.insert("groups".into(), Value::Array(group_entries));
