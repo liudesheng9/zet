@@ -88,8 +88,57 @@ const MATH_BOOK: &[&str] = &[
     "math-check",
 ];
 
-/// The initial reliable full-run target; date extraction is not an Event-layer switch.
-fn target(contract: &Value) -> Value {
+const RUN_FLAGS: &[&str] = &[
+    "terms", "models", "events", "findings", "hubs", "figures", "bridge", "notation", "boundary",
+    "proof", "theory",
+];
+
+/// Flat effective choices use the existing workflow flag names. Core verification stays required.
+pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>) -> Result<Value> {
+    if !["econ", "math"].contains(&variant) {
+        bail!("unknown run variant `{variant}`");
+    }
+    let mut options = serde_json::Map::new();
+    for &name in RUN_FLAGS {
+        let applicable = match name {
+            "events" | "findings" => variant == "econ",
+            "notation" | "boundary" | "proof" | "theory" => variant == "math",
+            _ => true,
+        };
+        options.insert(
+            name.into(),
+            json!(applicable && !(name == "figures" && no_figures)),
+        );
+    }
+    if let Some(input) = input {
+        for (name, value) in input
+            .as_object()
+            .context("run options must be a JSON object")?
+        {
+            if !RUN_FLAGS.contains(&name.as_str()) {
+                bail!("unknown run option `{name}`; core verification layers are required");
+            }
+            let enabled = value
+                .as_bool()
+                .with_context(|| format!("run option `{name}` must be boolean"))?;
+            if enabled
+                && ((variant == "econ"
+                    && ["notation", "boundary", "proof", "theory"].contains(&name.as_str()))
+                    || (variant == "math" && ["events", "findings"].contains(&name.as_str())))
+            {
+                bail!("run option `{name}` is not available for {variant}");
+            }
+            if enabled && name == "figures" && no_figures {
+                bail!("run option figures conflicts with NoFigures");
+            }
+            options.insert(name.clone(), json!(enabled));
+        }
+    }
+    Ok(Value::Object(options))
+}
+
+/// Date extraction is not an Event-layer switch. Disabled work stays explicit.
+fn target(contract: &Value) -> Result<Value> {
     let mut enabled = COMMON.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut excluded = Vec::new();
     if contract["options"]["no_figures"] == true {
@@ -103,7 +152,29 @@ fn target(contract: &Value) -> Value {
         enabled.extend(MATH.iter().map(|s| s.to_string()));
         excluded.extend(["events", "findings"]);
     }
-    json!({"enabled":enabled,"excluded":excluded})
+    let declared = contract["options"].get("run_options");
+    let run = run_options(
+        field(contract, "variant")?,
+        contract["options"]["no_figures"] == true,
+        declared,
+    )?;
+    for &name in RUN_FLAGS {
+        if run[name] != false {
+            continue;
+        }
+        let affected = if name == "models" {
+            vec!["models", "explain"]
+        } else {
+            vec![name]
+        };
+        for layer in affected {
+            enabled.retain(|l| l != layer);
+            if !excluded.contains(&layer) {
+                excluded.push(layer);
+            }
+        }
+    }
+    Ok(json!({"enabled":enabled,"excluded":excluded}))
 }
 
 struct Prepared {
@@ -175,6 +246,16 @@ impl Prepared {
         field(&contract, "citation_key")?;
         if !contract["options"].is_object() {
             bail!("incomplete prepared options");
+        }
+        if let Some(declared) = contract["options"].get("run_options") {
+            if run_options(
+                variant,
+                contract["options"]["no_figures"] == true,
+                Some(declared),
+            )? != *declared
+            {
+                bail!("incomplete effective run options");
+            }
         }
         check_file(&contract["source"], "source")?;
         let groups = contract["groups"]
@@ -436,6 +517,9 @@ fn verify_binding(conn: &Connection, p: &Prepared) -> Result<()> {
     if meta(conn, "preparation_hash")? != p.hash || meta(conn, "preparation")? != p.contract {
         bail!("immutable preparation mismatch; use a new output directory");
     }
+    if meta(conn, "target")? != target(&p.contract)? {
+        bail!("ledger declared target mismatch");
+    }
     Ok(())
 }
 
@@ -498,7 +582,7 @@ fn init(p: &Prepared) -> Result<Value> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("create run identity: {e}"))?;
     let run = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let target = target(&p.contract);
+    let target = target(&p.contract)?;
     for (k, v) in [
         ("schema_version", json!(1)),
         ("run_id", json!(run)),
@@ -528,15 +612,26 @@ fn init(p: &Prepared) -> Result<Value> {
         None,
         true,
     )?;
-    let terms = register(
-        &tx,
-        "terms",
-        "book",
-        &json!({"preparation_hash":p.hash}),
-        Some(&prepare),
-        false,
-    )?;
-    dependency(&tx, &terms, &prepare, "success")?;
+    let terms = if target["enabled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l == "terms")
+    {
+        Some(register(
+            &tx,
+            "terms",
+            "book",
+            &json!({"preparation_hash":p.hash}),
+            Some(&prepare),
+            false,
+        )?)
+    } else {
+        None
+    };
+    if let Some(terms) = &terms {
+        dependency(&tx, terms, &prepare, "success")?;
+    }
     let mut groups = Vec::new();
     for group in p.contract["groups"].as_array().unwrap() {
         let id = register(
@@ -548,7 +643,9 @@ fn init(p: &Prepared) -> Result<Value> {
             false,
         )?;
         dependency(&tx, &id, &prepare, "success")?;
-        dependency(&tx, &id, &terms, "success")?;
+        if let Some(terms) = &terms {
+            dependency(&tx, &id, terms, "success")?;
+        }
         groups.push(id);
     }
     // These fixed obligations cannot disappear when their dynamic producers have no ready rows.
@@ -575,6 +672,14 @@ fn init(p: &Prepared) -> Result<Value> {
     }
     if p.contract["variant"] == "math" {
         for &layer in MATH_BOOK {
+            if !target["enabled"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l == layer)
+            {
+                continue;
+            }
             let id = register(
                 &tx,
                 layer,
@@ -593,7 +698,9 @@ fn init(p: &Prepared) -> Result<Value> {
             &json!({"sealed":matches!(layer.as_str(),Some("prepare"|"terms"|"digest"))}),
         )?;
     }
-    tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
+    if let Some(terms) = terms {
+        tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
+    }
     tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,'preparation','manifest',?2,?3,?4)",params![prepare,p.out.join("manifest.json").to_string_lossy(),p.hash,canon::canonical_json(&json!({"group_count":groups.len(),"preparation_hash":p.hash}))])?;
     tx.execute(
         "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(?1,1,?2,'prepared',?3)",
@@ -657,6 +764,9 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         }
     }
     let target = meta(&tx, "target")?;
+    if target != self::target(&meta(&tx, "preparation")?)? {
+        bail!("ledger declared target mismatch");
+    }
     let excluded = target["excluded"]
         .as_array()
         .unwrap()
@@ -689,14 +799,22 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
     }
     let preparation = meta(&tx, "preparation")?;
     let mut coverage_faults = Vec::new();
-    let mut required = vec!["prepare", "terms"];
+    let mut required = vec!["prepare"];
+    if layers.iter().any(|l| l == "terms") {
+        required.push("terms");
+    }
     required.extend(
         BOOK.iter()
             .copied()
             .filter(|layer| layers.iter().any(|l| l == *layer)),
     );
     if preparation["variant"] == "math" {
-        required.extend_from_slice(MATH_BOOK);
+        required.extend(
+            MATH_BOOK
+                .iter()
+                .copied()
+                .filter(|layer| layers.iter().any(|l| l == *layer)),
+        );
     }
     let root_hash = canon::hash_value(&json!({"preparation_hash":meta(&tx,"preparation_hash")?}));
     for layer in required {
@@ -737,7 +855,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         && coverage_faults.is_empty();
     let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
     let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
     drop(deps_query);
     drop(statement);
     tx.commit()?;

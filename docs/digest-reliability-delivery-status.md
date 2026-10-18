@@ -193,6 +193,14 @@ The public isolated-graph fixture first failed because cyclic producers stayed r
 
 `D:/zt-target/qualification/issue70-cycles-public-final-summary.log` records six relevant suites, zero failures, 50 seconds: dependency graph 7 assertions, claims 38, core 23, preparation 18, schema 13 and existing prepare 29. The earlier 22-suite broader regression remains the recorded unaffected compiler checkpoint.
 
+### #70 declared optional layers
+
+Reliable preparation now accepts `-RunOptions <json>` with flat boolean choices using the existing workflow names. It retains effective defaults/choices in the immutable contract. Disabled work is explicitly excluded, with no fabricated done row; disabling Terms permits a real group claim without that prerequisite. Both variants retain required core checks, while incompatible choices, unknown keys, string booleans, duplicate keys and conflicting figure choices refuse before prepared files or archive setup. Source/date extraction and Event-layer selection remain distinct.
+
+Recovery uses the retained effective choices without the original options file. Changed manifest choices refuse the immutable binding, and changed target metadata cannot hide required work. A representative earlier schema-1 contract shape without the new optional field retains its original default target and run identity. The workflow adapter still must bind manager/provider/batch/review settings; full group completion and recovery remain unfinished.
+
+Evidence: `issue70-run-options-red.log` (unsupported option), `issue70-run-options-green.log`, `issue70-options-compatibility.log`, and `D:/zt-target/qualification/issue70-options-public-final-summary.log`: seven suites, zero failures, 52 seconds. Assertions: options 22, dependency graph 7, claims 38, core 23, preparation 18, schema 13, existing prepare 29. These remain isolated tool tests; no actual workflow/provider job or production deployment has run.
+
 ## #75: exact content-corruption checks
 
 The shared checker now reserves R18 for repeated substantive prose paragraphs and R19 for authored title headings repeated inside a Card body. R18 normalizes line endings and outer paragraph whitespace only, retaining interior text/spacing and reporting both first/current body-line spans for each repetition. R19 names every repeated title's body line. The checks exclude code/chart fences, display formulas, explicit quotations (including nested blockquotes), generated Reverse sections and non-prose metadata/placeholders. Indented continuation text remains part of its original paragraph rather than becoming a falsely repeated fragment. An embedded source label cannot hide repeated substantive prose. Uncertain 向向/价价 text is neither rewritten nor declared corrupt from repeated characters alone.
