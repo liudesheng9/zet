@@ -10,6 +10,8 @@
 //   ZT_FAIL_TREE                                 get_tree of this tree fails.
 //   ZT_FAIL_AFTER_EDIT, ZT_FAIL_CARD, ZT_FAIL_FLAG   after an edit_card of ZT_FAIL_AFTER_EDIT succeeds,
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
+//   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
+//       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import readline from 'node:readline'
@@ -50,6 +52,10 @@ async function handle(line) {
   const tool = message.method === 'tools/call' ? message.params.name : ''
   const at = (message.params && message.params.arguments) || {}
   if (tool && env.ZT_TRACE_TOOLS) fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify({ tool, process_id: process.pid, address_count: at.addresses?.length, item_count: at.items?.length }) + '\n')
+  if (tool && env.ZT_SLOW_TOOL && tool === env.ZT_SLOW_TOOL && Number(env.ZT_SLOW_MS) > 0) {
+    if (env.ZT_SLOW_FLAG) fs.writeFileSync(env.ZT_SLOW_FLAG, `${tool} ${process.pid}\n`)
+    await new Promise(resolve => setTimeout(resolve, Number(env.ZT_SLOW_MS)))
+  }
   if (tool === 'get_cards' && env.ZT_BULK_LIMIT && at.addresses.length > Number(env.ZT_BULK_LIMIT)) {
     const data = { error: 'simulated reply limit', code: 'read_limit', limit_kind: 'reply_bytes', limit: 1024, actual: 2048, complete: false }
     return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: true } })

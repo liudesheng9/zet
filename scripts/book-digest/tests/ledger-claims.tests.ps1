@@ -159,7 +159,11 @@ db.close();if(changed.changes!==1)throw new Error('the current claim was not exp
     Refuses @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)",'-Class','retryable','-Fault',$fault) 'stale_claim'
     $notReclaimed = Run-Digest @('ledger','next','-Out',$out,'-Layer','terms','-Take','1','-Owner','replacement-manager')
     $expiredGate = Run-Digest @('ledger','gate','-Out',$out,'-Layer','terms') 3
-    Assert ($notReclaimed.units.Count -eq 0 -and $expiredGate.counts.open -eq 1 -and -not $expiredGate.complete) 'expiry alone cannot start a replacement before safe writer/job reconciliation exists'
+    Assert ($notReclaimed.units.Count -eq 0 -and $expiredGate.counts.open -eq 1 -and -not $expiredGate.complete) 'expiry alone cannot start a replacement before the guarded reclaim'
+    $reclaimed = Run-Digest @('ledger','reclaim','-Out',$out,'-Unit',$claim.id)
+    Assert ($reclaimed.reclaimed.Count -eq 1 -and $reclaimed.reclaimed[0].previous_owner -eq 'expired-manager' -and $reclaimed.reclaimed[0].token -gt $claim.token) 'only the guarded reclaim of the expired owner offers the next attempt and fences the old token'
+    $replacement = Run-Digest @('ledger','next','-Out',$out,'-Layer','terms','-Take','1','-Owner','replacement-manager')
+    Assert ($replacement.units.Count -eq 1 -and $replacement.units[0].id -eq $claim.id -and $replacement.units[0].token -gt $reclaimed.reclaimed[0].token) 'the replacement attempt needs a newer token than the reclaimed claim'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

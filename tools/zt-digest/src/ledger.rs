@@ -3580,6 +3580,121 @@ fn now_seconds() -> i64 {
         .as_secs() as i64
 }
 
+/// R178: the lease is 120 seconds and a held claim renews it every 30 seconds. The two
+/// variables exist only so a public test can observe a renewal inside one command.
+fn lease_seconds() -> i64 {
+    std::env::var("ZT_LEDGER_LEASE_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(120)
+}
+
+fn heartbeat_interval() -> Duration {
+    let ms = std::env::var("ZT_LEDGER_HEARTBEAT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n >= 10)
+        .unwrap_or(30_000);
+    Duration::from_millis(ms)
+}
+
+/// Names the processes whose heartbeat already renews one claim, so repeated
+/// `finish_claim` calls in the same command start exactly one renewing thread.
+static HEARTBEATS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// A registered external run that is not terminal still owns the work that produced it,
+/// so neither a replacement attempt nor a completion may treat the unit as settled (R184).
+fn pending_jobs(unit: &str, progress: &Value) -> Result<()> {
+    let running = progress["jobs"]
+        .as_array()
+        .map(|jobs| {
+            jobs.iter()
+                .filter(|job| job["state"] != "terminal")
+                .filter_map(|job| job["id"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !running.is_empty() {
+        bail!(
+            "jobs_running: {unit} still owns running external runs: {} (request cancellation and observe each terminal state before completion)",
+            running.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// One heartbeat write: extend the lease only while this exact token is the current claim.
+/// The recorded fact is a timestamp and the process id, never an agent's claim of success.
+fn heartbeat_renew(
+    out: &Path,
+    unit: &str,
+    token: i64,
+    seq: u64,
+    interval: Duration,
+) -> Result<()> {
+    let mut conn = connect(&out.join("ledger.sqlite3"), true)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let row: Option<(String, i64, Option<i64>, Option<String>)> = tx
+        .query_row(
+            "SELECT state,claim_token,lease_until,owner FROM units WHERE id=?1",
+            [unit],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let (state, current, lease, owner) =
+        row.with_context(|| format!("stale_claim: unknown unit {unit}"))?;
+    if state != "claimed" || current != token {
+        bail!("stale_claim: {unit} has no current claim for token {token}");
+    }
+    // A renewal never shortens a lease another owner/config already extended.
+    let until = (now_seconds() + lease_seconds()).max(lease.unwrap_or(0));
+    tx.execute(
+        "UPDATE units SET lease_until=?2 WHERE id=?1",
+        params![unit, until],
+    )?;
+    event(
+        &tx,
+        unit,
+        owner.as_deref(),
+        Some(token),
+        "renewed",
+        &json!({"lease_until":until,"heartbeat":{"pid":std::process::id(),"interval_ms":interval.as_millis() as u64,"seq":seq,"utc":canon::utc_now_o()}}),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// A long command renews itself from a small internal heartbeat while it does bounded
+/// work (R178). A lost claim ends the thread; a transient ledger fault waits for the next
+/// beat. The process holds the thread for its whole life, so no command has to stop it.
+fn start_heartbeat(p: &Prepared, unit: &str, token: i64) {
+    let key = format!("{}|{unit}|{token}", p.out.display());
+    let registry = HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    if let Ok(mut keys) = registry.lock()
+        && !keys.insert(key)
+    {
+        return;
+    }
+    let out = p.out.clone();
+    let unit = unit.to_string();
+    let interval = heartbeat_interval();
+    std::thread::spawn(move || {
+        let mut seq = 0u64;
+        loop {
+            seq += 1;
+            if let Err(error) = heartbeat_renew(&out, &unit, token, seq, interval) {
+                let text = error.to_string();
+                if text.contains("stale_claim") || text.contains("unknown unit") {
+                    return;
+                }
+            }
+            std::thread::sleep(interval);
+        }
+    });
+}
+
 fn event(
     tx: &Transaction,
     unit: &str,
@@ -3816,15 +3931,16 @@ fn next(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value> {
     let mut claimed = Vec::new();
     for (id, input_hash, inputs, old_token) in rows {
         let token = old_token.checked_add(1).context("claim token exhausted")?;
-        tx.execute("UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",params![id,owner,token,now+120])?;
-        let claim = json!({"id":id,"owner":owner,"token":token,"lease_until":now+120,"input_hash":input_hash,"inputs":serde_json::from_str::<Value>(&inputs)?});
+        let lease_until = now + lease_seconds();
+        tx.execute("UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",params![id,owner,token,lease_until])?;
+        let claim = json!({"id":id,"owner":owner,"token":token,"lease_until":lease_until,"input_hash":input_hash,"inputs":serde_json::from_str::<Value>(&inputs)?});
         event(
             &tx,
             &id,
             Some(owner),
             Some(token),
             "claimed",
-            &json!({"input_hash":input_hash,"lease_until":now+120}),
+            &json!({"input_hash":input_hash,"lease_until":lease_until,"process":{"pid":std::process::id()}}),
         )?;
         claimed.push(claim);
     }
@@ -3852,16 +3968,369 @@ fn unit_guard(p: &Prepared, unit: &str) -> Result<UnitGuard> {
         bail!("unit guard path escaped the prepared output directory");
     }
     let path = directory.join(format!("{}.lock", canon::hash_value(&json!(unit))));
-    let file = std::fs::OpenOptions::new()
+    let file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(&path)
-        .with_context(|| format!("open unit guard {}", path.display()))?;
+    {
+        Ok(file) => file,
+        // A Windows sharing violation is the same contended guard as a failed exclusive
+        // lock, and R187 keeps both in the retryable `lock_busy` class.
+        Err(error) if is_sharing_violation(&error) => {
+            bail!("lock_busy: {unit}: {error}")
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("open unit guard {}", path.display()));
+        }
+    };
     file.try_lock()
         .map_err(|e| anyhow::anyhow!("lock_busy: {unit}: {e}"))?;
     Ok(UnitGuard { _file: file })
+}
+
+fn is_sharing_violation(error: &std::io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) on Windows.
+    matches!(error.raw_os_error(), Some(32) | Some(33))
+}
+
+/// A stranded claim is recoverable only through this guarded path: the reclaimer takes the
+/// unit's own OS guard first, so it can never revoke a claim in the middle of an active
+/// apply (R182), and it moves the token forward so the lost owner is fenced (R177).
+fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let run = meta(&tx, "run_id")?;
+    let now = now_seconds();
+    let mut candidates = Vec::new();
+    match only {
+        Some(unit) => {
+            let row: Option<(String, i64, Option<i64>, Option<String>)> = tx
+                .query_row(
+                    "SELECT state,claim_token,lease_until,owner FROM units WHERE id=?1",
+                    [unit],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let (state, token, lease, owner) =
+                row.with_context(|| format!("unknown unit {unit}"))?;
+            if state != "claimed" {
+                bail!("claim_active: {unit} is {state}, not claimed");
+            }
+            if lease.unwrap_or(0) > now {
+                bail!(
+                    "claim_active: {unit} still holds a live lease until {}",
+                    lease.unwrap_or_default()
+                );
+            }
+            candidates.push((unit.to_string(), token, owner));
+        }
+        None => {
+            let mut statement = tx.prepare(
+                "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND coalesce(lease_until,0)<=?1 ORDER BY id LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![now, take], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            for row in rows {
+                candidates.push(row?);
+            }
+        }
+    }
+    tx.commit()?;
+    drop(conn);
+    let mut reclaimed = Vec::new();
+    let mut blocked = Vec::new();
+    let mut skipped = Vec::new();
+    for (unit, token, owner) in candidates {
+        let guard = match unit_guard(p, &unit) {
+            Ok(guard) => guard,
+            Err(error) => {
+                if only.is_some() {
+                    return Err(error);
+                }
+                skipped.push(json!({"unit":unit,"reason":"lock_busy","cause":error.to_string()}));
+                continue;
+            }
+        };
+        let mut conn = writer(p)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        verify_binding(&tx, p)?;
+        let row: Option<(String, i64, Option<i64>, String)> = tx
+            .query_row(
+                "SELECT state,claim_token,lease_until,progress_json FROM units WHERE id=?1",
+                [&unit],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let (state, current, lease, progress) =
+            row.with_context(|| format!("unknown unit {unit}"))?;
+        if state != "claimed" || current != token || lease.unwrap_or(0) > now {
+            if only.is_some() {
+                bail!("claim_active: {unit} changed while its guard was acquired; no claim was reclaimed");
+            }
+            skipped.push(json!({"unit":unit,"reason":"claim_active"}));
+            tx.rollback()?;
+            drop(guard);
+            continue;
+        }
+        let progress: Value = serde_json::from_str(&progress)?;
+        let running = progress["jobs"]
+            .as_array()
+            .map(|jobs| {
+                jobs.iter()
+                    .filter(|job| job["state"] != "terminal")
+                    .filter_map(|job| job["id"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !running.is_empty() {
+            // R184: a replacement attempt may not start while a registered run is live.
+            if only.is_some() {
+                bail!(
+                    "jobs_running: {unit} still owns running external runs: {} (request cancellation and observe each terminal state before reclaiming)",
+                    running.join(", ")
+                );
+            }
+            blocked.push(json!({"unit":unit,"reason":"jobs_running","jobs":running}));
+            tx.rollback()?;
+            drop(guard);
+            continue;
+        }
+        let new_token = current.checked_add(1).context("claim token exhausted")?;
+        tx.execute(
+            "UPDATE units SET state='ready',owner=NULL,claim_token=?2,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",
+            params![unit, new_token],
+        )?;
+        event(
+            &tx,
+            &unit,
+            owner.as_deref(),
+            Some(current),
+            "reclaimed",
+            &json!({"previous_owner":owner,"previous_token":current,"token":new_token,"lease_expired_at":lease,"guard":"held","process":{"pid":std::process::id()}}),
+        )?;
+        tx.commit()?;
+        drop(guard);
+        reclaimed.push(json!({"unit":unit,"previous_owner":owner,"previous_token":current,"token":new_token,"state":"ready"}));
+    }
+    Ok(json!({
+        "schema_version":1,
+        "run_id":run,
+        "reclaimed":reclaimed,
+        "blocked":blocked,
+        "skipped":skipped
+    }))
+}
+
+fn jobs_of(progress: &Value) -> Vec<Value> {
+    progress["jobs"].as_array().cloned().unwrap_or_default()
+}
+
+fn job_field(job: &Value, key: &str) -> Result<String> {
+    job[key]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .with_context(|| format!("job needs a nonempty {key}"))
+}
+
+fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>) -> Result<Value> {
+    let id = job_field(input, "id")?;
+    if id.len() > 200 {
+        bail!("job id is at most 200 bytes");
+    }
+    let kind = input["kind"].as_str().filter(|k| !k.trim().is_empty()).unwrap_or("external");
+    if kind.len() > 40 {
+        bail!("job kind is at most 40 bytes");
+    }
+    let mut facts = input["facts"].as_object().cloned().unwrap_or_default();
+    if let Some(extra) = input.as_object() {
+        for (key, value) in extra {
+            if !["id", "kind", "facts"].contains(&key.as_str()) {
+                facts.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let mut job = json!({
+        "id":id,
+        "kind":kind,
+        "state":"running",
+        "token":token,
+        "owner":owner,
+        "registered_at":canon::utc_now_o(),
+        "facts":Value::Object(facts),
+        "cancel_requested_at":Value::Null,
+        "observed_at":Value::Null,
+        "outcome":Value::Null
+    });
+    if let Some(token) = token {
+        job["registration_token"] = json!(token);
+    }
+    Ok(job)
+}
+
+fn write_jobs(tx: &Transaction, unit: &str, jobs: &[Value]) -> Result<()> {
+    let progress: String = tx.query_row(
+        "SELECT progress_json FROM units WHERE id=?1",
+        [unit],
+        |r| r.get(0),
+    )?;
+    let mut progress: Value = serde_json::from_str(&progress)?;
+    if !progress.is_object() {
+        bail!("invalid unit progress object");
+    }
+    progress["jobs"] = json!(jobs);
+    tx.execute(
+        "UPDATE units SET progress_json=?2 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress)],
+    )?;
+    Ok(())
+}
+
+fn job_list(p: &Prepared, unit: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let progress: String = tx
+        .query_row("SELECT progress_json FROM units WHERE id=?1", [unit], |r| r.get(0))
+        .optional()?
+        .with_context(|| format!("unknown unit {unit}"))?;
+    let progress: Value = serde_json::from_str(&progress)?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"action":"list","unit":unit,"jobs":jobs_of(&progress)}))
+}
+
+fn job_register(p: &Prepared, unit: &str, token: i64, path: &str) -> Result<Value> {
+    let input = canon::read_json(path).context("invalid job registration")?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claim = claim(&tx, unit, token)?;
+    let mut jobs = {
+        let progress: String = tx.query_row(
+            "SELECT progress_json FROM units WHERE id=?1",
+            [unit],
+            |r| r.get(0),
+        )?;
+        jobs_of(&serde_json::from_str(&progress)?)
+    };
+    let record = job_record(&input, Some(token), Some(&claim.owner))?;
+    let id = job_field(&record, "id")?;
+    if jobs.iter().any(|job| job["id"] == json!(id)) {
+        bail!("job_conflict: {unit} already registered the run `{id}`");
+    }
+    jobs.push(record.clone());
+    write_jobs(&tx, unit, &jobs)?;
+    event(
+        &tx,
+        unit,
+        Some(&claim.owner),
+        Some(token),
+        "job_registered",
+        &json!({"job":id,"kind":record["kind"],"facts":record["facts"]}),
+    )?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"action":"register","unit":unit,"jobs":jobs}))
+}
+
+fn job_observe(p: &Prepared, unit: &str, path: &str) -> Result<Value> {
+    let input = canon::read_json(path).context("invalid job observation")?;
+    let id = job_field(&input, "id")?;
+    let state = match input["state"].as_str() {
+        Some("terminal") => "terminal",
+        Some("running") => "running",
+        _ => bail!("job observation state must be running or terminal"),
+    };
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let mut jobs = {
+        let progress: String = tx
+            .query_row("SELECT progress_json FROM units WHERE id=?1", [unit], |r| r.get(0))
+            .optional()?
+            .with_context(|| format!("unknown unit {unit}"))?;
+        jobs_of(&serde_json::from_str(&progress)?)
+    };
+    let index = jobs
+        .iter()
+        .position(|job| job["id"] == json!(id))
+        .with_context(|| format!("unknown job: {unit} has no registered run `{id}`"))?;
+    if jobs[index]["state"] == "terminal" {
+        bail!("job_terminal: {unit} already observed run `{id}` as terminal");
+    }
+    let mut facts = jobs[index]["facts"].as_object().cloned().unwrap_or_default();
+    for (key, value) in input["facts"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+    {
+        facts.insert(key, value);
+    }
+    jobs[index]["facts"] = Value::Object(facts);
+    jobs[index]["observed_at"] = json!(canon::utc_now_o());
+    if state == "terminal" {
+        let outcome = input["outcome"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .context("a terminal observation records its outcome")?;
+        if outcome.len() > 200 {
+            bail!("job outcome is at most 200 bytes");
+        }
+        jobs[index]["state"] = json!("terminal");
+        jobs[index]["outcome"] = json!(outcome);
+    }
+    write_jobs(&tx, unit, &jobs)?;
+    event(
+        &tx,
+        unit,
+        None,
+        None,
+        "job_observed",
+        &json!({"job":id,"state":state,"outcome":jobs[index]["outcome"]}),
+    )?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"action":"observe","unit":unit,"jobs":jobs}))
+}
+
+fn job_cancel(p: &Prepared, unit: &str, id: &str) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let mut jobs = {
+        let progress: String = tx
+            .query_row("SELECT progress_json FROM units WHERE id=?1", [unit], |r| r.get(0))
+            .optional()?
+            .with_context(|| format!("unknown unit {unit}"))?;
+        jobs_of(&serde_json::from_str(&progress)?)
+    };
+    let index = jobs
+        .iter()
+        .position(|job| job["id"] == json!(id))
+        .with_context(|| format!("unknown job: {unit} has no registered run `{id}`"))?;
+    if jobs[index]["state"] == "terminal" {
+        bail!("job_terminal: {unit} already observed run `{id}` as terminal");
+    }
+    if jobs[index]["cancel_requested_at"].is_null() {
+        jobs[index]["cancel_requested_at"] = json!(canon::utc_now_o());
+    }
+    write_jobs(&tx, unit, &jobs)?;
+    event(
+        &tx,
+        unit,
+        None,
+        None,
+        "job_cancel_requested",
+        &json!({"job":id}),
+    )?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"action":"cancel","unit":unit,"jobs":jobs}))
 }
 
 fn claim(tx: &Transaction, unit: &str, token: i64) -> Result<Claim> {
@@ -3874,6 +4343,7 @@ fn check_claim(p: &Prepared, unit: &str, token: i64) -> Result<()> {
     verify_binding(&tx, p)?;
     claim(&tx, unit, token)?;
     tx.commit()?;
+    start_heartbeat(p, unit, token);
     Ok(())
 }
 
@@ -3882,7 +4352,12 @@ fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     let claim = claim(&tx, unit, token)?;
-    let until = now_seconds() + 120;
+    let current: Option<i64> = tx.query_row(
+        "SELECT lease_until FROM units WHERE id=?1",
+        [unit],
+        |r| r.get(0),
+    )?;
+    let until = (now_seconds() + lease_seconds()).max(current.unwrap_or(0));
     tx.execute(
         "UPDATE units SET lease_until=?2 WHERE id=?1",
         params![unit, until],
@@ -3893,7 +4368,7 @@ fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
         Some(&claim.owner),
         Some(token),
         "renewed",
-        &json!({"lease_until":until}),
+        &json!({"lease_until":until,"manager":{"pid":std::process::id()}}),
     )?;
     tx.commit()?;
     Ok(json!({"unit":unit,"token":token,"lease_until":until}))
@@ -4176,10 +4651,10 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     claim(&tx, &unit, token)?;
-    let lease_until = now_seconds() + 120;
+    let tx_lease = now_seconds() + lease_seconds();
     tx.execute(
         "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
-        params![unit, canon::canonical_json(&progress), lease_until],
+        params![unit, canon::canonical_json(&progress), tx_lease],
     )?;
     event(
         &tx,
@@ -4187,10 +4662,10 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         Some(&claimed.owner),
         Some(token),
         "group_started",
-        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":lease_until}),
+        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":tx_lease}),
     )?;
     tx.commit()?;
-    Ok(start_view(&job, &job_path, false, lease_until))
+    Ok(start_view(&job, &job_path, false, tx_lease))
 }
 
 pub fn group_start_cli(argv: &[String]) -> Result<i32> {
@@ -4241,18 +4716,23 @@ fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, V
     if current != token || !matches!(state.as_str(), "claimed" | "done") {
         bail!("stale_claim: {unit} has no current completion for token {token}");
     }
+    let progress: Value = serde_json::from_str(&progress)?;
     if state == "claimed" {
         claim(&tx, unit, token)?;
+        pending_jobs(unit, &progress)?;
     }
     let run = meta(&tx, "run_id")?;
     tx.commit()?;
+    if state == "claimed" {
+        start_heartbeat(p, unit, token);
+    }
     Ok((
         Claim {
             owner,
             input_hash,
             attempts,
         },
-        serde_json::from_str(&progress)?,
+        progress,
         run,
         state == "done",
     ))
@@ -7851,9 +8331,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "notes"
                 | "relocate"
                 | "math"
+                | "reclaim"
+                | "job"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate or math"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate, math, reclaim or job"
             );
         }
         let params = if command == "next" {
@@ -7872,10 +8354,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Moves"]
         } else if command == "math" {
             vec!["Out"]
+        } else if command == "reclaim" {
+            vec!["Out", "Unit", "Take"]
+        } else if command == "job" {
+            vec!["Out", "Unit", "Token", "Register", "Observe", "Cancel"]
         } else {
             vec!["Out", "Layer"]
         };
-        let a = Args::parse(&argv[1..], &params, &[])?;
+        let a = Args::parse(&argv[1..], &params, if command == "job" { &["List"] } else { &[] })?;
         a.required("Out")?;
         if a.str("Out").trim().is_empty() {
             bail!("-Out is required");
@@ -7916,6 +8402,41 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 .ok()
                 .filter(|n| *n > 0)
                 .context("-Token must be a positive integer")?;
+        }
+        if command == "reclaim" {
+            if a.has("Unit") && a.str("Unit").trim().is_empty() {
+                bail!("-Unit must not be empty");
+            }
+            if a.has("Take") {
+                a.required("Take")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| (1..=64).contains(n))
+                    .context("-Take must be a positive integer from 1 through 64")?;
+            }
+        }
+        if command == "job" {
+            if a.required("Unit")?.trim().is_empty() {
+                bail!("-Unit is required");
+            }
+            let actions = ["Register", "Observe", "Cancel"]
+                .iter()
+                .filter(|name| a.has(name))
+                .count()
+                + usize::from(a.flag("List"));
+            if actions != 1 {
+                bail!("job takes exactly one of -Register, -Observe, -Cancel or -List");
+            }
+            if a.has("Register") || a.has("Observe") {
+                a.required(if a.has("Register") { "Register" } else { "Observe" })?;
+            }
+            if a.has("Register") {
+                a.required("Token")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .context("-Token must be a positive integer")?;
+            }
         }
         if command == "fail" {
             a.choice("Class", &["retryable", "operator", "content"])?;
@@ -7967,6 +8488,24 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), &a.str("Scope"))?
+    } else if command == "reclaim" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        let only = a.has("Unit").then(|| a.str("Unit"));
+        reclaim(&p, only.as_deref(), a.int_or("Take", 64)?)?
+    } else if command == "job" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        let unit = a.str("Unit");
+        if a.has("Register") {
+            job_register(&p, &unit, a.str("Token").parse()?, &a.str("Register"))?
+        } else if a.has("Observe") {
+            job_observe(&p, &unit, &a.str("Observe"))?
+        } else if a.has("Cancel") {
+            job_cancel(&p, &unit, &a.str("Cancel"))?
+        } else {
+            job_list(&p, &unit)?
+        }
     } else if command == "notes" {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
