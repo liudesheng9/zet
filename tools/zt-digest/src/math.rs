@@ -204,6 +204,11 @@ pub(crate) fn is_proof_step(facet: &str) -> bool {
     PROOF_STEP_FACET.is_match(facet)
 }
 
+/// One labelled section of a Card body as it stands now (R241).
+pub(crate) fn body_section(body: &str, name: &str) -> String {
+    text::section_text(body, name)
+}
+
 /// The math prompt files: each shared instruction file followed by its math supplement,
 /// with this prepared run's key, title, staging folder and index filled in. `step_docs`
 /// writes them; the ledger's `math-docs` check re-derives the same bytes, so a retained
@@ -1354,6 +1359,10 @@ impl Compiler {
             );
         }
         let mut written = 0;
+        // The checked membership/dependency summary of every Theory Card, so the ledger's
+        // `theory` publication can rebuild and verify it after its units or cited-premise
+        // Links change (R241).
+        let mut applied: Vec<Value> = Vec::new();
         for t in &theories {
             let model = self.get(&t["address"], "get_model")?;
             let card = self.get(&t["address"], "get_card")?;
@@ -1406,8 +1415,26 @@ impl Compiler {
             body = set_section(&body, "后续", &if users.is_empty() { String::new() } else { format!("**后续**：\n{}", users.join("\n")) });
             body = set_section(&body, "图", &format!("**图**：\n\n{}", dependency_map(&order)?));
             self.write(&[json!({ "tool": "edit_card", "arguments": { "at": t["address"], "body": body } })], "", "")?;
+            let written_card = self.get(&t["address"], "get_card")?;
+            applied.push(obj(vec![
+                ("address", t["address"].clone()),
+                ("chapter", t["chapter"].clone()),
+                ("title", json!(field(&written_card, "title"))),
+                ("members", json!(members)),
+                ("tools", json!(pipe(&model["math"]["tools"]).into_iter().map(|x| field(&x, "address")).collect::<Vec<_>>())),
+                ("body_sha256", json!(crate::canon::sha256_hex(field(&written_card, "body").as_bytes()))),
+            ]));
             written += 1;
         }
+        save_json(
+            &join(&self.theory_work(), "applied.json"),
+            &obj(vec![
+                ("schema_version", json!(1)),
+                ("kind", json!("theory_apply")),
+                ("theories", json!(applied)),
+                ("applied", json!(self.p.apply)),
+            ]),
+        )?;
         out_last(&obj(vec![("ok", json!(true)), ("theories", json!(written)), ("answered", json!(answers.len()))]))
     }
 

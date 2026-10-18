@@ -210,6 +210,40 @@ pub fn resolve_cites(units: &mut [Value]) {
 
 /// `Set-Section`: a Card body with one section (a bold label or heading such as **结构**) replaced,
 /// removed (empty `text`), or added before 来源.
+/// The current text of one labelled section of a Card body, found exactly as
+/// `Set-Section` finds it: the label line through the line before the next label or
+/// source line. The ledger's `theory` check re-reads the membership and dependency
+/// summary a Theory Card holds (R241).
+pub fn section_text(body: &str, name: &str) -> String {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let label_of = |l: &str| -> String {
+        let cut = |t: &str| t.trim().trim_end_matches(['：', ':']).to_string();
+        if let Some(m) = BOLD_LABEL.captures(l) {
+            cut(&m[1])
+        } else if let Some(m) = HEAD_LABEL.captures(l) {
+            cut(&m[1])
+        } else {
+            String::new()
+        }
+    };
+    let Some(start) = lines
+        .iter()
+        .position(|l| IS_LABEL.is_match(l) && ps::eq(&label_of(l), name))
+    else {
+        return String::new();
+    };
+    let mut end = lines.len();
+    for (j, l) in lines.iter().enumerate().skip(start + 1) {
+        if IS_LABEL.is_match(l) || SOURCE_LINE.is_match(l) {
+            end = j;
+            break;
+        }
+    }
+    lines[start..end].join("\n").trim().to_string()
+}
+
+/// `Set-Section`: the body with one labelled section replaced or inserted before its source
+/// line. `name` of the new section is `text`'s own first label.
 pub fn set_section(body: &str, name: &str, text: &str) -> String {
     let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
     let is_label = |l: &str| IS_LABEL.is_match(l);

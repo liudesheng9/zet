@@ -267,6 +267,79 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $proofDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$proofUnit,'-Token',$proofToken,'-Outputs',$proofFile)
     Assert ($proofDone.state -eq 'done' -and $proofDone.steps -eq @($steps).Count -and $proofDone.fixed -eq 1) 'the completed proof unit accounts for every reviewed step'
 
+    # --- the theory revision follows link-check and rebuilds every Theory Card summary ---------------
+    $tplan = Math 'theory'
+    Assert ($tplan.theories -eq 2 -and @($tplan.jobs).Count -eq 1) 'the theory plan names both Theory Cards'
+    Save-Json (Join-Path $out 'math\theory\out\t-01.json') @{ theories = @(
+            @{ address = $theory2; title = '连续函数理论：连续性使函数取遍中间值'; question = '连续函数有什么整体性质？'
+                main_results = @(@{ address = $th; line = '闭区间上的连续函数取遍中间值。' })
+                objects = @(@{ address = $def; line = '一点的连续性。' }) }) }
+    $tapplied = Math 'theory-apply' @('-Apply')
+    Assert ($tapplied.theories -eq 2) 'theory-apply rebuilds both Theory Cards'
+    $theoryApplied = Join-Path $out 'math\theory\applied.json'
+    $appliedRecord = (Get-Content -Raw $theoryApplied | ConvertFrom-Json -AsHashtable)
+    $record2 = @($appliedRecord.theories | Where-Object { $_.address -ceq $theory2 })[0]
+    $model2 = Read-Model $theory2
+    $expectedMembers = @($model2.math.order).Count
+    Assert (@($record2['members']).Count + @($record2['tools']).Count -eq $expectedMembers) 'the applied theory record accounts for the units its model holds'
+    # The publications the theory revision consumes are supplied as done fixtures; their own
+    # verifiers are covered by ledger-publication.tests.ps1.
+    $upstream = @'
+const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
+const p=path.resolve(process.argv[1]);
+if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-math-test-'))throw new Error('not the isolated ledger');
+const db=new DatabaseSync(p);db.exec('pragma foreign_keys=on;begin');
+const done=db.prepare("update units set state='done',completed_at=?,result_json='{\"disposition\":\"published\"}' where id=?");
+for(const id of ['digest/g001@1','digest/g002@1','digest/g003@1','link-check/book@1'])done.run(new Date().toISOString(),id);
+db.exec('commit');db.close();
+'@
+    & node --no-warnings -e $upstream (Join-Path $out 'ledger.sqlite3')
+    if ($LASTEXITCODE) { throw 'isolated upstream fixture failed' }
+    $published = Run-Digest @('ledger','publish','-Out',$out,'-Layer','theory')
+    Assert ($published.unit -ceq 'theory/book@2' -and $published.reused -eq $false -and 'theory/book@1' -in $published.superseded) 'a changed input set derives the next theory revision and supersedes the registered one'
+    $theoryContribution = @($published.contributions | ForEach-Object { $_.unit })
+    Assert (($theoryContribution -contains 'link-check/book@1') -and ($theoryContribution -contains 'models/g003-m0001@1')) 'the theory revision consumes the link-check revision and the changed units'
+    $organize = Run-Digest @('ledger','status','-Out',$out,'-Layer','organize')
+    Assert (@($organize.dependencies | Where-Object { $_.unit -eq 'organize/book@1' -and $_.needs -eq 'theory/book@1' -and $_.condition -eq 'settled' }).Count -eq 1) 'Organize is the tail publication that follows the theory revision'
+    $theoryReady = Claim 'theory'
+    $theoryUnit = @($theoryReady.units)[0].id
+    $theoryToken = @($theoryReady.units)[0].token
+    $theoryInputHash = @($theoryReady.units)[0].input_hash
+    $theoryEvidence = Join-Path $out 'publication-theory-book-2.json'
+    $consumed = @(@($theoryReady.units)[0].inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+    $coverage = @(@{ ref = $theory1; outcome = 'rebuilt'; reason = '' }, @{ ref = $theory2; outcome = 'rebuilt'; reason = '' })
+    function Theory-Evidence($plan) { Save-Json $theoryEvidence $plan; $null = $theoryEvidence }
+    Theory-Evidence ([ordered]@{ schema_version = 1; kind = 'publication_completion'; unit = $theoryUnit; token = $theoryToken; layer = 'theory'; key = 'book'; input_hash = $theoryInputHash; disposition = 'published'; consumed = $consumed; unresolved = @(); artifacts = @{ applied = $theoryApplied }; coverage = @(@{ ref = $theory2; outcome = 'rebuilt'; reason = '' }) })
+    $missing = @(& $Digest ledger done -Out $out -Unit $theoryUnit -Token $theoryToken -Outputs $theoryEvidence 2>&1)
+    Assert ($LASTEXITCODE -eq 1 -and ($missing -join ' ').Contains('must classify every Theory Card exactly once')) "a theory revision must account for every Theory Card ($($missing -join ' '))"
+    # A summary that no longer accounts for the theory's units cannot complete.
+    $staleRecord = (Get-Content -Raw $theoryApplied | ConvertFrom-Json -AsHashtable)
+    foreach ($record in $staleRecord.theories) { if ($record.address -ceq $theory2) { $record.members = @($record.members | Select-Object -First 1) } }
+    [IO.File]::WriteAllText($theoryApplied, ($staleRecord | ConvertTo-Json -Depth 20), $utf8)
+    Theory-Evidence ([ordered]@{ schema_version = 1; kind = 'publication_completion'; unit = $theoryUnit; token = $theoryToken; layer = 'theory'; key = 'book'; input_hash = $theoryInputHash; disposition = 'published'; consumed = $consumed; unresolved = @(); artifacts = @{ applied = $theoryApplied }; coverage = $coverage })
+    $stale = @(& $Digest ledger done -Out $out -Unit $theoryUnit -Token $theoryToken -Outputs $theoryEvidence 2>&1)
+    Assert ($LASTEXITCODE -eq 1 -and ($stale -join ' ').Contains('does not account for its model''s current units')) "a summary the theory's units no longer match cannot complete ($($stale -join ' '))"
+    # Rebuilding after that change makes the summary current again.
+    $null = Math 'theory-apply' @('-Apply')
+    $theoryDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$theoryUnit,'-Token',$theoryToken,'-Outputs',$theoryEvidence)
+    $rebuiltUnits = @((Read-Model $theory2).math.order).Count
+    Assert ($theoryDone.state -eq 'done' -and @($theoryDone.coverage).Count -eq 2 -and @($theoryDone.coverage | Where-Object { $_.ref -ceq $theory2 -and ($_.members + $_.tools) -eq $rebuiltUnits }).Count -eq 1) ("the rebuilt theory revision completes with every Theory Card's current summary recorded (" + ($theoryDone.coverage | ConvertTo-Json -Depth 6 -Compress) + ")")
+    # A changed unit derives the next revision and makes the completed one terminal history.
+    $anotherModel = @'
+const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');const crypto=require('node:crypto');
+const p=path.resolve(process.argv[1]);
+if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-math-test-'))throw new Error('not the isolated ledger');
+const input=JSON.stringify({model:'Abbott2015/3|a'});
+const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at,completed_at,result_json) values(?,'models',?,'1','done',?,?,'prepare/book@1',?,?,'{\"disposition\":\"verified\"}')").run(process.argv[2],process.argv[2],input,crypto.createHash('sha256').update(input).digest('hex'),new Date().toISOString(),new Date().toISOString());db.close();
+'@
+    & node --no-warnings -e $anotherModel (Join-Path $out 'ledger.sqlite3') 'models/g003-m0002@1'
+    if ($LASTEXITCODE) { throw 'isolated second Model fixture failed' }
+    $republished = Run-Digest @('ledger','publish','-Out',$out,'-Layer','theory')
+    $theoryStatus = Run-Digest @('ledger','status','-Out',$out,'-Layer','theory')
+    $theoryPublication = @($theoryStatus.publications | Where-Object { $_.layer -eq 'theory' })[0]
+    Assert ($republished.revision -eq 3 -and $republished.unit -ceq 'theory/book@3' -and @($theoryPublication.superseded | Where-Object { $_.unit -eq 'theory/book@2' -and $_.state -eq 'done' }).Count -eq 1) 'a changed unit derives the next theory revision and names the completed one as its superseded history'
+    Assert (@($theoryStatus.units | Where-Object { $_.id -eq 'theory/book@2' -and $_.state -eq 'done' }).Count -eq 1) 'the superseded theory revision keeps its verified completion as history'
+
     # --- the M1-M18 check describes the revision the audit published --------------------------------
     $null = Math 'check' @('-Out',$out)
     $blockedCheck = Claim 'math-check'

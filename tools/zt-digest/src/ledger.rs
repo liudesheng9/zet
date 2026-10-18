@@ -101,7 +101,6 @@ fn math_prerequisite(layer: &str) -> Option<&'static str> {
         "math-docs" => "math-index",
         "math-skeleton" => "math-docs",
         "notation" => "math-skeleton",
-        "theory" => "link-check",
         "math-check" => "audit",
         _ => return None,
     })
@@ -118,6 +117,9 @@ const PUBLICATION_CONTRACT: i64 = 1;
 
 /// Aggregate publication layers. Each gains a new immutable revision when its
 /// sorted input manifest changes; per-sentence or per-group aggregates stay out.
+/// The mathematics `theory` layer is one of them: a Theory Card's checked
+/// membership/dependency summary is rebuilt after its units or cited-premise
+/// Links change, and it is published after link-check and before Organize (R241).
 const PUBLICATION: &[&str] = &[
     "cards-book",
     "link-check",
@@ -127,6 +129,7 @@ const PUBLICATION: &[&str] = &[
     "bridge",
     "audit",
     "hubs",
+    "theory",
 ];
 
 /// The producer layers whose recorded work forms one aggregate publication input.
@@ -140,9 +143,33 @@ fn publication_sources(layer: &str) -> Option<&'static [&'static str]> {
         "cards-book" => Some(&["digest", "models", "cards"]),
         "link-check" => Some(&["digest", "models", "link"]),
         "organize" => Some(&["digest", "models", "notes"]),
+        // A Theory Card's summary depends on the units (their Models) and on the
+        // cited-premise Link pass, which the prerequisite revision names.
+        "theory" => Some(&["digest", "models"]),
         "skeleton" | "figures" | "bridge" | "audit" | "hubs" => Some(&["digest", "models"]),
         _ => None,
     }
+}
+
+/// The publication whose checked revision this layer consumes: the mathematics theory
+/// revision follows link-check, and Organize follows theory, so a changed revision of
+/// the earlier layer is a changed input of the later one (R241).
+fn publication_prerequisite(conn: &Connection, layer: &str) -> Result<Option<String>> {
+    let Some(previous) = (match layer {
+        "theory" => Some("link-check"),
+        "organize" => Some("theory"),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let target = meta(conn, "target")?;
+    let enabled = target["enabled"]
+        .as_array()
+        .is_some_and(|layers| layers.iter().any(|l| l == previous));
+    if !enabled {
+        return Ok(None);
+    }
+    Ok(required_publication(conn, previous)?.map(|(id, _)| id))
 }
 
 /// Flat effective choices use the existing workflow flag names. Core verification stays required.
@@ -793,6 +820,25 @@ fn publication_manifest(conn: &Connection, layer: &str, key: &str, scope: &Value
             } else {
                 dispositions.push(json!({"unit":id,"disposition":disposition_of(&state),"fault":disposition_fault(fault.as_deref())?}));
             }
+        }
+    }
+    // A declared prerequisite publication is one more input: its checked revision is
+    // either a contribution or an unresolved disposition of this revision (R241).
+    if let Some(previous) = publication_prerequisite(conn, layer)? {
+        let row: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT state,fault_json FROM units WHERE id=?1",
+                [&previous],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (state, fault) = row.with_context(|| {
+            format!("the prerequisite publication `{previous}` of `{layer}` is not registered")
+        })?;
+        if state == "done" {
+            contributions.push(json!({"unit":previous,"state":state,"fingerprint":verified_outputs(conn,&previous)?}));
+        } else {
+            dispositions.push(json!({"unit":previous,"disposition":disposition_of(&state),"fault":disposition_fault(fault.as_deref())?}));
         }
     }
     Ok(json!({
@@ -2255,6 +2301,7 @@ fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
     Some(match layer {
         "organize" => &["decisions", "applied"],
         "skeleton" => &["skeleton"],
+        "theory" => &["applied"],
         "figures" | "bridge" | "hubs" | "audit" | "cards-book" | "link-check" => &["report"],
         _ => return None,
     })
@@ -2407,11 +2454,15 @@ fn verify_bridge_report(p: &Prepared, report_path: &str, plan: &Value) -> Result
 /// produce substantive work.
 fn verify_coverage(
     p: &Prepared,
+    zt: &mut Zt,
     layer: &str,
     manifest: &Value,
     plan: &Value,
     artifacts: &serde_json::Map<String, Value>,
 ) -> Result<Value> {
+    if layer == "theory" {
+        return verify_theory_coverage(p, zt, plan, artifacts);
+    }
     if layer == "bridge" {
         let report = artifacts
             .get("report")
@@ -2563,10 +2614,147 @@ fn verify_coverage(
     Ok(json!(checked))
 }
 
-/// Complete one aggregate publication revision. The evidence must account for the
-/// whole manifest the revision was registered with and bind the compiler artifacts
-/// that carry its result, so an unchecked or stale publication cannot be `done`.
-fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+/// The mathematics theory revision (R241). The archive decides its members: every
+/// Theory Card of the book. Each one's applied record must name the membership and
+/// cited-premise dependencies its model has now, and the Card must hold exactly the
+/// summary that record produced. A changed unit or cited-premise Link therefore makes
+/// the older revision stale instead of silently current.
+fn verify_theory_coverage(
+    p: &Prepared,
+    zt: &mut Zt,
+    plan: &Value,
+    artifacts: &serde_json::Map<String, Value>,
+) -> Result<Value> {
+    let key = field(&p.contract, "citation_key")?;
+    let tree = zt.call("get_tree", json!({"tree":key}))?;
+    let theories = tree["cards"]
+        .as_array()
+        .context("the book tree read is incomplete")?
+        .iter()
+        .filter(|card| card["type"] == "model" && card["form"] == "theory" && card["facet"].is_null())
+        .map(|card| field(card, "address").map(str::to_string))
+        .collect::<Result<Vec<_>>>()?;
+    let record = artifacts
+        .get("applied")
+        .context("a theory publication requires its applied record")?;
+    let applied = bound_json(record, "applied theory record")?;
+    if applied["schema_version"] != 1 || applied["kind"] != "theory_apply" {
+        bail!("a theory publication requires the applied theory record of this run");
+    }
+    let records = applied["theories"]
+        .as_array()
+        .context("the applied theory record names no Theory Card")?;
+    let entries = plan["coverage"]
+        .as_array()
+        .context("publication completion is missing its checked coverage")?;
+    if entries.len() != theories.len() {
+        bail!(
+            "theory coverage must classify every Theory Card exactly once ({} of {})",
+            entries.len(),
+            theories.len()
+        );
+    }
+    let addresses = theories.clone();
+    let cards = if addresses.is_empty() {
+        Vec::new()
+    } else {
+        zt.cards(&addresses, "text")?.cards
+    };
+    let mut checked = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries {
+        let reference = field(entry, "ref")?.to_string();
+        if !theories.contains(&reference) || !seen.insert(reference.clone()) {
+            bail!("theory coverage names `{reference}`, which is not one unclassified Theory Card");
+        }
+        let outcome = field(entry, "outcome")?;
+        let reason = entry["reason"].as_str().unwrap_or_default().trim().to_string();
+        if outcome != "rebuilt" {
+            if reason.is_empty() {
+                bail!("theory coverage must give a reason for `{reference}`");
+            }
+            bail!("theory coverage cannot report `{reference}` as {outcome}: the run rebuilt its summary");
+        }
+        let applied = records
+            .iter()
+            .find(|record| record["address"] == json!(reference))
+            .with_context(|| format!("the applied theory record has no entry for `{reference}`"))?;
+        let model = zt.call("get_model", json!({"at":reference}))?;
+        let order = model["math"]["order"]
+            .as_array()
+            .context("the Theory Card's model has no dependency order")?
+            .iter()
+            .map(|unit| field(unit, "address").map(str::to_string))
+            .collect::<Result<Vec<_>>>()?;
+        let members = applied["members"]
+            .as_array()
+            .context("the applied theory record names no member")?
+            .iter()
+            .map(|at| {
+                at.as_str()
+                    .map(str::to_string)
+                    .context("invalid theory member")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let recorded_tools = applied["tools"]
+            .as_array()
+            .context("the applied theory record names no cited premise")?
+            .iter()
+            .map(|at| {
+                at.as_str()
+                    .map(str::to_string)
+                    .context("invalid cited premise")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // A Theory Card takes in whole units by Link, so its membership *and* its cited
+        // premises together are the units its model holds now. A rebuild that no longer
+        // accounts for them is stale, whatever the Card still says (R241).
+        let described = members
+            .iter()
+            .chain(&recorded_tools)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if described.len() != members.len() + recorded_tools.len()
+            || described != order.iter().cloned().collect()
+        {
+            bail!("the applied theory record for `{reference}` does not account for its model's current units");
+        }
+        let card = cards
+            .iter()
+            .find(|card| card["address"] == json!(reference))
+            .with_context(|| format!("the Theory Card `{reference}` is missing"))?;
+        if crate::canon::sha256_hex(card["body"].as_str().unwrap_or_default().as_bytes())
+            != field(applied, "body_sha256")?
+        {
+            bail!("the Theory Card `{reference}` does not hold the summary this revision applied");
+        }
+        let structure = crate::math::body_section(card["body"].as_str().unwrap_or_default(), "结构");
+        if links_of(&structure) != members {
+            bail!("the `{reference}` structure section is not its units in dependency order");
+        }
+        let tools_section = crate::math::body_section(card["body"].as_str().unwrap_or_default(), "所用工具");
+        if links_of(&tools_section) != recorded_tools {
+            bail!("the `{reference}` tool section is not its cited premises");
+        }
+        checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason,"members":members.len(),"tools":recorded_tools.len()}));
+    }
+    Ok(json!(checked))
+}
+
+/// The `[[address]]` links of one Card section, in the order they appear. A ZET address
+/// carries `|` in its own right, so the link text is the address verbatim.
+fn links_of(section: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    for part in section.split("[[").skip(1) {
+        if let Some(end) = part.find("]]") {
+            links.push(part[..end].trim().to_string());
+        }
+    }
+    links
+}
+
+
+fn publication_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Path) -> Result<Value> {
     let (layer, key, revision) = publication_unit(unit)?;
     let _guard = unit_guard(p, unit)?;
     let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
@@ -2666,7 +2854,7 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
             .with_context(|| format!("{artifact} artifact path must be a string"))?;
         artifacts.insert((*artifact).to_string(), bind_file(at, artifact)?);
     }
-    let coverage = verify_coverage(p, &layer, &manifest, &plan, &artifacts)?;
+    let coverage = verify_coverage(p, zt, &layer, &manifest, &plan, &artifacts)?;
     let mut result = json!({"schema_version":1,"kind":"publication_completion","unit":unit,"token":token,"layer":layer,"key":key,"revision":revision,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"disposition":disposition,"consumed":consumed,"unresolved":unresolved,"coverage":coverage,"artifacts":artifacts});
     let completion_path = p.out.join(format!("publication-completion-{layer}-{key}-{revision}.json"));
     if done {
@@ -3003,13 +3191,15 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
         groups.push(id);
     }
     // These fixed obligations cannot disappear when their dynamic producers have no ready rows.
-    for &layer in BOOK {
-        if !target["enabled"]
+    let enabled_layer = |name: &str| {
+        target["enabled"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|l| l == layer)
-        {
+            .any(|l| l == name)
+    };
+    for &layer in BOOK.iter().filter(|l| **l != "organize") {
+        if !enabled_layer(layer) {
             continue;
         }
         let manifest = publication_manifest(&tx, layer, "book", &Value::Null)?;
@@ -3018,12 +3208,16 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
     }
     if p.contract["variant"] == "math" {
         for &layer in MATH_BOOK {
-            if !target["enabled"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|l| l == layer)
-            {
+            if !enabled_layer(layer) {
+                continue;
+            }
+            // A mathematics publication layer takes its input manifest from the units and
+            // the prerequisite revision it consumes; a fixed obligation binds the
+            // preparation and the checked result of the layer before it.
+            if PUBLICATION.contains(&layer) {
+                let manifest = publication_manifest(&tx, layer, "book", &Value::Null)?;
+                register_publication_unit(&tx, layer, "book", 1, &manifest, Some(&prepare))?;
+                seal(&tx, layer)?;
                 continue;
             }
             let id = register(
@@ -3044,6 +3238,13 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
             // revision rather than for an enumeration that never comes.
             seal(&tx, layer)?;
         }
+    }
+    // Organize is the tail publication: it follows the mathematics theory revision, so
+    // it is registered after that revision exists and consumes its checked result (R241).
+    if enabled_layer("organize") {
+        let manifest = publication_manifest(&tx, "organize", "book", &Value::Null)?;
+        register_publication_unit(&tx, "organize", "book", 1, &manifest, Some(&prepare))?;
+        seal(&tx, "organize")?;
     }
     if let Some(terms) = terms.filter(|_| prepared) {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
@@ -4550,20 +4751,31 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
         .collect::<Vec<_>>();
     // An aggregate publication keeps only its binding here: its contributing
     // manifest gains immutable revisions, which are verified where they register.
+    // The mathematics theory revision is published after link-check, and Organize
+    // is the tail publication after it, so both name that prerequisite here (R241).
     for layer in BOOK.iter().copied().filter(|l| enabled(l)) {
-        units.insert(
-            format!("{layer}/book@1"),
-            (
-                None,
-                groups
-                    .iter()
-                    .map(|id| (id.clone(), "settled".into()))
-                    .collect(),
-            ),
-        );
+        let mut needs = groups
+            .iter()
+            .map(|id| (id.clone(), "settled".into()))
+            .collect::<Vec<_>>();
+        if layer == "organize" && enabled("theory") {
+            needs.push(("theory/book@1".into(), "settled".into()));
+        }
+        units.insert(format!("{layer}/book@1"), (None, needs));
     }
     if contract["variant"] == "math" {
         for layer in MATH_BOOK.iter().copied().filter(|l| enabled(l)) {
+            if layer == "theory" {
+                let mut needs = groups
+                    .iter()
+                    .map(|id| (id.clone(), "settled".into()))
+                    .collect::<Vec<_>>();
+                if enabled("link-check") {
+                    needs.push(("link-check/book@1".into(), "settled".into()));
+                }
+                units.insert(format!("{layer}/book@1"), (None, needs));
+                continue;
+            }
             let mut needs = vec![(root.to_string(), "success".to_string())];
             if let Some(previous) = math_prerequisite(layer) {
                 // The mathematics variant's declared stage order: each layer consumes the
@@ -6494,7 +6706,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .context("missing Terms planning options")?;
                 terms_apply(&p, &mut zt, token, terms, candidates)?
             } else if publication_unit(&unit).is_ok() {
-                publication_finish(&p, &unit, token, Path::new(&path))?
+                publication_finish(&p, &mut zt, &unit, token, Path::new(&path))?
             } else if let Some(layer) = math_book_layer(&unit) {
                 match layer {
                     "math-index" => math_index_finish(&p, &unit, token, Path::new(&path))?,
