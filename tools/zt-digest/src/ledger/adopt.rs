@@ -1573,17 +1573,25 @@ fn apply_plan(
             &plan_hash,
             &json!({"kind":"adoption_plan"}),
         )?;
-        for (address, fingerprint) in &fact.cards {
+        // R413: the declaration is the registration. This fingerprint map is the same source the
+        // result above enumerated its outputs from: it holds the group's anchor Card beside the
+        // substantive Cards the group wrote. Registering only the substantive set made the
+        // ledger's own emission invariant report every adopted group as a mismatched producer.
+        for (address, fingerprint) in result["card_fingerprints"]
+            .as_object()
+            .context("adopted group fingerprints")?
+        {
             output(
                 &tx,
                 &unit,
                 &format!("card/{address}"),
                 "card",
                 address,
-                fingerprint,
+                fingerprint.as_str().context("adopted group fingerprint")?,
                 &json!({"address":address}),
             )?;
         }
+
         event(
             &tx,
             &unit,

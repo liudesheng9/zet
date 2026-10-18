@@ -197,6 +197,20 @@ try {
     Assert (@($adoptedEvents | Where-Object { $_.unit_id -eq 'digest/g001@1' })[0].facts_json.Contains('owned_log')) 'the adopted event names its evidence'
     Assert (@($status.units | Where-Object { $_.layer -eq 'audit' -or $_.layer -eq 'cards-book' }).Count -ge 2) 'the book-level downstream obligations are registered as open units'
 
+    # --- R413: an adopted run owes the same emission invariant a completed run owes ------------
+    # The reconciliation (#91) recounts the settled ledger before its one resume, so adoption must
+    # not report itself as a mismatched producer. A group declares exactly the output rows it
+    # registers (the anchor Card it verified included), and the prepared manifest it adopted is a
+    # typed adoption record rather than the placeholder a completed prepare writes.
+    $verifiedStatus = Run-Digest @('ledger', 'status', '-Out', $legacy, '-Verify')
+    Assert (@($verifiedStatus.coverage_faults | Where-Object code -EQ 'producer_outputs_mismatch').Count -eq 0) 'every adopted group registers exactly the outputs it declares'
+    Assert (@($verifiedStatus.coverage_faults | Where-Object code -EQ 'preparation_outputs_mismatch').Count -eq 0) 'the adopted preparation is a typed record, not a placeholder completion'
+    Assert (@($verifiedStatus.coverage_faults | Where-Object code -EQ 'prepared_group_missing_or_changed').Count -eq 0) 'every prepared group stays bound to the prepared manifest'
+    Assert (@($verifiedStatus.coverage_faults | Where-Object { $_.code -ne 'required_unit_missing_or_changed' }).Count -eq 0) 'the reconciliation names only the unbuilt publications as coverage faults'
+    $ledgerRows = (Evidence $legacy) | ConvertFrom-Json -AsHashtable
+    Assert (@($ledgerRows.outputs | Where-Object { $_.unit_id -eq 'digest/g001@1' -and $_.output_key -eq "card/$anchor1" }).Count -eq 1) 'the adopted group registers the anchor Card it verified as an output'
+    Assert (@($ledgerRows.outputs | Where-Object { $_.unit_id -eq 'prepare/book@1' -and $_.output_key -eq 'preparation' }).Count -eq 1) 'the adopted preparation registers the manifest it adopted'
+
     # --- idempotence: the same proposal re-applies without changing a row ---------------------
     $evidence = Evidence $legacy
     $reapply = Run-Digest @('ledger', 'adopt', '-Out', $legacy, '-Variant', 'econ', '-Apply')

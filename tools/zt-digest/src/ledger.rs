@@ -3853,6 +3853,29 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
     }
     if prepared {
+        // An adopted preparation is a typed adoption record, not the placeholder a completion
+        // writes (R413). It declares exactly the one output row registered below and names the
+        // manifest it was verified from; it claims no historic prepare command or receipt.
+        let result = json!({
+            "schema_version":1,
+            "kind":"preparation_adoption",
+            "unit":"prepare/book@1",
+            "state":"done",
+            "disposition":"adopted",
+            "complete":true,
+            "outputs":["preparation"],
+            "preparation_hash":p.hash,
+            "groups":groups.len(),
+            "verification":{
+                "mode":"read_only",
+                "tool":format!("zt-digest {}", env!("CARGO_PKG_VERSION")),
+                "note":"the prepared manifest was written and verified by legacy adoption; no historic prepare command is claimed",
+            },
+        });
+        tx.execute(
+            "UPDATE units SET result_json=?2 WHERE id=?1",
+            params![prepare, canon::canonical_json(&result)],
+        )?;
         tx.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES(?1,'preparation','manifest',?2,?3,?4)",params![prepare,p.out.join("manifest.json").to_string_lossy(),p.hash,canon::canonical_json(&json!({"group_count":groups.len(),"preparation_hash":p.hash}))])?;
     }
     tx.execute(
@@ -7020,6 +7043,25 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
 
 fn preparation_outputs(conn: &Connection, result: &Value) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
+    // R413: an adopted preparation declares exactly the outputs adoption registered. It holds no
+    // historic receipt enumeration, so the invariant verifies its own declaration instead of
+    // pretending a prepare command ran.
+    if is_adoption(result) {
+        if result["unit"] != "prepare/book@1"
+            || result["preparation_hash"] != meta(conn, "preparation_hash")?
+        {
+            bail!("incomplete adopted preparation evidence");
+        }
+        let expected = adoption_output_keys(result)?;
+        let actual = conn
+            .prepare("SELECT output_key FROM outputs WHERE unit_id='prepare/book@1'")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        if expected != actual {
+            bail!("adopted preparation outputs mismatch");
+        }
+        return Ok(());
+    }
     let contract = meta(conn, "preparation")?;
     let run = meta(conn, "run_id")?;
     let expected_addresses = std::iter::once(contract["citation_key"].clone())
