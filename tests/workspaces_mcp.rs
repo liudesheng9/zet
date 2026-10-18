@@ -23,6 +23,208 @@ struct TestHome {
 }
 
 #[test]
+fn a_sequence_preview_matches_real_chunk_boundaries_and_recovers_partial_receipts() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let key = |i: usize| format!("sequence/group/1/apply/item-{i:06}");
+    let mut items = vec![
+        json!({"op_key":key(0),"client_ref":"0","tool":"create_topic","arguments":{"title":"Sequence context"}}),
+    ];
+    for i in 1..=64 {
+        items.push(json!({"op_key":key(i),"client_ref":i.to_string(),"tool":"create_successor","arguments":{"at":format!("@@{}",i-1),"title":format!("Card {i}"),"body":if i==64{"Follows [[@@1]]".to_string()}else{format!("Body {i}.")}}}));
+    }
+    items.push(json!({"op_key":key(65),"client_ref":"65","tool":"edit_card","arguments":{"at":"@@1","base_receipt":key(1),"body":"Depends on [[@@64]]"}}));
+    items.push(json!({"op_key":key(66),"client_ref":"66","tool":"create_successor","arguments":{"at":"@@64","title":"Final card","body":"Follows [[@@1]]"}}));
+    let revision =
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"].clone();
+    let draft = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert_eq!(draft["complete"], true);
+    assert_eq!(draft["applied"], false);
+    assert_eq!(draft["results"].as_array().unwrap().len(), 67);
+    assert_eq!(draft["cards"].as_array().unwrap().len(), 66);
+    assert_eq!(draft["results"][64]["result"]["address"], "0/64");
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    assert_eq!(
+        mcp.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_revision"],
+        revision
+    );
+    assert!(
+        mcp.err("apply_batch", json!({"preview_items":items}))
+            .contains("preview_items requires preview:true")
+    );
+    assert!(
+        mcp.err(
+            "apply_batch",
+            json!({"preview":true,"preview_items":items,"items":items[..1]})
+        )
+        .contains("cannot combine")
+    );
+    let first = mcp.ok("apply_batch", json!({"items":items[..64]}));
+    assert_eq!(first["results"][0]["result"]["address"], "0/0");
+    let body = mcp.ok("get_card", json!({"at":"0/1"}))["text"].clone();
+    let partial = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert!(
+        partial["results"].as_array().unwrap()[..64]
+            .iter()
+            .all(|r| r["replayed"] == true)
+    );
+    assert!(
+        partial["results"].as_array().unwrap()[64..]
+            .iter()
+            .all(|r| r["replayed"] == false)
+    );
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/1"}))["text"], body);
+    let mut invalid = items.clone();
+    invalid[66]["arguments"]["title"] = json!("");
+    let (_, failed) = mcp.call(
+        "apply_batch",
+        json!({"preview":true,"preview_items":invalid}),
+    );
+    assert!(failed);
+    assert_eq!(
+        mcp.ok("get_tree", json!({"tree":"0"}))["cards"]
+            .as_array()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(mcp.ok("get_card", json!({"at":"0/1"}))["text"], body);
+    let mut escaped = items.clone();
+    escaped[64]["arguments"]["body"] = json!("Literal @@@@0");
+    let (_, failed) = mcp.call(
+        "apply_batch",
+        json!({"preview":true,"preview_items":escaped}),
+    );
+    assert!(
+        failed,
+        "a transformed reference cannot regain access to another chunk's local bindings"
+    );
+    // These are exactly the helper's cross-chunk bindings after the first 64 results.
+    let mut tail = items[64..].to_vec();
+    tail[0]["arguments"]["at"] = json!("0/63");
+    tail[0]["arguments"]["body"] = json!("Follows [[0/1]]");
+    tail[1]["arguments"]["at"] = json!("0/1");
+    tail[2]["arguments"]["body"] = json!("Follows [[0/1]]");
+    mcp.ok("apply_batch", json!({"items":tail}));
+    assert_eq!(
+        mcp.ok("get_card", json!({"at":"0/1"}))["body"],
+        "Depends on [[0/64]]"
+    );
+    let replay = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert!(
+        replay["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["replayed"] == true)
+    );
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM applied_ops", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        67
+    );
+}
+
+#[test]
+fn a_sequence_preview_also_preserves_byte_limited_chunk_bindings() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let key = |i: usize| format!("byte-sequence/group/1/apply/item-{i:06}");
+    let body = "wide ".repeat(80000);
+    let items = vec![
+        json!({"op_key":key(0),"client_ref":"0","tool":"create_topic","arguments":{"title":"Wide context","body":body}}),
+        json!({"op_key":key(1),"client_ref":"1","tool":"create_successor","arguments":{"at":"@@0","title":"First wide card","body":body}}),
+        json!({"op_key":key(2),"client_ref":"2","tool":"create_successor","arguments":{"at":"@@1","title":"Second wide card","body":format!("{body} [[@@0]]")}}),
+    ];
+    let draft = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert_eq!(draft["cards"].as_array().unwrap().len(), 3);
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    mcp.ok("apply_batch", json!({"items":items[..2]}));
+    let partial = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert_eq!(partial["results"][0]["replayed"], true);
+    assert_eq!(partial["results"][2]["replayed"], false);
+    let mut last = items[2].clone();
+    last["arguments"]["at"] = json!("0/1");
+    last["arguments"]["body"] = json!(format!("{body} [[0/0]]"));
+    mcp.ok("apply_batch", json!({"items":[last]}));
+    let replay = mcp.ok("apply_batch", json!({"preview":true,"preview_items":items}));
+    assert!(
+        replay["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["replayed"] == true)
+    );
+}
+
+#[test]
+fn sequence_preview_limits_and_schema_never_enable_a_larger_write_batch() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let item = json!({"op_key":"sequence-limit/group/1/apply/item-0","client_ref":"0","tool":"create_topic","arguments":{"title":"Bounded"}});
+    assert!(
+        mcp.err("apply_batch", json!({"preview":true,"preview_items":[]}))
+            .contains("1 through 1024")
+    );
+    assert!(
+        mcp.err(
+            "apply_batch",
+            json!({"preview":true,"preview_items":vec![item.clone();1025]})
+        )
+        .contains("1 through 1024")
+    );
+    let mut large = item.clone();
+    large["arguments"]["body"] = json!("x".repeat(1048576));
+    assert!(
+        mcp.err(
+            "apply_batch",
+            json!({"preview":true,"preview_items":[large]})
+        )
+        .contains("1048576 authored bytes")
+    );
+    let mut total = Vec::new();
+    for i in 0..9 {
+        let mut entry = item.clone();
+        entry["client_ref"] = json!(i.to_string());
+        entry["arguments"]["body"] = json!("x".repeat(1000000));
+        total.push(entry);
+    }
+    assert!(
+        mcp.err("apply_batch", json!({"preview":true,"preview_items":total}))
+            .contains("8388608 authored bytes")
+    );
+    assert!(
+        mcp.err("apply_batch", json!({"items":vec![item.clone();65]}))
+            .contains("1 through 64")
+    );
+    let mut named = item.clone();
+    named["client_ref"] = json!("topic");
+    assert!(
+        mcp.err(
+            "apply_batch",
+            json!({"preview":true,"preview_items":[named]})
+        )
+        .contains("zero-based item index")
+    );
+    assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
+    let reply = mcp.request("tools/list", json!({}));
+    let schema = &reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "apply_batch")
+        .unwrap()["inputSchema"];
+    assert_eq!(schema["properties"]["items"]["maxItems"], 64);
+    assert_eq!(schema["properties"]["preview_items"]["maxItems"], 1024);
+    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn ordinary_and_identified_writes_refuse_a_duplicate_leading_title_but_preserve_legacy_metadata_edits()
  {
     let home = TestHome::new();

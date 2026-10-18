@@ -377,35 +377,108 @@ fn owned_paragraph(
     ))
 }
 
+fn authored_bytes(arguments: &Value) -> usize {
+    ["title", "body", "text", "bibtex", "base"]
+        .iter()
+        .map(|name| arguments[name].as_str().map(str::len).unwrap_or(0))
+        .sum::<usize>()
+        + arguments["owned_paragraph"]["text"]
+            .as_str()
+            .map(str::len)
+            .unwrap_or(0)
+}
+
+/// Match the thin client's concrete bindings for references to earlier chunks.
+fn resolve_before(value: &Value, refs: &BTreeMap<String, String>, start: usize) -> Result<Value> {
+    Ok(match value {
+        Value::String(text) => {
+            let mut rest = text.as_str();
+            let mut out = String::new();
+            while let Some(offset) = rest.find("@@") {
+                out.push_str(&rest[..offset]);
+                rest = &rest[offset + 2..];
+                let end = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if end == 0 {
+                    out.push_str("@@");
+                    continue;
+                }
+                let name = &rest[..end];
+                let n = name
+                    .parse::<usize>()
+                    .context("invalid numeric sequence reference")?;
+                if n < start {
+                    out.push_str(refs.get(name).with_context(|| {
+                        format!("unresolved earlier client reference `@@{name}`")
+                    })?);
+                } else {
+                    out.push_str("@@");
+                    out.push_str(name);
+                }
+                rest = &rest[end..];
+            }
+            out.push_str(rest);
+            json!(out)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|v| resolve_before(v, refs, start))
+                .collect::<Result<_>>()?,
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), resolve_before(v, refs, start)?)))
+                .collect::<Result<_>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
 pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     let preview = match args.get("preview") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
         _ => bail!("preview must be a boolean"),
     };
-    let items = args["items"]
+    let sequence = args.get("preview_items").is_some();
+    if sequence && !preview {
+        bail!("preview_items requires preview:true");
+    }
+    if sequence && args.get("items").is_some() {
+        bail!("cannot combine items and preview_items");
+    }
+    let items = args[if sequence { "preview_items" } else { "items" }]
         .as_array()
-        .context("missing array argument `items`")?;
-    if items.is_empty() || items.len() > 64 {
-        bail!("a batch requires 1 through 64 items");
+        .context("missing array argument `items` or `preview_items`")?;
+    let max_items = if sequence { 1024 } else { 64 };
+    if items.is_empty() || items.len() > max_items {
+        bail!(
+            "a {} requires 1 through {max_items} items",
+            if sequence {
+                "preview sequence"
+            } else {
+                "batch"
+            }
+        );
     }
-    let authored_bytes: usize = items
-        .iter()
-        .map(|item| {
-            ["title", "body", "text", "bibtex", "base"]
-                .map(|name| item["arguments"][name].as_str().map(str::len).unwrap_or(0))
-                .into_iter()
-                .sum::<usize>()
-                + item["arguments"]["owned_paragraph"]["text"]
-                    .as_str()
-                    .map(str::len)
-                    .unwrap_or(0)
-        })
-        .sum();
-    if authored_bytes > 1024 * 1024 {
-        bail!("a batch is limited to 1048576 authored bytes; received {authored_bytes}");
+    let bytes: usize = items.iter().map(|i| authored_bytes(&i["arguments"])).sum();
+    let max_bytes = if sequence {
+        8 * 1024 * 1024
+    } else {
+        1024 * 1024
+    };
+    if bytes > max_bytes {
+        bail!(
+            "a {} is limited to {max_bytes} authored bytes; received {bytes}",
+            if sequence {
+                "preview sequence"
+            } else {
+                "batch"
+            }
+        );
     }
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
         let key = item["op_key"].as_str().context("missing item op_key")?;
         let parts: Vec<_> = key.split('/').collect();
         if parts.len() != 5
@@ -421,6 +494,9 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         let name = item["client_ref"]
             .as_str()
             .context("missing item client_ref")?;
+        if sequence && name != index.to_string() {
+            bail!("preview sequence client_ref must be its zero-based item index");
+        }
         if name.is_empty()
             || name.len() > 64
             || !name
@@ -438,9 +514,13 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     let archive_revision = crate::link_index::revision(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)")?;
     let mut refs = BTreeMap::new();
+    let mut chunk_refs = BTreeMap::new();
     let mut changed = BTreeSet::new();
     let mut results = Vec::new();
-    for item in items {
+    let mut chunk_start = 0usize;
+    let mut chunk_bytes = 0usize;
+    let mut sequence_bytes = 0usize;
+    for (index, item) in items.iter().enumerate() {
         let op_key = item["op_key"].as_str().context("missing item op_key")?;
         let client_ref = item["client_ref"]
             .as_str()
@@ -449,9 +529,32 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             bail!("duplicate client_ref `{client_ref}`");
         }
         let tool = item["tool"].as_str().context("missing item tool")?;
-        let arguments = resolve(&item["arguments"], &refs)?;
-        let canonical = request(tool, &item["arguments"])?;
-        let resolved = resolve(&canonical, &refs)?;
+        let normalized = if sequence {
+            let mut arguments = resolve_before(&item["arguments"], &refs, chunk_start)?;
+            if index - chunk_start >= 64 || chunk_bytes + authored_bytes(&arguments) > 1024 * 1024 {
+                chunk_start = index;
+                chunk_bytes = 0;
+                chunk_refs.clear();
+                arguments = resolve_before(&item["arguments"], &refs, chunk_start)?;
+            }
+            let bytes = authored_bytes(&arguments);
+            if bytes > 1024 * 1024 {
+                bail!("resolved sequence item {index} exceeds 1048576 authored bytes");
+            }
+            chunk_bytes += bytes;
+            sequence_bytes += bytes;
+            if sequence_bytes > 8 * 1024 * 1024 {
+                bail!("resolved preview sequence exceeds 8388608 authored bytes");
+            }
+            Some(arguments)
+        } else {
+            None
+        };
+        let raw = normalized.as_ref().unwrap_or(&item["arguments"]);
+        let bindings = if sequence { &chunk_refs } else { &refs };
+        let arguments = resolve(raw, bindings)?;
+        let canonical = request(tool, raw)?;
+        let resolved = resolve(&canonical, bindings)?;
         let request_hash = hash(&json!({"request":canonical,"resolved":resolved}));
         let prior: Option<(String, String)> = tx
             .query_row(
@@ -470,6 +573,9 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                 .as_str()
                 .context("stored operation result missing address")?;
             refs.insert(client_ref.to_string(), address.to_string());
+            if sequence {
+                chunk_refs.insert(client_ref.to_string(), address.to_string());
+            }
             results.push(
                 json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":true}),
             );
@@ -515,6 +621,9 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         result["after_fingerprint"] = json!(fingerprint(&tx, &address)?);
         tx.execute("INSERT INTO applied_ops(op_key,request_hash,result_json,committed_at) VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",rusqlite::params![op_key,request_hash,result.to_string()])?;
         refs.insert(client_ref.to_string(), address.clone());
+        if sequence {
+            chunk_refs.insert(client_ref.to_string(), address.clone());
+        }
         if did_change {
             changed.insert(address);
         }

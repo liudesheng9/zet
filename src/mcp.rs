@@ -813,6 +813,7 @@ fn tool_definitions() -> Vec<Value> {
         "type": "string",
         "description": "Markdown body. Write `[[address]]` to link any Card in either Workspace.",
     });
+    let batch_item = json!({"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false});
     let facet = |description: &str| {
         json!({
             "type": "string",
@@ -990,15 +991,19 @@ fn tool_definitions() -> Vec<Value> {
             true,
             false,
         ),
-        tool(
-            "apply_batch",
-            "Apply identified Card writes",
-            "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
-            json!({"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied."},"items":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false}}}),
-            &["items"],
-            false,
-            false,
-        ),
+        {
+            let mut batch = tool(
+                "apply_batch",
+                "Apply identified Card writes",
+                "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
+                json!({"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied."},"items":{"type":"array","minItems":1,"maxItems":64,"items":batch_item},"preview_items":{"type":"array","minItems":1,"maxItems":1024,"items":batch_item,"description":"Read-only complete sequence, exclusive with items and requiring preview:true. At most 8 MiB authored input. Numeric client_ref equals the zero-based sequence index; references to earlier chunks bind exactly as the thin client's 64-item/1-MiB writes. All simulated changes roll back."}}),
+                &[],
+                false,
+                false,
+            );
+            batch["inputSchema"]["oneOf"] = json!([{"required":["items"],"not":{"required":["preview_items"]}},{"required":["preview","preview_items"],"properties":{"preview":{"const":true}},"not":{"required":["items"]}}]);
+            batch
+        },
         tool(
             "create_topic",
             "Create topic",
