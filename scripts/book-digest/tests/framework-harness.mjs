@@ -213,6 +213,14 @@ const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${messa
   check(until.report && until.report.stoppedAt === 'digest' && !until.calls.some(c => /^link manager|prepare link pass/.test(c.label)), 'checkpoint: until "digest" stops before the link pass')
   const noKey = await run('econ', { out: 'D:\\x\\Key', mode: 'cards' })
   check(noKey.result.stage === 'args' && /citationKey/.test(noKey.result.error), 'args: mode cards without citationKey halts at the args stage')
+  // 2.4.0: args.book replaces source, bibtex and bookTitle in mode full, and neither form is a silent mix.
+  const byBook = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', book: 20, hubs: false, figures: false, until: 'digest' })
+  const byBookPrepare = byBook.calls.find(c => c.label === 'prepare book')
+  check(byBookPrepare && /prepare-book-digest\.ps1" -Book '20' -Out "D:\\x\\Key" -CitationKey Key /.test(byBookPrepare.cmd) && !/-Source|-BibTeX|-BookTitle/.test(byBookPrepare.cmd),
+    'args: args.book prepares with -Book alone, without the explicit source, BibTeX or title')
+  const noBook = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'full', hubs: false, figures: false })
+  check(noBook.result.stage === 'args' && /needs args book, or args source, bibtex, and bookTitle/.test(noBook.result.error),
+    'args: mode full without book or the three explicit arguments halts at the args stage')
 }
 
 // ================================================================================================================

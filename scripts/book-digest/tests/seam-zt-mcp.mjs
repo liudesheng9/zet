@@ -12,7 +12,15 @@
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
+//   ZT_SCHOLAR_FIXTURE   a JSON file that answers the read-only Scholar Archive bridge, so
+//       `zt-digest prepare -Book` runs without a live archive. It holds `works` (a Work id to the
+//       `get_work` result), `search` (a normalised title to Work ids), `files` (a Work id to
+//       `list_work_files` rows), `documents` (a file id to `{name, relative_path, path}`, whose
+//       bytes the seam reads and hashes) and `errors` (`get_work`/`work_files`/`file` lists or a
+//       `list_works` flag) for the refusal paths. A bridge tool the file does not answer is a
+//       fault, so a test proves which calls the resolution made.
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import readline from 'node:readline'
 import path from 'node:path'
@@ -37,6 +45,51 @@ const send = message => process.stdout.write(JSON.stringify(message) + '\n')
 const failed = reply => !!(reply.error || (reply.result && reply.result.isError))
 const fault = (id, text) => ({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } })
 const flag = path => !!path && fs.existsSync(path)
+// The Scholar Archive fixture of `ZT_SCHOLAR_FIXTURE`, read on every call so a test may change it.
+const scholar = () => {
+  if (!env.ZT_SCHOLAR_FIXTURE || !fs.existsSync(env.ZT_SCHOLAR_FIXTURE)) return null
+  try { return JSON.parse(fs.readFileSync(env.ZT_SCHOLAR_FIXTURE, 'utf8')) } catch { return null }
+}
+const digest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+const numbered = (list, id) => (list || []).map(Number).includes(Number(id))
+// One `scholar_archive_read` answer: `{result}` or `{error}`.
+const scholarRead = (fixture, inner, args) => {
+  const errors = fixture.errors || {}
+  if (inner === 'get_work') {
+    const id = Number(args.work_id)
+    if (numbered(errors.get_work, id)) return { error: `simulated archive fault: no Work ${id}` }
+    const work = (fixture.works || {})[String(id)]
+    return work ? { result: work } : { error: `Scholar Archive has no Work ${id}` }
+  }
+  if (inner === 'list_works') {
+    if (errors.list_works) return { error: 'simulated unavailable search' }
+    const key = String(args.query || '').trim().replace(/\s+/g, ' ').toLowerCase()
+    const items = ((fixture.search || {})[key] || []).map(id => (fixture.works || {})[String(id)]).filter(Boolean)
+    return { result: { total: items.length, items, offset: 0, limit: Number(args.limit || 25) } }
+  }
+  if (inner === 'list_work_files') {
+    const id = Number(args.work_id)
+    if (numbered(errors.work_files, id)) return { error: `simulated unavailable file list of Work ${id}` }
+    const items = ((fixture.files || {})[String(id)] || []).map(file => ({ work_id: id, kind: 'markdown', availability: 'present', ...file }))
+    return { result: { total: items.length, items, next_after_file_id: null } }
+  }
+  return { error: `the Scholar Archive seam does not answer \`${inner}\`` }
+}
+// One `scholar_archive_file` answer: the document as the bridge's cached copy.
+const scholarFile = (fixture, id) => {
+  if (numbered((fixture.errors || {}).file, id)) return { error: `simulated unavailable document ${id}` }
+  const document = (fixture.documents || {})[String(id)]
+  if (!document) return { error: `Scholar Archive has no document ${id}` }
+  const local = path.resolve(document.path)
+  const bytes = fs.readFileSync(local)
+  return {
+    result: {
+      file_id: Number(id), name: document.name || path.basename(local),
+      relative_path: document.relative_path || document.name || path.basename(local),
+      path: local, bytes: bytes.length, sha256: digest(local),
+    },
+  }
+}
 const hangBatch = async filename => {
   const target = path.resolve(filename)
   const relative = path.relative(os.tmpdir(), target)
@@ -51,7 +104,28 @@ async function handle(line) {
   if (message.id === undefined) { real.stdin.write(line + '\n'); return }
   const tool = message.method === 'tools/call' ? message.params.name : ''
   const at = (message.params && message.params.arguments) || {}
-  if (tool && env.ZT_TRACE_TOOLS) fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify({ tool, process_id: process.pid, address_count: at.addresses?.length, item_count: at.items?.length }) + '\n')
+  if (tool && env.ZT_TRACE_TOOLS) {
+    const trace = { tool, process_id: process.pid, address_count: at.addresses?.length, item_count: at.items?.length }
+    if (tool === 'scholar_archive_read') {
+      trace.scholar_tool = at.tool
+      trace.work_id = at.arguments?.work_id
+      trace.query = at.arguments?.query
+    }
+    if (tool === 'scholar_archive_file') trace.file_id = at.file_id
+    fs.appendFileSync(env.ZT_TRACE_TOOLS, JSON.stringify(trace) + '\n')
+  }
+  const fixture = scholar()
+  if (fixture && tool === 'scholar_archive_read') {
+    const answer = scholarRead(fixture, String(at.tool || ''), at.arguments || {})
+    if (answer.error) return send(fault(message.id, answer.error))
+    const value = { tool: at.tool, result: answer.result }
+    return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value } })
+  }
+  if (fixture && tool === 'scholar_archive_file') {
+    const answer = scholarFile(fixture, at.file_id)
+    if (answer.error) return send(fault(message.id, answer.error))
+    return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(answer.result) }], structuredContent: answer.result } })
+  }
   if (tool && env.ZT_SLOW_TOOL && tool === env.ZT_SLOW_TOOL && Number(env.ZT_SLOW_MS) > 0) {
     if (env.ZT_SLOW_FLAG) fs.writeFileSync(env.ZT_SLOW_FLAG, `${tool} ${process.pid}\n`)
     await new Promise(resolve => setTimeout(resolve, Number(env.ZT_SLOW_MS)))

@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-math-digest",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "modules": [
@@ -10,7 +10,7 @@
   ],
   "preflight": {
     "P1": "Goal and result: zt-math-digest.js on the framework: the base digest plus the math stages, with the base result and math: {index, docs, skeleton, notation, boundary, proof, theory, check}; mode math returns {mode, dsh_model, citation_key, math}. The base 2.1.2 adds the Bridge report and isolated apply mode.",
-    "P2": "Inputs: the base's args plus supply, unitsPerJob, mainResults, coreBudget, notation, boundary, proof, theory (data and declared switches). Base Bridge arguments are inherited.",
+    "P2": "Inputs: the base's args plus supply, unitsPerJob, mainResults, coreBudget, notation, boundary, proof, theory (data and declared switches). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the numbered statements (math-compiler.ps1 index) and unitsPerJob units per boundary or proof job, one Theory Card per chapter.",
     "P4": "Roles: as the base. Every math step and its DeepSeek managers run as the Haiku manager role.",
     "P5": "Stage graph: the base chain with the slots filled: after-prepare: math-skeleton; after-digest: models (the model layer with the math supplements) → math-boundary → math-proof, and explain (mode explain); after-link: math-theory (the cited premises are complete after the link pass); after-audit: math-check. Figures → Bridge → Hubs; Bridge profile math.",

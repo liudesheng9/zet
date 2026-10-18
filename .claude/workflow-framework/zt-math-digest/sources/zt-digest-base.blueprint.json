@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "The shared base of the ZT digest workflows: Prepare, Digest with per-block card cycles, Link, Cleanup, Organize, Figures, Hubs, Audit, with slots where a book type installs its own layers (models, events, math stages), and report-first cross-book Bridges after Figures",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -10,14 +10,14 @@
   ],
   "preflight": {
     "P1": "Goal and result: the base is every stage that all ZT digests share (zt-digest-protocol sections 2-4), first ported from the hand-written zt-book-digest.js (removed 2026-10-16). The result is the report stage's object, in the shape that script returned for each mode, plus a variant's extra reports.",
-    "P2": "Inputs: the args of the removed zt-book-digest.js, one declaration each (out required; citationKey, source, bibtex, bookTitle checked per mode by the args stage, as before). They carry data: paths, keys, pilot filters, batch sizes (capped at the DSMP limits in code), DeepSeek efforts (raised to high), and switches that pick among declared conditional stages. architectEffort is gone: the architect role's effort is frozen. Bridge arguments select limits (60/120 sources, 5/8 candidates), target books, report id and separate new/earlier acceptance; work is out/bridge.",
+    "P2": "Inputs: the args of the removed zt-book-digest.js, one declaration each (out required; citationKey, source, bibtex, bookTitle checked per mode by the args stage, as before). 2.4.0 adds book: a Scholar Archive Work id or exact title that resolves source, bibtex, bookTitle and the file through the read-only bridge, so mode full takes book or the three explicit arguments, never a silent mix. They carry data: paths, keys, pilot filters, batch sizes (capped at the DSMP limits in code), DeepSeek efforts (raised to high), and switches that pick among declared conditional stages. architectEffort is gone: the architect role's effort is frozen. Bridge arguments select limits (60/120 sources, 5/8 candidates), target books, report id and separate new/earlier acceptance; work is out/bridge.",
     "P3": "Units of work: section groups (prepare-book-digest.ps1, perManager per Haiku manager), Model Cards (list-models.ps1, perSonnet or perConcept per architect batch), compiler jobs (one Haiku manager per 8, at most 8 managers in the run), pending link groups (prepare-link-pass.ps1). Bridge jobs hold at most 12 sources, with at most 10 jobs.",
     "P4": "Roles: manager = Haiku, effort low (relays commands, runs DeepSeek managers, clean-ups; reads no book, writes no Card). architect = Sonnet (writes plan.json only). organizer = Opus (writes decisions.json only). Scripts do every structural step; DeepSeek does the labour (DeepSeek Subagent Managed Protocol).",
     "P5": "Stage graph: args → source → prepare → [after-prepare] → terms → cards-book → digest → [after-digest] → hubs-first → link-prepare → link → link-check → [after-link] → cleanup → organize → figures → bridge → hubs → audit → [after-audit] → report. The base holds no model, event, or finding layer: each book type installs its own layers in the slots (after-digest: the model layer, explain, the event layer, the math Boundary and Proof). Inside digest the blocks run as a pipeline: each block's card cycle starts when its own manager returns.",
     "P6": "Modules: gate (args), zt-dsh-source, zt-digest-prepare, zt-book-terms, zt-cards-book, zt-digest-blocks, zt-hubs (hubs-first and hubs), zt-link-prepare, zt-link-pass, zt-link-check, zt-dsh-cleanup, zt-organize, zt-figures, zt-audit, zt-digest-report; all share zt-digest-lib. The book type's prompt files come from consts.profile: instructions (the base prompt dsh-digest-base.zh.md plus the type's supplements), noEventCandidates, the prefixes, the compiler and architect supplements. zt-bridge v3 calls bridge-compiler.ps1 with profile.bridgeProfile.",
     "P7": "Checks: every DeepSeek job runs its SELF-CHECK (in the job files the scripts write); zt-check is the only checker; the args stage checks the required args per mode; apply steps refuse unchecked text; the report keeps each stage's status. BR1–BR9 and Card checks gate reports and accepted edits; fingerprint/base/journal checks protect apply.",
     "P8": "Failure policy: args, source, prepare, digest (no group done), and link-prepare halt the run, as the removed zt-book-digest.js returned early there. terms and organize continue on a failure. Switches map to when-conditions: terms, cardChecks, organize, figures, hubs, audit. Modes: link, cards, hubs, figures, audit (each the stages that mode ran before); a book type adds its own (models, explain, events, math). Checkpoint: digest (stop before the book type's layers and the link pass). Bridge failures remain visible and nonfatal in full mode. Mode bridge applies without a source probe, judges, Organize, Hubs, or math stages. Bridge failure is visible: the stage expects status != failed, continues on a failure, and the report keeps {status: failed} in full and bridge modes. A Bridge report is published only after every judge job answered; cleanup always deletes the judge conversations.",
-    "P9": "Dry run: zt-econ-digest.sim.json and zt-math-digest.sim.json take mode full through every stage. Fixture: tests/framework-harness.mjs runs every check of the removed workflow-harness.mjs and math-workflow-harness.mjs on the built scripts, and checks that the scripts ported to zt-digest run as zt-digest tools (2.2.0: zdTool in zt-digest-lib v5 runs zt-digest audit, card, model, and list-models instead of pwsh; the helper is zt-digest call; 2.3.0: zt-digest-lib v6 runs every digest script as its zt-digest tool: hub, bridge, math, event, finding, terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics). Pilot: one chapter with cardMax, explainMax, hubTrees, after a database backup. bridge-workflow-harness.mjs exercises discovery, acceptance, cleanup and probe-free apply; compiler tests use scratch archives; actual user acceptance gates the live apply pilot."
+    "P9": "Dry run: zt-econ-digest.sim.json and zt-math-digest.sim.json take mode full through every stage. Fixture: tests/framework-harness.mjs runs every check of the removed workflow-harness.mjs and math-workflow-harness.mjs on the built scripts, and checks that the scripts ported to zt-digest run as zt-digest tools (2.2.0: zdTool in zt-digest-lib v5 runs zt-digest audit, card, model, and list-models instead of pwsh; the helper is zt-digest call; 2.3.0: zt-digest-lib v6 runs every digest script as its zt-digest tool: hub, bridge, math, event, finding, terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics; 2.4.0: zt-digest-prepare v4 passes -Book and omits the explicit source, BibTeX and title, and the harness checks both command forms and the args gate). Pilot: one chapter with cardMax, explainMax, hubTrees, after a database backup. bridge-workflow-harness.mjs exercises discovery, acceptance, cleanup and probe-free apply; compiler tests use scratch archives; actual user acceptance gates the live apply pilot."
   },
   "roles": {
     "manager": {
@@ -55,6 +55,10 @@
     "bookTitle": {
       "type": "string",
       "description": "the book's title (mode full)"
+    },
+    "book": {
+      "type": "any",
+      "description": "a Scholar Archive Work id or an exact title: mode full resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range instead of source, bibtex and bookTitle"
     },
     "fileId": {
       "type": "any",
@@ -348,6 +352,10 @@
                 "value": "full"
               },
               {
+                "path": "args.book",
+                "op": "nonempty"
+              },
+              {
                 "op": "and",
                 "value": [
                   {
@@ -365,7 +373,7 @@
                 ]
               }
             ],
-            "message": "mode full needs args source, bibtex, and bookTitle"
+            "message": "mode full needs args book, or args source, bibtex, and bookTitle"
           },
           {
             "op": "or",

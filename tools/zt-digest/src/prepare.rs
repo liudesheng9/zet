@@ -1,6 +1,11 @@
 //! `zt-digest prepare` (the port of `scripts/book-digest/prepare-book-digest.ps1`) and
 //! `zt-digest prepare-link` (the port of `prepare-link-pass.ps1`).
 //!
+//! With `-Book <Work id|title>` the book is resolved through the read-only Scholar Archive
+//! bridge first (`resolve`): the Work, its Chinese/bilingual Markdown, its BibTeX and the
+//! heading range become the run's frozen choices, and the caller's explicit `-Source`,
+//! `-FileId`, `-BibTeX`, `-BookTitle` and range arguments must agree with them.
+//!
 //! prepare: reads a Chinese bilingual Markdown book and keeps the Chinese, keeps its figures in
 //! ZET's artifact store (`figures::book_figures`), splits it at `#` and `##` headings from
 //! -StartHeading to -EndHeading into units and groups, and writes to -Out: book.zh.md,
@@ -31,11 +36,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
+mod resolve;
+
 static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
 static CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}\x{F900}-\x{FAFF}]").unwrap());
 static HAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}]").unwrap());
 static KEEP_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(\$\$|\||<|```)").unwrap());
-static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(#{1,2})\s+(.+)$").unwrap());
+pub(crate) static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(#{1,2})\s+(.+)$").unwrap());
 static NOT_EVENT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(!\[|\||#|\d+\))").unwrap());
 static CITATION_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\?\[[^\]]*\d{4}[^\]]*\\?\]|[（(]\s*\d{4}[a-z]?\s*[)）]").unwrap());
 static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(1[5-9]\d\d|20[0-2]\d)\s*年").unwrap());
@@ -73,6 +80,12 @@ fn mandatory(a: &Args, name: &str) -> Result<String> {
         bail!("Cannot bind argument to parameter '{name}' because it is an empty string.");
     }
     Ok(value)
+}
+
+/// Whether the text holds a Chinese character: a resolved heading with one survives the
+/// digest's Chinese-only filter, an English-only heading may not.
+pub(crate) fn has_cjk(text: &str) -> bool {
+    CJK.is_match(text)
 }
 
 /// `$text -match '(1[5-9]\d\d|20[0-2]\d)\s*年(?!代)'`.
@@ -422,23 +435,71 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Instructions",
         "Variant",
         "RunOptions",
+        "Book",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply"])?;
-    let source = mandatory(&a, "Source")?;
     let out = mandatory(&a, "Out")?;
     if Path::new(&out).join("ledger.sqlite3").exists() {
         bail!("output directory is already initialized; use ledger resume operations or a new output directory");
     }
-    let key = mandatory(&a, "CitationKey")?;
-    let bibtex = mandatory(&a, "BibTeX")?;
-    let title = a.str("BookTitle");
-    let start = a.str_or("StartHeading", "导论");
-    let end = a.str_or("EndHeading", "参考");
-    let skip_headings = a.str("SkipHeadings");
+    let book = a.str("Book");
+    let mut held: Option<Zt> = None;
+    let resolved = if book.trim().is_empty() {
+        None
+    } else {
+        let mut zt = Zt::start()?;
+        let explicit = resolve::Explicit {
+            source: a.str("Source"),
+            source_given: a.has("Source"),
+            file_id: a.int_or("FileId", 0)?,
+            citation_key: a.str("CitationKey"),
+            citation_key_given: a.has("CitationKey"),
+            bibtex: a.str("BibTeX"),
+            bibtex_given: a.has("BibTeX"),
+            book_title: a.str("BookTitle"),
+            book_title_given: a.has("BookTitle"),
+            start: a.has("StartHeading").then(|| a.str("StartHeading")),
+            end: a.has("EndHeading").then(|| a.str("EndHeading")),
+            skip: a.has("SkipHeadings").then(|| a.str("SkipHeadings")),
+        };
+        match resolve::run(&mut zt, &out, book.trim(), &explicit)? {
+            resolve::Outcome::NeedsSelection(result) => {
+                util::print_last(&result)?;
+                return Ok(resolve::NEEDS_SELECTION);
+            }
+            resolve::Outcome::Ready(resolved) => {
+                held = Some(zt);
+                Some(resolved)
+            }
+        }
+    };
+    let (source, key, bibtex, title, start, end, skip_headings) = match &resolved {
+        Some(resolved) => (
+            resolved.source.clone(),
+            resolved.citation_key.clone(),
+            resolved.bibtex.clone(),
+            resolved.book_title.clone(),
+            resolved.start.clone(),
+            resolved.end.clone(),
+            resolved.skip.clone(),
+        ),
+        None => (
+            mandatory(&a, "Source")?,
+            mandatory(&a, "CitationKey")?,
+            mandatory(&a, "BibTeX")?,
+            a.str("BookTitle"),
+            a.str_or("StartHeading", "导论"),
+            a.str_or("EndHeading", "参考"),
+            a.str("SkipHeadings"),
+        ),
+    };
     let max_chars = a.int_or("MaxChars", 20000)?;
     let max_units = a.int_or("MaxUnits", 3)?;
     let min_unit_chars = a.int_or("MinUnitChars", 1000)?;
-    let mut file_id = a.int_or("FileId", 0)?;
+    let mut file_id = match &resolved {
+        Some(resolved) => resolved.file_id,
+        None => a.int_or("FileId", 0)?,
+    };
     let min_figure_bytes = a.int_or("MinFigureBytes", 3000)?;
     let max_event_candidates = a.int_or("MaxEventCandidates", 12)?;
     let instructions = a.str_or("Instructions", "dsh-instructions.zh.md");
@@ -474,6 +535,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let skip: Vec<String> = skip_headings.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect();
     let units = split_units(&kept, &start, &end, &skip);
     if units.is_empty() {
+        if resolved.is_some() {
+            bail!(
+                "the start heading \"{start}\" is not in the Chinese text of {source} (the bilingual filter drops an English-only heading whose next block is its translation); pass -StartHeading with a heading of the Chinese text"
+            );
+        }
         bail!("no heading \"{start}\" found in {source}");
     }
     let merged = merge_units(units, min_unit_chars)?;
@@ -491,8 +557,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
     let staging = ps::full_name(&out);
 
-    // The book stays on disk: one file per unit plus an index.
-    let mut book = format!("# 全书正文（中文译本，{start} 至 {end} 之前）{NL}{NL}");
+    // The book stays on disk: one file per unit plus an index. A resolved run that found no
+    // back matter has no end heading, so its header names only the start.
+    let mut book = if end.is_empty() {
+        format!("# 全书正文（中文译本，{start} 起）{NL}{NL}")
+    } else {
+        format!("# 全书正文（中文译本，{start} 至 {end} 之前）{NL}{NL}")
+    };
     let unit_file: Vec<String> = (0..merged.len()).map(|u| format!("s{:02}.md", u + 1)).collect();
     for (u, unit) in merged.iter().enumerate() {
         write(&join_path(&staging, &format!("sections\\{}", unit_file[u])), &unit.text)?;
@@ -510,7 +581,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let documents: Vec<(String, String)> = merged.iter().enumerate().map(|(u, unit)| (unit_file[u].clone(), unit.text.clone())).collect();
     let section_model = Relatedness::new(&documents, 150);
 
-    let documents_line = if file_id != 0 { figures::document_line(file_id)? } else { String::new() };
+    let documents_line = match &resolved {
+        Some(resolved) => resolved.documents.clone(),
+        None => if file_id != 0 { figures::document_line(file_id)? } else { String::new() },
+    };
     let index_path = join_path(&staging, "sections\\index.md");
     let mut manifest = Map::new();
     manifest.insert("citation_key".into(), json!(key));
@@ -526,6 +600,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     manifest.insert("figures".into(), json!(figure_map.len()));
     manifest.insert("figures_file".into(), json!(join_path(&staging, "figures.json")));
     manifest.insert("documents".into(), json!(documents_line));
+    // The resolution was frozen (and persisted with every excluded section) before this
+    // staging folder held any group work.
+    if let Some(resolved) = &resolved {
+        manifest.insert("preparation".into(), json!(resolved.preparation));
+        manifest.insert("book_resolution".into(), resolved.summary.clone());
+    }
 
     // Every kept figure with its labels: the model compiler hands a part the figure its plan names.
     let mut listed: Vec<(String, Figure)> = figure_map.iter().map(|(k, f)| (k.clone(), f.clone())).collect();
@@ -639,8 +719,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     // --- agent Literature tree ---
     if apply {
-        let mut zt = Zt::start()?;
-        let z = &mut zt;
+        if held.is_none() {
+            held = Some(Zt::start()?);
+        }
+        let z = held.as_mut().context("no zt mcp process for the Literature tree")?;
         let archive=if !variant.is_empty() {
             z.archive_view()?["archive_identity"].clone()
         } else {Value::Null};

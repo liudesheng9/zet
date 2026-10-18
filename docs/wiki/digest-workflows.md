@@ -137,13 +137,13 @@ Every stage module calls `zdMake(ctx, params)` (directly or through `zmlMake` / 
 
 ### Workflows and their stages
 
-#### zt-econ-digest (v3.3.0) and zt-math-digest (v2.4.0) on base v2.3.0: the composed stage graph
+#### zt-econ-digest (v3.4.0) and zt-math-digest (v2.5.0) on base v2.4.0: the composed stage graph
 
 The stage ids, modules, and `after` edges come from the registry `blueprint.json` of each variant; titles are the progress phases.
 
 | Stage | Title | Module | After | Runs when (beyond its mode list) | On failure |
 |---|---|---|---|---|---|
-| `args` | Prepare | `gate` (framework) | — | always; checks `citationKey` (unless mode `hubs`/`audit`) and `source`, `bibtex`, `bookTitle` (mode `full`) | halt |
+| `args` | Prepare | `gate` (framework) | — | always; checks `citationKey` (unless mode `hubs`/`audit`), and in mode `full` either `book` or `source`, `bibtex` and `bookTitle` | halt |
 | `source` | Prepare | `zt-dsh-source` | args | not in modes `figures`, `audit`; not in mode `bridge` with `bridgeReport`, `bridgeApply`, or `bridgeApplyEarlier` | halt |
 | `prepare` | Prepare | `zt-digest-prepare` | source | mode `full` runs the script; other modes take `args.groups` | halt |
 | `math-skeleton` (math) | Prepare | `zt-math-skeleton` | prepare | mode `full` | halt |
@@ -176,7 +176,7 @@ The stage ids, modules, and `after` edges come from the registry `blueprint.json
 
 | Mode | zt-econ-digest | zt-math-digest | Stages it runs | Needs |
 |---|---|---|---|---|
-| `full` | yes | yes | all | `out`, `citationKey`, `source`, `bibtex`, `bookTitle` |
+| `full` | yes | yes | all | `out`, `citationKey`, and `book` or `source`+`bibtex`+`bookTitle` |
 | `link` | yes | yes | args, source, prepare, link-prepare, link, link-check, cleanup, organize, hubs, report | `groups` |
 | `cards` | yes | yes | args, source, prepare, cards-book, report | `citationKey`, `out` |
 | `hubs` | yes | yes | args, source, prepare, hubs-first, organize, report | `out` only |
@@ -218,6 +218,7 @@ Base args (both workflows):
 | `out` | string, required | — | the staging folder |
 | `citationKey` | string | — | the book's BibTeX key (all modes but `hubs`, `audit`) |
 | `source`, `bibtex`, `bookTitle` | string | — | the bilingual Markdown, the BibTeX entry, the title (mode `full`) |
+| `book` | any | — | a Scholar Archive Work id or exact title: mode `full` resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range through the read-only bridge, and the three explicit arguments are left out (base 2.4.0) |
 | `fileId` | any | read from the source path | the Scholar Archive file id of the book Markdown |
 | `startHeading`, `endHeading`, `skipHeadings` | string | none | where the text starts and stops; headings whose units are left out (`参考文献,习题`) |
 | `groups` | number | — | the existing group count (modes `link`, `models`) |
@@ -503,6 +504,7 @@ The stage stands after Figures and before Hubs in both workflows. Each variant p
 | Path | Written by | Kept |
 |---|---|---|
 | `groups\gNN.md`, `shared-prefix.md`, `link-prefix.md`, the manifest, the Chinese text | `prepare-book-digest.ps1` | yes |
+| `preparation.json` (`prepare -Book`) | the resolution: the Work, the chosen file, the generated BibTeX, the heading range with every excluded section, the frozen source hash; the manifest names it as `book_resolution.preparation` | yes |
 | `snapshot-gNN.md`, `link-gNN.md`, `allow-g*.txt`, `*calls*.json` | digest managers, `prepare-link-pass.ps1`, helpers | deleted by `zt-dsh-cleanup` |
 | `owned-gNN.txt`, `cards-all.md` | digest runs, link preparation | yes |
 | `linked-gNN.txt` | link managers (`Set-Content ... -Value done`) | yes |
@@ -556,10 +558,16 @@ node $A verify zt-econ-digest --scope project --project E:\zet
 
 ```js
 Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
+  book: 20, out: "D:\\zt-digest\\<key>", citationKey: "<key>",
+  startHeading: "<first chapter heading>", endHeading: "参考" } })
+// or the explicit form of an existing digest: source, bibtex and bookTitle instead of book
+Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
   source: "<the book's Chinese bilingual Markdown>", out: "D:\\zt-digest\\<key>",
   citationKey: "<key>", bibtex: "@book{<key>, title={…}}", bookTitle: "<中文书名>",
   startHeading: "<first chapter heading>", endHeading: "参考" } })
 ```
+
+`book` is a Scholar Archive Work id or an exact title; prepare resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range through the read-only bridge, and reports the candidates (exit 3) when the title or the file is not unique. See [zt-digest](zt-digest.md), `prepare -Book`.
 
 Re-run one stage on an existing digest:
 
@@ -671,6 +679,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-18` — Base 2.4.0 adds `args.book`: a Scholar Archive Work id or exact title that `prepare-book-digest.ps1 -Book` resolves into the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range, so mode `full` takes `book` or `source`+`bibtex`+`bookTitle` and never a silent mix. `zt-digest-prepare` v4 passes `-Book` alone and leaves the explicit arguments out; the args gate accepts either form; `zt-econ-digest` is 3.4.0 and `zt-math-digest` 2.5.0, both reinstalled and verified. `framework-harness.mjs` checks the `-Book` command, the args gate and the explicit form (136 checks). The workflow itself is not run here.
 
 - `2026-10-17` — Add namespaced real-batch hang seams before/after archive commit for bounded transport cleanup and exact receipt-recovery qualification.
 

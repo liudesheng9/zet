@@ -31,12 +31,26 @@
     -BibTeX and the anchor line <key>/1 .. <key>/N, one per group. It refuses if the tree exists.
     The Literature Card's body links the Work's PDF and Markdown documents with Document links
     (`[原书 PDF](scholar:<file_id>)`), which the GUI opens.
+  - -Book <Work id|title> resolves the book through the read-only Scholar Archive bridge instead
+    of taking -Source, -BibTeX and -BookTitle: the Work (a Work id resolves exactly; a title only
+    on one exact match), its Chinese/bilingual Markdown from the saved file metadata (a bilingual
+    or `chinese_bilingual_markdown` file wins; several files of the same preference need -FileId),
+    the BibTeX entry from the saved metadata (the Citation key is generated when -CitationKey is
+    not given, and a taken key is refused), and the heading range (the proposal starts after the
+    front matter, ends at the back matter, and skips exercises and references). The resolved
+    source path, hash, key and range, with every excluded section, are written to
+    `<Out>\preparation.json` and recorded in `manifest.json` as `book_resolution` before any group
+    work. A choice that stays open (an ambiguous title or several suitable files) writes only the
+    preparation result, prints it as its last line and exits 3; no Card is written. A given -Source,
+    -FileId, -BibTeX or -BookTitle that disagrees with the resolution is an input error, and a
+    bridge that cannot supply the metadata or the document fails with the missing fact and accepts
+    the explicit arguments as the fallback.
   Prints the manifest as compact JSON.
 
-  Parameters: -Source, -Out, -CitationKey, -BibTeX (required); -BookTitle '', -StartHeading 导论,
-  -EndHeading 参考, -SkipHeadings '', -MaxChars 20000, -MaxUnits 3, -MinUnitChars 1000, -FileId 0,
-  -MinFigureBytes 3000, -MaxEventCandidates 12, -Instructions dsh-instructions.zh.md,
-  -NoEventCandidates, -NoFigures, -Apply.
+  Parameters: -Source, -Out, -CitationKey, -BibTeX (required unless -Book resolves them); -Book,
+  -BookTitle '', -StartHeading 导论, -EndHeading 参考, -SkipHeadings '', -MaxChars 20000,
+  -MaxUnits 3, -MinUnitChars 1000, -FileId 0, -MinFigureBytes 3000, -MaxEventCandidates 12,
+  -Instructions dsh-instructions.zh.md, -NoEventCandidates, -NoFigures, -Apply.
 
   This script forwards every argument to `zt-digest prepare` (tools/zt-digest/src/prepare.rs),
   which does the work in one process with one `zt mcp`; callers should call the tool directly. It
