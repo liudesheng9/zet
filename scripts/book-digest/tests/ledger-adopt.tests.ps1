@@ -107,6 +107,16 @@ try {
         } }
     }
 
+    # The retained command/provider outputs: an Event/Finding layer with one job that never
+    # settled, and the immutable Bridge report the legacy run left.
+    $findings = Join-Path $legacy 'findings'
+    New-Item -ItemType Directory -Force $findings | Out-Null
+    Save-Json (Join-Path $findings 'plan.json') @{ schema_version = 1; layer = 'findings'; jobs = @(@{ id = 'f-001' }, @{ id = 'f-002' }, @{ id = 'f-003' }) }
+    Save-Json (Join-Path $findings 'state.json') @{ applied = @{ 'f-001' = @{ answer = 'x' } }; partial = @{ 'f-002' = @{ refused = @() } } }
+    $bridge = Join-Path $legacy 'bridge'
+    New-Item -ItemType Directory -Force $bridge | Out-Null
+    [IO.File]::WriteAllText((Join-Path $bridge 'report.md'), "# Bridge report`n`n- b001 承接 [[Topic/7]]：本条说明两者的关系。`n", $utf8)
+
     # --- R410: `ledger init` never fabricates a legacy folder's history -----------------------
     $archiveIdentity = (Invoke-Zt @(@{ tool = 'get_cards'; arguments = @{ addresses = @(); view = 'text' } }))[0].archive_identity
 
@@ -137,6 +147,10 @@ try {
     Assert (-not (Test-Path -LiteralPath (Join-Path $legacy 'ledger.sqlite3')) -and -not (Test-Path -LiteralPath (Join-Path $legacy 'manifest.json'))) 'a read-only plan writes no ledger and no prepared manifest'
     Assert ((Test-Path -LiteralPath $planFile) -and $plan.plan.sha256 -eq (Get-FileHash -LiteralPath $planFile -Algorithm SHA256).Hash.ToLowerInvariant()) 'the plan is a separately identifiable artifact with its own hash'
     Assert (@($plan.derived | Where-Object artifact -EQ 'shared-prefix.md').Count -eq 1 -and @($plan.derived | Where-Object artifact -EQ 'events.json').Count -eq 1) 'the plan names every artifact it derives instead of inventing them'
+    Assert ($plan.evidence.retained_outputs.findings.pending_jobs -eq 1 -and $plan.evidence.retained_outputs.findings.applied_jobs -eq 1 -and $plan.evidence.retained_outputs.findings.partial_jobs -eq 1) 'the retained Finding job state is recorded as facts, not as coverage'
+    Assert (@($plan.classification.unknown | Where-Object { $_.what -eq 'pending findings job' })[0].reason.Contains('whole-book Card cycle')) 'a job that never settled is a named obligation, never a completion'
+    Assert ($plan.evidence.retained_outputs.bridge.report.sha256 -eq (Get-FileHash -LiteralPath (Join-Path $legacy 'bridge\report.md') -Algorithm SHA256).Hash.ToLowerInvariant()) 'the retained Bridge report is recorded by its exact hash'
+    Assert (@($plan.classification.unknown | Where-Object { $_.what -eq 'retained Bridge report' })[0].reason.Contains('no proposal without its explicit acceptance')) 'the Bridge report stays a review decision, never an applied proposal'
 
     # --- R417: not enough evidence names the missing scope and writes nothing ------------------
     $empty = Join-Path $scratch 'empty-legacy'

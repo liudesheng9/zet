@@ -69,6 +69,9 @@ struct Legacy {
     figures: Option<(PathBuf, String)>,
     retained: Vec<RetainedModel>,
     model_states: usize,
+    /// The command/provider outputs the folder still holds: Events/Findings job state and the
+    /// Bridge report. They name obligations adoption records but does not invent a completion for.
+    retained_outputs: Value,
     /// Artifacts the legacy folder does not retain: derived read-only at apply (R415).
     derived: Vec<Value>,
     /// Scope this folder cannot supply: adoption needs an explicit preparation (R417).
@@ -411,6 +414,7 @@ fn resolve(out: &str, variant: &str) -> Result<Legacy> {
     }
     let _ = link_instructions;
     let (retained, model_states) = retained_models(&out)?;
+    let retained_outputs = retained_outputs(&out)?;
     Ok(Legacy {
         out,
         variant: variant.to_string(),
@@ -425,6 +429,7 @@ fn resolve(out: &str, variant: &str) -> Result<Legacy> {
         figures,
         retained,
         model_states,
+        retained_outputs,
         derived,
         missing,
     })
@@ -506,6 +511,73 @@ fn is_skeleton(body: &str) -> bool {
 
 fn is_placeholder(body: &str) -> bool {
     body.replace('\r', "").split('\n').any(|line| line.trim() == "待写")
+}
+
+/// The Events/Findings compiler state a layer keeps beside its accepted plan. A job the plan
+/// lists but the state neither applied nor marked partial never settled: adoption records that
+/// fact and registers no completion for it (R415).
+fn layer_jobs(out: &Path, name: &str) -> Result<Option<Value>> {
+    let work = out.join(name);
+    let plan_path = work.join("plan.json");
+    let state_path = work.join("state.json");
+    if !plan_path.is_file() && !state_path.is_file() {
+        return Ok(None);
+    }
+    let planned = if plan_path.is_file() {
+        util::read_json(&plan_path)?["jobs"].as_array().map(Vec::len).unwrap_or(0)
+    } else {
+        0
+    };
+    let state = if state_path.is_file() {
+        util::read_json(&state_path)?
+    } else {
+        Value::Null
+    };
+    let applied = state["applied"].as_object().map(|jobs| jobs.len()).unwrap_or(0);
+    let partial = state["partial"].as_object().map(|jobs| jobs.len()).unwrap_or(0);
+    let settled = applied + partial;
+    Ok(Some(json!({
+        "work":plain(&work),
+        "plan":if plan_path.is_file() { json!(true) } else { Value::Null },
+        "state":if state_path.is_file() { json!(true) } else { Value::Null },
+        "planned_jobs":planned,
+        "applied_jobs":applied,
+        "partial_jobs":partial,
+        "pending_jobs":planned.saturating_sub(settled),
+    })))
+}
+
+/// The command/provider outputs the folder still holds, as facts: the Event and Finding job
+/// counts and the retained Bridge report. Adoption names them and never applies a Bridge
+/// proposal or claims a settled job (R411/R415).
+fn retained_outputs(out: &Path) -> Result<Value> {
+    let bridge = out.join("bridge");
+    let report = bridge.join("report.md");
+    let proposal_plan = bridge.join("plan.json");
+    let proposals = bridge.join("proposals.json");
+    let mut outputs = Map::new();
+    for name in ["events", "findings"] {
+        outputs.insert(name.into(), layer_jobs(out, name)?.unwrap_or(Value::Null));
+    }
+    outputs.insert(
+        "bridge".into(),
+        if report.is_file() || proposal_plan.is_file() {
+            json!({
+                "work":plain(&bridge),
+                "report":if report.is_file() {
+                    let path = canonical(&report)?;
+                    json!({"path":plain(&path),"sha256":hash_file(&path)?})
+                } else { Value::Null },
+                "proposals":if proposals.is_file() {
+                    let path = canonical(&proposals)?;
+                    json!({"path":plain(&path),"sha256":hash_file(&path)?})
+                } else { Value::Null },
+            })
+        } else {
+            Value::Null
+        },
+    );
+    Ok(Value::Object(outputs))
 }
 
 fn log_lines(path: &Option<PathBuf>) -> Vec<String> {
@@ -900,6 +972,26 @@ fn plan_document(
             "reason":"the folder retained no model compiler state, so no retained model plan, note suggestion or historic review exists",
         }));
     }
+    // R415: the retained Event/Finding job state and Bridge report are named facts. Adoption
+    // registers no completion for them and applies no Bridge proposal.
+    for name in ["events", "findings"] {
+        let layer = &legacy.retained_outputs[name];
+        if layer["pending_jobs"].as_u64().is_some_and(|pending| pending > 0) {
+            unknown.push(json!({
+                "what":format!("pending {name} job"),
+                "detail":{"planned_jobs":layer["planned_jobs"],"applied_jobs":layer["applied_jobs"],"partial_jobs":layer["partial_jobs"],"pending_jobs":layer["pending_jobs"]},
+                "reason":format!("the retained {name} plan lists jobs whose state is neither applied nor partial; adoption registers no completion for them, and the whole-book Card cycle owns the Cards they would have written"),
+            }));
+        }
+    }
+    if legacy.retained_outputs["bridge"]["report"].is_object() {
+        unknown.push(json!({
+            "what":"retained Bridge report",
+            "unit":"bridge/book@1",
+            "detail":legacy.retained_outputs["bridge"]["report"],
+            "reason":"the Bridge publication is registered open; adoption applies no proposal without its explicit acceptance, so the immutable report stays a review decision",
+        }));
+    }
     let mut proposal = Vec::new();
     for fact in group_facts {
         proposal.push(json!({
@@ -983,9 +1075,10 @@ fn plan_document(
             "source_sha256":legacy.source_sha256,
             "groups":legacy.groups.len(),
             "model_states":legacy.model_states,
+            "retained_outputs":legacy.retained_outputs,
             "retained_models":legacy.retained.len(),
-            "terms":legacy.terms.as_ref().map(|(path, sha)| json!({"path":path.to_string_lossy(),"sha256":sha})).unwrap_or(Value::Null),
-            "figures":legacy.figures.as_ref().map(|(path, sha)| json!({"path":path.to_string_lossy(),"sha256":sha})).unwrap_or(Value::Null),
+            "terms":legacy.terms.as_ref().map(|(path, sha)| json!({"path":plain(path),"sha256":sha})).unwrap_or(Value::Null),
+            "figures":legacy.figures.as_ref().map(|(path, sha)| json!({"path":plain(path),"sha256":sha})).unwrap_or(Value::Null),
         },
         "groups":group_facts.iter().map(|fact| {
             let group = legacy.groups.iter().find(|group| group.n == fact.n).expect("group evidence");
