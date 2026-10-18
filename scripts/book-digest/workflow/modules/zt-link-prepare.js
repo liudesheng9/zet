@@ -15,7 +15,7 @@ defineModule({
     const linkPrep = await Z.zAgent(
       `Prepare the cross-part link pass of a ZET book digest. Do exactly these steps.
 1. Run this PowerShell command (one call): ${Z.tool('prepare-link-pass')} -Staging "${Z.OUT}"
-   On a large book it takes several minutes. Run it in the foreground with timeout 600000 and wait for it; never in the background. If it fails because the ZT service is not up, run \`zt up\` once and run the command again. Its last line is JSON {"pending":[n…],"groups":[{"n","owned","done"}],"unowned","cards_all"}. If it fails, return ok=false with the error.
+   On a large book it takes several minutes. Run it in the foreground with timeout_ms: 600000 and wait for it; never in the background. If it fails because the ZT service is not up, run \`zt up\` once and run the command again. Its last line is JSON {"pending":[n…],"groups":[{"n","owned","done"}],"unowned","cards_all"}. If it fails, return ok=false with the error.
 2. ${p.mode === 'link' ? ZD_USAGE_STEP : 'Skip this step.'}
 Return ok, pending (the "pending" array exactly), owned_total (sum of owned), unowned${p.mode === 'link' ? ', usage_before' : ''}.`,
       {

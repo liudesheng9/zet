@@ -1,10 +1,13 @@
-// ==== module zt-explain v3 ====
-// Mode "explain": 思路, 说明, and 解读 for the finished Derivation parts of a book (or of the Model Cards in
-// args.only). model-compiler.ps1 plans one job per chain, DeepSeek writes JSON, the script writes the Cards and
-// refuses any change to 起点, a step, or 结果. A refused part goes back to the same conversation once.
+// ==== module zt-explain v4 ====
+// Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
+// which a checked Model completion registers. Each claimed block is written by the existing explanation chain
+// (plan one job per chain, DeepSeek JSON, the script writes 思路/说明/解读 and refuses a changed 起点/step/结果,
+// one refused part going back to its own conversation once); every unit is then recorded through
+// `explain-finish`, which re-reads the parts and refuses a part that still lacks text. Runs in mode explain and
+// after the model layer in mode full.
 defineModule({
-  id: 'zt-explain', version: '3', requires: ['zt-model-lib'],
-  summary: 'ZT digest: explanations of finished Derivation parts (mode explain).',
+  id: 'zt-explain', version: '4', requires: ['zt-model-lib'],
+  summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written by the explanation chain and recorded by explain-finish.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
@@ -16,39 +19,35 @@ defineModule({
     const A = Z.A
     const work = `${Z.OUT}\\explain`
     const xstep = (s, extra = '') => `${Z.COMPILER} -Step ${s} -Work "${work}" -Staging "${Z.OUT}" ${Z.LIMITS}${extra}`
-    let models = Array.isArray(A.only) && A.only.length ? A.only : null
-    if (!models) {
-      const listed = await M.listModels(`-All -CitationKey ${Z.KEY}`, 'find models: explain')
-      if (!listed || !listed.ok) return { status: 'failed', error: `listing failed: ${listed && listed.error}` }
-      models = listed.models.filter(m => m.level !== 'concept').map(m => m.address)
-    }
-    if (!models.length) return { status: 'done', models: [] }
-    const sessions = {}
-    let jobs = 0
-    const xrun = async (what, command, opts = {}) => {
-      const r = await Z.drive(`explain: ${what}`, {
-        command, dsh: work, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, sessions: opts.continues ? sessions : null,
-        cleanup: opts.cleanup, phase: 'Models', writes: `${work}\\out`, keep: true,
-      })
-      for (const x of (r && r.results) || []) {
-        jobs++
-        if (x.session_id) sessions[x.id] = x.session_id
-      }
-      if (!r || !r.ok) log(`explain ${what}: ${(r && r.error) || 'no report from its driver'}`)
-      return r
-    }
-    const planned = zdLastJson(((await xrun('plan', xstep('explain', ` -Models "${models.join(',')}"${A.explainMax ? ` -MaxParts ${A.explainMax}` : ''}`))) || {}).output)
-    if (!planned) return { status: 'failed', error: 'explain plan: no output from model-compiler.ps1' }
-    log(`Explain: ${planned.parts || 0} Derivation parts of ${models.length} models in ${(planned.jobs || []).length} DeepSeek jobs.`)
-    // The first apply writes what passes and sends refused parts back once; the second writes the follow-ups.
-    const first = zdLastJson(((await xrun('apply 1', xstep('explain-apply'), { continues: true })) || {}).output)
-    const second = first && (first.jobs || []).length ? zdLastJson(((await xrun('apply 2', xstep('explain-apply'))) || {}).output) : null
-    const reported = zdLastJson(((await xrun('report', xstep('explain-report'), { cleanup: true })) || {}).output)
-    const rows = (reported && reported.models) || []
-    const sum = (field) => rows.reduce((s, r) => s + (Number(r[field]) || 0), 0)
-    const refused = [...((first && first.refused) || []), ...((second && second.refused) || [])]
-    log(`Explain: ${sum('explained')} of ${sum('derivations')} Derivation parts have 思路 and 解读; ${(first ? first.applied : 0) + (second ? second.applied : 0)} written now, ${refused.length} refused, ${rows.reduce((s, r) => s + (r.blocked || []).length, 0)} blocked; ${jobs} DeepSeek jobs.`)
-    return { status: reported && first ? 'done' : 'failed', parts: planned.parts, applied: [first, second].filter(Boolean), refused, report: reported }
+    const result = await Z.layer('explain', {
+      layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models',
+      work: async (units) => {
+        const models = units.map(u => (u.inputs && u.inputs.model) || '').filter(Boolean)
+        const only = Array.isArray(A.only) && A.only.length ? ` -Models "${models.join(',')}"` : ` -Models "${models.join(',')}"`
+        const chained = await Z.chain(`explain ${models.join(', ')}`, {
+          dsh: work, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, phase: 'Models', writes: `${work}\\out`,
+          steps: [
+            { name: 'plan', command: xstep('explain', `${only}${A.explainMax ? ` -MaxParts ${A.explainMax}` : ''}`), jobs: true },
+            { name: 'apply 1', command: xstep('explain-apply'), jobs: true },
+            { name: 'apply 2', command: xstep('explain-apply'), jobs: true, optional: true },
+            { name: 'report', command: xstep('explain-report'), optional: true },
+          ],
+          cleanup: true, keep: true,
+        })
+        const planned = Z.jsonOf(chained, 'plan')
+        const reported = Z.jsonOf(chained, 'report')
+        const refused = (Z.jsonOf(chained, 'apply 1') || {}).refused || []
+        log(`Explain: ${planned ? `${planned.parts || 0} Derivation parts in ${(planned.jobs || []).length} DeepSeek jobs` : 'plan gave no output'}; ${reported ? `${(reported.models || []).length} models reported` : 'no report'}; ${refused.length} refused.`)
+        const out = []
+        for (const unit of units) {
+          const at = (unit.inputs && unit.inputs.model) || ''
+          out.push(await Z.finishOrFault(`explain ${at}`, unit.id, unit.token, unit.inputs, { model: at }))
+        }
+        return out
+      },
+    })
+    log(`Explain: ${result.status} — ${result.dispositions.filter(d => d.status === 'done').length} models checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)
+    return { status: result.status, dispositions: result.dispositions, gate: result.gate }
   },
 })
 // ==== end module zt-explain ====

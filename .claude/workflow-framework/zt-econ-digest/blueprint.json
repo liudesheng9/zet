@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "3.5.0",
+  "version": "4.0.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -9,11 +9,11 @@
     "P2": "Inputs: the base args plus events and findings (false skips that layer). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the Model Cards of the book (model layer), the dated sentences per group (event layer), and the sentences that report data with a number per group (empirical-results layer; 3 groups per DeepSeek job each).",
     "P4": "Roles: as the base (manager Haiku low, architect Sonnet, organizer Opus).",
-    "P5": "Stage graph: the base chain; after-digest: models (the model layer), explain (mode explain), events (the event layer), findings (the empirical-results layer), side by side after the digest and before the link pass. Figures → Bridge → Hubs; Bridge profile book.",
+    "P5": "Stage graph: the base chain; the Event and Finding layers fill after-terms, so they are worked from ledger readiness while the remaining digest groups run; after-digest: the model layer, released when the digest managers settle; after-models: explanations of the finished Derivation parts, which settle before the link pass; the whole-book card cycle waits for the Model reviews. Figures → Bridge, Hubs → Bridge, and the final audit joins Hubs and Bridge. Bridge profile book.",
     "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md), zt-finding-layer (finding-compiler.ps1, dsh-finding-instructions.zh.md; the Card type finding of zt 0.20.0). zt-bridge v3.",
     "P7": "Checks: as the base; each event and finding job runs its SELF-CHECK (precheck: fields, supported Cards, and zt-check on the drafts: E1, E2 or F1 to F3, and the Card language); apply refuses what the precheck reports; in mode full the link check card cycle then checks every Card of the book. Bridge BR1–BR9, exact report acceptance and guarded edits.",
     "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
-    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of the removed workflow-harness.mjs and the layer order; 3.2.0: base 2.2.0, the ported scripts run as zt-digest tools; 3.3.0: base 2.3.0, every digest script runs as its zt-digest tool, the event and finding layers too; 3.4.0: base 2.4.0, the book argument passes -Book through prepare), tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 (scratch archives; the finding test needs zt 0.20.0). Run with zt 0.20.0 deployed: the finding layer creates Cards of type finding. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
+    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs checks the readiness graph, the ledger commands of the group cycle and every layer, the runner restrictions and the joins on the built script; tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 use scratch archives. Run with zt 0.20.0 deployed. Pilot: one chapter after a database backup."
   },
   "roles": {
     "manager": {
@@ -308,6 +308,18 @@
       "type": "any",
       "description": "separate all or unique array of earlier-carrier ids from bridgeReport"
     },
+    "maxAttempts": {
+      "type": "number",
+      "min": 1,
+      "max": 10,
+      "description": "the per-unit attempt budget of the managed run (default 3); persisted at preparation"
+    },
+    "dshRunCap": {
+      "type": "number",
+      "min": 60,
+      "max": 3600,
+      "description": "the seconds one external DeepSeek run may live (default 1200); persisted at preparation"
+    },
     "events": {
       "type": "boolean",
       "description": "mode full: false skips the event layer"
@@ -348,7 +360,7 @@
               {
                 "path": "mode",
                 "op": "matches",
-                "value": "^(hubs|audit)$"
+                "value": "^(hubs|audit|resume)$"
               },
               {
                 "path": "args.citationKey",
@@ -530,7 +542,8 @@
           "link"
         ],
         "instructions": "{{consts.profile.instructions}}",
-        "noEventCandidates": "{{consts.profile.noEventCandidates}}"
+        "noEventCandidates": "{{consts.profile.noEventCandidates}}",
+        "profile": "{{consts.profile}}"
       }
     },
     {
@@ -558,11 +571,204 @@
       }
     },
     {
+      "id": "events",
+      "title": "Events",
+      "detail": "the event layer: event-compiler.ps1 lists the dated sentences and each group's Idea Cards; DeepSeek writes the Event Cards as JSON with its SELF-CHECK; the script creates them beside the Idea Cards they support and links them",
+      "module": "zt-event-layer",
+      "when": [
+        {
+          "path": "mode",
+          "op": "matches",
+          "value": "^(full|events)$"
+        },
+        {
+          "path": "args.events",
+          "op": "!=",
+          "value": false
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "model": {
+          "$ref": "stages.source.output.model"
+        }
+      },
+      "after": [
+        "terms"
+      ]
+    },
+    {
+      "id": "findings",
+      "title": "Findings",
+      "detail": "the empirical-results layer: finding-compiler.ps1 lists the sentences that report data with a number and each group's Idea Cards; DeepSeek writes one Finding Card per result as JSON with its SELF-CHECK (F1 to F3); the script creates them beside the group anchors and links them with 印证",
+      "module": "zt-finding-layer",
+      "when": [
+        {
+          "path": "mode",
+          "op": "matches",
+          "value": "^(full|findings)$"
+        },
+        {
+          "path": "args.findings",
+          "op": "!=",
+          "value": false
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "model": {
+          "$ref": "stages.source.output.model"
+        }
+      },
+      "after": [
+        "terms"
+      ]
+    },
+    {
+      "id": "digest",
+      "title": "Digest",
+      "detail": "one ready group per manager chain: claim digest/gNNN@1, snapshot and frozen job, one DeepSeek run, checked group-finish (R250/R252/R253)",
+      "after": [
+        "terms"
+      ],
+      "foreach": {
+        "items": {
+          "$ref": "stages.prepare.output.groupList"
+        },
+        "itemFail": "collect",
+        "maxItems": 500,
+        "chain": [
+          {
+            "id": "group",
+            "module": "zt-group-cycle",
+            "params": {
+              "args": "{{args}}",
+              "mode": "{{mode}}",
+              "group": "{{item.n}}",
+              "profile": "{{consts.profile}}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cards",
+      "title": "Cards",
+      "detail": "the per-group offline Card checks (cards/gNNN@1), claimed from the ready work and recorded by cards-finish",
+      "module": "zt-cards-layer",
+      "after": [
+        "digest"
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}"
+      }
+    },
+    {
+      "id": "models",
+      "title": "Models",
+      "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
+      "module": "zt-model-layer",
+      "when": [
+        {
+          "op": "or",
+          "value": [
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
+            },
+            {
+              "op": "and",
+              "value": [
+                {
+                  "path": "mode",
+                  "op": "==",
+                  "value": "full"
+                },
+                {
+                  "path": "args.models",
+                  "op": "!=",
+                  "value": false
+                }
+              ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "models"
+            }
+          ]
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "model": {
+          "$ref": "stages.source.output.model"
+        },
+        "profile": "{{consts.profile}}"
+      },
+      "after": [
+        "cards"
+      ]
+    },
+    {
+      "id": "explain",
+      "title": "Models",
+      "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
+      "module": "zt-explain",
+      "when": [
+        {
+          "op": "or",
+          "value": [
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "explain"
+            },
+            {
+              "op": "and",
+              "value": [
+                {
+                  "path": "mode",
+                  "op": "==",
+                  "value": "full"
+                },
+                {
+                  "path": "args.models",
+                  "op": "!=",
+                  "value": false
+                }
+              ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
+            }
+          ]
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "model": {
+          "$ref": "stages.source.output.model"
+        }
+      },
+      "after": [
+        "models"
+      ]
+    },
+    {
       "id": "cards-book",
       "title": "Cards",
       "detail": "one whole-book card cycle after the digest runs (mode full), or on its own (mode cards); it also reviews the source of every Model draft no model chain elaborates",
       "after": [
-        "digest"
+        "explain"
       ],
       "module": "zt-cards-book",
       "when": [
@@ -601,155 +807,11 @@
       }
     },
     {
-      "id": "digest",
-      "title": "Digest",
-      "detail": "Haiku managers drive the DeepSeek digest runs per block (Idea Cards and anchors; the book type's prompt supplements add its own Cards); the cheap per-group deterministic check is the group completion's own offline check",
-      "after": [
-        "terms"
-      ],
-      "module": "zt-digest-blocks",
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        },
-        "profile": "{{consts.profile}}",
-        "groups": "{{stages.prepare.output.groups}}"
-      }
-    },
-    {
-      "id": "models",
-      "title": "Models",
-      "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
-      "module": "zt-model-layer",
-      "when": [
-        {
-          "op": "or",
-          "value": [
-            {
-              "op": "and",
-              "value": [
-                {
-                  "path": "mode",
-                  "op": "==",
-                  "value": "full"
-                },
-                {
-                  "path": "args.models",
-                  "op": "!=",
-                  "value": false
-                }
-              ]
-            },
-            {
-              "path": "mode",
-              "op": "==",
-              "value": "models"
-            }
-          ]
-        }
-      ],
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        },
-        "profile": "{{consts.profile}}"
-      },
-      "after": [
-        "digest"
-      ]
-    },
-    {
-      "id": "explain",
-      "title": "Models",
-      "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
-      "module": "zt-explain",
-      "when": [
-        {
-          "path": "mode",
-          "op": "==",
-          "value": "explain"
-        }
-      ],
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        }
-      },
-      "after": [
-        "digest"
-      ]
-    },
-    {
-      "id": "events",
-      "title": "Events",
-      "detail": "the event layer: event-compiler.ps1 lists the dated sentences and each group's Idea Cards; DeepSeek writes the Event Cards as JSON with its SELF-CHECK; the script creates them beside the Idea Cards they support and links them",
-      "module": "zt-event-layer",
-      "when": [
-        {
-          "path": "mode",
-          "op": "matches",
-          "value": "^(full|events)$"
-        },
-        {
-          "path": "args.events",
-          "op": "!=",
-          "value": false
-        }
-      ],
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        }
-      },
-      "after": [
-        "digest"
-      ]
-    },
-    {
-      "id": "findings",
-      "title": "Findings",
-      "detail": "the empirical-results layer: finding-compiler.ps1 lists the sentences that report data with a number and each group's Idea Cards; DeepSeek writes one Finding Card per result as JSON with its SELF-CHECK (F1 to F3); the script creates them beside the group anchors and links them with 印证",
-      "module": "zt-finding-layer",
-      "when": [
-        {
-          "path": "mode",
-          "op": "matches",
-          "value": "^(full|findings)$"
-        },
-        {
-          "path": "args.findings",
-          "op": "!=",
-          "value": false
-        }
-      ],
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        }
-      },
-      "after": [
-        "digest"
-      ]
-    },
-    {
       "id": "hubs-first",
       "title": "Hubs",
       "detail": "mode hubs: the hub compiler on the whole agent Workspace",
       "after": [
-        "models",
-        "explain",
-        "events",
-        "findings"
+        "explain"
       ],
       "module": "zt-hubs",
       "when": [
@@ -772,8 +834,10 @@
       "title": "Link",
       "detail": "prepare-link-pass.ps1: link files and the pending groups",
       "after": [
-        "hubs-first",
-        "cards-book"
+        "events",
+        "findings",
+        "cards-book",
+        "hubs-first"
       ],
       "module": "zt-link-prepare",
       "params": {
@@ -828,35 +892,11 @@
       }
     },
     {
-      "id": "cleanup",
-      "title": "Cleanup",
-      "detail": "delete leftover DeepSeek conversations, remove the workspace and scratch files, read the usage ledger",
-      "after": [
-        "link-check"
-      ],
-      "module": "zt-dsh-cleanup",
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "usageBefore": {
-          "$ref": "stages.prepare.output.usage_before"
-        },
-        "usageBeforeLink": {
-          "$ref": "stages.link-prepare.output.usage_before"
-        },
-        "groups": "{{stages.prepare.output.groups}}",
-        "linkRuns": {
-          "$ref": "stages.link.output.reports",
-          "default": []
-        }
-      }
-    },
-    {
       "id": "organize",
       "title": "Organize",
       "detail": "survey → Opus decisions.json → apply → notes card cycle → skeleton (Literature index, structure Card, Topic bodies)",
       "after": [
-        "cleanup"
+        "link-check"
       ],
       "module": "zt-organize",
       "onFail": "continue",
@@ -926,6 +966,58 @@
       }
     },
     {
+      "id": "hubs",
+      "title": "Hubs",
+      "detail": "the hub compiler on the whole agent Workspace, after Organize",
+      "after": [
+        "organize"
+      ],
+      "module": "zt-hubs",
+      "when": [
+        {
+          "op": "or",
+          "value": [
+            {
+              "op": "and",
+              "value": [
+                {
+                  "path": "mode",
+                  "op": "==",
+                  "value": "full"
+                },
+                {
+                  "path": "args.hubs",
+                  "op": "!=",
+                  "value": false
+                }
+              ]
+            },
+            {
+              "op": "and",
+              "value": [
+                {
+                  "path": "mode",
+                  "op": "==",
+                  "value": "link"
+                },
+                {
+                  "path": "args.hubs",
+                  "op": "true"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "model": {
+          "$ref": "stages.source.output.model"
+        }
+      }
+    },
+    {
       "id": "bridge",
       "title": "Bridge",
       "detail": "bounded frozen cross-book discovery and immutable review report; explicit accepted apply in bridge mode",
@@ -978,63 +1070,12 @@
       ]
     },
     {
-      "id": "hubs",
-      "title": "Hubs",
-      "detail": "the hub compiler on the whole agent Workspace, after Organize",
-      "after": [
-        "bridge"
-      ],
-      "module": "zt-hubs",
-      "when": [
-        {
-          "op": "or",
-          "value": [
-            {
-              "op": "and",
-              "value": [
-                {
-                  "path": "mode",
-                  "op": "==",
-                  "value": "full"
-                },
-                {
-                  "path": "args.hubs",
-                  "op": "!=",
-                  "value": false
-                }
-              ]
-            },
-            {
-              "op": "and",
-              "value": [
-                {
-                  "path": "mode",
-                  "op": "==",
-                  "value": "link"
-                },
-                {
-                  "path": "args.hubs",
-                  "op": "true"
-                }
-              ]
-            }
-          ]
-        }
-      ],
-      "params": {
-        "args": "{{args}}",
-        "mode": "{{mode}}",
-        "model": {
-          "$ref": "stages.source.output.model"
-        }
-      }
-    },
-    {
       "id": "audit",
       "title": "Audit",
       "detail": "digest-audit.ps1, read-only: faults per rule, orphans, models, figures, hubs",
       "after": [
-        "hubs"
+        "hubs",
+        "bridge"
       ],
       "module": "zt-audit",
       "when": [
@@ -1060,11 +1101,36 @@
       }
     },
     {
+      "id": "cleanup",
+      "title": "Cleanup",
+      "detail": "delete leftover DeepSeek conversations, remove the workspace and scratch files, read the usage ledger",
+      "after": [
+        "audit"
+      ],
+      "module": "zt-dsh-cleanup",
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "usageBefore": {
+          "$ref": "stages.prepare.output.usage_before"
+        },
+        "usageBeforeLink": {
+          "$ref": "stages.link-prepare.output.usage_before"
+        },
+        "groups": "{{stages.prepare.output.groups}}",
+        "linkRuns": {
+          "$ref": "stages.link.output.reports",
+          "default": []
+        }
+      },
+      "onFail": "continue"
+    },
+    {
       "id": "report",
       "title": "Report",
       "detail": "the run's result per mode",
       "after": [
-        "audit"
+        "cleanup"
       ],
       "module": "zt-digest-report",
       "params": {
@@ -1120,6 +1186,9 @@
         "bridge": {
           "$ref": "stages.bridge.output"
         },
+        "cards": {
+          "$ref": "stages.cards.output"
+        },
         "models": {
           "$ref": "stages.models.output"
         },
@@ -1137,9 +1206,10 @@
       "link-prepare",
       "link",
       "link-check",
-      "cleanup",
       "organize",
+      "figures",
       "hubs",
+      "cleanup",
       "report"
     ],
     "cards": [
@@ -1155,6 +1225,8 @@
       "prepare",
       "hubs-first",
       "organize",
+      "hubs",
+      "cleanup",
       "report"
     ],
     "figures": [
@@ -1165,6 +1237,7 @@
     "audit": [
       "args",
       "audit",
+      "cleanup",
       "report"
     ],
     "bridge": [
@@ -1178,6 +1251,7 @@
       "source",
       "prepare",
       "models",
+      "explain",
       "organize",
       "report"
     ],
@@ -1201,6 +1275,27 @@
       "prepare",
       "findings",
       "report"
+    ],
+    "resume": [
+      "args",
+      "prepare",
+      "digest",
+      "cards",
+      "events",
+      "findings",
+      "models",
+      "explain",
+      "cards-book",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "figures",
+      "hubs",
+      "bridge",
+      "audit",
+      "cleanup",
+      "report"
     ]
   },
   "checkpoints": [
@@ -1211,6 +1306,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "2.5.0"
+    "version": "3.0.0"
   }
 }

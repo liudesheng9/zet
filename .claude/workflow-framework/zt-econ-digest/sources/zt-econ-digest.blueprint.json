@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-econ-digest",
-  "version": "3.5.0",
+  "version": "4.0.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -10,11 +10,11 @@
     "P2": "Inputs: the base args plus events and findings (false skips that layer). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the Model Cards of the book (model layer), the dated sentences per group (event layer), and the sentences that report data with a number per group (empirical-results layer; 3 groups per DeepSeek job each).",
     "P4": "Roles: as the base (manager Haiku low, architect Sonnet, organizer Opus).",
-    "P5": "Stage graph: the base chain; after-digest: models (the model layer), explain (mode explain), events (the event layer), findings (the empirical-results layer), side by side after the digest and before the link pass. Figures → Bridge → Hubs; Bridge profile book.",
+    "P5": "Stage graph: the base chain; the Event and Finding layers fill after-terms, so they are worked from ledger readiness while the remaining digest groups run; after-digest: the model layer, released when the digest managers settle; after-models: explanations of the finished Derivation parts, which settle before the link pass; the whole-book card cycle waits for the Model reviews. Figures → Bridge, Hubs → Bridge, and the final audit joins Hubs and Bridge. Bridge profile book.",
     "P6": "Modules (the economics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md: the digest writes Idea Cards and Model Cards; shared-prefix.md, link-prefix.md; the economic architect model-architect.md), zt-model-layer and zt-explain (zt-model-lib), zt-event-layer (event-compiler.ps1, dsh-event-instructions.zh.md), zt-finding-layer (finding-compiler.ps1, dsh-finding-instructions.zh.md; the Card type finding of zt 0.20.0). zt-bridge v3.",
     "P7": "Checks: as the base; each event and finding job runs its SELF-CHECK (precheck: fields, supported Cards, and zt-check on the drafts: E1, E2 or F1 to F3, and the Card language); apply refuses what the precheck reports; in mode full the link check card cycle then checks every Card of the book. Bridge BR1–BR9, exact report acceptance and guarded edits.",
     "P8": "Failure policy: as the base; the model layer halts only in mode models; the event and finding layers report refused items and go on. Modes: the base modes plus models, explain, events, findings. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
-    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs (every check of the removed workflow-harness.mjs and the layer order; 3.2.0: base 2.2.0, the ported scripts run as zt-digest tools; 3.3.0: base 2.3.0, every digest script runs as its zt-digest tool, the event and finding layers too; 3.4.0: base 2.4.0, the book argument passes -Book through prepare), tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 (scratch archives; the finding test needs zt 0.20.0). Run with zt 0.20.0 deployed: the finding layer creates Cards of type finding. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
+    "P9": "Dry run: zt-econ-digest.sim.json. Fixture: tests/framework-harness.mjs checks the readiness graph, the ledger commands of the group cycle and every layer, the runner restrictions and the joins on the built script; tests/event-compiler.tests.ps1 and tests/finding-compiler.tests.ps1 use scratch archives. Run with zt 0.20.0 deployed. Pilot: one chapter after a database backup."
   },
   "consts": {
     "profile": {
@@ -40,68 +40,7 @@
     }
   },
   "fill": {
-    "after-digest": [
-      {
-        "id": "models",
-        "title": "Models",
-        "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
-        "module": "zt-model-layer",
-        "when": [
-          {
-            "op": "or",
-            "value": [
-              {
-                "op": "and",
-                "value": [
-                  {
-                    "path": "mode",
-                    "op": "==",
-                    "value": "full"
-                  },
-                  {
-                    "path": "args.models",
-                    "op": "!=",
-                    "value": false
-                  }
-                ]
-              },
-              {
-                "path": "mode",
-                "op": "==",
-                "value": "models"
-              }
-            ]
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          },
-          "profile": "{{consts.profile}}"
-        }
-      },
-      {
-        "id": "explain",
-        "title": "Models",
-        "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
-        "module": "zt-explain",
-        "when": [
-          {
-            "path": "mode",
-            "op": "==",
-            "value": "explain"
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          }
-        }
-      },
+    "after-terms": [
       {
         "id": "events",
         "title": "Events",
@@ -152,6 +91,101 @@
           }
         }
       }
+    ],
+    "after-digest": [
+      {
+        "id": "models",
+        "title": "Models",
+        "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
+        "module": "zt-model-layer",
+        "when": [
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "resume"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "==",
+                    "value": "full"
+                  },
+                  {
+                    "path": "args.models",
+                    "op": "!=",
+                    "value": false
+                  }
+                ]
+              },
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "models"
+              }
+            ]
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          },
+          "profile": "{{consts.profile}}"
+        }
+      }
+    ],
+    "after-models": [
+      {
+        "id": "explain",
+        "title": "Models",
+        "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
+        "module": "zt-explain",
+        "when": [
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "explain"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "==",
+                    "value": "full"
+                  },
+                  {
+                    "path": "args.models",
+                    "op": "!=",
+                    "value": false
+                  }
+                ]
+              },
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "resume"
+              }
+            ]
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          }
+        }
+      }
     ]
   },
   "params": {
@@ -183,6 +217,7 @@
       "source",
       "prepare",
       "models",
+      "explain",
       "organize",
       "report"
     ],
@@ -206,7 +241,27 @@
       "prepare",
       "findings",
       "report"
+    ],
+    "resume": [
+      "args",
+      "prepare",
+      "digest",
+      "cards",
+      "events",
+      "findings",
+      "models",
+      "explain",
+      "cards-book",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "figures",
+      "hubs",
+      "bridge",
+      "audit",
+      "cleanup",
+      "report"
     ]
   }
 }
-

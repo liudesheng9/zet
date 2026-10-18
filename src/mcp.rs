@@ -20,6 +20,27 @@ const ACCESS: Access = Access::Agent;
 const SERVER_NAME: &str = "zt";
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// How long a write waits for a busy edit lock before refusing (R269).
+///
+/// A person's editor holds the lock while it is open, so an ordinary agent write
+/// gives up quickly instead of hanging. A digest batch client needs long patience
+/// and sets `ZT_EDIT_PATIENCE=180` for its child `zt mcp`. The value is validated as
+/// whole seconds from 1 through 300; anything else keeps the default 20.
+const DEFAULT_EDIT_PATIENCE_SECONDS: u64 = 20;
+
+fn edit_patience() -> std::time::Duration {
+    patience_seconds(std::env::var("ZT_EDIT_PATIENCE").ok().as_deref())
+}
+
+/// The patience a declared value asks for: whole seconds from 1 through 300, else the default 20.
+fn patience_seconds(declared: Option<&str>) -> std::time::Duration {
+    let seconds = declared
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| (1..=300).contains(seconds))
+        .unwrap_or(DEFAULT_EDIT_PATIENCE_SECONDS);
+    std::time::Duration::from_secs(seconds)
+}
+
 const INSTRUCTIONS: &str = "ZT is a slip-box of addressable Markdown Cards split into two Workspaces: \
 `human` (read-only for you) and `agent` (yours to read and change). Each Workspace has two Zones: \
 Topic trees (rooted at a Topic such as `3/0`) and Literature trees (rooted at a Literature Card \
@@ -362,7 +383,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         ),
         "list_broken_links" => crate::read::broken(&root, optional_workspace(args)?),
         "create_topic" | "create_literature" | "create_successor" | "edit_card" => {
-            let _lock=crate::acquire_edit_lock_within(&root,std::time::Duration::from_secs(20))?;
+            let _lock=crate::acquire_edit_lock_within(&root,edit_patience())?;
             let mut conn=crate::open_db(&root)?;
             let tx=conn.transaction()?;
             let (result,changed)=write_card_tx(&root,&tx,name,args)?;
@@ -1287,6 +1308,18 @@ fn call_scholar_tool(name: &str, args: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_patience_is_a_bounded_whole_number_of_seconds() {
+        assert_eq!(patience_seconds(None), std::time::Duration::from_secs(20));
+        assert_eq!(patience_seconds(Some("180")), std::time::Duration::from_secs(180));
+        assert_eq!(patience_seconds(Some(" 1 ")), std::time::Duration::from_secs(1));
+        assert_eq!(patience_seconds(Some("300")), std::time::Duration::from_secs(300));
+        // An unreadable or out-of-range value keeps the ordinary short bound instead of hanging a write.
+        for value in ["0", "301", "-5", "1.5", "abc", ""] {
+            assert_eq!(patience_seconds(Some(value)), std::time::Duration::from_secs(20), "{value}");
+        }
+    }
 
     #[test]
     fn insert_card_names_the_create_successor_fields_it_does_not_take() {

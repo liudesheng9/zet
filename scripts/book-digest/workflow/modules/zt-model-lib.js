@@ -18,7 +18,7 @@ function zmlMake(ctx, p) {
     required: ['ok', 'models'],
   }
   const listModels = (selector, label) => zAgent(
-    `List the Model Cards of a ZET book digest. Run this one PowerShell command and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
+    `List the Model Cards of a ZET book digest. Run this one PowerShell command in the foreground with timeout_ms: 600000 and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
 ${Z.tool('list-models')} -Staging "${OUT}" ${selector}
 If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
     { label, phase: 'Models', model: 'haiku', schema: MODEL_LIST },

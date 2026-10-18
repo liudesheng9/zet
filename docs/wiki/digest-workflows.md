@@ -137,57 +137,59 @@ Every stage module calls `zdMake(ctx, params)` (directly or through `zmlMake` / 
 
 ### Workflows and their stages
 
-#### zt-econ-digest (v3.5.0) and zt-math-digest (v2.6.0) on base v2.5.0: the composed stage graph
+#### zt-econ-digest (v4.0.0) and zt-math-digest (v3.0.0) on base v3.0.0: the composed readiness graph
 
-The stage ids, modules, and `after` edges come from the registry `blueprint.json` of each variant; titles are the progress phases.
+The stage ids, modules, and `after` edges come from the registry `blueprint.json` of each variant; titles are the progress phases. The graph declares **readiness** (which stage may start when), not a mutable runtime schedule: the run ledger inside `zt-digest` decides which unit is actually ready, and each layer's driver claims only ready units (R244/R252).
 
 | Stage | Title | Module | After | Runs when (beyond its mode list) | On failure |
 |---|---|---|---|---|---|
-| `args` | Prepare | `gate` (framework) | — | always; checks `citationKey` (unless mode `hubs`/`audit`), and in mode `full` either `book` or `source`, `bibtex` and `bookTitle` | halt |
-| `source` | Prepare | `zt-dsh-source` | args | not in modes `figures`, `audit`; not in mode `bridge` with `bridgeReport`, `bridgeApply`, or `bridgeApplyEarlier` | halt |
-| `prepare` | Prepare | `zt-digest-prepare` | source | mode `full` runs the script; other modes take `args.groups` | halt |
+| `args` | Prepare | `gate` (framework) | — | always; checks `citationKey` (unless mode `hubs`/`audit`/`resume`), and in mode `full` either `book` or `source`, `bibtex` and `bookTitle`; the kernel bounds `maxAttempts` 1–10 and `dshRunCap` 60–3600 | halt |
+| `source` | Prepare | `zt-dsh-source` | args | not in modes `figures`, `audit`; not in mode `bridge` with a selection | halt |
+| `prepare` | Prepare | `zt-digest-prepare` | source | mode `full` runs the script with `-Variant -MaxAttempts -DshRunCap -RunOptions -Apply`; mode `resume` reads the retained groups from the ledger; other modes take `args.groups` | halt |
 | `math-skeleton` (math) | Prepare | `zt-math-skeleton` | prepare | mode `full` | halt |
-| `terms` | Prepare | `zt-book-terms` | prepare (econ), math-skeleton (math) | `args.terms != false` | continue |
-| `cards-book` | Cards | `zt-cards-book` | digest | mode `cards`, or (`full` and `args.cardChecks != false`): one whole-book card cycle, no cycle per block (R296) | halt |
-| `digest` | Digest | `zt-digest-blocks` | terms | mode `full` (only in its list) | halt |
-| `models` | Models | `zt-model-layer` | digest | (`full` and `args.models != false`) or mode `models` | halt |
-| `explain` | Models | `zt-explain` | digest | mode `explain` | halt |
-| `events` (econ) | Events | `zt-event-layer` | digest | mode `full` or `events`, `args.events != false` | halt |
-| `findings` (econ) | Findings | `zt-finding-layer` | digest | mode `full` or `findings`, `args.findings != false` | halt |
+| `terms` | Prepare | `zt-book-terms` | prepare (econ), math-skeleton (math) | `args.terms != false`; claims `terms/book@1` and completes it through the claimed Terms apply | continue |
+| `events` (econ) | Events | `zt-event-layer` | terms | `args.events != false`; claims ready `events/gNNN@1` units and waits for digest readiness | halt |
+| `findings` (econ) | Findings | `zt-finding-layer` | terms | `args.findings != false`; claims ready `findings/gNNN@1` units and waits for digest readiness | halt |
+| `digest` | Digest | `zt-group-cycle` (a per-group `foreach` chain) | terms | mode `full`; one chain per group item, claiming `digest/gNNN@1`, starting it, running the frozen job and recording `group-finish` | halt |
+| `cards` | Cards | `zt-cards-layer` | digest | always in a managed run (Card quality is required work); claims `cards/gNNN@1` and records `cards-finish` | halt |
+| `models` | Models | `zt-model-layer` | cards | (`full` and `args.models != false`), mode `models`, or mode `resume`; claims `models/gNNN-mIIII@1` and records `model-finish` | halt |
+| `explain` | Models | `zt-explain` | models | mode `explain`, or (`full`/`resume` and `args.models != false`); claims `explain/<key>@1` and records `explain-finish` | halt |
 | `math-boundary` (math) | Boundary | `zt-math-boundary` | models | mode `full` or `math`, `args.boundary != false` | halt |
 | `math-proof` (math) | Proof | `zt-math-proof` | math-boundary | mode `full` or `math`, `args.proof != false` | halt |
-| `hubs-first` | Hubs | `zt-hubs` | econ: models, explain, events, findings; math: explain, math-proof | mode `hubs` | halt |
-| `link-prepare` | Link | `zt-link-prepare` | hubs-first, cards-book | modes `full`, `link` | halt |
-| `link` | Link | `zt-link-pass` | link-prepare | modes `full`, `link` | halt |
+| `cards-book` | Cards | `zt-cards-book` | explain (econ), explain (math, after the proof layer) | mode `cards`, or (`full`/`resume` and `args.cardChecks != false`): publishes the present `cards-book` revision, claims it and records `book-cards-finish`; its coverage gate waits for the Model reviews (R248) | halt |
+| `hubs-first` | Hubs | `zt-hubs` | explain (econ), explain (math) | mode `hubs` | halt |
+| `link-prepare` | Link | `zt-link-prepare` | events, findings, cards-book, hubs-first | modes `full`, `link` | halt |
+| `link` | Link | `zt-link-pass` | link-prepare | modes `full`, `link`; the Link units are recorded as explicit unverified legacy-transport work | halt |
 | `link-check` | Cards | `zt-link-check` | link | `args.cardChecks != false` | halt |
 | `math-theory` (math) | Theory | `zt-math-theory` | link-check | mode `full` or `math`, `args.theory != false` | halt |
-| `cleanup` | Cleanup | `zt-dsh-cleanup` | link-check (econ), math-theory (math) | modes `full`, `link` | halt |
-| `organize` | Organize | `zt-organize` | cleanup | mode `full`, or `args.organize` matches `^(true\|legacy)$` | continue |
+| `organize` | Organize | `zt-organize` | link-check (econ), math-theory (math) | mode `full`, or `args.organize` matches `^(true\|legacy)$` | continue |
 | `figures` | Figures | `zt-figures` | organize | mode `figures`, or `args.figures != false` | halt |
+| `hubs` | Hubs | `zt-hubs` | organize | (`full` and `args.hubs != false`) or (`link` and `args.hubs` true); released beside Figures | halt |
 | `bridge` | Bridge | `zt-bridge` (`profile.bridgeProfile`) | figures | mode `bridge`, or (`full` and `args.bridge != false`); expects `status != failed` | continue |
-| `hubs` | Hubs | `zt-hubs` | bridge | (`full` and `args.hubs != false`) or (`link` and `args.hubs` true) | halt |
-| `audit` | Audit | `zt-audit` | hubs | mode `audit`, or `args.audit != false` | halt |
+| `audit` | Audit | `zt-audit` | hubs, bridge | mode `audit`, or `args.audit != false`; the final audit **joins** the Hubs branch and the Figures→Bridge branch | halt |
 | `math-check` (math) | Audit | `zt-math-check` | audit | mode `math`, or (`args.audit != false` and `citationKey` set) | halt |
-| `report` | Report | `zt-digest-report` | audit (econ), math-check (math) | always | halt |
+| `cleanup` | Cleanup | `zt-dsh-cleanup` | audit (econ), math-check (math) | after the joined audit, as part of the settlement | continue |
+| `report` | Report | `zt-digest-report` | cleanup | always; carries the effective settings and the schedule summary | halt |
 
-"halt" is the kernel default (`onFail` missing). Most modules log and return `{ status: 'failed', ... }` instead of throwing, so their stage still ends `done`; only a thrown error fails a stage. The modules that throw: `zt-dsh-source` (no source answered), `zt-digest-prepare` (prepare failed, or no groups in modes `full`/`link`), `zt-digest-blocks` (every group failed), `zt-link-prepare` (script failed), `zt-math-skeleton` (index, docs, or skeleton failed), `zt-model-layer` (listing failed, only in mode `models`), and `gate`.
+"halt" is the kernel default (`onFail` missing). Most modules log and return `{ status: 'failed', ... }` instead of throwing, so their stage still ends `done`; only a thrown error fails a stage. The modules that throw: `zt-dsh-source` (no source answered), `zt-digest-prepare` (prepare failed, no retained groups in mode `resume`, or no groups in modes `full`/`link`), `zt-link-prepare` (script failed), `zt-math-skeleton` (index, docs, or skeleton failed), `zt-model-layer` (listing failed, only in mode `models`), and `gate`.
 
 #### Modes
 
 | Mode | zt-econ-digest | zt-math-digest | Stages it runs | Needs |
 |---|---|---|---|---|
 | `full` | yes | yes | all | `out`, `citationKey`, and `book` or `source`+`bibtex`+`bookTitle` |
-| `link` | yes | yes | args, source, prepare, link-prepare, link, link-check, cleanup, organize, hubs, report | `groups` |
+| `link` | yes | yes | args, source, prepare, link-prepare, link, link-check, organize, figures, hubs, cleanup, report | `groups` |
 | `cards` | yes | yes | args, source, prepare, cards-book, report | `citationKey`, `out` |
-| `hubs` | yes | yes | args, source, prepare, hubs-first, organize, report | `out` only |
+| `hubs` | yes | yes | args, source, prepare, hubs-first, organize, hubs, cleanup, report | `out` only |
 | `figures` | yes | yes | args, figures, report | `citationKey`, `out` |
-| `audit` | yes | yes | args, audit, report | `out` (`citationKey` optional: one book, else every book) |
-| `models` | yes | yes | args, source, prepare, models, organize, report | `citationKey`, `out` |
-| `explain` | yes | yes | args, source, prepare, explain, report | `citationKey`, `out` (`only` for a pilot) |
+| `audit` | yes | yes | args, audit, cleanup, report | `out` (`citationKey` optional: one book, else every book) |
+| `models` | yes | yes | args, source, prepare, models, explain, report | `citationKey`, `out` |
+| `explain` | yes | yes | args, source, prepare, explain, report | `citationKey`, `out` (the retained `explain/` units) |
 | `bridge` | yes | yes | args, source (skipped when it applies), bridge, report | `citationKey`, `out`; to apply also `bridgeReport` and `bridgeApply` or `bridgeApplyEarlier` |
 | `events` | yes | no | args, source, prepare, events, report | `citationKey`, `out` |
 | `findings` | yes | no | args, source, prepare, findings, report | `citationKey`, `out` |
-| `math` | no | yes | args, source, prepare, math-boundary, math-proof, math-theory, math-check, report | `citationKey`, `out` |
+| `math` | no | yes | args, source, prepare, math-skeleton, models, math-boundary, math-proof, math-theory, math-check, report | `citationKey`, `out` |
+| `resume` | yes | yes | args, prepare, digest, cards, the book type's layers, cards-book, link, link-check, the math tail, organize, figures, hubs, bridge, audit, the math check, cleanup, report | a retained prepared run and its ledger; never re-preparation |
 
 A stage outside the mode passes through with status `not-in-mode` once every stage it waits for has ended, so the order holds. `args.until: "digest"` stops the run after the `digest` stage.
 
@@ -216,6 +218,8 @@ Base args (both workflows):
 | Arg | Type | Default (from code) | Meaning |
 |---|---|---|---|
 | `out` | string, required | — | the staging folder |
+| `maxAttempts` | number 1–10 | 3 | the per-unit attempt budget of the managed run; persisted at preparation and reused by a resume (R273) |
+| `dshRunCap` | number 60–3600 | 1200 | the seconds one external DeepSeek run may live; persisted at preparation and reused by a resume (R267/R273) |
 | `citationKey` | string | — | the book's BibTeX key (all modes but `hubs`, `audit`) |
 | `source`, `bibtex`, `bookTitle` | string | — | the bilingual Markdown, the BibTeX entry, the title (mode `full`) |
 | `book` | any | — | a Scholar Archive Work id or exact title: mode `full` resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range through the read-only bridge, and the three explicit arguments are left out (base 2.4.0) |
@@ -285,7 +289,7 @@ Library modules (no stage; their top-level names carry a prefix because all modu
 
 | Module | Version | Requires | Exports |
 |---|---|---|---|
-| `zt-digest-lib` | 7 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, tool, cleanupDsh, runCards`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`zt-digest hub`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
+| `zt-digest-lib` | 8 | `@dsmp` | constants `ZD_SCRIPTS`, `ZD_DIGEST` (`'zt-digest'`), `ZD_TOOLS` (script name → tool: `digest-audit` → `audit`, `card-compiler` → `card`, `model-compiler` → `model`, `model-context`, `list-models`, `hub-compiler` → `hub`, `bridge-compiler` → `bridge`, `math-compiler` → `math`, `event-compiler` → `event`, `finding-compiler` → `finding`, `book-terms` → `terms`, `book-skeleton` → `skeleton`, `organize-survey`, `organize-apply`, `attach-figures` → `figures`, `prepare-book-digest` → `prepare`, `prepare-link-pass` → `prepare-link`, `snapshot-topics`), `ZD_CALL` (`'zt-digest call'`), `ZD_DSH_SOURCES`, `ZD_PER_MANAGER_MAX` (8), `ZD_MAX_MANAGERS` (8), `ZD_USAGE`, `ZD_USAGE_STEP`, `ZD_RUN_SCHEMA`; `zdTool(name, scripts = ZD_SCRIPTS)` (the script command), `ZD_COMMAND_TIMEOUT_MS` (600000), `ZD_EDIT_PATIENCE` (180), `zdJsonIn(line)`, `zdLastJson(text)`, `zdDefaultModel(A)`; `zdMake(ctx, p)` returning the settings (`A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS, HUB_*, PER_MANAGER, LINK_PER_MANAGER, MAX_ATTEMPTS, DSH_RUN_CAP, RUNNER, LEDGER, DIGEST, CALL, DSH_SKILLS, raised, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, *_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS`) and helpers `zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines, chain, stepOf, jsonOf, resultLine, claim, gate, renew, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote, tool, cleanupDsh, runCards`. `tool: name => zdTool(name, SCRIPTS)`. `COMPILER` (`zt-digest model`), `HUB_COMPILER` (`zt-digest hub`), and the internal `CARD_COMPILER` (`zt-digest card`) are command prefixes from `zdTool`, not paths |
 | `zt-model-lib` | 2 | `zt-digest-lib` | `zmlMake(ctx, p)` → `{ Z, listModels(selector, label), elaborateAll(models, label), logModels(reports), modelCleanup(), dshJobs() }`; internal `compileBatch(batch, kind)` |
 | `zt-math-lib` | 2 | `zt-digest-lib` | `zmMake(ctx, p)` → `{ Z, A, MATH_WORK, SUPPLY, UNITS_PER_JOB, MAIN_RESULTS, mstep(step, more), runMathScript(what, step, extra, phase), mathOpts(stage, phase) }`; `MATH_COMPILER` is `Z.tool('math-compiler')` |
 
@@ -294,14 +298,15 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 | Module | Ver | Other params | Runs | Output |
 |---|---|---|---|---|
 | `zt-dsh-source` | 1 | — | with `dshSource: auto`, a Haiku probe in `<out>\dsh-probe` asks the official source, then OpenCode Go, for `ok`; throws when neither answers; logs efforts raised to high | `{ source, model, errors? }` |
-| `zt-digest-prepare` | 3 | `needGroups` (`['full','link']`), `instructions`, `noEventCandidates` | mode `full`: `prepare-book-digest.ps1 ... -Instructions '<files>' [-NoEventCandidates] -Apply` and a `deepseek_usage` reading | `{ groups, usage_before }` |
-| `zt-book-terms` | 2 | — | `book-terms.ps1 -Step plan`, then `-Step apply -Apply` with cleanup, workspace `<out>\terms` | `{ report }` (null on failure) |
-| `zt-cards-book` | 2 | — | `runCards('whole book', <out>\cards, [-Sample])` with orphans; `-ModelReview` in mode `cards` or when `args.models` is false, so the cycle reviews the Model drafts no chain owns (R247) | `{ status, report }` (the `cards_cycle` report) |
-| `zt-digest-blocks` | 3 | `profile`, `groups` | `runStage('digest', blocks)`: the digest runs only; the cheap per-group deterministic check is the group completion's own offline check and the one whole-book card cycle is its own stage (R296); throws when no group is done | `{ reports, managers }` |
-| `zt-model-layer` | 1 | `profile` | `zt-digest list-models -Staging <out> -All -CitationKey <key>`, `elaborateAll`, `modelCleanup` | `{ models, model_cleanup, error? }` |
-| `zt-explain` | 3 | — | `zt-digest model -Step explain`, `explain-apply` (twice when refused parts went back), `explain-report`; models from `only` or every non-concept Model Card | `{ status, parts, applied, refused, report }` |
-| `zt-event-layer` | 2 | — | `event-compiler.ps1 -Step plan` → `apply -Apply` → `report` (cleanup), workspace `<out>\events` | `{ status, plan, applied, report }` |
-| `zt-finding-layer` | 2 | — | `finding-compiler.ps1 -Step plan` → `apply -Apply` → `report` (cleanup), workspace `<out>\findings` | `{ status, plan, applied, report }` |
+| `zt-digest-prepare` | 5 | `needGroups` (`['full','link']`), `profile`, `instructions`, `noEventCandidates` | mode `full`: `prepare-book-digest.ps1 ... -Instructions '<files>' [-NoEventCandidates] -Apply` and a `deepseek_usage` reading | `{ groups, usage_before }` |
+| `zt-book-terms` | 3 | — | claims `terms/book@1` and runs the claimed Term table (`book-terms -Step plan -Token`, the one job, `-Step apply -Token -Apply`), which completes the unit with its checked evidence; a failure leaves the digest groups waiting on it | `{ status, unit, report }` |
+| `zt-cards-book` | 3 | — | publishes the present `cards-book` revision (`ledger publish -Layer cards-book`), claims it, runs `runCards('whole book', <out>\cards, [-Sample])` with orphans and records it through `book-cards-finish`; `-ModelReview` in mode `cards` or when `args.models` is false (R247) | `{ status, cycle, unit, completion }` |
+| `zt-group-cycle` | 1 | `profile`, `group` | one manager chain per group item: claim one `digest/gNNN@1`, `group-start` (snapshot before the job manifest), run the one frozen DeepSeek job, `group-finish -Draft`; a failed unit is recorded against its own attempt and claimed again within `maxAttempts` | `{ status, group, unit, disposition, owned }` |
+| `zt-cards-layer` | 1 | — | claims `cards/gNNN@1` in bounded blocks and records each through `cards-finish`; the layer gate decides complete/partial/active | `{ status, dispositions, gate }` |
+| `zt-model-layer` | 2 | `profile` | claims ready `models/gNNN-mIIII@1` blocks, builds them with the existing model chain (`list-models`, `elaborateAll`) and records each through `model-finish`, then the late cleanup and the gate | `{ status, dispositions, gate, model_cleanup }` |
+| `zt-explain` | 4 | — | claims ready `explain/<key>@1` units and runs the explanation chain for them (`model -Step explain`, `explain-apply` twice, `explain-report`), recording each through `explain-finish` | `{ status, dispositions, gate }` |
+| `zt-event-layer` | 3 | — | claims ready `events/gNNN@1` units (with the bounded readiness wait) and runs `zt-digest event -Step plan` → the jobs it prints → `apply -Apply` → `report` (cleanup) for each block, recording each group through `events-finish`; the digest layer's settled enumeration ends the wait | `{ status, dispositions, gate }` |
+| `zt-finding-layer` | 3 | — | the same ready-work driver for the empirical-results layer, recording each group through `findings-finish` | `{ status, dispositions, gate }` |
 | `zt-math-skeleton` | 1 | — | `math-compiler.ps1 -Step index`, `docs`, `skeleton -Apply` (throws on a failure); then `notation` and `notation-apply -Apply` unless `notation: false` | `{ index, docs, skeleton, notation? }` |
 | `zt-math-boundary` | 1 | — | `boundary -UnitsPerJob -Supply` → `boundary-apply -Supply` → `boundary-settle` (cleanup) | `{ status, plan, applied, settled }` |
 | `zt-math-proof` | 1 | — | `proof -UnitsPerJob` → `proof-apply` (cleanup) | `{ status, units, applied }` |
@@ -309,14 +314,14 @@ Stage modules. Every one takes `args` (`{{args}}`, required) and `mode` (`{{mode
 | `zt-math-check` | 1 | — | `math-compiler.ps1 -Step check -Out <out>` (read-only) | the script's JSON, or `{ status: 'failed' }` |
 | `zt-hubs` | 2 | — | Haiku hub manager (`hub-compiler.ps1 -Step survey`, limits by fixed rules), then `plan -Limits '<json>' [-Trees] [-Rebuild]`, `apply`, `check` + fix rounds, `report` (cleanup), workspace `hubWork` | `{ status, limits, reasons, trees, applied, report }` |
 | `zt-link-prepare` | 2 | `groups` | `prepare-link-pass.ps1 -Staging <out>`; usage reading in mode `link`; throws on failure | `{ pending, owned_total, unowned, usage_before }` |
-| `zt-link-pass` | 1 | `profile`, `groups`, `pending` | `runStage('link', blocks of linkPerManager)` on the pending groups | `{ reports }` |
+| `zt-link-pass` | 2 | `profile`, `groups`, `pending` | `runStage('link', blocks of linkPerManager)` on the pending groups, then each Link unit is recorded as an explicit `unsupported_claim` content failure (the helper transport has no receipt-bound draft yet), so the layer settles as a visible partial result (R263 Link half remains open) | `{ reports, link_units }` |
 | `zt-link-check` | 1 | — | `runCards('link check', <out>\cards-link)`: all hard rules in mode `full`, else `cardRules` or `L1,L2` | the card cycle report |
 | `zt-dsh-cleanup` | 1 | `usageBefore`, `usageBeforeLink`, `groups`, `linkRuns` | deletes leftover conversations in `<out>`, removes the workspace, deletes scratch files, reads usage | `{ cleanup, usage }` |
 | `zt-organize` | 2 | `groups`, `digest`, `link`, `models`, `modelsBook` | survey → Opus `decisions.json` → `organize-apply.ps1` → notes card cycle → `book-skeleton.ps1` plan/apply; or the legacy Opus job | `{ survey, decisions, applied, notes, skeleton }` (legacy: the Opus report text) |
 | `zt-figures` | 2 | — | `attach-figures.ps1 -CitationKey -Staging [-FileId] -Report <out>\figures-report.json -Apply` | `{ status, ...summary }` |
 | `zt-bridge` | 5 | `profile` (`book` or `math`) | `bridge-compiler.ps1` `plan` → read-only judge jobs → `report` (only when every job answered); cleanup in `finally`; with a selection only `apply -Apply`; workspace `<out>\bridge` | the compiler summary (`report_id`, counts, `outcome_counts`, the report path), or `{ status: 'failed', error }` |
 | `zt-audit` | 2 | — | `zt-digest audit [-CitationKey] -Out <out>` (read-only) | `{ status, ...summary }` |
-| `zt-digest-report` | 6 | `groups`, `digest`, `models`, `terms`, `cardsBook`, `explain`, `hubsFirst`, `link`, `linkCheck`, `cleanup`, `organize`, `figures`, `bridge`, `hubs`, `audit`, `extra` | no agent; assembles the result per mode and preserves Bridge failure | the run's result |
+| `zt-digest-report` | 7 | `groups`, `digest`, `models`, `terms`, `cardsBook`, `explain`, `hubsFirst`, `link`, `linkCheck`, `cleanup`, `organize`, `figures`, `bridge`, `hubs`, `audit`, `extra` | no agent; assembles the result per mode and preserves Bridge failure | the run's result |
 
 `gate` v1 comes from `~/.claude/skills/workflow-framework-protocol/modules/gate.js`: params `subject`, `checks`; it throws `gate: <message>` on the first failed check.
 
@@ -542,7 +547,10 @@ The args object (Interfaces) is the run-time configuration. These settings are f
 | Roles | `roles` in `zt-digest-base.blueprint.json` | `manager` Haiku/low, `architect` Sonnet, `organizer` Opus | models of every agent (frozen) |
 | Book profile | `consts.profile` in each variant blueprint | econ: `instructions` `dsh-digest-base.zh.md,dsh-model-cards.zh.md`, `noEventCandidates` true, `shared-prefix.md`, `link-prefix.md`, no compiler docs, no supplement, `skipForms` []; math: same instructions, `math-prefix.md`, `math-link-prefix.md`, `compilerDocs` `{BriefDoc, FillDoc, ReviewDoc}` under `math\`, `architectSupplement` `model-architect-math.md`, `skipForms` `["theory"]` | prompt files, compiler flags, architect supplement, forms left out |
 | Checkpoints | `checkpoints` in the base | `["digest"]` | allowed `until` values |
-| Wait times | manager prompts | digest `wait_seconds 900`; link and step jobs `0` then `deepseek_wait` 900 / 600; commands timeout 600000 ms | how long agents block |
+| Wait times | manager prompts | every command-bearing step and manager names `timeout_ms: 600000`; link jobs `0` then `deepseek_wait` 900 / 600; each manager keeps at most 8 DeepSeek jobs | how long agents block, and the explicit command bound (R265) |
+| Readiness wait | `ledger next -Wait <0..600>` | 60 s after a retry, 600 s while the Event/Finding layers wait for digest readiness | the tool-side wait that keeps workflow modules clock-free (R270) |
+| Provider cap | prepared run contract `settings.dsh_run_cap` | 1200 s | `ledger job` reports `cap_exceeded`/`action` per registered run; cancellation is observed before a retry (R267/R268) |
+| Edit patience | `ZT_EDIT_PATIENCE` for the child `zt mcp` | 180 s for write steps, 20 s otherwise | `zt-digest` sets it per step; `zt` refuses a value outside 1–300 (R269) |
 | Assembler location | env `WFP_ROOT` (read by `framework-harness.mjs`) | default `~/.claude/skills/workflow-framework-protocol` | which `lib.mjs` the harness builds with |
 
 ## Usage
@@ -629,11 +637,11 @@ Both harnesses build each variant in memory and run the workflow script body as 
 `commandOf` in `framework-harness.mjs` finds the first `pwsh -NoProfile -File ...` command or `zt-digest <tool> -...` command (`ZT_DIGEST_COMMAND`, built from `ZT_DIGEST_TOOLS` with the longest names first, so `model-context` is not read as `model` nor `prepare-link` as `prepare`; a tool name followed by a parameter, so the approval lines, which name tools without one, do not match) in a prompt. `bridge-workflow-harness.mjs` takes the first `pwsh -NoProfile -File ...` or `zt-digest bridge -...` command. `canonical` rewrites a tool command to the form of the script it replaced, `pwsh -NoProfile -File "E:\zet\scripts\book-digest\<script>.ps1" ...` (map `ZT_DIGEST_TOOLS`), so the command checks written for the PowerShell scripts still match. Each recorded call keeps `cmd` (the canonical command) and `raw` (the `zt-digest` command as the prompt gave it). The Prepare checks allow the quoted script path (`prepare-book-digest\.ps1"?`).
 
 ```bash
-node scripts/book-digest/tests/framework-harness.mjs       # 131 checks: both variants
+node scripts/book-digest/tests/framework-harness.mjs       # 86 checks: the readiness graph, the runner rules and the ready-work behaviour
 node scripts/book-digest/tests/bridge-workflow-harness.mjs # Bridge discovery, acceptance, cleanup, probe-free apply
 ```
 
-`framework-harness.mjs` prints one `ok:`/`FAIL:` line per check and `failed: <n>`, and exits 1 when any check fails. `bridge-workflow-harness.mjs` uses `node:assert`: it stops at the first failed check and prints one `ok:` line per variant. `framework-harness.mjs` builds with `$WFP_ROOT/tools/lib.mjs` (default `~/.claude/skills/workflow-framework-protocol`). The framework's own tests: `node ~/.claude/skills/workflow-framework-protocol/tests/run-tests.mjs`. The PowerShell compilers have their own tests (for example `pwsh -NoProfile -File scripts\book-digest\tests\event-compiler.tests.ps1`): see [Digest scripts](digest-scripts.md).
+`framework-harness.mjs` prints one `ok:`/`FAIL:` line per check and `failed: <n>`, and exits 1 when any check fails. It answers the ledger commands with an in-memory ledger that really claims and completes units, so a layer's complete/partial result is measured, not assumed; a `ledger next -Wait` really waits for ready work to appear. `bridge-workflow-harness.mjs` uses `node:assert`: it stops at the first failed check and prints one `ok:` line per variant. `framework-harness.mjs` builds with `$WFP_ROOT/tools/lib.mjs` (default `~/.claude/skills/workflow-framework-protocol`). The framework's own tests: `node ~/.claude/skills/workflow-framework-protocol/tests/run-tests.mjs`. The PowerShell compilers have their own tests (for example `pwsh -NoProfile -File scripts\book-digest\tests\event-compiler.tests.ps1`): see [Digest scripts](digest-scripts.md).
 
 What they cover:
 
@@ -679,6 +687,8 @@ Gaps:
 - **A full digest changes the slip-box.** Take a database backup, ask the user before the run, never deploy zt during a run.
 
 ## Change history
+
+- `2026-10-18` — Base 3.0.0 drives the **frozen ready-work schedule** (#82, R243–R273): the stage graph is `args → source → prepare → [after-prepare] → terms → [events, findings] → digest → cards → [after-digest: models] → [after-models: explain] → cards-book → link-prepare → link → link-check → [after-link] → organize → figures ∥ hubs → bridge → audit (joins hubs and bridge) → [after-audit] → cleanup → report`. `digest` is a per-group `foreach` chain (module `zt-group-cycle` v1) whose manager claims `digest/gNNN@1`, starts it (snapshot before the job manifest, R262), runs the one frozen job and records `group-finish -Draft`; a new `cards` stage (module `zt-cards-layer` v1) records the per-group offline checks. Every layer driver claims its ready units in bounded blocks, works each unit's own chain in one manager, records the family's checked completion and settles with the ledger gate, so a unit's failure is its own retry (`maxAttempts`) and the stage is never rerun (R252–R258). The Event and Finding layers start after terms and work from readiness while the remaining digest groups run; the model layer is released by the settled digest; the whole-book cycle waits for the Model reviews; Figures and Hubs are released together by Organize and the final audit joins both branches (R244/R246). `zt-digest-lib` v8 adds the one-manager chain (`CHAIN PLAN`, at most 8 jobs, `timeout_ms: 600000`, no terminal tabs/Monitor/handoff/sleep) and the ledger adapter (`ledger next/gate/publish/renew/fail/job`, the family `*-finish` commands, `finishOrFault`, `layer`); `zt-event-layer`/`zt-finding-layer` v3, `zt-model-layer` v2, `zt-explain` v4, `zt-cards-book` v3, `zt-book-terms` v3, `zt-digest-prepare` v5, `zt-link-pass` v2 and `zt-digest-report` v7 use it. The args gain `maxAttempts` (1–10, default 3) and `dshRunCap` (60–3600 s, default 1200), persisted by `prepare -Variant -MaxAttempts -DshRunCap -RunOptions -Apply` in the immutable contract and read back by `ledger status` on a resume. `zt-digest` gains `ledger next -Wait` (0–600 s), the provider cap facts on `ledger job` (`cap_exceeded`, `action`, `elapsed_seconds`) and `ZT_EDIT_PATIENCE` for write steps (180 s; `zt mcp` reads 1–300, default 20); the shared MCP client already bounds its transport (240 s) and reaps its own child tree. `zt-econ-digest` 4.0.0 and `zt-math-digest` 3.0.0 are installed and verified. `framework-harness.mjs` is rebuilt around the readiness graph (86 checks) and `ledger-settings.tests.ps1` covers the settings, the readiness wait and the cap. The Link draft transport (R263's Link half) remains open: the link pass keeps the helper and records its units as explicit unverified work. The workflow itself is not run here.
 
 - `2026-10-18` — Base 2.5.0 runs one whole-book Card cycle instead of a cycle per digest block (R296, R247): the `cards-book` stage now sits after `digest` and before the link pass, runs in mode `full` as well as `cards`, and `link-prepare` waits for it; `zt-digest-blocks` v3 is content only (no `cardBlock`, output `{reports, managers}`); `zt-cards-book` v2 passes `-ModelReview` in mode `cards` or with `args.models` false, so the cycle owns the source review of the Model drafts no chain elaborates, and the sample runs in both modes; `zt-digest-lib` v7 drops `cardBlock` and its `.NET` sample, adds the `-ModelReview` option, and defaults `ideaSample` to 0.1 in `cards`; `zt-digest-report` v6 returns `cards: { book, link }`. `zt-econ-digest` is 3.5.0 and `zt-math-digest` 2.6.0, both reinstalled and verified; `framework-harness.mjs` checks the whole-book cycle, the stage order, the model layer not waiting for it, and the model review in modes `cards` and `full` with models off (139 checks). The workflow itself is not run here.
 

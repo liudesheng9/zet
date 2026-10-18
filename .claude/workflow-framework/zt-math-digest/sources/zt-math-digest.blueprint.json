@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-math-digest",
-  "version": "2.6.0",
+  "version": "3.0.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "modules": [
@@ -13,11 +13,11 @@
     "P2": "Inputs: the base's args plus supply, unitsPerJob, mainResults, coreBudget, notation, boundary, proof, theory (data and declared switches). Base Bridge arguments are inherited; base 2.4.0 adds args.book, the Scholar Archive Work id or title that resolves the book.",
     "P3": "Units of work: as the base, plus the numbered statements (math-compiler.ps1 index) and unitsPerJob units per boundary or proof job, one Theory Card per chapter.",
     "P4": "Roles: as the base. Every math step and its DeepSeek managers run as the Haiku manager role.",
-    "P5": "Stage graph: the base chain with the slots filled: after-prepare: math-skeleton; after-digest: models (the model layer with the math supplements) → math-boundary → math-proof, and explain (mode explain); after-link: math-theory (the cited premises are complete after the link pass); after-audit: math-check. Figures → Bridge → Hubs; Bridge profile math.",
+    "P5": "Stage graph: the base chain with the slots filled: after-prepare: math-skeleton; cards-book (one whole-book card cycle, base 2.5.0, R296) after the digest and before the link pass; after-digest: models (the model layer with the math supplements) → math-boundary → math-proof, and explain (mode explain), never queued behind the card cycle; after-link: math-theory (the cited premises are complete after the link pass); after-audit: math-check. Figures → Bridge → Hubs; Bridge profile math.",
     "P6": "Modules (the mathematics set): the profile (dsh-digest-base.zh.md plus dsh-model-cards.zh.md, then math-prefix.md and math-link-prefix.md from math-compiler.ps1 -Step docs; -BriefDoc, -FillDoc, -ReviewDoc; model-architect-math.md; Theory Cards out of the model compiler), zt-model-layer and zt-explain (zt-model-lib), zt-math-skeleton, zt-math-boundary, zt-math-proof, zt-math-theory, zt-math-check (zt-math-lib). No Event Card: the event layer is the economics set's. zt-bridge v3.",
     "P7": "Checks: as the base; the boundary review job checks each supplied counterexample; the proof review checks every step; math-check reports M1-M18. Bridge BR1–BR9, exact report acceptance and guarded edits.",
     "P8": "Failure policy: a failed index, docs, or skeleton step halts the run; a failed notation table is logged and the digest goes on. Switches: models, notation, boundary, proof, theory. Modes: the base modes plus models, explain, math. Bridge failure is nonfatal in full; bridge apply runs only args, Bridge and report.",
-    "P9": "Dry run: zt-math-digest.sim.json. Fixture: tests/framework-harness.mjs runs all checks of the removed math-workflow-harness.mjs on the built script (2.3.0: base 2.2.0, the ported scripts run as zt-digest tools; 2.4.0: base 2.3.0, every digest script runs as its zt-digest tool, math-compiler as zt-digest math), and checks that the shared stages build the same commands in both book types. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
+    "P9": "Dry run: zt-math-digest.sim.json. Fixture: tests/framework-harness.mjs runs all checks of the removed math-workflow-harness.mjs on the built script (2.3.0: base 2.2.0, the ported scripts run as zt-digest tools; 2.4.0: base 2.3.0, every digest script runs as its zt-digest tool, math-compiler as zt-digest math; 2.6.0: base 2.5.0, one whole-book card cycle instead of a cycle per block), and checks that the shared stages build the same commands in both book types. Pilot: one chapter after a database backup. bridge-workflow-harness.mjs and Bridge scratch tests; verify frozen installation and real report-only pilot separately."
   },
   "args": {
     "supply": {
@@ -106,6 +106,157 @@
         }
       }
     ],
+    "after-digest": [
+      {
+        "id": "models",
+        "title": "Models",
+        "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
+        "module": "zt-model-layer",
+        "when": [
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "resume"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "==",
+                    "value": "full"
+                  },
+                  {
+                    "path": "args.models",
+                    "op": "!=",
+                    "value": false
+                  }
+                ]
+              },
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "models"
+              }
+            ]
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          },
+          "profile": "{{consts.profile}}"
+        }
+      },
+      {
+        "id": "math-boundary",
+        "title": "Boundary",
+        "detail": "hypothesis roles, counterexamples, and contrast pairs (DeepSeek JSON, a second job checks each supplied one)",
+        "module": "zt-math-boundary",
+        "when": [
+          {
+            "path": "mode",
+            "op": "matches",
+            "value": "^(full|math)$"
+          },
+          {
+            "path": "args.boundary",
+            "op": "!=",
+            "value": false
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          }
+        },
+        "after": [
+          "models"
+        ]
+      },
+      {
+        "id": "math-proof",
+        "title": "Proof",
+        "detail": "a DeepSeek reviewer checks every proof plan, proof step, and conclusion",
+        "after": [
+          "math-boundary"
+        ],
+        "module": "zt-math-proof",
+        "when": [
+          {
+            "path": "mode",
+            "op": "matches",
+            "value": "^(full|math)$"
+          },
+          {
+            "path": "args.proof",
+            "op": "!=",
+            "value": false
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          }
+        }
+      }
+    ],
+    "after-models": [
+      {
+        "id": "explain",
+        "title": "Models",
+        "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
+        "module": "zt-explain",
+        "when": [
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "explain"
+              },
+              {
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "==",
+                    "value": "full"
+                  },
+                  {
+                    "path": "args.models",
+                    "op": "!=",
+                    "value": false
+                  }
+                ]
+              },
+              {
+                "path": "mode",
+                "op": "==",
+                "value": "resume"
+              }
+            ]
+          }
+        ],
+        "params": {
+          "args": "{{args}}",
+          "mode": "{{mode}}",
+          "model": {
+            "$ref": "stages.source.output.model"
+          }
+        }
+      }
+    ],
     "after-link": [
       {
         "id": "math-theory",
@@ -170,125 +321,6 @@
           "mode": "{{mode}}"
         }
       }
-    ],
-    "after-digest": [
-      {
-        "id": "models",
-        "title": "Models",
-        "detail": "the model layer: the model compiler on every Model Card of the book (DeepSeek brief → Sonnet plan → DeepSeek fill, derive, review, split)",
-        "module": "zt-model-layer",
-        "when": [
-          {
-            "op": "or",
-            "value": [
-              {
-                "op": "and",
-                "value": [
-                  {
-                    "path": "mode",
-                    "op": "==",
-                    "value": "full"
-                  },
-                  {
-                    "path": "args.models",
-                    "op": "!=",
-                    "value": false
-                  }
-                ]
-              },
-              {
-                "path": "mode",
-                "op": "==",
-                "value": "models"
-              }
-            ]
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          },
-          "profile": "{{consts.profile}}"
-        }
-      },
-      {
-        "id": "explain",
-        "title": "Models",
-        "detail": "mode explain: 思路, 说明, and 解读 for finished Derivation parts",
-        "module": "zt-explain",
-        "when": [
-          {
-            "path": "mode",
-            "op": "==",
-            "value": "explain"
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          }
-        }
-      },
-      {
-        "id": "math-boundary",
-        "title": "Boundary",
-        "detail": "hypothesis roles, counterexamples, and contrast pairs (DeepSeek JSON, a second job checks each supplied one)",
-        "module": "zt-math-boundary",
-        "when": [
-          {
-            "path": "mode",
-            "op": "matches",
-            "value": "^(full|math)$"
-          },
-          {
-            "path": "args.boundary",
-            "op": "!=",
-            "value": false
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          }
-        },
-        "after": [
-          "models"
-        ]
-      },
-      {
-        "id": "math-proof",
-        "title": "Proof",
-        "detail": "a DeepSeek reviewer checks every proof plan, proof step, and conclusion",
-        "after": [
-          "math-boundary"
-        ],
-        "module": "zt-math-proof",
-        "when": [
-          {
-            "path": "mode",
-            "op": "matches",
-            "value": "^(full|math)$"
-          },
-          {
-            "path": "args.proof",
-            "op": "!=",
-            "value": false
-          }
-        ],
-        "params": {
-          "args": "{{args}}",
-          "mode": "{{mode}}",
-          "model": {
-            "$ref": "stages.source.output.model"
-          }
-        }
-      }
     ]
   },
   "params": {
@@ -340,6 +372,7 @@
       "source",
       "prepare",
       "models",
+      "explain",
       "organize",
       "report"
     ],
@@ -354,12 +387,37 @@
       "args",
       "source",
       "prepare",
+      "math-skeleton",
+      "models",
       "math-boundary",
       "math-proof",
       "math-theory",
       "math-check",
       "report"
+    ],
+    "resume": [
+      "args",
+      "prepare",
+      "digest",
+      "cards",
+      "math-skeleton",
+      "models",
+      "explain",
+      "math-boundary",
+      "math-proof",
+      "cards-book",
+      "link-prepare",
+      "link",
+      "link-check",
+      "math-theory",
+      "organize",
+      "figures",
+      "hubs",
+      "bridge",
+      "audit",
+      "math-check",
+      "cleanup",
+      "report"
     ]
   }
 }
-

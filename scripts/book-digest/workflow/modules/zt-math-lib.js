@@ -15,7 +15,7 @@ function zmMake(ctx, p) {
   // One script step relayed by Haiku; its last JSON line, or null (logged) on a failure.
   const runMathScript = async (what, s, extra, phaseName) => {
     const run = await Z.zAgent(
-      `Run this PowerShell command once in the foreground with timeout 600000 and wait for it; do nothing else:
+      `Run this PowerShell command once in the foreground with timeout_ms: 600000 and wait for it; do nothing else:
 ${mstep(s, extra)}
 Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
       { label: `math: ${what}`, phase: phaseName, model: 'haiku', schema: ZD_RUN_SCHEMA },

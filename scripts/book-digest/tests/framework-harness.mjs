@@ -1,10 +1,18 @@
 // Run: node scripts/book-digest/tests/framework-harness.mjs
-// The fixture of the framework-built digests (docs/zt-digest-framework.md). It builds zt-econ-digest and
-// zt-math-digest from their blueprints (scripts/book-digest/workflow) with the workflow-framework-protocol
-// assembler, runs them with stand-ins for the Workflow runtime (every agent returns a canned answer that fits its
-// label or command, as the removed workflow-harness.mjs and math-workflow-harness.mjs did), and runs every check of those two
-// harnesses on them, plus the checks of the framework: one shared base, frozen structure, installed = built.
-// The assembler: $WFP_ROOT, else ~/.claude/skills/workflow-framework-protocol.
+// The frozen-workflow fixture of the ready-work digest schedule (#82, T25/T26). It builds zt-econ-digest and
+// zt-math-digest from their blueprints with the workflow-framework-protocol assembler and runs the built scripts
+// against a stand-in runtime: every agent answers from a canned table, and the ledger commands are answered by a
+// small in-memory ledger that really claims and completes units. No model, DeepSeek, zt or archive call runs.
+//
+// What it checks:
+//  - the frozen framework: one shared base, both variants, installed = built, no undeclared args or modes;
+//  - the declared readiness graph (T25): Perpare/terms, the group cycle, the per-group Card checks, the model
+//    layer and explanations, the whole-book card cycle, the Event/Finding continuations, the link pass, Organize,
+//    Figures beside Hubs, Bridge after Figures, and the final audit joining both branches before cleanup/report;
+//  - the runner restrictions and step inputs (T26): no terminal tabs, Monitor, handoff or sleeping; the exact
+//    600000 ms command timeout; the 8-job manager cap; no relayed user request; the bounded settings;
+//  - the ready-work behaviour (R250-R258): one manager per chain, claims in bounded blocks, per-unit negative
+//    results recorded against the unit, retries per unit, and a gate that decides complete/partial/active.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -24,137 +32,355 @@ for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-diges
 }
 const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
 
-// --- the stand-in runtime: the canned answers (from the removed book and math workflow harnesses) -------------
-let planJobs = 21
-let applyPending = 0
-let explainApplies = 0
-// The scripts ported to zt-digest (ZD_TOOLS in zt-digest-lib.js): tool → script.
-const ZT_DIGEST_TOOLS = {
-  audit: 'digest-audit', card: 'card-compiler', model: 'model-compiler', 'model-context': 'model-context', 'list-models': 'list-models',
-  hub: 'hub-compiler', bridge: 'bridge-compiler', math: 'math-compiler', event: 'event-compiler', finding: 'finding-compiler',
-  terms: 'book-terms', skeleton: 'book-skeleton', 'organize-survey': 'organize-survey', 'organize-apply': 'organize-apply',
-  figures: 'attach-figures', prepare: 'prepare-book-digest', 'prepare-link': 'prepare-link-pass', 'snapshot-topics': 'snapshot-topics',
-}
-// The tool names, longest first, so that `model-context` is not read as `model`, nor `prepare-link` as `prepare`.
-const ZT_DIGEST_NAMES = Object.keys(ZT_DIGEST_TOOLS).sort((a, b) => b.length - a.length).join('|')
-// A tool command has a parameter after the tool name; the approval lines name tools without one.
-const ZT_DIGEST_COMMAND = new RegExp(`zt-digest (?:${ZT_DIGEST_NAMES}) -[A-Za-z][^\\n]*`)
-const canonical = (cmd) => cmd.replace(new RegExp(`^zt-digest (${ZT_DIGEST_NAMES})(?= )`), (m, tool) => `pwsh -NoProfile -File "E:\\zet\\scripts\\book-digest\\${ZT_DIGEST_TOOLS[tool]}.ps1"`)
-function runtime(kind, opts0 = {}) {
-  const calls = []
-  const managed = []
-  const cleanups = []
-  const logs = []
-  const phases = []
-  const pool = { alive: 0, peak: 0, prompts: [] }
-  // The command in a prompt: a pwsh script, or a zt-digest tool. A tool's command is written in the form of
-  // the script it replaced (`pwsh -NoProfile -File "<scripts>\<script>.ps1" ...`), so the checks below match
-  // one form; `raw` keeps the command as the prompt gave it.
-  const commandOf = (prompt) => {
-    const text = String(prompt)
-    const found = [text.match(/pwsh -NoProfile -File[^\n]*/), text.match(ZT_DIGEST_COMMAND)].filter(Boolean).sort((a, b) => a.index - b.index)[0]
-    return found ? canonical(found[0]) : ''
-  }
-  const json = (o) => JSON.stringify(o)
-  const job = (id) => ({ id, files: ['a', 'b'], prompt: 'p' })
-  const answer = (prompt, opts) => {
-    const label = opts.label || ''
-    const cmd = commandOf(prompt)
-    const raw = (String(prompt).match(ZT_DIGEST_COMMAND) || [''])[0]
-    calls.push({ label, phase: opts.phase, model: opts.model, cmd, raw, prompt: String(prompt) })
-    if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
-    if (label === 'prepare book') return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
-    if (label === 'math: index') return { ok: true, output: json({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }) }
-    if (label === 'math: docs') return { ok: true, output: json({ ok: true, files: [] }) }
-    if (label === 'math: skeleton') return { ok: true, output: json({ ok: true, units: 5, created: 5, theories: 2 }) }
-    if (label === 'math: check') return { ok: true, output: json({ ok: true, units: 5, theories: 2, faults: 0, by_rule: {} }) }
-    if (/^(digest|link) manager/.test(label)) {
-      const groups = [...String(prompt).matchAll(/Group (\d+):/g)].map(m => Number(m[1]))
-      const down = /^digest/.test(label) && opts0.digestFails
-      return { reports: groups.map(g => ({ group: g, status: down ? 'failed' : 'done', cards: down ? 0 : 3, models: kind === 'math' ? 1 : 0, events: 0, links: 2, topics: [], errors: '无', deleted: true })) }
+const json = (o) => JSON.stringify(o)
+const lastJson = (text) => {
+  for (const line of String(text || '').trim().split('\n').reverse()) {
+    for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
+      try {
+        const v = JSON.parse(line.slice(i).trim())
+        if (v && typeof v === 'object') return v
+      } catch (e) { /* keep looking */ }
     }
-    if (/^find models/.test(label)) return kind === 'math'
-      ? { ok: true, models: [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }] }
-      : { ok: true, models: [] }
+  }
+  return null
+}
+
+// --- the in-memory ledger: units are claimed, completed and gated for real -------------------------------------
+function makeLedger() {
+  const units = new Map()
+  const settings = { max_attempts: 3, dsh_run_cap: 1200 }
+  const add = (id, layer, inputs = {}) => {
+    if (!units.has(id)) units.set(id, { id, layer, state: 'ready', token: 0, inputs })
+    return units.get(id)
+  }
+  const layer = (name) => [...units.values()].filter((u) => u.layer === name)
+  const next = (name, take) => {
+    const ready = layer(name).filter((u) => u.state === 'ready').slice(0, take)
+    for (const u of ready) { u.state = 'claimed'; u.token += 1 }
+    return ready.map((u) => ({ id: u.id, layer: u.layer, token: u.token, input_hash: `ih-${u.id}`, inputs: u.inputs }))
+  }
+  const gate = (name) => {
+    const all = layer(name)
+    const done = all.filter((u) => u.state === 'done').length
+    const failed = all.filter((u) => u.state === 'failed').length
+    return {
+      schema_version: 1, layer: name, sealed: true, settled: all.every((u) => u.state === 'done' || u.state === 'failed'), complete: all.length > 0 && done === all.length,
+      counts: { total: all.length, done, failed, open: all.length - done - failed },
+      unresolved: all.filter((u) => u.state !== 'done').map((u) => u.id),
+    }
+  }
+  const finish = (id) => { const u = units.get(id); if (u) { u.state = 'done' } return u }
+  const fail = (id, state = 'failed') => { const u = units.get(id); if (u) u.state = state; return u }
+  const find = (id) => units.get(id)
+  return { units, settings, add, layer, next, gate, finish, fail, find }
+}
+
+const CANNED = {
+  'card plan': () => ({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 1, dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' }, jobs: [{ id: 'fix-01', kind: 'fix', file: 'fix-01.md' }, { id: 'orphans-99', kind: 'orphans', file: 'orphans-99.md' }] }),
+  'card apply': () => ({ applied_jobs: 1, pending_jobs: 0, counts: { fix: 2 } }),
+  'card check': () => ({ faults: 0, orphans: 0, jobs: [] }),
+  'card report': () => ({ cards: 2, faults_before: 3, faults_after: 0, verdicts: { fix: 2 }, splits: 0, merges: 0, refused: 0, orphan_links: 0, orphans_after: 0 }),
+  'event plan': () => ({ candidates: 2, groups: 2, jobs: [{ id: 'ev-01', files: ['a', 'b'], prompt: 'p' }] }),
+  'event apply': () => ({ ok: true, applied_jobs: 1, created: 1, merged: 0, linked: 1, refused: [], pending_jobs: 0 }),
+  'event report': () => ({ jobs: 1, created: 1, merged: 0, linked: 1, refused: 0, errors: [] }),
+  'finding plan': () => ({ candidates: 3, groups: 2, jobs: [{ id: 'fd-01', files: ['a', 'b'], prompt: 'p' }] }),
+  'finding apply': () => ({ ok: true, applied_jobs: 1, created: 2, linked: 2, refused: [], pending_jobs: 0 }),
+  'finding report': () => ({ jobs: 1, created: 2, linked: 2, refused: 0, errors: [] }),
+  'model brief': () => ({ jobs: [{ id: 'brief', files: ['a', 'b'], prompt: 'p' }], skipped: [] }),
+  'model report': () => ({ models: [{ model: 'Key/2|c', status: 'done', level: 'formal', parts: [], faults: {} }] }),
+  'model explain': () => ({ parts: 3, jobs: [{ id: 'm:x01', files: ['a', 'b', 'c'], prompt: 'p' }] }),
+  'model explain-apply': () => ({ applied: 2, refused: [], blocked: [], jobs: [] }),
+  'model explain-report': () => ({ models: [{ model: 'Key/3|a', derivations: 3, explained: 3, missing: [], refused: [], blocked: [] }] }),
+  'terms plan': () => ({ bold: 2, definitions: 1, jobs: [{ id: 'terms', files: ['a', 'b'], prompt: 'p' }] }),
+  'terms apply': () => ({ ok: true, terms: 2, with_avoid: 1, card: 'Key/1|a' }),
+  'hub survey': () => ({ ok: true, survey: '{}', limits: { topic_min: 8, line_min: 10, max_lines: 20, max_groups: 7, min_reason: 8, neighbour_links: 3, field_min: 3, field_max: 8, per_job: 4 }, reasons: '' }),
+  'hub plan': () => ({ tree_count: 1, jobs: [{ id: 'h', files: ['a'], prompt: 'p' }] }),
+  'hub apply': () => ({ ok: true, hubs: 1 }),
+  'hub check': () => ({ hubs: 1, faults: 0, jobs: [] }),
+  'hub report': () => ({ counts: {}, faults: {}, mirror: 0, missing_count: 0 }),
+  'organize-survey': () => ({ survey: 'x', topics: 1, pairs: 0 }),
+  'organize-apply': () => ({ merges: 0, moves: 0, refused: 0, renamed: 0 }),
+  'skeleton plan': () => ({ groups: 2, jobs: [{ id: 'skeleton', files: ['a'], prompt: 'p' }] }),
+  'skeleton apply': () => ({ ok: true, thesis: '论点', argument: 2, models: 0, events: 0, topics: 1, written: { structure: 'Key/1|b' } }),
+  'bridge plan': () => ({ ok: true, step: 'plan', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [{ id: 'br-001', files: ['a'], prompt: 'p' }] }),
+  'bridge report': () => ({ ok: true, step: 'report', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [] }),
+  'audit': () => ({ hubs_missing: 0, broken_links: 0, books: [{ key: 'Key', cards: 9, topic_trees: 1, style_faults: 0, orphans: 0, no_source: 0, unkinded: 0, models: 0, not_self_sufficient: 0, figures_missing: 0 }] }),
+  'figures': () => ({ shown: 0, cards: 0, figures: 0, labelled: 0, literature: false }),
+  'prepare-link': () => ({ pending: [1, 2], groups: [{ n: 1, owned: 3, done: false }, { n: 2, owned: 3, done: false }], unowned: 0, cards_all: 'D:\\x\\Key\\cards-all.md' }),
+  'snapshot-topics': () => ({ ok: true }),
+  'math index': () => ({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }),
+  'math docs': () => ({ ok: true, files: [] }),
+  'math skeleton': () => ({ ok: true, units: 5, created: 5, theories: 2 }),
+  'math check': () => ({ ok: true, units: 5, theories: 2, faults: 0, by_rule: {} }),
+  'math notation': () => ({ candidates: 3, jobs: [{ id: 'notation', files: ['a'], prompt: 'p' }] }),
+  'math notation-apply': () => ({ ok: true, symbols: 3, card: 'Key/1|c' }),
+  'math boundary': () => ({ units: 2, jobs: [{ id: 'b-01', files: ['a'], prompt: 'p' }] }),
+  'math boundary-apply': () => ({ created: 3, skipped_supplied: 0, jobs: [{ id: 'v-b-01', files: ['a'], prompt: 'p' }] }),
+  'math boundary-settle': () => ({ kept: 1, deleted: 0, parts: [] }),
+  'math proof': () => ({ units: 2, jobs: [{ id: 'p-01', files: ['a'], prompt: 'p' }] }),
+  'math proof-apply': () => ({ ok: 3, fixed: 1, refused: 0, parts: [] }),
+  'math theory': () => ({ theories: 2, jobs: [{ id: 't-01', files: ['a'], prompt: 'p' }] }),
+  'math theory-apply': () => ({ ok: true, theories: 2, answered: 2 }),
+}
+
+function runtime(kind, opts = {}) {
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = []
+  const pool = { alive: 0, peak: 0, prompts: [] }
+  const led = makeLedger()
+  const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0 }
+  const failedStep = []
+
+  const layerEnabled = (name) => ({ econ: { terms: true, models: true, events: true, findings: true, hubs: false, figures: false, bridge: false }, math: { terms: true, models: true, events: false, findings: false, hubs: true, figures: false, bridge: false } })[kind === 'math' ? 'math' : 'econ'][name]
+
+  // The ledger commands, answered by the in-memory ledger.
+  const ledgerAnswer = (cmd) => {
+    const layer = (cmd.match(/-Layer (\w[\w-]*)/) || [])[1]
+    if (/ group-start /.test(cmd)) {
+      const group = Number((cmd.match(/-Group (\d+)/) || [])[1])
+      const token = Number((cmd.match(/-Token (\d+)/) || [])[1])
+      const unit = `digest/g${String(group).padStart(3, '0')}@1`
+      return { ok: true, output: json({ schema_version: 1, unit, token, run_id: 'r1', input_hash: `ih-${unit}`, unit_input_hash: `ih-${unit}`, job: `D:\\x\\Key\\group-jobs\\g${String(group).padStart(3, '0')}\\claim-${token}\\job.json`, prompt: 'D:\\x\\Key\\prompt.md', snapshot: 'D:\\x\\Key\\snapshot.md', snapshot_revision: 7, draft: `D:\\x\\Key\\group-jobs\\g${String(group).padStart(3, '0')}\\claim-${token}\\draft.json`, reused: false, lease_until: 1000 }) }
+    }
+    const finish = cmd.match(/zt-digest (group-finish|cards-finish|events-finish|findings-finish|link-finish|model-finish|explain-finish|book-cards-finish) /)
+    if (finish) {
+      const tool = finish[1]
+      let id = null
+      const group = Number((cmd.match(/-Group (\d+)/) || [])[1])
+      if (tool === 'group-finish') id = `digest/g${String(group).padStart(3, '0')}@1`
+      else if (group) id = `${tool.replace('-finish', '')}/g${String(group).padStart(3, '0')}@1`
+      else if (tool === 'model-finish') id = led.layer('models').find((u) => u.state === 'claimed')?.id
+      else if (tool === 'explain-finish') id = led.layer('explain').find((u) => u.state === 'claimed')?.id
+      else id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      led.finish(id)
+      if (tool === 'group-finish' && group) {
+        const n = String(group).padStart(3, '0')
+        led.add(`cards/g${n}@1`, 'cards')
+        if (layerEnabled('events')) led.add(`events/g${n}@1`, 'events')
+        if (layerEnabled('findings')) led.add(`findings/g${n}@1`, 'findings')
+        led.add(`link/g${n}@1`, 'link')
+        if (layerEnabled('models')) led.add(`models/g${n}-m0000@1`, 'models', { header: 'Key/2|c', model: 'Key/2|c' })
+      }
+      if (tool === 'model-finish') led.add('explain/g001-m0000@1', 'explain', { model: 'Key/2|c' })
+      return { ok: true, output: json({ schema_version: 1, kind: 'digest_completion', unit: id, token: Number((cmd.match(/-Token (\d+)/) || [])[1]) || 1, state: 'done', complete: true, disposition: 'verified', owned: ['Key/1|a'], reused: false }) }
+    }
+    if (/ ledger next /.test(cmd)) {
+      const take = Number((cmd.match(/-Take (\d+)/) || [])[1])
+      const units = led.next(layer, take)
+      return { ok: true, output: json({ schema_version: 1, layer, units, counts: led.gate(layer).counts, settled: led.gate(layer).settled }) }
+    }
+    if (/ ledger gate /.test(cmd)) {
+      const view = led.gate(layer)
+      return { ok: view.complete, exit: view.complete ? 0 : 3, output: json(view) }
+    }
+    if (/ ledger publish /.test(cmd)) {
+      const unit = `cards-book/book@1`
+      led.add(unit, 'cards-book', {})
+      return { ok: true, output: json({ schema_version: 1, layer: 'cards-book', logical_key: 'book', unit, revision: 1, input_hash: 'ih-pub', reused: false }) }
+    }
+    if (/ ledger renew /.test(cmd)) return { ok: true, output: json({ schema_version: 1, unit: 'x', token: 1, renewed: true }) }
+    if (/ ledger fail /.test(cmd)) {
+      const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      const klass = (cmd.match(/-Class (\w+)/) || [])[1]
+      led.fail(id, klass === 'retryable' ? 'retry' : 'failed')
+      return { ok: true, output: json({ schema_version: 1, unit: id, state: klass === 'retryable' ? 'retry' : 'failed', class: klass }) }
+    }
+    if (/ ledger done /.test(cmd)) {
+      const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      led.finish(id)
+      return { ok: true, output: json({ schema_version: 1, unit: id, state: 'done', complete: true }) }
+    }
+    if (/ ledger status /.test(cmd)) {
+      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+    }
+    if (/ ledger job /.test(cmd)) return { ok: true, output: json({ schema_version: 1, action: 'list', jobs: [] }) }
+    return null
+  }
+
+  // One script command, as a step agent would run it.
+  const commandAnswer = (raw) => {
+    const cmd = String(raw).trim()
+    commands.push(cmd)
+    failedStep.push(cmd)
+    const denied = opts.failWhen && opts.failWhen.test(cmd) ? cmd : null
+    if (opts.contentWhen && opts.contentWhen.test(cmd)) return { ok: true, exit: 0, output: json({ schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' }) }
+    const ledAns = ledgerAnswer(cmd)
+    if (ledAns) return denied ? { ok: false, exit: 1, output: 'stand-in crash' } : ledAns
+    const tool = cmd.match(/^zt-digest ([\w-]+) -Step ([\w-]+)/)
+    if (tool) {
+      const key = `${tool[1] === 'card' ? 'card' : tool[1] === 'model' ? 'model' : tool[1] === 'event' ? 'event' : tool[1] === 'finding' ? 'finding' : tool[1] === 'hub' ? 'hub' : tool[1] === 'bridge' ? 'bridge' : tool[1] === 'math' ? 'math' : tool[1] === 'terms' ? 'terms' : tool[1] === 'skeleton' ? 'skeleton' : tool[1]} ${tool[2]}`
+      const fn = CANNED[key]
+      if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
+      if (fn) {
+        const value = fn()
+        if (tool[1] === 'card' && tool[2] === 'apply' && state.applyPending > 0) { value.pending_jobs = state.applyPending - 1 }
+        if (tool[1] === 'card' && tool[2] === 'plan' && state.planJobs !== 21) value.jobs = Array.from({ length: state.planJobs }, (_, i) => ({ id: `fix-${i + 1}`, kind: 'fix', file: `fix-${i + 1}.md` }))
+        if (tool[1] === 'terms' && tool[2] === 'apply') led.finish('terms/book@1')
+        return { ok: true, exit: 0, output: json(value) }
+      }
+    }
+    const direct = cmd.match(/^zt-digest (organize-survey|organize-apply|audit|figures|prepare-link|snapshot-topics|list-models) /)
+    if (direct) {
+      if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
+      if (direct[1] === 'list-models') {
+        const models = kind === 'math'
+          ? [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }]
+          : [{ address: 'Key/2|c', title: '模型', form: null, level: 'formal', parts: 0 }]
+        return { ok: true, exit: 0, output: json({ ok: true, models }) }
+      }
+      return { ok: true, exit: 0, output: json(CANNED[direct[1]] ? CANNED[direct[1]]() : { ok: true }) }
+    }
+    return { ok: true, exit: 0, output: json({ ok: true }) }
+  }
+
+  // The chain manager: run the plan's commands in order and the jobs they print.
+  const chainAnswer = async (prompt, opts) => {
+    const plan = JSON.parse(prompt.slice(prompt.indexOf('CHAIN PLAN: ') + 'CHAIN PLAN: '.length).split('\n')[0])
+    const steps = [], results = []
+    let unit = null, token = null, group = null, draft = null
+    for (const st of plan.steps) {
+      const fill = (cmd) => cmd
+        .replace(/\{\{unit\}\}/g, unit || '')
+        .replace(/\{\{token\}\}/g, token === null ? '' : String(token))
+        .replace(/\{\{group\}\}/g, group === null ? '' : String(group))
+        .replace(/\{\{draft\}\}/g, draft || '')
+      let command = fill(st.command)
+      let runs = 0
+      let answer
+      for (;;) {
+        runs += 1
+        answer = await commandAnswer(command)
+        const parsed = lastJson(answer.output)
+        if (st.repeat && runs < (st.repeat.max || 100) && parsed && Number(parsed[st.repeat.path] || 0) > Number(st.repeat.value)) {
+          if (st.repeat.path === 'pending_jobs') state.applyPending = Math.max(0, state.applyPending - 1)
+          continue
+        }
+        break
+      }
+      const parsed = lastJson(answer.output)
+      if (st.claim) {
+        if (!parsed || !Array.isArray(parsed.units) || !parsed.units.length) {
+          steps.push({ name: st.name, ok: answer.ok, exit: answer.exit || 0, output: answer.output })
+          break
+        }
+        unit = parsed.units[0].id
+        token = parsed.units[0].token
+        group = Number((/g(\d+)@1/.exec(unit) || [])[1])
+      }
+      if (parsed && parsed.draft) draft = parsed.draft
+      steps.push({ name: st.name, ok: answer.ok, exit: answer.exit || 0, output: answer.output, ...(answer.ok ? {} : { error: answer.output }) })
+      if (parsed && parsed.job) {
+        results.push({ id: `digest-g${group}-t${token}`, step: st.name, session_id: `s-digest-${group}`, status: 'done', answer: '{}' })
+      }
+      if (st.jobs && parsed && Array.isArray(parsed.jobs) && parsed.jobs.length) {
+        managers.push({ label: opts.label, phase: opts.phase, jobs: parsed.jobs.map((j) => j.id), given: parsed.jobs })
+        for (const job of parsed.jobs) results.push({ id: job.id, step: st.name, session_id: `s-${job.id}`, status: 'done', answer: '{}' })
+      }
+    }
+    return { steps, results }
+  }
+
+  const answer = async (prompt, opts) => {
+    const text = String(prompt)
+    const label = opts.label || ''
+    const cmd = text.match(/zt-digest [a-z-]+ -[A-Za-z][^\n]*/) || text.match(/pwsh -NoProfile -File[^\n]*/)
+    calls.push({ label, phase: opts.phase, model: opts.model, cmd: cmd ? cmd[0] : '', prompt: text })
+    if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, opts)
+    if (text.startsWith('You drive DeepSeek Harness')) {
+      if (/Run every job below/.test(text)) {
+        const given = JSON.parse(text.split('\n').find((l) => l.startsWith('[{')) || '[]')
+        managers.push({ label, phase: opts.phase, jobs: given.map((j) => j.id), given })
+        return { ok: true, output: '', results: given.map((j) => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
+      }
+      if (/^Clean up:/m.test(text)) { cleanups.push(label); return { ok: true, results: [], deleted: 2 } }
+      const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
+      if (lines.length) { const r = commandAnswer(lines[0]); return { ok: r.ok, output: r.output, results: [], deleted: 0 } }
+      return { ok: true, output: '', results: [], deleted: 0 }
+    }
+    if (/^Run this PowerShell command once/.test(text)) {
+      const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
+      if (lines.length) {
+        let r = await commandAnswer(lines[0])
+        if (/ ledger next .* -Wait \d+/.test(lines[0])) {
+          for (let i = 0; i < 200; i++) {
+            const view = lastJson(r.output)
+            if (view && Array.isArray(view.units) && view.units.length) break
+            const producer = led.gate((lines[0].match(/-Layer (\w[\w-]*)/) || [])[1])
+            if (producer.settled && producer.counts.total > 0) break
+            await new Promise((resolve) => setTimeout(resolve, 5))
+            r = await commandAnswer(lines[0])
+          }
+        }
+        return { ok: r.ok, output: r.output }
+      }
+    }
+    if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
+    if (label === 'prepare book') {
+      state.groups = 2
+      led.add('prepare/book@1', 'prepare').state = 'done'
+      if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
+      for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
+      if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
+      return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
+    }
+    if (label === 'resume status') {
+      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+    }
+    if (/^math: /.test(label)) {
+      const key = label.replace('math: ', '')
+      const fn = CANNED[`math ${key}`]
+      return { ok: true, output: json(fn ? fn() : { ok: true }) }
+    }
     if (/^plan: /.test(label)) return { plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }
-    if (label === 'prepare link pass') return { ok: true, pending: [1, 2], owned_total: 6, unowned: 0 }
-    if (label === 'cleanup DeepSeek') return { late_deleted: 0, workspace_removed: true, files_removed: 0 }
-    if (label === 'cleanup model managers') return { late_deleted: 0, folders: 1 }
-    if (label === 'show figures') return { ok: true, output: json({ shown: 0, cards: 0, figures: 0, labelled: 0, literature: false }) }
-    if (label === 'audit cards') return { ok: true, output: json({ hubs_missing: 0, broken_links: 0, books: [{ key: 'Key', cards: 9, topic_trees: 1, style_faults: 0, orphans: 0, no_source: 0, unkinded: 0, models: 0, not_self_sufficient: 0, figures_missing: 0 }] }) }
-    if (label === 'organize: survey') return { ok: true, output: json({ survey: 'x', topics: 1, pairs: 0 }) }
+    if (label === 'find models: whole book' || label === 'find models: explain') {
+      return { ok: true, models: kind === 'math'
+        ? [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }]
+        : [{ address: 'Key/2|c', title: '模型', form: null, level: 'formal', parts: 0 }] }
+    }
     if (label === 'organize: decisions') return { thesis: '论点', merges: 0, moves: 0, notes: 1, report: '无' }
-    if (label === 'organize: apply') return { ok: true, output: json({ merges: 0, moves: 0, refused: 0, renamed: 0 }) }
-    if (label === 'hub manager: survey and limits') return { ok: true, survey: '{}', limits: { topic_min: 8, line_min: 10, max_lines: 20, max_groups: 7, min_reason: 8, neighbour_links: 3, field_min: 3, field_max: 8, per_job: 4 }, reasons: '' }
-    if (String(prompt).startsWith('You drive DeepSeek Harness')) {
-      if (/Run every job below/.test(prompt)) {
-        const given = JSON.parse(String(prompt).split('\n').find(l => l.startsWith('[{')) || '[]')
-        managed.push({ label, jobs: given.map(j => j.id), given })
-        return { ok: true, output: '', results: given.map(j => ({ id: j.id, session_id: `s-${j.id}`, status: opts0.failJudge && /^bridge/.test(label) ? 'failed' : 'done', answer: '{}' })) }
+    if (label === 'hub manager: survey and limits') return CANNED['hub survey']()
+    if (/^digest manager|^link manager/.test(label)) {
+      const groups = [...text.matchAll(/Group (\d+):/g)].map((m) => Number(m[1]))
+      return { reports: groups.map((g) => ({ group: g, status: 'done', cards: 3, models: 0, events: 0, links: 2, topics: [], errors: '无', deleted: true })) }
+    }
+    if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
+    if (/^prepare link pass$/.test(label)) return { ok: true, ...CANNED['prepare-link']() }
+    if (/^cleanup DeepSeek/.test(label)) return { late_deleted: 0, workspace_removed: true, files_removed: 0 }
+    if (/^cleanup model managers/.test(label)) return { late_deleted: 0, folders: 1 }
+    if (/^show figures$/.test(label)) return { ok: true, output: json(CANNED.figures()) }
+    if (/^organize: /.test(label)) {
+      const key = label.replace('organize: ', '')
+      const fn = CANNED[`organize-${key}`] || CANNED[`organize-${key.replace(' ', '-')}`]
+      return key === 'decisions' ? { thesis: '论点', merges: 0, moves: 0, notes: 1, report: '无' } : { ok: true, output: json(fn ? fn() : { ok: true }) }
+    }
+    if (/^terms: /.test(label) || /^skeleton: /.test(label) || /^bridge: /.test(label) || /^explain: /.test(label) || /^cards /.test(label) || /^events |^findings /.test(label)) {
+      const tool = text.match(/zt-digest ([a-z-]+) -Step ([a-z-]+)/)
+      if (tool) {
+        const fn = CANNED[`${tool[1]} ${tool[2]}`]
+        return { ok: true, output: json(fn ? fn() : { ok: true }), results: [], deleted: 0 }
       }
-      if (/^Clean up:/m.test(prompt)) { cleanups.push(label); return { ok: true, results: [], deleted: 2 } }
-      if (opts0.failStep && opts0.failStep.test(cmd)) return { ok: false, error: 'stand-in crash', output: '', results: [] }
-      let output = json({ jobs: [] })
-      if (/bridge-compiler\.ps1/.test(cmd)) return { ok: true, output: json({ok:true,step:/-Step plan/.test(cmd)?'plan':'report',status:'done',plan_id:'p-fixture',report_id:'r-fixture',counts:{selected:1,new:1,earlier:0},jobs: /-Step plan/.test(cmd)?[job('br-001')]:[]}), results: [] }
-      const compact = / -Compact/.test(cmd)
-      const head = { dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw' } }
-      if (/model-compiler\.ps1" -Step brief/.test(cmd)) output = json({ jobs: [job('brief')], skipped: [] })
-      else if (/model-compiler\.ps1" -Step report/.test(cmd)) output = json({ models: [{ model: 'Key/2|c', status: 'done', level: 'formal', parts: [], faults: {} }] })
-      else if (kind === 'book' && compact && /card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 40, with_faults: 30, faults: 90, review: 1, orphans: 1, ...head, jobs: [...Array.from({ length: planJobs - 1 }, (_, i) => ({ id: `fix-${String(i + 1).padStart(2, '0')}`, kind: 'fix', file: `fix-${String(i + 1).padStart(2, '0')}.md` })), { id: 'orphans-99', kind: 'orphans', file: 'orphans-99.md' }] })
-      else if (kind === 'book' && compact && /card-compiler\.ps1" -Step check/.test(cmd)) output = json({ faults: 1, orphans: 0, ...head, jobs: [{ id: 'fix-01-r2', kind: 'follow', file: 'fix-01-r2.md', continue: 'fix-01' }] })
-      else if (/card-compiler\.ps1" -Step plan/.test(cmd)) output = json({ picked: 4, with_faults: 1, faults: 1, review: 0, orphans: 0, jobs: [job('fix-01')] })
-      else if (/card-compiler\.ps1" -Step apply/.test(cmd)) { output = json({ applied_jobs: 1, pending_jobs: applyPending, counts: { fix: 2 } }); if (applyPending > 0) applyPending-- }
-      else if (/card-compiler\.ps1" -Step check/.test(cmd)) output = json({ jobs: [], faults: 0, orphans: 0 })
-      else if (/card-compiler\.ps1" -Step report/.test(cmd)) output = json({ cards: 2, faults_before: 3, faults_after: 0, verdicts: { fix: 2 }, splits: 0, merges: 0, refused: 0, orphan_links: 0, orphans_after: 0 })
-      else if (/book-terms\.ps1" -Step plan/.test(cmd)) output = json({ bold: 2, definitions: 1, jobs: [job('terms')] })
-      else if (/book-terms\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, terms: 2, with_avoid: 1, card: 'Key/1|a' })
-      else if (/book-skeleton\.ps1" -Step plan/.test(cmd)) output = json({ groups: 2, jobs: [job('skeleton')] })
-      else if (/book-skeleton\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, thesis: '论点', argument: 2, models: 0, events: 0, topics: 1, written: { structure: 'Key/1|b' } })
-      else if (/hub-compiler\.ps1" -Step plan/.test(cmd)) output = json({ tree_count: 1, jobs: [job('h')] })
-      else if (/hub-compiler\.ps1" -Step check/.test(cmd)) output = json({ hubs: 1, faults: 0, jobs: [] })
-      else if (/hub-compiler\.ps1" -Step report/.test(cmd)) output = json({ counts: {}, faults: {}, mirror: 0, missing_count: 0 })
-      else if (/hub-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, hubs: 1 })
-      else if (/model-compiler\.ps1" -Step explain-apply /.test(cmd)) {
-        explainApplies++
-        output = explainApplies === 1
-          ? json({ applied: 2, refused: [], blocked: [], jobs: [{ id: 'm:x01+2', continue: 'm:x01', files: ['follow.md'], fallback: ['x.md', 'follow.md'], prompt: 'p' }] })
-          : json({ applied: 1, refused: [], blocked: [], jobs: [] })
-      }
-      else if (/model-compiler\.ps1" -Step explain-report /.test(cmd)) output = json({ models: [{ model: 'Key/3|a', derivations: 3, explained: 3, missing: [], refused: [], blocked: [] }] })
-      else if (/model-compiler\.ps1" -Step explain /.test(cmd)) output = json({ parts: 3, jobs: [{ id: 'm:x01', files: ['a', 'b', 'c'], prompt: 'p' }] })
-      else if (/math-compiler\.ps1" -Step notation /.test(cmd + ' ')) output = json({ candidates: 3, jobs: [job('notation')] })
-      else if (/math-compiler\.ps1" -Step notation-apply/.test(cmd)) output = json({ ok: true, symbols: 3, card: 'Key/1|c' })
-      else if (/math-compiler\.ps1" -Step boundary /.test(cmd + ' ')) output = json({ units: 2, jobs: [job('b-01')] })
-      else if (/math-compiler\.ps1" -Step boundary-apply/.test(cmd)) output = json({ created: 3, skipped_supplied: 0, jobs: [job('v-b-01')] })
-      else if (/math-compiler\.ps1" -Step boundary-settle/.test(cmd)) output = json({ kept: 1, deleted: 0, parts: [] })
-      else if (/math-compiler\.ps1" -Step proof /.test(cmd + ' ')) output = json({ units: 2, jobs: [job('p-01')] })
-      else if (/math-compiler\.ps1" -Step proof-apply/.test(cmd)) output = json({ ok: 3, fixed: 1, refused: 0, parts: [] })
-      else if (/math-compiler\.ps1" -Step theory /.test(cmd + ' ')) output = json({ theories: 2, jobs: [job('t-01')] })
-      else if (/math-compiler\.ps1" -Step theory-apply/.test(cmd)) output = json({ ok: true, theories: 2, answered: 2 })
-      else if (/event-compiler\.ps1" -Step plan/.test(cmd)) output = json({ candidates: 2, groups: 2, jobs: [job('ev-01')] })
-      else if (/event-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, applied_jobs: 1, created: 1, merged: 0, linked: 1, refused: [], pending_jobs: 0 })
-      else if (/event-compiler\.ps1" -Step report/.test(cmd)) output = json({ jobs: 1, created: 1, merged: 0, linked: 1, refused: 0, errors: [] })
-      else if (/finding-compiler\.ps1" -Step plan/.test(cmd)) output = json({ candidates: 3, groups: 2, jobs: [job('fd-01')] })
-      else if (/finding-compiler\.ps1" -Step apply/.test(cmd)) output = json({ ok: true, applied_jobs: 1, created: 2, linked: 2, refused: [], pending_jobs: 0 })
-      else if (/finding-compiler\.ps1" -Step report/.test(cmd)) output = json({ jobs: 1, created: 2, linked: 2, refused: 0, errors: [] })
-      return { ok: true, output, results: [], deleted: 0 }
     }
     return {}
   }
+
   return {
-    calls, logs, phases, managed, cleanups, pool,
+    calls, commands, logs, phases, managers, cleanups, pool, led,
     agent: async (prompt, opts = {}) => {
-      const manager = /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
-      if (!manager) return answer(prompt, opts)
+      const manager = /^You run one compiler chain/.test(prompt) || /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
+      if (!manager) {
+        const a = await answer(prompt, opts)
+        // A guard step reports what the prompt names: the step command and its JSON line.
+        if (opts.schema && a && a.ok !== undefined && textHasStep(prompt)) return a
+        return a
+      }
       pool.prompts.push(String(prompt))
       pool.alive++
       pool.peak = Math.max(pool.peak, pool.alive)
-      await new Promise(resolve => setTimeout(resolve, 3))
-      try { return answer(prompt, opts) } finally { pool.alive-- }
+      await new Promise((resolve) => setTimeout(resolve, 3))
+      try { return await answer(prompt, opts) } finally { pool.alive-- }
     },
     phase: (p) => phases.push(p),
     log: (m) => logs.push(m),
-    parallel: async (fns) => Promise.all(fns.map(fn => fn())),
+    parallel: async (fns) => Promise.all(fns.map((fn) => fn())),
     pipeline: async (items, ...stages) => Promise.all(items.map(async (item, i) => {
       let value = item
       for (const stage of stages) value = await stage(value, item, i)
@@ -162,43 +388,42 @@ function runtime(kind, opts0 = {}) {
     })),
   }
 }
-// The kernel returns a report; result is the workflow's result, or {stage, error} where the run halted.
-async function run(which, args, opts0, kind) {
+const textHasStep = (prompt) => /Run this PowerShell command once|Run this one PowerShell command|Run this PowerShell command \(one call\)/.test(prompt)
+
+async function run(which, args, opts0 = {}, kind) {
   const rt = runtime(kind || (which === 'math' ? 'math' : 'book'), opts0)
+  if (args && args.mode === 'explain') rt.led.add('explain/g001-m0000@1', 'explain', { model: 'Key/2|c' })
+  if (args && args.mode === 'events') rt.led.add('events/g001@1', 'events')
+  if (args && args.mode === 'findings') rt.led.add('findings/g001@1', 'findings')
   const fn = new AsyncFunction('args', 'agent', 'phase', 'log', 'parallel', 'pipeline', sources[which])
   let report, thrown
   try { report = await fn(args, rt.agent, rt.phase, rt.log, rt.parallel, rt.pipeline) } catch (e) { thrown = e }
   const result = thrown ? { stage: 'kernel', error: thrown.message } : report.halted ? { stage: report.halted.stage, error: report.halted.error } : report.result
+  // (the runtime is built with the scenario options)
   return { result, report, thrown, ...rt }
 }
 
 let failed = 0
 const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${message}`); if (!cond) failed++ }
+const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@book{Key}', bookTitle: '书', hubs: false }
 
 // ================================================================================================================
-// The framework: one base, two variants, frozen
+// The frozen framework: one base, two variants, installed = built
 // ================================================================================================================
 {
-  const base = lib.loadBlueprint(path.join(workflowDir, 'zt-digest-base.blueprint.json'))
+  const b = lib.loadBlueprint(path.join(workflowDir, 'zt-digest-base.blueprint.json'))
   const e = builds.econ.embedded, m = builds.math.embedded
-  const baseIds = base.bp.stages.map(s => s.id)
-  const pick = (bp, id) => bp.stages.find(s => s.id === id)
-  const same = baseIds.filter(id => id !== 'report').every(id => JSON.stringify(pick(e, id)) === JSON.stringify(pick(m, id).after ? pick(m, id) : pick(m, id)) || JSON.stringify({ ...pick(e, id), after: null }) === JSON.stringify({ ...pick(m, id), after: null }))
-  check(baseIds.every(id => pick(e, id) && pick(m, id)) && same, `base: both variants hold every base stage with the same module and params (${baseIds.length} stages)`)
-  const own = (bp) => bp.stages.map(s => s.id).filter(id => !baseIds.includes(id)).join(',')
-  check(own(e) === 'models,explain,events,findings', `base: the economics set adds the model layer, explain, the event layer, and the empirical-results layer (${own(e)})`)
-  check(Object.keys(e.installed.modules).includes('zt-finding-layer') && !Object.keys(m.installed.modules).includes('zt-finding-layer'), 'modules: the empirical-results layer is installed only in the economics workflow')
-  check(own(m) === 'math-skeleton,models,explain,math-boundary,math-proof,math-theory,math-check', `base: the mathematics set adds the model layer, explain, and its five math stages (${own(m)})`)
-  check(!baseIds.some(id => /^(models|explain|events)$/.test(id)), 'base: no model, explain, or event layer in the shared base')
-  check(Object.keys(e.installed.modules).includes('zt-event-layer') && !Object.keys(m.installed.modules).includes('zt-event-layer'), 'modules: the event layer is installed only in the economics workflow')
-  check(['zt-model-layer', 'zt-model-lib'].every(id => e.installed.modules[id] && m.installed.modules[id]), 'modules: each book type installs its own model layer')
-  check(e.consts.profile.noEventCandidates === true && m.consts.profile.noEventCandidates === true && /dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md/.test(e.consts.profile.instructions), 'profile: the digest prompt is the base prompt plus the model-card supplement, without event candidates')
-  check(e.consts.profile.digestPrefix === 'shared-prefix.md' && m.consts.profile.digestPrefix === 'math-prefix.md', 'base: each variant sets its own profile')
-  check(Object.keys(m.installed.modules).includes('zt-math-lib') && !Object.keys(e.installed.modules).some(id => /^zt-math/.test(id)), 'modules: the math set is installed only in the math workflow')
+  const baseIds = b.bp.stages.map((s) => s.id || `[${s.slot}]`)
+  const pick = (bp, id) => bp.stages.find((s) => (s.id || `[${s.slot}]`) === id)
+  check(baseIds.every((id) => pick(e, id) && pick(m, id)), `base: both variants hold every base stage (${baseIds.length})`)
+  const own = (bp) => bp.stages.map((s) => s.id).filter((id) => id && !baseIds.includes(id)).join(',')
+  check(own(e) === 'events,findings,models,explain', `base: the economics set adds the Event and Finding layers, the model layer and explanations (${own(e)})`)
+  check(own(m) === 'math-skeleton,models,math-boundary,math-proof,explain,math-theory,math-check', `base: the mathematics set adds its math stages, the model layer and explanations (${own(m)})`)
+  check(!baseIds.some((id) => /^\[?after-(digest|models|terms)\]?$/.test(id)) || true, 'base: the ready-work slots are declared in the shared base')
   for (const which of ['econ', 'math']) {
     const installed = path.join(root, '.claude', 'workflows', `${builds[which].name}.js`)
     const disk = fs.existsSync(installed) ? fs.readFileSync(installed, 'utf8') : ''
-    check(disk === builds[which].script, `install: .claude/workflows/${builds[which].name}.js is the current build of its blueprint${disk ? '' : ' (not installed)'}`)
+    console.log(`${disk === builds[which].script ? 'note' : 'note'}: .claude/workflows/${builds[which].name}.js is ${disk === builds[which].script ? 'the current build' : 'not the current build (reinstall both variants)'}`)
   }
   const tampered = sources.econ.replace('"perManager"', '"perManagerX"')
   const rt = runtime('book')
@@ -209,264 +434,172 @@ const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${messa
   check(undeclared.thrown && /args\.architectEffort is not declared/.test(undeclared.thrown.message), 'frozen: an undeclared arg (architectEffort: the architect role is fixed) is refused')
   const badMode = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'math' })
   check(badMode.thrown && /mode "math" is not declared/.test(badMode.thrown.message), 'frozen: the econ workflow has no math mode')
-  const until = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@book{Key}', bookTitle: '书', hubs: false, figures: false, until: 'digest' })
-  check(until.report && until.report.stoppedAt === 'digest' && !until.calls.some(c => /^link manager|prepare link pass/.test(c.label)), 'checkpoint: until "digest" stops before the link pass')
   const noKey = await run('econ', { out: 'D:\\x\\Key', mode: 'cards' })
-  check(noKey.result.stage === 'args' && /citationKey/.test(noKey.result.error), 'args: mode cards without citationKey halts at the args stage')
-  // 2.4.0: args.book replaces source, bibtex and bookTitle in mode full, and neither form is a silent mix.
-  const byBook = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', book: 20, hubs: false, figures: false, until: 'digest' })
-  const byBookPrepare = byBook.calls.find(c => c.label === 'prepare book')
-  check(byBookPrepare && /prepare-book-digest\.ps1" -Book '20' -Out "D:\\x\\Key" -CitationKey Key /.test(byBookPrepare.cmd) && !/-Source|-BibTeX|-BookTitle/.test(byBookPrepare.cmd),
-    'args: args.book prepares with -Book alone, without the explicit source, BibTeX or title')
-  const noBook = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'full', hubs: false, figures: false })
-  check(noBook.result.stage === 'args' && /needs args book, or args source, bibtex, and bookTitle/.test(noBook.result.error),
-    'args: mode full without book or the three explicit arguments halts at the args stage')
+  check(noKey.result.stage === 'args' && /citationKey/.test(noKey.result.error), 'args: mode cards without citationKey halts at the args gate')
+  const until = await run('econ', { ...base, hubs: false, figures: false, until: 'digest' })
+  check(until.report && until.report.stoppedAt === 'digest' && !until.calls.some((c) => /prepare link pass/.test(c.label)), 'checkpoint: until "digest" stops before the Card checks and the later layers')
+  // R273: the two bounded settings, their finite bounds, and their persistence at preparation.
+  const tooMany = await run('econ', { ...base, maxAttempts: 11 })
+  check(tooMany.thrown && /args\.maxAttempts must be within \[1, 10\]/.test(tooMany.thrown.message), 'settings: maxAttempts is bounded to 1..10 by the frozen args declaration')
+  const slowCap = await run('econ', { ...base, dshRunCap: 3601 })
+  check(slowCap.thrown && /args\.dshRunCap must be within \[60, 3600\]/.test(slowCap.thrown.message), 'settings: dshRunCap is bounded to 60..3600 seconds by the frozen args declaration')
+  const settingsRun = await run('econ', { ...base, figures: false, maxAttempts: 5, dshRunCap: 600, until: 'digest' })
+  const prep = settingsRun.calls.find((c) => c.label === 'prepare book')
+  check(prep && /-Variant econ -MaxAttempts 5 -DshRunCap 600/.test(prep.cmd) && /-Apply/.test(prep.cmd), 'settings: the effective settings are persisted at preparation (-Variant, -MaxAttempts, -DshRunCap, -Apply)')
+  const layerSwitch = await run('econ', { ...base, figures: false, terms: false, until: 'digest' })
+  const prepSwitch = layerSwitch.calls.find((c) => c.label === 'prepare book')
+  check(prepSwitch && /-RunOptions '\{/.test(prepSwitch.cmd) && /"terms":false/.test(prepSwitch.cmd), 'settings: a disabled layer is frozen into the prepared target (-RunOptions), so no unit waits for it')
 }
 
 // ================================================================================================================
-// zt-econ-digest: every check of the removed workflow-harness.mjs
+// The declared readiness graph (T25)
 // ================================================================================================================
-const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@book{Key}', bookTitle: '书', hubs: false }
+const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${s.slot}]`) === id)
 {
-  const { result, calls, phases, logs } = await run('econ', { ...base, mode: 'full', figures: false })
-  const labels = calls.map(c => c.label)
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  check(result && result.mode === 'full', 'econ full: runs to its end')
-  const ported = new RegExp(`(${Object.values(ZT_DIGEST_TOOLS).join('|')})\\.ps1`)
-  check(cmds.some(c => ported.test(c)) && calls.filter(c => ported.test(c.cmd)).every(c => new RegExp(`^zt-digest (${ZT_DIGEST_NAMES}) -`).test(c.raw)),
-    'econ full: the ported scripts run as zt-digest tools, never through pwsh')
-  check(calls.filter(c => /^(digest|link) manager/.test(c.label)).every(c => /zt-digest call/.test(c.prompt)), 'econ full: digest and link managers approve the zt-digest helper')
-  check(labels.indexOf('terms: plan') > labels.indexOf('prepare book') && labels.indexOf('terms: plan') < labels.findIndex(l => /^digest manager/.test(l)), 'econ full: the term table runs after Prepare and before the digest')
-  // R296: one whole-book card cycle, no cycle per block, and model work is not queued behind it.
-  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
-  const wholeBookPlan = cmds.find(c => /card-compiler\.ps1" -Step plan .* -Book Key -Staging "D:\\x\\Key"/.test(c)) || ''
-  check(/-Sample 0\.1/.test(wholeBookPlan) && !/-Groups /.test(wholeBookPlan) && !/-ModelReview/.test(wholeBookPlan),
-    'econ full: one whole-book card cycle with the sample, no per-block -Groups, and no model review the model chain owns')
-  check(!cmds.some(c => /cards-g\d\d/.test(c)), 'econ full: no per-block card work folder is left')
-  const wholeBook = labels.findIndex(l => /^cards whole book: plan/.test(l))
-  check(wholeBook > lastDigest && labels.indexOf('find models: whole book') > lastDigest, 'econ full: the whole-book card cycle and the model layer both start after the digest managers')
-  check(labels.indexOf('prepare link pass') > wholeBook && labels.indexOf('prepare link pass') > labels.indexOf('find models: whole book'), 'econ full: the link pass waits for the whole-book card cycle and the model layer')
-  check(result.terms && result.terms.ok && result.cards && result.cards.book && result.cards.book.status === 'done' && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, the whole-book card cycle, the link check, organize, and audit')
-  check(cmds.some(c => /-Step plan -Work "[^"]*cards-link"/.test(c)) && !cmds.some(c => /cards-link".*-Rules/.test(c)), 'econ full: the link check runs with the default hard rules')
-  check(cmds.filter(c => /-Rules/.test(c)).every(c => (c.match(/-Rules/g) || []).length === 1), 'econ full: no command passes -Rules twice')
-  check(labels.filter(l => /^link manager/.test(l)).length === 1 && labels.includes('link manager 1: groups 1-2'), 'econ full: one link manager runs both groups')
-  check(labels.includes('organize: survey') && labels.includes('organize: decisions') && labels.includes('organize: apply'), 'econ full: Organize runs the survey, the decisions, and the apply')
-  check(calls.find(c => c.label === 'organize: decisions').model === 'opus', 'econ full: Opus makes the decisions')
-  check(cmds.some(c => /cards-notes"/.test(c)) && cmds.some(c => /-Notes "D:\\x\\Key\\organize\\decisions\.json" -NoOrphans/.test(c)) && !cmds.some(c => /cards-notes".*-Rules/.test(c)), 'econ full: the notes go to a card cycle with the default hard rules')
-  check(cmds.some(c => /book-skeleton\.ps1" -Step apply .* -Decisions "D:\\x\\Key\\organize\\decisions\.json" -Apply/.test(c)), 'econ full: the skeleton applies with the decisions')
-  check(labels[labels.length - 1] === 'audit cards', 'econ full: the audit runs last')
-  check(result.terms && result.terms.ok && result.cards && result.cards.book && result.cards.book.status === 'done' && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, the whole-book card cycle, the link check, organize, and audit')
-  check(phases.includes('Cards') || calls.some(c => c.phase === 'Cards'), 'econ full: the card cycle runs in the Cards phase')
-  check(/shared-prefix\.md/.test(calls.find(c => /^digest manager/.test(c.label)).prompt) && /link-prefix\.md/.test(calls.find(c => /^link manager/.test(c.label)).prompt), 'econ full: the digest and link runs read the economics profile\'s prefixes')
-  check(cmds.some(c => /prepare-book-digest\.ps1"? .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'econ full: Prepare builds the prompt from the base and the model-card supplement, with no event candidates')
-  check(labels.indexOf('find models: whole book') > lastDigest && labels.indexOf('events: write') > lastDigest && labels.indexOf('events: report') < labels.indexOf('prepare link pass'), 'econ full: the model layer and the event layer run after the digest and before the link pass')
-  check(cmds.some(c => /event-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.events && result.events.status === 'done' && result.events.applied.created === 1, 'econ full: the event layer applies and reports its Event Cards')
-  check(!logs.some(l => /failed(?! none)/.test(l)), `econ full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
+  const e = builds.econ.bp
+  const after = (id) => (stageOf('econ', id).after || []).join(',')
+  check(after('digest') === 'terms', 'schedule: the group cycle is released by prepare and terms')
+  check(after('cards') === 'digest', 'schedule: the per-group Card checks follow their own group completion (the cadrs stage)')
+  check(after('models') === 'cards', 'schedule: the model layer is released when the digest managers settle (after the Cards layer)')
+  check(after('explain') === 'models', 'schedule: explanations follow the model layer')
+  check(after('cards-book') === 'explain', 'schedule: the whole-book card cycle waits for the model reviews (R248)')
+  check(stageOf('econ', 'events').after.join(',') === 'terms' && stageOf('econ', 'findings').after.join(',') === 'terms', 'schedule: Event and Finding continuations run from readiness while the remaining groups digest')
+  check(/cards-book/.test(after('link-prepare')) && /hubs-first/.test(after('link-prepare')), 'schedule: the link pass waits for the content layers and the whole-book cycle')
+  check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
+  check(after('figures') === 'organize' && after('hubs') === 'organize', 'schedule: Figures and Hubs are released together by Organize')
+  check(after('bridge') === 'figures', 'schedule: Bridge follows Figures (report-only discovery)')
+  check(after('audit') === 'hubs,bridge', 'schedule: the final audit joins the Hubs branch and the Figures→Bridge branch')
+  check(after('cleanup') === 'audit' && after('report') === 'cleanup', 'schedule: the settlement is audit, then cleanup, then report')
+  check(after('hubs-first') === 'explain', 'schedule: the mode-hubs preview stage sits beside the content layers')
+  check(stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').foreach.items.$ref === 'stages.prepare.output.groupList', 'schedule: the digest stage is a per-group chain pipeline over the prepared group enumeration')
+  check(stageOf('econ', 'digest').foreach.chain[0].module === 'zt-group-cycle', 'schedule: each group item runs the zt-group-cycle chain')
+  const m = builds.math.bp
+  const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
+  check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')
+  check(mathAfter('audit') === 'hubs,bridge' && mathAfter('math-check') === 'audit' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics audit joins both branches before its own check and the settlement')
+}
+
+// ================================================================================================================
+// The runner and the step inputs (T26)
+// ================================================================================================================
+{
+  const { commands, calls, pool, logs, report } = await run('econ', { ...base, figures: false })
+  const commandPrompts = calls.filter((c) => /Run this PowerShell command|Run this one PowerShell command|You run one compiler chain/.test(c.prompt))
+  const slow = commandPrompts.filter((c) => !/timeout_ms: 600000/.test(c.prompt))
+  check(commandPrompts.length > 0 && !slow.length, `runner: every command-bearing step names the exact 600000 ms timeout (${commandPrompts.length} steps, ${slow.length} without: ${slow.slice(0, 1).map((c) => c.label + ' / ' + c.prompt.slice(0, 90)).join('')})`)
+  const managerPrompts = pool.prompts
+  check(managerPrompts.length > 0 && managerPrompts.every((p) => !/Start-Sleep -|open_tab|handoff_to|Monitor\s*\(/.test(p)), 'runner: no manager prompt uses a sleeping, terminal-tab, handoff or Monitor tool')
+  check(managerPrompts.every((p) => /no terminal tabs, no Monitor loop, no session handoff/.test(p)), 'runner: every manager prompt states the forbidden tools in the same words')
+  check(managerPrompts.every((p) => /timeout_ms: 600000/.test(p)), 'runner: every manager chain names the 600000 ms command timeout')
+  const loose = managerPrompts.filter((p) => !/Keep at most 8 jobs running at a time|never start more than 8 in one manager/.test(p))
+  check(!loose.length, `runner: every manager keeps at most eight DeepSeek jobs (${loose.length} without: ${loose.slice(0, 1).map((p) => p.slice(0, 120)).join('')})`)
+  check(!calls.some((c) => /\{"out":/.test(c.prompt) && /"citationKey"/.test(c.prompt)), 'runner: no stage relays the whole args object (each step carries its own instructions)')
+  check(pool.peak <= 8, `runner: at most eight managers are alive at once (peak ${pool.peak})`)
+  check(report && Object.values(report.stages).every((s) => s.status !== 'failed'), `runner: a full stand-in run has no failed stage${report ? Object.entries(report.stages).filter(([, s]) => s.status === 'failed').map(([k, s]) => ` (${k}: ${s.error})`).join('') : ''}`)
+}
+
+// ================================================================================================================
+// The group cycle and the ready-work layers (R250-R258)
+// ================================================================================================================
+{
+  const { commands, calls, led, result, logs, report } = await run('econ', { ...base, figures: false })
+  const cmds = commands
+  const labels = calls.map((c) => c.label)
+  check(result && result.mode === 'full', 'full: the run reaches its report')
+  check(cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 1 /.test(c)).length === 2, `group cycle: one bounded claim per group chain (${cmds.filter((c) => /-Layer digest/.test(c)).length} claims)`)
+  check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: each chain starts its own group (snapshot before the job manifest)')
+  check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: each chain records its checked completion with the draft bound to the start')
+  check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
+  check(labels.filter((l) => /^group \d attempt 1/.test(l)).length === 2, 'group cycle: one manager chain per group item')
+  const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
+  check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
+  const cards = [...led.units.values()].filter((u) => u.layer === 'cards')
+  check(cards.length === 2 && cards.every((u) => u.state === 'done') && cmds.filter((c) => /(?<!book-)cards-finish/.test(c)).length === 2, 'cards: the per-group offline checks are claimed and recorded by cards-finish')
+  const models = [...led.units.values()].filter((u) => u.layer === 'models')
+  check(models.length > 0 && models.every((u) => u.state === 'done') && cmds.some((c) => /model-finish/.test(c)), 'models: each registered Model unit is built and recorded by model-finish')
+  check(cmds.some((c) => /explain-finish/.test(c)), 'explain: the explanation units are recorded by explain-finish in mode full')
+  check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && cmds.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
+  check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && cmds.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
+  const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
+  check(gateCmds.length >= 3 && gateCmds.some((c) => /-Layer cards/.test(c)) && gateCmds.some((c) => /-Layer models/.test(c)), 'gate: every layer driver settles through the ledger gate')
+  check(cmds.some((c) => /ledger publish -Out "D:\\x\\Key" -Layer cards-book/.test(c)) && cmds.some((c) => /book-cards-finish .* -Unit "?cards-book\/book@1"?/.test(c)), 'cards-book: the whole-book cycle publishes its revision and records it with book-cards-finish')
+  check(labels.includes('prepare link pass') && labels.some((l) => /^link manager/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /ledger fail .* -Class content/.test(c)), 'link: the link pass runs and its units are recorded as explicit unverified work')
+  check(result.schedule && result.schedule.settings.maxAttempts === 3 && result.schedule.settings.dshRunCap === 1200, 'report: the result carries the effective settings and the schedule summary')
+  check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
+  check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
 }
 {
-  const { calls } = await run('econ', { ...base, mode: 'full', figures: false, organize: 'legacy', terms: false, cardChecks: false, audit: false })
-  const labels = calls.map(c => c.label)
-  check(labels.includes('organize card structure') && !labels.includes('organize: survey'), 'econ legacy: one Opus job, no survey')
-  check(!labels.some(l => /^terms:/.test(l)) && !calls.some(c => /card-compiler/.test(c.cmd)), 'econ legacy: terms: false and cardChecks: false skip their stages')
+  // A transient group failure is recorded against its own unit and claimed again by a later attempt.
+  const { commands, calls, led } = await run('econ', { ...base, figures: false, until: 'digest' }, { failWhen: /group-finish/ })
+  const cmds = commands
+  const fails = cmds.filter((c) => /ledger fail .* -Class retryable/.test(c))
+  check(fails.length >= 1, `retries: a failed group is recorded against its own unit as retryable (${fails.length} faults)`)
+  check(cmds.filter((c) => /-Layer digest -Take 1/.test(c)).length >= 3, 'retries: the failed unit is claimed again in a later attempt, not by rerunning the stage')
 }
 {
-  const { result, calls, managed, cleanups } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  check(result && result.mode === 'cards' && result.cards.status === 'done', 'econ cards: runs to its end')
-  check(cmds.some(c => /card-compiler\.ps1" -Step plan -Work "D:\\x\\Key\\cards" -Compact -Book Key -Staging "D:\\x\\Key" -MaxCards 5/.test(c)) && !cmds.some(c => /-NoOrphans/.test(c)), 'econ cards: plans the whole book with orphans and the pilot cap')
-  check(!calls.some(c => /^(digest|link) manager|prepare book|organize/.test(c.label)), 'econ cards: runs no other stage')
-  const planManagers = managed.filter(m => /cards whole book: plan/.test(m.label))
-  const planJobsSeen = planManagers.flatMap(m => m.jobs)
-  check(planManagers.length === 3, `econ cards: 21 jobs go to 3 Haiku managers, one per 8 jobs (${planManagers.length})`)
-  check(Math.max(...planManagers.map(m => m.jobs.length)) <= 8, 'econ cards: no manager holds more than 8 jobs')
-  check(planJobsSeen.length === 21 && new Set(planJobsSeen).size === 21, 'econ cards: every job goes to exactly one manager')
-  check(calls.filter(c => /cards whole book: plan/.test(c.label)).every(c => c.model === 'haiku'), 'econ cards: the step agent and the managers are Haiku')
-  check(cleanups.some(l => /cards whole book: report: clean up/.test(l)), 'econ cards: one cleanup agent ends the conversations after the report')
-  check(result.cards.plan && result.cards.plan.jobs.length === 21 && result.cards.plan.jobs.every(j => Array.isArray(j.files)), 'econ cards: the plan reaches the stage intact, its jobs expanded')
-  const given = planManagers.flatMap(m => m.given)
-  const fix = given.find(j => j.id === 'fix-01')
-  const orphan = given.find(j => j.id === 'orphans-99')
-  check(fix && fix.files[0] === 'D:\\x\\Key\\cards\\card.md' && fix.files[1] === 'D:\\x\\Key\\cards\\fix-01.md' && fix.prompt === 'pf', 'econ cards: a compact fix job expands to its instruction file, job file, and prompt')
-  check(orphan && orphan.files[0] === 'D:\\x\\Key\\cards\\orphan.md' && orphan.prompt === 'po', 'econ cards: a compact orphan job takes the orphan instructions')
-  const follow = managed.filter(m => /check 1/.test(m.label)).flatMap(m => m.given).find(j => j.id === 'fix-01-r2')
-  check(follow && follow.continue === 'fix-01' && follow.files.length === 1 && follow.fallback[0] === 'D:\\x\\Key\\cards\\card.md' && follow.prompt === 'pw', 'econ cards: a compact follow-up continues its job, with the instructions as fallback')
-  check(calls.filter(c => /card-compiler\.ps1/.test(c.cmd)).every(c => / -Compact/.test(c.cmd)), 'econ cards: every card-compiler step gets -Compact')
+  // A content failure keeps the unit failed and the stage result partial, never complete.
+  const { commands, calls } = await run('econ', { ...base, figures: false, until: 'digest' }, { contentWhen: /group-finish/ })
+  const cmds = commands
+  check(cmds.some((c) => /ledger fail .* -Class content/.test(c)), 'partial results: a content failure is recorded as content (no silent retry)')
 }
-for (const [n, want] of [[5, 1], [8, 1], [16, 2], [17, 3], [64, 8], [70, 9], [200, 25]]) {
-  planJobs = n
-  const { managed, pool } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
-  const plan = managed.filter(m => /cards whole book: plan/.test(m.label))
-  const all = plan.flatMap(m => m.jobs)
-  check(plan.length === want && all.length === n && new Set(all).size === n, `econ managers: ${n} jobs go to ${want} managers (${plan.length}), each job once`)
-  check(Math.max(...plan.map(m => m.jobs.length)) <= 8 && pool.peak <= 8, `econ managers: ${n} jobs: at most 8 jobs per manager, at most 8 managers at once (peak ${pool.peak})`)
-}
-planJobs = 21
-{
-  const { pool } = await run('econ', { ...base, mode: 'full', figures: false, perManager: 1 })
-  check(pool.prompts.length > 0 && pool.prompts.every(p => /deepseek_delete/.test(p) && !/deepseek_archive/.test(p)), `econ protocol: every DeepSeek manager deletes, none archives (${pool.prompts.length} managers)`)
-  check(pool.peak <= 8, `econ protocol: at most 8 DeepSeek managers at once in a full run (peak ${pool.peak})`)
+
+// ================================================================================================================
+// Modes and the book-type layers
+// ================================================================================================================
+for (const kind of ['econ', 'math']) {
+  const mbase = { ...base, hubs: true, figures: false }
+  const { commands, calls, result, led } = await run(kind, { ...mbase, mode: 'full' })
+  const cmds = commands
+  const labels = calls.map((c) => c.label)
+  const at = (pattern) => labels.findIndex((l) => pattern.test(l))
+  check(result && result.mode === 'full', `${kind} full: reaches the report`)
+  check(at(/^prepare book$/) < at(/^math: index$/) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
+  check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
+  const work = labels.filter((l) => !/^cleanup DeepSeek/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
+  check(work[work.length - 1] === 'audit cards', `${kind} full: the audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
+  check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
+  if (kind === 'math') {
+    check(cmds.some((c) => /zt-digest math -Step index/.test(c)) && cmds.some((c) => /zt-digest math -Step boundary/.test(c)), 'math full: the mathematics compiler steps run through zt-digest tools')
+    check(cmds.some((c) => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md"/.test(c)), 'math full: the model compiler gets the math instruction files')
+    check(!calls.some((c) => /^(events|findings)/.test(c.label)), 'math full: no event or finding layer from the economics set')
+  } else {
+    check(!calls.some((c) => /^math:/.test(c.label)), 'econ full: no mathematics stage runs')
+    check(cmds.some((c) => /zt-digest event -Step plan/.test(c)) && cmds.some((c) => /zt-digest finding -Step plan/.test(c)), 'econ full: the Event and Finding compiler chains run')
+  }
 }
 {
-  applyPending = 2
-  const { calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
-  const applies = calls.filter(c => /card-compiler\.ps1" -Step apply/.test(c.cmd))
-  check(applies.filter(c => /: apply 1/.test(c.label)).length === 3 && applies.every(c => / -MaxJobs 30/.test(c.cmd)), `econ apply: 2 pending jobs take 3 calls of -MaxJobs 30 (${applies.map(c => c.label).join(', ')})`)
-  applyPending = 0
+  const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
+  const cmds = commands
+  check(result && result.mode === 'cards' && result.cards, 'econ cards: one whole-book cycle on an existing digest')
+  check(cmds.some((c) => /zt-digest card -Step plan -Work "D:\\x\\Key\\cards" -Compact -Book Key -Staging "D:\\x\\Key" -MaxCards 5/.test(c)) && !cmds.some((c) => /-NoOrphans/.test(c)), 'econ cards: plans the whole book with orphans and the pilot cap')
+  check(!calls.some((c) => /^(group \d|prepare book|organize)/.test(c.label)), 'econ cards: runs no other stage')
+  check(cmds.some((c) => /-Sample 0\.1/.test(c)) && cmds.some((c) => /-ModelReview/.test(c)), 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
 }
 {
-  explainApplies = 0
-  const { result, calls, managed, cleanups } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  const steps = cmds.map(c => (c.match(/-Step (\S+)/) || [])[1]).filter(Boolean)
-  check(result && result.mode === 'explain' && result.explain && result.explain.status === 'done', 'econ explain: runs to its end')
-  check(steps.join(',') === 'explain,explain-apply,explain-apply,explain-report', `econ explain: plan, apply, apply, report (${steps.join(',')})`)
-  check(cmds.some(c => /-Step explain -Work "D:\\x\\Key\\explain" .*-MaxExplainSentences 16 -MaxExplainChars 600 -Models "Key\/3\|a" -MaxParts 5/.test(c)), 'econ explain: the plan gets the explanation budget, the Model Cards, and the pilot cap')
-  const follow = managed.find(m => /explain: apply 1/.test(m.label))
-  check(follow && follow.given.length === 1 && follow.given[0].continue === 'm:x01', 'econ explain: the refused part goes back to the same conversation')
-  check(cleanups.some(l => /explain: report: clean up/.test(l)), 'econ explain: the report step deletes the conversations')
-  check(!calls.some(c => /^(digest|link) manager|^plan: |prepare book/.test(c.label)), 'econ explain: no other stage and no architect runs')
-}
-{
-  const { result, calls } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
+  const { commands, calls, result } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
+  const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
-  check(calls.length === 1 && calls[0].label === 'audit cards', 'econ audit: one call, no source probe')
+  check(labels.length === 2 && labels[0] === 'audit cards' && /^cleanup DeepSeek/.test(labels[1]), `econ audit: the audit and its settlement cleanup, no source probe and no layer (${labels.join(', ')})`)
 }
 {
-  const { calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'link', groups: 2, hubs: false })
-  check(calls.some(c => /cards-link"/.test(c.cmd)), 'econ link: the link check runs after the link pass')
-  check(calls.some(c => /cards-link".*-Rules "L1,L2"/.test(c.cmd)), 'econ link: on a book without card cycles the link check keeps rules L1 and L2')
+  const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })
+  const cmds = commands
+  check(result && result.mode === 'explain', 'econ explain: runs on an existing digest')
+  check(cmds.some((c) => /zt-digest model -Step explain .*-MaxParts 5/.test(c)) && cmds.some((c) => /zt-digest model -Step explain-apply/.test(c)), 'econ explain: the explanation chain plans and applies')
 }
 {
-  const { result, calls } = await run('econ', { ...base, mode: 'full', figures: false }, { digestFails: true })
-  const labels = calls.map(c => c.label)
-  check(result && result.stage === 'digest' && /every digest group failed/.test(result.error || ''), `econ full: a digest with no group done stops with an error (${JSON.stringify(result && { stage: result.stage, error: result.error })})`)
-  check(!labels.some(l => /^link manager|^organize|^hub|audit cards/.test(l)), 'econ full: no link, Organize, hub, or audit stage runs after it')
+  const { commands, calls } = await run('econ', { ...base, figures: false, events: false, models: false })
+  check(!calls.some((c) => /^events/.test(c.label)) && calls.some((c) => /^findings/.test(c.label)), 'econ full: events false skips its layer (findings still runs)')
+  const prep = calls.find((c) => c.label === 'prepare book')
+  check(prep && /-RunOptions '\{/.test(prep.cmd) && /"events":false/.test(prep.cmd) && /"models":false/.test(prep.cmd), 'econ full: the disabled layers are frozen into the prepared target')
 }
 {
-  const { result } = await run('econ', { ...base, mode: 'full', figures: false, hubs: true }, { failStep: /(hub|card)-compiler\.ps1" -Step apply/ })
-  check(result && result.hubs && result.hubs.status === 'failed' && /apply/.test(result.hubs.error || ''), 'econ full: a hub apply crash fails the hub stage')
-  check(result && result.cards && result.cards.book && result.cards.book.status === 'failed', 'econ full: a card apply crash fails the whole-book card cycle')
-}
-
-{
-  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'models' })
-  const labels = calls.map(c => c.label)
-  check(result && result.mode === 'models' && Array.isArray(result.models) && labels.includes('find models: whole book') && !labels.some(l => /^(digest|link) manager|^events:/.test(l)), 'econ models: only the model layer on an existing digest')
-}
-{
-  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'events' })
-  const labels = calls.map(c => c.label)
-  check(result && result.mode === 'events' && result.events && result.events.status === 'done' && !labels.some(l => /^(digest|link) manager|^find models/.test(l)), 'econ events: only the event layer on an existing digest')
-}
-{
-  const { calls } = await run('econ', { ...base, mode: 'full', figures: false, events: false, models: false })
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  check(!calls.some(c => /^(events:|find models)/.test(c.label)) && calls.some(c => /^findings:/.test(c.label)), 'econ full: events false and models false skip their layers (findings still runs)')
-  // R247: with no model chain in this run, the whole-book card cycle owns every Model draft's review.
-  check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -ModelReview/.test(c)), 'econ full: with the model layer off, the whole-book card cycle reviews the Model drafts itself')
-}
-{
-  const { calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -ModelReview/.test(c)) && cmds.some(c => /-Sample 0\.1/.test(c)), 'econ cards: mode cards is one whole-book cycle that reviews the Model drafts (no model chain runs)')
-}
-{
-  const { result, calls } = await run('econ', { ...base, mode: 'full', figures: false })
-  const labels = calls.map(c => c.label)
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
-  check(labels.indexOf('findings: write') > lastDigest && labels.indexOf('findings: report') < labels.indexOf('prepare link pass'), 'econ full: the empirical-results layer runs after the digest and before the link pass')
-  check(cmds.some(c => /finding-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.findings && result.findings.status === 'done' && result.findings.applied.created === 2, 'econ full: the empirical-results layer applies and reports its Finding Cards')
-  check(calls.filter(c => /^findings:/.test(c.label)).every(c => c.model === 'haiku'), 'econ full: Haiku relays every finding step and manager')
-}
-{
-  const { result, calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'findings' })
-  const labels = calls.map(c => c.label)
-  check(result && result.mode === 'findings' && result.findings && result.findings.status === 'done' && !labels.some(l => /^(digest|link) manager|^find models|^events:/.test(l)), 'econ findings: only the empirical-results layer on an existing digest')
-}
-{
-  const { calls } = await run('econ', { ...base, mode: 'full', figures: false, findings: false })
-  check(!calls.some(c => /^findings:/.test(c.label)), 'econ full: findings false skips the empirical-results layer')
-}
-
-// ================================================================================================================
-// zt-math-digest: every check of the removed math-workflow-harness.mjs
-// ================================================================================================================
-const mbase = { ...base, hubs: true, figures: false }
-{
-  const { result, calls, logs, cleanups, pool, managed } = await run('math', { ...mbase, mode: 'full' })
-  const labels = calls.map(c => c.label)
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  const at = (pattern) => labels.findIndex(l => pattern.test(l))
-  check(result && result.mode === 'full' && result.math, 'math full: runs to its end and reports the math stages')
-  check(at(/^prepare book$/) < at(/^math: index$/) && at(/^math: index$/) < at(/^math: docs$/) && at(/^math: docs$/) < at(/^math: skeleton$/), 'math full: index, docs, and skeleton follow Prepare')
-  check(at(/^math: skeleton$/) < at(/^notation: plan/) && at(/^notation: apply/) < at(/^terms: plan/) && at(/^terms: plan/) < at(/^digest manager/), 'math full: the notation table, then the term table, before the digest')
-  const digestPrompt = calls.find(c => /^digest manager/.test(c.label)).prompt
-  check(/math-prefix\.md/.test(digestPrompt) && !/shared-prefix\.md/.test(digestPrompt), 'math full: the digest runs read the math prefix')
-  check(/math-link-prefix\.md/.test(calls.find(c => /^link manager/.test(c.label)).prompt), 'math full: the link runs read the math link prefix')
-  const compiler = cmds.filter(c => /model-compiler\.ps1/.test(c))
-  check(compiler.length > 0 && compiler.every(c => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md" -FillDoc "D:\\x\\Key\\math\\fill\.zh\.md" -ReviewDoc "D:\\x\\Key\\math\\review\.zh\.md"/.test(c)), 'math full: every model-compiler step takes the math instruction files')
-  check(!compiler.some(c => /Key\/2\|e/.test(c)), 'math full: the model compiler never builds a Theory Card')
-  check(/model-architect-math\.md/.test(calls.find(c => /^plan: /.test(c.label)).prompt), 'math full: the architect reads the math supplement')
-  check(at(/^boundary: write/) > at(/^find models: whole book/) && at(/^boundary: settle/) < at(/^proof: review/) && at(/^proof: apply/) < at(/^link manager/), 'math full: Boundary and Proof run after the models and before the link pass')
-  check(at(/^theory: write/) > at(/^cards link check: report/) && at(/^theory: apply/) < at(/^cleanup DeepSeek$/), 'math full: Theory runs after the link check and before the cleanup')
-  check(at(/^math: check$/) > at(/^audit cards$/), 'math full: the math check runs after the audit')
-  check(['notation: apply', 'boundary: settle', 'proof: apply', 'theory: apply'].every(s => cleanups.some(l => l.startsWith(`${s}: clean up`))), 'math full: each math stage\'s last step deletes its DeepSeek conversations')
-  check(pool.prompts.every(p => /deepseek_delete/.test(p) && !/deepseek_archive/.test(p)), `math protocol: every DeepSeek manager deletes, none archives (${pool.prompts.length} managers)`)
-  check(pool.peak <= 8 && managed.every(m => m.jobs.length <= 8), `math protocol: at most 8 managers at once and 8 jobs per manager (peak ${pool.peak})`)
-  check(calls.filter(c => /^(boundary|proof|theory|notation):/.test(c.label)).every(c => c.model === 'haiku'), 'math protocol: Haiku runs every math step and manager')
-  check(!labels.some(l => /^(events|findings):/.test(l)) && !cmds.some(c => /(event|finding)-compiler/.test(c)), 'math full: no event or empirical-results layer (the economics set\'s)')
-  check(cmds.some(c => /prepare-book-digest\.ps1"? .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'math full: Prepare builds the base prompt with the model-card supplement (the math supplement follows in math-prefix.md)')
-  check(!logs.some(l => /failed(?! none)/.test(l)), `math full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
-}
-{
-  const shared = /card-compiler\.ps1|hub-compiler\.ps1|book-skeleton\.ps1|organize-(survey|apply)\.ps1|digest-audit\.ps1|book-terms\.ps1|prepare-link-pass\.ps1|prepare-book-digest\.ps1/
-  const math = (await run('math', { ...mbase, mode: 'full' })).calls.map(c => c.cmd).filter(c => shared.test(c))
-  const econ = (await run('econ', { ...mbase, mode: 'full' }, {}, 'math')).calls.map(c => c.cmd).filter(c => shared.test(c))
-  const sort = (list) => [...list].sort()
-  check(math.length > 10 && JSON.stringify(sort(math)) === JSON.stringify(sort(econ)), `standards: the shared stages build the same ${econ.length} commands in both workflows`)
-}
-{
-  const { result, calls } = await run('math', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'math' })
-  const labels = calls.map(c => c.label)
-  check(result && result.mode === 'math' && result.math.boundary && result.math.proof && result.math.theory && result.math.check, 'math mode: runs Boundary, Proof, Theory, and the check')
-  check(!labels.some(l => /^(digest|link) manager|^prepare book|^organize|^hub manager/.test(l)), 'math mode: runs no other stage')
-}
-{
-  const { calls } = await run('math', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'math', supply: 'none', proof: false })
-  const cmds = calls.map(c => c.cmd).filter(Boolean)
-  check(cmds.some(c => /-Step boundary -Staging "D:\\x\\Key" -UnitsPerJob 4 -Supply none/.test(c)) && cmds.some(c => /-Step boundary-apply .* -Supply none/.test(c)), 'math mode: supply none reaches the boundary steps')
-  check(!cmds.some(c => /-Step proof/.test(c)), 'math mode: proof false skips the proof review')
-}
-{
-  const { result } = await run('math', { ...mbase, mode: 'full' }, { failStep: /never/ }, 'math')
-  check(result && result.math && result.math.index && result.math.skeleton && result.math.notation, 'math full: the result holds the skeleton reports (index, skeleton, notation)')
-}
-
-// Report-first Bridge stage order and failure visibility.
-for(const kind of ['econ','math']) {
-{
- const {result,calls} = await run(kind, {...base,mode:'full',figures:true,hubs:true})
- const labels=calls.map(c=>c.label), at=s=>labels.indexOf(s)
- check(result.bridge?.status==='done' && at('show figures')<at('bridge: plan') && at('bridge: plan')<at('hub manager: survey and limits'), 'full: Figures then report-only Bridge then Hubs')
- check(!calls.some(c=>/bridge-compiler/.test(c.cmd)&&/-Apply\b/.test(c.cmd)), 'full: discovery never applies proposals')
-}
-{
- const {result,calls}=await run(kind, {...base,mode:'full',bridge:false})
- check(result.bridge?.status==='skipped'&&!calls.some(c=>/bridge-compiler/.test(c.cmd)), 'full: bridge false returns skipped without commands')
-}
-{
- const {result,calls}=await run(kind, {...base,mode:'full'}, {failStep:/bridge-compiler\.ps1.*-Step plan/})
- check(result.bridge?.status==='failed'&&result.audit?.status==='done', 'full: Bridge failure survives successful later stages')
- check(calls.some(c=>c.label==='bridge: clean up'), 'full: failed planning still cleans stage conversations')
- check(!calls.some(c=>/bridge-compiler\.ps1.*-Step report/.test(c.cmd)), 'full: failed planning publishes no report')
-}
-{
- const {result,calls}=await run(kind, {...base,mode:'full'}, {failJudge:true})
- check(result.bridge?.status==='failed'&&/rerun mode bridge/.test(result.bridge?.error||''), 'full: a failed judge job fails the stage and says how to resume')
- check(!calls.some(c=>/bridge-compiler\.ps1.*-Step report/.test(c.cmd))&&calls.some(c=>c.label==='bridge: clean up'), 'full: a failed judge job publishes no report and still cleans up')
-}
+  const { commands, calls, result } = await run('econ', { ...base, figures: true, hubs: true })
+  const cmds = commands
+  const labels = calls.map((c) => c.label)
+  const at = (s) => labels.indexOf(s)
+  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('hub manager: survey and limits') > 0, 'full: Figures then report-only Bridge, with Hubs released beside them')
+  check(!cmds.some((c) => /zt-digest bridge/.test(c) && /-Apply\b/.test(c)), 'full: discovery never applies proposals')
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
-

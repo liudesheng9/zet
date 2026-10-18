@@ -236,6 +236,40 @@ pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>
     Ok(Value::Object(options))
 }
 
+/// The managed run's bounded settings (R273): the per-unit attempt budget and the
+/// external provider run cap. They are persisted at preparation, so a resume reuses
+/// the effective values instead of accepting a second, different configuration.
+pub(crate) const DEFAULT_MAX_ATTEMPTS: i64 = 3;
+pub(crate) const DEFAULT_DSH_RUN_CAP: i64 = 1200;
+
+pub(crate) fn run_settings(max_attempts: Option<i64>, dsh_run_cap: Option<i64>) -> Result<Value> {
+    let max_attempts = max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS);
+    if !(1..=10).contains(&max_attempts) {
+        bail!("-MaxAttempts must be a whole number from 1 through 10, not {max_attempts}");
+    }
+    let dsh_run_cap = dsh_run_cap.unwrap_or(DEFAULT_DSH_RUN_CAP);
+    if !(60..=3600).contains(&dsh_run_cap) {
+        bail!("-DshRunCap must be a whole number of seconds from 60 through 3600, not {dsh_run_cap}");
+    }
+    Ok(json!({"max_attempts":max_attempts,"dsh_run_cap":dsh_run_cap}))
+}
+
+/// The effective settings of a prepared run; a schema-1 contract written before
+/// the settings existed keeps the documented defaults instead of inventing a value.
+pub(crate) fn settings_of(contract: &Value) -> Result<Value> {
+    match contract.get("settings") {
+        None | Some(Value::Null) => run_settings(None, None),
+        Some(declared) => {
+            let max_attempts = declared["max_attempts"].as_i64();
+            let dsh_run_cap = declared["dsh_run_cap"].as_i64();
+            if max_attempts.is_none() && dsh_run_cap.is_none() {
+                bail!("the prepared run's settings are unreadable");
+            }
+            run_settings(max_attempts, dsh_run_cap)
+        }
+    }
+}
+
 /// Date extraction is not an Event-layer switch. Disabled work stays explicit.
 fn target(contract: &Value) -> Result<Value> {
     let mut enabled = COMMON.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -4043,7 +4077,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         && coverage_faults.is_empty();
     let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
     let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"settings":settings_of(&preparation)?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
     drop(deps_query);
     drop(statement);
     tx.commit()?;
@@ -4446,7 +4480,29 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
     Ok(())
 }
 
-fn next(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value> {
+/// Claim ready units of one layer in a bounded block.
+///
+/// `-Wait <seconds>` is the tool-side readiness wait (R244/R270): when nothing is
+/// ready yet, zt-digest keeps the call open until a unit becomes ready, the layer
+/// settles, or the deadline passes. Timekeeping lives here, never in a workflow
+/// module. The wait never spends an attempt and never changes a unit state except
+/// by the ordinary bounded claim.
+fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64) -> Result<Value> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait.max(0) as u64);
+    loop {
+        let claimed = next_once(p, layer, take, owner)?;
+        let empty = claimed["units"].as_array().is_none_or(|units| units.is_empty());
+        if !empty || wait <= 0 || std::time::Instant::now() >= deadline {
+            return Ok(claimed);
+        }
+        if claimed["settled"] == true {
+            return Ok(claimed);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value> {
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -4677,7 +4733,7 @@ fn job_field(job: &Value, key: &str) -> Result<String> {
         .with_context(|| format!("job needs a nonempty {key}"))
 }
 
-fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>) -> Result<Value> {
+fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>, cap_seconds: i64) -> Result<Value> {
     let id = job_field(input, "id")?;
     if id.len() > 200 {
         bail!("job id is at most 200 bytes");
@@ -4694,6 +4750,14 @@ fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>) -> Result<
             }
         }
     }
+    // The cap is measured from the registered provider start time (R267): a run
+    // that a restart picks up again does not get a fresh 20 minutes.
+    let now = now_seconds();
+    let started = match facts.get("started_at").and_then(Value::as_i64) {
+        Some(at) if at > 0 && at <= now => at,
+        Some(at) => bail!("job started_at must be an epoch second from 1 through the current time, not {at}"),
+        None => now,
+    };
     let mut job = json!({
         "id":id,
         "kind":kind,
@@ -4701,6 +4765,8 @@ fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>) -> Result<
         "token":token,
         "owner":owner,
         "registered_at":canon::utc_now_o(),
+        "started_at":started,
+        "cap_seconds":cap_seconds,
         "facts":Value::Object(facts),
         "cancel_requested_at":Value::Null,
         "observed_at":Value::Null,
@@ -4710,6 +4776,32 @@ fn job_record(input: &Value, token: Option<i64>, owner: Option<&str>) -> Result<
         job["registration_token"] = json!(token);
     }
     Ok(job)
+}
+
+/// Elapsed and cap facts for one registered external run. A running run past its cap
+/// is reported as `cap_exceeded` with the action the manager must take (R268): request
+/// cancellation, observe the terminal state, then record a transient fault. A cancelled
+/// run that is still running is reported as `cancellation_unconfirmed`, which blocks a
+/// replacement attempt until its terminal observation arrives.
+fn job_cap_facts(job: &mut Value, now: i64) {
+    let Some(started) = job["started_at"].as_i64() else {
+        return;
+    };
+    let cap = job["cap_seconds"].as_i64().unwrap_or(DEFAULT_DSH_RUN_CAP);
+    let elapsed = (now - started).max(0);
+    let running = job["state"].as_str() == Some("running");
+    let cancelled = !job["cancel_requested_at"].is_null();
+    let exceeded = running && elapsed >= cap;
+    job["elapsed_seconds"] = json!(elapsed);
+    job["cap_remaining_seconds"] = json!((cap - elapsed).max(0));
+    job["cap_exceeded"] = json!(exceeded);
+    job["action"] = json!(if exceeded && !cancelled {
+        "cancel"
+    } else if exceeded && cancelled {
+        "await_terminal"
+    } else {
+        "wait"
+    });
 }
 
 fn write_jobs(tx: &Transaction, unit: &str, jobs: &[Value]) -> Result<()> {
@@ -4740,11 +4832,17 @@ fn job_list(p: &Prepared, unit: &str) -> Result<Value> {
         .with_context(|| format!("unknown unit {unit}"))?;
     let progress: Value = serde_json::from_str(&progress)?;
     tx.commit()?;
-    Ok(json!({"schema_version":1,"action":"list","unit":unit,"jobs":jobs_of(&progress)}))
+    let now = now_seconds();
+    let mut jobs = jobs_of(&progress);
+    for job in jobs.iter_mut() {
+        job_cap_facts(job, now);
+    }
+    Ok(json!({"schema_version":1,"action":"list","unit":unit,"settings":settings_of(&p.contract)?,"jobs":jobs}))
 }
 
 fn job_register(p: &Prepared, unit: &str, token: i64, path: &str) -> Result<Value> {
     let input = canon::read_json(path).context("invalid job registration")?;
+    let cap_seconds = settings_of(&p.contract)?["dsh_run_cap"].as_i64().unwrap_or(DEFAULT_DSH_RUN_CAP);
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -4757,7 +4855,7 @@ fn job_register(p: &Prepared, unit: &str, token: i64, path: &str) -> Result<Valu
         )?;
         jobs_of(&serde_json::from_str(&progress)?)
     };
-    let record = job_record(&input, Some(token), Some(&claim.owner))?;
+    let record = job_record(&input, Some(token), Some(&claim.owner), cap_seconds)?;
     let id = job_field(&record, "id")?;
     if jobs.iter().any(|job| job["id"] == json!(id)) {
         bail!("job_conflict: {unit} already registered the run `{id}`");
@@ -4773,6 +4871,10 @@ fn job_register(p: &Prepared, unit: &str, token: i64, path: &str) -> Result<Valu
         &json!({"job":id,"kind":record["kind"],"facts":record["facts"]}),
     )?;
     tx.commit()?;
+    let now = now_seconds();
+    for job in jobs.iter_mut() {
+        job_cap_facts(job, now);
+    }
     Ok(json!({"schema_version":1,"action":"register","unit":unit,"jobs":jobs}))
 }
 
@@ -4832,6 +4934,10 @@ fn job_observe(p: &Prepared, unit: &str, path: &str) -> Result<Value> {
         &json!({"job":id,"state":state,"outcome":jobs[index]["outcome"]}),
     )?;
     tx.commit()?;
+    let now = now_seconds();
+    for job in jobs.iter_mut() {
+        job_cap_facts(job, now);
+    }
     Ok(json!({"schema_version":1,"action":"observe","unit":unit,"jobs":jobs}))
 }
 
@@ -4866,6 +4972,10 @@ fn job_cancel(p: &Prepared, unit: &str, id: &str) -> Result<Value> {
         &json!({"job":id}),
     )?;
     tx.commit()?;
+    let now = now_seconds();
+    for job in jobs.iter_mut() {
+        job_cap_facts(job, now);
+    }
     Ok(json!({"schema_version":1,"action":"cancel","unit":unit,"jobs":jobs}))
 }
 
@@ -11331,7 +11441,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             );
         }
         let params = if command == "next" {
-            vec!["Out", "Layer", "Take", "Owner"]
+            vec!["Out", "Layer", "Take", "Owner", "Wait"]
         } else if command == "renew" {
             vec!["Out", "Unit", "Token"]
         } else if command == "fail" {
@@ -11383,6 +11493,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 .context("-Take must be a positive integer from 1 through 64")?;
             if a.required("Owner")?.trim().is_empty() || a.str("Owner").len() > 256 {
                 bail!("-Owner must be nonempty and at most 256 bytes");
+            }
+            if a.has("Wait") {
+                a.required("Wait")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| (0..=600).contains(n))
+                    .context("-Wait must be a whole number of seconds from 0 through 600")?;
             }
         }
         if matches!(command.as_str(), "renew" | "fail" | "done") {
@@ -11693,7 +11810,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 &fault,
             )?
         } else {
-            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"))?
+            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?)?
         }
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?

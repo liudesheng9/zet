@@ -80,6 +80,16 @@ fn limits() -> (Duration, Duration) {
     )
 }
 
+/// The edit patience the child `zt mcp` gets (R269). Long batch writes need more than the
+/// ordinary short bound; ordinary reads and prechecks keep the default. The value is
+/// process policy (a versioned tool default), never a workflow knob, so a caller sets it
+/// once before it starts the client instead of passing it through every command.
+static CHILD_EDIT_PATIENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn child_edit_patience(seconds: u64) {
+    CHILD_EDIT_PATIENCE.store(seconds, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A complete required-address read from one archive revision.
 pub struct CardRead {
     pub cards: Vec<Value>,
@@ -96,6 +106,10 @@ impl Zt {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        let patience = CHILD_EDIT_PATIENCE.load(std::sync::atomic::Ordering::Relaxed);
+        if patience > 0 && patience <= 300 {
+            command.env("ZT_EDIT_PATIENCE", patience.to_string());
+        }
         let mut process = owned::Owned::spawn(&mut command)
             .with_context(|| format!("failed to start `{program} mcp`"))?;
         let mut stdin = process.child.stdin.take().context("zt mcp has no stdin")?;

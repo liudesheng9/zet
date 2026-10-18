@@ -78,6 +78,51 @@ pub fn print_line(line: &str) -> Result<()> {
     print_lines(&[line.to_string()])
 }
 
+/// The edit patience a write-capable step gives its child `zt mcp` (R269).
+///
+/// A digest apply waits on the archive edit lock while its own checker and receipt
+/// replay run, so it needs far more patience than an ordinary agent write. Ordinary
+/// reads and prechecks keep the short default: a busy archive fails fast there.
+pub const WRITE_EDIT_PATIENCE_SECONDS: u64 = 180;
+
+/// Whether this tool invocation can write Cards and so needs the long edit patience.
+///
+/// The test is the step or switch that performs the write, never the tool name alone:
+/// every compiler tool also has read-only plan, check and report steps. The helper
+/// (`call`) always writes; `organize-apply` and `figures` write; `prepare` writes only
+/// with `-Apply`; a compiler step writes with `-Apply` or in one of the listed write
+/// steps, and `group-finish`/`link-finish` apply their checked draft.
+pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
+    let step = argv
+        .iter()
+        .position(|a| a.eq_ignore_ascii_case("-Step"))
+        .and_then(|at| argv.get(at + 1))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let apply = argv.iter().any(|a| {
+        a.eq_ignore_ascii_case("-Apply") || a.eq_ignore_ascii_case("-Apply:$true") || a.eq_ignore_ascii_case("-Apply:true")
+    });
+    if matches!(tool, "call" | "organize-apply" | "figures" | "group-finish" | "link-finish") {
+        return true;
+    }
+    if tool == "skeleton" && step == "apply" && !apply {
+        // `skeleton -Step apply` without -Apply is the read-only draft precheck.
+        return false;
+    }
+    apply
+        || matches!(
+            step.as_str(),
+            "apply"
+                | "explain-apply"
+                | "notation-apply"
+                | "boundary-apply"
+                | "proof-apply"
+                | "theory-apply"
+                | "resume"
+                | "split"
+        )
+}
+
 /// The last line of a compiler step: the step's result as compact JSON.
 #[allow(dead_code)]
 pub fn print_last(value: &Value) -> Result<()> {
@@ -122,4 +167,39 @@ pub fn bind_positional(argv: &[String], params: &[&str]) -> Result<Vec<String>> 
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_write_step_gets_long_edit_patience_and_a_read_step_keeps_the_short_bound() {
+        // The helper and the two apply-only tools always write.
+        assert!(writes_cards("call", &argv(&["-", "-Allow", "a.txt"])));
+        assert!(writes_cards("organize-apply", &argv(&["-Work", "D:\\w"])));
+        assert!(writes_cards("figures", &argv(&["-CitationKey", "K"])));
+        assert!(writes_cards("group-finish", &argv(&["-Out", "D:\\o", "-Group", "1"])));
+        // A compiler step writes only in an apply step or with -Apply.
+        assert!(writes_cards("card", &argv(&["-Step", "apply", "-Work", "D:\\w"])));
+        assert!(!writes_cards("card", &argv(&["-Step", "plan", "-Work", "D:\\w"])));
+        assert!(!writes_cards("card", &argv(&["-Step", "precheck", "-Job", "j"])));
+        assert!(writes_cards("prepare", &argv(&["-Source", "s.md", "-Out", "D:\\o", "-Apply"])));
+        assert!(!writes_cards("prepare", &argv(&["-Source", "s.md", "-Out", "D:\\o"])));
+        // The skeleton's read-only draft precheck names -Step apply without -Apply.
+        assert!(!writes_cards("skeleton", &argv(&["-Step", "apply", "-Work", "D:\\w"])));
+        assert!(writes_cards("skeleton", &argv(&["-Step", "apply", "-Work", "D:\\w", "-Apply"])));
+        // Every write step of the model and math compilers.
+        for step in ["apply", "explain-apply", "notation-apply", "boundary-apply", "proof-apply", "theory-apply", "resume", "split"] {
+            assert!(writes_cards("model", &argv(&["-Step", step])), "{step}");
+        }
+        for step in ["brief", "plan", "report", "explain-check", "explain-report"] {
+            assert!(!writes_cards("model", &argv(&["-Step", step])), "{step}");
+        }
+        assert_eq!(WRITE_EDIT_PATIENCE_SECONDS, 180);
+    }
 }

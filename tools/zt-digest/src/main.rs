@@ -41,6 +41,14 @@ fn main() {
     let mut argv = std::env::args().skip(1);
     let tool = argv.next().unwrap_or_default();
     let rest: Vec<String> = argv.collect();
+    // R269: a write-capable step gives its child `zt mcp` long edit patience; a read
+    // or a precheck keeps the ordinary short bound. Set once, before the one client
+    // of this process starts.
+    zt_check::mcp::child_edit_patience(if util::writes_cards(&tool, &rest) {
+        util::WRITE_EDIT_PATIENCE_SECONDS
+    } else {
+        0
+    });
     let result = match tool.to_ascii_lowercase().as_str() {
         "call" => calls::cli(&rest),
         "audit" => audit::cli(&rest),

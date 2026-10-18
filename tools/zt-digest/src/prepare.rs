@@ -447,6 +447,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Variant",
         "RunOptions",
         "Book",
+        "MaxAttempts",
+        "DshRunCap",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply"])?;
     let out = mandatory(&a, "Out")?;
@@ -521,6 +523,19 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let variant=if a.has("Variant") {a.choice("Variant",&["econ","math"])?} else {String::new()};
     if !variant.is_empty() && !apply {bail!("Variant requires Apply so the prepared run can bind its actual archive");}
     if a.has("RunOptions") && variant.is_empty() {bail!("RunOptions requires Variant and Apply");}
+    if (a.has("MaxAttempts") || a.has("DshRunCap")) && variant.is_empty() {bail!("MaxAttempts and DshRunCap require Variant and Apply");}
+    // R273: the managed run's bounded settings are validated here, at preparation,
+    // and persisted in the immutable run contract. A resume reuses them.
+    let settings = match crate::ledger::run_settings(
+        a.has("MaxAttempts").then(|| a.int_or("MaxAttempts", 0)).transpose()?,
+        a.has("DshRunCap").then(|| a.int_or("DshRunCap", 0)).transpose()?,
+    ) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("zt-digest prepare: {error}");
+            return Ok(2);
+        }
+    };
     let declared=if a.has("RunOptions") {Some(crate::canon::read_json(&a.str("RunOptions"))?)}else{None};
     let run_options=if variant.is_empty(){Value::Null}else{crate::ledger::run_options(&variant,no_figures,declared.as_ref())?};
     let scripts = scripts_dir();
@@ -804,7 +819,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         write(&join_path(&staging, "setup-calls.json"), &ps::json_pretty(&Value::Array(setup.clone())))?;
         if !variant.is_empty() {
             let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures,"run_options":run_options});
-            let contract = run_contract(&manifest, &variant, &source_hash, options, archive)?;
+            let mut contract = run_contract(&manifest, &variant, &source_hash, options, archive)?;
+            contract["settings"] = settings.clone();
             manifest.insert("run_contract".into(), contract);
             write(
                 &join_path(&staging, "manifest.json"),

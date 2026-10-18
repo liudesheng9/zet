@@ -29,7 +29,7 @@ defineModule({
     const hstep = (s, extra = '') => `${Z.HUB_COMPILER} -Step ${s} -Work "${HUB_WORK}"${extra}`
     const manager = await Z.zAgent(
       `You are the hub manager of a ZET slip-box. Hub Cards are the ways into a subject: a topic hub for each large Topic tree, a line hub for each large branch, field hubs over related Topics, and one register. A script builds them; DeepSeek writes them. You choose the limits that decide which hubs the policy requires and how large a hub may be. You read no Card.
-1. Run this one PowerShell command in the foreground with timeout 600000 and wait for it:
+1. Run this one PowerShell command in the foreground with timeout_ms: 600000 and wait for it:
 ${hstep('survey')}
    Its last output line is compact JSON: topics, tree_cards, branch_cards, and neighbour_links (each a distribution: n, min, p25, median, p75, p90, max), hubs (counts per level), legacy (Idea Cards used as hubs), register. Put that line, unchanged, in survey. If the command fails, return ok=false with the error text; do not retry with other options.
 2. Choose the limits from the distributions with these rules, and round to whole numbers:
