@@ -2623,8 +2623,8 @@ fn verify_coverage(
                 if reason.is_empty() {
                     bail!("publication coverage must give a reason for `{reference}`");
                 }
-                if contributing {
-                    bail!("publication coverage cannot report `{reference}` as {outcome}: its producer completed");
+                if substantive {
+                    bail!("publication coverage cannot report `{reference}` as {outcome}: its producer created substantive work");
                 }
             }
             _ => bail!("unknown {layer} coverage outcome `{outcome}`"),
@@ -3016,29 +3016,30 @@ fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<V
     verify_binding(&tx, p)?;
     let manifest = publication_manifest(&tx, layer, key, &scope)?;
     let input_hash = canon::hash_value(&manifest);
-    let existing: Option<(String, i64)> = tx
+    // Only the latest revision of this logical key may be reused: an older revision
+    // that once had the same manifest is terminal history, so returning it would hand
+    // back superseded work and leave no current revision for the present inputs.
+    let latest: Option<(String, i64, String)> = tx
         .query_row(
-            "SELECT id,revision FROM units WHERE layer=?1 AND logical_key=?2 AND input_hash=?3 ORDER BY revision LIMIT 1",
-            params![layer, key, input_hash],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT id,revision,input_hash FROM units WHERE layer=?1 AND logical_key=?2 ORDER BY revision DESC LIMIT 1",
+            params![layer, key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let (id, revision, reused) = match existing {
-        Some((id, revision)) => (id, revision, true),
-        None => {
-            let latest: i64 = tx
-                .query_row(
-                    "SELECT coalesce(max(revision),0) FROM units WHERE layer=?1 AND logical_key=?2",
-                    params![layer, key],
-                    |r| r.get(0),
-                )?;
-            let revision = latest + 1;
+    let previous = latest.as_ref().map(|(_, revision, _)| *revision).unwrap_or(0);
+    let (id, revision, reused) = match latest {
+        Some((id, revision, hash)) if hash == input_hash => (id, revision, true),
+        _ => {
+            let revision = previous + 1;
             let id = register_publication_unit(&tx, layer, key, revision, &manifest, None)?;
             seal(&tx, layer)?;
             // Every older revision that is still open is terminal: it can never be
-            // claimed as current work, and the report names its replacement.
+            // claimed as current work, and the report names its replacement. A revision
+            // that already failed keeps its own retained fault, so a real content
+            // failure is never rewritten as supersession and an earlier replacement
+            // record still names the revision that made it stale.
             let superseded = {
-                let mut statement = tx.prepare("SELECT id FROM units WHERE layer=?1 AND logical_key=?2 AND revision<?3 AND state<>'done' ORDER BY revision")?;
+                let mut statement = tx.prepare("SELECT id FROM units WHERE layer=?1 AND logical_key=?2 AND revision<?3 AND state NOT IN ('done','failed') ORDER BY revision")?;
                 statement
                     .query_map(params![layer, key, revision], |r| r.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?

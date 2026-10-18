@@ -186,6 +186,43 @@ try {
     $untouched = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','OtherTree','-Scope',$hubScope)
     Assert ($untouched.unit -ceq 'hubs/OtherTree@1' -and @($untouched.contributions).Count -eq 0) 'a tree no producer touched has no contributing work of its own'
 
+    # R157/R159/R161: the manifest rule is about the present input set. A manifest that
+    # returns to an earlier one never hands back that terminal history: the next
+    # revision is registered so the report's latest revision stays current.
+    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
+    $reverted = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
+    Assert ($reverted.unit -ceq 'hubs/HubTree@3' -and -not $reverted.reused) 'a manifest that returns to an earlier input set registers fresh work instead of returning a superseded revision'
+    $supersededFirst = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@1' })[0]
+    Assert ($supersededFirst.state -eq 'failed' -and $supersededFirst.fault.code -eq 'superseded' -and $supersededFirst.fault.by -ceq 'hubs/HubTree@2') 'the revision an earlier input set once had stays terminal history naming its replacement'
+
+    # R157/R158/R161: a done revision is never reopened, and a done revision is never
+    # handed back as current work after a later input set existed. The latest revision
+    # always describes the present inputs; older ones keep their own retained outcome.
+    $revertClaim = (Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','hubs','-Take','1','-Owner','hub-manager')).units[0]
+    Assert ($revertClaim.id -ceq 'hubs/HubTree@3') 'the fresh hub revision derived from the present inputs is the only claimable one'
+    $hubReport = Join-Path $hubOut 'hub-report.json'
+    [IO.File]::WriteAllText($hubReport,(@{ fixture = 'hubs' } | ConvertTo-Json),$utf8)
+    $revertPlan = Join-Path $hubOut 'publication-hubs-HubTree-3.json'
+    [IO.File]::WriteAllText($revertPlan,(@{
+        schema_version = 1; kind = 'publication_completion'; unit = $revertClaim.id; token = $revertClaim.token
+        layer = 'hubs'; key = 'HubTree'; input_hash = $revertClaim.input_hash
+        disposition = 'published'; consumed = @($revertClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+        unresolved = @(); coverage = @(); artifacts = @{ report = $hubReport }
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $revertDone = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit',$revertClaim.id,'-Token',"$($revertClaim.token)",'-Outputs',$revertPlan)
+    Assert ($revertDone.state -eq 'done' -and $revertDone.disposition -eq 'published') 'the re-derived hub revision completes against its checked input set'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1","HubTree/2"],"register":null}',$utf8)
+    $afterDone = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
+    Assert ($afterDone.unit -ceq 'hubs/HubTree@4' -and -not $afterDone.reused) 'a changed input derives the next revision beside a done one'
+    $keptDone = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@3' })[0]
+    Assert ($keptDone.state -eq 'done' -and @($afterDone.superseded) -notcontains 'hubs/HubTree@3' -and 'hubs/HubTree@3' -notin (Run-Digest @('ledger','rerun-list','-Out',$hubOut)).units.id) 'a done publication revision stays done and is never offered as rerunnable work'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
+    $reopened = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
+    $keptAgain = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@3' })[0]
+    Assert ($reopened.unit -ceq 'hubs/HubTree@5' -and -not $reopened.reused -and $keptAgain.state -eq 'done' -and $keptAgain.result.disposition -eq 'published') 'returning to a done revision''s input set registers fresh work instead of reopening the done revision'
+    $hubHistory = @((Run-Digest @('ledger','status','-Out',$hubOut)).publications | Where-Object { $_.layer -eq 'hubs' -and $_.key -eq 'HubTree' })[0]
+    Assert ($hubHistory.latest -ceq 'hubs/HubTree@5' -and $hubHistory.current -eq $true -and @($hubHistory.superseded | Where-Object { $_.unit -ceq 'hubs/HubTree@3' -and $_.state -eq 'done' }).Count -eq 1) 'the report selects the revision that describes the present inputs and keeps the done one as superseded history'
+
     # Every independent note suggestion becomes one work unit with its own outcome,
     # registered against the Card state the suggestion was made from.
     $suggestions = Join-Path $scratch 'suggestions.json'
@@ -229,6 +266,56 @@ try {
     $n03 = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit','notes/n03@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n03@1' })[0].token)",'-Outputs',(Note-Plan 'n03' 'refused' '来源不支持该关系'))
     Assert ($n02.outcome -eq 'already_present' -and $n02.present -eq $true -and $n02.fingerprint -eq $n02.suggestion.fingerprint -and $n03.outcome -eq 'refused' -and $n03.reason -eq '来源不支持该关系' -and $n03.present -eq $false) 'every suggestion retains its own already-present or reasoned refusal outcome'
 
+    # R224/R225: Organize consumes every completed suggestion and disposes it with the
+    # outcome the suggestion's own unit retained; a restatement is refused.
+    $organizeHub = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','organize')
+    $organizeClaim = (Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','organize','-Take','1','-Owner','organize-manager')).units[0]
+    Assert ($organizeHub.unit -ceq 'organize/book@2' -and $organizeClaim.id -ceq 'organize/book@2' -and @($organizeHub.contributions | Where-Object { $_.unit -like 'notes/*' }).Count -eq 3) 'Organize consumes every completed suggestion as its own contribution'
+    foreach ($name in @('decisions','applied')) {
+        [IO.File]::WriteAllText((Join-Path $hubOut "$name.json"),(@{ name = $name; fixture = $true } | ConvertTo-Json),$utf8)
+    }
+    function Organize-Plan($coverage) {
+        $planPath = Join-Path $hubOut 'publication-organize-book-2.json'
+        [IO.File]::WriteAllText($planPath,(@{
+            schema_version = 1; kind = 'publication_completion'; unit = $organizeClaim.id; token = $organizeClaim.token
+            layer = 'organize'; key = 'book'; input_hash = $organizeClaim.input_hash
+            disposition = 'published'; consumed = @($organizeClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+            unresolved = @(); coverage = $coverage
+            artifacts = @{ decisions = (Join-Path $hubOut 'decisions.json'); applied = (Join-Path $hubOut 'applied.json') }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $planPath
+    }
+    $honest = @(
+        @{ ref = 'notes/n01@1'; outcome = 'applied'; reason = '' },
+        @{ ref = 'notes/n02@1'; outcome = 'already_present'; reason = '' },
+        @{ ref = 'notes/n03@1'; outcome = 'refused'; reason = '来源不支持该关系' }
+    )
+    $restated = @(
+        @{ ref = 'notes/n01@1'; outcome = 'applied'; reason = '' },
+        @{ ref = 'notes/n02@1'; outcome = 'already_present'; reason = '' },
+        @{ ref = 'notes/n03@1'; outcome = 'applied'; reason = '' }
+    )
+    Refuses @('ledger','done','-Out',$hubOut,'-Unit',$organizeClaim.id,'-Token',"$($organizeClaim.token)",'-Outputs',(Organize-Plan $restated)) 'its own outcome is refused'
+    $organizeDone = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit',$organizeClaim.id,'-Token',"$($organizeClaim.token)",'-Outputs',(Organize-Plan $honest))
+    Assert ($organizeDone.state -eq 'done' -and $organizeDone.disposition -eq 'published' -and @($organizeDone.coverage).Count -eq 3 -and @($organizeDone.coverage | Where-Object { $_.ref -eq 'notes/n03@1' -and $_.outcome -eq 'refused' }).Count -eq 1) 'a completed Organize revision disposes every suggestion with the outcome the archive checked, never a restatement'
+
+    # R226: the positive side too — an anchor whose producer completed with substantive
+    # Cards is indexed, not reported as a gap.
+    $hubSkeleton = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','skeleton')
+    $hubSkeletonClaim = (Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','skeleton','-Take','1','-Owner','skeleton-manager')).units[0]
+    [IO.File]::WriteAllText((Join-Path $hubOut 'hub-skeleton.json'),(@{ fixture = 'skeleton' } | ConvertTo-Json),$utf8)
+    $hubSkeletonPlan = Join-Path $hubOut ("publication-{0}.json" -f ($hubSkeletonClaim.id -replace '[/@]','-'))
+    [IO.File]::WriteAllText($hubSkeletonPlan,(@{
+        schema_version = 1; kind = 'publication_completion'; unit = $hubSkeletonClaim.id; token = $hubSkeletonClaim.token
+        layer = 'skeleton'; key = 'book'; input_hash = $hubSkeletonClaim.input_hash
+        disposition = 'published'
+        consumed = @($hubSkeletonClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+        unresolved = @(); coverage = @($hubManifest.groups | ForEach-Object { @{ ref = $_.anchor; outcome = 'indexed'; reason = '' } })
+        artifacts = @{ skeleton = (Join-Path $hubOut 'hub-skeleton.json') }
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $hubSkeletonDone = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit',$hubSkeletonClaim.id,'-Token',"$($hubSkeletonClaim.token)",'-Outputs',$hubSkeletonPlan)
+    Assert ($hubSkeletonDone.state -eq 'done' -and $hubSkeletonDone.unit -ceq $hubSkeleton.unit -and @($hubSkeletonDone.coverage | Where-Object { $_.outcome -eq 'indexed' -and $_.producer -ceq 'digest/g001@1' }).Count -eq $hubManifest.groups.Count) 'a skeleton indexes an anchor whose producer completed with substantive Cards'
+
     # A recorded structural mapping updates the addresses this run published; an
     # unexplained move is a precise conflict, not a silently stale locator.
     $moves = Join-Path $scratch 'moves.json'
@@ -261,6 +348,28 @@ try {
         schema_version = 1; unit = $group.id; token = $group.token; input_hash = $started.input_hash; disposition = 'no_cards'; calls = @()
     } | ConvertTo-Json -Depth 8),$utf8)
     $null = Run-Digest @('group-finish','-Out',$skeletonOut,'-Group','1','-Token',"$($group.token)",'-Draft',$started.draft)
+
+    # R226: a completed producer that created no substantive Cards is a named gap. A
+    # skeleton revision may record that gap but may never index the anchor as work.
+    $faultSkeletonPublication = Run-Digest @('ledger','publish','-Out',$skeletonOut,'-Layer','skeleton')
+    $faultSkeletonClaim = (Run-Digest @('ledger','next','-Out',$skeletonOut,'-Layer','skeleton','-Take','1','-Owner','skeleton-manager')).units[0]
+    [IO.File]::WriteAllText((Join-Path $skeletonOut 'fault-skeleton.json'),(@{ fixture = 'skeleton' } | ConvertTo-Json),$utf8)
+    $secondAnchors = @($second.groups | ForEach-Object { $_.anchor })
+    function Fault-Skeleton-Plan([string]$Outcome) {
+        $planPath = Join-Path $skeletonOut ("publication-{0}.json" -f ($faultSkeletonClaim.id -replace '[/@]','-'))
+        [IO.File]::WriteAllText($planPath,(@{
+            schema_version = 1; kind = 'publication_completion'; unit = $faultSkeletonClaim.id; token = $faultSkeletonClaim.token
+            layer = 'skeleton'; key = 'book'; input_hash = $faultSkeletonClaim.input_hash
+            disposition = 'published'; consumed = @($faultSkeletonClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+            unresolved = @(); coverage = @($secondAnchors | ForEach-Object { @{ ref = $_; outcome = $Outcome; reason = 'the completed producer created no substantive Cards' } })
+            artifacts = @{ skeleton = (Join-Path $skeletonOut 'fault-skeleton.json') }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $planPath
+    }
+    Refuses @('ledger','done','-Out',$skeletonOut,'-Unit',$faultSkeletonClaim.id,'-Token',"$($faultSkeletonClaim.token)",'-Outputs',(Fault-Skeleton-Plan 'indexed')) 'must mark'
+    $faultSkeletonDone = Run-Digest @('ledger','done','-Out',$skeletonOut,'-Unit',$faultSkeletonClaim.id,'-Token',"$($faultSkeletonClaim.token)",'-Outputs',(Fault-Skeleton-Plan 'gap'))
+    Assert ($faultSkeletonDone.state -eq 'done' -and $faultSkeletonDone.unit -ceq $faultSkeletonPublication.unit -and @($faultSkeletonDone.coverage | Where-Object { $_.outcome -eq 'gap' -and $_.reason }).Count -eq $secondAnchors.Count) 'a producer that created no substantive Cards leaves a named gap instead of fabricated skeleton coverage'
+
     $faultPublication = Run-Digest @('ledger','publish','-Out',$skeletonOut,'-Layer','audit')
     $faultClaim = (Run-Digest @('ledger','next','-Out',$skeletonOut,'-Layer','audit','-Take','1','-Owner','fault-manager')).units[0]
     [IO.File]::WriteAllText((Join-Path $skeletonOut 'report.json'),(@{ fixture = 'audit' } | ConvertTo-Json),$utf8)
@@ -371,6 +480,12 @@ try {
     Assert (@($modelsNext.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the fresh revision names the registered Model work as an explicit unresolved disposition'
     $modelsTerminal = @((Run-Digest @('ledger','status','-Out',$modelsOut,'-Layer','organize')).units | Where-Object { $_.id -eq $modelsInitial.unit })[0]
     Assert ($modelsTerminal.state -eq 'failed' -and $modelsTerminal.fault.code -eq 'superseded' -and $modelsTerminal.fault.by -ceq 'organize/book@2') 'the older publication revision is terminal history rather than rerunnable work'
+    $modelsHubScope = Join-Path $scratch 'models-hub-scope.json'
+    [IO.File]::WriteAllText($modelsHubScope,'{"tree":"ModelsBook","upper":[],"register":null}',$utf8)
+    $modelsHub = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','hubs','-Key','ModelsBook','-Scope',$modelsHubScope)
+    Assert ($modelsHub.unit -ceq 'hubs/ModelsBook@1' -and @($modelsHub.contributions | Where-Object { $_.unit -ceq 'digest/g001@1' }).Count -eq 1 -and @($modelsHub.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the touched tree derives its own hub revision from the completed producer and the registered Model work'
+    $modelsLinks = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','link-check')
+    Assert ($modelsLinks.unit -ceq 'link-check/book@2' -and @($modelsLinks.dispositions | Where-Object { $_.unit -ceq 'link/g001@1' }).Count -eq 1 -and @($modelsLinks.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the Link pass revision consumes the registered Link work and the Model candidate of the completed producer'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
