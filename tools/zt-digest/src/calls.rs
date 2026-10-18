@@ -651,6 +651,9 @@ fn precheck_identified(
             bail!("incomplete Link draft: authored output mismatch at `{address}`");
         }
     }
+    if !expected.is_empty() {
+        bail!("incomplete Link draft: {} accepted outputs were not previewed", expected.len());
+    }
     let paragraphs = draft["paragraphs"]
         .as_array()
         .context("incomplete Link draft: missing paragraphs")?;
@@ -678,9 +681,9 @@ fn precheck_identified(
             .context("incomplete Link draft: missing Card title")?;
         entries.push(json!({"address":address,"title":title,"body":paragraph["body"],"links":paragraph["links"],"kinds":paragraph["kinds"],"category":"idea"}));
     }
-    if zt.cards(&[], "text")?.archive_revision != revision {
-        bail!("incomplete Link draft: archive revision changed");
-    }
+    // The preview is one transaction's own projection, so its completeness and fingerprints
+    // above are the whole check. A later empty read would refuse a preview merely because
+    // another client committed unrelated work; the draft names its own revision instead.
     let mut file = tempfile::NamedTempFile::new()?;
     serde_json::to_writer(&mut file, &entries)?;
     std::io::Write::flush(&mut file)?;
@@ -710,7 +713,9 @@ fn precheck_identified(
     Ok(faults)
 }
 /// A receipt proves a historical commit. Completion additionally needs current
-/// authored outputs to match the final accepted write for each address.
+/// authored outputs to match the final accepted write for each address, seen in one
+/// coherent read. Another client's commit is not this unit's fault: the archive
+/// revision moves for unrelated work, so only the unit's own outputs are compared.
 fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
     let mut expected = BTreeMap::new();
     for receipt in receipts {
@@ -730,19 +735,39 @@ fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
         return Ok(());
     }
     let read = zt.cards(&expected.keys().cloned().collect::<Vec<_>>(), "text")?;
-    for card in read.cards {
+    verified_outputs(&expected, &read.cards)
+}
+
+/// Every accepted output must be present, in the agent Workspace, with exactly its
+/// accepted authored fingerprint. The count check makes a deleted output a refusal
+/// instead of a silently skipped one, so a separate whole-archive revision refresh is
+/// unnecessary — and would wrongly refuse a unit whose neighbour committed meanwhile.
+fn verified_outputs(expected: &BTreeMap<String, String>, cards: &[Value]) -> Result<()> {
+    if cards.len() != expected.len() {
+        bail!(
+            "incomplete identified output verification: {} of {} accepted outputs were returned",
+            cards.len(),
+            expected.len()
+        );
+    }
+    let mut remaining = expected.clone();
+    for card in cards {
         let address = card["address"]
             .as_str()
             .context("incomplete identified output address")?;
-        let fingerprint = authored_fingerprint(&card);
-        if card["workspace"] != "agent" || expected.get(address) != Some(&fingerprint) {
+        let fingerprint = authored_fingerprint(card);
+        if card["workspace"] != "agent" || remaining.remove(address).as_deref() != Some(&fingerprint)
+        {
             bail!(
                 "identified output changed: `{address}` no longer matches its accepted receipt; keep the current Card and use a newly accepted plan revision for a correction"
             );
         }
     }
-    if zt.cards(&[], "text")?.archive_revision != read.archive_revision {
-        bail!("incomplete identified output verification: archive revision changed");
+    if !remaining.is_empty() {
+        bail!(
+            "incomplete identified output verification: {} accepted outputs were not returned",
+            remaining.len()
+        );
     }
     Ok(())
 }
@@ -841,5 +866,41 @@ mod tests {
         assert!(similarity("价格理论导论", "价格理论导引") >= 0.8);
         assert!(similarity("价格理论", "货币银行") < 0.8);
         assert_eq!(similarity("a", "a"), 1.0);
+    }
+
+    fn card(address: &str, body: &str, workspace: &str) -> Value {
+        json!({"address":address,"title":"A part","body":body,"bibtex":"","type":"model",
+            "facet":"设定","emphasis":"","level":"formal","hub_level":"","form":"","workspace":workspace})
+    }
+
+    #[test]
+    fn accepted_outputs_must_all_return_unchanged() {
+        let first = card("9/1", "第一版正文。", "agent");
+        let second = card("9/1|a", "第二步正文。", "agent");
+        let mut expected = BTreeMap::new();
+        expected.insert("9/1".to_string(), authored_fingerprint(&first));
+        expected.insert("9/1|a".to_string(), authored_fingerprint(&second));
+
+        // One coherent read that returns every accepted output unchanged completes, whatever
+        // another client did to the archive revision meanwhile (that fact is not passed in).
+        verified_outputs(&expected, &[first.clone(), second.clone()]).unwrap();
+
+        // A changed output is refused with the correction rule.
+        let edited = card("9/1", "另一版正文。", "agent");
+        let changed = verified_outputs(&expected, &[edited, second.clone()]).unwrap_err().to_string();
+        assert!(changed.starts_with("identified output changed: `9/1`"), "{changed}");
+
+        // A deleted output is a refusal, not a silently skipped address.
+        let missing = verified_outputs(&expected, &[second.clone()]).unwrap_err().to_string();
+        assert!(missing.contains("1 of 2 accepted outputs were returned"), "{missing}");
+
+        // So is a reply that repeats one address instead of returning the other.
+        let repeated = verified_outputs(&expected, &[first.clone(), first.clone()]).unwrap_err().to_string();
+        assert!(repeated.contains("no longer matches its accepted receipt"), "{repeated}");
+
+        // And a human Card is never accepted as an agent unit's output.
+        let human = card("9/1", "第一版正文。", "human");
+        let foreign = verified_outputs(&expected, &[human, second]).unwrap_err().to_string();
+        assert!(foreign.starts_with("identified output changed: `9/1`"), "{foreign}");
     }
 }

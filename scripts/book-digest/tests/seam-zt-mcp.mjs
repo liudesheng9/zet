@@ -7,6 +7,11 @@
 //   ZT_RACE_TARGET, ZT_RACE_FLAG, ZT_RACE_LINE   once (no flag file yet), before the first edit_card
 //       of the Card ZT_RACE_TARGET, append ZT_RACE_LINE to that Card, as a parallel digest stage would
 //       between a compiler's read and its write; then create the flag file.
+//   ZT_RACE_AFTER_READ   (see above) the injected edit happens before an addressed read is
+//       forwarded, so the read already sees it.
+//   ZT_RACE_AFTER_BULK_REPLY, with ZT_RACE_TARGET/ZT_RACE_LINE/ZT_RACE_FLAG   once, AFTER an
+//       addressed `get_cards` reply is produced and before it is sent back: another writer commits
+//       its unrelated Card while the caller still holds this unit's own output read.
 //   ZT_FAIL_TREE                                 get_tree of this tree fails.
 //   ZT_FAIL_AFTER_EDIT, ZT_FAIL_CARD, ZT_FAIL_FLAG   after an edit_card of ZT_FAIL_AFTER_EDIT succeeds,
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
@@ -188,6 +193,12 @@ async function handle(line) {
     reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
   }
   if (tool === 'get_cards' && at.addresses.length && env.ZT_RACE_AFTER_READ && env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG) && !failed(reply)) {
+    fs.writeFileSync(env.ZT_RACE_FLAG, '')
+    const read = await call('get_card', { at: env.ZT_RACE_TARGET })
+    const card = JSON.parse(read.result.content.map(c => c.text).join('\n'))
+    await call('edit_card', { at: env.ZT_RACE_TARGET, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
+  }
+  if (tool === 'get_cards' && at.addresses.length && env.ZT_RACE_AFTER_BULK_REPLY && env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG) && !failed(reply)) {
     fs.writeFileSync(env.ZT_RACE_FLAG, '')
     const read = await call('get_card', { at: env.ZT_RACE_TARGET })
     const card = JSON.parse(read.result.content.map(c => c.text).join('\n'))

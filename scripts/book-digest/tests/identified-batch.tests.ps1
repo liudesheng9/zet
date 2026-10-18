@@ -91,12 +91,34 @@ try {
     $env:ZT_RACE_LINE = '参照 [[ReceiptTerms/1|a]]，这里给出独立的术语背景。'
     $inboundChanged = @(& $Digest terms -Step apply -Staging $staging -Apply -OperationPrefix 'qualification/terms/3/apply' 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $env:ZT_RACE_FLAG)) 'an unrelated inbound Link between plan read and apply does not invalidate the authored base'
+    # A second writer commits an unrelated Card after the helper read this unit's own outputs but
+    # before it finishes verifying them. The unit's own outputs are unchanged, so completion must
+    # hold: the archive revision is not this unit's property (issue #89's bounded concurrent
+    # workload, R352's "no lock failures under the declared concurrency").
+    $concurrentCalls = Join-Path $scratch 'concurrent-calls.json'
+    $concurrentModel = @(
+        @{tool='create_topic';arguments=@{title='Concurrent identified topic';body='并发单元的入口。'}},
+        @{tool='create_successor';arguments=@{at='@@0';title='Concurrent model';type='model';level='concept';body='并发单元的问题与机制。'}},
+        @{tool='create_successor';arguments=@{at='@@1';kind='side';title='Concurrent part';body='这一步依赖 [[@@1]]。'}}
+    )
+    [IO.File]::WriteAllText($concurrentCalls,($concurrentModel | ConvertTo-Json -Depth 12 -AsArray),$utf8)
+    $env:ZT_RACE_TARGET = 'ReceiptTerms/2'
+    $env:ZT_RACE_FLAG = Join-Path $scratch 'concurrent-writer.flag'
+    $env:ZT_RACE_LINE = '另一位写作者在核对输出期间追加的一行。'
+    $env:ZT_RACE_AFTER_BULK_REPLY = '1'
+    $concurrent = @(& $Digest call $concurrentCalls -OperationPrefix 'qualification/concurrent/1/build' 2>&1)
+    $concurrentExit = $LASTEXITCODE
+    $wrote = Test-Path -LiteralPath $env:ZT_RACE_FLAG
+    Remove-Item Env:ZT_RACE_AFTER_BULK_REPLY,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE -ErrorAction SilentlyContinue
+    Assert ($wrote) 'the concurrent writer committed its unrelated Card while the helper verified its own outputs'
+    Assert ($concurrentExit -eq 0) "another writer's commit during output verification does not fail this unit: $($concurrent -join ' | ')"
+    Assert ((Invoke-Zt @(@{tool='get_card';arguments=@{at='ReceiptTerms/2'}})).body.Contains('另一位写作者在核对输出期间追加的一行。')) 'the concurrent writer keeps its committed Card'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item Env:ZT_DROP_BATCH_REPLY_FLAG -ErrorAction SilentlyContinue
     Remove-Item Env:ZT_CHECK_ZT -ErrorAction SilentlyContinue
     Remove-Item Env:ZT_TRACE_TOOLS -ErrorAction SilentlyContinue
-    Remove-Item Env:ZT_RACE_AFTER_READ,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE -ErrorAction SilentlyContinue
+    Remove-Item Env:ZT_RACE_AFTER_READ,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE,Env:ZT_RACE_AFTER_BULK_REPLY -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'all passed'
