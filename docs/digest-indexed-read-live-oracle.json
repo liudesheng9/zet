@@ -1,0 +1,52 @@
+{
+  "generated_utc": "2026-10-18T08:17:12Z",
+  "scope": "Whole live archive, read-only. The running GUI full Snapshot is the oracle for export_titles, get_tree, get_cards and get_model. No Card write, reindex, migration or digest workflow was run; the archive revision stayed 0.",
+  "executable": {
+    "installed_sha256": "8A6A013BF69D88095178CD015319274661970DCE0F499E10188472C1D18DFA1C",
+    "previous_installed_sha256": "D7477DBDE637CCBCA360CC30C29232F6F7794FF3FE43752C4CA093FE9953FBCB",
+    "relinked_same_source_sha256": "BEE90E30A1DCE3E6C14DE13FE33F4EAB326EC0D0AC3F75477D70C14D56B56F93",
+    "normalized_content_sha256": "1B2DB4054870D76D0CF6CD723C96FC43584654304A3A930564B9A27773335D93",
+    "differing_bytes_between_builds": 24,
+    "differing_fields": [
+      "PE COFF TimeDateStamp (offset 264 and its .rdata copies)",
+      "CodeView/PDB build identity (16 bytes in .rdata)"
+    ],
+    "note": "Identical source and toolchain do not give byte-identical MSVC images; after zeroing those 24 build-identity bytes the three images hash to the same value."
+  },
+  "service": {
+    "version": "zt 0.20.0",
+    "state": "up",
+    "pid": 89536,
+    "gui": "http://127.0.0.1:4717/",
+    "check_links": "ok"
+  },
+  "live_archive": {
+    "cards": 10895,
+    "trees": 218,
+    "links": 56994,
+    "broken_links": 0,
+    "archive_revision": 0,
+    "archive_identity": {
+      "path": "\\\\?\\D:\\zt",
+      "id": "<32 hex digits; redacted>"
+    }
+  },
+  "checks": 645,
+  "failures": [],
+  "samples": {
+    "full_cards": 848,
+    "models": 80,
+    "trees": 37,
+    "tree_cards": 2468,
+    "tree_reply_limits": [
+      {
+        "tree": "mascolell1995microeconomic",
+        "actual": 9922990,
+        "cards": 5092
+      }
+    ],
+    "text_cards": 10895,
+    "gui_cards": 2033,
+    "full_reply_limits": 0
+  }
+}
