@@ -290,7 +290,7 @@ Verification on Windows, 2026-10-17:
 
 Retained limits: the figures coverage rule is exercised at the boundary only for a source whose recognized reference set is empty, because a temporary archive has no Scholar Archive document to extract figures from; the non-empty path (including the shown-figure path/hash integrity check) is qualified by a real prepared book. No book workflow was run. `#77` is implemented and isolated-qualified, not yet published or closed.
 
-## Publication and deployment at `aed7462`+`4fdc18a`
+## Publication and deployment at `7eadff1`
 
 Every installed executable matches a release build of the current `HEAD`, and the running daemon is that binary. `zt.exe` was reinstalled with `cargo install --path . --locked`; `zt-check.exe` and `zt-digest.exe` with `scripts\install-zt-check.ps1` and `scripts\install-zt-digest.ps1`. The deploy ran the documented order: `zt down`, a `zt.sqlite3.20261017-224501.bak` copy of the archive, the installs, `zt up`.
 
