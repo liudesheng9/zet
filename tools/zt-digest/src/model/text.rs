@@ -237,6 +237,23 @@ pub fn explained(body: &str) -> bool {
     !section_text(&sections, "思路").is_empty() && !section_text(&sections, "解读").is_empty()
 }
 
+/// The first authored line of 思路, position line included: `section_text` drops that line, so
+/// a stale chain placement is only visible here.
+pub fn position_of(body: &str) -> String {
+    let sections = split_sections(body);
+    sections
+        .iter()
+        .find(|sec| ps::eq(&sec.head, "思路"))
+        .and_then(|sec| {
+            sec.lines
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
 /// `Get-Core`: what explain-apply must never change, line by line.
 pub fn core(body: &str) -> String {
     let mut lines = Vec::new();
@@ -340,6 +357,17 @@ mod tests {
         assert_eq!(new, "**思路**\n第 1 张，共 3 张。新。\n先求还款。\n\n**起点**\n- a\n\n**结果**\n$$x$$\n来源：书");
         assert_eq!(result_of(body), "$$x$$");
         assert_eq!(set_chain_line("没有思路", "x"), "没有思路");
+    }
+
+    #[test]
+    fn the_position_line_stays_visible_even_when_the_explanation_is_written() {
+        let body = "**思路**\n第 2 张，共 3 张：从 a 推到 b。\n把上界代入。\n\n**起点**\n- 依赖上一步。\n\n**结果**\n$$L$$\n\n**解读**\n够大才借得到钱。";
+        assert_eq!(position_of(body), "第 2 张，共 3 张：从 a 推到 b。");
+        assert!(explained(body));
+        // A part without 思路 or with only 待写 has no authored position line.
+        assert_eq!(position_of("**起点**\n- a\n\n**结果**\n$$L$$"), "");
+        assert_eq!(position_of("**思路**\n待写\n\n**起点**\n- a"), "待写");
+        assert!(!explained("**思路**\n待写\n\n**起点**\n- a\n\n**结果**\n$$L$$\n\n**解读**\n待写"));
     }
 
     #[test]

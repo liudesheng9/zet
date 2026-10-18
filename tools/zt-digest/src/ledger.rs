@@ -135,24 +135,41 @@ const PUBLICATION: &[&str] = &[
     "theory",
 ];
 
-/// The producer layers whose recorded work forms one aggregate publication input.
+/// The publisher layers whose recorded work forms one aggregate publication input.
 /// Every publication also reads the Model candidates its groups registered, so a
 /// repaired or newly built model changes the input set of every downstream
 /// revision. The whole-book Card and Link cycles additionally enumerate their own
 /// child layer, and Organize also reads the registered note suggestions it must
 /// dispose. A producer that later emits nothing still changes the manifest.
+/// Checked explanation work edits model Card bodies, so every aggregate published
+/// after it consumes those fingerprints too (R219, R301).
 fn publication_sources(layer: &str) -> Option<&'static [&'static str]> {
     match layer {
         "cards-book" => Some(&["digest", "models", "cards"]),
-        "link-check" => Some(&["digest", "models", "link"]),
-        "organize" => Some(&["digest", "models", "notes"]),
+        "link-check" => Some(&["digest", "models", "link", "explain"]),
+        "organize" => Some(&["digest", "models", "notes", "explain"]),
         // A Theory Card's summary depends on the units (their Models) and on the
         // cited-premise Link pass, which the prerequisite revision names.
-        "theory" => Some(&["digest", "models"]),
-        "skeleton" | "figures" | "bridge" | "audit" | "hubs" => Some(&["digest", "models"]),
+        "theory" => Some(&["digest", "models", "explain"]),
+        "skeleton" | "figures" | "bridge" | "audit" | "hubs" => {
+            Some(&["digest", "models", "explain"])
+        }
         _ => None,
     }
 }
+
+/// The aggregate publications that consume a checked explanation revision, recorded
+/// in its own evidence so the emitted work names its downstream inputs.
+const EXPLANATION_CONSUMERS: &[&str] = &[
+    "link-check",
+    "organize",
+    "skeleton",
+    "figures",
+    "bridge",
+    "audit",
+    "hubs",
+    "theory",
+];
 
 /// The publication whose checked revision this layer consumes: the mathematics theory
 /// revision follows link-check, and Organize follows theory, so a changed revision of
@@ -3533,9 +3550,14 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
 /// R167: which layer can still append units to a dynamic child layer once that
 /// producer has run. Only layers whose producer exists are listed here; the other
 /// dynamic layers keep their own slice's closure rule rather than a fabricated one.
-fn enumeration_producer(layer: &str) -> Option<&'static str> {
+/// The second field names the closures that must already be sealed, because a
+/// producer can only enumerate its rows after its own enumeration closed.
+fn enumeration_closure(layer: &str) -> Option<(&'static str, &'static [&'static str])> {
     Some(match layer {
-        "cards" | "events" | "findings" | "link" | "models" => "digest",
+        "cards" | "events" | "findings" | "link" | "models" => ("digest", &[][..]),
+        // Explanation work is registered by Model completions, which can only appear while
+        // the Digest enumeration is still open, so the Models closure comes first (R301).
+        "explain" => ("models", &["models"][..]),
         _ => return None,
     })
 }
@@ -3551,9 +3573,17 @@ fn close_enumerations(tx: &Transaction) -> Result<()> {
         .iter()
         .filter_map(Value::as_str)
     {
-        let Some(producer) = enumeration_producer(layer) else {
+        let Some((producer, after)) = enumeration_closure(layer) else {
             continue;
         };
+        let closed = after.iter().try_fold(true, |closed, previous| {
+            Ok::<bool, anyhow::Error>(
+                closed && meta(tx, &format!("barrier/{previous}"))?["sealed"] == true,
+            )
+        })?;
+        if !closed {
+            continue;
+        }
         let open: i64 = tx.query_row(
             "SELECT count(*) FROM units WHERE layer=?1 AND state NOT IN ('done','failed','blocked')",
             [producer],
@@ -4400,7 +4430,7 @@ fn fault_class(code: &str) -> Result<&'static str> {
         | "unreconciled_move" => "operator",
         "invalid_plan" | "dependency_cycle" | "source_unavailable" | "unsupported_claim"
         | "stale_content" | "check_failed" | "unknown_producer" | "named_part_missing"
-        | "named_part_changed" => "content",
+        | "named_part_changed" | "explanation_missing" => "content",
         _ => bail!("unknown fault code `{code}`"),
     })
 }
@@ -5119,6 +5149,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "ledger-event-finding-test-",
                 "model-finish-test-",
                 "model-dependencies-test-",
+                "explain-finish-test-",
             ]
             .iter()
             .any(|prefix| n.to_string_lossy().starts_with(prefix))
@@ -9058,15 +9089,21 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
             requirements.push(json!({"from":address,"to":target,"ref":want["ref"],"why":want["why"]}));
         }
     }
-    // Explanation needs: the exact own Derivation parts that still lack 思路 or 解读.
+    // Explanation needs: the exact own Derivation parts that still lack 思路 or 解读. The
+    // parts counted are the checked model's own, in build order, never an older count (R301).
+    let own_derivations: Vec<String> = model["build"]["order"]
+        .as_array()
+        .context("incomplete model build order")?
+        .iter()
+        .filter(|o| o["derivation"] == json!(true) && o["line"] != json!("shared"))
+        .map(|o| s(&o["address"]))
+        .collect();
     let mut needs = Vec::new();
-    for (address, order_entry) in &order {
-        if order_entry["derivation"] != json!(true) || order_entry["line"] == json!("shared") {
-            continue;
-        }
-        let card = cards.get(address);
-        let body = card.map(|c| s(&c["body"])).unwrap_or_default();
+    let mut thoughts = Vec::new();
+    for address in &own_derivations {
+        let body = cards.get(address).map(|c| s(&c["body"])).unwrap_or_default();
         if crate::model::text::explained(&body) {
+            thoughts.push(address.clone());
             continue;
         }
         let sections = crate::model::text::split_sections(&body);
@@ -9079,16 +9116,23 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         needs.push(json!({"address":address,"missing":missing}));
     }
     let needs_at: BTreeSet<String> = needs.iter().map(|n| s(&n["address"])).collect();
+    let own_at: BTreeSet<String> = own_derivations.iter().cloned().collect();
     let chains: Vec<Value> = build["chains"]
         .as_array()
         .context("incomplete derivation chains")?
         .iter()
+        .map(|chain| {
+            json!({
+                "parts": pipe(&chain["parts"]).into_iter().filter(|p| own_at.contains(&s(p))).cloned().collect::<Vec<_>>(),
+                "after": chain["after"],
+                "before": chain["before"],
+            })
+        })
         .filter(|chain| {
             chain["parts"]
                 .as_array()
-                .is_some_and(|parts| parts.iter().any(|p| needs_at.contains(&s(p))))
+                .is_some_and(|parts| !parts.is_empty() && parts.iter().any(|p| needs_at.contains(&s(p))))
         })
-        .cloned()
         .collect();
     // Style faults are the whole-book Card cycle's work: retained as a tolerance, not a
     // second quality gate that would hide the model's own build facts.
@@ -9145,11 +9189,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "structure": {"lines":structure,"fingerprint":canon::hash_value(&json!(structure))},
         "steps": steps,
         "split": split,
-        "explanation": if needs.is_empty() {
-            json!({"status":"none","reason":if derived {"explained"} else {"no_derivations"},"needs":[],"chains":[]})
-        } else {
-            json!({"status":"required","reason":"unexplained","needs":needs,"chains":chains})
-        },
+        "explanation": explanation_facts(&level, &own_derivations, &thoughts, needs, chains),
         "notes": entry["notes"],
         "links": {"requirements":requirements},
         "build": {"order":part_order.len(),"tolerated":build["tolerated"],"cited":build["cited"]},
@@ -9157,6 +9197,37 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "trees": trees,
         "archive_revision": read.archive_revision,
     }))
+}
+
+/// The recorded state of one model's explanation layer (R301, R302). `applicable` separates a
+/// concept model, whose layer is inapplicable, from a formal model that still holds unexplained
+/// Derivation parts. The counts are the checked model's own parts, not an older report's.
+fn explanation_facts(
+    level: &str,
+    own: &[String],
+    thoughts: &[String],
+    needs: Vec<Value>,
+    chains: Vec<Value>,
+) -> Value {
+    let applicable = !ps::eq(level, "concept");
+    let (status, reason) = if !applicable {
+        ("none", "concept")
+    } else if own.is_empty() {
+        ("none", "no_derivations")
+    } else if needs.is_empty() {
+        ("none", "explained")
+    } else {
+        ("required", "unexplained")
+    };
+    json!({
+        "status": status,
+        "reason": reason,
+        "applicable": applicable,
+        "derivations": own.len(),
+        "explained": thoughts.len(),
+        "needs": needs,
+        "chains": chains,
+    })
 }
 
 /// Repeating a completed Model unit re-reads its Cards and its step state; a changed
@@ -9303,6 +9374,7 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
         event(&tx, &id, Some(&claimed.owner), Some(token), "registered", &json!({"producer":unit,"input_hash":canon::hash_value(inputs)}))?;
         result["explain_unit"] = json!(id);
     }
+    // The last Model unit to finish closes the Explain layer its completions feed (R301).
     completion_fault(p, "before_commit")?;
     tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
     event(
@@ -9313,6 +9385,7 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
         "completed",
         &json!({"disposition":"verified","plan_hash":result["plan_hash"],"parts":result["parts"].as_object().map(|p| p.len()),"explanation":result["explanation"]["status"],"trees":result["trees"],"completion":completion,"check":check_record}),
     )?;
+    close_enumerations(&tx)?;
     completion_fault(p, "after_commit")?;
     tx.commit()?;
     Ok(result)
@@ -9595,6 +9668,429 @@ pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
     drop(conn);
     let unit = unit.with_context(|| format!("no registered Model unit names `{model}`"))?;
     let result = model_deps(&p, &mut zt, &unit, token)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+/// The one Explain unit a Model header owns; a registered obligation is never inferred.
+fn explain_unit_for_model(conn: &Connection, header: &str) -> Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id,inputs_json FROM units WHERE layer='explain' ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let mut found = None;
+    for (id, inputs) in rows {
+        if serde_json::from_str::<Value>(&inputs)?["model"] == json!(header) {
+            if found.is_some() {
+                bail!("more than one Explain unit names `{header}`");
+            }
+            found = Some(id);
+        }
+    }
+    Ok(found)
+}
+
+/// The chains of the checked model restricted to its own (not shared) Derivation parts, each
+/// with the position line the compiler writes into 思路: `(address, expected line)`.
+fn explain_chains(model: &Value) -> Result<Vec<Value>> {
+    let own: BTreeSet<String> = model["build"]["order"]
+        .as_array()
+        .context("incomplete model build order")?
+        .iter()
+        .filter(|o| o["derivation"] == json!(true) && o["line"] != json!("shared"))
+        .map(|o| s(&o["address"]))
+        .collect();
+    let mut chains = Vec::new();
+    for chain in model["build"]["chains"]
+        .as_array()
+        .context("incomplete derivation chains")?
+    {
+        let parts: Vec<String> = pipe(&chain["parts"])
+            .into_iter()
+            .map(s)
+            .filter(|address| own.contains(address))
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        chains.push(json!({"parts":parts,"after":chain["after"],"before":chain["before"]}));
+    }
+    Ok(chains)
+}
+
+/// R301: enumerate the checked model's actual own Derivation parts and chains, verify both
+/// sections and the compiler's chain/size constraints, and refuse while any of that work is
+/// still unfinished. Nothing here trusts the registered need as the count of the work.
+fn explain_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Value) -> Result<Value> {
+    use std::collections::BTreeMap;
+    let header = field(inputs, "model")?;
+    let model_unit = field(inputs, "unit")?;
+    let plan_hash = field(inputs, "plan_hash")?;
+    let registered: BTreeSet<String> = inputs["parts"]
+        .as_array()
+        .context("incomplete Explain unit scope")?
+        .iter()
+        .map(|part| Ok(field(&json!({"part":part}), "part")?.to_string()))
+        .collect::<Result<_>>()?;
+    // The producer stays a checked Model completion for this header and plan: a built model
+    // is the explanation layer's premise, and its own facts stay separately recorded.
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT state,result_json FROM units WHERE id=?1",
+            [model_unit],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (state, raw) = row.with_context(|| format!("Model unit {model_unit} is not registered"))?;
+    if state != "done" {
+        bail!("Model unit {model_unit} is {state}, not a checked completion");
+    }
+    let build: Value = serde_json::from_str(&raw.context("missing Model completion evidence")?)?;
+    if build["kind"] != json!("model_completion")
+        || build["model"] != json!(header)
+        || build["plan_hash"] != json!(plan_hash)
+        || build["complete"] != json!(true)
+    {
+        bail!("the Explain unit's Model completion does not describe `{header}`");
+    }
+    let explained_at_build: BTreeSet<String> = build["explanation"]["needs"]
+        .as_array()
+        .context("incomplete Model explanation evidence")?
+        .iter()
+        .map(|need| s(&need["address"]))
+        .collect();
+    if explained_at_build != registered {
+        bail!("the Explain unit's registered scope is not the Model completion's recorded need");
+    }
+    let model = zt.call("get_model", json!({"at":header}))?;
+    let level = s(&model["level"]);
+    let own: Vec<String> = model["build"]["order"]
+        .as_array()
+        .context("incomplete model build order")?
+        .iter()
+        .filter(|o| o["derivation"] == json!(true) && o["line"] != json!("shared"))
+        .map(|o| s(&o["address"]))
+        .collect();
+    for address in &registered {
+        if !own.contains(address) {
+            bail!("stale_content: the checked model no longer holds the registered Derivation part `{address}`");
+        }
+    }
+    let chains = explain_chains(&model)?;
+    let read = zt.cards(&own, "text")?;
+    let cards: BTreeMap<String, Value> = read
+        .cards
+        .iter()
+        .map(|card| Ok((field(card, "address")?.to_string(), card.clone())))
+        .collect::<Result<_>>()?;
+    let mut missing = Vec::new();
+    let mut parts = Vec::new();
+    for address in &own {
+        let card = cards
+            .get(address)
+            .with_context(|| format!("the Derivation part `{address}` does not exist"))?;
+        if card["workspace"] != "agent" {
+            bail!("Derivation part `{address}` is not in the agent Workspace");
+        }
+        let body = s(&card["body"]);
+        let sections = crate::model::text::split_sections(&body);
+        let mut absent = Vec::new();
+        for name in ["思路", "解读"] {
+            if crate::model::text::section_text(&sections, name).is_empty() {
+                absent.push(name);
+            }
+        }
+        if !absent.is_empty() {
+            missing.push(format!("{address} ({})", absent.join(", ")));
+        }
+        parts.push(json!({
+            "address": address,
+            "facet": card["facet"],
+            "title": card["title"],
+            "explained": absent.is_empty(),
+            "missing": absent,
+        }));
+    }
+    if !missing.is_empty() {
+        bail!(
+            "explanation_missing: {} of {} Derivation parts of `{header}` still lack 思路 or 解读: {}; run the model compiler's explain step and apply the accepted answers",
+            missing.len(),
+            own.len(),
+            missing.join("; ")
+        );
+    }
+    // The chain position line is the compiler's own text: a stale one would misplace the part
+    // in its chain, so it is checked against the current chain and results.
+    let mut chain_faults = Vec::new();
+    let mut chain_facts = Vec::new();
+    for chain in &chains {
+        let members: Vec<String> = pipe(&chain["parts"]).into_iter().map(s).collect();
+        let tos: Vec<String> = members
+            .iter()
+            .map(|address| crate::model::text::result_of(&s(&cards[address]["body"])))
+            .collect();
+        let count = members.len();
+        for (index, address) in members.iter().enumerate() {
+            let expected = crate::model::text::chain_line(index + 1, count, &tos);
+            chain_facts.push(json!({"address":address,"position":index + 1,"chain":count,"line":expected}));
+            if expected.is_empty() {
+                continue;
+            }
+            // The first authored line of 思路, position line included: `section_text` drops it.
+            let first = crate::model::text::position_of(&s(&cards[address]["body"]));
+            if first != expected {
+                chain_faults.push(format!(
+                    "{address} 思路 starts `{first}`, the chain of {count} parts wants `{expected}`"
+                ));
+            }
+        }
+    }
+    if !chain_faults.is_empty() {
+        bail!("explanation_chain: {}", chain_faults.join("; "));
+    }
+    // The explanation rules, not the whole Card language: R15 to R17 on these parts are this
+    // layer's gate; ordinary language faults stay the whole-book Card cycle's work (R302).
+    let check = crate::check::Check {
+        model: header.to_string(),
+        skip_shared: true,
+        require_explain: true,
+        ..Default::default()
+    };
+    let lines = check.run(zt)?;
+    let own_at: BTreeSet<String> = own.iter().cloned().collect();
+    let explanation: Vec<String> = lines
+        .iter()
+        .filter(|line| !line.starts_with("faults: "))
+        .filter(|line| {
+            let mut fields = line.splitn(3, ' ');
+            let address = fields.next().unwrap_or_default();
+            let rule = fields.next().unwrap_or_default();
+            own_at.contains(address) && matches!(rule, "R15" | "R16" | "R17")
+        })
+        .cloned()
+        .collect();
+    if !explanation.is_empty() {
+        bail!(
+            "check_failed: the explanation rules find {} fault(s): {}",
+            explanation.len(),
+            explanation.join("; ")
+        );
+    }
+    let fingerprints: BTreeMap<String, String> = own
+        .iter()
+        .map(|address| (address.clone(), crate::calls::authored_fingerprint(&cards[address])))
+        .collect();
+    let trees: BTreeSet<String> = cards
+        .values()
+        .map(|card| field(card, "tree").map(str::to_string))
+        .collect::<Result<_>>()?;
+    let checked: Vec<String> = lines
+        .iter()
+        .filter(|line| !line.starts_with("faults: "))
+        .cloned()
+        .collect();
+    Ok(json!({
+        "schema_version": 1,
+        "kind": "explain_completion",
+        "unit": unit,
+        "token": token,
+        "state": "done",
+        "complete": true,
+        "reused": false,
+        "model": header,
+        "level": level,
+        "plan_hash": plan_hash,
+        "producer": model_unit,
+        "producer_input_hash": build["unit_input_hash"],
+        "build": {"unit":model_unit,"complete":true,"parts":build["build"]["order"],"plan_parts":build["plan_parts"],"plan_hash":plan_hash},
+        "explanation": {
+            "status": "explained",
+            "derivations": own.len(),
+            "explained": own.len(),
+            "needs": [],
+            "parts": parts,
+            "chains": chains,
+            "positions": chain_facts,
+            "check": {"ran":true,"rules":["R15","R16","R17"],"count":checked.len(),"lines":checked},
+        },
+        "publication_inputs": {"layers":EXPLANATION_CONSUMERS,"unit":unit,"fingerprints":fingerprints},
+        "card_fingerprints": fingerprints,
+        "trees": trees,
+        "archive_revision": read.archive_revision,
+    }))
+}
+
+/// Repeating a completed Explain unit re-reads the checked model and its Cards; a changed part
+/// makes the retained completion stale instead of describing other text.
+fn explain_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |row| row.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows = tx
+        .prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?
+        .query_map([unit], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != field(&result, "unit_input_hash").unwrap_or("") {
+        bail!("Explain unit input hash mismatch");
+    }
+    let current = explain_evidence(p, zt, unit, token, &inputs)?;
+    for key in ["explanation", "card_fingerprints", "plan_hash", "publication_inputs"] {
+        if current[key] != result[key] {
+            bail!("completed Explain unit changed ({key}); keep the checked result and re-run from a new claim");
+        }
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if result["files"][key]["path"] != *locator || result["files"][key]["sha256"] != *fingerprint {
+                    bail!("changed Explain evidence registration");
+                }
+                check_file(&json!({"path":locator,"sha256":fingerprint}), "Explain completion evidence")?;
+            }
+            "card" => {}
+            _ => bail!("unknown Explain evidence kind"),
+        }
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn explain_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: bool) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Explain unit input hash mismatch");
+    }
+    if done {
+        let mut result = explain_done(p, zt, unit, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let mut result = explain_evidence(p, zt, unit, token, &inputs)?;
+    result["input_hash"] = json!(claimed.input_hash);
+    result["unit_input_hash"] = json!(claimed.input_hash);
+    if check_only {
+        result["check_only"] = json!(true);
+        result["applied"] = json!(false);
+        return Ok(result);
+    }
+    let key = unit
+        .strip_prefix("explain/")
+        .and_then(|value| value.strip_suffix("@1"))
+        .with_context(|| format!("not an Explain unit: {unit}"))?;
+    renew(p, unit, token)?;
+    let check_record = publish(
+        &p.out.join(format!("explain-check-{key}.json")),
+        &serde_json::to_string_pretty(&json!({
+            "schema_version":1,"unit":unit,"token":token,"model":result["model"],"level":result["level"],
+            "plan_hash":result["plan_hash"],"explanation":result["explanation"],"archive_revision":result["archive_revision"]
+        }))?,
+    )?;
+    result["files"] = json!({"check": check_record.clone()});
+    let completion = publish(
+        &p.out.join(format!("explain-completion-{key}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["files"]["completion"] = completion.clone();
+    for record in [&check_record, &completion] {
+        check_file(record, "Explain completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64() != Some(result["archive_revision"].as_u64().unwrap())
+    {
+        bail!("read_view_changed: Explain completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    for (name, record) in [("check", &check_record), ("completion", &completion)] {
+        output(&tx, unit, name, "file", field(record, "path")?, field(record, "sha256")?, record)?;
+    }
+    for (address, fingerprint) in result["card_fingerprints"]
+        .as_object()
+        .context("missing explanation fingerprints")?
+    {
+        output(
+            &tx,
+            unit,
+            &format!("card/{address}"),
+            "card",
+            address,
+            fingerprint.as_str().unwrap_or_default(),
+            &json!({"address":address}),
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    completion_fault(p, "before_commit")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":"verified","model":result["model"],"plan_hash":result["plan_hash"],"parts":result["explanation"]["derivations"],"chains":result["explanation"]["chains"],"trees":result["trees"],"completion":completion,"check":check_record}),
+    )?;
+    completion_fault(p, "after_commit")?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn explain_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64, bool)> {
+        let a = Args::parse(argv, &["Out", "Model", "Token"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), a.required("Model")?, token, a.flag("CheckOnly")))
+    })();
+    let (out, model, token, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest explain-finish: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let unit = explain_unit_for_model(&conn, &model)?;
+    drop(conn);
+    let unit =
+        unit.with_context(|| format!("no registered Explain unit names `{model}`"))?;
+    let result = explain_finish(&p, &mut zt, &unit, token, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
@@ -10574,6 +11070,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     bail!("completion evidence locator mismatch");
                 }
                 model_finish(&p, &mut zt, &unit, token, false)?
+            } else if let Some(key) = unit
+                .strip_prefix("explain/")
+                .and_then(|value| value.strip_suffix("@1"))
+            {
+                // The Explain unit's checked output is the checked model's own Derivation parts
+                // and chains: caller-supplied addresses cannot establish it.
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != "explain_completion"
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                {
+                    bail!("invalid Explain completion evidence");
+                }
+                if std::fs::canonicalize(&path)?
+                    != std::fs::canonicalize(p.out.join(format!("explain-completion-{key}.json")))?
+                {
+                    bail!("completion evidence locator mismatch");
+                }
+                explain_finish(&p, &mut zt, &unit, token, false)?
             } else {
                 let number = unit
                     .strip_prefix("digest/g")
@@ -10688,5 +11203,39 @@ mod tests {
         assert_eq!(empirical_labels(&FINDINGS), ["测量", "数据", "方法", "结果", "局限"]);
         assert_eq!(EVENTS.rules, "E1,E2,E5");
         assert_eq!(FINDINGS.rules, "F1,F2,F3,F4");
+    }
+
+    #[test]
+    fn an_explanation_layer_separates_inapplicable_from_unfinished_work() {
+        let part = |address: &str| json!({"address": address, "missing": ["思路"]});
+        let own = vec!["K/1|a|a|1".to_string(), "K/1|a|a|2".to_string()];
+        // A concept model records the layer as inapplicable, never as unexplained work.
+        let concept = explanation_facts("concept", &own, &[], Vec::new(), Vec::new());
+        assert_eq!(concept["applicable"], json!(false));
+        assert_eq!(concept["reason"], json!("concept"));
+        assert_eq!(concept["status"], json!("none"));
+        // A formal model without Derivation parts is applicable and still a no-op.
+        let plain = explanation_facts("formal", &[], &[], Vec::new(), Vec::new());
+        assert_eq!(plain["applicable"], json!(true));
+        assert_eq!(plain["reason"], json!("no_derivations"));
+        assert_eq!(plain["derivations"], json!(0));
+        // A formal model with unexplained parts carries the exact need and its count.
+        let unfinished = explanation_facts("formal", &own, &[], vec![part("K/1|a|a|1"), part("K/1|a|a|2")], Vec::new());
+        assert_eq!(unfinished["status"], json!("required"));
+        assert_eq!(unfinished["reason"], json!("unexplained"));
+        assert_eq!(unfinished["derivations"], json!(2));
+        assert_eq!(unfinished["explained"], json!(0));
+        assert_eq!(unfinished["needs"].as_array().map(Vec::len), Some(2));
+        // Every in-scope part explained is the completed layer, not a second kind of work.
+        let explained = explanation_facts(
+            "formal",
+            &own,
+            &["K/1|a|a|1".to_string(), "K/1|a|a|2".to_string()],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(explained["status"], json!("none"));
+        assert_eq!(explained["reason"], json!("explained"));
+        assert_eq!(explained["explained"], json!(2));
     }
 }

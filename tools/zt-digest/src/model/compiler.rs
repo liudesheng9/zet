@@ -2231,6 +2231,23 @@ impl Compiler {
             .collect()
     }
 
+    /// The own Derivation parts whose 思路 does not start with the chain position line the
+    /// current chain and results give them. A chain of one part needs no position line.
+    fn misplaced(st: &Value, own: &[String], body: &dyn Fn(&str) -> String) -> Vec<String> {
+        let mut out = Vec::new();
+        for c in list(&st["build"]["chains"]) {
+            let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, own)).collect();
+            let tos: Vec<String> = parts.iter().map(|a| text::result_of(&body(a))).collect();
+            for (index, a) in parts.iter().enumerate() {
+                let expected = text::chain_line(index + 1, parts.len(), &tos);
+                if !expected.is_empty() && text::position_of(&body(a)) != expected {
+                    out.push(a.clone());
+                }
+            }
+        }
+        out
+    }
+
     fn bodies_of(st: &Value) -> CiMap<String> {
         let mut bodies = CiMap::new();
         for p in list(&st["parts"]) {
@@ -2289,7 +2306,14 @@ impl Compiler {
             }
             let body = |a: &str| bodies.get(a).cloned().unwrap_or_default();
             let own = Self::own_derivations(&st);
-            let missing: Vec<String> = own.iter().filter(|a| !text::explained(&body(a)) && !pending.contains(a)).cloned().collect();
+            // A part whose 思路 is not where the current chain puts it is unfinished too: the
+            // writer's answer rewrites the position line from the chain (R301).
+            let misplaced: Vec<String> = Self::misplaced(&st, &own, &body);
+            let missing: Vec<String> = own
+                .iter()
+                .filter(|a| (!text::explained(&body(a)) || misplaced.contains(a)) && !pending.contains(a))
+                .cloned()
+                .collect();
             if missing.is_empty() {
                 continue;
             }

@@ -179,7 +179,7 @@ try {
     $conceptClaim = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'models', '-Take', '5', '-Owner', 'model-manager')).units | Where-Object { $_.inputs.header -eq $concept } | Select-Object -First 1
     Assert ($conceptClaim) 'the second Model candidate is a registered Model unit'
     $conceptDone = Run-Digest @('model-finish', '-Out', $out, '-Model', $concept, '-Token', "$($conceptClaim.token)")
-    Assert ($conceptDone.complete -and $conceptDone.explanation.status -eq 'none' -and $conceptDone.explanation.reason -eq 'no_derivations') 'a concept model completes with an explicit explanation no-op'
+    Assert ($conceptDone.complete -and $conceptDone.explanation.status -eq 'none' -and $conceptDone.explanation.reason -eq 'concept' -and $conceptDone.explanation.applicable -eq $false) 'a concept model records the explanation layer as inapplicable'
     Assert (-not $conceptDone.explain_unit) 'a no-op explanation registers no explanation obligation'
     $gate = Run-Digest @('ledger', 'gate', '-Out', $out, '-Layer', 'models')
     Assert ($gate.sealed -and $gate.settled -and $gate.counts.done -eq 2 -and -not $gate.complete) 'the Models layer settles only after both Model units are done, without claiming the run complete'
