@@ -3527,6 +3527,52 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
     Ok(result)
 }
 
+/// R167: which layer can still append units to a dynamic child layer once that
+/// producer has run. Only layers whose producer exists are listed here; the other
+/// dynamic layers keep their own slice's closure rule rather than a fabricated one.
+fn enumeration_producer(layer: &str) -> Option<&'static str> {
+    Some(match layer {
+        "cards" | "events" | "findings" | "link" | "models" => "digest",
+        _ => return None,
+    })
+}
+
+/// A dynamic child layer is closed only when every producer that can register more of
+/// its units is terminal, so an empty claim queue never completes the layer while a
+/// producer can still append to it. Closing is monotone and one event names the fact.
+fn close_enumerations(tx: &Transaction) -> Result<()> {
+    let target = meta(tx, "target")?;
+    for layer in target["enabled"]
+        .as_array()
+        .context("missing declared target")?
+        .iter()
+        .filter_map(Value::as_str)
+    {
+        let Some(producer) = enumeration_producer(layer) else {
+            continue;
+        };
+        let open: i64 = tx.query_row(
+            "SELECT count(*) FROM units WHERE layer=?1 AND state NOT IN ('done','failed','blocked')",
+            [producer],
+            |row| row.get(0),
+        )?;
+        if open > 0 || meta(tx, &format!("barrier/{layer}"))?["sealed"] == true {
+            continue;
+        }
+        seal(tx, layer)?;
+        tx.execute(
+            "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
+            params![
+                meta(tx, "invocation")?.as_i64().context("invalid invocation number")?,
+                canon::utc_now_o(),
+                "sealed_enumeration",
+                canon::canonical_json(&json!({"layer":layer,"producer":producer,"cause":"every producer that can append to this layer is terminal"}))
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn now_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3662,6 +3708,7 @@ fn detect_cycles(tx: &Transaction) -> Result<()> {
 /// Dependency waiting consumes no attempt. Aggregates wait for their explicit enumeration barrier.
 fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
     detect_cycles(tx)?;
+    close_enumerations(tx)?;
     loop {
         let mut statement=tx.prepare("SELECT id,layer,state,retry_after,fault_class,fault_json FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id")?;
         let rows = statement
@@ -4559,6 +4606,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
             [
                 "ledger-group-finish-test-",
                 "ledger-link-test-",
+                "ledger-cards-test-",
                 "ledger-terms-test-",
                 "ledger-prepare-recovery-test-",
                 "ledger-publication-test-",
@@ -5820,6 +5868,9 @@ fn group_finish(
         "completed",
         &json!({"disposition":result["disposition"],"children":child_ids,"plan_hash":result["plan_hash"],"completion":result_record,"touched_trees":trees}),
     )?;
+    // The last group to finish closes the child enumerations its children belong to,
+    // in the same transaction that makes it terminal.
+    close_enumerations(&tx)?;
     completion_fault(p, "before_commit")?;
     tx.commit()?;
     completion_fault(p, "after_commit")?;
@@ -5879,9 +5930,9 @@ fn link_unit(number: u64) -> String {
     format!("link/g{number:03}@1")
 }
 
-/// The Link unit's frozen inputs were registered by the group producer; re-hashing
-/// them proves the enumeration below is the accepted one.
-fn link_inputs(p: &Prepared, unit: &str) -> Result<Value> {
+/// A producer-registered unit's frozen inputs; re-hashing them proves the
+/// enumeration below is the accepted one.
+fn frozen_inputs(p: &Prepared, unit: &str) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let raw: String = conn
         .query_row("SELECT inputs_json FROM units WHERE id=?1", [unit], |r| {
@@ -5891,32 +5942,37 @@ fn link_inputs(p: &Prepared, unit: &str) -> Result<Value> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-/// The exact in-scope set: the group's published owned manifest, re-hashed here so
-/// a changed or shortened file cannot silently shrink the Link obligation.
-fn link_owned(p: &Prepared, inputs: &Value, number: u64) -> Result<Vec<String>> {
-    if inputs["producer"] != json!(format!("digest/g{number:03}@1")) {
-        bail!("Link unit input does not name its group producer");
-    }
+/// The exact in-scope set from the group's published owned manifest, re-hashed here
+/// so a changed or shortened file cannot silently shrink a child obligation.
+fn frozen_owned(p: &Prepared, inputs: &Value, label: &str) -> Result<Vec<String>> {
     let record = &inputs["owned"];
-    check_file(record, "Link unit owned manifest")?;
+    check_file(record, &format!("{label} owned manifest"))?;
     let path = Path::new(field(record, "path")?);
     if !path.starts_with(&p.out) {
-        bail!("Link unit owned manifest escaped the prepared output directory");
+        bail!("{label} owned manifest escaped the prepared output directory");
     }
     let text = util::read_text(path)?;
     let mut owned = std::collections::BTreeSet::new();
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if line.len() > 200 || line.chars().any(char::is_control) {
-            bail!("Link unit owned manifest holds an unreadable Card address");
+            bail!("{label} owned manifest holds an unreadable Card address");
         }
         if !owned.insert(line.to_string()) {
-            bail!("Link unit owned manifest names `{line}` twice");
+            bail!("{label} owned manifest names `{line}` twice");
         }
     }
     if owned.is_empty() {
-        bail!("Link unit owned manifest enumerates no Card");
+        bail!("{label} owned manifest enumerates no Card");
     }
     Ok(owned.into_iter().collect())
+}
+
+/// The Link unit's owner binding and exact in-scope set.
+fn link_owned(p: &Prepared, inputs: &Value, number: u64) -> Result<Vec<String>> {
+    if inputs["producer"] != json!(format!("digest/g{number:03}@1")) {
+        bail!("Link unit input does not name its group producer");
+    }
+    frozen_owned(p, inputs, "Link unit")
 }
 
 /// The accepted plan: one owned paragraph per written Card, and one checked
@@ -6302,7 +6358,7 @@ fn link_done(p: &Prepared, zt: &mut Zt, number: u64, unit: &str, token: i64) -> 
     if canon::hash_value(&accepted) != result["plan_hash"] {
         bail!("completed Link plan hash changed");
     }
-    let inputs = link_inputs(p, unit)?;
+    let inputs = frozen_inputs(p, unit)?;
     if canon::hash_value(&inputs) != field(&result, "unit_input_hash")? {
         bail!("Link unit input hash mismatch");
     }
@@ -6371,7 +6427,7 @@ fn link_finish(
     finish_claim(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
     let (claimed, _progress, run, done) = finish_claim(p, &unit, token)?;
-    let inputs = link_inputs(p, &unit)?;
+    let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Link unit input hash mismatch");
     }
@@ -6635,6 +6691,491 @@ pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
     let mut zt = Zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     let result = link_finish(&p, &mut zt, group, token, &draft, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+/// R216: the Cards/group unit is complete only when the offline zt-check has run
+/// over exactly the group's owned Cards, every hard fault it found has a registered
+/// consumer that can repair that Card category, and the checked result is retained.
+/// The unit enumerates its scope from the group's registered owned manifest, never
+/// from a caller-supplied address list; the book Card cycle is the consumer of the
+/// work it hands onward.
+const CARDS_CONSUMER: &str = "cards-book/book@1";
+
+fn cards_unit(number: u64) -> String {
+    format!("cards/g{number:03}@1")
+}
+
+fn cards_number(unit: &str) -> Option<u64> {
+    unit.strip_prefix("cards/g")
+        .and_then(|value| value.strip_suffix("@1"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|number| *number > 0)
+}
+
+/// The offline SELF-CHECK: the existing checker over the exact owned set, through
+/// the same `zt mcp` the completion already holds, with the rules the whole-book
+/// Card cycle applies to that scope.
+fn cards_self_check(owned: &[String], book: &str, zt: &mut Zt) -> Result<Value> {
+    let check = crate::check::Check {
+        cards: owned.join(","),
+        book: book.to_string(),
+        rules: crate::card::DEFAULT_CARD_RULES.to_string(),
+        ..Default::default()
+    };
+    let lines = check.run(zt)?;
+    let reported = lines
+        .last()
+        .and_then(|line| line.strip_prefix("faults: "))
+        .and_then(|count| count.parse::<usize>().ok())
+        .context("Cards SELF-CHECK did not report completeness")?;
+    let observed = &lines[..lines.len() - 1];
+    let (advisories, faults): (Vec<_>, Vec<_>) = observed
+        .iter()
+        .partition(|line| line.contains("(advisory)"));
+    if faults.len() != reported {
+        bail!("incomplete Cards SELF-CHECK fault count");
+    }
+    Ok(json!({
+        "ran": true,
+        "rules": crate::card::DEFAULT_CARD_RULES,
+        "count": faults.len(),
+        "reported_count": reported,
+        "faults": faults,
+        "advisories": advisories,
+        "lines": observed,
+    }))
+}
+
+fn cards_fault_address(line: &str) -> Result<&str> {
+    line.split_whitespace()
+        .next()
+        .filter(|at| !at.is_empty())
+        .context("Cards SELF-CHECK fault line has no Card address")
+}
+
+/// Every hard fault must name an owned Card whose category the book cycle can repair,
+/// or the group's registered Model consumer for that Model Card (R211, R216).
+fn cards_consumer(p: &Prepared, zt: &mut Zt, number: u64, at: &str, card: &Value) -> Result<String> {
+    use std::collections::{HashMap, HashSet};
+    if card["type"] == "model" {
+        let models = target(&p.contract)?["enabled"]
+            .as_array()
+            .context("incomplete declared target")?
+            .iter()
+            .any(|layer| layer == "models");
+        if !models {
+            bail!("Cards SELF-CHECK fault at `{at}` has no enabled Model consumer");
+        }
+        let model = zt.call("get_model", json!({"at":at}))?;
+        let head = field(&model["head"], "address").context("incomplete Model candidate header")?;
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let children = conn
+            .prepare("SELECT id,inputs_json FROM units WHERE layer='models' AND logical_key LIKE ?1 ORDER BY id")?
+            .query_map([format!("g{number:03}-m%")], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, inputs) in children {
+            let inputs: Value = serde_json::from_str(&inputs)?;
+            if inputs["header"] == json!(head) {
+                return Ok(id);
+            }
+        }
+        bail!("Cards SELF-CHECK fault at `{at}` has no registered Model consumer");
+    }
+    let book = field(&p.contract, "citation_key")?.to_string();
+    let literature = HashSet::from([book.clone()]);
+    let anchors = HashMap::from([(
+        book,
+        p.contract["groups"].as_array().unwrap().len(),
+    )]);
+    let category = zt_check::graph::category(card, &literature, &anchors);
+    if !["idea", "anchor", "event", "finding"].contains(&category.as_str()) {
+        bail!("Cards SELF-CHECK fault at `{at}` has no writable Card consumer: it is a {category} Card");
+    }
+    Ok(CARDS_CONSUMER.to_string())
+}
+
+/// A registered consumer is a real repair path only while it can still run.
+fn cards_consumer_ready(p: &Prepared, consumer: &str) -> Result<()> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let state: Option<String> = conn
+        .query_row("SELECT state FROM units WHERE id=?1", [consumer], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let state = state.with_context(|| {
+        format!("Cards SELF-CHECK fault has no registered consumer `{consumer}`")
+    })?;
+    if !matches!(state.as_str(), "registered" | "ready" | "claimed" | "retry") {
+        bail!("Cards SELF-CHECK fault consumer `{consumer}` is {state}, so it cannot repair the fault");
+    }
+    Ok(())
+}
+
+/// The Cards unit exists only after its group producer accepted a checked completion;
+/// a failed or missing producer is not a scope to check.
+fn cards_producer(p: &Prepared, inputs: &Value, number: u64) -> Result<()> {
+    let producer = field(inputs, "producer")?;
+    if producer != format!("digest/g{number:03}@1") {
+        bail!("Cards unit input does not name its group producer");
+    }
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT state,input_hash FROM units WHERE id=?1",
+            [producer],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (state, hash) = row.with_context(|| format!("Cards unit producer {producer} is not registered"))?;
+    if state != "done" {
+        bail!("Cards unit producer {producer} is {state}, not a checked completion");
+    }
+    if inputs["producer_input_hash"] != json!(hash) {
+        bail!("Cards unit producer input hash changed");
+    }
+    Ok(())
+}
+
+fn cards_verified(result: &Value) -> Result<()> {
+    if result["schema_version"] != 1
+        || result["kind"] != "cards_completion"
+        || result["state"] != "done"
+        || result["complete"] != true
+        || result["self_check"]["ran"] != true
+    {
+        bail!("incomplete typed Cards completion evidence");
+    }
+    Ok(())
+}
+
+fn cards_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    cards_verified(result)?;
+    let files = result["files"]
+        .as_object()
+        .context("missing Cards evidence enumeration")?;
+    if files.len() != 2
+        || files
+            .keys()
+            .any(|key| !["check", "completion"].contains(&key.as_str()))
+    {
+        bail!("incomplete Cards evidence enumeration");
+    }
+    let mut keys = std::collections::BTreeSet::from(
+        ["check", "completion"].map(str::to_string),
+    );
+    for name in ["check", "completion"] {
+        field(&files[name], "path")?;
+        field(&files[name], "sha256")?;
+    }
+    for at in result["owned"]
+        .as_array()
+        .context("missing Cards owned enumeration")?
+    {
+        keys.insert(format!(
+            "card/{}",
+            at.as_str().context("invalid owned Cards output")?
+        ));
+    }
+    Ok(keys)
+}
+
+/// The complete checked outcome of the frozen owned set: the offline SELF-CHECK, its
+/// hard faults and each fault's registered consumer.
+fn cards_result(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    token: i64,
+    input_hash: &str,
+    inputs: &Value,
+    owned: &[String],
+    read: &zt_check::mcp::CardRead,
+) -> Result<Value> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let book = field(&p.contract, "citation_key")?;
+    let mut cards = BTreeMap::new();
+    for card in &read.cards {
+        let at = field(card, "address")?;
+        if !owned.iter().any(|owned| owned == at) {
+            bail!("the archive read returned the unowned Card `{at}`");
+        }
+        if card["workspace"] != "agent" {
+            bail!("the owned Card `{at}` is not in the agent Workspace");
+        }
+        cards.insert(at.to_string(), card.clone());
+    }
+    for at in owned {
+        if !cards.contains_key(at) {
+            bail!("the owned Card `{at}` does not exist");
+        }
+    }
+    let self_check = cards_self_check(owned, book, zt)?;
+    if zt.cards(&[], "text")?.archive_revision != read.archive_revision {
+        bail!("read_view_changed: Cards SELF-CHECK");
+    }
+    let mut deferred = Vec::new();
+    for fault in self_check["faults"]
+        .as_array()
+        .context("missing checked Cards faults")?
+    {
+        let line = fault
+            .as_str()
+            .context("invalid Cards SELF-CHECK fault")?;
+        let at = cards_fault_address(line)?;
+        let card = cards
+            .get(at)
+            .context("Cards SELF-CHECK fault has no owned Card")?;
+        let consumer = cards_consumer(p, zt, number, at, card)?;
+        cards_consumer_ready(p, &consumer)?;
+        deferred.push(json!({"fault":line,"at":at,"consumer":consumer}));
+    }
+    let fingerprints = owned
+        .iter()
+        .map(|at| {
+            Ok((
+                at.clone(),
+                crate::calls::authored_fingerprint(&cards[at]),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let checked = owned.iter().cloned().collect::<BTreeSet<_>>();
+    Ok(json!({
+        "schema_version": 1,
+        "kind": "cards_completion",
+        "unit": cards_unit(number),
+        "token": token,
+        "state": "done",
+        "complete": true,
+        "reused": false,
+        "input_hash": input_hash,
+        "unit_input_hash": input_hash,
+        "producer": field(inputs, "producer")?,
+        "producer_input_hash": field(inputs, "producer_input_hash")?,
+        "plan_hash": field(inputs, "plan_hash")?,
+        "owned": checked,
+        "disposition": if deferred.is_empty() { "verified" } else { "deferred" },
+        "self_check": self_check,
+        "deferred": deferred,
+        "card_fingerprints": fingerprints,
+        "archive_revision": read.archive_revision,
+    }))
+}
+
+/// Repeated completion re-reads the Cards it checked and re-runs their SELF-CHECK; a
+/// changed Card or a lost consumer makes the retained completion stale.
+fn cards_done(p: &Prepared, zt: &mut Zt, number: u64, unit: &str, token: i64) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |row| row.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows = tx
+        .prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?
+        .query_map([unit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    cards_verified(&result)?;
+    let expected = cards_output_keys(&result)?;
+    if rows
+        .iter()
+        .map(|(key, _, _, _)| key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        bail!("incomplete Cards completion output registration");
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if result["files"][key]["path"] != *locator
+                    || result["files"][key]["sha256"] != *fingerprint
+                {
+                    bail!("changed Cards evidence registration");
+                }
+                check_file(
+                    &json!({"path":locator,"sha256":fingerprint}),
+                    "Cards completion evidence",
+                )?;
+            }
+            "card" => {}
+            _ => bail!("unknown Cards evidence kind"),
+        }
+    }
+    let inputs = frozen_inputs(p, unit)?;
+    if canon::hash_value(&inputs) != field(&result, "unit_input_hash")? {
+        bail!("Cards unit input hash mismatch");
+    }
+    cards_producer(p, &inputs, number)?;
+    let owned = frozen_owned(p, &inputs, "Cards unit")?;
+    if json!(owned) != result["owned"] {
+        bail!("completed Cards unit owned enumeration changed");
+    }
+    let read = zt.cards(&owned, "text")?;
+    let current = cards_result(
+        p,
+        zt,
+        number,
+        token,
+        field(&result, "unit_input_hash")?,
+        &inputs,
+        &owned,
+        &read,
+    )?;
+    if current["card_fingerprints"] != result["card_fingerprints"] {
+        bail!("completed Cards unit owned Cards changed; keep the checked result and re-run from a new claim");
+    }
+    if current["self_check"]["lines"] != result["self_check"]["lines"]
+        || current["disposition"] != result["disposition"]
+    {
+        bail!("completed Cards SELF-CHECK no longer describes the owned Cards");
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn cards_finish(p: &Prepared, zt: &mut Zt, number: u64, token: i64, check_only: bool) -> Result<Value> {
+    let unit = cards_unit(number);
+    finish_claim(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, &unit, token)?;
+    let inputs = frozen_inputs(p, &unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Cards unit input hash mismatch");
+    }
+    cards_producer(p, &inputs, number)?;
+    let owned = frozen_owned(p, &inputs, "Cards unit")?;
+    if done {
+        let mut result = cards_done(p, zt, number, &unit, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let read = zt.cards(&owned, "text")?;
+    let result = cards_result(p, zt, number, token, &claimed.input_hash, &inputs, &owned, &read)?;
+    if check_only {
+        let mut result = result;
+        result["check_only"] = json!(true);
+        result["applied"] = json!(false);
+        return Ok(result);
+    }
+    renew(p, &unit, token)?;
+    let check_record = publish(
+        &p.out.join(format!("cards-check-g{number:03}.json")),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"owned":owned,"self_check":result["self_check"],"deferred":result["deferred"],"archive_revision":result["archive_revision"]}),
+        )?,
+    )?;
+    let mut result = result;
+    result["files"] = json!({"check": check_record.clone()});
+    let completion = publish(
+        &p.out.join(format!("cards-completion-g{number:03}.json")),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["files"]["completion"] = completion.clone();
+    cards_output_keys(&result)?;
+    for record in [&check_record, &completion] {
+        check_file(record, "Cards completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64()
+            != Some(result["archive_revision"].as_u64().unwrap())
+    {
+        bail!("read_view_changed: Cards completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    for (name, record) in [("check", &check_record), ("completion", &completion)] {
+        output(
+            &tx,
+            &unit,
+            name,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    for (at, fingerprint) in result["card_fingerprints"]
+        .as_object()
+        .context("missing checked Cards enumeration")?
+    {
+        output(
+            &tx,
+            &unit,
+            &format!("card/{at}"),
+            "card",
+            at,
+            fingerprint.as_str().context("invalid checked Card fingerprint")?,
+            &json!({"owned": true}),
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":result["disposition"],"completion":completion,"owned":owned,"faults":result["self_check"]["count"],"rules":result["self_check"]["rules"],"deferred":result["deferred"]}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+pub fn cards_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64, bool)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Group must be positive")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), group, token, a.flag("CheckOnly")))
+    })();
+    let (out, group, token, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest cards-finish: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = cards_finish(&p, &mut zt, group, token, check_only)?;
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
@@ -7498,6 +8039,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 proof_finish(&p, &unit, token, &mut zt, Path::new(&path))?
             } else if unit.starts_with("notes/") {
                 note_disposition(&p, &mut zt, &unit, token, Path::new(&path))?
+            } else if let Some(number) = cards_number(&unit) {
+                // The Cards/group unit has no caller-supplied draft: its deterministic
+                // verifier re-runs the offline SELF-CHECK over the frozen owned set.
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != "cards_completion"
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                {
+                    bail!("invalid Cards completion evidence");
+                }
+                if std::fs::canonicalize(&path)?
+                    != std::fs::canonicalize(
+                        p.out
+                            .join(format!("cards-completion-g{number:03}.json")),
+                    )?
+                {
+                    bail!("completion evidence locator mismatch");
+                }
+                cards_finish(&p, &mut zt, number, token, false)?
             } else {
                 let number = unit
                     .strip_prefix("digest/g")
@@ -7550,6 +8110,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?
     } else {
+        if command == "gate" {
+            // Settlement is a recorded fact, not a guess: close the dynamic layers whose
+            // producers have all settled before reporting the gate (R167, R200).
+            let mut zt = Zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            let mut conn = writer(&p)?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            verify_binding(&tx, &p)?;
+            close_enumerations(&tx)?;
+            tx.commit()?;
+        }
         status(Path::new(&a.str("Out")), &a.str("Layer"))?
     };
     util::print_line(&serde_json::to_string(&result)?)?;

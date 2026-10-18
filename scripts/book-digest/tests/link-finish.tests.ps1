@@ -23,20 +23,6 @@ function Refused($arguments,$text,$message) {
 }
 function Revision { (Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})).archive_revision }
 function BodyOf($at) { (Invoke-Zt @(@{tool='get_card';arguments=@{at=$at}})).body }
-# The Cards/group unit is the offline check of the exact owned set. Its completion
-# belongs to the ledger completion slice; seed its done state so this suite can claim
-# the Link unit the group registered.
-function Set-CardsDone {
-    $seed=@'
-const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
-const p=path.resolve(process.argv[1]);if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-link-test-'))throw new Error('not the isolated ledger');
-const db=new DatabaseSync(p);
-db.prepare("update units set state='done',completed_at=?,result_json=? where id='cards/g001@1'").run(new Date().toISOString(),JSON.stringify({schema_version:1,kind:'cards_completion',unit:'cards/g001@1',complete:true}));
-db.close();
-'@
-    & node --no-warnings -e $seed (Join-Path $out 'ledger.sqlite3')
-    if ($LASTEXITCODE) {throw 'isolated Cards/group fixture failed'}
-}
 try {
     zt config set archive_root (Join-Path $scratch 'archive') | Out-Null; zt up | Out-Null
     $source=Join-Path $scratch 'book.md'; $options=Join-Path $scratch 'options.json'
@@ -58,7 +44,9 @@ try {
     Assert ($owned.Count -eq 2 -and $owned -contains 'LinkBook/1' -and $owned -contains $created) 'the group completion enumerates its anchor and substantive owned Card'
     $unready=(Run-Digest @('ledger','next','-Out',$out,'-Layer','link','-Take','1','-Owner','link-manager')).units
     Assert (@($unready).Count -eq 0) 'the Link unit waits for the Cards/group obligation the group emitted'
-    Set-CardsDone
+    $cardsClaim=(Run-Digest @('ledger','next','-Out',$out,'-Layer','cards','-Take','1','-Owner','link-manager')).units[0]
+    $cardsDone=Run-Digest @('cards-finish','-Out',$out,'-Group','1','-Token',"$($cardsClaim.token)")
+    Assert ($cardsDone.state -eq 'done' -and $cardsDone.complete -and $cardsDone.disposition -eq 'deferred' -and $cardsDone.deferred[0].consumer -eq 'cards-book/book@1') 'the Cards/group obligation completes through its own offline check'
     $linkClaim=(Run-Digest @('ledger','next','-Out',$out,'-Layer','link','-Take','1','-Owner','link-manager')).units[0]
     Assert ($linkClaim.id -eq 'link/g001@1' -and $linkClaim.inputs.owned.path -like '*owned-*' -and $linkClaim.input_hash) 'the claim freezes the exact owned enumeration of the Link unit'
     $paragraph='依赖 [[LinkBook/1]]，后者给出这家企业的融资约束。'

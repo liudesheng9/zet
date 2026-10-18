@@ -1821,6 +1821,11 @@ fn push(list: &mut Value, item: Value) {
     }
 }
 
+/// The rules the whole-book Card cycle checks an owned scope with. The Cards/group
+/// completion runs the same set, so the work it hands to the book cycle is exactly
+/// the work that cycle will see (R216).
+pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2";
+
 /// `zt-digest card`.
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = ["Step", "Work", "Book", "Staging", "Groups", "PerJob", "Sample", "Seed", "Rules", "MaxCards", "Notes", "MaxJobs", "Job", "File"];
@@ -1835,7 +1840,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         per_job: a.int_or("PerJob", 8)?,
         sample: a.float_or("Sample", 0.0)?,
         seed: i32::try_from(seed).with_context(|| format!("-Seed: `{seed}` is not an Int32"))?,
-        rules: a.str_or("Rules", "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2"),
+        rules: a.str_or("Rules", DEFAULT_CARD_RULES),
         max_cards: a.int_or("MaxCards", 0)?,
         no_orphans: a.flag("NoOrphans"),
         notes: a.str("Notes"),
