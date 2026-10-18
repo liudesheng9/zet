@@ -171,6 +171,7 @@ try {
     Assert ($prepared.code -eq 0 -and (Test-Path -LiteralPath $report)) "the preparation renders its source-fault report: $($prepared.lines -join ' | ')"
     $reportText = Get-Content -LiteralPath $report -Raw -Encoding utf8
     Assert ($reportText -match '集中注释' -and $reportText -match '1\.4') 'the preparation faults and the missing note are in the report'
+    Assert ($reportText.Contains('《企业与契约》')) 'the report names the book it belongs to'
     Assert ($reportText -notmatch 'A\.66|A\.69a|A\.53') 'the report claims no historical fault that the current evidence does not support'
     $firstHash = (Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash
     $render = Invoke-Digest @('source-faults', '-Staging', $staging)

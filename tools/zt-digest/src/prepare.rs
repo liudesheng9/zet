@@ -810,6 +810,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 &join_path(&staging, "manifest.json"),
                 &ps::json_pretty(&Value::Object(manifest)),
             )?;
+            // The report was rendered before the manifest existed; render it once more so the
+            // file the person reads names the book.
+            crate::faults::render(&staging, &identity)?;
             crate::ledger::prepare_setup(&staging, z)?;
             let complete = crate::util::read_json(join_path(&staging, "manifest.json"))?;
             util::print_line(&ps::json_compact(&complete))?;
@@ -826,6 +829,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     let manifest = Value::Object(manifest);
     write(&join_path(&staging, "manifest.json"), &ps::json_pretty(&manifest))?;
+    // The report was rendered before the manifest existed; render it once more so the file the
+    // person reads names the book.
+    crate::faults::render(&staging, &identity)?;
     util::print_line(&ps::json_compact(&manifest))?;
     Ok(0)
 }
