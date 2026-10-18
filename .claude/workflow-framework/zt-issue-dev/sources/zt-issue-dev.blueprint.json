@@ -1,22 +1,22 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-issue-dev",
-  "version": "1.0.0",
-  "description": "Develop a list of GitHub issues of the zet repository one at a time: per issue a Haiku manager drives one DeepSeek V4.1 Flash (official source) agent with the /goal /tdd task; when the agent asks for something, the main agent does it and the manager sends the result back, until the agent reports STATUS: DONE",
-  "whenToUse": "Run development on GitHub issues of liudesheng9/zet (open or closed: closed ones are reverified) with DeepSeek doing the work and Claude fulfilling its requests. args: {issues: [numbers or \"a-b\" ranges], dsEffort?: high|max, maxRounds?}. Use until: \"prepare\" to see the resolved issue list first.",
+  "version": "1.1.0",
+  "description": "Develop a list of GitHub issues of the zet repository one at a time: per issue a Haiku manager starts one DeepSeek V4.1 Flash (official source) agent with a goal set through the bridge (/goal /tdd ...); the agent works in goal rounds until it marks the goal complete; when it asks for something, the main agent does it and the manager sends the answer back",
+  "whenToUse": "Run development on GitHub issues of liudesheng9/zet (open or closed: closed ones are reverified) with DeepSeek doing the work under a dsh goal and Claude fulfilling its requests. Needs dsh-mcp-bridge 0.11+ (goals) and the DeepSeek Harness Desktop. args: {issues: [numbers or \"a-b\" ranges], dsEffort?: high|max, maxGoalRounds?, maxAsks?}. Use until: \"prepare\" to see the resolved issue list first.",
   "modules": [
     "./modules"
   ],
   "preflight": {
-    "P1": "Goal and result: every listed issue gets one DeepSeek conversation that develops (or, if closed, reverifies) it test-first, deploys, pushes, and ends with a STATUS line. The result: per issue {number, title, stateBefore, outcome done|needs-human|max-rounds|timeout|failed, summary, rounds, asks, trail of main-agent asks, repo state after it}, totals done/needsHuman/notDone, the issues whose repo state is not ok, conversations not deleted, and the DSMP log.",
-    "P2": "Inputs: issues (array of numbers or \"a-b\" ranges, required), repo (default liudesheng9/zet), cwd (default E:/zet), dsEffort (high|max, default max: the user's default), maxRounds (relay rounds per issue, default 40). The DeepSeek model is fixed in consts: deepseek-official/deepseek-flash (DeepSeek V4.1 Flash, the official source, as the user asked); no OpenCode fallback.",
+    "P1": "Goal and result: every listed issue gets one DeepSeek conversation started with a dsh goal (bridge 0.11 deepseek_run goal) that develops (or, if closed, reverifies) it test-first, deploys and pushes; the agent works in goal rounds until it marks the goal complete. The result: per issue {number, title, stateBefore, outcome done|needs-human|max-rounds|max-asks|timeout|failed, summary, goalRounds, asks, trail of main-agent asks, repo state after it}, totals done/needsHuman/notDone, the issues whose repo state is not ok, conversations not deleted, and the DSMP log.",
+    "P2": "Inputs: issues (array of numbers or \"a-b\" ranges, required), repo (default liudesheng9/zet), cwd (default E:/zet), dsEffort (high|max, default max: the user's default), maxGoalRounds (DeepSeek goal round cap per issue, default 60), maxAsks (main-agent asks per issue, default 40). The DeepSeek model is fixed in consts: deepseek-official/deepseek-flash (DeepSeek V4.1 Flash, the official source, as the user asked); no OpenCode fallback. v1.1.0 replaces maxRounds (relay rounds) with these two.",
     "P3": "Units of work: one GitHub issue. prepare runs scripts/issue-dev/issue-list.mjs, which expands ranges and reads each issue with gh; a missing issue fails the stage. Real input: #65-#91 = 27 issues (4 closed, 21 open ready-for-agent, 2 open ready-for-human). limits.maxItems 100.",
     "P4": "Roles: manager (Haiku, low) relays one DeepSeek conversation through the bridge and never answers, approves, edits or runs commands itself; executor (the session model, i.e. the main agent; high) does what the DeepSeek agent asked and never does the issue's development beyond the ask, never authorizes a live digest run, a Stiglitz resume, deletes of backups or Cards, or a force-push; runner (Haiku, low) relays the issue-list and repo-state scripts and never fixes anything. DeepSeek V4.1 Flash does the development work.",
-    "P5": "Stage graph: prepare -> develop -> check -> report. develop is one stage, not a foreach: the issues share one checkout, one zt service and one installed binary, and later issues build on earlier ones, so they run strictly in order inside the module (the kernel's foreach runs items in parallel). Inside develop, per issue: manager start (deepseek_run with the task, wait) -> loop [needs_response: main agent per pending item -> manager respond; finished with STATUS: ASK: main agent -> manager prompt with the result; finished without STATUS: manager prompt nudge; running: another wait manager] until STATUS: DONE or NEEDS-HUMAN or a limit -> manager delete -> runner repo state. After the last issue the E:/zet workspace is removed from the Desktop only if it holds no conversations. check is a barrier gate over all issues; report shapes the result.",
-    "P6": "Modules: prepare = script (node scripts/issue-dev/issue-list.mjs); develop = zt-issue-relay v1 (project module, requires @dsmp and script); check = gate; report = value. The DSMP block gives dsmpSlot (the script-wide cap of 8 managers), dsmpLog and dsCleanupWorkspaces.",
-    "P7": "Checks: prepare expects a nonempty issue list and no missing issue. Each issue ends only on the agent's own STATUS line; its relay protocol tells it to finish only after tests pass, the build is deployed, the service runs the new binary and the commits are pushed. After each issue, scripts/issue-dev/repo-state.mjs records clean, pushed, zt version == Cargo.toml version and service up (read-only). The check gate requires every issue done and every repo state ok; it only reports (onFail continue).",
-    "P8": "Failure policy: prepare retries 1 (gh or a relay hiccup), halts on failure. develop does not retry (a retry would redo finished issues) and halts on a crash; inside it an issue that fails, times out or reaches maxRounds is recorded and the next issue starts. A failed or cancelled DeepSeek turn gets one resume prompt in the same conversation. waitsPerManager 12 x 900 s per manager agent, at most 8 extra wait-only managers per issue (about 27 h of DeepSeek time per issue). check onFail continue. Checkpoint: prepare (until: \"prepare\" shows the list). No modes.",
-    "P9": "Dry run: zt-issue-dev.sim.json walks two issues: #65 asks a question (main agent answers), then ends STATUS: ASK (main agent, prompt), then DONE; #66 is DONE at once (install needs every stage done); plus the harness scripts/issue-dev/tests/issue-relay.tests.mjs (failure, running, nudge, max-rounds paths). Pilot: {issues: [65]} (a closed issue: reverify only), then the full {issues: [\"65-91\"]}."
+    "P5": "Stage graph: prepare -> develop -> check -> report. develop is one stage, not a foreach: the issues share one checkout, one zt service and one installed binary, and later issues build on earlier ones, so they run strictly in order inside the module (the kernel's foreach runs items in parallel). Inside develop, per issue: manager start (deepseek_run with the task as the first message, the user's /tdd text as goal, max_goal_rounds; the bridge keeps the turn running until the goal settles) -> loop [needs_response: main agent per pending item -> manager respond; running: another wait manager; finished with goal complete -> done, blocked -> needs-human (round-limit -> max-rounds); stopped short or error -> manager resume (deepseek_goal resume) once] -> manager delete (cancel pauses a running goal first) -> runner repo state. After the last issue the E:/zet workspace is removed from the Desktop only if it holds no conversations. check is a barrier gate over all issues; report shapes the result.",
+    "P6": "Modules: prepare = script (node scripts/issue-dev/issue-list.mjs); develop = zt-issue-relay v2 (project module, requires @dsmp and script; v2 drives the dsh goal through the bridge instead of STATUS: ASK prompts and nudges); check = gate; report = value. The DSMP block gives dsmpSlot (the script-wide cap of 8 managers), dsmpLog and dsCleanupWorkspaces.",
+    "P7": "Checks: prepare expects a nonempty issue list and no missing issue. Each issue ends on its goal's phase, which only the agent sets (update_goal complete/blocked) or the round cap; the relay rules tell it to complete only after tests pass, the build is deployed, the service runs the new binary and the commits are pushed, with a STATUS line. After each issue, scripts/issue-dev/repo-state.mjs records clean, pushed, zt version == Cargo.toml version and service up (read-only). The check gate requires every issue done, every repo state ok, every conversation deleted; it only reports (onFail continue).",
+    "P8": "Failure policy: prepare retries 1 (gh or a relay hiccup), halts on failure. develop does not retry (a retry would redo finished issues) and halts on a crash; inside it an issue that fails, times out, or reaches maxGoalRounds or maxAsks is recorded and the next issue starts. A goal that stops short (paused, disarmed) or a failed turn gets one deepseek_goal resume. waitsPerManager 12 x 900 s per manager agent, at most 8 extra wait-only managers per issue (about 27 h per issue). check onFail continue. Checkpoint: prepare. No modes.",
+    "P9": "Dry run: zt-issue-dev.sim.json walks two issues: #65 asks a question in a goal round (main agent answers, manager responds), then the goal is complete; #66 completes at once. The harness scripts/issue-dev/tests/issue-relay.tests.mjs covers the start arguments (goal, max_goal_rounds, model, effort, tdd), blocked, round-limit, resume, waits, approvals, maxAsks, repo state, prepare halts. Live: dsh-mcp-bridge scripts/goal-check.mjs passed against the Desktop on 2026-10-18. Pilot: {issues: [65]}, then {issues: [\"65-91\"]}."
   },
   "roles": {
     "manager": {
@@ -60,12 +60,19 @@
       ],
       "description": "DeepSeek reasoning effort"
     },
-    "maxRounds": {
+    "maxGoalRounds": {
+      "type": "number",
+      "default": 60,
+      "min": 1,
+      "max": 1000,
+      "description": "the goal round cap per issue (max_goal_rounds of the DeepSeek goal)"
+    },
+    "maxAsks": {
       "type": "number",
       "default": 40,
       "min": 1,
-      "max": 200,
-      "description": "most relay rounds (main-agent asks, nudges) per issue"
+      "max": 500,
+      "description": "most main-agent asks per issue"
     }
   },
   "consts": {
@@ -73,11 +80,9 @@
     "dsSkills": [
       "tdd"
     ],
-    "taskPrompt": "/goal /tdd \n\nissue #{N}\n\nMake sure that all the features and the architecture structures of the issues are well tested and verified. and make sure that the service is running on the latest development and the executable is on the latest version. The GitHub repository is on the latest code base. For the workflow, you should test the workflow tools, but for the workflow itself, after the development and basic tests, I will ask Claude Code to run the workflow and continue to test. If the issue has already closed, reverify and check. If there are anything not good, fix.",
-    "protocol": "--- How this conversation runs ---\nYou run inside an automated development workflow. No person reads this conversation while it runs. The issue is #{N} of the GitHub repository {REPO} (read it with `gh issue view <number> --repo {REPO} --comments`); you work in {CWD} on its main branch. Read AGENTS.md first and follow it (the wiki rule too).\n- You have a shell. Do the development, the tests, the build, the deploy, the commits and the push yourself.\n- When you need something you cannot do yourself, or a decision, call ask_user_question with ONE clear request: exactly what to run or decide, and what result you need back. The main agent (Claude Code, with the user's tools: the zt MCP server, the deepseek bridge, the Claude Code agents) does it and its answer comes back as the answer to your question. Then continue.\n- Do not start, resume or re-run a real book digest or digest stage on the live archive D:\\zt, and do not delete backups, Cards or archive data, unless an answer from the main agent says the user authorized it. Never force-push.\n- Finish only when the goal is complete: tests pass, the build is deployed and the service runs it, the commits are pushed, and the issue is commented and closed as its acceptance criteria require. End your final message with exactly one line:\nSTATUS: DONE — <commits, tests run and their results, deployed version, issue state>\nIf only the user can do or decide what is left, end with: STATUS: NEEDS-HUMAN — <what is left and why>\nIf you end a turn to wait for the main agent, end it with: STATUS: ASK — <your request>",
-    "continueText": "Continue the goal. End your final message with one STATUS line (DONE, NEEDS-HUMAN, or ASK).",
-    "nudgeText": "Your last message had no STATUS line. If the goal is complete and verified, reply with the evidence and end with STATUS: DONE — <evidence>. If only the user can do what is left, end with STATUS: NEEDS-HUMAN — <what and why>. Otherwise continue the work; ask the main agent with ask_user_question when you need something.",
-    "resumeText": "Your last turn stopped with an error. Check the state of the work (git status, the last commands) and continue the goal. End your final message with one STATUS line (DONE, NEEDS-HUMAN, or ASK)."
+    "taskPrompt": "issue #{N}\n\nMake sure that all the features and the architecture structures of the issues are well tested and verified. and make sure that the service is running on the latest development and the executable is on the latest version. The GitHub repository is on the latest code base. For the workflow, you should test the workflow tools, but for the workflow itself, after the development and basic tests, I will ask Claude Code to run the workflow and continue to test. If the issue has already closed, reverify and check. If there are anything not good, fix.",
+    "protocol": "--- How this conversation runs ---\nYou run inside an automated development workflow. No person reads this conversation while it runs. This conversation has a goal (set with /goal): you keep working in goal rounds until you mark the goal complete. The issue is #{N} of the GitHub repository {REPO} (read it with `gh issue view <number> --repo {REPO} --comments`); you work in {CWD} on its main branch. Read AGENTS.md first and follow it (the wiki rule too).\n- You have a shell. Do the development, the tests, the build, the deploy, the commits and the push yourself.\n- When you need something you cannot do yourself, or a decision, call ask_user_question with ONE clear request: exactly what to run or decide, and what result you need back. The main agent (Claude Code, with the user's tools: the zt MCP server, the deepseek bridge, the Claude Code agents) does it and its answer comes back as the answer to your question. Never end a round to wait for an answer: only ask_user_question reaches the main agent.\n- Do not start, resume or re-run a real book digest or digest stage on the live archive D:\\zt, and do not delete backups, Cards or archive data, unless an answer from the main agent says the user authorized it. Never force-push.\n- Mark the goal complete (update_goal, action complete) only when all of it is done and verified: tests pass, the build is deployed and the service runs it, the commits are pushed, and the issue is commented and closed as its acceptance criteria require. End that message with exactly one line:\nSTATUS: DONE — <commits, tests run and their results, deployed version, issue state>\n- If only the user can do or decide what is left, finish everything else, then end your message with: STATUS: NEEDS-HUMAN — <what is left and why>, and mark the goal blocked (update_goal, action blocked, with that reason) once the goal policy allows it.",
+    "goalObjective": "/tdd \n\nissue #{N}\n\nMake sure that all the features and the architecture structures of the issues are well tested and verified. and make sure that the service is running on the latest development and the executable is on the latest version. The GitHub repository is on the latest code base. For the workflow, you should test the workflow tools, but for the workflow itself, after the development and basic tests, I will ask Claude Code to run the workflow and continue to test. If the issue has already closed, reverify and check. If there are anything not good, fix.\n\n(Follow the rules in the first message of this conversation: ask the main agent with ask_user_question; mark this goal complete only when all of it is verified, and end that message with a STATUS line.)"
   },
   "limits": {
     "maxItems": 100
@@ -110,7 +115,7 @@
     {
       "id": "develop",
       "title": "Develop",
-      "detail": "each issue in order: a Haiku manager drives one DeepSeek agent; the main agent fulfills its asks",
+      "detail": "each issue in order: a Haiku manager starts one DeepSeek agent with a goal; the main agent fulfills its asks until the goal is complete",
       "after": [
         "prepare"
       ],
@@ -127,11 +132,10 @@
         "skills": "{{consts.dsSkills}}",
         "taskPrompt": "{{consts.taskPrompt}}",
         "protocol": "{{consts.protocol}}",
-        "continueText": "{{consts.continueText}}",
-        "nudgeText": "{{consts.nudgeText}}",
-        "resumeText": "{{consts.resumeText}}",
         "repoCheck": "node scripts/issue-dev/repo-state.mjs --repo {{args.repo|psq}} --cwd {{args.cwd|psq}} --issue {N}",
-        "maxRounds": "{{args.maxRounds}}"
+        "goalObjective": "{{consts.goalObjective}}",
+        "maxGoalRounds": "{{args.maxGoalRounds}}",
+        "maxAsks": "{{args.maxAsks}}"
       }
     },
     {

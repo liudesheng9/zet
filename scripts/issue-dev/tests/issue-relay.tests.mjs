@@ -18,17 +18,21 @@ const mods = loadModules(dirs)
 const v = validate(bp, mods)
 assert.deepEqual(v.errors, [], 'the blueprint validates')
 const { script } = build(bp, mods)
+// A copy of the script that records the manager ops it is asked for, for checks on their arguments.
+const spy = script.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  ;(globalThis.__zirOps ||= []).push(op)')
 
 const issue = (number, state = 'OPEN') => ({ number, title: `issue ${number}`, state, labels: [], url: `u${number}` })
-const st = (o) => ({ session_id: 's', status: 'finished', answer: '', pending: [], error: '', context_pct: 1, waits: 1, ...o })
+const st = (o) => ({ session_id: 's', status: 'finished', answer: '', pending: [], goal_phase: 'active', goal_rounds: '1/60', goal_blocked_reason: '', error: '', context_pct: 1, waits: 1, ...o })
+const done = (o = {}) => st({ goal_phase: 'complete', answer: 'STATUS: DONE — ok', ...o })
 const repoOk = { ok: true, clean: true, pushed: true, zt: { match: true, service: 'up' } }
 
-async function run(name, issues, answers, { args = {}, repo = repoOk } = {}) {
+async function run(name, issues, answers, { args = {}, repo = repoOk, src = script } = {}) {
+  globalThis.__zirOps = []
   const sim = {
     script: { 'issue-list\\.mjs': { ok: true, issues, missing: [] }, 'repo-state\\.mjs': repo },
     answers: [...answers, { label: 'manager delete$', answer: { deleted: true, cancelled: false, note: '' } }],
   }
-  const r = await simulate(script, { sim, args: { issues: issues.map(i => i.number), ...args } })
+  const r = await simulate(src, { sim, args: { issues: issues.map(i => i.number), ...args } })
   if (r.error) throw new Error(`${name}: ${r.error.stack || r.error}`)
   return r
 }
@@ -44,66 +48,80 @@ await test('expandIssues: numbers, ranges, #, dedup', () => {
   assert.throws(() => expandIssues(['9-3']))
 })
 
-await test('question -> main agent -> respond; ASK -> main agent -> prompt; DONE', async () => {
+await test('the manager starts the conversation with a goal: task, goal objective, cap, model, max effort, tdd', async () => {
+  await run('start', [issue(70)], [{ label: 'manager start$', answer: done() }], { src: spy })
+  const start = globalThis.__zirOps.find(o => o.op === 'start')
+  const r = start.run
+  assert.equal(r.model, 'deepseek-official/deepseek-flash')
+  assert.equal(r.reasoning_effort, 'max')
+  assert.deepEqual(r.skills, ['tdd'])
+  assert.equal(r.max_goal_rounds, 60)
+  assert.match(r.goal, /^\/tdd \n\nissue #70\n\nMake sure that all the features/)
+  assert.match(r.goal, /If there are anything not good, fix\./)
+  assert.match(r.goal, /mark this goal complete only when all of it is verified/)
+  assert.match(r.prompt, /^issue #70\n\nMake sure/)
+  assert.match(r.prompt, /This conversation has a goal \(set with \/goal\)/)
+  assert.match(r.prompt, /gh issue view <number> --repo liudesheng9\/zet/)
+  assert.match(r.prompt, /update_goal, action complete/)
+  assert.doesNotMatch(r.prompt + r.goal, /\{N\}|\{REPO\}|\{CWD\}/)
+})
+
+await test('the manager prompt passes goal to deepseek_run and loads deepseek_goal', async () => {
+  const s = spy.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  ;(globalThis.__zirPrompts ||= []).push(zirManagerPrompt(op, p, p.waitsPerManager))')
+  globalThis.__zirPrompts = []
+  await run('prompt', [issue(71)], [{ label: 'manager start$', answer: done() }], { src: s })
+  const text = globalThis.__zirPrompts[0]
+  assert.match(text, /"goal": "\/tdd/)
+  assert.match(text, /"max_goal_rounds": 60/)
+  assert.match(text, /mcp__deepseek__deepseek_goal/)
+  assert.match(text, /goal_phase/)
+})
+
+await test('dsEffort high and maxGoalRounds are passed through', async () => {
+  await run('args', [issue(72)], [{ label: 'manager start$', answer: done() }], { src: spy, args: { dsEffort: 'high', maxGoalRounds: 12 } })
+  const r = globalThis.__zirOps.find(o => o.op === 'start').run
+  assert.equal(r.reasoning_effort, 'high')
+  assert.equal(r.max_goal_rounds, 12)
+})
+
+await test('question in a goal round -> main agent -> respond; goal complete -> done', async () => {
   const r = await run('main path', [issue(65, 'CLOSED')], [
-    { label: '#65 manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'question-1', kind: 'question', detail: JSON.stringify({ questions: [{ id: 'q1', question: 'run X' }] }) }] }) },
+    { label: '#65 manager start$', answer: st({ status: 'needs_response', goal_rounds: '2/60', pending: [{ request_id: 'question-1', kind: 'question', detail: JSON.stringify({ questions: [{ id: 'q1', question: 'run X' }] }) }] }) },
     { label: '#65 main agent 1$', answer: { outcome: 'done', result: 'X ok', answers: [{ id: 'q1', text: 'X ran, exit 0' }], decision: 'none' } },
-    { label: '#65 manager respond 1$', answer: st({ answer: 'STATUS: ASK — deploy please' }) },
-    { label: '#65 main agent 2$', answer: { outcome: 'done', result: 'deployed', answers: [], decision: 'none' } },
-    { label: '#65 manager prompt 2$', answer: st({ answer: 'tests ok\nSTATUS: DONE — commit abc' }) },
-  ])
+    { label: '#65 manager respond 1$', answer: done({ answer: 'tests ok\nSTATUS: DONE — commit abc', goal_rounds: '3/60' }) },
+  ], { src: spy })
   const res = r.result.result
   assert.equal(res.done, 1)
-  assert.equal(res.issues[0].outcome, 'done')
-  assert.equal(res.issues[0].summary, 'commit abc')
-  assert.equal(res.issues[0].asks, 2)
+  const i = res.issues[0]
+  assert.equal(i.outcome, 'done')
+  assert.equal(i.summary, 'commit abc')
+  assert.equal(i.goalRounds, '3/60')
+  assert.equal(i.asks, 1)
+  assert.equal(i.trail[0].goalRounds, '2/60')
+  assert.deepEqual(globalThis.__zirOps.find(o => o.op === 'respond').responses, [{ request_id: 'question-1', answers: [{ id: 'q1', custom: 'X ran, exit 0' }] }])
   assert.equal(r.result.stages.check.status, 'done')
-  const labels = r.calls.map(c => c.label)
-  assert.ok(labels.some(l => /#65 manager respond 1$/.test(l)))
-  assert.ok(labels.some(l => /#65 manager delete$/.test(l)))
-  assert.ok(labels.some(l => /workspace cleanup/.test(l)), 'the workspace cleanup ran')
   const byLabel = l => r.calls.find(c => new RegExp(l).test(c.label))
   assert.equal(byLabel('manager start$').model, 'haiku')
   assert.equal(byLabel('main agent 1$').model, undefined, 'the main agent inherits the session model')
   assert.equal(byLabel('repo state').model, 'haiku')
+  assert.ok(r.calls.some(c => /workspace cleanup/.test(c.label)), 'the workspace cleanup ran')
   assert.equal(r.result.deepseek.deleted, 1)
 })
 
-await test('the start prompt carries the task, the model, max effort and the tdd skill', async () => {
-  let prompt = ''
-  const sim = {
-    script: { 'issue-list\\.mjs': { ok: true, issues: [issue(70)], missing: [] }, 'repo-state\\.mjs': repoOk },
-    answers: [{ label: 'manager start$', answer: st({ answer: 'STATUS: DONE — x' }) }],
-  }
-  const real = await simulate(script.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  if (op.op === "start") globalThis.__zirStart = zirManagerPrompt(op, p, p.waitsPerManager)'), { sim, args: { issues: [70] } })
-  if (real.error) throw real.error
-  prompt = globalThis.__zirStart
-  assert.match(prompt, /"model": "deepseek-official\/deepseek-flash"/)
-  assert.match(prompt, /"reasoning_effort": "max"/)
-  assert.match(prompt, /"skills": \[\n  "tdd"\n \]/)
-  assert.match(prompt, /\/goal \/tdd \\n\\nissue #70\\n/)
-  assert.match(prompt, /gh issue view <number> --repo liudesheng9\/zet/)
-  assert.match(prompt, /issue is #70 of/)
-  assert.doesNotMatch(prompt, /\{N\}|\{REPO\}|\{CWD\}/)
+await test('a goal complete without a STATUS line is still done, with the answer tail as summary', async () => {
+  const r = await run('no status', [issue(73)], [{ label: 'manager start$', answer: done({ answer: 'all verified and pushed' }) }])
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.equal(r.result.result.issues[0].summary, 'all verified and pushed')
 })
 
-await test('dsEffort high is passed through', async () => {
-  const sim = {
-    script: { 'issue-list\\.mjs': { ok: true, issues: [issue(71)], missing: [] }, 'repo-state\\.mjs': repoOk },
-    answers: [{ label: 'manager start$', answer: st({ answer: 'STATUS: DONE — x' }) }],
-  }
-  const r = await simulate(script.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  if (op.op === "start") globalThis.__zirEffort = op.run.reasoning_effort'), { sim, args: { issues: [71], dsEffort: 'high' } })
-  if (r.error) throw r.error
-  assert.equal(globalThis.__zirEffort, 'high')
-})
-
-await test('NEEDS-HUMAN ends the issue and the next issue still runs, in order', async () => {
-  const r = await run('needs human', [issue(90), issue(91)], [
-    { label: '#90 manager start$', answer: st({ answer: 'STATUS: NEEDS-HUMAN — the user must authorize the pilot' }) },
-    { label: '#91 manager start$', answer: st({ answer: 'STATUS: DONE — ok' }) },
+await test('a blocked goal is needs-human and the next issue still runs, in order', async () => {
+  const r = await run('blocked', [issue(90), issue(91)], [
+    { label: '#90 manager start$', answer: st({ goal_phase: 'blocked', goal_blocked_reason: 'model-reported: the real pilot needs the user', answer: 'STATUS: NEEDS-HUMAN — authorize the pilot' }) },
+    { label: '#91 manager start$', answer: done() },
   ])
   const res = r.result.result
   assert.deepEqual(res.issues.map(i => i.outcome), ['needs-human', 'done'])
+  assert.match(res.issues[0].summary, /model-reported: the real pilot needs the user \| authorize the pilot/)
   assert.deepEqual(res.notDone, ['#90 needs-human'])
   assert.equal(r.result.stages.check.status, 'failed')
   assert.equal(r.result.stages.report.status, 'done')
@@ -111,58 +129,64 @@ await test('NEEDS-HUMAN ends the issue and the next issue still runs, in order',
   assert.deepEqual(order.map(l => l.replace(/^develop: /, '')), ['#90 manager start', '#90 manager delete', '#91 manager start', '#91 manager delete'])
 })
 
-await test('no STATUS line -> nudge prompt; running -> wait manager', async () => {
-  const r = await run('nudge', [issue(72)], [
-    { label: 'manager start$', answer: st({ status: 'running', answer: '' }) },
-    { label: 'manager wait 1$', answer: st({ answer: 'I did some work.' }) },
-    { label: 'manager prompt 1$', answer: st({ answer: 'STATUS: DONE — finished' }) },
+await test('a goal blocked at its round limit is max-rounds', async () => {
+  const r = await run('round limit', [issue(74)], [
+    { label: 'manager start$', answer: st({ goal_phase: 'blocked', goal_blocked_reason: 'round-limit: Goal reached its configured limit of 60 rounds.', goal_rounds: '60/60' }) },
+  ])
+  assert.equal(r.result.result.issues[0].outcome, 'max-rounds')
+})
+
+await test('running -> wait managers; maxWaitCalls exceeded is timeout', async () => {
+  const r = await run('waits', [issue(75)], [
+    { label: 'manager start$', answer: st({ status: 'running' }) },
+    { label: 'manager wait 1$', answer: done() },
   ])
   assert.equal(r.result.result.issues[0].outcome, 'done')
-  assert.equal(r.result.result.issues[0].rounds, 1)
+  const t = await run('timeout', [issue(76)], [{ label: 'manager (start|wait \\d+)$', answer: st({ status: 'running' }) }])
+  assert.equal(t.result.result.issues[0].outcome, 'timeout')
+  assert.equal(t.calls.filter(c => /manager wait/.test(c.label)).length, 8)
 })
 
-await test('a failed turn gets one resume, a second failure ends the issue', async () => {
-  const r = await run('failed', [issue(73)], [
-    { label: 'manager start$', answer: st({ status: 'failed', error: 'provider 503' }) },
-    { label: 'manager resume 1$', answer: st({ status: 'error', error: 'provider 503 again' }) },
+await test('a goal that stops short gets one resume; a second stop fails the issue', async () => {
+  const r = await run('resume ok', [issue(77)], [
+    { label: 'manager start$', answer: st({ goal_phase: 'paused' }) },
+    { label: 'manager resume 1$', answer: done() },
+  ], { src: spy })
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.ok(globalThis.__zirOps.some(o => o.op === 'resume'))
+  const f = await run('resume fails', [issue(78)], [
+    { label: 'manager start$', answer: st({ status: 'error', goal_phase: 'active', error: 'provider 503' }) },
+    { label: 'manager resume 1$', answer: st({ status: 'error', goal_phase: 'paused', error: 'provider 503 again' }) },
   ])
-  const i = r.result.result.issues[0]
+  const i = f.result.result.issues[0]
   assert.equal(i.outcome, 'failed')
   assert.match(i.summary, /503 again/)
-  assert.ok(r.calls.some(c => /#73 manager delete$/.test(c.label)), 'the conversation is still deleted')
+  assert.ok(f.calls.some(c => /#78 manager delete$/.test(c.label)), 'the conversation is still deleted')
 })
 
-await test('maxRounds stops an issue that never finishes', async () => {
-  const r = await run('max rounds', [issue(74)], [
-    { label: 'manager (start|prompt \\d+)$', answer: st({ answer: 'still going' }) },
-  ], { args: { maxRounds: 3 } })
+await test('maxAsks stops an issue that keeps asking', async () => {
+  const ask = st({ status: 'needs_response', pending: [{ request_id: 'q', kind: 'question', detail: '{"questions":[{"id":"a"}]}' }] })
+  const r = await run('max asks', [issue(79)], [
+    { label: 'manager (start|respond \\d+)$', answer: ask },
+    { label: 'main agent', answer: { outcome: 'done', result: 'ok', answers: [{ id: 'a', text: 'ok' }], decision: 'none' } },
+  ], { args: { maxAsks: 3 } })
   const i = r.result.result.issues[0]
-  assert.equal(i.outcome, 'max-rounds')
-  assert.equal(i.rounds, 3)
+  assert.equal(i.outcome, 'max-asks')
+  assert.equal(i.asks, 3)
 })
 
 await test('an approval is decided by the main agent and relayed as a decision', async () => {
-  let responded = null
-  const sim = {
-    script: { 'issue-list\\.mjs': { ok: true, issues: [issue(75)], missing: [] }, 'repo-state\\.mjs': repoOk },
-    answers: [
-      { label: 'manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'approval-1', kind: 'approval', detail: '{"tool":"pwsh","input":"cargo test"}' }] }) },
-      { label: 'main agent 1$', answer: { outcome: 'done', result: 'allowed: cargo test is in scope', answers: [], decision: 'allow' } },
-      { label: 'manager respond 1$', answer: st({ answer: 'STATUS: DONE — ok' }) },
-      { label: 'manager delete$', answer: { deleted: true, note: '' } },
-    ],
-  }
-  const r = await simulate(script.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  if (op.op === "respond") globalThis.__zirResp = op.responses'), { sim, args: { issues: [75] } })
-  if (r.error) throw r.error
-  responded = globalThis.__zirResp
-  assert.deepEqual(responded, [{ request_id: 'approval-1', decision: 'allow' }])
+  await run('approval', [issue(80)], [
+    { label: 'manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'approval-1', kind: 'approval', detail: '{"tool":"pwsh","input":"cargo test"}' }] }) },
+    { label: 'main agent 1$', answer: { outcome: 'done', result: 'allowed: cargo test is in scope', answers: [], decision: 'allow' } },
+    { label: 'manager respond 1$', answer: done() },
+  ], { src: spy })
+  assert.deepEqual(globalThis.__zirOps.find(o => o.op === 'respond').responses, [{ request_id: 'approval-1', decision: 'allow' }])
 })
 
 await test('a repo state that is not ok fails the check gate but not the run', async () => {
-  const r = await run('repo', [issue(76)], [
-    { label: 'manager start$', answer: st({ answer: 'STATUS: DONE — ok' }) },
-  ], { repo: { ok: false, clean: false, pushed: false } })
-  assert.deepEqual(r.result.result.repoNotOk, ['#76'])
+  const r = await run('repo', [issue(81)], [{ label: 'manager start$', answer: done() }], { repo: { ok: false, clean: false, pushed: false } })
+  assert.deepEqual(r.result.result.repoNotOk, ['#81'])
   assert.equal(r.result.stages.check.status, 'failed')
   assert.equal(r.result.halted, null)
 })
@@ -179,6 +203,12 @@ await test('until prepare stops before any DeepSeek work', async () => {
   const r = await simulate(script, { sim, args: { issues: [65], until: 'prepare' } })
   assert.equal(r.result.stoppedAt, 'prepare')
   assert.ok(!r.calls.some(c => /manager/.test(c.label)))
+})
+
+await test('the old maxRounds arg is refused', async () => {
+  const sim = { script: { 'issue-list\\.mjs': { ok: true, issues: [issue(65)], missing: [] } }, answers: [] }
+  const r = await simulate(script, { sim, args: { issues: [65], maxRounds: 3 } })
+  assert.match(String(r.error && r.error.message), /args\.maxRounds is not declared/)
 })
 
 console.log(`${passed} passed${process.exitCode ? ', some failed' : ''}`)

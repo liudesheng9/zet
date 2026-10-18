@@ -63,9 +63,12 @@
           {
             "request_id": "question-1",
             "kind": "question",
-            "detail": "{\"request_id\":\"question-1\",\"kind\":\"question\",\"questions\":[{\"id\":\"q1\",\"question\":\"Run the GUI check\"}]}"
+            "detail": "{\"request_id\":\"question-1\",\"kind\":\"question\",\"questions\":[{\"id\":\"q1\",\"question\":\"Deploy zt please\"}]}"
           }
         ],
+        "goal_phase": "active",
+        "goal_rounds": "2/60",
+        "goal_blocked_reason": "",
         "error": "",
         "context_pct": 3,
         "waits": 1
@@ -75,11 +78,11 @@
       "label": "#65 main agent 1$",
       "answer": {
         "outcome": "done",
-        "result": "ran it: exit 0",
+        "result": "deployed 0.20.1; zt status up",
         "answers": [
           {
             "id": "q1",
-            "text": "ran it: exit 0"
+            "text": "deployed 0.20.1; zt status up"
           }
         ],
         "decision": "none"
@@ -90,32 +93,14 @@
       "answer": {
         "session_id": "s65",
         "status": "finished",
-        "answer": "Need a deploy.\nSTATUS: ASK — please deploy zt",
-        "pending": [],
-        "error": "",
-        "context_pct": 5,
-        "waits": 2
-      }
-    },
-    {
-      "label": "#65 main agent 2$",
-      "answer": {
-        "outcome": "done",
-        "result": "deployed 0.20.1; zt status up",
-        "answers": [],
-        "decision": "none"
-      }
-    },
-    {
-      "label": "#65 manager prompt 2$",
-      "answer": {
-        "session_id": "s65",
-        "status": "finished",
         "answer": "All verified.\nSTATUS: DONE — commit abc, cargo test ok, 0.20.1 deployed, #65 closed",
         "pending": [],
+        "goal_phase": "complete",
+        "goal_rounds": "4/60",
+        "goal_blocked_reason": "",
         "error": "",
         "context_pct": 8,
-        "waits": 1
+        "waits": 2
       }
     },
     {
@@ -125,6 +110,9 @@
         "status": "finished",
         "answer": "Reverified.\nSTATUS: DONE — cargo test ok, #66 stays closed",
         "pending": [],
+        "goal_phase": "complete",
+        "goal_rounds": "1/60",
+        "goal_blocked_reason": "",
         "error": "",
         "context_pct": 2,
         "waits": 3

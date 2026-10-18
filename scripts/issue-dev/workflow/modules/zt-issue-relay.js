@@ -1,10 +1,13 @@
-// ==== module zt-issue-relay v1 ====
+// ==== module zt-issue-relay v2 ====
 // Develops GitHub issues one at a time, each in its own DeepSeek Harness conversation that a Haiku manager drives.
-// The DeepSeek agent works on its own (it has a shell). When it needs something it cannot do, it asks: a
-// question or approval (status needs_response) or a turn that ends "STATUS: ASK". Then the main agent (the
-// executor role) does what was asked, and the manager sends the result back so the DeepSeek agent continues.
-// An issue ends on "STATUS: DONE" or "STATUS: NEEDS-HUMAN", or when a declared limit is reached. Then the manager
-// deletes the conversation (never archives it) and a runner records the repository and deploy state.
+// The manager starts the conversation with a goal (deepseek_run with goal, bridge 0.11+): the first message is the
+// task, and the goal keeps the agent working in goal rounds until it marks the goal complete or blocked, or the
+// round cap is reached. The DeepSeek agent works on its own (it has a shell). When it needs something it cannot do,
+// it asks with ask_user_question (or a tool approval): the bridge reports status needs_response, the main agent (the
+// executor role) does what was asked, and the manager sends the answer back so the agent continues. The bridge
+// reports the conversation as running until the goal settles, so an issue ends on the goal's phase: complete ->
+// done, blocked -> needs-human (round-limit -> max-rounds). Then the manager deletes the conversation (never
+// archives it) and a runner records the repository and deploy state.
 // Issues run in order, never in parallel: they share one checkout, one service, and one installed binary.
 // DeepSeek Subagent Managed Protocol: managers are Haiku and take a slot of the script-wide pool (dsmpSlot);
 // each manager drives exactly one DeepSeek conversation; deletions go into dsmpLog; the workspace is removed at
@@ -24,11 +27,14 @@ const ZIR_STATE = {
         detail: { type: 'string', description: 'the whole pending item as JSON text, verbatim' } },
         required: ['request_id', 'kind', 'detail'] },
     },
+    goal_phase: { type: 'string', enum: ['active', 'paused', 'blocked', 'complete', 'none'], description: 'goal.phase of the last result; "none" when it has no goal' },
+    goal_rounds: { type: 'string', description: 'goal.rounds of the last result (e.g. "3/60"), else ""' },
+    goal_blocked_reason: { type: 'string', description: 'goal.blocked_reason of the last result, else ""' },
     error: { type: 'string', description: 'the error text of a failed call, else ""' },
     context_pct: { type: 'number', description: 'context.used_pct of the last result, else 0' },
     waits: { type: 'integer', description: 'how many deepseek_wait calls you made' },
   },
-  required: ['session_id', 'status', 'answer', 'pending', 'error'],
+  required: ['session_id', 'status', 'answer', 'pending', 'goal_phase', 'error'],
 }
 
 const ZIR_DELETED = {
@@ -49,27 +55,29 @@ const ZIR_EXEC = {
 }
 
 // The declared defaults; the kernel passes only the params a blueprint gives.
-const ZIR_DEFAULTS = { skills: [], maxRounds: 40, waitSeconds: 900, waitsPerManager: 12, maxWaitCalls: 8, managerRole: 'manager', executorRole: 'executor', runnerRole: 'runner', cleanupWorkspace: true }
+const ZIR_DEFAULTS = { skills: [], maxGoalRounds: 60, maxAsks: 40, waitSeconds: 900, waitsPerManager: 12, maxWaitCalls: 8, managerRole: 'manager', executorRole: 'executor', runnerRole: 'runner', cleanupWorkspace: true }
 
-const ZIR_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete'
+const ZIR_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_goal,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete'
 
-// The last STATUS line of an answer: DONE, NEEDS-HUMAN or ASK (else null).
+// The last STATUS line of an answer: DONE or NEEDS-HUMAN (else null).
 function zirStatus(answer) {
-  const all = [...String(answer || '').matchAll(/STATUS:\s*(DONE|NEEDS-HUMAN|ASK)\b[ \t]*[—:-]*[ \t]*([^\n]*)/g)]
+  const all = [...String(answer || '').matchAll(/STATUS:\s*(DONE|NEEDS-HUMAN)\b[ \t]*[—:-]*[ \t]*([^\n]*)/g)]
   if (!all.length) return { kind: null, text: '' }
   const m = all[all.length - 1]
   return { kind: m[1], text: m[2].trim() }
 }
 
+const zirFill = (text, p, n) => String(text).split('{N}').join(String(n)).split('{REPO}').join(p.repo).split('{CWD}').join(p.cwd)
+
 function zirManagerPrompt(op, p, waitMax) {
   const loop = `WAIT LOOP: while the status is "running", call mcp__deepseek__deepseek_wait with the session_id and wait_seconds ${p.waitSeconds}. Make at most ${waitMax} wait calls; if the status is still "running" after them, stop and return status "running".`
-  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made).`
+  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), goal_phase (goal.phase of the last result, "none" if it has no goal), goal_rounds (goal.rounds, else ""), goal_blocked_reason (goal.blocked_reason, else ""), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made).`
   const head = `You manage one DeepSeek agent conversation through the deepseek bridge. You relay only: you never answer its questions yourself, never approve or reject anything on your own, never edit files, and never run shell commands. Keep your messages short.
 
 First load the tools: ToolSearch with query "${ZIR_TOOLS}".
 `
   if (op.op === 'start') return `${head}
-1. Call mcp__deepseek__deepseek_run with exactly these arguments (change nothing):
+1. Call mcp__deepseek__deepseek_run with exactly these arguments (change nothing). "goal" sets the conversation's goal: the agent keeps working until the goal is complete.
 ${JSON.stringify({ ...op.run, wait_seconds: p.waitSeconds }, null, 1)}
 2. ${loop}
 3. ${ret}`
@@ -86,12 +94,9 @@ ${JSON.stringify(op.responses, null, 1)}
 1. For each RESPONSE in order, call mcp__deepseek__deepseek_respond with session_id ${op.session_id}, its request_id, wait_seconds ${p.waitSeconds}, and its "decision" (for an approval) or its "answers" (for a question), copied verbatim. If a result is "needs_response" with a request_id that is not in RESPONSES, stop and return that state.
 2. ${loop}
 3. ${ret}`
-  if (op.op === 'prompt') return `${head}
-The conversation is session_id ${op.session_id}. Its last turn has finished.
-1. Call mcp__deepseek__deepseek_prompt with session_id ${op.session_id}, wait_seconds ${p.waitSeconds}, and this prompt, copied verbatim between the markers (without the markers):
-<<<PROMPT
-${op.text}
-PROMPT>>>
+  if (op.op === 'resume') return `${head}
+The conversation is session_id ${op.session_id}. Its goal stopped before it was complete.
+1. Call mcp__deepseek__deepseek_goal with session_id ${op.session_id}, action "resume" and wait_seconds ${p.waitSeconds}.
 2. ${loop}
 3. ${ret}`
   throw new Error(`zt-issue-relay: unknown manager op ${op.op}`)
@@ -108,7 +113,7 @@ async function zirDelete(ctx, p, sessionId, label) {
 First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
 
 1. Call mcp__deepseek__deepseek_wait with session_id ${sessionId} and wait_seconds 0 to read its status.
-2. If the status is "running": call mcp__deepseek__deepseek_cancel with session_id ${sessionId}, then wait again (wait_seconds 60) until it is not "running".
+2. If the status is "running" or "needs_response": call mcp__deepseek__deepseek_cancel with session_id ${sessionId} (this also pauses its goal), then wait again (wait_seconds 60) until it is neither.
 3. Call mcp__deepseek__deepseek_delete with session_id ${sessionId}. Never call deepseek_archive. If the delete is refused, do not retry it.
 Return deleted (true when the delete succeeded), cancelled (true when you cancelled it), and note (the refusal text, else "").`,
     { role: p.managerRole, schema: ZIR_DELETED, label }))
@@ -119,32 +124,37 @@ Return deleted (true when the delete succeeded), cancelled (true when you cancel
 }
 
 async function zirExecute(ctx, p, issue, ask, label) {
-  const what = ask.kind === 'message'
-    ? `It ended its turn with this message; its request is at the end ("STATUS: ASK — ..."):\n<<<ASK\n${ask.text}\nASK>>>`
-    : ask.kind === 'question'
-      ? `It asked this question (a pending item of the deepseek bridge; answer each question id):\n<<<ASK\n${ask.detail}\nASK>>>`
-      : `It asks for approval of this tool call (a pending item of the deepseek bridge):\n<<<ASK\n${ask.detail}\nASK>>>\nDecide allow or reject. Allow only a call that serves the issue and that you would run yourself under your rules.`
-  return ctx.agent(`A DeepSeek agent is developing GitHub issue #${issue.number} ("${issue.title}", ${issue.state}) of ${p.repo} in ${p.cwd}. It asked you, the main agent, for something. ${what}
+  const what = ask.kind === 'question'
+    ? `It asked this question (a pending item of the deepseek bridge; answer each question id):\n<<<ASK\n${ask.detail}\nASK>>>`
+    : `It asks for approval of this tool call (a pending item of the deepseek bridge):\n<<<ASK\n${ask.detail}\nASK>>>\nDecide allow or reject. Allow only a call that serves the issue and that you would run yourself under your rules.`
+  return ctx.agent(`A DeepSeek agent is developing GitHub issue #${issue.number} ("${issue.title}", ${issue.state}) of ${p.repo} in ${p.cwd}. It works under a goal and is paused until you answer. ${what}
 
 Do what it asks, within your rules, then return outcome, result, answers and decision.
 - For a question: put your full reply in answers (one entry per question id; text at most 3500 characters) and the same reply in result.
-- For an approval: set decision and say why in result.
-- For a message: put your reply in result; answers is [] and decision is "none".`,
+- For an approval: set decision and say why in result; answers is [].`,
     { role: p.executorRole, schema: ZIR_EXEC, label })
 }
 
 const zirCut = (s, n) => (String(s || '').length > n ? String(s).slice(0, n) + `\n[... cut at ${n} characters]` : String(s || ''))
+const zirTail = (s, n) => (String(s || '').length > n ? String(s).slice(-n) : String(s || ''))
 
 async function zirIssue(ctx, p, issue, k, total) {
   const tag = `#${issue.number}`
   const lab = s => `${ctx.label}: ${tag} ${s}`
-  const prompt = `${p.taskPrompt}\n\n${p.protocol}`.split('{N}').join(String(issue.number)).split('{REPO}').join(p.repo).split('{CWD}').join(p.cwd)
-  const run = { cwd: p.cwd, prompt, model: p.model, reasoning_effort: p.effort, ...(p.skills && p.skills.length ? { skills: p.skills } : {}) }
+  const run = {
+    cwd: p.cwd,
+    prompt: zirFill(`${p.taskPrompt}\n\n${p.protocol}`, p, issue.number),
+    goal: zirFill(p.goalObjective, p, issue.number),
+    max_goal_rounds: p.maxGoalRounds,
+    model: p.model,
+    reasoning_effort: p.effort,
+    ...(p.skills && p.skills.length ? { skills: p.skills } : {}),
+  }
   ctx.log(`issue ${tag} (${k + 1}/${total}): ${issue.title} [${issue.state}]`)
   const trail = []
   let st = await zirManage(ctx, p, { op: 'start', run }, lab('manager start'))
   let session = (st && st.session_id) || ''
-  let rounds = 0, asks = 0, waitCalls = 0, resumes = 0, outcome = null, summary = ''
+  let asks = 0, waitCalls = 0, resumes = 0, outcome = null, summary = ''
   while (!outcome) {
     if (!st) { outcome = 'failed'; summary = 'the manager returned nothing'; break }
     if (st.session_id) session = st.session_id
@@ -153,19 +163,13 @@ async function zirIssue(ctx, p, issue, k, total) {
       st = await zirManage(ctx, p, { op: 'wait', session_id: session }, lab(`manager wait ${waitCalls}`))
       continue
     }
-    if (st.status === 'finished') {
-      const s = zirStatus(st.answer)
-      if (s.kind === 'DONE') { outcome = 'done'; summary = s.text; break }
-      if (s.kind === 'NEEDS-HUMAN') { outcome = 'needs-human'; summary = s.text; break }
-    }
-    if (rounds >= p.maxRounds) { outcome = 'max-rounds'; summary = `${p.maxRounds} rounds without STATUS: DONE`; break }
-    rounds++
     if (st.status === 'needs_response') {
+      if (asks >= p.maxAsks) { outcome = 'max-asks'; summary = `${p.maxAsks} asks answered and the goal is not complete`; break }
       const responses = []
       for (const item of st.pending || []) {
         asks++
         const ex = await zirExecute(ctx, p, issue, { kind: item.kind === 'approval' ? 'approval' : 'question', detail: item.detail }, lab(`main agent ${asks}`))
-        trail.push({ round: rounds, kind: item.kind, outcome: ex ? ex.outcome : 'failed', result: zirCut(ex && ex.result, 600) })
+        trail.push({ ask: asks, kind: item.kind, goalRounds: st.goal_rounds || '', outcome: ex ? ex.outcome : 'failed', result: zirCut(ex && ex.result, 600) })
         if (item.kind === 'approval') responses.push({ request_id: item.request_id, decision: ex && ex.decision === 'allow' ? 'allow' : 'reject' })
         else {
           let ids = []
@@ -176,29 +180,27 @@ async function zirIssue(ctx, p, issue, k, total) {
         }
       }
       if (!responses.length) { outcome = 'failed'; summary = 'needs_response without pending items'; break }
-      st = await zirManage(ctx, p, { op: 'respond', session_id: session, responses }, lab(`manager respond ${rounds}`))
+      st = await zirManage(ctx, p, { op: 'respond', session_id: session, responses }, lab(`manager respond ${asks}`))
       continue
     }
-    if (st.status === 'finished') {
-      const s = zirStatus(st.answer)
-      let text
-      if (s.kind === 'ASK') {
-        asks++
-        const ex = await zirExecute(ctx, p, issue, { kind: 'message', text: st.answer }, lab(`main agent ${asks}`))
-        trail.push({ round: rounds, kind: 'message', outcome: ex ? ex.outcome : 'failed', result: zirCut(ex && ex.result, 600) })
-        text = `RESULT FROM THE MAIN AGENT (${ex ? ex.outcome : 'failed'}):\n${zirCut((ex && ex.result) || 'The main agent returned nothing.', 3800)}\n\n${p.continueText}`
-      } else text = p.nudgeText
-      st = await zirManage(ctx, p, { op: 'prompt', session_id: session, text }, lab(`manager prompt ${rounds}`))
-      continue
+    const said = zirStatus(st.answer)
+    if (st.status === 'finished' && st.goal_phase === 'complete') {
+      outcome = 'done'; summary = said.text || zirTail(st.answer, 400); break
     }
-    // failed, cancelled or error: one more prompt to the same conversation, then give up
+    if (st.status === 'finished' && st.goal_phase === 'blocked') {
+      const reason = st.goal_blocked_reason || ''
+      outcome = /^round-limit/.test(reason) ? 'max-rounds' : 'needs-human'
+      summary = [reason, said.text].filter(Boolean).join(' | ') || zirTail(st.answer, 400)
+      break
+    }
+    // The goal stopped short (paused, disarmed, none) or the turn failed: resume the goal once, then give up.
     if (session && resumes < 1) {
       resumes++
-      trail.push({ round: rounds, kind: 'resume', outcome: st.status, result: zirCut(st.error, 600) })
-      st = await zirManage(ctx, p, { op: 'prompt', session_id: session, text: p.resumeText }, lab(`manager resume ${rounds}`))
+      trail.push({ ask: asks, kind: 'resume', goalRounds: st.goal_rounds || '', outcome: `${st.status}/${st.goal_phase}`, result: zirCut(st.error, 600) })
+      st = await zirManage(ctx, p, { op: 'resume', session_id: session }, lab(`manager resume ${resumes}`))
       continue
     }
-    outcome = 'failed'; summary = `${st.status}: ${zirCut(st.error, 600)}`
+    outcome = 'failed'; summary = `${st.status}, goal ${st.goal_phase}: ${zirCut(st.error || said.text, 600)}`
   }
   const del = await zirDelete(ctx, p, session, lab('manager delete'))
   let repo = null
@@ -207,16 +209,16 @@ async function zirIssue(ctx, p, issue, k, total) {
   } catch (e) { repo = { ok: false, error: String(e && e.message || e) } }
   const res = {
     number: issue.number, title: issue.title, stateBefore: issue.state, outcome, summary: zirCut(summary, 1500),
-    rounds, asks, session, deleted: !!(del && del.deleted), lastAnswer: outcome === 'done' ? '' : zirCut(st && st.answer, 2000),
-    trail, repo,
+    goalRounds: (st && st.goal_rounds) || '', asks, session, deleted: !!(del && del.deleted),
+    lastAnswer: outcome === 'done' ? '' : zirTail(st && st.answer, 2000), trail, repo,
   }
   ctx.log(`issue ${tag}: ${outcome}${summary ? ' — ' + zirCut(summary, 200) : ''}`)
   return res
 }
 
 defineModule({
-  id: 'zt-issue-relay', version: '1', requires: ['@dsmp', 'script'],
-  summary: 'Develop GitHub issues one at a time: a Haiku manager drives one DeepSeek conversation per issue; the main agent fulfills its asks.',
+  id: 'zt-issue-relay', version: '2', requires: ['@dsmp', 'script'],
+  summary: 'Develop GitHub issues one at a time: a Haiku manager drives one DeepSeek conversation per issue under a goal; the main agent fulfills its asks.',
   params: {
     issues: { type: 'array', required: true, description: 'issue records {number, title, state} in the order to develop' },
     repo: { type: 'string', required: true, description: 'owner/name on GitHub' },
@@ -224,13 +226,12 @@ defineModule({
     model: { type: 'string', required: true, description: 'the DeepSeek model, provider/model' },
     effort: { type: 'string', required: true, description: 'the DeepSeek reasoning effort' },
     skills: { type: 'array', default: [], description: 'DeepSeek Harness skills for the first message' },
-    taskPrompt: { type: 'string', required: true, description: 'the task; {N} is replaced by the issue number' },
-    protocol: { type: 'string', required: true, description: 'the relay rules added after the task; {REPO} and {CWD} are replaced' },
-    continueText: { type: 'string', required: true, description: 'added after a main-agent result sent by prompt' },
-    nudgeText: { type: 'string', required: true, description: 'sent when a turn ends without a STATUS line' },
-    resumeText: { type: 'string', required: true, description: 'sent once after a failed or cancelled turn' },
+    taskPrompt: { type: 'string', required: true, description: 'the first message; {N}, {REPO}, {CWD} are replaced' },
+    protocol: { type: 'string', required: true, description: 'the relay rules added after the task; {N}, {REPO}, {CWD} are replaced' },
+    goalObjective: { type: 'string', required: true, description: 'the goal objective set with the first message; {N}, {REPO}, {CWD} are replaced' },
     repoCheck: { type: 'string', required: true, description: 'the command that prints the repository and deploy state; {N} is the issue number' },
-    maxRounds: { type: 'number', default: 40, min: 1, max: 200, description: 'most relay rounds (asks, answers, nudges) per issue' },
+    maxGoalRounds: { type: 'number', default: 60, min: 1, max: 1000, description: 'the goal round cap per issue (max_goal_rounds)' },
+    maxAsks: { type: 'number', default: 40, min: 1, max: 500, description: 'most main-agent asks per issue' },
     waitSeconds: { type: 'number', default: 900, min: 60, max: 3600, description: 'wait_seconds of each bridge call' },
     waitsPerManager: { type: 'number', default: 12, min: 1, max: 40, description: 'most deepseek_wait calls in one manager agent' },
     maxWaitCalls: { type: 'number', default: 8, min: 0, max: 100, description: 'most extra manager agents that only wait, per issue' },

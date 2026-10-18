@@ -1,18 +1,18 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-issue-dev",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scope": "project",
   "script": ".claude/workflows/zt-issue-dev.js",
   "scriptRel": "workflows/zt-issue-dev.js",
-  "sha256": "12400a455c8bfbb1eae6eed778e6408100bc4a78dbba1f4b92b924c97ba44dae",
-  "fingerprint": "b7866382899c9de7",
-  "blueprintSha256": "0e0b44f84b5a0c44d38068b20574c2e3d3717b885c721408727e134df48bcc45",
+  "sha256": "2ac24732ea6ff01d1ea570b10723a0eb3f7c85cd2cab50a1e0a36587e89b6da3",
+  "fingerprint": "cdd4de6fd7828ae0",
+  "blueprintSha256": "b5f452659e430aaba2b3fbb062a18fccd9ae4e043e79e6fe701e527087ae5fd9",
   "modules": {
     "gate": "1",
     "script": "1",
     "value": "1",
-    "zt-issue-relay": "1"
+    "zt-issue-relay": "2"
   },
   "moduleFiles": {
     "gate": {
@@ -29,18 +29,18 @@
     },
     "zt-issue-relay": {
       "file": "scripts/issue-dev/workflow/modules/zt-issue-relay.js",
-      "sha256": "2e6149cb4fd4bb3c934bfdb00ae9db3fef1bb5a5a8d6e8ef11b2c57d2dd0be2b"
+      "sha256": "bfa3507dae83861f60395bf61a943db6ddca4be155dcbca4ded2e6873bc294e5"
     }
   },
   "sources": [
     {
       "file": "scripts/issue-dev/workflow/zt-issue-dev.blueprint.json",
-      "sha256": "342ac1bb695c9812394bc5b8be0de3aea104d2bd1a4b250f6a4397fe4a801d3c"
+      "sha256": "3ac3b97fbe13e46688e76813f0b28cc7b460321a19c3f18f66fb9ef5cf8cd09c"
     }
   ],
-  "installedAt": "2026-10-18T07:23:07.003Z",
+  "installedAt": "2026-10-18T07:42:29.777Z",
   "dryRun": {
-    "agents": 12,
+    "agents": 10,
     "order": [
       "prepare",
       "develop",
