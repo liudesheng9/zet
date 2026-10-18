@@ -184,9 +184,9 @@ try {
 
     # R302: the build completion and the explanation completion stay separately visible. The
     # Models layer settles on its built units while the Explain layer still names its open work.
-    $modelsDone = Gate 'models' '"complete":true' 0
-    Assert ($modelsDone.sealed -and $modelsDone.settled -and $modelsDone.counts.done -eq 3) 'the Models layer settles on the three checked builds'
-    $open = Gate 'explain' '"sealed":true' 3
+    $modelsDone = Gate 'models' '"layer":"models"' 0
+    Assert ($modelsDone.sealed -and $modelsDone.settled -and -not $modelsDone.complete -and $modelsDone.counts.done -eq 3) 'the Models layer settles on the three checked builds without claiming the run complete'
+    $open = Gate 'explain' '"layer":"explain"' 3
     Assert ($open.sealed -and -not $open.settled -and $open.counts.open -eq 1 -and @($open.unresolved) -contains $built.explain_unit) 'the Explain layer is sealed and still open on the unexplained parts'
     $receiptsBefore = Receipts (Join-Path $scratch 'archive\zt.sqlite3')
 
@@ -291,8 +291,8 @@ try {
     Assert ($explainDone.schema_version -eq 1 -and $explainDone.kind -eq 'explain_completion' -and $explainDone.unit -eq $unit -and $explainDone.state -eq 'done' -and $explainDone.complete -and -not $explainDone.reused) 'the real explanation completion records typed evidence'
     Assert ($explainDone.explanation.status -eq 'explained' -and $explainDone.explanation.derivations -eq 3 -and @($explainDone.explanation.needs).Count -eq 0) 'the completion records every checked Derivation part'
     Assert (@($explainDone.publication_inputs.layers) -contains 'link-check' -and $explainDone.publication_inputs.fingerprints[$cap] -and $explainDone.publication_inputs.fingerprints[$net]) 'the completion emits the changed fingerprints and the downstream publication inputs'
-    $explainGate = Gate 'explain' '"complete":true' 0
-    Assert ($explainGate.sealed -and $explainGate.settled -and $explainGate.counts.done -eq 1) 'the Explain layer settles on its checked completion'
+    $explainGate = Gate 'explain' '"layer":"explain"' 0
+    Assert ($explainGate.sealed -and $explainGate.settled -and -not $explainGate.complete -and $explainGate.counts.done -eq 1) 'the Explain layer settles on its checked completion without claiming the run complete'
 
     # The same evidence through the generic ledger command, and a repeated completion.
     $completionFile = Join-Path $out "explain-completion-$key2.json"
@@ -307,6 +307,49 @@ try {
     Refused $finish 'completed Explain unit changed' 'a later edit of an explained part makes the Explain completion stale'
     Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $cap; body = $capBody } }) | Out-Null
     Assert ((Run-Digest $finish).reused) 'restoring the checked part recovers the same Explain completion'
+
+    # A book whose models are all inapplicable leaves the layer empty: it settles only after the
+    # Models enumeration closes, so a concept-only book never blocks on explanation work.
+    $emptyOut = Join-Path $scratch 'prepared-empty'
+    $emptySource = Join-Path $scratch 'empty.md'
+    [IO.File]::WriteAllText($emptySource, "# 第一章`n`n抵押提高还款承诺，投资者愿意放款。`n`n# 参考`n未选择。", $utf8)
+    $null = Run-Digest @('prepare', '-Source', $emptySource, '-Out', $emptyOut, '-CitationKey', 'EmptyBook', '-BibTeX', '@book{EmptyBook,title={Empty book}}', '-StartHeading', '第一章', '-EndHeading', '参考', '-MinUnitChars', '1', '-NoFigures', '-Variant', 'econ', '-RunOptions', $options, '-Apply')
+    $emptyClaim = (Run-Digest @('ledger', 'next', '-Out', $emptyOut, '-Layer', 'digest', '-Take', '1', '-Owner', 'digest-manager')).units[0]
+    $emptyStarted = Run-Digest @('group-start', '-Out', $emptyOut, '-Group', '1', '-Token', "$($emptyClaim.token)")
+    $emptyJob = Get-Content -LiteralPath $emptyStarted.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $emptyDraft = @{ schema_version = 1; unit = $emptyClaim.id; token = $emptyClaim.token; input_hash = $emptyStarted.input_hash; disposition = 'cards'; calls = @(
+        @{ tool = 'edit_card'; arguments = @{ at = 'EmptyBook/1'; title = '抵押与还款承诺'; body = '抵押提高还款承诺。投资者因此愿意放款。'; base_fingerprint = $emptyJob.inputs.anchor.fingerprint } },
+        @{ tool = 'create_successor'; arguments = @{ at = 'EmptyBook/1'; kind = 'side'; type = 'model'; level = 'concept'; title = '概念模型：抵押的作用'; body = '问题：抵押怎样帮助融资？' } }
+    ) }
+    Save-Json $emptyStarted.draft $emptyDraft
+    $emptyGroup = Run-Digest @('group-finish', '-Out', $emptyOut, '-Group', '1', '-Token', "$($emptyClaim.token)", '-Draft', $emptyStarted.draft)
+    $emptyHead = @($emptyGroup.owned | Where-Object { $_ -match '\|a$' })[0]
+    $emptySlug = $emptyHead -replace '[\\/|]', '_'
+    $emptyWork = Join-Path $emptyOut "models\m-$emptySlug"
+    $emptyDir = Join-Path $emptyWork $emptySlug
+    $emptyStep = { param($s, [string[]]$more = @()) Run-Digest (@('model', '-Step', $s, '-Work', $emptyWork, '-Staging', $emptyOut) + $more) }
+    $null = & $emptyStep 'brief' @('-Models', $emptyHead)
+    Save-Json (Join-Path $emptyDir 'plan.json') ([ordered]@{ model = $emptyHead; level = 'concept'; card = '问题、机制、结论'; parts = @(
+        [ordered]@{ id = 'C1'; line = 'main'; facet = '机制'; title = '机制：抵押提高还款承诺'; spec = '机制'; src = @('sections/s01.md:2') }
+    ) })
+    $null = & $emptyStep 'apply'
+    $emptyIds = (State $emptyWork).models[$emptyHead].ids
+    $emptyHeadCard = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $emptyHead } })
+    $emptyStructure = ([regex]'(?s)\*\*结构\*\*.*$').Match($emptyHeadCard.body).Value
+    Invoke-Zt @(
+        @{ tool = 'edit_card'; arguments = @{ at = $emptyHead; body = "问题：抵押怎样帮助融资？机制：抵押提高还款承诺。结论：有抵押更容易融资。`n`n来源：第一章。`n`n$emptyStructure" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $emptyIds['C1']; body = "抵押提高还款承诺，投资者愿意放款。`n`n来源：第一章。" } }
+    ) | Out-Null
+    $null = & $emptyStep 'report'
+    $emptyBefore = @(& $Digest @('ledger', 'gate', '-Out', $emptyOut, '-Layer', 'explain') 2>&1)
+    $emptyBeforeJson = $emptyBefore[-1] | ConvertFrom-Json -AsHashtable
+    Assert ($LASTEXITCODE -eq 3 -and -not $emptyBeforeJson.sealed -and $emptyBeforeJson.counts.total -eq 0) 'an empty Explain layer stays unsealed while a Model unit can still register work'
+    $emptyModelClaim = (Run-Digest @('ledger', 'next', '-Out', $emptyOut, '-Layer', 'models', '-Take', '1', '-Owner', 'model-manager')).units[0]
+    $emptyDone = Run-Digest @('model-finish', '-Out', $emptyOut, '-Model', $emptyHead, '-Token', "$($emptyModelClaim.token)")
+    Assert ($emptyDone.explanation.reason -eq 'concept' -and -not $emptyDone.explain_unit) 'a concept-only book registers no explanation unit'
+    $emptyGate = @(& $Digest @('ledger', 'gate', '-Out', $emptyOut, '-Layer', 'explain') 2>&1)
+    $emptyGateJson = $emptyGate[-1] | ConvertFrom-Json -AsHashtable
+    Assert ($LASTEXITCODE -eq 0 -and $emptyGateJson.sealed -and $emptyGateJson.settled -and $emptyGateJson.counts.total -eq 0) 'an empty Explain layer settles once its Models enumeration closes'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
