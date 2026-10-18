@@ -409,6 +409,17 @@ Registry totals on the candidate release build: root `cargo test --all-targets -
 
 Unix process-group and parent-death equivalence remains unqualified on this Windows host; the guarded reclaim and the OS guard are exercised with real Windows file locks. No provider run, actual digest workflow or production archive write was performed by this slice.
 
+### Publication and deployment at `2ba7a20`
+
+Registry totals on the pushed HEAD: root `cargo test --all-targets --locked -- --test-threads=4` → **366 passed, zero failed, one intentionally ignored manual-clipboard test** (`D:/zt-target/qualification/issue71-owner/root-tests.log`); `zt-check` **10 passed**; `zt-digest` **81 passed**. The complete public runner against the candidate release binaries passes **all 47 suites, zero failures, 137 s** (`D:/zt-target/qualification/issue71-owner/public-summary.log`, `public/`), including the new `ledger-owner-recovery.tests.ps1` at 31 assertions, `ledger-claims.tests.ps1` at 40, `ledger-publication` 46, `ledger-math` 57, `ledger-terms` 37, `cards-finish` 40, `link-finish` 37, `mcp-lifecycle` 27, and both workflow harnesses (131 and 2).
+
+Every installed executable matches its release artifact. `src/`, `Cargo.toml`/`Cargo.lock` and `tools/zt-check/` have no delta since `cde3f40`, so `zt.exe` `202DCFFE…`, `zt-boot.exe` `BCE8F896…` and `zt-check.exe` `F2E1343E…` are unchanged verified artifacts; `zt-digest.exe` was rebuilt and reinstalled with `scripts\install-zt-digest.ps1`, and the installed file and `D:\zt-digest-target\release\zt-digest.exe` both hash `7DCCF46E11BAA006B30104A74FD533F20D92DEADA7013C7F87AB8262CB96910B`. The installed digest reports the extended surface (`…, math, reclaim or job`), and the installed binary set re-ran `ledger-owner-recovery.tests.ps1` to 31 passing assertions (`installed-green.log`).
+
+The deploy ran the documented order: `zt down`, a `D:\zt\backup\zt.sqlite3.20261018-050704.bak` copy (39,026,688 bytes), the digest install, `zt up`. Daemon `51036` runs `C:\Users\chenx\.cargo\bin\zt.exe`; `zt status` reports up, archive `D:\zt`, 10,895 Cards, zero Sessions and GUI `http://127.0.0.1:4717/`; the GUI root answers HTTP 200, a tokenless `/api/ping` is refused (403); `zt version` is 0.20.0 and `zt-digest version` 0.1.0. The read-only `zt status --check-links` on the live archive reports ok, 10,895 Cards, 56,994 Links, revision 0 and zero faults. No live Card write, migration or digest workflow was run.
+
+Workflow tools, no workflow run: `scripts/issue-dev/tests/issue-relay.tests.mjs` passes 16 scenarios, the framework protocol's own `run-tests.mjs` passes 28 tests, `framework-harness.mjs` 131 assertions and `bridge-workflow-harness.mjs` 2 (inside the suite run); `assemble.mjs verify` reports `zt-issue-dev` 1.1.0, `zt-econ-digest` 3.3.0 and `zt-math-digest` 2.4.0 intact (no problems, no library drift, only the known note that a checkout loses the read-only script flag), and `assemble.mjs simulate` returns `{"ok":true,"halted":null}` for all three blueprints in the stand-in runtime, which starts no shell command and no model. The wiki check reports every block fresh at `2ba7a20`.
+
+
 
 ## Publication and deployment at `f35c8c8`
 
@@ -468,4 +479,4 @@ The archive never changed: every test and probe used isolated temporary archives
 
 ## Remaining slices
 
-#71–#74 and #78–#89 remain implementation/isolated qualification work. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status is now checked against actual installed hashes and running process paths, as recorded above.
+#72–#74 and #78–#89 remain implementation/isolated qualification work; #71 was completed and closed on 2026-10-18. #90 and #91 retain their live-workflow and Stiglitz acceptance gaps until the user performs those runs. The service/executable publication and deployment status is checked against actual installed hashes and running process paths, as recorded above.
