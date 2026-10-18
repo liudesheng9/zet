@@ -805,6 +805,418 @@ fn verify_publication_input(id: &str, layer: &str, key: &str, hash: &str, inputs
     Ok(())
 }
 
+/// One independent note suggestion: its own readable key, the Card it names and
+/// the authored Card state the suggestion was made from (R224).
+fn note_suggestions(zt: &mut Zt, path: &str) -> Result<Vec<Value>> {
+    let raw = util::read_json(path).context("invalid note suggestions")?;
+    let items = raw
+        .as_array()
+        .context("note suggestions must be a JSON array")?;
+    if items.is_empty() || items.len() > 512 {
+        bail!("note suggestions must name between 1 and 512 suggestions");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut suggestions = Vec::new();
+    for item in items {
+        let id = field(item, "id")?;
+        if id.is_empty()
+            || id.len() > 64
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            bail!("note suggestion id `{id}` must be a readable key of at most 64 bytes");
+        }
+        if !seen.insert(id.to_string()) {
+            bail!("note suggestion `{id}` is declared twice");
+        }
+        let note = field(item, "note")?;
+        if note.trim().is_empty() {
+            bail!("note suggestion `{id}` must carry its suggestion");
+        }
+        let target = note
+            .split("[[")
+            .nth(1)
+            .and_then(|rest| rest.split("]]").next())
+            .map(|link| link.split('|').next().unwrap_or_default().trim().to_string())
+            .filter(|target| !target.is_empty())
+            .with_context(|| format!("note suggestion `{id}` must name the Link it proposes"))?;
+        suggestions.push(json!({"id":id,"card":field(item,"card")?,"note":note,"target":target}));
+    }
+    // One bounded read binds every suggestion to the Card state it was made from.
+    let addresses = suggestions
+        .iter()
+        .map(|s| field(s, "card").map(str::to_string))
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let cards = zt.cards(
+        &addresses.iter().cloned().collect::<Vec<_>>(),
+        "text",
+    )?;
+    for suggestion in &mut suggestions {
+        let at = field(suggestion, "card")?;
+        let card = cards
+            .cards
+            .iter()
+            .find(|card| card["address"] == at)
+            .with_context(|| {
+                format!(
+                    "note suggestion `{}` names a missing Card `{at}`",
+                    field(suggestion, "id").unwrap_or_default()
+                )
+            })?;
+        suggestion["fingerprint"] = json!(crate::calls::authored_fingerprint(card));
+    }
+    suggestions.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Ok(suggestions)
+}
+
+/// Register one unit per independent note suggestion. The same suggestion key with
+/// the same content reuses its unit; rebinding a key to different content is refused.
+fn register_notes(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
+    let suggestions = note_suggestions(zt, path)?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let mut units = Vec::new();
+    let mut reused = true;
+    for suggestion in &suggestions {
+        let id = field(suggestion, "id")?;
+        let unit = format!("notes/{id}@1");
+        let hash = canon::hash_value(suggestion);
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT input_hash FROM units WHERE id=?1",
+                [&unit],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match existing {
+            Some(stored) => {
+                if stored != hash {
+                    bail!("a registered suggestion key cannot be rebound to different content: {unit}");
+                }
+            }
+            None => {
+                reused = false;
+                register(&tx, "notes", id, 1, suggestion, None, false)?;
+                dependency(&tx, &unit, "prepare/book@1", "success")?;
+                event(
+                    &tx,
+                    &unit,
+                    None,
+                    None,
+                    "registered",
+                    &json!({"card":suggestion["card"],"input_hash":hash}),
+                )?;
+            }
+        }
+        units.push(json!({
+            "unit":unit,
+            "card":suggestion["card"],
+            "note":suggestion["note"],
+            "target":suggestion["target"],
+            "fingerprint":suggestion["fingerprint"],
+            "input_hash":hash,
+            "state":"registered"
+        }));
+    }
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "run_id":run,
+        "reused":reused,
+        "suggestions":suggestions.len(),
+        "units":units
+    }))
+}
+
+/// Complete one note suggestion: it is applied as a checked Link, already present,
+/// or refused with a source or relationship reason (R224). The archive read decides
+/// whether the proposed Link is authored now, and the registered Card state decides
+/// whether this pass changed the Card.
+fn note_disposition(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let (layer, rest) = unit.split_once('/').context("invalid note unit id")?;
+    let (id, revision) = rest.rsplit_once('@').context("invalid note unit id")?;
+    if layer != "notes" || revision != "1" {
+        bail!("`{unit}` is not a note suggestion unit");
+    }
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let registered = unit_inputs(p, unit)?;
+    let expected = p.out.join(format!("note-{id}.json"));
+    if std::fs::canonicalize(path).context("note disposition evidence does not exist")?
+        != std::fs::canonicalize(&expected)?
+    {
+        bail!("note disposition evidence locator mismatch");
+    }
+    let plan = util::read_json(path).context("invalid note disposition evidence")?;
+    if plan["schema_version"] != 1
+        || plan["kind"] != "note_disposition"
+        || plan["unit"] != unit
+        || plan["token"] != token
+        || plan["suggestion"] != registered
+    {
+        bail!("note disposition identity mismatch");
+    }
+    let outcome = field(&plan, "outcome")?;
+    if !["applied", "already_present", "refused"].contains(&outcome) {
+        bail!("note disposition outcome must be applied, already_present or refused");
+    }
+    let reason = plan["reason"].as_str().unwrap_or_default().trim().to_string();
+    let at = field(&registered, "card")?;
+    let card = zt.cards(&[at.to_string()], "text")?;
+    let card = card
+        .cards
+        .first()
+        .with_context(|| format!("note suggestion {unit} names a missing Card `{at}`"))?;
+    let body = card["body"].as_str().unwrap_or_default();
+    let target = field(&registered, "target")?;
+    let present = body.contains(&format!("[[{target}"));
+    let fingerprint = crate::calls::authored_fingerprint(card);
+    match outcome {
+        "applied" if !present => {
+            bail!("note disposition claims an applied Link that `{at}` does not author")
+        }
+        "applied" if fingerprint == registered["fingerprint"] => bail!(
+            "note disposition claims an applied Link without changing `{at}`; report already_present instead"
+        ),
+        "already_present" if !present => {
+            bail!("note disposition claims a present Link that `{at}` does not author")
+        }
+        "already_present" if fingerprint != registered["fingerprint"] => {
+            bail!("`{at}` changed since the suggestion was registered; re-register the suggestion")
+        }
+        "refused" if reason.is_empty() => {
+            bail!("a refused note suggestion must give its source or relationship reason")
+        }
+        _ => {}
+    }
+    let mut result = json!({
+        "schema_version":1,
+        "kind":"note_disposition",
+        "unit":unit,
+        "token":token,
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "suggestion":registered,
+        "outcome":outcome,
+        "reason":reason,
+        "present":present,
+        "fingerprint":fingerprint
+    });
+    let disposition_path = p.out.join(format!("note-disposition-{id}.json"));
+    if done {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let stored: String =
+            conn.query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| {
+                r.get(0)
+            })?;
+        let mut stored: Value = serde_json::from_str(&stored)?;
+        check_file(&stored["disposition"], "note disposition")?;
+        stored["reused"] = json!(true);
+        return Ok(stored);
+    }
+    let disposition = publish(&disposition_path, &serde_json::to_string_pretty(&result)?)?;
+    result["disposition"] = disposition.clone();
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "record",
+        "file",
+        field(&disposition, "path")?,
+        field(&disposition, "sha256")?,
+        &disposition,
+    )?;
+    output(
+        &tx,
+        unit,
+        &format!("card/{at}"),
+        "card",
+        at,
+        &fingerprint,
+        &json!({"purpose":"note_suggestion","outcome":outcome}),
+    )?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"outcome":outcome,"card":at,"present":present}),
+    )?;
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Existing addresses among `wanted`, read in bounded chunks. A missing address is
+/// explicit input, never an empty successful read.
+fn existing_cards(zt: &mut Zt, wanted: &[String]) -> Result<std::collections::BTreeSet<String>> {
+    let mut present = std::collections::BTreeSet::new();
+    for chunk in wanted.chunks(200) {
+        let reply = zt.call("get_cards", json!({"addresses":chunk,"view":"text"}))?;
+        for card in reply["cards"].as_array().into_iter().flatten() {
+            if let Some(at) = card["address"].as_str() {
+                present.insert(at.to_string());
+            }
+        }
+    }
+    Ok(present)
+}
+
+/// A recorded structural mapping: either one JSON object of old-to-new addresses
+/// or the helper's `-Moves` log of `{"i":n,"moved":{...}}` records. Chained moves
+/// compose, so an address that moved twice ends at its final place.
+fn recorded_moves(path: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    let text = util::read_text(path).context("invalid recorded move map")?;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut collect = |moved: &serde_json::Map<String, Value>| -> Result<()> {
+        for (old, new) in moved {
+            if old.trim().is_empty() {
+                bail!("a recorded move must name the address it replaces");
+            }
+            let new = new
+                .as_str()
+                .filter(|new| !new.trim().is_empty())
+                .with_context(|| format!("recorded move `{old}` must name its new address"))?;
+            pairs.push((old.clone(), new.to_string()));
+        }
+        Ok(())
+    };
+    let mut handled = false;
+    if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(text.trim()) {
+        if let Some(moved) = object.get("moved").and_then(Value::as_object) {
+            collect(moved)?;
+            handled = true;
+        } else if object.values().all(Value::is_string) {
+            collect(&object)?;
+            handled = true;
+        }
+    }
+    if !handled {
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let record: Value = serde_json::from_str(line).context("invalid recorded move line")?;
+            if let Some(moved) = record["moved"].as_object() {
+                collect(moved)?;
+            }
+        }
+    }
+    if pairs.len() > 512 {
+        bail!("a recorded move map names more than 512 moves");
+    }
+    let direct = pairs.iter().cloned().collect::<std::collections::BTreeMap<_, _>>();
+    let mut composed = std::collections::BTreeMap::new();
+    for (old, _) in &pairs {
+        let mut at = old.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(next) = direct.get(&at) {
+            if !seen.insert(at.clone()) {
+                break;
+            }
+            at = next.clone();
+        }
+        if at != *old {
+            composed.insert(old.clone(), at);
+        }
+    }
+    Ok(composed)
+}
+
+/// Apply a recorded structural mapping to every Card address this run published.
+/// A published address the archive no longer has, with no recorded mapping that
+/// explains it, is a precise conflict rather than a silent locator (T21).
+fn relocate(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
+    let mapping = recorded_moves(path)?;
+    if !mapping.is_empty() {
+        let targets = mapping.values().cloned().collect::<Vec<_>>();
+        let present = existing_cards(zt, &targets)?;
+        if let Some(missing) = targets.iter().find(|at| !present.contains(at.as_str())) {
+            bail!("a recorded move must name a Card that exists, not `{missing}`");
+        }
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let rows = {
+        let mut statement = tx.prepare(
+            "SELECT unit_id,output_key,locator FROM outputs WHERE kind='card' ORDER BY unit_id,output_key",
+        )?;
+        statement
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let unexplained = rows
+        .iter()
+        .filter(|(_, _, at)| !mapping.contains_key(at))
+        .map(|(_, _, at)| at.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let present = existing_cards(zt, &unexplained)?;
+    let vanished = unexplained
+        .iter()
+        .filter(|at| !present.contains(at.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !vanished.is_empty() {
+        bail!(
+            "unreconciled_move: addresses this run published have moved without a recorded mapping: {}",
+            vanished.join(", ")
+        );
+    }
+    let mut applied = 0;
+    let mut units = std::collections::BTreeSet::new();
+    for (unit, key, at) in &rows {
+        let Some(new) = mapping.get(at) else {
+            continue;
+        };
+        let taken: i64 = tx.query_row(
+            "SELECT count(*) FROM outputs WHERE unit_id=?1 AND output_key=?2",
+            params![unit, format!("card/{new}")],
+            |r| r.get(0),
+        )?;
+        if taken != 0 {
+            bail!("a recorded move would duplicate the recorded locator card/{new} of {unit}");
+        }
+        tx.execute(
+            "UPDATE outputs SET output_key=?2,locator=?3 WHERE unit_id=?1 AND output_key=?4",
+            params![unit, format!("card/{new}"), new, key],
+        )?;
+        event(
+            &tx,
+            unit,
+            None,
+            None,
+            "relocated",
+            &json!({"from":at,"to":new}),
+        )?;
+        units.insert(unit.clone());
+        applied += 1;
+    }
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "run_id":run,
+        "reused":applied == 0,
+        "applied":applied,
+        "moves":mapping,
+        "units":units.into_iter().collect::<Vec<_>>()
+    }))
+}
+
 /// The compiler artifacts that carry one publication layer's checked result. The
 /// workflow names the real files; the ledger binds their canonical path and hash.
 fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
@@ -844,6 +1256,104 @@ fn unit_inputs(p: &Prepared, unit: &str) -> Result<Value> {
         r.get(0)
     })?;
     canon::parse_json(&raw)
+}
+
+/// One completed producer's retained result, or null while it has not completed.
+fn unit_result(p: &Prepared, unit: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let raw: Option<String> = conn
+        .query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    match raw {
+        Some(raw) => serde_json::from_str(&raw).context("invalid producer result"),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The prepared members one publication layer must classify exactly once. A
+/// skeleton indexes the prepared groups, so every anchor is either verified
+/// substantive work or a named gap (R226).
+fn publication_coverage(p: &Prepared, layer: &str) -> Result<Option<Vec<Value>>> {
+    match layer {
+        "skeleton" => Ok(Some(
+            p.contract["groups"]
+                .as_array()
+                .context("missing prepared groups")?
+                .clone(),
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// Verify the layer's checked coverage: every required member exactly once, no
+/// invented member, and no fabricated coverage for a producer that did not
+/// produce substantive work.
+fn verify_coverage(p: &Prepared, layer: &str, manifest: &Value, plan: &Value) -> Result<Value> {
+    let Some(groups) = publication_coverage(p, layer)? else {
+        return Ok(json!([]));
+    };
+    if groups.is_empty() {
+        return Ok(json!([]));
+    }
+    let contributions = manifest["contributions"]
+        .as_array()
+        .context("publication manifest is missing its contributions")?;
+    let entries = plan["coverage"]
+        .as_array()
+        .context("publication completion is missing its checked coverage")?;
+    if entries.len() != groups.len() {
+        bail!("publication coverage must classify every required member exactly once");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut checked = Vec::new();
+    for entry in entries {
+        let reference = field(entry, "ref")?.to_string();
+        if !seen.insert(reference.clone()) {
+            bail!("publication coverage names `{reference}` twice");
+        }
+        let group = groups
+            .iter()
+            .find(|group| group["anchor"] == json!(reference))
+            .with_context(|| {
+                format!("publication coverage names `{reference}`, which is not a required member")
+            })?;
+        let producer = format!(
+            "digest/g{:03}@1",
+            group["n"].as_u64().context("invalid prepared group number")?
+        );
+        let contributing = contributions
+            .iter()
+            .any(|c| c["unit"] == json!(producer));
+        let substantive = if contributing {
+            unit_result(p, &producer)?["disposition"] != "no_cards"
+        } else {
+            false
+        };
+        let outcome = field(entry, "outcome")?;
+        let reason = entry["reason"].as_str().unwrap_or_default().trim().to_string();
+        match (layer, outcome) {
+            ("skeleton", "indexed") if !contributing => {
+                bail!("publication coverage cannot index `{reference}`: its producer is unresolved")
+            }
+            ("skeleton", "indexed") if !substantive => {
+                bail!("publication coverage must mark `{reference}` as a gap: its producer has no substantive Cards")
+            }
+            ("skeleton", "indexed") => {}
+            ("skeleton", "gap" | "unresolved") => {
+                if reason.is_empty() {
+                    bail!("publication coverage must give a reason for `{reference}`");
+                }
+                if contributing {
+                    bail!("publication coverage cannot report `{reference}` as {outcome}: its producer completed");
+                }
+            }
+            _ => bail!("unknown {layer} coverage outcome `{outcome}`"),
+        }
+        checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason,"producer":producer}));
+    }
+    Ok(json!(checked))
 }
 
 /// Complete one aggregate publication revision. The evidence must account for the
@@ -949,7 +1459,8 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
             .with_context(|| format!("{artifact} artifact path must be a string"))?;
         artifacts.insert((*artifact).to_string(), bind_file(at, artifact)?);
     }
-    let mut result = json!({"schema_version":1,"kind":"publication_completion","unit":unit,"token":token,"layer":layer,"key":key,"revision":revision,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"disposition":disposition,"consumed":consumed,"unresolved":unresolved,"artifacts":artifacts});
+    let coverage = verify_coverage(p, &layer, &manifest, &plan)?;
+    let mut result = json!({"schema_version":1,"kind":"publication_completion","unit":unit,"token":token,"layer":layer,"key":key,"revision":revision,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"disposition":disposition,"consumed":consumed,"unresolved":unresolved,"coverage":coverage,"artifacts":artifacts});
     let completion_path = p.out.join(format!("publication-completion-{layer}-{key}-{revision}.json"));
     if done {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
@@ -978,6 +1489,7 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
             record,
         )?;
     }
+    completion_fault(p, "after_outputs")?;
     output(
         &tx,
         unit,
@@ -987,6 +1499,17 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
         field(&completion, "sha256")?,
         &completion,
     )?;
+    for record in result["coverage"].as_array().unwrap() {
+        output(
+            &tx,
+            unit,
+            &format!("coverage/{}", field(record, "ref")?),
+            "coverage",
+            field(record, "producer")?,
+            &canon::hash_value(record),
+            record,
+        )?;
+    }
     tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
     event(
         &tx,
@@ -996,17 +1519,69 @@ fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resu
         "completed",
         &json!({"disposition":disposition,"revision":revision,"completion":completion,"consumed":result["consumed"],"unresolved":result["unresolved"]}),
     )?;
+    completion_fault(p, "before_commit")?;
     tx.commit()?;
+    completion_fault(p, "after_commit")?;
     Ok(result)
+}
+
+/// The declared scope of one hub refresh. A hub refresh is coalesced by touched
+/// tree, so it must name that tree and its relevant upper hubs and Register (R227);
+/// the hub compiler's own report is what verifies their structure and membership.
+fn hub_scope(key: &str, path: &str) -> Result<Value> {
+    if path.trim().is_empty() {
+        bail!("a `hubs` publication requires -Scope naming the touched tree, its required upper hubs and the Register");
+    }
+    let raw = util::read_json(path).context("invalid hub scope")?;
+    let object = raw.as_object().context("hub scope must be a JSON object")?;
+    if let Some(name) = object
+        .keys()
+        .find(|k| !["tree", "upper", "register"].contains(&k.as_str()))
+    {
+        bail!("hub scope accepts only tree, upper and register, not `{name}`");
+    }
+    let tree = field(&raw, "tree").context("hub scope requires its tree")?;
+    if tree != key {
+        bail!("hub scope tree `{tree}` differs from the requested key `{key}`");
+    }
+    let upper = raw["upper"]
+        .as_array()
+        .context("hub scope requires its required upper hubs")?
+        .iter()
+        .map(|at| {
+            at.as_str()
+                .filter(|at| !at.trim().is_empty())
+                .map(str::to_string)
+                .context("hub scope upper hubs must be nonempty addresses")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if upper.len() > 64 {
+        bail!("hub scope names more than 64 required upper hubs");
+    }
+    let register = match raw.get("register") {
+        Some(Value::Null) => None,
+        Some(Value::String(at)) if !at.trim().is_empty() => Some(at.clone()),
+        Some(_) => bail!("hub scope register must be a nonempty address or null"),
+        None => bail!("hub scope requires an explicit register address or null"),
+    };
+    Ok(json!({"tree":key,"upper":upper,"register":register}))
 }
 
 /// Derive and register the next revision of one aggregate publication. The same
 /// sorted input manifest always returns the same revision; a changed manifest
 /// registers the next one and makes every older open revision terminal.
-fn publication(p: &Prepared, layer: &str, key: &str, scope: Value) -> Result<Value> {
+fn publication(p: &Prepared, layer: &str, key: &str, declared: &str) -> Result<Value> {
     if !PUBLICATION.contains(&layer) {
         bail!("`{layer}` is not an aggregate publication layer");
     }
+    let scope = if layer == "hubs" {
+        hub_scope(key, declared)?
+    } else {
+        if !declared.trim().is_empty() {
+            bail!("only a `hubs` publication declares -Scope");
+        }
+        Value::Null
+    };
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -2556,6 +3131,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "ledger-group-finish-test-",
                 "ledger-terms-test-",
                 "ledger-prepare-recovery-test-",
+                "ledger-publication-test-",
             ]
             .iter()
             .any(|prefix| n.to_string_lossy().starts_with(prefix))
@@ -4513,9 +5089,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "fail"
                 | "rerun-list"
                 | "publish"
+                | "notes"
+                | "relocate"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list or publish"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes or relocate"
             );
         }
         let params = if command == "next" {
@@ -4527,7 +5105,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else if command == "done" {
             vec!["Out", "Unit", "Token", "Outputs"]
         } else if command == "publish" {
-            vec!["Out", "Layer", "Key"]
+            vec!["Out", "Layer", "Key", "Scope"]
+        } else if command == "notes" {
+            vec!["Out", "Suggestions"]
+        } else if command == "relocate" {
+            vec!["Out", "Moves"]
         } else {
             vec!["Out", "Layer"]
         };
@@ -4580,6 +5162,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         if command == "done" {
             a.required("Outputs")?;
         }
+        if command == "notes" && a.required("Suggestions")?.trim().is_empty() {
+            bail!("-Suggestions is required");
+        }
+        if command == "relocate" && a.required("Moves")?.trim().is_empty() {
+            bail!("-Moves is required");
+        }
         if a.has("Layer")
             && !COMMON.contains(&a.str("Layer").as_str())
             && ![
@@ -4616,7 +5204,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let result = if command == "publish" {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
-        publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), Value::Null)?
+        publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), &a.str("Scope"))?
+    } else if command == "notes" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read(&a.str("Out"), &mut zt)?;
+        register_notes(&p, &mut zt, &a.str("Suggestions"))?
+    } else if command == "relocate" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read(&a.str("Out"), &mut zt)?;
+        relocate(&p, &mut zt, &a.str("Moves"))?
     } else if matches!(
         command.as_str(),
         "init" | "next" | "renew" | "done" | "fail"
@@ -4660,6 +5256,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 terms_apply(&p, &mut zt, token, terms, candidates)?
             } else if publication_unit(&unit).is_ok() {
                 publication_finish(&p, &unit, token, Path::new(&path))?
+            } else if unit.starts_with("notes/") {
+                note_disposition(&p, &mut zt, &unit, token, Path::new(&path))?
             } else {
                 let number = unit
                     .strip_prefix("digest/g")

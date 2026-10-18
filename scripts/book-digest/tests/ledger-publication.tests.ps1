@@ -8,6 +8,7 @@ New-Item -ItemType Directory -Force $scratch | Out-Null
 if ($Zt) { $env:PATH = "$(Split-Path -Parent $Zt);$env:PATH" }
 if (-not $Digest) { $Digest = (Get-Command zt-digest -CommandType Application | Select-Object -First 1).Source }
 $env:ZT_DIGEST = $Digest; $env:ZT_CONFIG_DIR = Join-Path $scratch 'config'; $env:ZT_GUI_PORT = '0'
+. (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition,$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Run-Digest([string[]]$Arguments) {
     $lines = @(& $Digest @Arguments 2>&1)
@@ -101,6 +102,165 @@ try {
     Assert ($done.state -eq 'done' -and $done.disposition -eq 'partial' -and @($done.consumed).Count -eq 0 -and @($done.unresolved).Count -eq 2 -and $done.artifacts.decisions.sha256 -match '^[0-9a-f]{64}$' -and $done.artifacts.applied.sha256 -match '^[0-9a-f]{64}$') 'a publication revision completes with every manifest entry accounted for and its compiler artifacts hash-bound'
     $repeat = Run-Digest @('ledger','done','-Out',$out,'-Unit',$claimed.id,'-Token',"$($claimed.token)",'-Outputs',$plan)
     Assert ($repeat.reused -eq $true -and $repeat.disposition -eq 'partial' -and $repeat.completion.sha256 -ceq $done.completion.sha256) 'repeating a completed publication revision is read-only and retains its evidence'
+
+    # A skeleton revision must classify every prepared anchor; it may not invent
+    # coverage for an anchor whose producer never became substantive work.
+    $skeleton = Run-Digest @('ledger','publish','-Out',$out,'-Layer','skeleton')
+    Assert ($skeleton.unit -ceq 'skeleton/book@2' -and -not $skeleton.reused) 'another publication layer derives its own revision from the same sorted manifest'
+    $skeletonClaim = Run-Digest @('ledger','next','-Out',$out,'-Layer','skeleton','-Take','1','-Owner','publication-manager')
+    Assert ($skeletonClaim.units.Count -eq 1 -and $skeletonClaim.units[0].id -ceq 'skeleton/book@2') 'the skeleton revision is claimable through the ledger'
+    [IO.File]::WriteAllText((Join-Path $out 'skeleton.json'),(@{ fixture = 'skeleton' } | ConvertTo-Json),$utf8)
+    $anchors = @($manifest.groups | ForEach-Object { $_.anchor })
+    $skelUnit = $skeletonClaim.units[0]
+    function Skeleton-Plan([string]$Outcome) {
+        $planPath = Join-Path $out 'publication-skeleton-book-2.json'
+        [IO.File]::WriteAllText($planPath,(@{
+            schema_version = 1
+            kind = 'publication_completion'
+            unit = $skelUnit.id
+            token = $skelUnit.token
+            layer = 'skeleton'
+            key = 'book'
+            input_hash = $skelUnit.input_hash
+            disposition = 'partial'
+            consumed = @()
+            unresolved = @($skelUnit.inputs.dispositions | ForEach-Object { @{ unit = $_.unit } })
+            coverage = @($anchors | ForEach-Object { @{ ref = $_; outcome = $Outcome; reason = 'fixture' } })
+            artifacts = @{ skeleton = (Join-Path $out 'skeleton.json') }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $planPath
+    }
+    Refuses @('ledger','done','-Out',$out,'-Unit',$skelUnit.id,'-Token',"$($skelUnit.token)",'-Outputs',(Skeleton-Plan 'indexed')) 'its producer is unresolved'
+    $skelDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$skelUnit.id,'-Token',"$($skelUnit.token)",'-Outputs',(Skeleton-Plan 'unresolved'))
+    Assert ($skelDone.state -eq 'done' -and $skelDone.disposition -eq 'partial' -and @($skelDone.coverage).Count -eq $anchors.Count -and @($skelDone.coverage | Where-Object { $_.outcome -eq 'unresolved' -and $_.reason -and $_.producer }).Count -eq $anchors.Count) 'a skeleton revision completes with every prepared anchor explicitly unresolved instead of fabricated coverage'
+
+    # A hub refresh is coalesced by touched tree, so it declares that tree with its
+    # required upper hubs and Register instead of refreshing every tree at once.
+    $hubOut = Join-Path $scratch 'hubs'
+    $hubSource = Join-Path $scratch 'hubs.md'
+    [IO.File]::WriteAllText($hubSource,"# 导论`n`n企业的融资约束改变投资选择。`n`n# 参考`n未选择。",$utf8)
+    $hubOptions = Join-Path $scratch 'hubs-options.json'
+    [IO.File]::WriteAllText($hubOptions,'{"terms":false,"models":false,"events":false,"findings":false,"figures":false,"bridge":false}',$utf8)
+    $hubManifest = Run-Digest @('prepare','-Source',$hubSource,'-Out',$hubOut,'-CitationKey','HubTree','-BibTeX','@book{HubTree,title={Hub tree}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-NoFigures','-Variant','econ','-RunOptions',$hubOptions,'-Apply')
+    $hubClaim = (Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','digest','-Take','1','-Owner','hub-manager')).units[0]
+    $hubStart = Run-Digest @('group-start','-Out',$hubOut,'-Group','1','-Token',"$($hubClaim.token)")
+    $hubJob = Get-Content -LiteralPath $hubStart.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    [IO.File]::WriteAllText($hubStart.draft,(@{
+        schema_version = 1; unit = $hubClaim.id; token = $hubClaim.token; input_hash = $hubStart.input_hash; disposition = 'cards'
+        calls = @(
+            @{ tool = 'edit_card'; arguments = @{ at = 'HubTree/1'; title = '融资约束改变投资选择'; body = '融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。'; base_fingerprint = $hubJob.inputs.anchor.fingerprint } },
+            @{ tool = 'create_successor'; arguments = @{ at = 'HubTree/1'; kind = 'side'; title = '贷款收紧限制企业投入'; body = '融资成本影响企业的生产选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[HubTree/1]]' } }
+        )
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $hubDone = Run-Digest @('group-finish','-Out',$hubOut,'-Group','1','-Token',"$($hubClaim.token)",'-Draft',$hubStart.draft)
+    Assert ($hubDone.state -eq 'done' -and 'HubTree' -in $hubDone.trees) 'a completed producer records the trees it actually touched'
+
+    $hubScope = Join-Path $scratch 'hub-scope.json'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"OtherTree","upper":[],"register":null}',$utf8)
+    Refuses @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope) 'differs from the requested key'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
+    $hubPublication = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
+    Assert ($hubPublication.unit -ceq 'hubs/HubTree@1' -and $hubPublication.scope.tree -ceq 'HubTree' -and $hubPublication.scope.upper -contains 'HubTree/1' -and @($hubPublication.contributions).Count -eq 1 -and $hubPublication.contributions[0].unit -ceq 'digest/g001@1') 'a hub refresh coalesces the producers that touched its declared tree'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1","HubTree/2"],"register":null}',$utf8)
+    $changedScope = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
+    Assert ($changedScope.unit -ceq 'hubs/HubTree@2' -and -not $changedScope.reused) 'a changed declared scope is a changed input and registers the next revision'
+    [IO.File]::WriteAllText($hubScope,'{"tree":"OtherTree","upper":[],"register":null}',$utf8)
+    $untouched = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','OtherTree','-Scope',$hubScope)
+    Assert ($untouched.unit -ceq 'hubs/OtherTree@1' -and @($untouched.contributions).Count -eq 0) 'a tree no producer touched has no contributing work of its own'
+
+    # Every independent note suggestion becomes one work unit with its own outcome,
+    # registered against the Card state the suggestion was made from.
+    $suggestions = Join-Path $scratch 'suggestions.json'
+    [IO.File]::WriteAllText($suggestions,'[{"id":"n01","card":"HubTree/1","note":"[[HubTree/1|a]] 依赖 融资约束"},{"id":"n02","card":"HubTree/1|a","note":"[[HubTree/1]] 承接 融资约束"},{"id":"n03","card":"HubTree/1","note":"[[MissingCard/9]] 对应 未知来源"}]',$utf8)
+    $notes = Run-Digest @('ledger','notes','-Out',$hubOut,'-Suggestions',$suggestions)
+    Assert (@($notes.units).Count -eq 3 -and @($notes.units | Where-Object { $_.unit -eq 'notes/n01@1' -and $_.state -eq 'registered' }).Count -eq 1 -and @($notes.units | Where-Object { $_.unit -eq 'notes/n03@1' }).Count -eq 1) 'each note suggestion registers its own readable logical unit'
+    Assert (@($notes.units | Where-Object { -not $_.fingerprint -or -not $_.target }).Count -eq 0) 'a registered suggestion records the Card state and the Link it proposes'
+    $again = Run-Digest @('ledger','notes','-Out',$hubOut,'-Suggestions',$suggestions)
+    Assert ($again.reused -eq $true -and @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','notes')).units).Count -eq 3) 'repeating the same suggestions registers no second unit'
+    [IO.File]::WriteAllText($suggestions,'[{"id":"n01","card":"HubTree/1","note":"[[HubTree/2]] 印证 融资约束"}]',$utf8)
+    Refuses @('ledger','notes','-Out',$hubOut,'-Suggestions',$suggestions) 'a registered suggestion key cannot be rebound to different content'
+
+    # Each suggestion reaches exactly one outcome, checked against the archive: an
+    # applied Link changed the Card, an already-present Link did not, and a refusal
+    # carries its source or relationship reason.
+    $noteClaim = Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','notes','-Take','4','-Owner','notes-manager')
+    Assert (@($noteClaim.units).Count -eq 3) 'every registered suggestion is claimable as its own work unit'
+    function Note-Plan([string]$Id,[string]$Outcome,[string]$Reason) {
+        $unit = @($notes.units | Where-Object { $_.unit -eq "notes/$Id@1" })[0]
+        $claim = @($noteClaim.units | Where-Object { $_.id -eq "notes/$Id@1" })[0]
+        $planPath = Join-Path $hubOut "note-$Id.json"
+        [IO.File]::WriteAllText($planPath,(@{
+            schema_version = 1
+            kind = 'note_disposition'
+            unit = $claim.id
+            token = $claim.token
+            outcome = $Outcome
+            reason = $Reason
+            suggestion = @{ id = $Id; card = $unit.card; note = $unit.note; target = $unit.target; fingerprint = $unit.fingerprint }
+        } | ConvertTo-Json -Depth 8),$utf8)
+        return $planPath
+    }
+    Refuses @('ledger','done','-Out',$hubOut,'-Unit','notes/n01@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n01@1' })[0].token)",'-Outputs',(Note-Plan 'n01' 'refused' '')) 'must give its source or relationship reason'
+    $null = Invoke-Zt @(@{tool='apply_batch';arguments=@{items=@(
+        @{op_key='qualification/notes/1/apply/n01';client_ref='n01';tool='edit_card';arguments=@{at='HubTree/1';body='融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。[[HubTree/1|a]] 依赖 融资约束';base_fingerprint=$hubDone.card_fingerprints['HubTree/1']}}
+    )}})
+    $n01 = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit','notes/n01@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n01@1' })[0].token)",'-Outputs',(Note-Plan 'n01' 'applied' ''))
+    Assert ($n01.state -eq 'done' -and $n01.outcome -eq 'applied' -and $n01.present -eq $true -and $n01.fingerprint -ne $n01.suggestion.fingerprint) 'an applied suggestion is a checked Link that changed its Card'
+    Refuses @('ledger','done','-Out',$hubOut,'-Unit','notes/n02@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n02@1' })[0].token)",'-Outputs',(Note-Plan 'n02' 'applied' '')) 'without changing'
+    $n02 = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit','notes/n02@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n02@1' })[0].token)",'-Outputs',(Note-Plan 'n02' 'already_present' ''))
+    $n03 = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit','notes/n03@1','-Token',"$(@($noteClaim.units | Where-Object { $_.id -eq 'notes/n03@1' })[0].token)",'-Outputs',(Note-Plan 'n03' 'refused' '来源不支持该关系'))
+    Assert ($n02.outcome -eq 'already_present' -and $n02.present -eq $true -and $n02.fingerprint -eq $n02.suggestion.fingerprint -and $n03.outcome -eq 'refused' -and $n03.reason -eq '来源不支持该关系' -and $n03.present -eq $false) 'every suggestion retains its own already-present or reasoned refusal outcome'
+
+    # A recorded structural mapping updates the addresses this run published; an
+    # unexplained move is a precise conflict, not a silently stale locator.
+    $moves = Join-Path $scratch 'moves.json'
+    $null = & $Digest call -Tool move_card -Json '{"at":"HubTree/1|a","to":"HubTree/2","confirm":"move"}' -Moves $moves 2>&1
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path $moves) -and ((Get-Content -LiteralPath $moves -Raw) -match 'HubTree/1\|a')) 'a real move records its exact structural mapping'
+    $emptyMoves = Join-Path $scratch 'no-moves.json'
+    [IO.File]::WriteAllText($emptyMoves,'{}',$utf8)
+    Refuses @('ledger','relocate','-Out',$hubOut,'-Moves',$emptyMoves) 'unreconciled_move'
+    $relocated = Run-Digest @('ledger','relocate','-Out',$hubOut,'-Moves',$moves)
+    Assert ($relocated.applied -ge 1 -and @($relocated.units).Count -ge 1 -and -not $relocated.reused) 'a recorded mapping updates every published Card locator it explains'
+    $again = Run-Digest @('ledger','relocate','-Out',$hubOut,'-Moves',$moves)
+    Assert ($again.applied -eq 0 -and $again.reused) 'reapplying the same recorded mapping changes no locator twice'
+    $badMoves = Join-Path $scratch 'bad-moves.json'
+    [IO.File]::WriteAllText($badMoves,'{"HubTree/1":"HubTree/99"}',$utf8)
+    Refuses @('ledger','relocate','-Out',$hubOut,'-Moves',$badMoves) 'must name a Card that exists'
+
+    # T15: a completion fault after the outputs are written rolls the whole
+    # publication transition back, so a done revision never loses or half-gains work.
+    $skelAgain = Run-Digest @('ledger','publish','-Out',$out,'-Layer','skeleton')
+    $skeletonOut = Join-Path $scratch 'skeleton-second'
+    $null = New-Item -ItemType Directory -Force $skeletonOut
+    $secondSource = Join-Path $scratch 'second.md'
+    [IO.File]::WriteAllText($secondSource,"# 导论`n`n# 参考`n未选择。",$utf8)
+    $secondOptions = Join-Path $scratch 'second-options.json'
+    [IO.File]::WriteAllText($secondOptions,'{"terms":false,"models":false,"events":false,"findings":false,"figures":false,"bridge":false}',$utf8)
+    $second = Run-Digest @('prepare','-Source',$secondSource,'-Out',$skeletonOut,'-CitationKey','FaultBook','-BibTeX','@book{FaultBook,title={Fault book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-NoFigures','-Variant','econ','-RunOptions',$secondOptions,'-Apply')
+    $group = (Run-Digest @('ledger','next','-Out',$skeletonOut,'-Layer','digest','-Take','1','-Owner','fault-manager')).units[0]
+    $started = Run-Digest @('group-start','-Out',$skeletonOut,'-Group','1','-Token',"$($group.token)")
+    [IO.File]::WriteAllText($started.draft,(@{
+        schema_version = 1; unit = $group.id; token = $group.token; input_hash = $started.input_hash; disposition = 'no_cards'; calls = @()
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $null = Run-Digest @('group-finish','-Out',$skeletonOut,'-Group','1','-Token',"$($group.token)",'-Draft',$started.draft)
+    $faultPublication = Run-Digest @('ledger','publish','-Out',$skeletonOut,'-Layer','audit')
+    $faultClaim = (Run-Digest @('ledger','next','-Out',$skeletonOut,'-Layer','audit','-Take','1','-Owner','fault-manager')).units[0]
+    [IO.File]::WriteAllText((Join-Path $skeletonOut 'report.json'),(@{ fixture = 'audit' } | ConvertTo-Json),$utf8)
+    $faultPlan = Join-Path $skeletonOut ("publication-{0}.json" -f ($faultClaim.id -replace '[/@]','-'))
+    [IO.File]::WriteAllText($faultPlan,(@{
+        schema_version = 1; kind = 'publication_completion'; unit = $faultClaim.id; token = $faultClaim.token
+        layer = 'audit'; key = 'book'; input_hash = $faultClaim.input_hash
+        disposition = 'published'; consumed = @($faultClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
+        unresolved = @(); coverage = @(); artifacts = @{ report = (Join-Path $skeletonOut 'report.json') }
+    } | ConvertTo-Json -Depth 8),$utf8)
+    $env:ZT_LEDGER_COMPLETE_FAULT = 'after_outputs'
+    Refuses @('ledger','done','-Out',$skeletonOut,'-Unit',$faultClaim.id,'-Token',"$($faultClaim.token)",'-Outputs',$faultPlan) 'injected completion fault'
+    Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT
+    $rolledBack = Run-Digest @('ledger','status','-Out',$skeletonOut,'-Layer','audit')
+    $rolledBackUnit = @($rolledBack.units | Where-Object { $_.id -eq $faultClaim.id })[0]
+    Assert ($rolledBackUnit.state -eq 'claimed' -and $rolledBackUnit.result -eq $null -and $rolledBack.counts.done -eq 0) 'a publication completion fault rolls its outputs, done state and evidence back together'
+    $retried = Run-Digest @('ledger','done','-Out',$skeletonOut,'-Unit',$faultClaim.id,'-Token',"$($faultClaim.token)",'-Outputs',$faultPlan)
+    Assert ($retried.state -eq 'done' -and $retried.disposition -eq 'published' -and $retried.unit -ceq $faultPublication.unit) 'the same publication claim completes after the fault is removed'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
