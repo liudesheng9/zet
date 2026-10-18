@@ -1,0 +1,1132 @@
+{
+  "schema_version": 1,
+  "issue": 89,
+  "scope": "Isolated release qualification of both frozen digest variants: consistent archive copies, release hashes, warm-up and 10 measured runs with median/p95, call/row/byte/update/queue/lock evidence, full-parser parity and fixed-local-work scaling. No digest workflow, provider call or live Card write ran.",
+  "facts": {
+    "generated_utc": "2026-10-18T21:25:44Z",
+    "host": {
+      "os": "Microsoft Windows NT 10.0.26200.0",
+      "psversion": "7.6.7",
+      "processors": 32,
+      "machine": "LENOVO-CXT"
+    },
+    "archive": {
+      "source": "D:\\zt\\zt.sqlite3",
+      "source_sha256": "4ac0c974e84026f72a09517a7d21e4754dcee061c616074261e3626588153a60",
+      "source_bytes": 39026688
+    },
+    "source": {
+      "path": "E:\\zet\\docs\\digest-pilot-short-source.zh.md",
+      "sha256": "c9b20dca0e99e217bbc7dad0f8561c2443e9d162e252bb4fcc3e618d1ec39e13",
+      "bytes": 2994
+    },
+    "binaries": {
+      "zt": {
+        "path": "C:\\Users\\chenx\\.cargo\\bin\\zt.exe",
+        "sha256": "751727e77f27f68466018f7e0003773363ffba49f3b0ebe4a9baf2de831624e9",
+        "version": "zt 0.20.0"
+      },
+      "zt_check": {
+        "path": "C:\\Users\\chenx\\.cargo\\bin\\zt-check.exe",
+        "sha256": "36d0fd6195c0867746b87f97a2c06971e5bfdfdf112eacafc08ac13e44f30a2f"
+      },
+      "zt_digest": {
+        "path": "C:\\Users\\chenx\\.cargo\\bin\\zt-digest.exe",
+        "sha256": "ef3fde47da58d89082ab6d73c141db0f23d353097bebc790a9937b8d53a767c7",
+        "version": "zt-digest 0.1.0"
+      }
+    },
+    "runs": 10,
+    "concurrency": 4
+  },
+  "results": {
+    "variants": {
+      "econ": {
+        "prepare": {
+          "exit": 0,
+          "ms": 560.4,
+          "groups": 3,
+          "citation_key": "Qualify2026",
+          "manifest_sha256": "91e07239b5f5feee55bb8ae44ac839700f2942d476f969179d728f5e884a5e0c",
+          "ledger_sha256": "ce28712a619666b6589e56d5b5a311fd7088d4d2c5bba64378f5b19cd97ef1d5"
+        },
+        "link_check": {
+          "before": {
+            "archive_revision": 0,
+            "cards": 10895,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 10895,
+              "refreshed_cards": 10895
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "after_prepare": {
+            "archive_revision": 1,
+            "cards": 10899,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 4,
+              "refreshed_cards": 4
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "after_tools": {
+            "archive_revision": 1,
+            "cards": 10899,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 4,
+              "refreshed_cards": 4
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "final": {
+            "archive_revision": 44,
+            "cards": 11921,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 67,
+              "indexed_cards": 5,
+              "refreshed_cards": 67
+            },
+            "links": 58974,
+            "ok": true
+          },
+          "archive_sha256_before": "4ac0c974e84026f72a09517a7d21e4754dcee061c616074261e3626588153a60",
+          "archive_sha256_final": "2a446f52199df019dd93f17f61db5e1b1301fef3ce0280ba03388f1f0d55c786"
+        },
+        "tools": [
+          {
+            "command": "snapshot-topics",
+            "target_ms": 1000,
+            "samples_ms": [
+              665.4,
+              673.2,
+              721.4,
+              739.1,
+              684.3,
+              700.9,
+              716.0,
+              696.4,
+              654.0,
+              663.0
+            ],
+            "median_ms": 684.3,
+            "p95_ms": 739.1,
+            "max_ms": 739.1,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "export_titles": 1
+            },
+            "call_count": 1,
+            "mcp_processes": 1,
+            "addresses_requested": 0,
+            "stdout_bytes": null,
+            "artifact_bytes": 1193347,
+            "projection_sha256": "cf9b812584c64181621d5a43069efa4c4b1463cc4db96fe9dd7d7f3202879683",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-plan",
+            "target_ms": 10000,
+            "samples_ms": [
+              1325.5,
+              1359.3,
+              1321.6,
+              1390.9,
+              1370.8,
+              1318.2,
+              1327.2,
+              1392.2,
+              1324.9,
+              1305.2
+            ],
+            "median_ms": 1325.5,
+            "p95_ms": 1392.2,
+            "max_ms": 1392.2,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 478,
+            "projection_sha256": "a62b96bded14b77c4b78cc32b39b5d6f7c807335a5c8974a848ee977c13543f9",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-check",
+            "target_ms": 10000,
+            "samples_ms": [
+              1344.1,
+              1308.1,
+              1315.1,
+              1355.6,
+              1323.1,
+              1302.9,
+              1340.4,
+              1371.0,
+              1350.0,
+              1310.3
+            ],
+            "median_ms": 1323.1,
+            "p95_ms": 1371.0,
+            "max_ms": 1371.0,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 59,
+            "projection_sha256": "c67126d1dcc24a89b35012da839d52022ebd544afc4d76b093576430cf1291f2",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-report",
+            "target_ms": 10000,
+            "samples_ms": [
+              1352.5,
+              1315.3,
+              1381.8,
+              1327.4,
+              1318.3,
+              1354.1,
+              1298.5,
+              1381.7,
+              1345.6,
+              1320.5
+            ],
+            "median_ms": 1327.4,
+            "p95_ms": 1381.8,
+            "max_ms": 1381.8,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 1606,
+            "projection_sha256": "4885de8a9ce30909295b7dd4d2f447a9e82adbffa65ce3b2d943b3b41b3426dd",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "prepare-link",
+            "target_ms": 20000,
+            "samples_ms": [
+              4788.6,
+              4481.3,
+              4597.8,
+              4622.3,
+              4575.8,
+              4702.9,
+              4673.5,
+              4773.1,
+              4594.9,
+              5191.5
+            ],
+            "median_ms": 4622.3,
+            "p95_ms": 5191.5,
+            "max_ms": 5191.5,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "export_titles": 1,
+              "get_cards": 55
+            },
+            "call_count": 56,
+            "mcp_processes": 1,
+            "addresses_requested": 10899,
+            "stdout_bytes": null,
+            "artifact_bytes": 241,
+            "projection_sha256": "3fe3013d22c8147d37048f3210e519517d9e29c499018df002c1e3b4d4a49fc4",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          }
+        ],
+        "model_apply": {
+          "runs": [
+            {
+              "run": 1,
+              "exit": 0,
+              "ms": 439.2,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 2,
+              "exit": 0,
+              "ms": 656.2,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 3,
+              "exit": 0,
+              "ms": 600.6,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 4,
+              "exit": 0,
+              "ms": 446.3,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 5,
+              "exit": 0,
+              "ms": 418.2,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 6,
+              "exit": 0,
+              "ms": 522.0,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 7,
+              "exit": 0,
+              "ms": 465.6,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 8,
+              "exit": 0,
+              "ms": 459.9,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 9,
+              "exit": 0,
+              "ms": 412.9,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 10,
+              "exit": 0,
+              "ms": 438.6,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            }
+          ],
+          "samples_ms": [
+            439.2,
+            656.2,
+            600.6,
+            446.3,
+            418.2,
+            522.0,
+            465.6,
+            459.9,
+            412.9,
+            438.6
+          ],
+          "median_ms": 446.3,
+          "p95_ms": 656.2,
+          "max_ms": 656.2,
+          "chunk_shapes": [
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5"
+          ],
+          "part_map": {
+            "model": "286/1",
+            "parts": 66
+          },
+          "revisions": 20,
+          "replay_revision_delta": 0,
+          "accepted_replayed": 69,
+          "last_write": {
+            "changed_reverse_sections": 67,
+            "indexed_cards": 5,
+            "refreshed_cards": 67
+          },
+          "lock_log_lines": []
+        },
+        "ordinary": {
+          "target": "287/1",
+          "read_ms": {
+            "samples": [
+              3.1,
+              3.8,
+              2.9,
+              2.8,
+              3.0,
+              3.4,
+              3.3,
+              3.7,
+              2.9,
+              2.9
+            ],
+            "median_ms": 3.0,
+            "p95_ms": 3.8,
+            "bytes": [
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1423,
+              1423
+            ]
+          },
+          "write_ms": {
+            "samples": [
+              11.7,
+              12.2,
+              11.4,
+              11.5,
+              12.0,
+              328.3,
+              10.1,
+              12.0,
+              11.8,
+              11.5
+            ],
+            "median_ms": 11.7,
+            "p95_ms": 328.3,
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 1,
+              "refreshed_cards": 1
+            }
+          }
+        },
+        "contention": {
+          "waited_ms": 6644.0,
+          "committed": true,
+          "queue_wait_ms": 6630,
+          "held_ms": 10,
+          "log_line": "1792358875 edit wait done: op=edit_card waiter_pid=65604 outcome=acquired queue_wait_ms=6630 held_ms=10"
+        },
+        "concurrency": {
+          "writes": 4,
+          "succeeded": 4,
+          "exit_codes": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "revisions": 8,
+          "lock_lines": []
+        }
+      },
+      "math": {
+        "prepare": {
+          "exit": 0,
+          "ms": 472.5,
+          "groups": 3,
+          "citation_key": "Qualify2026",
+          "manifest_sha256": "05f0de7e14688f5f90d30e1d091fb0bdd4993b96ff725ebbe418e358b8571590",
+          "ledger_sha256": "dd17a3d6c6bf2abd4b94f9237c85e9d92707935317b4043375a97e1ba2ae7601"
+        },
+        "link_check": {
+          "before": {
+            "archive_revision": 0,
+            "cards": 10895,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 10895,
+              "refreshed_cards": 10895
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "after_prepare": {
+            "archive_revision": 1,
+            "cards": 10899,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 4,
+              "refreshed_cards": 4
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "after_tools": {
+            "archive_revision": 1,
+            "cards": 10899,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 4,
+              "refreshed_cards": 4
+            },
+            "links": 56994,
+            "ok": true
+          },
+          "final": {
+            "archive_revision": 44,
+            "cards": 11921,
+            "faults": [],
+            "last_write": {
+              "changed_reverse_sections": 67,
+              "indexed_cards": 5,
+              "refreshed_cards": 67
+            },
+            "links": 58974,
+            "ok": true
+          },
+          "archive_sha256_before": "4ac0c974e84026f72a09517a7d21e4754dcee061c616074261e3626588153a60",
+          "archive_sha256_final": "c99c043cd719d5ca8cc7ac398de10d85e976a43b024b06006b093f822b940098"
+        },
+        "tools": [
+          {
+            "command": "snapshot-topics",
+            "target_ms": 1000,
+            "samples_ms": [
+              672.0,
+              655.7,
+              658.5,
+              696.4,
+              661.6,
+              713.1,
+              672.3,
+              671.9,
+              667.5,
+              661.6
+            ],
+            "median_ms": 667.5,
+            "p95_ms": 713.1,
+            "max_ms": 713.1,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "export_titles": 1
+            },
+            "call_count": 1,
+            "mcp_processes": 1,
+            "addresses_requested": 0,
+            "stdout_bytes": null,
+            "artifact_bytes": 1193347,
+            "projection_sha256": "cf9b812584c64181621d5a43069efa4c4b1463cc4db96fe9dd7d7f3202879683",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-plan",
+            "target_ms": 10000,
+            "samples_ms": [
+              1336.5,
+              1422.8,
+              1339.7,
+              1338.2,
+              1379.2,
+              1374.0,
+              1366.4,
+              1308.5,
+              1366.2,
+              1391.0
+            ],
+            "median_ms": 1366.2,
+            "p95_ms": 1422.8,
+            "max_ms": 1422.8,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 478,
+            "projection_sha256": "82ab21bf356d91499d6cd0c283bf877cf785127e923fd21a5d37fdcf5ab6ba7a",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-check",
+            "target_ms": 10000,
+            "samples_ms": [
+              1359.4,
+              1361.9,
+              1325.6,
+              1349.1,
+              1315.9,
+              1410.1,
+              1408.9,
+              1375.0,
+              1377.5,
+              1388.5
+            ],
+            "median_ms": 1361.9,
+            "p95_ms": 1410.1,
+            "max_ms": 1410.1,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 59,
+            "projection_sha256": "c67126d1dcc24a89b35012da839d52022ebd544afc4d76b093576430cf1291f2",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "card-report",
+            "target_ms": 10000,
+            "samples_ms": [
+              1345.3,
+              1332.9,
+              1323.3,
+              1345.2,
+              1348.9,
+              1334.2,
+              1305.6,
+              1313.0,
+              1380.0,
+              1339.1
+            ],
+            "median_ms": 1334.2,
+            "p95_ms": 1380.0,
+            "max_ms": 1380.0,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "get_cards": 3,
+              "export_titles": 1,
+              "list_links": 1
+            },
+            "call_count": 5,
+            "mcp_processes": 1,
+            "addresses_requested": 4,
+            "stdout_bytes": null,
+            "artifact_bytes": 1606,
+            "projection_sha256": "ed3c60817fce004fb24ba01b2f98e6039f6ea7e131e86ac8da7df946b62afed3",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          },
+          {
+            "command": "prepare-link",
+            "target_ms": 20000,
+            "samples_ms": [
+              4555.4,
+              4625.3,
+              4786.7,
+              4521.0,
+              4675.4,
+              4537.4,
+              4479.8,
+              4520.2,
+              4668.4,
+              4960.0
+            ],
+            "median_ms": 4555.4,
+            "p95_ms": 4960.0,
+            "max_ms": 4960.0,
+            "exits": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "calls": {
+              "export_titles": 1,
+              "get_cards": 55
+            },
+            "call_count": 56,
+            "mcp_processes": 1,
+            "addresses_requested": 10899,
+            "stdout_bytes": null,
+            "artifact_bytes": 241,
+            "projection_sha256": "2c9c7e806edff5f9b39d816a46e520421fb7b7ad063239e9ea36821a0415dbb7",
+            "call_evidence": "the traced warm-up; the measured runs are untraced so their latency is the command own"
+          }
+        ],
+        "model_apply": {
+          "runs": [
+            {
+              "run": 1,
+              "exit": 0,
+              "ms": 411.6,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 2,
+              "exit": 0,
+              "ms": 452.4,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 3,
+              "exit": 0,
+              "ms": 443.7,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 4,
+              "exit": 0,
+              "ms": 436.8,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 5,
+              "exit": 0,
+              "ms": 413.0,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 6,
+              "exit": 0,
+              "ms": 401.5,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 7,
+              "exit": 0,
+              "ms": 449.7,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 8,
+              "exit": 0,
+              "ms": 456.8,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 9,
+              "exit": 0,
+              "ms": 471.4,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            },
+            {
+              "run": 10,
+              "exit": 0,
+              "ms": 435.8,
+              "chunks": [
+                64,
+                5
+              ],
+              "accepted": 69
+            }
+          ],
+          "samples_ms": [
+            411.6,
+            452.4,
+            443.7,
+            436.8,
+            413.0,
+            401.5,
+            449.7,
+            456.8,
+            471.4,
+            435.8
+          ],
+          "median_ms": 436.8,
+          "p95_ms": 471.4,
+          "max_ms": 471.4,
+          "chunk_shapes": [
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5",
+            "64,5"
+          ],
+          "part_map": {
+            "model": "286/1",
+            "parts": 66
+          },
+          "revisions": 20,
+          "replay_revision_delta": 0,
+          "accepted_replayed": 69,
+          "last_write": {
+            "changed_reverse_sections": 67,
+            "indexed_cards": 5,
+            "refreshed_cards": 67
+          },
+          "lock_log_lines": []
+        },
+        "ordinary": {
+          "target": "287/1",
+          "read_ms": {
+            "samples": [
+              2.7,
+              2.9,
+              2.8,
+              2.7,
+              2.5,
+              2.8,
+              2.7,
+              2.6,
+              2.6,
+              2.7
+            ],
+            "median_ms": 2.7,
+            "p95_ms": 2.9,
+            "bytes": [
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1422,
+              1423,
+              1423
+            ]
+          },
+          "write_ms": {
+            "samples": [
+              11.6,
+              11.1,
+              11.5,
+              11.7,
+              11.9,
+              11.1,
+              11.9,
+              12.4,
+              12.6,
+              13.4
+            ],
+            "median_ms": 11.7,
+            "p95_ms": 13.4,
+            "last_write": {
+              "changed_reverse_sections": 0,
+              "indexed_cards": 1,
+              "refreshed_cards": 1
+            }
+          }
+        },
+        "contention": {
+          "waited_ms": 6644.9,
+          "committed": true,
+          "queue_wait_ms": 6632,
+          "held_ms": 9,
+          "log_line": "1792359008 edit wait done: op=edit_card waiter_pid=69628 outcome=acquired queue_wait_ms=6632 held_ms=9"
+        },
+        "concurrency": {
+          "writes": 4,
+          "succeeded": 4,
+          "exit_codes": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "revisions": 8,
+          "lock_lines": []
+        }
+      }
+    },
+    "fixed_local_work": {
+      "runs": 10,
+      "control": {
+        "name": "control",
+        "archive_cards": 10899,
+        "fixed_card": "276/1",
+        "neighbours": [
+          "276/1|a",
+          "276/1|b"
+        ],
+        "unrelated_addresses": 0,
+        "unrelated_ms": 0,
+        "edit_ms": {
+          "samples": [
+            13.1,
+            13.2,
+            12.6,
+            12.6,
+            13.3,
+            12.3,
+            12.7,
+            13.9,
+            12.5,
+            13.6
+          ],
+          "median_ms": 12.7,
+          "p95_ms": 13.9
+        },
+        "first_write": {
+          "changed_reverse_sections": 2,
+          "indexed_cards": 1,
+          "refreshed_cards": 3
+        },
+        "last_write": {
+          "changed_reverse_sections": 0,
+          "indexed_cards": 1,
+          "refreshed_cards": 3
+        },
+        "get_cards_ms": 3.5,
+        "get_cards_bytes": 4782,
+        "get_cards_payload_sha256": "3ac5b904ce15d82aec9834c28a91be89ca81662f901c0692dfa1b843f59b76f6",
+        "get_cards_count": 3,
+        "get_card_ms": 3.5,
+        "get_card_bytes": 2343,
+        "link_check_ok": true
+      },
+      "big": {
+        "name": "big",
+        "archive_cards": 11159,
+        "fixed_card": "276/1",
+        "neighbours": [
+          "276/1|a",
+          "276/1|b"
+        ],
+        "unrelated_addresses": 260,
+        "unrelated_ms": 37477.5,
+        "edit_ms": {
+          "samples": [
+            12.1,
+            11.5,
+            11.5,
+            11.5,
+            10.9,
+            11.6,
+            11.6,
+            11.7,
+            11.6,
+            11.6
+          ],
+          "median_ms": 11.6,
+          "p95_ms": 12.1
+        },
+        "first_write": {
+          "changed_reverse_sections": 2,
+          "indexed_cards": 1,
+          "refreshed_cards": 3
+        },
+        "last_write": {
+          "changed_reverse_sections": 0,
+          "indexed_cards": 1,
+          "refreshed_cards": 3
+        },
+        "get_cards_ms": 3.4,
+        "get_cards_bytes": 4776,
+        "get_cards_payload_sha256": "3ac5b904ce15d82aec9834c28a91be89ca81662f901c0692dfa1b843f59b76f6",
+        "get_cards_count": 3,
+        "get_card_ms": 2.8,
+        "get_card_bytes": 2343,
+        "link_check_ok": true
+      },
+      "parsed_rows_bounded": true,
+      "updated_rows_bounded": true,
+      "payload_identical": true,
+      "unrelated_cards": 260
+    }
+  },
+  "summary": {
+    "checks": 141,
+    "failed": 0,
+    "variants": [
+      "econ",
+      "math"
+    ],
+    "generated_utc": "2026-10-18T21:25:44Z"
+  }
+}
