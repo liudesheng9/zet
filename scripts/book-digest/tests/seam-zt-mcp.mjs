@@ -46,6 +46,7 @@ async function handle(line) {
     return send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: true } })
   }
   if (tool === 'get_tree' && env.ZT_FAIL_TREE && at.tree === env.ZT_FAIL_TREE) return send(fault(message.id, 'simulated unavailable tree'))
+  if (tool === 'export_titles' && env.ZT_FAIL_EXPORT_TITLES) return send(fault(message.id, 'simulated unavailable title export'))
   if (tool === 'get_model' && env.ZT_FAIL_MODEL && at.at === env.ZT_FAIL_MODEL) return send(fault(message.id, 'simulated unavailable model'))
   if (tool === 'get_card' && flag(env.ZT_FAIL_FLAG) && at.at === env.ZT_FAIL_CARD) return send(fault(message.id, 'simulated unavailable target after persistence'))
   if (tool === 'edit_card' && env.ZT_RACE_TARGET && at.at === env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG)) {

@@ -29,6 +29,19 @@ pub fn write_text(path: impl AsRef<Path>, text: &str) -> Result<()> {
     std::fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// Complete UTF-8 evidence publication, preserving the old file on a refused replacement.
+pub(crate) fn write_atomic(path: impl AsRef<Path>, text: &str) -> Result<()> {
+    let path = path.as_ref();
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("create temporary artifact for {}", path.display()))?;
+    temporary.write_all(text.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|e| e.error)
+        .with_context(|| format!("atomically publish artifact {}", path.display()))?;
+    Ok(())
+}
+
 /// Appends UTF-8 text (the file is made when missing).
 pub fn append_text(path: impl AsRef<Path>, text: &str) -> Result<()> {
     let path = path.as_ref();

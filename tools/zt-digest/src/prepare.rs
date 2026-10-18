@@ -28,7 +28,6 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -53,18 +52,7 @@ fn read_raw(path: &str) -> Result<String> {
 }
 
 fn write(path: &str, text: &str) -> Result<()> {
-    let parent = Path::new(path)
-        .parent()
-        .context("preparation artifact needs a parent directory")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("create temporary preparation artifact for {path}"))?;
-    temporary.write_all(text.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("atomically publish preparation artifact {path}"))?;
-    Ok(())
+    util::write_atomic(path,text)
 }
 /// Where the instruction files live.
 fn scripts_dir() -> String {

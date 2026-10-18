@@ -1128,8 +1128,41 @@ struct Claim {
     attempts: i64,
 }
 
+struct UnitGuard {
+    _file: std::fs::File,
+}
+
+fn unit_guard(p: &Prepared, unit: &str) -> Result<UnitGuard> {
+    let directory = p.out.join("locks");
+    std::fs::create_dir_all(&directory)?;
+    let directory = std::fs::canonicalize(directory)?;
+    if !directory.starts_with(&p.out) {
+        bail!("unit guard path escaped the prepared output directory");
+    }
+    let path = directory.join(format!("{}.lock", canon::hash_value(&json!(unit))));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("open unit guard {}", path.display()))?;
+    file.try_lock()
+        .map_err(|e| anyhow::anyhow!("lock_busy: {unit}: {e}"))?;
+    Ok(UnitGuard { _file: file })
+}
+
 fn claim(tx: &Transaction, unit: &str, token: i64) -> Result<Claim> {
     tx.query_row("SELECT owner,input_hash,attempts FROM units WHERE id=?1 AND state='claimed' AND claim_token=?2 AND lease_until>?3",params![unit,token,now_seconds()],|r|Ok(Claim{owner:r.get(0)?,input_hash:r.get(1)?,attempts:r.get(2)?})).optional()?.with_context(||format!("stale_claim: {unit} has no current unexpired claim for token {token}"))
+}
+
+fn check_claim(p: &Prepared, unit: &str, token: i64) -> Result<()> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
@@ -1167,6 +1200,7 @@ fn fault_class(code: &str) -> Result<&'static str> {
         | "missing_result"
         | "missing_jobs"
         | "pending_jobs"
+        | "read_view_changed"
         | "lease_lost" => "retryable",
         "access_refused"
         | "invalid_arguments"
@@ -1181,6 +1215,8 @@ fn fault_class(code: &str) -> Result<&'static str> {
 }
 
 fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Result<Value> {
+    check_claim(p, unit, token)?;
+    let _guard = unit_guard(p, unit)?;
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -1214,6 +1250,250 @@ fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Res
     reconcile(&tx, now)?;
     tx.commit()?;
     Ok(json!({"unit":unit,"token":token,"state":state,"fault":fault,"retry_after":retry_after}))
+}
+
+fn publish(path: &Path, text: &str) -> Result<Value> {
+    util::write_atomic(path, text)?;
+    let record = json!({"path":std::fs::canonicalize(path)?.to_string_lossy(),"sha256":canon::sha256_hex(text.as_bytes())});
+    check_file(&record, "group job artifact")?;
+    Ok(record)
+}
+
+fn start_view(job: &Value, path: &Path, reused: bool, lease_until: i64) -> Value {
+    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"draft":job["draft"],"reused":reused,"lease_until":lease_until})
+}
+
+fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
+    let group = p.contract["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["n"].as_u64() == Some(number))
+        .context("prepared group does not exist")?;
+    let unit = format!("digest/g{number:03}@1");
+    check_claim(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let claimed = claim(&tx, &unit, token)?;
+    let progress: String = tx.query_row(
+        "SELECT progress_json FROM units WHERE id=?1",
+        [&unit],
+        |r| r.get(0),
+    )?;
+    let mut progress: Value = serde_json::from_str(&progress)?;
+    if !progress.is_object() {
+        bail!("invalid group progress object");
+    }
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    drop(conn);
+    if claimed.input_hash != canon::hash_value(group) {
+        bail!("group input hash mismatch");
+    }
+    if progress["group_start"]["token"] == token {
+        let accepted = &progress["group_start"]["job"];
+        check_file(accepted, "group job artifact")?;
+        let path = Path::new(field(accepted, "path")?);
+        let job = util::read_json(path)?;
+        if job["schema_version"] != 1
+            || job["mode"] != "draft_only"
+            || job["expected_jobs"] != 1
+            || job["jobs"].as_array().is_none_or(|jobs| jobs.len() != 1)
+            || job["jobs"][0]["permissions"]["archive_write"] != false
+        {
+            bail!("incompatible group job contract");
+        }
+        if job["unit"] != unit
+            || job["token"] != token
+            || job["run_id"] != run
+            || job["unit_input_hash"] != claimed.input_hash
+            || job["input_hash"] != canon::hash_value(&job["inputs"])
+            || job["input_hash"] != progress["group_start"]["input_hash"]
+        {
+            bail!("group job binding mismatch");
+        }
+        for record in job["artifacts"]
+            .as_object()
+            .context("missing group job artifacts")?
+            .values()
+            .filter(|r| !r.is_null())
+        {
+            check_file(record, "group job artifact")?;
+        }
+        let renewed = renew(p, &unit, token)?;
+        return Ok(start_view(
+            &job,
+            path,
+            true,
+            renewed["lease_until"].as_i64().unwrap(),
+        ));
+    }
+    renew(p, &unit, token)?;
+    let anchor = zt.cards(&[field(group, "anchor")?.to_string()], "text")?;
+    let trees = crate::snapshot::read_title_trees(zt)?;
+    let revision = trees
+        .first()
+        .and_then(|t| t["archive_revision"].as_u64())
+        .context("group snapshot has no prepared archive view")?;
+    let after = zt.archive_view()?;
+    if after["archive_identity"] != p.contract["archive_identity"]
+        || after["archive_revision"].as_u64() != Some(revision)
+        || anchor.archive_revision != revision
+    {
+        bail!("read_view_changed: group-start archive view changed; retry");
+    }
+    let (snapshot, _) = crate::snapshot::render(&trees, 40);
+    let directory = p
+        .out
+        .join("group-jobs")
+        .join(format!("g{number:03}"))
+        .join(format!("claim-{token}"));
+    std::fs::create_dir_all(&directory)?;
+    let directory = std::fs::canonicalize(directory)?;
+    if !directory.starts_with(&p.out) {
+        bail!("group job path escaped the prepared output directory");
+    }
+    let snapshot_path = directory.join("snapshot.md");
+    let prompt_path = directory.join("prompt.md");
+    let job_path = directory.join("job.json");
+    let draft_path = directory.join("draft.json");
+    let mut snapshot_record = publish(&snapshot_path, &snapshot)?;
+    snapshot_record["archive_revision"] = json!(revision);
+    let run_options = run_options(
+        field(&p.contract, "variant")?,
+        p.contract["options"]["no_figures"] == true,
+        p.contract["options"].get("run_options"),
+    )?;
+    let terms = if run_options["terms"] == true {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let required:Option<(String,String)>=conn.query_row("SELECT o.locator,o.fingerprint FROM outputs o JOIN units u ON u.id=o.unit_id WHERE o.unit_id='terms/book@1' AND o.output_key='terms' AND o.kind='file' AND u.state='done'",[],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let (locator, fingerprint) =
+            required.context("required verified term-table output is missing")?;
+        drop(conn);
+        let source_path = p.out.join("terms.md");
+        let bytes =
+            std::fs::read(&source_path).context("required applied term table is missing")?;
+        if std::fs::canonicalize(&source_path)? != Path::new(&locator)
+            || canon::sha256_hex(&bytes) != fingerprint
+        {
+            bail!("required term-table output changed");
+        }
+        let terms = std::str::from_utf8(&bytes)?;
+        let terms = terms.strip_prefix('\u{feff}').unwrap_or(terms);
+        let path = directory.join("terms.md");
+        publish(&path, terms)?
+    } else {
+        Value::Null
+    };
+    let anchor = &anchor.cards[0];
+    let source_prefix = &p.contract["artifacts"]["shared_prefix"];
+    let prefix_bytes = std::fs::read(field(source_prefix, "path")?)?;
+    if canon::sha256_hex(&prefix_bytes) != source_prefix["sha256"] {
+        bail!("shared prefix hash mismatch during group-start");
+    }
+    let prefix = publish(
+        &directory.join("shared-prefix.md"),
+        std::str::from_utf8(&prefix_bytes)?,
+    )?;
+    let inputs = json!({"schema_version":1,"prompt_contract":1,"draft_schema":1,"mode":"draft_only","run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"group":group,"anchor":{"address":anchor["address"],"fingerprint":crate::calls::authored_fingerprint(anchor)},"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"contracts":p.contract["contracts"]});
+    let input_hash = canon::hash_value(&inputs);
+    let mut source = String::new();
+    for section in group["sections"].as_array().unwrap() {
+        let bytes = std::fs::read(field(section, "path")?)?;
+        if canon::sha256_hex(&bytes) != section["sha256"] {
+            bail!("group source section hash mismatch during startup");
+        }
+        source.push_str(std::str::from_utf8(&bytes)?);
+        source.push_str("\n\n");
+    }
+    let draft = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":"cards","calls":[]});
+    let prompt = format!(
+        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        draft_path.display(),
+        field(&inputs["prefix"], "path")?,
+        snapshot_path.display(),
+        if terms.is_null() {
+            "本次明确关闭术语层。".to_string()
+        } else {
+            format!("`{}`", field(&terms, "path")?)
+        },
+        inputs["anchor"]["fingerprint"].as_str().unwrap(),
+        serde_json::to_string_pretty(&draft)?,
+        field(anchor, "title")?,
+        field(anchor, "body")?,
+        source
+    );
+    let prompt = publish(&prompt_path, &prompt)?;
+    let mut files = vec![
+        prefix["path"].clone(),
+        json!(prompt_path.to_string_lossy()),
+        json!(snapshot_path.to_string_lossy()),
+    ];
+    if !terms.is_null() {
+        files.push(terms["path"].clone());
+    }
+    let job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":1,"draft":draft_path.to_string_lossy(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms},"jobs":[{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}]});
+    let record = publish(&job_path, &serde_json::to_string_pretty(&job)?)?;
+    progress["group_start"] = json!({"token":token,"input_hash":input_hash,"job":record});
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    let lease_until = now_seconds() + 120;
+    tx.execute(
+        "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress), lease_until],
+    )?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "group_started",
+        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":lease_until}),
+    )?;
+    tx.commit()?;
+    Ok(start_view(&job, &job_path, false, lease_until))
+}
+
+pub fn group_start_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token"], &[])?;
+        let out = a.required("Out")?;
+        if out.trim().is_empty() {
+            bail!("-Out is required");
+        }
+        if !a.positional.is_empty() {
+            bail!("unexpected group-start positional arguments");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Group must be a positive integer")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Token must be a positive integer")?;
+        Ok((out, group, token))
+    })();
+    let (out, group, token) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("zt-digest group-start: {e}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = group_start(&p, &mut zt, group, token)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
 }
 
 fn rerun_list(out: &Path) -> Result<Value> {

@@ -118,7 +118,8 @@ db.close();console.log(JSON.stringify({appendOnly,foreignKeys}));
         Assert ($ready.units.Count -eq 1) "actual retry attempt $attempt receives one claim"
         $claim = $ready.units[0]; $tokens += $claim.token
         if ($attempt -gt 1) { Refuses @('ledger','renew','-Out',$out,'-Unit',$claim.id,'-Token',"$($tokens[0])") 'stale_claim' }
-        [IO.File]::WriteAllText($fault,(@{code='pending_jobs';unit=$claim.id;input_hash=$claim.input_hash;cause='registered fixture work is still pending'} | ConvertTo-Json),$utf8)
+        $retryCode = if ($attempt -eq 2) { 'read_view_changed' } else { 'pending_jobs' }
+        [IO.File]::WriteAllText($fault,(@{code=$retryCode;unit=$claim.id;input_hash=$claim.input_hash;cause='registered fixture work is still pending'} | ConvertTo-Json),$utf8)
         $retry = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)",'-Class','retryable','-Fault',$fault)
         if ($attempt -lt 3) {
             $remaining = $retry.retry_after-[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()

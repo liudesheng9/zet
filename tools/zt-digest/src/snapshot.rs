@@ -112,6 +112,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let mut zt = Zt::start()?;
     let details = read_title_trees(&mut zt)?;
 
+    let (text, count) = render(&details, title_chars);
+    std::fs::write(&out, text).with_context(|| format!("failed to write {out}"))?;
+    util::print_line(&format!("{count} cards -> {out}"))?;
+    Ok(0)
+}
+
+/// The legacy renderer also supplies the reliable group's frozen startup snapshot.
+pub(crate) fn render(details: &[Value], title_chars: usize) -> (String, usize) {
     let mut text = String::new();
     text.push_str("# 现有卡片快照（本组启动时生成；之后其他组可能新增卡片；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");
     text.push_str(NL);
@@ -129,9 +137,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
         text.push_str(NL);
     }
-    std::fs::write(&out, text).with_context(|| format!("failed to write {out}"))?;
-    util::print_line(&format!("{count} cards -> {out}"))?;
-    Ok(0)
+    (text, count)
 }
 
 #[cfg(test)]
