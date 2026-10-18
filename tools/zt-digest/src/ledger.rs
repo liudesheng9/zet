@@ -93,6 +93,35 @@ const RUN_FLAGS: &[&str] = &[
     "proof", "theory",
 ];
 
+/// The publication contract version is part of every aggregate input manifest, so
+/// a changed derivation contract cannot silently reuse an older revision.
+const PUBLICATION_CONTRACT: i64 = 1;
+
+/// Aggregate publication layers. Each gains a new immutable revision when its
+/// sorted input manifest changes; per-sentence or per-group aggregates stay out.
+const PUBLICATION: &[&str] = &[
+    "cards-book",
+    "link-check",
+    "organize",
+    "skeleton",
+    "figures",
+    "bridge",
+    "audit",
+    "hubs",
+];
+
+/// The producer layers whose recorded work forms one aggregate publication input.
+/// The whole-book Card and Link cycles also enumerate their digest groups, so a
+/// group that later produces nothing still changes the manifest.
+fn publication_sources(layer: &str) -> Option<&'static [&'static str]> {
+    match layer {
+        "cards-book" => Some(&["digest", "cards"]),
+        "link-check" => Some(&["digest", "link"]),
+        "organize" | "skeleton" | "figures" | "bridge" | "audit" | "hubs" => Some(&["digest"]),
+        _ => None,
+    }
+}
+
 /// Flat effective choices use the existing workflow flag names. Core verification stays required.
 pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>) -> Result<Value> {
     if !["econ", "math"].contains(&variant) {
@@ -437,6 +466,20 @@ fn put_meta(tx: &Transaction, key: &str, value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Sealing is monotonic. A layer's producer enumeration is complete once the
+/// publication revision that enumerates it is registered, so the revision can
+/// leave `registered` as soon as its producers settle (US26).
+fn seal(tx: &Transaction, layer: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+        params![
+            format!("barrier/{layer}"),
+            canon::canonical_json(&json!({"sealed":true}))
+        ],
+    )?;
+    Ok(())
+}
+
 fn verify_schema(conn: &Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version != 1 || meta(conn, "schema_version")? != 1 {
@@ -569,13 +612,14 @@ fn register(
     tx: &Transaction,
     layer: &str,
     key: &str,
+    revision: i64,
     inputs: &Value,
     creator: Option<&str>,
     done: bool,
 ) -> Result<String> {
-    let id = format!("{layer}/{key}@1");
+    let id = format!("{layer}/{key}@{revision}");
     let now = canon::utc_now_o();
-    tx.execute("INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at,completed_at,result_json) VALUES(?1,?2,?3,1,?4,?5,?6,?7,?8,?9,?10)",params![id,layer,key,if done{"done"}else{"registered"},canon::canonical_json(inputs),canon::hash_value(inputs),creator,now,if done{Some(&now)}else{None},if done{Some("{\"disposition\":\"verified\"}")}else{None}])?;
+    tx.execute("INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at,completed_at,result_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![id,layer,key,revision,if done{"done"}else{"registered"},canon::canonical_json(inputs),canon::hash_value(inputs),creator,now,if done{Some(&now)}else{None},if done{Some("{\"disposition\":\"verified\"}")}else{None}])?;
     Ok(id)
 }
 
@@ -585,6 +629,447 @@ fn dependency(tx: &Transaction, id: &str, needs: &str, condition: &str) -> Resul
         params![id, needs, condition],
     )?;
     Ok(())
+}
+
+/// A producer's verified outputs as one order-independent contribution fingerprint.
+/// A producer without registered outputs has no verified contribution yet.
+fn verified_outputs(conn: &Connection, unit: &str) -> Result<String> {
+    let mut statement = conn
+        .prepare("SELECT output_key,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?;
+    let rows = statement
+        .query_map([unit], |r| {
+            Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?]))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(canon::hash_value(&Value::Array(rows)))
+}
+
+/// The trees a completed producer actually touched, from its retained result.
+fn recorded_trees(result: Option<&str>) -> Result<Vec<String>> {
+    let Some(result) = result else {
+        return Ok(Vec::new());
+    };
+    let result: Value = serde_json::from_str(result).context("invalid producer result")?;
+    Ok(result["trees"]
+        .as_array()
+        .map(|trees| {
+            trees
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// A unit's retained fault, exactly as recorded.
+fn parsed_fault(fault: Option<&str>) -> Result<Value> {
+    match fault {
+        Some(fault) => serde_json::from_str(fault).context("invalid unit fault"),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The disposition code a publication manifest records. Scheduling states
+/// (`registered`, `ready`, `claimed`, `retry`) are one `pending` disposition:
+/// only real status changes alter a publication manifest, and a status change
+/// always does (R159).
+fn disposition_fault(fault: Option<&str>) -> Result<Value> {
+    let fault = parsed_fault(fault)?;
+    Ok(if fault.is_null() {
+        Value::Null
+    } else {
+        json!({"code":fault["code"]})
+    })
+}
+
+/// The disposition vocabulary of one unresolved producer.
+fn disposition_of(state: &str) -> &'static str {
+    match state {
+        "failed" | "blocked" => "unresolved",
+        _ => "pending",
+    }
+}
+
+/// Whether one unit is a superseded publication revision: terminal history that
+/// a later revision replaced, never a failure and never resumable work.
+fn is_superseded(unit: &Value) -> bool {
+    unit["fault"]["code"] == "superseded"
+}
+
+/// The sorted input manifest of one aggregate publication revision: contributing
+/// units with their verified output fingerprints, the disposition of every
+/// relevant unresolved unit, and the publication contract version (R159).
+fn publication_manifest(conn: &Connection, layer: &str, key: &str, scope: &Value) -> Result<Value> {
+    let sources = publication_sources(layer)
+        .with_context(|| format!("`{layer}` is not an aggregate publication layer"))?;
+    let mut contributions = Vec::new();
+    let mut dispositions = Vec::new();
+    for source in sources {
+        let mut statement =
+            conn.prepare("SELECT id,state,fault_json,result_json FROM units WHERE layer=?1 ORDER BY id")?;
+        let rows = statement
+            .query_map([source], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, state, fault, result) in rows {
+            // A hub refresh is coalesced by touched tree. A producer that has not
+            // run yet has no recorded tree, so it stays a required disposition.
+            if layer == "hubs"
+                && state == "done"
+                && !recorded_trees(result.as_deref())?.iter().any(|t| t == key)
+            {
+                continue;
+            }
+            if state == "done" {
+                contributions.push(json!({"unit":id,"state":state,"fingerprint":verified_outputs(conn,&id)?}));
+            } else {
+                dispositions.push(json!({"unit":id,"disposition":disposition_of(&state),"fault":disposition_fault(fault.as_deref())?}));
+            }
+        }
+    }
+    Ok(json!({
+        "schema_version":1,
+        "publication_contract":PUBLICATION_CONTRACT,
+        "layer":layer,
+        "logical_key":key,
+        "preparation_hash":meta(conn,"preparation_hash")?,
+        "scope":scope,
+        "contributions":contributions,
+        "dispositions":dispositions
+    }))
+}
+
+/// Every older revision of one logical key that is no longer the current
+/// publication: it is terminal and can never be claimed as current work.
+fn superseded_units(conn: &Connection, layer: &str, key: &str, before: i64) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id,state,fault_json FROM units WHERE layer=?1 AND logical_key=?2 AND revision<?3 ORDER BY revision",
+    )?;
+    let rows = statement
+        .query_map(params![layer, key, before], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut superseded = Vec::new();
+    for (id, state, fault) in rows {
+        if state != "done" && disposition_fault(fault.as_deref())?["code"] == "superseded" {
+            superseded.push(id);
+        }
+    }
+    Ok(superseded)
+}
+
+/// Register one derived aggregate revision and its manifest dependencies.
+fn register_publication_unit(
+    tx: &Transaction,
+    layer: &str,
+    key: &str,
+    revision: i64,
+    manifest: &Value,
+    creator: Option<&str>,
+) -> Result<String> {
+    let id = register(tx, layer, key, revision, manifest, creator, false)?;
+    for contribution in manifest["contributions"].as_array().unwrap() {
+        dependency(tx, &id, field(contribution, "unit")?, "success")?;
+    }
+    for disposition in manifest["dispositions"].as_array().unwrap() {
+        dependency(tx, &id, field(disposition, "unit")?, "settled")?;
+    }
+    Ok(id)
+}
+
+/// An aggregate revision stays bound to its preparation, layer and logical key;
+/// only the immutable revision suffix and its manifest may differ.
+fn verify_publication_input(id: &str, layer: &str, key: &str, hash: &str, inputs: &Value) -> Result<()> {
+    if inputs["schema_version"] != 1
+        || inputs["publication_contract"] != PUBLICATION_CONTRACT
+        || inputs["layer"] != layer
+        || inputs["logical_key"] != key
+        || inputs["preparation_hash"] != hash
+        || !inputs["contributions"].is_array()
+        || !inputs["dispositions"].is_array()
+    {
+        bail!("preparation registration: changed publication binding for {id}");
+    }
+    Ok(())
+}
+
+/// The compiler artifacts that carry one publication layer's checked result. The
+/// workflow names the real files; the ledger binds their canonical path and hash.
+fn publication_artifacts(layer: &str) -> Option<&'static [&'static str]> {
+    Some(match layer {
+        "organize" => &["decisions", "applied"],
+        "skeleton" => &["skeleton"],
+        "figures" | "bridge" | "hubs" | "audit" | "cards-book" | "link-check" => &["report"],
+        _ => return None,
+    })
+}
+
+/// A publication unit id as its layer, logical key and revision.
+fn publication_unit(unit: &str) -> Result<(String, String, i64)> {
+    let (layer, rest) = unit.split_once('/').context("invalid publication unit id")?;
+    let (key, revision) = rest.rsplit_once('@').context("invalid publication unit id")?;
+    if !PUBLICATION.contains(&layer) {
+        bail!("`{unit}` is not an aggregate publication unit");
+    }
+    let revision = revision
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .context("invalid publication revision")?;
+    Ok((layer.to_string(), key.to_string(), revision))
+}
+
+/// Bind an existing compiler artifact by its canonical path and content hash.
+fn bind_file(path: &str, label: &str) -> Result<Value> {
+    let canonical = std::fs::canonicalize(path).with_context(|| format!("{label} does not exist"))?;
+    let bytes = std::fs::read(&canonical).with_context(|| format!("read {label}"))?;
+    Ok(json!({"path":canonical.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)}))
+}
+
+fn unit_inputs(p: &Prepared, unit: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let raw: String = conn.query_row("SELECT inputs_json FROM units WHERE id=?1", [unit], |r| {
+        r.get(0)
+    })?;
+    canon::parse_json(&raw)
+}
+
+/// Complete one aggregate publication revision. The evidence must account for the
+/// whole manifest the revision was registered with and bind the compiler artifacts
+/// that carry its result, so an unchecked or stale publication cannot be `done`.
+fn publication_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let (layer, key, revision) = publication_unit(unit)?;
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let expected = p.out.join(format!("publication-{layer}-{key}-{revision}.json"));
+    if std::fs::canonicalize(path).context("publication evidence does not exist")?
+        != std::fs::canonicalize(&expected)?
+    {
+        bail!("publication evidence locator mismatch");
+    }
+    let plan = util::read_json(path).context("invalid publication evidence")?;
+    if plan["schema_version"] != 1
+        || plan["kind"] != "publication_completion"
+        || plan["unit"] != unit
+        || plan["token"] != token
+        || plan["layer"] != layer
+        || plan["key"] != key
+        || plan["input_hash"] != claimed.input_hash
+    {
+        bail!("publication completion identity mismatch");
+    }
+    let manifest = unit_inputs(p, unit)?;
+    let contributions = manifest["contributions"]
+        .as_array()
+        .context("publication manifest is missing its contributions")?;
+    let dispositions = manifest["dispositions"]
+        .as_array()
+        .context("publication manifest is missing its dispositions")?;
+    let name = |item: &Value| -> Result<String> { Ok(field(item, "unit")?.to_string()) };
+    let expected_consumed = contributions
+        .iter()
+        .map(name)
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let expected_unresolved = dispositions
+        .iter()
+        .map(name)
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let consumed = plan["consumed"]
+        .as_array()
+        .context("publication completion is missing its consumed outputs")?;
+    let unresolved = plan["unresolved"]
+        .as_array()
+        .context("publication completion is missing its unresolved dispositions")?;
+    let actual_consumed = consumed
+        .iter()
+        .map(name)
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let actual_unresolved = unresolved
+        .iter()
+        .map(name)
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    if actual_consumed.len() != consumed.len() || actual_unresolved.len() != unresolved.len() {
+        bail!("publication completion names one manifest entry twice");
+    }
+    if !actual_consumed.is_subset(&expected_consumed) {
+        bail!("publication completion consumes work outside its registered manifest");
+    }
+    if !actual_unresolved.is_subset(&expected_unresolved) {
+        bail!("publication completion disposes work outside its registered manifest");
+    }
+    let mut accounted = actual_consumed.clone();
+    accounted.extend(actual_unresolved.iter().cloned());
+    if accounted.len() != expected_consumed.len() + expected_unresolved.len() {
+        bail!("publication completion leaves manifest entries unaccounted for");
+    }
+    for entry in consumed {
+        let at = name(entry)?;
+        let registered = contributions
+            .iter()
+            .find(|item| item["unit"] == json!(at))
+            .context("publication completion names an unknown contribution")?;
+        if entry["fingerprint"] != registered["fingerprint"] {
+            bail!("publication completion consumes a different verified output for {at}");
+        }
+    }
+    let disposition = field(&plan, "disposition")?;
+    let checked = if expected_consumed.is_empty() && expected_unresolved.is_empty() {
+        "no_work"
+    } else if actual_unresolved.is_empty() {
+        "published"
+    } else {
+        "partial"
+    };
+    if disposition != checked {
+        bail!("publication disposition `{disposition}` does not match its accounted manifest ({checked})");
+    }
+    let required = publication_artifacts(&layer).context("unknown publication layer")?;
+    let declared = plan["artifacts"]
+        .as_object()
+        .context("publication completion is missing its artifacts")?;
+    if declared.len() != required.len() || declared.keys().any(|n| !required.contains(&n.as_str())) {
+        bail!("publication completion must name exactly the {layer} artifacts: {}", required.join(", "));
+    }
+    let mut artifacts = serde_json::Map::new();
+    for artifact in required {
+        let at = declared[*artifact]
+            .as_str()
+            .with_context(|| format!("{artifact} artifact path must be a string"))?;
+        artifacts.insert((*artifact).to_string(), bind_file(at, artifact)?);
+    }
+    let mut result = json!({"schema_version":1,"kind":"publication_completion","unit":unit,"token":token,"layer":layer,"key":key,"revision":revision,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"disposition":disposition,"consumed":consumed,"unresolved":unresolved,"artifacts":artifacts});
+    let completion_path = p.out.join(format!("publication-completion-{layer}-{key}-{revision}.json"));
+    if done {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let stored: String = conn.query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| {
+            r.get(0)
+        })?;
+        let mut stored: Value = serde_json::from_str(&stored)?;
+        check_file(&stored["completion"], "publication completion")?;
+        stored["reused"] = json!(true);
+        return Ok(stored);
+    }
+    let completion = publish(&completion_path, &serde_json::to_string_pretty(&result)?)?;
+    result["completion"] = completion.clone();
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    for (artifact, record) in artifacts.iter() {
+        output(
+            &tx,
+            unit,
+            artifact,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        field(&completion, "path")?,
+        field(&completion, "sha256")?,
+        &completion,
+    )?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":disposition,"revision":revision,"completion":completion,"consumed":result["consumed"],"unresolved":result["unresolved"]}),
+    )?;
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Derive and register the next revision of one aggregate publication. The same
+/// sorted input manifest always returns the same revision; a changed manifest
+/// registers the next one and makes every older open revision terminal.
+fn publication(p: &Prepared, layer: &str, key: &str, scope: Value) -> Result<Value> {
+    if !PUBLICATION.contains(&layer) {
+        bail!("`{layer}` is not an aggregate publication layer");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let manifest = publication_manifest(&tx, layer, key, &scope)?;
+    let input_hash = canon::hash_value(&manifest);
+    let existing: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT id,revision FROM units WHERE layer=?1 AND logical_key=?2 AND input_hash=?3 ORDER BY revision LIMIT 1",
+            params![layer, key, input_hash],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (id, revision, reused) = match existing {
+        Some((id, revision)) => (id, revision, true),
+        None => {
+            let latest: i64 = tx
+                .query_row(
+                    "SELECT coalesce(max(revision),0) FROM units WHERE layer=?1 AND logical_key=?2",
+                    params![layer, key],
+                    |r| r.get(0),
+                )?;
+            let revision = latest + 1;
+            let id = register_publication_unit(&tx, layer, key, revision, &manifest, None)?;
+            seal(&tx, layer)?;
+            // Every older revision that is still open is terminal: it can never be
+            // claimed as current work, and the report names its replacement.
+            let superseded = {
+                let mut statement = tx.prepare("SELECT id FROM units WHERE layer=?1 AND logical_key=?2 AND revision<?3 AND state<>'done' ORDER BY revision")?;
+                statement
+                    .query_map(params![layer, key, revision], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for unit in &superseded {
+                tx.execute("UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='operator',fault_json=?2 WHERE id=?1",params![unit,canon::canonical_json(&json!({"code":"superseded","by":id,"cause":"a changed publication input manifest registers a new revision"}))])?;
+            }
+            event(
+                &tx,
+                &id,
+                None,
+                None,
+                "published",
+                &json!({"layer":layer,"logical_key":key,"revision":revision,"input_hash":input_hash,"superseded":superseded,"contributions":manifest["contributions"].as_array().unwrap().len(),"dispositions":manifest["dispositions"].as_array().unwrap().len()}),
+            )?;
+            (id, revision, false)
+        }
+    };
+    let superseded = superseded_units(&tx, layer, key, revision)?;
+    let view = json!({
+        "schema_version":1,
+        "run_id":meta(&tx,"run_id")?,
+        "layer":layer,
+        "logical_key":key,
+        "unit":id,
+        "revision":revision,
+        "input_hash":input_hash,
+        "reused":reused,
+        "superseded":superseded,
+        "scope":scope,
+        "contributions":manifest["contributions"],
+        "dispositions":manifest["dispositions"]
+    });
+    tx.commit()?;
+    Ok(view)
 }
 
 fn init(p: &Prepared) -> Result<Value> {
@@ -661,10 +1146,21 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
     ] {
         put_meta(&tx, k, &v)?;
     }
+    // Enumerations are seeded before any producer enumerates them; a publication
+    // revision seals its own layer afterwards.
+    for layer in target["enabled"].as_array().unwrap() {
+        let layer = layer.as_str().unwrap();
+        put_meta(
+            &tx,
+            &format!("barrier/{layer}"),
+            &json!({"sealed":matches!(layer,"prepare"|"terms"|"digest")}),
+        )?;
+    }
     let prepare = register(
         &tx,
         "prepare",
         "book",
+        1,
         &json!({"preparation_hash":p.hash}),
         None,
         prepared,
@@ -682,6 +1178,7 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
             &tx,
             "terms",
             "book",
+            1,
             &json!({"preparation_hash":p.hash}),
             Some(&prepare),
             false,
@@ -698,6 +1195,7 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
             &tx,
             "digest",
             &format!("g{:03}", group["n"].as_u64().unwrap()),
+            1,
             group,
             Some(&prepare),
             false,
@@ -718,17 +1216,9 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
         {
             continue;
         }
-        let id = register(
-            &tx,
-            layer,
-            "book",
-            &json!({"preparation_hash":p.hash}),
-            Some(&prepare),
-            false,
-        )?;
-        for group in &groups {
-            dependency(&tx, &id, group, "settled")?;
-        }
+        let manifest = publication_manifest(&tx, layer, "book", &Value::Null)?;
+        register_publication_unit(&tx, layer, "book", 1, &manifest, Some(&prepare))?;
+        seal(&tx, layer)?;
     }
     if p.contract["variant"] == "math" {
         for &layer in MATH_BOOK {
@@ -744,19 +1234,13 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
                 &tx,
                 layer,
                 "book",
+                1,
                 &json!({"preparation_hash":p.hash}),
                 Some(&prepare),
                 false,
             )?;
             dependency(&tx, &id, &prepare, "success")?;
         }
-    }
-    for layer in target["enabled"].as_array().unwrap() {
-        put_meta(
-            &tx,
-            &format!("barrier/{}", layer.as_str().unwrap()),
-            &json!({"sealed":matches!(layer.as_str(),Some("prepare"|"terms"|"digest"))}),
-        )?;
     }
     if let Some(terms) = terms.filter(|_| prepared) {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
@@ -786,6 +1270,103 @@ pub fn prepare_setup(out: &str, zt: &mut Zt) -> Result<Value> {
     let p = Prepared::read_mode(out, zt, false)?;
     initialize(&p, false)?;
     prepare_finish(&p, zt, 1, &p.out.join("prepare-plan.json"))
+}
+
+/// Whether one registered aggregate revision still describes the present inputs.
+/// A non-publication obligation (the mathematics root) binds only its preparation.
+fn publication_current(
+    conn: &Connection,
+    layer: &str,
+    inputs: &Value,
+    root_hash: &str,
+) -> Result<bool> {
+    if inputs.get("publication_contract").is_some() {
+        Ok(
+            canon::hash_value(&publication_manifest(
+                conn,
+                layer,
+                field(inputs, "logical_key")?,
+                &inputs["scope"],
+            )?) == canon::hash_value(inputs),
+        )
+    } else {
+        Ok(canon::hash_value(inputs) == root_hash)
+    }
+}
+
+/// The latest registered revision of one layer's book-level obligation.
+fn required_publication(conn: &Connection, layer: &str) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT id,inputs_json FROM units WHERE layer=?1 AND logical_key='book' ORDER BY revision DESC LIMIT 1",
+            [layer],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// Every aggregate publication of this run: the latest required revision of each
+/// logical key and the earlier revisions it superseded, so a report can never
+/// present a stale publication as current (R158).
+fn publications(conn: &Connection, root_hash: &str) -> Result<Vec<Value>> {
+    let list = PUBLICATION
+        .iter()
+        .map(|layer| format!("'{layer}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut statement = conn.prepare(&format!(
+        "SELECT layer,logical_key,id,revision,state,inputs_json,fault_json FROM units WHERE layer IN ({list}) ORDER BY layer,logical_key,revision"
+    ))?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut ordered: Vec<(String, String, Vec<Value>)> = Vec::new();
+    for (layer, key, id, revision, state, inputs, fault) in rows {
+        let record = json!({
+            "unit":id,"revision":revision,"state":state,
+            "fault":parsed_fault(fault.as_deref())?,
+            "inputs":canon::parse_json(&inputs)?
+        });
+        match ordered.last_mut() {
+            Some((seen_layer, seen_key, revisions))
+                if *seen_layer == layer && *seen_key == key =>
+            {
+                revisions.push(record);
+            }
+            _ => ordered.push((layer, key, vec![record])),
+        }
+    }
+    let mut result = Vec::new();
+    for (layer, key, revisions) in ordered {
+        let latest = revisions.last().unwrap();
+        let current = publication_current(conn, &layer, &latest["inputs"], root_hash)?;
+        let superseded = revisions[..revisions.len() - 1]
+            .iter()
+            .map(|revision| {
+                json!({"unit":revision["unit"],"revision":revision["revision"],"state":revision["state"],"fault":revision["fault"]})
+            })
+            .collect::<Vec<_>>();
+        result.push(json!({
+            "layer":layer,
+            "key":key,
+            "latest":latest["unit"],
+            "revision":latest["revision"],
+            "state":latest["state"],
+            "current":current,
+            "superseded":superseded
+        }));
+    }
+    Ok(result)
 }
 
 fn status(out: &Path, layer: &str) -> Result<Value> {
@@ -844,30 +1425,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
     let layers = target["enabled"]
         .as_array()
         .context("missing declared target")?;
-    let mut sealed = true;
-    for name in layers
-        .iter()
-        .filter_map(Value::as_str)
-        .filter(|name| layer.is_empty() || *name == layer)
-    {
-        sealed &= meta(&tx, &format!("barrier/{name}"))?["sealed"] == true;
-    }
-    let mut counts = json!({"total":units.len(),"done":0,"failed":0,"blocked":0,"open":0});
-    let mut unresolved = Vec::new();
-    for unit in &units {
-        let state = unit["state"].as_str().unwrap();
-        let bucket = if matches!(state, "done" | "failed" | "blocked") {
-            state
-        } else {
-            "open"
-        };
-        counts[bucket] = json!(counts[bucket].as_u64().unwrap() + 1);
-        if state != "done" {
-            unresolved.push(unit["id"].clone());
-        }
-    }
     let preparation = meta(&tx, "preparation")?;
-    let mut coverage_faults = Vec::new();
     let mut required = vec!["prepare"];
     if layers.iter().any(|l| l == "terms") {
         required.push("terms");
@@ -885,16 +1443,49 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
                 .filter(|layer| layers.iter().any(|l| l == *layer)),
         );
     }
+    let mut sealed = true;
+    for name in layers
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| layer.is_empty() || *name == layer)
+    {
+        sealed &= meta(&tx, &format!("barrier/{name}"))?["sealed"] == true;
+        // An absent required publication is outstanding work, not an empty queue.
+        if required.iter().any(|r| *r == name) {
+            sealed &= required_publication(&tx, name)?.is_some();
+        }
+    }
+    let mut counts = json!({"total":units.len(),"done":0,"failed":0,"blocked":0,"open":0,"superseded":0});
+    let mut unresolved = Vec::new();
+    for unit in &units {
+        let state = unit["state"].as_str().unwrap();
+        // A superseded revision is terminal history: it is neither a failure of
+        // this run nor outstanding work, and it is never offered to a resume.
+        let bucket = if is_superseded(unit) {
+            "superseded"
+        } else if matches!(state, "done" | "failed" | "blocked") {
+            state
+        } else {
+            "open"
+        };
+        counts[bucket] = json!(counts[bucket].as_u64().unwrap() + 1);
+        if state != "done" && bucket != "superseded" {
+            unresolved.push(unit["id"].clone());
+        }
+    }
+    let mut coverage_faults = Vec::new();
     let root_hash = canon::hash_value(&json!({"preparation_hash":meta(&tx,"preparation_hash")?}));
     for layer in required {
-        let id = format!("{layer}/book@1");
-        let hash: Option<String> = tx
-            .query_row("SELECT input_hash FROM units WHERE id=?1", [&id], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if hash.as_deref() != Some(root_hash.as_str()) {
-            coverage_faults.push(json!({"code":"required_unit_missing_or_changed","unit":id}));
+        // The required publication is the latest revision of `<layer>/book`. It must
+        // exist, stay bound to this preparation, and still describe the present
+        // inputs: a stale revision is reported instead of being called current.
+        let latest = required_publication(&tx, layer)?;
+        let current = match &latest {
+            None => false,
+            Some((_, raw)) => publication_current(&tx, layer, &canon::parse_json(raw)?, &root_hash)?,
+        };
+        if !current {
+            coverage_faults.push(json!({"code":"required_unit_missing_or_changed","unit":latest.map(|(id,_)|id).unwrap_or(format!("{layer}/book@1"))}));
         }
     }
     for group in preparation["groups"]
@@ -925,7 +1516,7 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         && coverage_faults.is_empty();
     let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
     let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"resume_count":meta(&tx,"resume_count")?,"citation_key":preparation["citation_key"],"variant":preparation["variant"],"archive_identity":preparation["archive_identity"],"source":preparation["source"],"effective_options":preparation["options"],"contracts":preparation["contracts"],"run_options":run_options(field(&preparation,"variant")?,preparation["options"]["no_figures"]==true,preparation["options"].get("run_options"))?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"publications":publications(&tx,&root_hash)?,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
     drop(deps_query);
     drop(statement);
     tx.commit()?;
@@ -2126,7 +2717,7 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
     let mut units = BTreeMap::from([(
         root.to_string(),
         (
-            json!({"preparation_hash":hash}),
+            Some(json!({"preparation_hash":hash})),
             Vec::<(String, String)>::new(),
         ),
     )]);
@@ -2134,7 +2725,7 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
         units.insert(
             terms.into(),
             (
-                json!({"preparation_hash":hash}),
+                Some(json!({"preparation_hash":hash})),
                 vec![(root.into(), "success".into())],
             ),
         );
@@ -2149,15 +2740,17 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
             if enabled("terms") {
                 needs.push((terms.to_string(), "success".to_string()));
             }
-            units.insert(id.clone(), (g.clone(), needs));
+            units.insert(id.clone(), (Some(g.clone()), needs));
             id
         })
         .collect::<Vec<_>>();
+    // An aggregate publication keeps only its binding here: its contributing
+    // manifest gains immutable revisions, which are verified where they register.
     for layer in BOOK.iter().copied().filter(|l| enabled(l)) {
         units.insert(
             format!("{layer}/book@1"),
             (
-                json!({"preparation_hash":hash}),
+                None,
                 groups
                     .iter()
                     .map(|id| (id.clone(), "settled".into()))
@@ -2170,7 +2763,7 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
             units.insert(
                 format!("{layer}/book@1"),
                 (
-                    json!({"preparation_hash":hash}),
+                    Some(json!({"preparation_hash":hash})),
                     vec![(root.into(), "success".into())],
                 ),
             );
@@ -2187,11 +2780,24 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
         let Some((stored, raw, by)) = row else {
             bail!("preparation registration: missing unit {id}");
         };
-        if stored != canon::hash_value(inputs)
-            || canon::parse_json(&raw)? != *inputs
+        let parsed = canon::parse_json(&raw)?;
+        if stored != canon::hash_value(&parsed)
             || by.as_deref() != if id == root { None } else { Some(root) }
         {
             bail!("preparation registration: changed unit {id}");
+        }
+        match inputs {
+            Some(inputs) => {
+                if stored != canon::hash_value(inputs) || parsed != *inputs {
+                    bail!("preparation registration: changed unit {id}");
+                }
+            }
+            None => {
+                let (layer, _) = id
+                    .split_once('/')
+                    .context("invalid publication unit id")?;
+                verify_publication_input(id, layer, "book", hash, &parsed)?;
+            }
         }
         let actual = conn
             .prepare("SELECT needs_id,condition FROM deps WHERE unit_id=?1")?
@@ -3152,6 +3758,7 @@ fn group_finish(
             &tx,
             field(child, "layer")?,
             field(child, "key")?,
+            1,
             &child["inputs"],
             Some(&unit),
             false,
@@ -3848,11 +4455,12 @@ fn rerun_list(out: &Path) -> Result<Value> {
     let units = view["units"].as_array().unwrap();
     let unfinished = units
         .iter()
-        .filter(|u| u["state"] != "done")
+        .filter(|u| u["state"] != "done" && !is_superseded(u))
         .filter_map(|u| u["id"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let roots = units
         .iter()
+        .filter(|u| !is_superseded(u))
         .filter(|u| {
             matches!(
                 u["state"].as_str(),
@@ -3884,7 +4492,7 @@ fn rerun_list(out: &Path) -> Result<Value> {
         seen.into_iter().collect::<Vec<_>>()
     };
     Ok(
-        json!({"schema_version":1,"run_id":view["run_id"],"complete":view["complete"],"unresolved":view["unresolved"],"prerequisites":closure(false),"downstream":closure(true),"units":units.iter().filter(|u|u["state"]!="done").collect::<Vec<_>>(),"dependencies":view["dependencies"],"archive_verification":"not_requested"}),
+        json!({"schema_version":1,"run_id":view["run_id"],"complete":view["complete"],"unresolved":view["unresolved"],"prerequisites":closure(false),"downstream":closure(true),"units":units.iter().filter(|u|u["state"]!="done"&&!is_superseded(u)).collect::<Vec<_>>(),"dependencies":view["dependencies"],"archive_verification":"not_requested"}),
     )
 }
 
@@ -3896,9 +4504,19 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let parsed = (|| -> Result<Args> {
         if !matches!(
             command.as_str(),
-            "init" | "status" | "gate" | "next" | "renew" | "done" | "fail" | "rerun-list"
+            "init"
+                | "status"
+                | "gate"
+                | "next"
+                | "renew"
+                | "done"
+                | "fail"
+                | "rerun-list"
+                | "publish"
         ) {
-            bail!("ledger requires init, status, gate, next, renew, done, fail or rerun-list");
+            bail!(
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list or publish"
+            );
         }
         let params = if command == "next" {
             vec!["Out", "Layer", "Take", "Owner"]
@@ -3908,6 +4526,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Unit", "Token", "Class", "Fault"]
         } else if command == "done" {
             vec!["Out", "Unit", "Token", "Outputs"]
+        } else if command == "publish" {
+            vec!["Out", "Layer", "Key"]
         } else {
             vec!["Out", "Layer"]
         };
@@ -3918,6 +4538,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
         if matches!(command.as_str(), "gate" | "next") {
             a.required("Layer")?;
+        }
+        if command == "publish" {
+            a.required("Layer")?;
+            if !PUBLICATION.contains(&a.str("Layer").as_str()) {
+                bail!("-Layer must be an aggregate publication layer: {}", PUBLICATION.join(", "));
+            }
+            let key = a.str_or("Key", "book");
+            if key.len() > 200
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            {
+                bail!("-Key must be a readable logical key of at most 200 bytes");
+            }
         }
         if command == "next" {
             a.required("Take")?
@@ -3979,7 +4613,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let result = if matches!(
+    let result = if command == "publish" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read(&a.str("Out"), &mut zt)?;
+        publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), Value::Null)?
+    } else if matches!(
         command.as_str(),
         "init" | "next" | "renew" | "done" | "fail"
     ) {
@@ -4002,8 +4640,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let evidence = canon::read_json(&path).context("invalid completion evidence")?;
             let unit = a.str("Unit");
             let token = a.str("Token").parse::<i64>()?;
-            if unit == "terms/book@1" {
-                if evidence["schema_version"] != 1
+            if unit == "terms/book@1" {                if evidence["schema_version"] != 1
                     || evidence["kind"] != "terms_completion"
                     || evidence["unit"] != unit
                     || evidence["token"] != token
@@ -4021,6 +4658,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .as_i64()
                     .context("missing Terms planning options")?;
                 terms_apply(&p, &mut zt, token, terms, candidates)?
+            } else if publication_unit(&unit).is_ok() {
+                publication_finish(&p, &unit, token, Path::new(&path))?
             } else {
                 let number = unit
                     .strip_prefix("digest/g")
