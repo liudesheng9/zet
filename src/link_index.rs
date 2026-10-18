@@ -82,7 +82,7 @@ pub(crate) fn ensure(root: &Path, conn: &mut Connection) -> Result<()> {
     drop(saved);
     let tx = conn.transaction()?;
     tx.execute_batch("CREATE TABLE links(source TEXT NOT NULL, ord INTEGER NOT NULL CHECK(ord>=0), target TEXT NOT NULL, kind TEXT, PRIMARY KEY(source,ord)); CREATE INDEX links_by_target ON links(target,source);")?;
-    rebuild(&tx)?;
+    let repaired = rebuild(&tx)?;
     let mut identity = [0u8; 16];
     getrandom::fill(&mut identity).map_err(|e| anyhow::anyhow!("archive identity: {e}"))?;
     let identity: String = identity.iter().map(|b| format!("{b:02x}")).collect();
@@ -94,6 +94,11 @@ pub(crate) fn ensure(root: &Path, conn: &mut Connection) -> Result<()> {
         "INSERT OR IGNORE INTO metadata(key,value) VALUES('archive_revision','0')",
         [],
     )?;
+    // A migration that repairs a stored generated section changes Cards, so the
+    // read view a reader already holds must change with it.
+    if repaired > 0 {
+        bump_revision(&tx)?;
+    }
     tx.execute(
         "INSERT INTO metadata(key,value) VALUES('links_index_version',?1)",
         [INDEX_VERSION],

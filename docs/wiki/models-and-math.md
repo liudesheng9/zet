@@ -481,7 +481,7 @@ cargo test --bin zt ops::tests
 | `tests/model_structure.rs` | Facet and emphasis schemas and refusals; parts filed and parts taken in by Link (`filed`, `also`); relation kinds and notes; loose parts; neighbours both ways; the Model Card retype refusal; the GUI's create/edit of parts; the Session `ty model <facet…>` view; the one-time upgrade of a zt 0.6 archive with its backup |
 | `tests/model_levels.rs` | Setting and clearing a level (`2`, empty), the refusals on Idea Cards and parts, loss of the level on retype, `beyond_level` in a concept model, `level` in `search_cards` and `get_tree` |
 | `tests/self_sufficient_models.rs` | Build order with main, side, shared, and off lines; `closure` fixes; `forward`; `unanchored`; `tolerated`; Derivation chains and shared chains; `insert_card` and `move_card` with `before` and `alone` (MCP and GUI); `delete_card` with `into` |
-| `tests/math_units.rs` | Math form storage and refusals; cited premises and `reach_in`; tiers, budget, the contrast pair, crux and other unit faults; load and `used_by`; study stations; the theory's dependency order, weights, tools, building block; statement-only premises of a lemma on the study path; `specializes` |
+| `tests/math_units.rs` | Math form storage and refusals; cited premises and `reach_in`; tiers, budget, the contrast pair, crux and other unit faults; load and `used_by`; study stations; the theory's dependency order, weights, tools, building block; statement-only premises of a lemma on the study path; `specializes`, including the same kind in the derived Link index's `kinds` map |
 | `src/model.rs` `tests` | Facet parsing, emphasis parsing, `find_head`, `address_order`, sentence notes, kind reading, `印证`/`参照`/`引出`/`来自` |
 | `src/math.rs` `tests` | Form parsing, facet roles, labels, `section_links`, notation tables |
 
@@ -524,6 +524,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 
 ## Change history
 
+- `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65): the `specializes` kind is asserted once from the full parser (`get_tree`) and once from the derived Link index (`get_cards` text `kinds`), so both readers keep every current relation kind.
 - `2026-10-16` — `a_delete_names_the_links_it_breaks_and_into_re_points_them` expects the plan line that keeps later Side successors in place when Links to the deleted part break.
 - `2026-10-15` `639a5a4` — A theory's study path follows only a lemma's statement premises; the theory report adds `statement_cites`.
 - `2026-10-15` `9918ba6` — Math forms on Model Cards (`src/math.rs`): units and Theory Cards, cited premises, `reach_in`, the `specializes` kind, new rests-on cues (`按定义`, `cites`, `by …`), the unit and theory reports in `math`.

@@ -1207,6 +1207,14 @@ fn terminal_session_moves_and_deletes_cards_with_confirmations() {
     assert!(!home.location_exists("0/1|a"));
     assert!(!home.location_exists("0/2|a"));
     assert!(home.card_text("0/2").contains("[[0/2|a]]"));
+    // Session writes are writers too: the derived Link index is still exact.
+    assert!(
+        home.zt_command()
+            .args(["status", "--check-links"])
+            .status()
+            .expect("zt status")
+            .success()
+    );
 }
 
 #[test]
@@ -1279,6 +1287,10 @@ fn terminal_session_edit_lock_blocks_other_writes() {
         "stderr did not contain edit lock message: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        home.archive_root.join("zt.edit.lock").exists(),
+        "a live Session lock is reported busy, never removed"
+    );
 
     session.send_key(Key::Esc);
     session.wait_for_text("location: 0/1");
@@ -1286,6 +1298,13 @@ fn terminal_session_edit_lock_blocks_other_writes() {
     session.send_enter();
     let status = session.wait_for_exit();
     assert!(status.success(), "session exited with {status}");
+    assert!(
+        home.zt_command()
+            .args(["status", "--check-links"])
+            .status()
+            .expect("zt status")
+            .success()
+    );
 }
 
 #[test]

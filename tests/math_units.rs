@@ -630,6 +630,16 @@ fn special_cases_and_definitions_announce_their_relation_kinds() {
         "specializes",
         "{card}"
     );
+    // The derived Link index keeps the same relation kind as the full parser.
+    let lean = mcp.ok(
+        "get_cards",
+        json!({"addresses":[uniform.clone()], "view":"text"}),
+    );
+    assert_eq!(
+        lean["cards"][0]["kinds"][c.definition.as_str()],
+        "specializes",
+        "the indexed kinds map carries every current relation kind: {lean}"
+    );
     // The definition's connect station names its narrower concept's broader one.
     let math = mcp.ok("get_model", json!({ "at": uniform }))["math"].clone();
     let connect = math["study"]

@@ -3876,6 +3876,82 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
     );
     assert_eq!(topic["inbound"][0]["address"], "0/1");
 
+    // The GUI is a writer too: its creates, moves and deletes keep the derived
+    // Link index in step and its Spreads follow the addresses in the same
+    // transaction.
+    let check_links = |expected: u64| {
+        let out = home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report: serde_json::Value = serde_json::from_slice(&out).expect("Link report");
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["links"], expected, "{report}");
+    };
+    check_links(1);
+    let (_, branch) = api(
+        "POST",
+        "/api/create",
+        Some(r##"{"kind":"side","at":"0/1","text":"# Branch\n\nsecond branch.\n"}"##),
+    );
+    assert_eq!(branch["address"], "0/1|a");
+    let (_, later) = api(
+        "POST",
+        "/api/create",
+        Some(r##"{"kind":"side","at":"0/1","text":"# Later\n\n依赖 [[0/1]]。\n"}"##),
+    );
+    assert_eq!(later["address"], "0/1|b");
+    check_links(2);
+    let (status, spread) = api(
+        "POST",
+        "/api/spreads",
+        Some(
+            r##"{"current":"a","spreads":[{"id":"a","name":"Work","cards":[
+                {"at":"0/1","x":0,"y":0},{"at":"0/1|a","x":120,"y":0},
+                {"at":"0/1|b","x":240,"y":0}]}]}"##,
+        ),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(spread["spreads"][0]["cards"].as_array().unwrap().len(), 3);
+    // Deleting the unreferenced side successor compacts the later one one label
+    // up, and its Spread place follows in the same transaction.
+    let (_, deleted_branch) = api(
+        "POST",
+        "/api/delete",
+        Some(r##"{"at":"0/1|a","confirm":"delete"}"##),
+    );
+    assert_eq!(deleted_branch["deleted"], 1);
+    assert_eq!(deleted_branch["moved"]["0/1|b"], "0/1|a");
+    check_links(2);
+    let followed = api("GET", "/api/spreads", None).1;
+    assert_eq!(
+        followed["spreads"][0]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|card| card["at"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["0/1", "0/1|a"],
+        "the Spread follows the compacted Card and drops the deleted one"
+    );
+    let (_, deleted_later) = api(
+        "POST",
+        "/api/delete",
+        Some(r##"{"at":"0/1|a","confirm":"delete"}"##),
+    );
+    assert_eq!(deleted_later["deleted"], 1);
+    check_links(1);
+    let followed = api("GET", "/api/spreads", None).1;
+    assert_eq!(
+        followed["spreads"][0]["cards"].as_array().unwrap().len(),
+        1,
+        "a deleted Card leaves every Spread"
+    );
+
     let (_, stale) = api(
         "POST",
         "/api/edit",
@@ -3901,6 +3977,13 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
         (Some(1), Some("0/0"))
     );
     assert!(!home.location_exists("0/1"));
+    check_links(0);
+    let followed = api("GET", "/api/spreads", None).1;
+    assert_eq!(
+        followed["spreads"][0]["cards"].as_array().unwrap().len(),
+        0,
+        "the Spread keeps its place but no Card"
+    );
 
     let (_, overview) = api("GET", "/api/overview", None);
     assert_eq!(overview["stats"]["total"], 1);

@@ -407,6 +407,7 @@ Integration tests in `tests/workspaces_mcp.rs` build the `zt` binary, make a tem
 - `mcp_reads_both_workspaces_but_changes_only_the_agent_workspace` — the tool list, `list_workspaces` access, reads of human Cards, refusal of every write to the human Workspace, agent Topic and Literature trees, `list_trees` / `get_tree` / `search_cards` / `list_links` filters, `edit_card` (`base`, missing heading), move plan and confirm, Citation key rename, delete plan and Tree root confirmation, Reverse links on a human Card.
 - `mcp_refuses_agent_changes_that_would_rewrite_links_in_human_cards` — move, compaction on delete, and rename refused; deleting a linked agent Card leaves a Broken link.
 - `mcp_protocol_errors_and_service_state_are_reported` — `ping`, `-32601`, `-32602`, tool errors, and the "service is not available" error after `zt down`, then recovery after `zt up` in the same server.
+- `migrating_an_existing_markdown_archive_keeps_authored_cards_and_is_idempotent`, `creating_a_previously_missing_target_keeps_the_broken_links_that_named_it`, `legacy_link_migration_names_a_bad_card_and_can_be_retried_after_repair`, `a_live_lock_holder_is_reported_busy_promptly_and_its_lock_file_is_kept` — the derived Link index through the public boundary: migration with repeated, Broken and cross-Workspace occurrences preserves authored bytes and is idempotent; a new Card at a Broken Link's address takes its existing inbound sources at once; an aborted migration leaves no marker, index row or changed Card and one consistent backup; a live lock holder is reported busy without its file being removed, then its stale file is recovered.
 - The other tests in the file cover Workspaces through the shell, Session, GUI, migration, and `zt dp`; they are not MCP tests.
 
 Commands:
@@ -447,6 +448,8 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+
+- `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65) at the MCP/CLI boundary: add the T01 legacy-migration oracle and idempotency test, the T02 aborted-migration state assertions, the T10 live-lock-holder refusal, and the R067 test that a new target takes over the Broken links that already named it. The migration revision fix is recorded in [Service, CLI and storage](service-and-cli.md).
 
 - `2026-10-17` — Add the lean distinct `outbound_count`, preserving the full view's valid/Broken/repeated/fenced target semantics. Public MCP tests compare the count after a confirmed target deletion; ownership inference needs no full projection.
 

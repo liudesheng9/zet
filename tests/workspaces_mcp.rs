@@ -1882,22 +1882,102 @@ fn legacy_link_migration_names_a_bad_card_and_can_be_retried_after_repair() {
         .to_string();
     drop(mcp);
     home.cmd().arg("down").assert().success();
+    let rows = || -> Vec<(String, String)> {
+        let conn = home.db();
+        let mut stmt = conn
+            .prepare("SELECT COALESCE(location, citation_key), text FROM cards ORDER BY 1")
+            .expect("cards query");
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("card rows")
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            .expect("card rows");
+        rows
+    };
+    let metadata = |key: &str| -> Option<String> {
+        home.db()
+            .query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    };
+    let links_table = || -> u32 {
+        home.db()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='links'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sqlite_master")
+    };
     // Model an archive created before the index and an invalid persisted body.
     // This is storage-boundary fault injection, not a query used to assert behavior.
     let db = home.db();
-    db.execute_batch("DROP TABLE links; DELETE FROM metadata WHERE key='links_index_version';")
-        .unwrap();
+    db.execute_batch(
+        "DROP TABLE links;
+         DELETE FROM metadata WHERE key IN ('links_index_version','link_write_stats');",
+    )
+    .unwrap();
     db.execute(
         "UPDATE cards SET text='# Bad\n\n[[invalid target]]\n' WHERE location=?1",
         [at],
     )
     .unwrap();
     drop(db);
+    let damaged = rows();
+    let revision_before = metadata("archive_revision");
+    let backups = || -> Vec<std::path::PathBuf> {
+        let mut found = fs::read_dir(&home.archive_root)
+            .expect("archive root")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("zt.sqlite3.pre-link-index-")
+            })
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        found.sort();
+        found
+    };
+    let backups_before = backups().len();
+    assert_eq!(links_table(), 0, "the fixture starts without the index");
     home.cmd()
         .arg("up")
         .assert()
         .failure()
         .stderr(predicate::str::contains(format!("Card `{at}`")));
+    // A failed migration commits nothing: no marker, no index, no partial rows.
+    assert_eq!(
+        links_table(),
+        0,
+        "an aborted migration must not publish a partial index"
+    );
+    assert_eq!(metadata("links_index_version"), None);
+    assert_eq!(metadata("link_write_stats"), None);
+    assert_eq!(metadata("archive_revision"), revision_before);
+    assert_eq!(
+        rows(),
+        damaged,
+        "an aborted migration must leave every stored Card untouched"
+    );
+    let backups_after = backups();
+    assert_eq!(
+        backups_after.len(),
+        backups_before + 1,
+        "the failed migration retains one consistent pre-migration backup"
+    );
+    let saved = Connection::open_with_flags(
+        backups_after.last().unwrap(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open backup");
+    let integrity: String = saved
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("backup integrity");
+    assert_eq!(integrity, "ok", "the pre-migration backup is consistent");
+    drop(saved);
     let db = home.db();
     db.execute(
         "UPDATE cards SET text=?1 WHERE location=?2",
@@ -1908,6 +1988,71 @@ fn legacy_link_migration_names_a_bad_card_and_can_be_retried_after_repair() {
     home.cmd().arg("up").assert().success();
     let mut mcp = home.mcp();
     assert_eq!(mcp.ok("get_card", json!({"at":at}))["text"], original);
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_live_lock_holder_is_reported_busy_promptly_and_its_lock_file_is_kept() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("# Topic\n\nentry\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let path = home.archive_root.join("zt.edit.lock");
+    fs::write(&path, "zt edit lock\npid 999999\n").unwrap();
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open the live lock file");
+    holder.lock().expect("hold the live lock");
+    let started = std::time::Instant::now();
+    let output = home
+        .cmd_with_editor("# Blocked\n\nbody\n")
+        .args(["n", "--at", "0/0"])
+        .output()
+        .expect("run a competing writer");
+    assert!(
+        !output.status.success(),
+        "a live holder keeps the edit lock: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("edit in progress"),
+        "the live holder is reported as busy: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the shell refuses without an unbounded wait"
+    );
+    assert!(path.exists(), "a live holder's lock file is never removed");
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        "zt edit lock\npid 999999\n".len() as u64,
+        "a live holder's lock file is not rewritten"
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+    holder.unlock().expect("release the live lock");
+    drop(holder);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "zt edit lock\npid 999999\n",
+        "a live holder's lock file is not rewritten"
+    );
+    // Once the holder is gone its file is stale: the next writer recovers.
+    home.cmd_with_editor("# Recovered\n\nbody\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success();
     home.cmd()
         .args(["status", "--check-links"])
         .assert()
@@ -2047,6 +2192,267 @@ fn an_explicit_reindex_repairs_corrupt_derived_rows_without_changing_card_text()
     );
     home.cmd().arg("reindex").assert().success();
     assert_eq!(mcp.ok("get_card", json!({"at":"0/0"}))["text"], before);
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+/// T01: migrating an archive written before the Link index keeps every authored
+/// title and body, rebuilds repeated and Broken occurrences, repairs only the
+/// generated Reverse sections, counts that repair as one changing transaction,
+/// and a repeated migration changes nothing.
+#[test]
+fn migrating_an_existing_markdown_archive_keeps_authored_cards_and_is_idempotent() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.human_topic();
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{MigratedBook, title={Migrated book}}","body":"依赖 [[0/1]]。"}),
+    );
+    home.cmd_with_editor(
+        "# Repeated source\n\n依赖 [[0/1]]，参照 [[MigratedBook]]，也依赖 [[0/1]]。\n",
+    )
+    .args(["n", "--at", "0/1"])
+    .assert()
+    .success()
+    .stdout("0/2\n");
+    home.cmd_with_editor("# Doomed\n\ndoomed\n")
+        .args(["b", "--at", "0/1"])
+        .assert()
+        .success()
+        .stdout("0/1|a\n");
+    home.cmd_with_editor("# Breaker\n\n依赖 [[0/1|a]]。\n")
+        .args(["n", "--at", "0/2"])
+        .assert()
+        .success()
+        .stdout("0/3\n");
+    home.cmd()
+        .args(["del", "--at", "0/1|a"])
+        .write_stdin("delete\n")
+        .assert()
+        .success();
+    drop(mcp);
+
+    let rows = || -> Vec<(String, String)> {
+        let conn = home.db();
+        let mut stmt = conn
+            .prepare("SELECT COALESCE(location, citation_key), text FROM cards ORDER BY 1")
+            .expect("cards query");
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("card rows")
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            .expect("card rows");
+        rows
+    };
+    let revision = || -> u64 {
+        let out = home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["archive_revision"]
+            .as_u64()
+            .expect("archive revision")
+    };
+    let before = rows();
+    assert_eq!(
+        before.len(),
+        5,
+        "two Cards from the human helper, one Literature Card, one repeated source and one breaker"
+    );
+    let authored = before
+        .iter()
+        .map(|(at, text)| {
+            let authored = text
+                .split("<!-- zt:reverse-links -->")
+                .next()
+                .expect("stored Card prefix")
+                .trim_end()
+                .to_string();
+            (at.clone(), authored)
+        })
+        .collect::<Vec<_>>();
+    let before_revision = revision();
+
+    // Model an archive written before the index: the derived table and its
+    // marker are gone and one stored Reverse section is deliberately stale.
+    home.cmd().arg("down").assert().success();
+    let db = home.db();
+    db.execute_batch(
+        "DROP TABLE links;
+         DELETE FROM metadata WHERE key IN ('links_index_version','link_write_stats');",
+    )
+    .expect("remove the derived index");
+    assert_eq!(
+        db.execute(
+            "UPDATE cards SET text = replace(text, '<!-- zt:reverse-links -->',
+             '<!-- zt:reverse-links -->' || char(10) || '- [[9/9]] Stale reverse')
+             WHERE location = '0/1'",
+            [],
+        )
+        .expect("damage a stored Reverse section"),
+        1
+    );
+    let damaged: String = db
+        .query_row("SELECT text FROM cards WHERE location = '0/1'", [], |row| {
+            row.get(0)
+        })
+        .expect("damaged text");
+    assert!(damaged.contains("Stale reverse"), "{damaged}");
+    drop(db);
+
+    home.cmd().arg("up").assert().success();
+
+    let report: Value = serde_json::from_slice(
+        &home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("structured Link integrity report");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(
+        report["links"], 5,
+        "two occurrences of one target, one cross-workspace Link and one Broken occurrence"
+    );
+    assert_eq!(
+        revision(),
+        before_revision + 1,
+        "one migration transaction that repairs stored text advances the archive once"
+    );
+
+    let after = rows();
+    assert_eq!(after.len(), before.len());
+    for ((at, text), (_, authored_text)) in after.iter().zip(&authored) {
+        let prefix = text
+            .split("<!-- zt:reverse-links -->")
+            .next()
+            .expect("stored Card prefix")
+            .trim_end();
+        assert_eq!(
+            prefix, authored_text,
+            "authored text of `{at}` is unchanged"
+        );
+    }
+    let indexed_target = home.text("0/1");
+    assert!(
+        !indexed_target.contains("Stale reverse"),
+        "the generated section is rebuilt: {indexed_target}"
+    );
+    assert!(
+        indexed_target.contains("- [[0/2]] Repeated source"),
+        "{indexed_target}"
+    );
+    assert!(
+        indexed_target.contains("- [[MigratedBook]] Migrated book"),
+        "{indexed_target}"
+    );
+
+    let mut mcp = home.mcp();
+    let broken = mcp.ok("list_broken_links", json!({"workspace":"human"}));
+    assert_eq!(broken["broken"][0]["target"], "0/1|a", "{broken}");
+    assert_eq!(broken["broken"][0]["source"], "0/3", "{broken}");
+    drop(mcp);
+
+    // A second migration attempt over the ready archive is a no-op.
+    let stats = || -> (String, String) {
+        let conn = home.db();
+        (
+            conn.query_row(
+                "SELECT value FROM metadata WHERE key='link_write_stats'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("write stats"),
+            conn.query_row(
+                "SELECT value FROM metadata WHERE key='archive_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("revision"),
+        )
+    };
+    let settled = (rows(), stats());
+    home.cmd().arg("down").assert().success();
+    home.cmd().arg("up").assert().success();
+    assert_eq!(
+        (rows(), stats()),
+        settled,
+        "repeating the migration changes no Card, no index row and no revision"
+    );
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
+
+/// R067: a new Card at an address a Broken Link already names supplies that
+/// target's existing inbound sources immediately, without a reindex.
+#[test]
+fn creating_a_previously_missing_target_keeps_the_broken_links_that_named_it() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("# Topic\n\nentry\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success()
+        .stdout("0/0\n");
+    let mut mcp = home.mcp();
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{Reused, title={Reused literature}}","body":"work\n"}),
+    );
+    home.cmd_with_editor("# Liker\n\n参照 [[Reused]]。\n")
+        .args(["n", "--at", "0/0"])
+        .assert()
+        .success()
+        .stdout("0/1\n");
+    let revision = || -> u64 {
+        let out = home
+            .cmd()
+            .args(["status", "--check-links"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["archive_revision"]
+            .as_u64()
+            .expect("archive revision")
+    };
+    let before_delete = revision();
+    mcp.ok("delete_card", json!({"at":"Reused","confirm":"Reused"}));
+    assert!(!home.exists("Reused"));
+    let broken = mcp.ok("list_broken_links", json!({}));
+    assert_eq!(broken["broken"][0]["target"], "Reused", "{broken}");
+    assert_eq!(broken["broken"][0]["source"], "0/1", "{broken}");
+    assert_eq!(revision(), before_delete + 1);
+
+    mcp.ok(
+        "create_literature",
+        json!({"bibtex":"@book{Reused, title={Recreated literature}}","body":"work again\n"}),
+    );
+    let target = mcp.ok("get_card", json!({"at":"Reused"}));
+    let text = target["text"].as_str().expect("Card text");
+    assert!(
+        text.contains("- [[0/1]] Liker"),
+        "the new target lists its existing inbound sources at once: {text}"
+    );
+    assert_eq!(
+        mcp.ok("list_broken_links", json!({}))["broken"],
+        json!([]),
+        "the Link is no longer broken"
+    );
     home.cmd()
         .args(["status", "--check-links"])
         .assert()
