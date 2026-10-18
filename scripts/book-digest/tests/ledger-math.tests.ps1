@@ -120,6 +120,24 @@ try {
     $again = Run-Digest @('ledger','math','-Out',$out)
     Assert ($again.reused -eq $true -and @($again.units).Count -eq @($registered.units).Count) 'the same plan registers no second obligation'
 
+    # --- a done model build stays done while its own obligations are open ---------------------------
+    # A stopped-local fixture supplies the finished Model unit (#72 owns its own verifier); the
+    # boundary and proof obligations are real registered work beside it.
+    $modelUnit = 'models/g003-m0001@1'
+    $modelFixture = @'
+const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');const crypto=require('node:crypto');
+const p=path.resolve(process.argv[1]);
+if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-math-test-'))throw new Error('not the isolated ledger');
+const input=JSON.stringify({model:'Abbott2015/3|b'});
+const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at,completed_at,result_json) values(?,'models',?,'1','done',?,?,'prepare/book@1',?,?,'{\"disposition\":\"verified\"}')").run(process.argv[2],process.argv[2],input,crypto.createHash('sha256').update(input).digest('hex'),new Date().toISOString(),new Date().toISOString());db.close();
+'@
+    & node --no-warnings -e $modelFixture (Join-Path $out 'ledger.sqlite3') $modelUnit
+    if ($LASTEXITCODE) { throw 'isolated Model fixture failed' }
+    $modelRow = (& node --no-warnings -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});console.log(JSON.stringify(db.prepare('select * from units where id=?').get(process.argv[2])));db.close();" (Join-Path $out 'ledger.sqlite3') $modelUnit)
+    $rerun = Run-Digest @('ledger','rerun-list','-Out',$out)
+    Assert ($modelUnit -notin $rerun.units.id -and $modelUnit -notin $rerun.unresolved -and "boundary/$th@1" -in $rerun.units.id) 'a done model build is not offered to a resume while its boundary obligation is'
+    $modelBefore = (Read-Model $th) | ConvertTo-Json -Depth 8 -Compress
+
     # --- the indexed statement index must account for the prepared sections -------------------------
     $indexFile = Join-Path $out 'math\index.json'
     $good = [IO.File]::ReadAllBytes($indexFile)
@@ -276,6 +294,14 @@ const db=new DatabaseSync(p);db.prepare("update units set state='done',completed
     $checkDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$checkUnit,'-Token',$checkToken,'-Outputs',$checkFile)
     Assert ($checkDone.state -eq 'done' -and $checkDone.audit -ceq 'audit/book@1' -and $checkDone.audit_revision -eq 1 -and $checkDone.units -eq 3 -and $checkDone.theories -eq 2) 'the final math check names the audit revision its M1-M18 report describes'
     Assert ($checkDone.faults -ge 1 -and $checkDone.by_rule.M1 -ge 1) 'the final check reports the rules the book still breaks instead of claiming a clean pass'
+
+    # --- the drained obligations never rebuilt the model unit ---------------------------------------
+    $modelAfter = (& node --no-warnings -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});console.log(JSON.stringify(db.prepare('select * from units where id=?').get(process.argv[2])));db.close();" (Join-Path $out 'ledger.sqlite3') $modelUnit)
+    Assert ($modelAfter -ceq $modelRow) 'draining the boundary and proof obligations changed no fact of the done model unit'
+    $drained = Run-Digest @('ledger','rerun-list','-Out',$out)
+    Assert ($modelUnit -notin $drained.units.id -and "boundary/$th@1" -notin $drained.units.id -and "proof/$th@1" -notin $drained.units.id) 'completed obligations leave the resume list while the done model build stays out of it'
+    $modelNow = (Read-Model $th) | ConvertTo-Json -Depth 8 -Compress
+    Assert ($modelNow -ne $modelBefore -and (Read-Card $th).title -eq '介值定理：连续函数取遍中间值') 'the work changed the model parts, not the unit Card the build owns'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

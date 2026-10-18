@@ -302,7 +302,7 @@ Each layer completes through its own deterministic verifier instead of a caller-
 | `proof/<address>@1` | The reviewed steps must be the unit model's current main-line premise/proof/conclusion steps, one verdict each. An accepted fix must be the body the archive now holds and keep every Link the step had; an untouched step must still be the fingerprint the review read. A refused correction keeps the unit open and is reported as a named obligation. |
 | `math-check/book@1` | Re-run the M1–M18 report against the archive and require it to equal the retained `math-audit.json`, then record the `audit` revision it describes. The retained evidence is not rewritten by a refusal. |
 
-Public coverage is `ledger-math.tests.ps1`: a real `prepare -Variant math -Apply`, the real `math` steps and `ledger` commands on the same staging folder, and the named regression scenarios for allocation-versus-building, the notation gate, unreviewed and rejected boundary candidates, a hidden deletion, unreviewed and refused proof steps, and a stale final audit.
+Public coverage is `ledger-math.tests.ps1`: a real `prepare -Variant math -Apply`, the real `math` steps and `ledger` commands on the same staging folder, and the named regression scenarios for allocation-versus-building, the notation gate, unreviewed and rejected boundary candidates, a hidden deletion, unreviewed and refused proof steps, a stale final audit, and the resume facts — a done Model unit stays out of the resume list and unchanged while its boundary and proof obligations drain.
 
 
 
