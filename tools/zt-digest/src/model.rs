@@ -8,7 +8,7 @@
 
 use crate::ps;
 
-mod compiler;
+pub(crate) mod compiler;
 mod context;
 mod list;
 

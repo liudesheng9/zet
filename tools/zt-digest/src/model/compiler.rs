@@ -58,6 +58,11 @@ const STEPS: [&str; 12] = [
     "brief", "validate", "apply", "derive", "review", "split", "report", "resume", "explain", "explain-check",
     "explain-apply", "explain-report",
 ];
+/// One model's folder and artifact stem: the address with `\`, `/` and `|` replaced by `_`.
+/// Adoption reads the retained plans and states by the same name the compiler writes them.
+pub(crate) fn slug_of(address: &str) -> String {
+    SLUG.replace_all(address, "_").into_owned()
+}
 /// A premise that states a mathematical unit (a Model Card with a unit form) is cited, not taken in.
 const UNIT_FORMS: [&str; 6] = ["definition", "axiom", "theorem", "proposition", "lemma", "corollary"];
 
@@ -381,7 +386,7 @@ impl Compiler {
     }
 
     fn slug(address: &str) -> String {
-        SLUG.replace_all(address, "_").into_owned()
+        slug_of(address)
     }
 
     fn dir(&self, model: &str) -> String {

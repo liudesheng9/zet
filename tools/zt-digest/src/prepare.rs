@@ -72,7 +72,7 @@ fn write(path: &str, text: &str) -> Result<()> {
     util::write_atomic(path,text)
 }
 /// Where the instruction files live.
-fn scripts_dir() -> String {
+pub(crate) fn scripts_dir() -> String {
     if let Ok(dir) = std::env::var("ZT_DIGEST_SCRIPTS")
         && !dir.is_empty()
     {
@@ -326,7 +326,7 @@ fn event_candidates(unit: &Unit, file: &str, n: usize, max: i64, into: &mut Vec<
 
 /// The shared prefix: the first instruction file, each further file inserted before its
 /// `## 回复` section, the placeholders filled.
-fn build_prefix(dir: &str, files: &str, fill: &[(&str, &str)]) -> Result<String> {
+pub(crate) fn build_prefix(dir: &str, files: &str, fill: &[(&str, &str)]) -> Result<String> {
     let names: Vec<&str> = files.split(',').map(str::trim).filter(|f| !f.is_empty()).collect();
     let first = names.first().context("no instruction file")?;
     let mut template = read_raw(&join_path(dir, first))?;
@@ -344,7 +344,7 @@ fn build_prefix(dir: &str, files: &str, fill: &[(&str, &str)]) -> Result<String>
 }
 
 /// `zt-digest prepare` (prepare-book-digest.ps1).
-fn run_contract(
+pub(crate) fn run_contract(
     manifest: &Map<String, Value>,
     variant: &str,
     source_hash: &str,

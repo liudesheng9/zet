@@ -1,4 +1,5 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
+mod adopt;
 use crate::event::layer::prop;
 use crate::ps::{self, list, pipe, s, truthy};
 use crate::{args::Args, canon, report, util, zt::Zt};
@@ -6401,6 +6402,28 @@ fn terms_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String
 }
 
 /// Read-only ledger reconciliation. File/Card checks remain a typed verifier's job.
+/// Whether one done unit's record is an adoption verification rather than a historic
+/// completion (R413). An adoption declares the outputs and children it registered itself, so
+/// the same emission invariant holds without pretending a command enumeration exists.
+fn is_adoption(result: &Value) -> bool {
+    result["kind"]
+        .as_str()
+        .is_some_and(|kind| kind.ends_with("_adoption"))
+}
+
+/// The output keys an adoption record declares. Adoption writes no Card and starts no command,
+/// so its enumeration is exactly the evidence it registered.
+fn adoption_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    result["outputs"]
+        .as_array()
+        .context("missing adoption output enumeration")?
+        .iter()
+        .map(|key| {
+            Ok(key.as_str().context("invalid adoption output key")?.to_string())
+        })
+        .collect()
+}
+
 fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
     let producers = conn
         .prepare(
@@ -6435,10 +6458,21 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
     }
     for (producer, raw) in producers {
         let result: Value = serde_json::from_str(&raw)?;
-        let Some(emitted) = result["emitted"].as_array() else {
-            faults.push(json!({"code":"producer_enumeration_missing","unit":producer}));
-            continue;
+        let adoption = is_adoption(&result);
+        // R413: an adoption carries its declaration too. A record that names neither is a
+        // producer whose enumeration is missing, exactly as a completion without one is.
+        let declared = if adoption {
+            result.get("emitted").and_then(Value::as_array).cloned().unwrap_or_default()
+        } else {
+            match result["emitted"].as_array() {
+                Some(emitted) => emitted.clone(),
+                None => {
+                    faults.push(json!({"code":"producer_enumeration_missing","unit":producer}));
+                    continue;
+                }
+            }
         };
+        let emitted = &declared;
         let mut expected = std::collections::BTreeSet::new();
         for child in emitted {
             let id = field(child, "id")?;
@@ -6485,7 +6519,11 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
         if actual != expected {
             faults.push(json!({"code":"producer_children_mismatch","unit":producer,"expected":expected,"actual":actual}));
         }
-        let expected_outputs = completion_output_keys(&result)?;
+        let expected_outputs = if adoption {
+            adoption_output_keys(&result)?
+        } else {
+            completion_output_keys(&result)?
+        };
         let actual_outputs = conn
             .prepare("SELECT output_key FROM outputs WHERE unit_id=?1")?
             .query_map([&producer], |r| r.get::<_, String>(0))?
@@ -6503,7 +6541,11 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
         .optional()?;
     if let Some(raw) = terms {
         let result: Value = serde_json::from_str(&raw)?;
-        let expected = terms_output_keys(&result)?;
+        let expected = if is_adoption(&result) {
+            adoption_output_keys(&result)?
+        } else {
+            terms_output_keys(&result)?
+        };
         let actual = conn
             .prepare("SELECT output_key FROM outputs WHERE unit_id='terms/book@1'")?
             .query_map([], |r| r.get::<_, String>(0))?
@@ -11346,7 +11388,10 @@ fn explain_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &
         bail!("Model unit {model_unit} is {state}, not a checked completion");
     }
     let build: Value = serde_json::from_str(&raw.context("missing Model completion evidence")?)?;
-    if build["kind"] != json!("model_completion")
+    // R413: an adopted Model unit carries a read-only adoption verification, and that is a
+    // different artifact from a historic compiler completion. Both record the build and the
+    // explanation need; the Explain layer's premise is the checked build, not its origin.
+    if !matches!(build["kind"].as_str(), Some("model_completion" | "model_adoption"))
         || build["model"] != json!(header)
         || build["plan_hash"] != json!(plan_hash)
         || build["complete"] != json!(true)
@@ -14148,6 +14193,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         .first()
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    // R410 (#88): legacy adoption has its own operation and its own parameters. It is never
+    // reached through `init`, and `init` never fabricates a legacy folder's history.
+    if command == "adopt" {
+        return adopt::cli(argv);
+    }
     let parsed = (|| -> Result<Args> {
         if !matches!(
             command.as_str(),
@@ -14170,10 +14220,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "resume"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource or report"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource, report or adopt"
             );
-        }
-        let params = if command == "report" || command == "resume" {
+        }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
         } else if command == "next" {
             vec!["Out", "Layer", "Take", "Owner", "Wait"]
