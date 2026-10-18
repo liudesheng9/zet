@@ -10,8 +10,12 @@ Status: **prepared and rehearsed; the authorized live window is pending.** This 
 recorded everything that does not need provider spend or a live Card write: the consistent
 backups, the exact recount on a copy of the settled archive, the adoption of the real legacy
 staging evidence, the one-resume rehearsal, the final-report rehearsal, and two defects the recount
-found (fixed test-first). Applying the adoption to `D:\zt-digest\stiglitz2014learning` and running
-the one `mode: "resume"` with real provider work is the human's authorized step (section 6).
+found (fixed test-first). The ruling for this slice is that the **user runs the whole live window**:
+the adoption `-Apply` and the one `mode: "resume"` wait for the user's explicit word, so no
+`zt-digest` command was ever pointed at `D:\zt-digest\stiglitz2014learning` (even a read-only plan
+writes `<folder>\adoption\plan.json` and renews the expiring run marker). Section 6 holds the exact
+ordered commands and expected results, with the proof that the copy's plan is the live plan.
+
 
 Nothing here is a completion claim. The dated numbers of the proposal (a fourth run in progress,
 137 placeholders, 15 Cards/18 repeated paragraphs, 31 title bodies, 65 note suggestions, 13 named
@@ -144,47 +148,127 @@ before/after manifest; the compact repository copy is the recount JSON above.
 
 ## 6. The authorized live runbook
 
-Only this section needs the user's maintenance window, provider spend and live Card writes. The
-main agent does not run it (#90/#91 are refused as live-run work); Claude Code runs it with the
-user, exactly as the frozen workflow provides.
+Only this section needs the user's maintenance window, provider spend and live Card writes. This
+pass ran none of it: the ruling on this slice is that the **user runs the whole window** (the
+adoption `-Apply` and the one resume), and the user's word restarts `stiglitz2014learning`. What
+follows is the exact order and the expected result at each step. Run it in one Claude Code session,
+and do not interleave another digest.
 
-1. **Window check.** No digest active (`zt-digest service-wait -Wait 5` → `stage: null`), no
-   `zt-digest`/`zt-check` process, no `ledger.sqlite3` in the staging folder. If the window moves,
-   take fresh backups first (section 1's two commands).
-2. **Read-only plan on the live folder**:
-   `zt-digest ledger adopt -Out D:\zt-digest\stiglitz2014learning -Variant econ`.
-   Inspect: `status: ready`, `apply.allowed: true`, 171/160/11 groups, 170/54/116 models, 214
-   adopted, 127 unresolved, the Bridge report hash `9532997e…`, no `missing` scope. Record the
-   plan and proposal hashes.
-3. **Apply**: the same command with `-Apply`. It writes `manifest.json`, `ledger.sqlite3` and
-   `adoption/applied.json` from the reviewed plan; nothing else in the folder or the archive
-   changes.
-4. **Verify**: `zt-digest ledger status -Out <folder> -Verify` → 216 done / 127 ready / 8
-   registered, `complete: false`, coverage faults only the seven publications, 232 placeholders in
-   170 models.
-5. **The one authorized resume**, with the frozen economics workflow:
+**What this pass did *not* run against the live folder.** No `zt-digest` command was ever pointed at
+`D:\zt-digest\stiglitz2014learning`. A read-only plan would still write two things: `<folder>\adoption\plan.json`
+and a renewal of the archive's expiring `zt.digest.run` marker (written by every `zt-digest` client
+that names a staging folder). That is outside "writes nothing", so the plan below is the copy's.
+Why the copy's plan *is* the live plan: on 2026-10-18 every named input file and all **171 group
+files / 187 section files** are byte-identical between the live folder and the rehearsal copy
+(`book.zh.md` `9c369586…`, `sections/index.md` `98281daf…`, `terms.md` `aa9f8d4d…`, `figures.json`
+`dd18941a…`, `bridge/report.md` `9532997e…`, `bridge/plan.json` `69025a92…`, `bridge/proposals.json`
+`5afc2f21…`), both archives are `806009944a966daad513b2aacabddc5f` at revision 0 with 10,895 Cards
+and 56,994 Links, and the live folder holds no `ledger.sqlite3`, no `manifest.json` and no
+`adoption` directory (its newest file is dated 2026-10-17 05:28). The rehearsal's plan was exit 0 /
+`status: ready`, plan sha256 `7f4b27bc…`, proposal hash `79d74054…`; those two hashes are
+path- and time-specific, so the live plan will have its own — record them.
 
-   ```js
-   Workflow({scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js",
-             args: {mode: "resume", out: "D:\\zt-digest\\stiglitz2014learning"}})
-   ```
+**Step 0 — window check (read-only).**
 
-   The tool form `zt-digest ledger resume -Out <folder>` opens the same invocation 2 when the
-   workflow runner is not used. **There is one resume**: if the resumed run leaves hard failures,
-   the remaining work is a manual worklist and a later repair is a separate preparation. Do not
-   spend the resume on a rehearsal or a checkpoint stop.
-6. **After the run**: `zt-digest ledger report -Out <folder>`,
-   `zt-digest audit -CitationKey stiglitz2014learning -Out <folder>\audit-final`, and
-   `zt status --check-links`. The final report must name every remaining gap, the incomplete groups,
-   the models still holding `待写`, the unexplained Derivation parts, the unmatched figures, the
-   source-review/fault outcome, the Bridge report id with its open proposals, and the owned-resource
-   cleanup.
-7. **Fill the evidence table** below and comment it on #91.
+```powershell
+zt status                                  # up, D:\zt, revision 0, 10,895 Cards, 0 Sessions
+zt-digest service-wait -Wait 5             # state up, stage null, last_exit_abnormal false
+Get-Process zt-digest,zt-check -ErrorAction SilentlyContinue   # nothing running
+Test-Path D:\zt-digest\stiglitz2014learning\ledger.sqlite3      # False
+Test-Path D:\zt-digest\stiglitz2014learning\manifest.json       # False
+```
+
+**Step 1 — first backup, before any write.**
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$bak = "D:\zt\backup\zt.sqlite3.$stamp.pre-issue91-live.bak"
+$js = Join-Path $env:TEMP 'zt-backup-91.mjs'
+@'
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(process.env.ZT_SRC, { readOnly: true });
+db.exec(`VACUUM INTO '${process.env.ZT_DST}'`);
+db.close();
+const c = new DatabaseSync(process.env.ZT_DST, { readOnly: true });
+const integrity = c.prepare('PRAGMA integrity_check').all().map(r => r.integrity_check);
+const cards = c.prepare('SELECT count(*) AS n FROM cards').get().n;
+const links = c.prepare('SELECT count(*) AS n FROM links').get().n;
+const meta = Object.fromEntries(c.prepare('SELECT key, value FROM metadata').all().map(r => [r.key, r.value]));
+c.close();
+console.log(JSON.stringify({ integrity, cards, links, archive_id: meta.archive_id, revision: meta.archive_revision }));
+'@ | Set-Content -Path $js -Encoding utf8
+$env:ZT_SRC = 'D:\zt\zt.sqlite3'; $env:ZT_DST = $bak
+node --no-warnings $js      # integrity ["ok"], 10895 Cards, 56994 Links, 806009944a966daad513b2aacabddc5f, revision 0
+Compress-Archive -Path 'D:\zt-digest\stiglitz2014learning\*' -DestinationPath "D:\zt\backup\staging-stiglitz2014learning.$stamp.pre-issue91-live.zip" -CompressionLevel Optimal
+```
+
+**Step 2 — read-only plan.** Writes only `<folder>\adoption\plan.json` and renews the expiring run
+marker; it writes no manifest, ledger, lock or Card.
+
+```powershell
+zt-digest ledger adopt -Out D:\zt-digest\stiglitz2014learning -Variant econ
+```
+
+Expected: exit 0; `status: ready`; `apply.allowed: true`; **171 groups (160 verified, 11 incomplete:
+10, 18, 92, 93, 94, 95, 127, 163, 168, 169, 170)**; **170 models (54 verified, 116 incomplete)**;
+**214 adopted, 127 unresolved**; `evidence.retained_outputs.bridge.report.sha256` `9532997e…`; no
+`missing` scope. Record the plan sha256 and the proposal hash.
+
+**Step 3 — apply.** Writes `manifest.json`, `ledger.sqlite3`, `adoption/applied.json` and the four
+derived artifacts from the reviewed plan.
+
+```powershell
+zt-digest ledger adopt -Out D:\zt-digest\stiglitz2014learning -Variant econ -Apply
+```
+
+Expected: `status: applied`, `kind: adoption_applied`, `resume_count: 0`; `applied.json` names the
+plan's hash.
+
+**Step 4 — verify the adopted ledger (read-only).**
+
+```powershell
+zt-digest ledger status -Out D:\zt-digest\stiglitz2014learning -Verify
+```
+
+Expected: `done 216`, `ready 127`, `registered 8`; `complete: false` with
+`quality_reason: placeholders_present`; placeholders **232 Cards across 170 models**, 42 models
+holding `待写`; `coverage_faults` is only `required_unit_missing_or_changed` for the seven unbuilt
+publications (`audit`, `bridge`, `cards-book`, `figures`, `link-check`, `organize`, `skeleton`);
+`resume.available: true`, `resume_count: 0`; seven publications, none current.
+
+**Step 5 — second backup immediately before the resume.** Same snippet as step 1 with
+`$bak = "D:\zt\backup\zt.sqlite3.$stamp.pre-resume-issue91.bak"`; confirm the same `archive_id`,
+integrity `ok`, 10,895 Cards and the revision the adoption left (still 0: adoption writes no Card).
+
+**Step 6 — the one resume.**
+
+```js
+Workflow({scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js",
+          args: {mode: "resume", out: "D:\\zt-digest\\stiglitz2014learning"}})
+```
+
+It opens invocation 2 and spends `resume_count 1`. If it leaves hard failures, the remaining work is
+a manual worklist and a later repair is a separate preparation — **there is no second resume**.
+
+**Step 7 — after the run.**
+
+```powershell
+zt-digest ledger report -Out D:\zt-digest\stiglitz2014learning
+zt-digest audit -CitationKey stiglitz2014learning -Out D:\zt-digest\stiglitz2014learning\audit-final
+zt status --check-links
+zt-digest ledger gate -Out D:\zt-digest\stiglitz2014learning -Layer digest   # then each enabled layer
+```
+
+The report must name every remaining gap; keep the Bridge report report-only (57 proposals, 0
+applied) unless an exact selection was separately accepted.
+
+**Step 8 — fill the evidence table** below and comment it on #91.
 
 | Evidence | Value to record |
 | --- | --- |
-| Adoption plan/proposal hashes, `applied.json` hash | |
-| `ledger status -Verify` before the resume (done/ready/registered, placeholders) | |
+| Window check facts (service, run, folder) and both backup paths with their integrity facts | |
+| Adoption plan sha256 / proposal hash; `applied.json` hash | |
+| `ledger status -Verify` before the resume (done/ready/registered, placeholders, coverage faults) | |
 | Invocation and `resume_count`; the workflow run id | |
 | Per-layer outcome after the run (digest, models, explain, cards-book, link-check, organize, skeleton, hubs, figures, bridge, audit) | |
 | Completed groups before/after; any group still incomplete with its reason | |
@@ -193,7 +277,7 @@ user, exactly as the frozen workflow provides.
 | Figures shown / unmatched with reason / unresolved | |
 | Event and Finding dispositions (candidates, jobs, pending count) | |
 | Source review coverage and source-fault report (with original locations) | |
-| Bridge report id, proposals open/applied (must stay 0 applied without an exact selection) | |
+| Bridge report id, proposals open/applied (must stay 0 applied) | |
 | Owned resource ids and deletion/workspace settlement | |
 | Final audit revision, report hash, full-parser Link check | |
 | Actual usage (requests, tokens, cost, missing coverage) and wall-clock time | |
@@ -225,6 +309,10 @@ section 7.1:
 
 - No live Card was written, no digest stage ran, no provider was called, and the live staging
   folder was not mutated. The adoption, the failure, the resume and both audits ran on copies.
+- Even the read-only live plan was not run against the live folder: it writes
+  `<folder>\adoption\plan.json` and renews the archive's expiring `zt.digest.run` marker, which is
+  outside the "writes nothing" boundary this pass works under. Section 6 proves the copy's plan is
+  the live plan byte for byte and tells the user to run the plan itself as step 2 of the window.
 - The book is not complete: 11 groups, 116 models, 69 unexplained Derivation parts, 20 unmatched
   figure references and the whole downstream publication chain remain open, and the run report says
   so (`complete: false`, 374 gaps).
