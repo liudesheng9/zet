@@ -314,10 +314,125 @@ fn put_meta(tx: &Transaction, key: &str, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn verify_binding(conn: &Connection, p: &Prepared) -> Result<()> {
-    if meta(conn, "schema_version")? != 1 {
+fn verify_schema(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version != 1 || meta(conn, "schema_version")? != 1 {
         bail!("incompatible ledger schema");
     }
+    let journal: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+    if journal != "wal" {
+        bail!("ledger journal mode mismatch: expected wal, observed {journal}");
+    }
+    let mut tables=conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    let tables = tables
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if tables != ["deps", "events", "meta", "outputs", "units"] {
+        bail!("ledger table mismatch: {tables:?}");
+    }
+    for (table, columns) in [
+        ("meta", "key,value"),
+        (
+            "units",
+            "id,layer,logical_key,revision,state,attempts,owner,claim_token,lease_until,retry_after,fault_class,fault_json,inputs_json,input_hash,progress_json,result_json,created_by,created_at,completed_at",
+        ),
+        ("deps", "unit_id,needs_id,condition"),
+        (
+            "outputs",
+            "unit_id,output_key,kind,locator,fingerprint,data_json",
+        ),
+        (
+            "events",
+            "seq,unit_id,invocation,utc,owner,claim_token,event,facts_json",
+        ),
+    ] {
+        conn.prepare(&format!("SELECT {columns} FROM {table} LIMIT 0"))
+            .with_context(|| format!("ledger table mismatch: {table} columns"))?;
+    }
+    let mut indexes = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name",
+    )?;
+    let indexes = indexes
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if indexes != ["deps_needs", "units_ready"] {
+        bail!("ledger index mismatch: {indexes:?}");
+    }
+    for (name, expected) in [
+        ("deps_needs", &["needs_id"][..]),
+        ("units_ready", &["layer", "state", "retry_after"][..]),
+    ] {
+        let mut columns = conn.prepare(&format!("PRAGMA index_info({name})"))?;
+        let columns = columns
+            .query_map([], |r| r.get::<_, String>(2))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if columns != expected {
+            bail!("ledger index mismatch: {name} has {columns:?}");
+        }
+    }
+    let compact = |sql: &str| {
+        sql.chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+            .trim_end_matches(';')
+            .to_string()
+    };
+    for expected in SCHEMA
+        .lines()
+        .filter(|line| line.starts_with("CREATE TRIGGER "))
+    {
+        let name = expected.split_whitespace().nth(2).unwrap();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if actual.as_deref().map(compact) != Some(compact(expected)) {
+            bail!("ledger event protection mismatch: {name}");
+        }
+    }
+    for (table, columns) in [
+        ("units", &["created_by"][..]),
+        ("deps", &["unit_id", "needs_id"][..]),
+        ("outputs", &["unit_id"][..]),
+        ("events", &["unit_id"][..]),
+    ] {
+        let mut keys = conn.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+        let mut keys = keys
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        keys.sort();
+        let mut expected = columns
+            .iter()
+            .map(|c| ("units".to_string(), c.to_string(), "id".to_string()))
+            .collect::<Vec<_>>();
+        expected.sort();
+        if keys != expected {
+            bail!("ledger foreign key mismatch: {table}");
+        }
+    }
+    let violation: Option<(String, Option<i64>, String)> = conn
+        .query_row("PRAGMA foreign_key_check", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()?;
+    if let Some(violation) = violation {
+        bail!("ledger foreign key violation: {violation:?}");
+    }
+    Ok(())
+}
+
+fn verify_binding(conn: &Connection, p: &Prepared) -> Result<()> {
+    verify_schema(conn)?;
     if meta(conn, "preparation_hash")? != p.hash || meta(conn, "preparation")? != p.contract {
         bail!("immutable preparation mismatch; use a new output directory");
     }
@@ -500,9 +615,7 @@ pub fn init_prepared(out: &str, zt: &mut Zt) -> Result<Value> {
 fn status(out: &Path, layer: &str) -> Result<Value> {
     let conn = connect(&out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
-    if meta(&tx, "schema_version")? != 1 {
-        bail!("incompatible ledger schema");
-    }
+    verify_schema(&tx)?;
     if meta(&tx, "preparation_hash")? != canon::hash_value(&meta(&tx, "preparation")?) {
         bail!("ledger preparation hash mismatch");
     }
@@ -659,7 +772,7 @@ fn writer(p: &Prepared) -> Result<Connection> {
 /// Dependency waiting consumes no attempt. Aggregates wait for their explicit enumeration barrier.
 fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
     loop {
-        let mut statement=tx.prepare("SELECT id,layer,state,retry_after,fault_class FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id")?;
+        let mut statement=tx.prepare("SELECT id,layer,state,retry_after,fault_class,fault_json FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id")?;
         let rows = statement
             .query_map([], |r| {
                 Ok((
@@ -668,12 +781,13 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<i64>>(3)?,
                     r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
         let mut changed = false;
-        for (id, layer, state, retry_after, fault_class) in rows {
+        for (id, layer, state, retry_after, fault_class, previous_fault) in rows {
             let mut deps=tx.prepare_cached("SELECT d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id WHERE d.unit_id=?1 ORDER BY d.needs_id")?;
             let deps = deps
                 .query_map([&id], |r| {
@@ -719,7 +833,10 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
             } else {
                 "registered"
             };
-            if state == next {
+            if state == next
+                && (next != "blocked"
+                    || previous_fault.as_deref() == Some(canon::canonical_json(&fault).as_str()))
+            {
                 continue;
             }
             tx.execute("UPDATE units SET state=?2,fault_class=CASE WHEN ?2='blocked' THEN 'dependency' WHEN fault_class='dependency' THEN NULL ELSE fault_class END,fault_json=CASE WHEN ?2='blocked' THEN ?3 WHEN fault_class='dependency' THEN NULL ELSE fault_json END WHERE id=?1",params![id,next,if fault.is_null(){None}else{Some(canon::canonical_json(&fault))}])?;

@@ -177,6 +177,14 @@ Focused evidence is `D:/zt-target/qualification/issue70-ledger-retries.log` (33 
 
 The complete affected regression pass is `D:/zt-target/qualification/issue70-claims-public-final-summary.log`: 22 suites, zero failures, 228 seconds. It includes ledger claims 36 assertions (now also checking expired-token refusal and no unsafe automatic replacement), ledger core 23, reliable preparation 18, the 29 existing preparation assertions, and the existing Card/Model/math/Event/Finding/Hub/Bridge/receipt/bulk/orphan/corruption/checker suites. This qualification runs tools against isolated archives and does not run the actual book workflows.
 
+### #70 existing-schema validation and current dependency faults
+
+Resume/init, status and mutation now inspect the actual schema, not only a retained metadata number: SQLite/user metadata versions, WAL, exact table set/required columns, scheduling indexes/column order, append-only trigger definitions, foreign-key definitions and existing referential integrity. Damaged schema refuses without an automatic repair. The public schema fixture progressively failed on each missing validation before its implementation; the corrected contract RED is `issue70-ledger-schema-contract-red.log` (an earlier fixture-only PowerShell variable collision is retained separately). Restoring injected faults revalidates the same original run.
+
+A separate public failure showed that a group already blocked on Terms kept an outdated fault list when a second independent producer failed. Readiness now updates its exact prerequisite facts/event even though the state remains blocked. It spends no dependent attempt, and independent ready work remains runnable. RED: `issue70-blocked-prerequisites-red.log`.
+
+`D:/zt-target/qualification/issue70-schema-public-final-summary.log` records five relevant suites with zero failures in 48 seconds: claims 38 assertions, core 23, preparation 18, schema 13, existing prepare 29. These changes leave the earlier 22-suite checkpoint intact; no real workflow or production deployment has run. The remaining #70/#71 completion/recovery work stays open.
+
 ## #75: exact content-corruption checks
 
 The shared checker now reserves R18 for repeated substantive prose paragraphs and R19 for authored title headings repeated inside a Card body. R18 normalizes line endings and outer paragraph whitespace only, retaining interior text/spacing and reporting both first/current body-line spans for each repetition. R19 names every repeated title's body line. The checks exclude code/chart fences, display formulas, explicit quotations (including nested blockquotes), generated Reverse sections and non-prose metadata/placeholders. Indented continuation text remains part of its original paragraph rather than becoming a falsely repeated fragment. An embedded source label cannot hide repeated substantive prose. Uncertain 向向/价价 text is neither rewritten nor declared corrupt from repeated characters alone.

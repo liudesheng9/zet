@@ -76,6 +76,23 @@ try {
     Assert ($none.units.Count -eq 0 -and -not $none.complete) 'zero claims cannot be interpreted as complete digest coverage'
     Refuses @('ledger','renew','-Out',$out,'-Unit',$claim.id,'-Token',"$($claim.token)") 'stale_claim'
     Refuses @('ledger','next','-Out',$out,'-Layer','terms','-Take','1.5','-Owner','manager-d') 'positive integer' 2
+    $secondPrerequisite = @'
+const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
+const p=path.resolve(process.argv[1]);
+if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('ledger-claims-test-'))throw new Error('not the isolated ledger');
+const db=new DatabaseSync(p);db.exec('pragma foreign_keys=on');
+db.exec("begin;insert into units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at) select 'models/other@1','models','other',1,'registered',inputs_json,input_hash,'prepare/book@1',created_at from units where id='terms/book@1';insert into deps values('models/other@1','prepare/book@1','success');insert into deps values('digest/g001@1','models/other@1','success');commit");db.close();
+'@
+    & node --no-warnings -e $secondPrerequisite (Join-Path $out 'ledger.sqlite3')
+    if ($LASTEXITCODE) { throw 'isolated prerequisite fixture failed' }
+    $other = Run-Digest @('ledger','next','-Out',$out,'-Layer','models','-Take','1','-Owner','other-manager')
+    Assert ($other.units.Count -eq 1) 'independent ready work remains claimable after another prerequisite fails'
+    $other = $other.units[0]
+    [IO.File]::WriteAllText($fault,(@{code='invalid_plan';unit=$other.id;input_hash=$other.input_hash;cause='the independent fixture plan is invalid'} | ConvertTo-Json),$utf8)
+    $otherFailed = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$other.id,'-Token',"$($other.token)",'-Class','content','-Fault',$fault)
+    $blockedAgain = Run-Digest @('ledger','status','-Out',$out,'-Layer','digest')
+    $firstGroup = @($blockedAgain.units | Where-Object id -EQ 'digest/g001@1')[0]
+    Assert ($firstGroup.fault.prerequisites.Count -eq 2 -and 'terms/book@1' -in $firstGroup.fault.prerequisites -and 'models/other@1' -in $firstGroup.fault.prerequisites) 'an already blocked unit updates its exact prerequisite list when another producer fails'
     $damage = @'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');
 const p=path.resolve(process.argv[1]);
