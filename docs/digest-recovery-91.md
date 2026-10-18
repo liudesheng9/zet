@@ -58,7 +58,7 @@ zt-digest audit -CitationKey stiglitz2014learning -Out <audit copy>   # card-lev
 | Backlog category (proposal) | Current recount (archive revision 0) | Where it is now |
 | --- | --- | --- |
 | 15 Cards/18 repeated Link paragraphs | **14 repeated prose paragraphs (R18)** on 14 Cards; the Link table check reports 56,994 occurrences with zero broken Links | `audit.json` `style.by_rule.R18`, `audit-faults.txt`; the exact paragraphs are priced by the Cards/whole-book cycle |
-| 31 repeated title bodies; five `向向`/`价价` cases | **32 repeated Card titles (R19)**; no `向向` or `价价` text appears in any of the 1,448 book Cards any more, so those five named cases are absent rather than silently fixed | `audit.json` `style.by_rule.R19`; the five cases stay a reviewed disposition (absent) |
+| 31 repeated title bodies; five `向向`/`价价` cases | **32 repeated Card titles (R19) and 14 repeated prose paragraphs (R18)**; the exact addresses and findings are in the evidence JSON. An archive-wide literal scan of all 10,895 Cards finds the two strings on only 5 Cards / 6 spans, and every one is a legitimate word boundary (`方向向量`, `议价价格`, `评价价格变化`): no doubled-character corruption exists, the five historical cases are absent, and automatic character replacement would corrupt legitimate words | `audit-faults.txt`, evidence JSON `duplicate_findings`/`literal_scan`; the cards-book cycle owns reviewed fixes |
 | Groups 92–95 and 168–170 | **11 incomplete groups: 10, 18, 92, 93, 94, 95, 127, 163, 168, 169, 170**; 160 verified groups. 92, 93, 95, 168, 170 keep a skeleton anchor with no substantive Card; 10, 18, 94, 127, 163, 169 hold no substantive Card for another reason | `ledger adopt` plan `groups[]`; the 11 are ready `digest/gNNN@1` units |
 | Models reported unbuilt/placeholder-filled | **170 Model Cards: 54 verified built, 116 incomplete**; **42 still hold `待写`**; **96 carry 244 build faults** (closure, unanchored); 11 have no part | plan `models[]`, `ledger status -Verify` `placeholders.models` |
 | `67\|a` derive and `59\|a` review | **`67\|a`: 12 parts, 3 unanchored faults, 6 Derivation parts and 6 explanation needs; `59\|a`: 1 part, no Derivation.** No retained model compiler state exists, so no historic derive or review is claimed; both are registered open model units and only their missing work is owed | plan `models[]`, `models/adopted-…@1` units |
@@ -74,6 +74,17 @@ zt-digest audit -CitationKey stiglitz2014learning -Out <audit copy>   # card-lev
 Recount summary: 2,671 book Cards; 1,448 Cards carry a body read by the style pass; 130 style
 faults across 7 rules; zero broken Links; `hubs_missing` 0. The machine-readable form is
 [`digest-recovery-stiglitz-recount-2026-10-18.json`](digest-recovery-stiglitz-recount-2026-10-18.json).
+
+**R419/R420 review sheet.** The evidence JSON now carries the exact findings, not only counts:
+`duplicate_findings.r18` (14 repeated prose paragraphs with their line ranges),
+`duplicate_findings.r19` (32 repeated Card titles with the body line), `residual_faults` (the 92
+orphan and 15 unkinded-Link addresses plus the layer-rule tally) and `literal_scan`. The five
+historical `向向`/`价价` cases are disposed of as **absent, with the reason**: the archive-wide scan
+of all 10,895 Cards finds only six literal spans, each across a legitimate word boundary, so a
+reviewed fix must not replace characters wholesale. The live run's whole-book Card cycle owns the
+reviewed fixes for the 46 duplicate findings; `zt status --check-links` after each fix is the Link
+integrity check, and any fault it leaves open must be named in the report rather than counted as
+fixed.
 
 ## 3. What adoption makes of the recount
 

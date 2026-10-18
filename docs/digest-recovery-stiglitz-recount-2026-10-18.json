@@ -1564,5 +1564,359 @@
     "live_staging_mutated": false,
     "provider_calls": 0,
     "evidence": "the archive was copied with VACUUM INTO and the legacy staging folder was copied to a temporary directory; adoption, the injected failure, the one resume and both audits ran only on those copies"
-  }
+  },
+  "duplicate_findings": {
+    "r18": [
+      {
+        "address": "211/1",
+        "finding": "repeated prose paragraph at lines 11-13 and 15-17"
+      },
+      {
+        "address": "222/2|b",
+        "finding": "repeated prose paragraph at lines 9-10 and 12-13"
+      },
+      {
+        "address": "232/1|a",
+        "finding": "repeated prose paragraph at lines 5-8 and 10-13"
+      },
+      {
+        "address": "232/1|b",
+        "finding": "repeated prose paragraph at lines 5-8 and 10-13"
+      },
+      {
+        "address": "232/1|c",
+        "finding": "repeated prose paragraph at lines 5-7 and 9-11"
+      },
+      {
+        "address": "239/2|a|a",
+        "finding": "repeated prose paragraph at lines 10-10 and 12-12"
+      },
+      {
+        "address": "stiglitz2014learning/16|a",
+        "finding": "repeated prose paragraph at lines 24-24 and 26-26"
+      },
+      {
+        "address": "stiglitz2014learning/22|b",
+        "finding": "repeated prose paragraph at lines 36-38 and 40-42"
+      },
+      {
+        "address": "stiglitz2014learning/22|b",
+        "finding": "repeated prose paragraph at lines 36-38 and 44-46"
+      },
+      {
+        "address": "stiglitz2014learning/22|b",
+        "finding": "repeated prose paragraph at lines 36-38 and 48-50"
+      },
+      {
+        "address": "stiglitz2014learning/22|b",
+        "finding": "repeated prose paragraph at lines 36-38 and 52-54"
+      },
+      {
+        "address": "stiglitz2014learning/33|a",
+        "finding": "repeated prose paragraph at lines 31-31 and 35-35"
+      },
+      {
+        "address": "stiglitz2014learning/33|a",
+        "finding": "repeated prose paragraph at lines 33-33 and 37-37"
+      },
+      {
+        "address": "stiglitz2014learning/9",
+        "finding": "repeated prose paragraph at lines 9-9 and 11-11"
+      }
+    ],
+    "r19": [
+      {
+        "address": "206/1|d",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "207/2|a|1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "207/2|a|1|b|1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "207/2|a|1|b|a",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "207/2|a|1|b|a|1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "207/2|a|2",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "211/1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "211/1|b",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "228/1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "228/1|a",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "228/1|d",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "228/1|e",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "233/3|b",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "233/3|c",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "238/1",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "238/1|a",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "238/1|b",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "266/2",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "267/4",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "267/5",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "267/6",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/119",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/161",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/161|b",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/164",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/164|a",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/31",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/31",
+        "finding": "repeated Card title at body line 3"
+      },
+      {
+        "address": "stiglitz2014learning/31|a",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/37",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/41",
+        "finding": "repeated Card title at body line 1"
+      },
+      {
+        "address": "stiglitz2014learning/47|b",
+        "finding": "repeated Card title at body line 1"
+      }
+    ]
+  },
+  "residual_faults": {
+    "orphans": [
+      "206/2|c|a|a",
+      "207/3|c|a|a",
+      "stiglitz2014learning/108|b|a|1",
+      "stiglitz2014learning/108|b|a|2",
+      "stiglitz2014learning/108|b|a|3",
+      "stiglitz2014learning/108|b|a|4",
+      "stiglitz2014learning/109|a|a|6|a",
+      "stiglitz2014learning/109|a|a|8",
+      "stiglitz2014learning/111|a|a|1",
+      "stiglitz2014learning/111|a|a|2",
+      "stiglitz2014learning/111|a|a|5",
+      "stiglitz2014learning/111|a|a|6",
+      "stiglitz2014learning/111|a|a|7",
+      "stiglitz2014learning/111|a|a|8",
+      "stiglitz2014learning/119|a|a|1|a",
+      "stiglitz2014learning/119|a|a|5",
+      "stiglitz2014learning/119|a|a|8|a",
+      "stiglitz2014learning/128|a|a|2",
+      "stiglitz2014learning/128|a|a|3",
+      "stiglitz2014learning/128|a|a|6",
+      "stiglitz2014learning/56|a|a|3",
+      "stiglitz2014learning/56|a|a|5",
+      "stiglitz2014learning/56|a|a|5|a",
+      "stiglitz2014learning/56|a|a|7",
+      "stiglitz2014learning/57|a|a|1",
+      "stiglitz2014learning/57|a|a|2",
+      "stiglitz2014learning/57|a|a|4|a",
+      "stiglitz2014learning/57|a|a|5",
+      "stiglitz2014learning/57|a|a|6",
+      "stiglitz2014learning/57|a|b",
+      "stiglitz2014learning/59|a|a",
+      "stiglitz2014learning/62|a|a|7|a",
+      "stiglitz2014learning/62|a|a|7|b",
+      "stiglitz2014learning/67|a|a|4|a",
+      "stiglitz2014learning/67|a|a|7",
+      "stiglitz2014learning/67|a|a|8",
+      "stiglitz2014learning/67|a|a|9",
+      "stiglitz2014learning/69|a|a|4",
+      "stiglitz2014learning/72|a|a|1",
+      "stiglitz2014learning/72|a|a|2",
+      "stiglitz2014learning/72|a|a|3",
+      "stiglitz2014learning/72|a|a|4",
+      "stiglitz2014learning/72|a|a|5",
+      "stiglitz2014learning/72|a|a|6",
+      "stiglitz2014learning/72|a|a|7",
+      "stiglitz2014learning/72|a|a|8",
+      "stiglitz2014learning/72|a|b",
+      "stiglitz2014learning/73|a|a|2",
+      "stiglitz2014learning/73|a|a|3",
+      "stiglitz2014learning/73|a|a|4",
+      "stiglitz2014learning/73|a|a|5",
+      "stiglitz2014learning/73|a|a|6",
+      "stiglitz2014learning/73|a|a|7",
+      "stiglitz2014learning/73|a|a|8",
+      "stiglitz2014learning/73|a|b",
+      "stiglitz2014learning/84|a|a",
+      "stiglitz2014learning/84|a|a|2",
+      "stiglitz2014learning/84|a|a|3",
+      "stiglitz2014learning/84|a|a|4",
+      "stiglitz2014learning/84|a|a|5",
+      "stiglitz2014learning/84|a|a|7",
+      "stiglitz2014learning/88|a|a|2",
+      "stiglitz2014learning/88|a|a|4",
+      "stiglitz2014learning/88|a|a|6",
+      "stiglitz2014learning/88|a|a|7",
+      "stiglitz2014learning/89|a|a|4",
+      "stiglitz2014learning/89|a|a|5",
+      "stiglitz2014learning/89|a|a|6",
+      "stiglitz2014learning/89|a|a|7",
+      "stiglitz2014learning/89|a|a|8",
+      "stiglitz2014learning/90|a|a|11",
+      "stiglitz2014learning/90|a|a|12",
+      "stiglitz2014learning/90|a|a|13",
+      "stiglitz2014learning/90|a|a|14",
+      "stiglitz2014learning/90|a|a|15",
+      "stiglitz2014learning/90|a|a|16",
+      "stiglitz2014learning/90|a|a|17",
+      "stiglitz2014learning/90|a|a|18",
+      "stiglitz2014learning/90|a|a|19",
+      "stiglitz2014learning/90|a|a|20",
+      "stiglitz2014learning/90|a|a|21",
+      "stiglitz2014learning/90|a|a|22",
+      "stiglitz2014learning/90|a|a|23",
+      "stiglitz2014learning/90|a|a|24",
+      "stiglitz2014learning/90|a|a|25",
+      "stiglitz2014learning/90|a|a|26",
+      "stiglitz2014learning/90|a|a|27",
+      "stiglitz2014learning/90|a|a|4",
+      "stiglitz2014learning/90|a|a|5",
+      "stiglitz2014learning/90|a|a|6",
+      "stiglitz2014learning/90|a|a|7",
+      "stiglitz2014learning/96|a|a|2"
+    ],
+    "unkinded": [
+      "207/2|b|c|a",
+      "218/1|c|a",
+      "256/1|b|2|a|a",
+      "264/1|a|1|a|b",
+      "265/1|b",
+      "267/2|a",
+      "269/2|a|a",
+      "271/2|a|a",
+      "271/2|a|b",
+      "272/5|a",
+      "273/1|a|1|a",
+      "273/1|b",
+      "273/3|b",
+      "274/3|a",
+      "stiglitz2014learning/150|b|a"
+    ],
+    "layer_faults": 2,
+    "layer_advisory": "{\"L3\":69,\"E5\":4,\"I5\":2}"
+  },
+  "literal_scan": {
+    "cards_scanned": 10895,
+    "method": "read-only SQLite read of the consistent archive copy (cards.text, all workspaces), plus the audit scope over the book",
+    "literals": [
+      "向向",
+      "价价"
+    ],
+    "hits": [
+      {
+        "query": "向向",
+        "address": "mascolell1995microeconomic/30|b|a",
+        "text": "价格变化的方向向量",
+        "verdict": "legitimate word boundary (方向|向量)"
+      },
+      {
+        "query": "向向",
+        "address": "mascolell1995microeconomic/30|c|a",
+        "text": "价格变化的方向向量",
+        "verdict": "legitimate word boundary (方向|向量)"
+      },
+      {
+        "query": "价价",
+        "address": "hart1995firms/9|a|a",
+        "text": "小部件的议价价格",
+        "verdict": "legitimate word boundary (议价|价格)"
+      },
+      {
+        "query": "价价",
+        "address": "hart1995firms/9|a|a",
+        "text": "纳什议价价格",
+        "verdict": "legitimate word boundary (议价|价格)"
+      },
+      {
+        "query": "价价",
+        "address": "hart1995firms/9|a|a|6",
+        "text": "价格被推回议价价",
+        "verdict": "legitimate word boundary (议价|价格) inside one sentence"
+      },
+      {
+        "query": "价价",
+        "address": "mascolell1995microeconomic/12|h",
+        "text": "用支出函数评价价格变化",
+        "verdict": "legitimate word boundary (评价|价格)"
+      }
+    ],
+    "doubled_character_titles": 114,
+    "verdict": "no doubled-character corruption exists: the only literal matches are legitimate word boundaries, and the five historical 向向/价价 cases named by the proposal are absent from the current Cards; automatic character replacement would corrupt 方向向量/议价价格/评价价格"
+  },
+  "note": "Recount at archive revision 0, 2026-10-18; the proposal's dated numbers are replaced by these findings. Counts and addresses are read-only evidence, not applied fixes."
 }
