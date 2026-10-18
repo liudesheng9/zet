@@ -359,6 +359,10 @@ fn run_contract(
         .context("incomplete prepared groups")?
     {
         let mut record = file(&s(&group["file"]))?;
+        // The mathematics skeleton appends its own unit list to a group file at the
+        // frozen boundary. The length lets the ledger verify that frozen prefix exactly
+        // while the declared extension marker names where the compiler's own text starts.
+        record["bytes"] = json!(std::fs::metadata(s(&group["file"]))?.len());
         for key in ["n", "id", "anchor", "chapter", "headings", "chars"] {
             record[key] = group[key].clone();
         }
@@ -396,7 +400,7 @@ fn run_contract(
         file(&join_path(&s(&manifest["staging"]), "setup-calls.json"))?,
     );
     Ok(
-        json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts}),
+        json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts,"group_extension":if variant == "math" {json!({"marker":crate::math::group_extension_marker(),"by":"math-skeleton"})} else {Value::Null}}),
     )
 }
 pub fn cli(argv: &[String]) -> Result<i32> {

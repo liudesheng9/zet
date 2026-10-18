@@ -102,7 +102,6 @@ struct Compiler {
     key: String,
     title: String,
     work: String,
-    scripts: String,
 }
 
 /// The folder of the PowerShell scripts: ZT_DIGEST_SCRIPTS, else this repository's scripts\book-digest.
@@ -115,6 +114,11 @@ fn scripts_dir() -> String {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = crate_dir.parent().and_then(Path::parent).unwrap_or(crate_dir);
     repo.join("scripts").join("book-digest").to_string_lossy().into_owned()
+}
+
+/// One instruction file of the scripts folder.
+fn script_path(name: &str) -> String {
+    join(&scripts_dir(), name)
 }
 
 /// `Read-Json`: ConvertFrom-Json -AsHashtable (keys keep their case; an empty file is $null).
@@ -163,6 +167,126 @@ fn bump(map: &mut CiMap<i64>, k: &str) {
     map.insert(k, n);
 }
 
+/// The statement index of a prepared book: every numbered environment of every prepared
+/// section file, in prepared group order, with its cited statements resolved. `step_index`
+/// writes this; the ledger's `math-index` check re-derives it from the same prepared bytes,
+/// so a retained index cannot drift from the source it claims to account for (R238).
+pub(crate) fn scan_index(staging: &str, manifest: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+    let mut units: Vec<Value> = Vec::new();
+    let mut others: Vec<Value> = Vec::new();
+    for g in pipe(&manifest["groups"]) {
+        for file in pipe(&g["sections"]) {
+            let file = s(file);
+            let path = join(staging, &format!("sections\\{file}"));
+            if !ps::exists(&path) {
+                continue;
+            }
+            let lines = ps::read_lines(&path)?;
+            text::index_file(&lines, &file, ps::int(&g["n"])?, &field(g, "chapter"), &mut units, &mut others);
+        }
+    }
+    resolve_cites(&mut units);
+    Ok((units, others))
+}
+
+/// The unit-list block the skeleton appends to a prepared group file: one entry per
+/// addressed unit of that group, then its examples and exercises. The prepared group
+/// file is frozen up to this block's marker, so the ledger verifies the block itself
+/// against the same index and unit list the compiler worked from (R238).
+pub(crate) fn group_extension_marker() -> &'static str {
+    "## 本组的数学单元"
+}
+
+/// Whether a part's facet is one the proof review must cover: a premise, a proof step or
+/// a conclusion. The ledger re-derives the selected steps with this predicate, so a
+/// review cannot cover a proof the unit no longer has (R240).
+pub(crate) fn is_proof_step(facet: &str) -> bool {
+    PROOF_STEP_FACET.is_match(facet)
+}
+
+/// The math prompt files: each shared instruction file followed by its math supplement,
+/// with this prepared run's key, title, staging folder and index filled in. `step_docs`
+/// writes them; the ledger's `math-docs` check re-derives the same bytes, so a retained
+/// prompt file cannot drift from the instruction files it claims to be (R238).
+pub(crate) fn docs_files(
+    key: &str,
+    title: &str,
+    staging: &str,
+    manifest: &Value,
+) -> Result<Vec<(String, String)>> {
+    let work = join(staging, "math");
+    let fill = [
+        ("KEY", key.to_string()),
+        ("TITLE", title.to_string()),
+        ("STAGING", staging.to_string()),
+        ("INDEX", join(&work, "index.md")),
+    ];
+    let pairs = [
+        (field(manifest, "shared_prefix"), "dsh-math-instructions.zh.md", join(staging, "math-prefix.md")),
+        (field(manifest, "link_prefix"), "dsh-math-link.zh.md", join(staging, "math-link-prefix.md")),
+        (script_path("dsh-brief-instructions.zh.md"), "dsh-math-brief.zh.md", join(&work, "brief.zh.md")),
+        (script_path("dsh-fill-instructions.zh.md"), "dsh-math-fill.zh.md", join(&work, "fill.zh.md")),
+        (script_path("dsh-review-instructions.zh.md"), "dsh-math-review.zh.md", join(&work, "review.zh.md")),
+    ];
+    let mut files = Vec::new();
+    for (shared, supplement, target) in pairs {
+        let shared = util::read_text(&shared)?;
+        let mut text = util::read_text(&script_path(supplement))?;
+        for (k, v) in &fill {
+            text = text.replace(&format!("{{{{{k}}}}}"), v);
+        }
+        files.push((target, format!("{}\n\n{}\n", shared.trim_end(), text.trim_end())));
+    }
+    Ok(files)
+}
+
+/// The Book notation table one applied answer produces: its rows, its title and its body.
+/// `notation-apply` writes it; the ledger's `notation` check re-derives it from the same
+/// retained answer and unit list, so a completed notation layer is the applied table (R238).
+pub(crate) fn notation_table(
+    raw: &Value,
+    units: &Value,
+    key: &str,
+    title: &str,
+    max_symbols: i64,
+) -> (usize, String, String) {
+    let mut by_id: CiMap<Value> = CiMap::new();
+    if truthy(units) {
+        for u in pipe(&units["units"]) {
+            if truthy(&u["address"]) {
+                by_id.insert(&field(&u, "id"), u["address"].clone());
+            }
+        }
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut seen: CiMap<()> = CiMap::new();
+    for item in pipe(&raw["symbols"]) {
+        let symbol = field(&item, "symbol").trim().to_string();
+        if symbol.is_empty() || seen.contains(&symbol) || symbol.contains(['|', '\n']) {
+            continue;
+        }
+        seen.insert(&symbol, ());
+        let unit = field(&item, "unit").trim().to_string();
+        let place = match by_id.get(&unit).filter(|a| truthy(a)) {
+            Some(a) => format!("{unit} [[{}]]", s(a)),
+            None if !unit.is_empty() => unit.clone(),
+            None => "—".to_string(),
+        };
+        rows.push(format!("| {symbol} | {} | {place} |", field(&item, "meaning").trim().replace('|', "/")));
+        if rows.len() as i64 >= max_symbols {
+            break;
+        }
+    }
+    let body = format!(
+        "本卡是《{}》的符号表。本书的单元用左列的符号表示中列的对象。证明可以依赖本表。\n\n符号表\n\n| 符号 | 含义 | 定义于 |\n| --- | --- | --- |\n{}\n\n来源：[[{}]]",
+        title,
+        rows.join("\n"),
+        key
+    );
+    let title = format!("符号表：《{}》的 {} 个符号", title, rows.len());
+    (rows.len(), title, body)
+}
+
 impl Compiler {
     fn zt(&mut self) -> Result<&mut Zt> {
         if self.zt.is_none() {
@@ -176,7 +300,7 @@ impl Compiler {
     }
 
     fn script_file(&self, name: &str) -> String {
-        join(&self.scripts, name)
+        script_path(name)
     }
 
     /// `Invoke-Write`: the calls through the helper; the addresses of the writes, in order. A
@@ -206,6 +330,21 @@ impl Compiler {
     /// `zt-mcp failed: <the helper's lines>`. The answers that are JSON objects, in order.
     fn helper(&mut self, calls: &[Value]) -> Result<Vec<Value>> {
         let (done, failure) = calls::run(self.zt()?, calls, &mut calls::Options::new())?;
+        if let Some(failure) = failure {
+            let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
+            lines.extend(failure.lines());
+            bail!("zt-mcp failed: {}", lines.join(" | "));
+        }
+        Ok(done.into_iter().filter_map(|d| d.value).collect())
+    }
+
+    /// The same, keeping every renumbering the archive reported: `-Moves` writes one line
+    /// per call whose address mapping moved Cards, which is the only record of what a
+    /// deletion renamed (R239).
+    fn helper_moves(&mut self, calls: &[Value], moves: &str) -> Result<Vec<Value>> {
+        let mut options = calls::Options::new();
+        options.moves = moves.to_string();
+        let (done, failure) = calls::run(self.zt()?, calls, &mut options)?;
         if let Some(failure) = failure {
             let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
             lines.extend(failure.lines());
@@ -267,20 +406,7 @@ impl Compiler {
     // --- index -----------------------------------------------------------------------------------
 
     fn step_index(&mut self) -> Result<()> {
-        let mut units: Vec<Value> = Vec::new();
-        let mut others: Vec<Value> = Vec::new();
-        for g in pipe(&self.manifest["groups"]) {
-            for file in pipe(&g["sections"]) {
-                let file = s(file);
-                let path = self.path(&format!("sections\\{file}"));
-                if !ps::exists(&path) {
-                    continue;
-                }
-                let lines = ps::read_lines(&path)?;
-                text::index_file(&lines, &file, ps::int(&g["n"])?, &field(g, "chapter"), &mut units, &mut others);
-            }
-        }
-        resolve_cites(&mut units);
+        let (units, others) = scan_index(&self.p.staging, &self.manifest)?;
         let index_file = join(&self.work, "index.json");
         save_json(&index_file, &obj(vec![("units", json!(units)), ("others", json!(others))]))?;
         let mut md = format!("# 数学单元索引：《{}》{NL}{NL}", self.title);
@@ -321,30 +447,19 @@ impl Compiler {
     // --- docs ------------------------------------------------------------------------------------
 
     fn step_docs(&mut self) -> Result<()> {
-        let fill = [
-            ("KEY", self.key.clone()),
-            ("TITLE", self.title.clone()),
-            ("STAGING", self.p.staging.clone()),
-            ("INDEX", join(&self.work, "index.md")),
-        ];
-        let pairs = [
-            (field(&self.manifest, "shared_prefix"), "dsh-math-instructions.zh.md", self.path("math-prefix.md")),
-            (field(&self.manifest, "link_prefix"), "dsh-math-link.zh.md", self.path("math-link-prefix.md")),
-            (self.script_file("dsh-brief-instructions.zh.md"), "dsh-math-brief.zh.md", join(&self.work, "brief.zh.md")),
-            (self.script_file("dsh-fill-instructions.zh.md"), "dsh-math-fill.zh.md", join(&self.work, "fill.zh.md")),
-            (self.script_file("dsh-review-instructions.zh.md"), "dsh-math-review.zh.md", join(&self.work, "review.zh.md")),
-        ];
         let mut written = Vec::new();
-        for (shared, supplement, target) in pairs {
-            let shared = util::read_text(&shared)?;
-            let mut text = util::read_text(self.script_file(supplement))?;
-            for (k, v) in &fill {
-                text = text.replace(&format!("{{{{{k}}}}}"), v);
-            }
-            util::write_text(&target, &format!("{}\n\n{}\n", shared.trim_end(), text.trim_end()))?;
+        for (target, text) in docs_files(
+            &self.key,
+            &self.title,
+            &self.p.staging,
+            &self.manifest,
+        )? {
+            util::write_text(&target, &text)?;
             written.push(target);
         }
-        out_last(&obj(vec![("ok", json!(true)), ("files", json!(written))]))
+        let report = obj(vec![("ok", json!(true)), ("files", json!(written))]);
+        save_json(&join(&self.work, "docs.json"), &report)?;
+        out_last(&report)
     }
 
     // --- skeleton --------------------------------------------------------------------------------
@@ -437,7 +552,7 @@ impl Compiler {
                 if text.is_empty() {
                     bail!("You cannot call a method on a null-valued expression.");
                 }
-                let marker = "## 本组的数学单元";
+                let marker = group_extension_marker();
                 if text.contains(marker) {
                     continue;
                 }
@@ -592,40 +707,7 @@ impl Compiler {
         }
         let raw = read_json(&file)?;
         let data = self.units()?;
-        let mut by_id: CiMap<Value> = CiMap::new();
-        if truthy(&data) {
-            for u in pipe(&data["units"]) {
-                if truthy(&u["address"]) {
-                    by_id.insert(&field(u, "id"), u["address"].clone());
-                }
-            }
-        }
-        let mut rows: Vec<String> = Vec::new();
-        let mut seen: CiMap<()> = CiMap::new();
-        for item in pipe(&raw["symbols"]) {
-            let symbol = field(item, "symbol").trim().to_string();
-            if symbol.is_empty() || seen.contains(&symbol) || symbol.contains(['|', '\n']) {
-                continue;
-            }
-            seen.insert(&symbol, ());
-            let unit = field(item, "unit").trim().to_string();
-            let place = match by_id.get(&unit).filter(|a| truthy(a)) {
-                Some(a) => format!("{unit} [[{}]]", s(a)),
-                None if !unit.is_empty() => unit.clone(),
-                None => "—".to_string(),
-            };
-            rows.push(format!("| {symbol} | {} | {place} |", field(item, "meaning").trim().replace('|', "/")));
-            if rows.len() as i64 >= self.p.max_symbols {
-                break;
-            }
-        }
-        let body = format!(
-            "本卡是《{}》的符号表。本书的单元用左列的符号表示中列的对象。证明可以依赖本表。\n\n符号表\n\n| 符号 | 含义 | 定义于 |\n| --- | --- | --- |\n{}\n\n来源：[[{}]]",
-            self.title,
-            rows.join("\n"),
-            self.key
-        );
-        let title = format!("符号表：《{}》的 {} 个符号", self.title, rows.len());
+        let (symbols, title, body) = notation_table(&raw, &data, &self.key, &self.title, self.p.max_symbols);
         let mut address = Value::Null;
         if self.p.apply {
             let key = self.key.clone();
@@ -637,7 +719,23 @@ impl Compiler {
             };
         }
         util::write_text(self.path("notation.md"), &body)?;
-        out_last(&obj(vec![("ok", json!(true)), ("symbols", json!(rows.len())), ("card", address)]))
+        // The ledger's `notation` check reads this: which answer was applied, with which
+        // symbol bound, and the exact Card it wrote. Availability is what dependent work needs.
+        save_json(
+            &join(&self.notation_work(), "applied.json"),
+            &obj(vec![
+                ("schema_version", json!(1)),
+                ("kind", json!("notation_apply")),
+                ("applied", json!(self.p.apply)),
+                ("symbols", json!(symbols)),
+                ("max_symbols", json!(self.p.max_symbols)),
+                ("card", address.clone()),
+                ("title", json!(title)),
+                ("body_sha256", json!(crate::canon::sha256_hex(body.as_bytes()))),
+                ("disposition", if symbols == 0 { json!("no_symbols") } else { json!("applied") }),
+            ]),
+        )?;
+        out_last(&obj(vec![("ok", json!(true)), ("symbols", json!(symbols)), ("card", address)]))
     }
 
     // --- boundary --------------------------------------------------------------------------------
@@ -727,7 +825,19 @@ impl Compiler {
                 ("prompt", json!(format!("按以上说明写出 {name} 的 JSON 文件。最后只回复一行 JSON。"))),
             ]));
         }
-        save_json(&join(&bw, "state.json"), &obj(vec![("batches", Value::Object(batches)), ("created", json!({}))]))?;
+        save_json(&join(&bw, "state.json"), &obj(vec![("batches", Value::Object(batches.clone())), ("created", json!({}))]))?;
+        // The ledger adapter reads this plan: one boundary obligation per planned unit (R239).
+        let mut planned: Vec<Value> = Vec::new();
+        for (u, _, need) in &todo {
+            planned.push(obj(vec![
+                ("unit", u["address"].clone()),
+                ("id", u["id"].clone()),
+                ("form", u["form"].clone()),
+                ("group", u["group"].clone()),
+                ("need", json!(need)),
+            ]));
+        }
+        save_json(&join(&bw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("units", json!(planned)), ("batches", Value::Object(batches))]))?;
         out_last(&obj(vec![("units", json!(todo.len())), ("jobs", json!(jobs))]))
     }
 
@@ -878,23 +988,50 @@ impl Compiler {
         let state = read_json(&join(&bw, "state.json"))?;
         let mut wrong: CiMap<String> = CiMap::new();
         let mut kept = 0;
+        // Every candidate keeps its own disposition: what it is, whether the book gave it,
+        // the independent review of a supplied one, and what the settle did with it. A
+        // batch count is never the record (R239).
+        let mut reviews: Vec<Value> = Vec::new();
+        let mut candidates: Vec<Value> = Vec::new();
+        let mut unreviewed = 0;
         for name in ps::keys(&state["created"]) {
             let file = join(&bw, &format!("out\\v-{name}.json"));
-            if !ps::exists(&file) {
-                continue;
-            }
-            let answer = read_json(&file)?;
+            let answer = if ps::exists(&file) { read_json(&file)? } else { Value::Null };
             let verdicts = pipe(&answer["verdicts"]);
             let created = pipe(&state["created"][&name]);
+            for c in created.iter() {
+                let mut candidate = (*c).clone();
+                if let Some(map) = candidate.as_object_mut() {
+                    map.insert("batch".into(), json!(name));
+                }
+                candidates.push(candidate);
+            }
             for c in created.iter().filter(|c| truthy(&c["supplied"])) {
                 let address = field(c, "address");
                 let v = verdicts.iter().find(|v| eq(&field(v, "address"), &address));
-                let Some(v) = v.filter(|v| truthy(v) && eq(&field(v, "verdict"), "wrong")) else {
+                let (verdict, reason) = match v.filter(|v| truthy(v)) {
+                    Some(v) if eq(&field(v, "verdict"), "wrong") => ("wrong", field(v, "reason")),
+                    Some(v) if eq(&field(v, "verdict"), "ok") => ("ok", String::new()),
+                    _ => {
+                        unreviewed += 1;
+                        ("unreviewed", String::new())
+                    }
+                };
+                reviews.push(obj(vec![
+                    ("batch", json!(name)),
+                    ("unit", c["unit"].clone()),
+                    ("address", json!(address)),
+                    ("verdict", json!(verdict)),
+                    ("reason", json!(reason)),
+                ]));
+                if verdict == "unreviewed" {
+                    continue;
+                }
+                if verdict == "ok" {
                     kept += 1;
                     continue;
-                };
+                }
                 // The part that names a wrong counterexample goes with it.
-                let reason = field(v, "reason");
                 wrong.insert(&address, reason.clone());
                 for p in created.iter().filter(|p| !p["partner"].is_null() && eq(&field(p, "partner"), &address)) {
                     wrong.insert(&field(p, "address"), reason.clone());
@@ -904,16 +1041,78 @@ impl Compiler {
         // Delete the last Card first: deleting a Side successor renames its later siblings.
         let mut order: Vec<(String, String)> = wrong.keys().into_iter().map(|a| (order_key(&a), a)).collect();
         ps::ps_sort(&mut order, |a, b| ps::culture_cmp(&b.0, &a.0));
-        let mut deleted: Vec<Value> = Vec::new();
-        for (_, address) in order {
-            let plan = self.helper(&[json!({ "tool": "delete_card", "arguments": { "at": address } })])?.into_iter().next().unwrap_or(Value::Null);
-            if truthy(&plan["confirm"]) {
-                self.helper(&[json!({ "tool": "delete_card", "arguments": { "at": address, "confirm": field(&plan, "confirm") } })])?;
+        // Read every candidate before anything moves, so the record carries what each
+        // address held. That fingerprint is how the ledger finds the same part again
+        // after a confirmed deletion renumbered its neighbours.
+        let addresses: Vec<String> = candidates.iter().map(|c| field(c, "address")).collect();
+        let reads: Vec<(&str, Value)> = addresses.iter().map(|at| ("get_card", json!({ "at": at }))).collect();
+        let cards = if reads.is_empty() { Vec::new() } else { read_calls(self.zt()?, &reads)? };
+        for candidate in candidates.iter_mut() {
+            let at = field(candidate, "address");
+            let card = cards.iter().find(|c| eq(&field(c, "address"), &at));
+            if let Some(map) = candidate.as_object_mut() {
+                map.insert("fingerprint".into(), card.map(crate::calls::authored_fingerprint).map(Value::String).unwrap_or(Value::Null));
             }
-            let reason = wrong.get(&address).cloned().unwrap_or_default();
-            deleted.push(obj(vec![("address", json!(address)), ("reason", json!(reason))]));
         }
-        out_last(&obj(vec![("kept", json!(kept)), ("deleted", json!(deleted.len())), ("parts", json!(deleted))]))
+        let mut deleted: Vec<Value> = Vec::new();
+        // Deleting a Side successor renumbers its later siblings, so the settle keeps the
+        // archive's own mapping. That mapping is how a recorded candidate still resolves
+        // to its Card after a rejected neighbour is gone.
+        let moves_log = join(&bw, "settle-moves.jsonl");
+        if ps::exists(&moves_log) {
+            std::fs::remove_file(&moves_log)?;
+        }
+        for (_, address) in order {
+            // Read the part before it goes: the record keeps what was removed and the
+            // confirmation the archive issued for exactly that Card.
+            let card = self.get(&json!(address), "get_card")?;
+            let removed = crate::calls::authored_fingerprint(&card);
+            let plan = self.helper(&[json!({ "tool": "delete_card", "arguments": { "at": address } })])?.into_iter().next().unwrap_or(Value::Null);
+            let confirm = field(&plan, "confirm");
+            let mut moved = Value::Null;
+            if !confirm.is_empty() {
+                let answers = self.helper_moves(
+                    &[json!({ "tool": "delete_card", "arguments": { "at": address, "confirm": confirm.clone() } })],
+                    &moves_log,
+                )?;
+                moved = answers.into_iter().next().unwrap_or(Value::Null);
+            }
+            let candidate = candidates.iter().find(|c| field(c, "address") == address);
+            let reason = wrong.get(&address).cloned().unwrap_or_default();
+            deleted.push(obj(vec![
+                ("address", json!(address)),
+                ("unit", candidate.map(|c| c["unit"].clone()).unwrap_or(Value::Null)),
+                ("reason", json!(reason)),
+                ("confirm", json!(confirm)),
+                ("removed", json!(removed)),
+                ("facet", card["facet"].clone()),
+                ("moved", moved["moved"].clone()),
+            ]));
+        }
+        let mut renames: Vec<Value> = Vec::new();
+        if ps::exists(&moves_log) {
+            for line in ps::read_lines(&moves_log)? {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let entry = ps::parse_json(&line)?;
+                if truthy(&entry["moved"]) {
+                    renames.push(entry);
+                }
+            }
+        }
+        let settled = obj(vec![
+            ("schema_version", json!(1)),
+            ("kind", json!("boundary_settle")),
+            ("candidates", json!(candidates)),
+            ("reviews", json!(reviews)),
+            ("deleted", json!(deleted)),
+            ("renames", json!(renames)),
+            ("kept", json!(kept)),
+            ("unreviewed", json!(unreviewed)),
+        ]);
+        save_json(&join(&bw, "settled.json"), &settled)?;
+        out_last(&obj(vec![("kept", json!(kept)), ("deleted", json!(deleted.len())), ("unreviewed", json!(unreviewed)), ("parts", json!(deleted))]))
     }
 
     // --- proof -----------------------------------------------------------------------------------
@@ -944,6 +1143,8 @@ impl Compiler {
             }
         }
         let mut jobs: Vec<Value> = Vec::new();
+        let mut planned: Vec<Value> = Vec::new();
+        let mut batches = Map::new();
         let per_job = if todo.is_empty() { 1 } else { self.per_job()? };
         for (k, share) in todo.chunks(per_job).enumerate() {
             let name = format!("p-{}", ps::d2(k as i64 + 1));
@@ -967,7 +1168,16 @@ impl Compiler {
                         field(&part, "body")
                     ));
                 }
+                planned.push(obj(vec![
+                    ("unit", u["address"].clone()),
+                    ("id", u["id"].clone()),
+                    ("form", u["form"].clone()),
+                    ("group", u["group"].clone()),
+                    ("model", model["head"]["address"].clone()),
+                    ("steps", json!(steps.iter().map(|st| obj(vec![("address", st["address"].clone()), ("facet", st["facet"].clone())])).collect::<Vec<_>>())),
+                ]));
             }
+            batches.insert(name.clone(), Value::Array(share.iter().map(|(u, _, _)| u["address"].clone()).collect()));
             let job = join(&pw, &format!("{name}.md"));
             util::write_text(&job, &sb)?;
             jobs.push(obj(vec![
@@ -976,38 +1186,101 @@ impl Compiler {
                 ("prompt", json!(format!("按以上说明复核这些证明，写出 {name} 的 JSON 文件。最后只回复一行 JSON。"))),
             ]));
         }
+        // The ledger adapter reads this plan: one proof obligation per selected formal result (R240).
+        save_json(&join(&pw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("units", json!(planned)), ("batches", Value::Object(batches))]))?;
         out_last(&obj(vec![("units", json!(todo.len())), ("jobs", json!(jobs))]))
     }
 
     fn step_proof_apply(&mut self) -> Result<()> {
         let out = join(&self.proof_work(), "out");
+        let plan = read_json(&join(&self.proof_work(), "plan.json"))?;
+        // Which unit each reviewed step belongs to: the ledger completes one unit at a time
+        // and reads the reviewed steps and the applied fixes back from this record (R240).
+        let mut owner: CiMap<String> = CiMap::new();
+        for entry in pipe(&plan["units"]) {
+            for step in pipe(&entry["steps"]) {
+                owner.insert(&field(&step, "address"), field(&entry, "unit"));
+            }
+        }
         let (mut ok, mut fixed) = (0, 0);
         let mut refused: Vec<Value> = Vec::new();
+        let mut reviewed: Vec<Value> = Vec::new();
         for name in ps::child_files(&out, "p-", ".json") {
             let answer = read_json(&join(&out, &name))?;
             for v in pipe(&answer["verdicts"]) {
+                let address = field(v, "address");
+                let unit = owner.get(&address).cloned().unwrap_or_default();
+                let reason = field(v, "reason");
+                let card = self.get(&json!(address), "get_card")?;
+                let before = crate::calls::authored_fingerprint(&card);
                 if !eq(&field(v, "verdict"), "fix") {
                     ok += 1;
+                    reviewed.push(obj(vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("ok")),
+                        ("reason", json!(reason)),
+                        ("before", json!(before)),
+                    ]));
                     continue;
                 }
-                let address = field(v, "address");
                 let new = field(v, "body");
                 if new.trim().is_empty() {
-                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(format!("no body: {}", field(v, "reason"))))]));
+                    let why = format!("no body: {reason}");
+                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
+                    reviewed.push(obj(vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("refused")),
+                        ("reason", json!(why)),
+                        ("before", json!(before)),
+                    ]));
                     continue;
                 }
-                let card = self.get(&json!(address), "get_card")?;
                 let old = ps::select_unique(LINK.captures_iter(&field(&card, "body")).map(|m| m[1].to_string()));
                 let kept: Vec<String> = LINK.captures_iter(&new).map(|m| m[1].to_string()).collect();
                 let lost: Vec<String> = old.into_iter().filter(|o| !is_in(o, &kept)).collect();
                 if !lost.is_empty() {
-                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(format!("drops Links: {}", lost.join(", "))))]));
+                    let why = format!("drops Links: {}", lost.join(", "));
+                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
+                    reviewed.push(obj(vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("refused")),
+                        ("reason", json!(why)),
+                        ("before", json!(before)),
+                        ("dropped_links", json!(lost)),
+                    ]));
                     continue;
                 }
                 self.write(&[json!({ "tool": "edit_card", "arguments": { "at": address, "body": new } })], "", "")?;
+                let after = self.get(&json!(address), "get_card")?;
+                if field(&after, "body") != new {
+                    bail!("the accepted proof fix for `{address}` is not the body that was written");
+                }
                 fixed += 1;
+                reviewed.push(obj(vec![
+                    ("unit", json!(unit)),
+                    ("address", json!(address)),
+                    ("verdict", json!("fix")),
+                    ("reason", json!(reason)),
+                    ("before", json!(before)),
+                    ("after", json!(crate::calls::authored_fingerprint(&after))),
+                    ("kept_links", json!(kept)),
+                ]));
             }
         }
+        save_json(
+            &join(&self.proof_work(), "applied.json"),
+            &obj(vec![
+                ("schema_version", json!(1)),
+                ("kind", json!("proof_apply")),
+                ("reviewed", json!(reviewed)),
+                ("ok", json!(ok)),
+                ("fixed", json!(fixed)),
+                ("refused", json!(refused.len())),
+            ]),
+        )?;
         out_last(&obj(vec![("ok", json!(ok)), ("fixed", json!(fixed)), ("refused", json!(refused.len())), ("parts", json!(refused))]))
     }
 
@@ -1143,7 +1416,18 @@ impl Compiler {
     fn step_check(&mut self) -> Result<()> {
         let out = if self.p.out.is_empty() { self.p.staging.clone() } else { self.p.out.clone() };
         let key = self.key.clone();
-        let tree = read_one(self.zt()?, "get_tree", json!({ "tree": key }))?;
+        let report = check_report(self.zt()?, &key, &out)?;
+        out_last(&report)
+    }
+}
+
+/// The M1–M18 report of one book: every indexed unit and Theory Card with the rules it
+/// breaks, without writing anything. `math -Step check` writes it; the ledger's
+/// `math-check` compares the same read against the retained audit (R241).
+pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
+    let key = key.to_string();
+    {
+        let tree = read_one(zt, "get_tree", json!({ "tree": key }))?;
         let heads: Vec<Value> = pipe(&tree["cards"])
             .into_iter()
             .filter(|c| eq(&field(c, "type"), "model") && !truthy(&c["facet"]) && truthy(&c["form"]))
@@ -1153,7 +1437,7 @@ impl Compiler {
             Vec::new()
         } else {
             let calls: Vec<(&str, Value)> = heads.iter().map(|h| ("get_model", json!({ "at": h["address"] }))).collect();
-            read_calls(self.zt()?, &calls)?
+            read_calls(zt, &calls)?
         };
         let mut faults: Vec<Value> = Vec::new();
         let mut add = |rule: &str, address: Value, text: Value| {
@@ -1163,7 +1447,7 @@ impl Compiler {
             let model = models.get(i).cloned().unwrap_or(Value::Null);
             let form = field(head, "form");
             let address = field(head, "address");
-            let card = self.get(&json!(address), "get_card")?;
+            let card = read_one(zt, "get_card", json!({ "at": address }))?;
             let body = field(&card, "body");
             let at = || json!(address);
             if eq(&form, "theory") {
@@ -1283,29 +1567,38 @@ impl Compiler {
             ("by_rule", counts(&by_rule)),
             ("list", json!(faults)),
         ]);
-        save_json(&join(&out, "math-audit.json"), &report)?;
-        let mut md = format!("# 数学规则审计：{key}{NL}{NL}");
-        md.push_str(&format!("单元 {units} 个，理论卡 {theories} 张，问题 {} 处。{NL}{NL}", faults.len()));
-        md.push_str(&format!("| 规则 | 数量 |{NL}| --- | --- |{NL}"));
-        for (k, n) in by_rule.iter() {
-            md.push_str(&format!("| {k} | {n} |{NL}"));
-        }
-        md.push_str(&format!("{NL}## 问题{NL}{NL}"));
-        for f in &faults {
-            md.push_str(&format!("- {} [[{}]]：{}{NL}", field(f, "rule"), field(f, "address"), field(f, "text")));
-        }
-        let report_md = join(&out, "math-audit.md");
-        util::write_text(&report_md, &md)?;
-        out_last(&obj(vec![
-            ("ok", json!(true)),
-            ("units", json!(units)),
-            ("theories", json!(theories)),
-            ("forms", counts(&forms)),
-            ("faults", json!(faults.len())),
-            ("by_rule", counts(&by_rule)),
-            ("report", json!(report_md)),
-        ]))
+        Ok(report)
     }
+}
+
+/// Write the M1–M18 report and its Markdown view, and answer with the step's last line.
+pub(crate) fn check_report(zt: &mut Zt, key: &str, out: &str) -> Result<Value> {
+    let report = check_value(zt, key)?;
+    let units = report["units"].clone();
+    let theories = report["theories"].clone();
+    let faults = report["faults"].as_u64().unwrap_or_default();
+    save_json(&join(out, "math-audit.json"), &report)?;
+    let mut md = format!("# 数学规则审计：{key}{NL}{NL}");
+    md.push_str(&format!("单元 {units} 个，理论卡 {theories} 张，问题 {faults} 处。{NL}{NL}"));
+    md.push_str(&format!("| 规则 | 数量 |{NL}| --- | --- |{NL}"));
+    for (k, n) in report["by_rule"].as_object().into_iter().flatten() {
+        md.push_str(&format!("| {k} | {n} |{NL}"));
+    }
+    md.push_str(&format!("{NL}## 问题{NL}{NL}"));
+    for f in report["list"].as_array().into_iter().flatten() {
+        md.push_str(&format!("- {} [[{}]]：{}{NL}", field(f, "rule"), field(f, "address"), field(f, "text")));
+    }
+    let report_md = join(out, "math-audit.md");
+    util::write_text(&report_md, &md)?;
+    Ok(obj(vec![
+        ("ok", json!(true)),
+        ("units", units),
+        ("theories", theories),
+        ("forms", report["forms"].clone()),
+        ("faults", json!(faults)),
+        ("by_rule", report["by_rule"].clone()),
+        ("report", json!(report_md)),
+    ]))
 }
 
 /// `zt-digest math`.
@@ -1334,7 +1627,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let manifest = read_json(&join(&p.staging, "manifest.json"))?;
     let key = field(&manifest, "citation_key");
     let title = field(&manifest, "book_title");
-    let mut compiler = Compiler { p, zt: None, manifest, key, title, work, scripts: scripts_dir() };
+    let mut compiler = Compiler { p, zt: None, manifest, key, title, work };
     match compiler.p.step.as_str() {
         "index" => compiler.step_index()?,
         "docs" => compiler.step_docs()?,

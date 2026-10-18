@@ -88,6 +88,25 @@ const MATH_BOOK: &[&str] = &[
     "math-check",
 ];
 
+/// The mathematics variant's per-unit obligations: one ledger unit per planned
+/// mathematical unit, registered from the compiler's retained plan (R239, R240).
+const MATH_OBLIGATIONS: &[&str] = &["boundary", "proof"];
+
+/// The layer whose checked result a mathematics layer consumes, in the variant's
+/// declared stage order. The notation table precedes the proof and model work that
+/// depends on it, and the M1–M18 check describes the final audit revision (R238, R241).
+fn math_prerequisite(layer: &str) -> Option<&'static str> {
+    Some(match layer {
+        "math-index" => return None,
+        "math-docs" => "math-index",
+        "math-skeleton" => "math-docs",
+        "notation" => "math-skeleton",
+        "theory" => "link-check",
+        "math-check" => "audit",
+        _ => return None,
+    })
+}
+
 const RUN_FLAGS: &[&str] = &[
     "terms", "models", "events", "findings", "hubs", "figures", "bridge", "notation", "boundary",
     "proof", "theory",
@@ -239,6 +258,40 @@ fn check_file(record: &Value, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// A prepared group file is exact unless the run variant declares a group extension, in
+/// which case the compiler may append its own enumeration at the frozen boundary: the
+/// prepared prefix still hashes exactly and the append opens with the declared marker.
+/// Nothing before that boundary may change (R238).
+fn check_group_file(record: &Value, label: &str, extension: Option<&str>) -> Result<()> {
+    let Some(marker) = extension else {
+        return check_file(record, label);
+    };
+    let path = Path::new(field(record, "path")?);
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("missing {label} artifact {}", path.display()))?;
+    if std::fs::canonicalize(path)? != path {
+        bail!("{label} path is not canonical: {}", path.display());
+    }
+    let frozen = record["bytes"]
+        .as_u64()
+        .with_context(|| format!("incomplete {label} artifact length"))? as usize;
+    if bytes.len() < frozen || canon::sha256_hex(&bytes[..frozen]) != field(record, "sha256")? {
+        bail!(
+            "{label} prepared text changed at {}; use a new output directory",
+            path.display()
+        );
+    }
+    if bytes.len() == frozen {
+        return Ok(());
+    }
+    let appended =
+        std::str::from_utf8(&bytes[frozen..]).context("group extension must be strict UTF-8")?;
+    if !appended.trim_start().starts_with(marker) {
+        bail!("{label} changed outside its declared extension marker {marker:?}");
+    }
+    Ok(())
+}
+
 fn json_artifact(path: &Path) -> Result<(Value, Value)> {
     let path = std::fs::canonicalize(path)?;
     let mut bytes = Vec::new();
@@ -343,7 +396,11 @@ impl Prepared {
             if std::fs::canonicalize(field(m, "file")?)? != Path::new(field(g, "path")?) {
                 bail!("group locator mismatch at group {}", i + 1);
             }
-            check_file(g, "group")?;
+            check_group_file(
+                g,
+                "group",
+                contract["group_extension"]["marker"].as_str(),
+            )?;
             let sections = g["sections"]
                 .as_array()
                 .context("incomplete prepared sections")?;
@@ -933,6 +990,977 @@ fn register_notes(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
         "suggestions":suggestions.len(),
         "units":units
     }))
+}
+
+/// The mathematics variant's per-unit obligations (R237). The compiler's own boundary
+/// and proof plans enumerate the mathematical units, and each planned unit becomes one
+/// unit of the same ledger: no second ledger, scheduler or compiler framework. A unit
+/// binds the exact plan entry it was enumerated from, so the same plan reuses its units
+/// and rebinding one key to different work is refused (R167).
+fn math_register(p: &Prepared, _zt: &mut Zt) -> Result<Value> {
+    if p.contract["variant"] != "math" {
+        bail!("ledger math requires a prepared mathematics run");
+    }
+    let declared = target(&p.contract)?;
+    let enabled = |name: &str| {
+        declared["enabled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == name)
+    };
+    let notation = enabled("notation");
+    let mut plans = Vec::new();
+    for layer in MATH_OBLIGATIONS {
+        if !enabled(layer) {
+            continue;
+        }
+        let path = p.out.join("math").join(layer).join("plan.json");
+        if !path.exists() {
+            continue;
+        }
+        plans.push((*layer, math_plan(layer, &util::read_json(&path)?)?));
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let mut units = Vec::new();
+    let mut reused = true;
+    for (layer, plan) in &plans {
+        for entry in plan.as_array().context("invalid math plan")? {
+            let key = field(entry, "unit")?;
+            let inputs = json!({"schema_version":1,"layer":layer,"key":key,"plan":entry});
+            let unit = format!("{layer}/{key}@1");
+            let hash = canon::hash_value(&inputs);
+            let existing: Option<String> = tx
+                .query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            match existing {
+                Some(stored) => {
+                    if stored != hash {
+                        bail!("a registered mathematical unit cannot be rebound to different work: {unit}");
+                    }
+                }
+                None => {
+                    reused = false;
+                    register(&tx, layer, key, 1, &inputs, None, false)?;
+                    dependency(&tx, &unit, "math-skeleton/book@1", "success")?;
+                    if notation {
+                        // Notation must be applied and available before the proof and
+                        // model work that requires it (R238).
+                        dependency(&tx, &unit, "notation/book@1", "success")?;
+                    }
+                    event(
+                        &tx,
+                        &unit,
+                        None,
+                        None,
+                        "registered",
+                        &json!({"layer":layer,"plan":entry}),
+                    )?;
+                }
+            }
+            units.push(json!({"unit":unit,"layer":layer,"key":key,"input_hash":hash}));
+        }
+    }
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,
+        "run_id":run,
+        "reused":reused,
+        "layers":plans.iter().map(|(layer,_)| *layer).collect::<Vec<_>>(),
+        "units":units
+    }))
+}
+
+/// One retained compiler plan: every entry names one mathematical unit and the work
+/// that unit owes. An entry that does not is refused before any unit is registered.
+fn math_plan(layer: &str, plan: &Value) -> Result<Value> {
+    if plan["schema_version"] != 1 {
+        bail!("invalid {layer} plan: schema 1 is required");
+    }
+    let entries = plan["units"].as_array().context("invalid math plan")?;
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries {
+        let key = field(entry, "unit")?;
+        if key.trim().is_empty()
+            || key.len() > 200
+            || key.contains(['\n', '\r'])
+            || !seen.insert(key.to_string())
+        {
+            bail!("`{key}` is not one readable mathematical unit of the {layer} plan");
+        }
+        if field(entry, "id").is_err() || entry["group"].as_i64().is_none() {
+            bail!("the {layer} plan entry for `{key}` names no indexed statement");
+        }
+        match layer {
+            "boundary" => {
+                let need = entry["need"].as_array().context("invalid math plan")?;
+                if need.is_empty() || need.iter().any(|n| n.as_str().is_none_or(str::is_empty)) {
+                    bail!("the boundary plan entry for `{key}` names no boundary work");
+                }
+            }
+            "proof" => {
+                let steps = entry["steps"].as_array().context("invalid math plan")?;
+                if steps.is_empty()
+                    || steps.iter().any(|step| {
+                        field(step, "address").is_err() || field(step, "facet").is_err()
+                    })
+                {
+                    bail!("the proof plan entry for `{key}` names no proof step");
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Value::Array(entries.clone()))
+}
+
+/// The mathematics variant's book-level layers whose completion has its own checked
+/// contract: the prepared enumeration, the prompt files and the applied notation table.
+/// Everything after them is the per-unit work of `MATH_OBLIGATIONS` (R238).
+fn math_book_layer(unit: &str) -> Option<&'static str> {
+    Some(match unit {
+        "math-index/book@1" => "math-index",
+        "math-docs/book@1" => "math-docs",
+        "math-skeleton/book@1" => "math-skeleton",
+        "notation/book@1" => "notation",
+        "math-check/book@1" => "math-check",
+        _ => return None,
+    })
+}
+
+/// One verified mathematics layer completion: its result file is published, its checked
+/// outputs are recorded, the claim is rechecked and the unit completes in one
+/// transaction. A repeated completion rereads the retained result instead of trusting a
+/// second file (R160).
+fn math_record(
+    p: &Prepared,
+    unit: &str,
+    token: i64,
+    claimed: &Claim,
+    done: bool,
+    mut result: Value,
+    outputs: &[(String, String, String, String, Value)],
+    file: &str,
+) -> Result<Value> {
+    if done {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let stored: String =
+            conn.query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| {
+                r.get(0)
+            })?;
+        let mut stored: Value = serde_json::from_str(&stored)?;
+        check_file(&stored["result"], "mathematics completion")?;
+        stored["reused"] = json!(true);
+        return Ok(stored);
+    }
+    let record = publish(&p.out.join(file), &serde_json::to_string_pretty(&result)?)?;
+    result["result"] = record.clone();
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "result",
+        "file",
+        field(&record, "path")?,
+        field(&record, "sha256")?,
+        &record,
+    )?;
+    for (key, kind, locator, fingerprint, data) in outputs {
+        output(&tx, unit, key, kind, locator, fingerprint, data)?;
+    }
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"layer":result["layer"],"disposition":result["disposition"],"checks":result["checks"]}),
+    )?;
+    tx.commit()?;
+    Ok(result)
+}
+
+/// The prepared run's own manifest, re-read where a verifier needs the frozen paths.
+fn prepared_manifest(p: &Prepared) -> Result<Value> {
+    util::read_json(p.out.join("manifest.json"))
+}
+
+/// `math-index/book@1`: every numbered statement of every prepared section file is
+/// indexed, and the retained index is exactly what those prepared bytes produce. A
+/// missing or changed section is a fault, never an empty index.
+fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let manifest = prepared_manifest(p)?;
+    let expected = p.out.join("math").join("index.json");
+    let path = std::fs::canonicalize(path).context("math index evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the prepared index it enumerated: {}", expected.display());
+    }
+    let retained = util::read_json(&path).context("invalid retained math index")?;
+    let (units, others) = crate::math::scan_index(&p.out.to_string_lossy(), &manifest)?;
+    if retained["units"] != json!(units) || retained["others"] != json!(others) {
+        bail!("the retained math index does not match the prepared sections it must account for");
+    }
+    let sections = manifest["groups"]
+        .as_array()
+        .context("incomplete prepared groups")?
+        .iter()
+        .map(|g| {
+            g["sections"]
+                .as_array()
+                .context("incomplete prepared sections")
+                .map(|s| s.len())
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<usize>();
+    let mut forms = std::collections::BTreeMap::<String, u64>::new();
+    for unit in &units {
+        *forms.entry(field(unit, "form")?.to_string()).or_default() += 1;
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"math_index_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"math-index",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":"indexed",
+        "units":units.len(),
+        "others":others.len(),
+        "sections":sections,
+        "forms":forms,
+        "checks":{"prepared_sections":sections,"indexed_statements":units.len()}
+    });
+    math_record(p, unit, token, &claimed, done, result, &[], "math/completion-index.json")
+}
+
+/// `math-docs/book@1`: each math prompt file is the frozen shared instruction file plus
+/// its math supplement, with this run's own paths filled in (R238).
+fn math_docs_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let manifest = prepared_manifest(p)?;
+    let expected = p.out.join("math").join("docs.json");
+    let path = std::fs::canonicalize(path).context("math docs evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the prepared docs report: {}", expected.display());
+    }
+    let report = util::read_json(&path).context("invalid math docs report")?;
+    // The matcher uses the staging spelling the preparation froze, which is what the
+    // compiler filled into the prompt files.
+    let staging = field(&manifest, "staging")?.to_string();
+    let wanted = crate::math::docs_files(
+        field(&p.contract, "citation_key")?,
+        manifest["book_title"].as_str().unwrap_or_default(),
+        &staging,
+        &manifest,
+    )?;
+    let files = report["files"]
+        .as_array()
+        .context("the math docs report names no prompt files")?;
+    if report["ok"] != true || files.len() != wanted.len() {
+        bail!("the math docs report must name all {} math prompt files", wanted.len());
+    }
+    let mut bound = Vec::new();
+    for ((target, text), named) in wanted.iter().zip(files) {
+        let named = std::fs::canonicalize(named.as_str().context("invalid prompt file path")?)
+            .with_context(|| format!("missing math prompt file for {target}"))?;
+        if named != std::fs::canonicalize(target)? {
+            bail!("math prompt file mismatch at {}", named.display());
+        }
+        let actual = std::fs::read(&named)?;
+        if actual != text.as_bytes() {
+            bail!(
+                "the math prompt file {} is not the shared instruction file with its math supplement",
+                named.display()
+            );
+        }
+        bound.push(bind_file(&named.to_string_lossy(), "math prompt")?);
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"math_docs_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"math-docs",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":"docs",
+        "files":files.len(),
+        "checks":{"prompt_files":files.len()}
+    });
+    let outputs = bound
+        .iter()
+        .enumerate()
+        .map(|(i, record)| {
+            (
+                format!("file/{i}"),
+                "file".to_string(),
+                field(record, "path").unwrap_or("").to_string(),
+                field(record, "sha256").unwrap_or("").to_string(),
+                record.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    math_record(p, unit, token, &claimed, done, result, &outputs, "math/completion-docs.json")
+}
+
+/// `math-skeleton/book@1`: every indexed statement is accounted for exactly once, each
+/// addressed unit and Theory Card really exists in the agent Workspace, and each prepared
+/// group file carries its own unit list. Allocation is not a built unit: a `待写`
+/// statement stays open and this layer never reports it built (R238).
+fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let manifest = prepared_manifest(p)?;
+    let relayed = p.out.join("math").join("units.json");
+    let path = std::fs::canonicalize(path).context("math skeleton evidence does not exist")?;
+    if path != std::fs::canonicalize(&relayed)? {
+        bail!("`{unit}` completes at the skeleton unit list: {}", relayed.display());
+    }
+    let retained = util::read_json(&path).context("invalid retained unit list")?;
+    let (index_units, index_others) = crate::math::scan_index(&p.out.to_string_lossy(), &manifest)?;
+    let units = retained["units"].as_array().context("invalid unit list")?;
+    if units.len() != index_units.len() {
+        bail!(
+            "the skeleton accounts for {} of the {} indexed statements",
+            units.len(),
+            index_units.len()
+        );
+    }
+    let mut addresses = Vec::new();
+    let mut group_units = std::collections::BTreeMap::<u64, Vec<Value>>::new();
+    for (allocated, indexed) in units.iter().zip(&index_units) {
+        if field(allocated, "id")? != field(indexed, "id")? || allocated["form"] != indexed["form"] {
+            bail!("the skeleton's units are not the indexed statements in book order");
+        }
+        if allocated["address"].is_null() {
+            continue;
+        }
+        let at = field(allocated, "address")?.to_string();
+        let group = allocated["group"]
+            .as_u64()
+            .context("a skeleton unit names no group")?;
+        group_units.entry(group).or_default().push(allocated.clone());
+        addresses.push(at);
+    }
+    let theories = retained["theories"].as_array().context("invalid Theory list")?;
+    let mut chapters = std::collections::BTreeSet::new();
+    for theory in theories {
+        if theory["address"].is_null() {
+            continue;
+        }
+        let chapter = field(theory, "chapter")?;
+        if !chapters.insert(chapter.to_string())
+            || theory["units"].as_array().is_none_or(|u| u.is_empty())
+        {
+            bail!("a Theory Card must cover one chapter that holds units");
+        }
+        addresses.push(field(theory, "address")?.to_string());
+    }
+    // The archive decides existence: an allocation that names no real Card is a gap.
+    let cards = zt.cards(&addresses, "text")?;
+    if cards.cards.len() != addresses.len() {
+        bail!("the skeleton names {} Cards the agent Workspace does not hold", addresses.len() - cards.cards.len());
+    }
+    let tree = field(&p.contract, "citation_key")?;
+    if cards
+        .cards
+        .iter()
+        .any(|c| c["workspace"] != "agent" || c["tree"] != tree)
+    {
+        bail!("every allocated mathematical unit belongs to this book's agent Literature tree");
+    }
+    // The declared group extension: the prepared text plus this group's own unit list.
+    let marker = p.contract["group_extension"]["marker"]
+        .as_str()
+        .context("the mathematics preparation declares no group extension")?;
+    let mut appended = Vec::new();
+    for group in manifest["groups"].as_array().context("incomplete prepared groups")? {
+        let n = group["n"].as_u64().context("invalid prepared group number")?;
+        let file = field(group, "file")?;
+        let text = util::read_text(file)?;
+        let allocated = group_units.get(&n).map_or(0, Vec::len);
+        let others = index_others
+            .iter()
+            .filter(|o| o["group"].as_u64() == Some(n))
+            .count();
+        let block = match text.find(marker) {
+            Some(at) if allocated + others == 0 => {
+                bail!("group {n} carries a mathematical unit list for work it does not have")
+            }
+            Some(at) => &text[at..],
+            None if allocated + others > 0 => {
+                bail!("group {n} carries no mathematical unit list")
+            }
+            None => "",
+        };
+        for unit in group_units.get(&n).into_iter().flatten() {
+            if !block.contains(&format!("[[{}]]", field(unit, "address")?)) {
+                bail!(
+                    "group {n} does not list its allocated unit {}",
+                    field(unit, "id")?
+                );
+            }
+        }
+        for other in index_others.iter().filter(|o| o["group"].as_u64() == Some(n)) {
+            if !block.contains(field(other, "id")?) {
+                bail!("group {n} does not list its {} {}", field(other, "kind")?, field(other, "id")?);
+            }
+        }
+        appended.push(json!({"group":n,"units":allocated,"others":others}));
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"math_skeleton_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"math-skeleton",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":"allocated",
+        "indexed":index_units.len(),
+        "allocated":units.iter().filter(|u| !u["address"].is_null()).count(),
+        "gaps":units.iter().filter(|u| u["address"].is_null()).count(),
+        "theories":theories.iter().filter(|t| !t["address"].is_null()).count(),
+        "groups":appended,
+        "checks":{"indexed_statements":index_units.len(),"card_addresses":addresses.len()}
+    });
+    let outputs = cards
+        .cards
+        .iter()
+        .map(|card| {
+            (
+                format!("card/{}", field(card, "address").unwrap_or_default()),
+                "card".to_string(),
+                field(card, "address").unwrap_or_default().to_string(),
+                crate::calls::authored_fingerprint(card),
+                json!({"purpose":"mathematical_unit"}),
+            )
+        })
+        .collect::<Vec<_>>();
+    math_record(p, unit, token, &claimed, done, result, &outputs, "math/completion-skeleton.json")
+}
+
+/// `notation/book@1`: the notation table is applied and available. The retained answer
+/// re-derives the exact Card this run wrote; a dependent proof or model pass may rely on
+/// it from here (R238).
+fn notation_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let expected = p.out.join("math").join("notation").join("applied.json");
+    let path = std::fs::canonicalize(path).context("notation evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the applied notation record: {}", expected.display());
+    }
+    let applied = util::read_json(&path).context("invalid applied notation record")?;
+    if applied["schema_version"] != 1 || applied["kind"] != "notation_apply" {
+        bail!("invalid applied notation record");
+    }
+    let answer_path = p.out.join("math").join("notation").join("out").join("notation.json");
+    let answer = if answer_path.exists() {
+        util::read_json(&answer_path)?
+    } else {
+        Value::Null
+    };
+    let units = {
+        let file = p.out.join("math").join("units.json");
+        if file.exists() {
+            util::read_json(&file)?
+        } else {
+            Value::Null
+        }
+    };
+    let max_symbols = applied["max_symbols"]
+        .as_i64()
+        .context("the applied notation record names no symbol bound")?;
+    let (symbols, title, body) = crate::math::notation_table(
+        &answer,
+        &units,
+        field(&p.contract, "citation_key")?,
+        prepared_manifest(p)?["book_title"].as_str().unwrap_or_default(),
+        max_symbols,
+    );
+    if applied["symbols"].as_u64() != Some(symbols as u64)
+        || field(&applied, "body_sha256")? != canon::sha256_hex(body.as_bytes())
+        || field(&applied, "title")? != title
+    {
+        bail!("the applied notation record does not match the answer it claims to have applied");
+    }
+    let disposition = if symbols == 0 { "no_symbols" } else { "applied" };
+    if applied["disposition"] != disposition {
+        bail!("the applied notation record states the wrong disposition");
+    }
+    let mut outputs = Vec::new();
+    let mut card_address = Value::Null;
+    if symbols == 0 {
+        if !applied["card"].is_null() {
+            bail!("an empty notation table writes no Card");
+        }
+    } else {
+        let at = field(&applied, "card")?.to_string();
+        let cards = zt.cards(&[at.clone()], "text")?;
+        let card = cards
+            .cards
+            .first()
+            .with_context(|| format!("the notation table Card `{at}` is missing"))?;
+        if card["workspace"] != "agent"
+            || card["tree"] != field(&p.contract, "citation_key")?
+            || card["title"] != json!(title)
+            || card["body"] != json!(body)
+        {
+            bail!("the notation table Card `{at}` is not the applied table of this run");
+        }
+        card_address = json!(at);
+        outputs.push((
+            format!("card/{at}"),
+            "card".to_string(),
+            at,
+            crate::calls::authored_fingerprint(card),
+            json!({"purpose":"notation_table","symbols":symbols}),
+        ));
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"notation_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"notation",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":disposition,
+        "symbols":symbols,
+        "available":symbols > 0,
+        "card":card_address,
+        "checks":{"symbols":symbols,"applied":applied["applied"]}
+    });
+    math_record(p, unit, token, &claimed, done, result, &outputs, "math/completion-notation.json")
+}
+
+/// One mathematical unit's boundary work (R239). Every candidate the plan enumerated
+/// keeps its own disposition; a supplied candidate carries its independent review; a
+/// rejected one is gone through the archive's confirmed deletion and names what was
+/// removed. A batch count is never the record, and no candidate may disappear silently.
+fn boundary_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
+    let registered = unit_inputs(p, unit)?;
+    let plan = registered["plan"].clone();
+    let at = field(&plan, "unit")?.to_string();
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let expected = p.out.join("math").join("boundary").join("settled.json");
+    let path = std::fs::canonicalize(path).context("boundary settle evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the settled boundary record: {}", expected.display());
+    }
+    let settled = util::read_json(&path).context("invalid settled boundary record")?;
+    if settled["schema_version"] != 1 || settled["kind"] != "boundary_settle" {
+        bail!("invalid settled boundary record");
+    }
+    let mine = settled["candidates"]
+        .as_array()
+        .context("the settled boundary record enumerates no candidates")?
+        .iter()
+        .filter(|c| c["unit"] == json!(at))
+        .cloned()
+        .collect::<Vec<_>>();
+    if mine.is_empty() {
+        bail!("`{unit}` planned boundary work and the settle record holds no candidate for it");
+    }
+    let reviews = settled["reviews"]
+        .as_array()
+        .context("the settled boundary record holds no reviews")?;
+    let deletions = settled["deleted"]
+        .as_array()
+        .context("the settled boundary record holds no deletions")?;
+    // A confirmed deletion renumbers the later siblings. The settle keeps the archive's
+    // own mapping, and a recorded candidate resolves through it to the Card that holds
+    // it now, in the order the deletions ran (R239).
+    let renames = settled["renames"].as_array().cloned().unwrap_or_default();
+    let resolve = |address: &str| -> String {
+        let mut current = address.to_string();
+        for entry in &renames {
+            if let Some(next) = entry["moved"].get(&current).and_then(Value::as_str) {
+                current = next.to_string();
+            }
+        }
+        current
+    };
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for candidate in &mine {
+        let address = field(candidate, "address")?;
+        if !seen.insert(address.to_string()) {
+            bail!("boundary candidate `{address}` is recorded twice");
+        }
+        if field(candidate, "facet")?.trim().is_empty() {
+            bail!("boundary candidate `{address}` names no facet");
+        }
+        let supplied = candidate["supplied"] == true;
+        let review = reviews
+            .iter()
+            .find(|r| field(r, "address").is_ok_and(|a| a == address));
+        let verdict = match review {
+            Some(review) => field(review, "verdict")?.to_string(),
+            // A supplied candidate is the one an independent review decides; a part the
+            // book itself gave needs no review.
+            None if supplied => {
+                bail!("the supplied boundary candidate `{address}` has no independent review")
+            }
+            None => "book".to_string(),
+        };
+        if verdict == "unreviewed" {
+            bail!("the supplied boundary candidate `{address}` has no independent review");
+        }
+        if !["wrong", "ok", "book"].contains(&verdict.as_str()) {
+            bail!("unknown boundary review verdict `{verdict}` for `{address}`");
+        }
+        let now = resolve(&address);
+        match deletions
+            .iter()
+            .find(|d| field(d, "address").is_ok_and(|a| a == address))
+        {
+            // A rejected supplied part, or the role part that named it, is removed through
+            // the archive's own confirmed deletion: the record names what went and the
+            // confirmation issued for exactly that Card.
+            Some(deletion) => {
+                if verdict == "wrong"
+                    && review
+                        .map(|r| r["reason"].as_str().unwrap_or_default().trim().is_empty())
+                        .unwrap_or(true)
+                {
+                    bail!("the rejected boundary candidate `{address}` names no reason");
+                }
+                if verdict != "wrong" && supplied {
+                    bail!("the supplied boundary candidate `{address}` was deleted without a review judging it wrong");
+                }
+                if field(deletion, "confirm")?.trim().is_empty()
+                    || field(deletion, "removed")?.trim().is_empty()
+                    || field(deletion, "reason")?.trim().is_empty()
+                {
+                    bail!("the deletion of `{address}` records no confirmed operation");
+                }
+                removed.push(json!({"address":address,"reason":field(deletion, "reason")?,"removed":field(deletion, "removed")?}));
+            }
+            None => {
+                if verdict == "wrong" {
+                    bail!("the rejected boundary candidate `{address}` was not deleted through the confirmed path");
+                }
+                if supplied && verdict != "ok" {
+                    bail!("the kept supplied boundary candidate `{address}` has no review judging it");
+                }
+                kept.push((address.to_string(), now, field(candidate, "fingerprint")?.to_string()));
+            }
+        }
+    }
+    // The archive decides which parts are there: a kept candidate is the same Card at
+    // the address the recorded mapping gives it, and a rejected one is gone from the
+    // unit's own model. Nothing may have vanished behind the count.
+    for candidate in &mine {
+        let Some(partner) = candidate["partner"].as_str().filter(|p| !p.is_empty()) else {
+            continue;
+        };
+        if !removed
+            .iter()
+            .any(|r| field(r, "address").is_ok_and(|a| a == partner))
+        {
+            continue;
+        }
+        let address = field(candidate, "address")?;
+        if !deletions
+            .iter()
+            .any(|d| field(d, "address").is_ok_and(|a| a == address))
+        {
+            bail!(
+                "the part `{address}` that names the rejected `{partner}` was not deleted through the confirmed path"
+            );
+        }
+    }
+    let kept_addresses = kept.iter().map(|(_, now, _)| now.clone()).collect::<Vec<_>>();
+    let kept_cards = if kept_addresses.is_empty() {
+        Vec::new()
+    } else {
+        zt.cards(&kept_addresses, "text")?.cards
+    };
+    if kept_cards.len() != kept.len() {
+        bail!("a kept boundary candidate of `{at}` is gone from the archive");
+    }
+    for ((address, now, fingerprint), card) in kept.iter().zip(&kept_cards) {
+        if field(card, "address")? != now || crate::calls::authored_fingerprint(card) != *fingerprint
+        {
+            bail!("the kept boundary candidate `{address}` is no longer the part this settle recorded");
+        }
+    }
+    if !removed.is_empty() {
+        let model = zt.call("get_model", json!({"at":at}))?;
+        let parts = model["parts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|part| field(part, "address").map(str::to_string))
+            .collect::<Result<Vec<_>>>()?;
+        let current = if parts.is_empty() {
+            Vec::new()
+        } else {
+            zt.cards(&parts, "text")?.cards
+        };
+        let present = current
+            .iter()
+            .map(crate::calls::authored_fingerprint)
+            .collect::<std::collections::BTreeSet<_>>();
+        for part in &removed {
+            if present.contains(field(part, "removed")?) {
+                bail!(
+                    "the rejected boundary candidate `{}` is recorded as deleted and is still part of {at}",
+                    field(part, "address")?
+                );
+            }
+        }
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"boundary_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"boundary",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":"settled",
+        "candidates":mine.len(),
+        "kept":kept.len(),
+        "removed":removed,
+        "renames":renames,
+        "need":plan["need"],
+        "checks":{"candidates":mine.len(),"kept":kept.len(),"removed":removed.len()}
+    });
+    let outputs = kept_cards
+        .iter()
+        .map(|card| {
+            (
+                format!("card/{}", field(card, "address").unwrap_or_default()),
+                "card".to_string(),
+                field(card, "address").unwrap_or_default().to_string(),
+                crate::calls::authored_fingerprint(card),
+                json!({"purpose":"boundary_candidate"}),
+            )
+        })
+        .collect::<Vec<_>>();
+    math_record(p, unit, token, &claimed, done, result, &outputs, "math/completion-boundary.json")
+}
+
+/// One selected formal result's proof review (R240). Every proof step of the unit as it
+/// stands now has a verdict: an accepted fix was written and kept every Link it had, an
+/// untouched step is the very Card the review read, and a refused correction stays a
+/// named obligation instead of quietly completing.
+fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
+    let registered = unit_inputs(p, unit)?;
+    let plan = registered["plan"].clone();
+    let at = field(&plan, "unit")?.to_string();
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let expected = p.out.join("math").join("proof").join("applied.json");
+    let path = std::fs::canonicalize(path).context("proof apply evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the applied proof record: {}", expected.display());
+    }
+    let applied = util::read_json(&path).context("invalid applied proof record")?;
+    if applied["schema_version"] != 1 || applied["kind"] != "proof_apply" {
+        bail!("invalid applied proof record");
+    }
+    let planned = plan["steps"]
+        .as_array()
+        .context("the proof plan names no step")?
+        .iter()
+        .map(|step| field(step, "address").map(str::to_string))
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    // The current proof decides: every main-line step the review must cover is the step
+    // list of the unit's own model now, not the list the plan remembered.
+    let model = zt.call("get_model", json!({"at":at}))?;
+    let current = model["build"]["order"]
+        .as_array()
+        .context("the unit's model has no build order")?
+        .iter()
+        .filter(|step| step["line"] == "main")
+        .filter(|step| {
+            step["facet"]
+                .as_str()
+                .is_some_and(crate::math::is_proof_step)
+        })
+        .map(|step| field(step, "address").map(str::to_string))
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    if current.is_empty() {
+        bail!("`{unit}` was selected for proof review and its model has no proof step now");
+    }
+    if current != planned {
+        bail!("the proof of `{at}` changed since it was planned; re-run the proof review");
+    }
+    let reviewed = applied["reviewed"]
+        .as_array()
+        .context("the applied proof record holds no review")?
+        .iter()
+        .filter(|r| r["unit"] == json!(at))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut fixed = 0;
+    let mut untouched = Vec::new();
+    for step in &current {
+        let entry = reviewed
+            .iter()
+            .find(|r| field(r, "address").is_ok_and(|a| a == step))
+            .with_context(|| format!("the selected proof step `{step}` was not reviewed"))?;
+        if !seen.insert(step.clone()) {
+            bail!("the proof step `{step}` is reviewed twice");
+        }
+        let verdict = field(entry, "verdict")?;
+        match verdict {
+            "ok" => untouched.push(step.clone()),
+            "fix" => {
+                if field(entry, "before")? == field(entry, "after")? {
+                    bail!("the accepted proof fix for `{step}` did not change the step");
+                }
+                fixed += 1;
+            }
+            "refused" => bail!(
+                "the refused correction of `{step}` in `{at}` remains a named obligation: {}",
+                field(entry, "reason")?
+            ),
+            other => bail!("unknown proof verdict `{other}` for `{step}`"),
+        }
+    }
+    let addresses = current.iter().cloned().collect::<Vec<_>>();
+    let cards = zt.cards(&addresses, "text")?.cards;
+    if cards.len() != addresses.len() {
+        bail!("a reviewed proof step of `{at}` is gone from the archive");
+    }
+    for (address, card) in addresses.iter().zip(&cards) {
+        let entry = reviewed
+            .iter()
+            .find(|r| field(r, "address").is_ok_and(|a| a == address))
+            .context("missing proof review entry")?;
+        let fingerprint = crate::calls::authored_fingerprint(card);
+        let body = card["body"].as_str().unwrap_or_default();
+        match field(entry, "verdict")? {
+            "ok" => {
+                if fingerprint != field(entry, "before")? {
+                    bail!("the reviewed proof step `{address}` changed after its review without an accepted fix");
+                }
+            }
+            "fix" => {
+                if fingerprint != field(entry, "after")? {
+                    bail!("the accepted proof fix for `{address}` is not the step the archive holds");
+                }
+                // A correction keeps every Link the step had: the plan cites its premises.
+                for link in entry["kept_links"]
+                    .as_array()
+                    .context("the accepted proof fix records no kept Link")?
+                {
+                    let link = link.as_str().context("invalid kept Link")?;
+                    if !body.contains(&format!("[[{link}")) {
+                        bail!("the accepted proof fix for `{address}` dropped the Link to `{link}`");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"proof_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"proof",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":"reviewed",
+        "steps":current.len(),
+        "fixed":fixed,
+        "untouched":untouched.len(),
+        "checks":{"proof_steps":current.len(),"fixed":fixed}
+    });
+    let outputs = cards
+        .iter()
+        .map(|card| {
+            (
+                format!("card/{}", field(card, "address").unwrap_or_default()),
+                "card".to_string(),
+                field(card, "address").unwrap_or_default().to_string(),
+                crate::calls::authored_fingerprint(card),
+                json!({"purpose":"proof_step"}),
+            )
+        })
+        .collect::<Vec<_>>();
+    math_record(p, unit, token, &claimed, done, result, &outputs, "math/completion-proof.json")
+}
+
+/// `math-check/book@1`: the M1–M18 checks describe the revision the audit published.
+/// The report is re-run against the archive the run holds now and must be exactly the
+/// retained one, so a stale or hand-written report cannot complete the layer (R241).
+fn math_check_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) -> Result<Value> {
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    let expected = p.out.join("math-audit.json");
+    let path = std::fs::canonicalize(path).context("math check evidence does not exist")?;
+    if path != std::fs::canonicalize(&expected)? {
+        bail!("`{unit}` completes at the book's math audit: {}", expected.display());
+    }
+    let retained = util::read_json(&path).context("invalid retained math audit")?;
+    let audit = required_publication(&connect(&p.out.join("ledger.sqlite3"), false)?, "audit")?
+        .context("the final audit revision was never published")?;
+    let revision = audit
+        .0
+        .rsplit_once('@')
+        .and_then(|(_, r)| r.parse::<i64>().ok())
+        .context("invalid audit revision")?;
+    // Read the checks again without writing: a refused completion must leave the
+    // retained evidence exactly as the run published it.
+    let fresh = crate::math::check_value(zt, field(&p.contract, "citation_key")?)?;
+    if fresh["units"] != retained["units"]
+        || fresh["theories"] != retained["theories"]
+        || fresh["forms"] != retained["forms"]
+        || fresh["by_rule"] != retained["by_rule"]
+        || fresh["list"] != retained["list"]
+    {
+        bail!("the retained math audit is not the M1–M18 report of the current revision");
+    }
+    let result = json!({
+        "schema_version":1,
+        "kind":"math_check_completion",
+        "unit":unit,
+        "token":token,
+        "layer":"math-check",
+        "state":"done",
+        "reused":false,
+        "input_hash":claimed.input_hash,
+        "disposition":if retained["faults"] == 0 {"clean"} else {"faults"},
+        "units":retained["units"],
+        "theories":retained["theories"],
+        "faults":retained["faults"],
+        "by_rule":retained["by_rule"],
+        "audit":audit.0,
+        "audit_revision":revision,
+        "checks":{"units":retained["units"],"theories":retained["theories"],"faults":retained["faults"]}
+    });
+    math_record(p, unit, token, &claimed, done, result, &[], "math/completion-check.json")
 }
 
 /// Complete one note suggestion: it is applied as a checked Link, already present,
@@ -2008,6 +3036,13 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
                 false,
             )?;
             dependency(&tx, &id, &prepare, "success")?;
+            if let Some(previous) = math_prerequisite(layer) {
+                dependency(&tx, &id, &format!("{previous}/book@1"), "success")?;
+            }
+            // Each mathematics layer enumerates its own book-level obligation here, so
+            // its barrier is sealed from the start: the final check waits for the audit
+            // revision rather than for an enumeration that never comes.
+            seal(&tx, layer)?;
         }
     }
     if let Some(terms) = terms.filter(|_| prepared) {
@@ -3529,12 +4564,16 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
     }
     if contract["variant"] == "math" {
         for layer in MATH_BOOK.iter().copied().filter(|l| enabled(l)) {
+            let mut needs = vec![(root.to_string(), "success".to_string())];
+            if let Some(previous) = math_prerequisite(layer) {
+                // The mathematics variant's declared stage order: each layer consumes the
+                // checked result of the layer before it, and the final check reads the
+                // audit revision rather than rebuilding the domain checks (R238, R241).
+                needs.push((format!("{previous}/book@1"), "success".to_string()));
+            }
             units.insert(
                 format!("{layer}/book@1"),
-                (
-                    Some(json!({"preparation_hash":hash})),
-                    vec![(root.into(), "success".into())],
-                ),
+                (Some(json!({"preparation_hash":hash})), needs),
             );
         }
     }
@@ -5284,9 +6323,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "publish"
                 | "notes"
                 | "relocate"
+                | "math"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes or relocate"
+                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, publish, notes, relocate or math"
             );
         }
         let params = if command == "next" {
@@ -5303,6 +6343,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Suggestions"]
         } else if command == "relocate" {
             vec!["Out", "Moves"]
+        } else if command == "math" {
+            vec!["Out"]
         } else {
             vec!["Out", "Layer"]
         };
@@ -5406,6 +6448,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         relocate(&p, &mut zt, &a.str("Moves"))?
+    } else if command == "math" {
+        let mut zt = Zt::start()?;
+        let p = Prepared::read(&a.str("Out"), &mut zt)?;
+        math_register(&p, &mut zt)?
     } else if matches!(
         command.as_str(),
         "init" | "next" | "renew" | "done" | "fail"
@@ -5449,6 +6495,21 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 terms_apply(&p, &mut zt, token, terms, candidates)?
             } else if publication_unit(&unit).is_ok() {
                 publication_finish(&p, &unit, token, Path::new(&path))?
+            } else if let Some(layer) = math_book_layer(&unit) {
+                match layer {
+                    "math-index" => math_index_finish(&p, &unit, token, Path::new(&path))?,
+                    "math-docs" => math_docs_finish(&p, &unit, token, Path::new(&path))?,
+                    "math-skeleton" => {
+                        math_skeleton_finish(&p, &unit, token, &mut zt, Path::new(&path))?
+                    }
+                    "notation" => notation_finish(&p, &unit, token, &mut zt, Path::new(&path))?,
+                    "math-check" => math_check_finish(&p, &unit, token, &mut zt, Path::new(&path))?,
+                    _ => bail!("unknown mathematics layer `{layer}`"),
+                }
+            } else if unit.starts_with("boundary/") {
+                boundary_finish(&p, &unit, token, &mut zt, Path::new(&path))?
+            } else if unit.starts_with("proof/") {
+                proof_finish(&p, &unit, token, &mut zt, Path::new(&path))?
             } else if unit.starts_with("notes/") {
                 note_disposition(&p, &mut zt, &unit, token, Path::new(&path))?
             } else {
