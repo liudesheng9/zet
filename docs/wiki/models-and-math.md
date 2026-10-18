@@ -7,8 +7,8 @@ paths:
   - "tests/model_*.rs"
   - "tests/self_sufficient_models.rs"
   - "tests/math_units.rs"
-synced: fe5d77864def
-updated: 2026-10-16
+synced: cde3f403cd7b
+updated: 2026-10-18
 ---
 
 # Model structure and math units

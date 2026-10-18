@@ -12,8 +12,8 @@ paths:
   - "tests/autostart.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: fe5d77864def
-updated: 2026-10-17
+synced: cde3f403cd7b
+updated: 2026-10-18
 ---
 
 # Service, CLI and storage
