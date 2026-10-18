@@ -1,4 +1,5 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
+use crate::event::layer::prop;
 use crate::ps::{self, list, pipe, s, truthy};
 use crate::{args::Args, canon, util, zt::Zt};
 use anyhow::{Context, Result, bail};
@@ -4940,6 +4941,28 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
             faults.push(json!({"code":"producer_outputs_mismatch","unit":"terms/book@1","missing":expected.difference(&actual).collect::<Vec<_>>(),"unexpected":actual.difference(&expected).collect::<Vec<_>>()}));
         }
     }
+    // A completed Events/Findings unit states its own required output registration: the
+    // accepted list, source links, Link/Organize inputs, check and every Card it touched.
+    for layer in EMPIRICAL {
+        let completed = conn
+            .prepare("SELECT id,result_json FROM units WHERE layer=?1 AND state='done' ORDER BY id")?
+            .query_map([layer.layer], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, raw) in completed {
+            let result: Value = serde_json::from_str(&raw)?;
+            let Ok(expected) = empirical_output_keys(&result) else {
+                faults.push(json!({"code":"producer_enumeration_missing","unit":id}));
+                continue;
+            };
+            let actual = conn
+                .prepare("SELECT output_key FROM outputs WHERE unit_id=?1")?
+                .query_map([&id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+            if actual != expected {
+                faults.push(json!({"code":"producer_outputs_mismatch","unit":id,"missing":expected.difference(&actual).collect::<Vec<_>>(),"unexpected":actual.difference(&expected).collect::<Vec<_>>()}));
+            }
+        }
+    }
     Ok(faults)
 }
 
@@ -5093,6 +5116,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "ledger-terms-test-",
                 "ledger-prepare-recovery-test-",
                 "ledger-publication-test-",
+                "ledger-event-finding-test-",
                 "model-finish-test-",
                 "model-dependencies-test-",
             ]
@@ -7665,6 +7689,1048 @@ pub fn cards_finish_cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+// ==== The Events/Findings layer unit (R220, R221) ===========================================
+
+/// One empirical layer the group released: the Cards it writes, the kind word of its
+/// Links, and the Card rules its accepted output must pass.
+struct Empirical {
+    /// The ledger layer and its unit prefix (`events/g001@1`).
+    layer: &'static str,
+    /// The compiler tool that plans and applies this layer (`zt-digest event`).
+    tool: &'static str,
+    /// The work folder under the prepared out folder (`<out>/events`).
+    work_dir: &'static str,
+    completion_kind: &'static str,
+    /// The Card type every created Card must have.
+    card_type: &'static str,
+    /// The kind word of the Link each supported Idea Card gets.
+    link_kind: &'static str,
+    /// The zt-check rules the accepted Cards must pass.
+    rules: &'static str,
+    /// A created Event Card is filed beside its first supported Card; a Finding Card
+    /// under its group anchor.
+    placement: Placement,
+    /// The frozen source of the layer's candidate enumeration.
+    candidate_source: &'static str,
+}
+
+#[derive(PartialEq)]
+enum Placement {
+    Support,
+    Anchor,
+}
+
+const EVENTS: Empirical = Empirical {
+    layer: "events",
+    tool: "event",
+    work_dir: "events",
+    completion_kind: "events_completion",
+    card_type: "event",
+    link_kind: "案例",
+    rules: "E1,E2,E5",
+    placement: Placement::Support,
+    candidate_source: "artifact",
+};
+
+const FINDINGS: Empirical = Empirical {
+    layer: "findings",
+    tool: "finding",
+    work_dir: "findings",
+    completion_kind: "findings_completion",
+    card_type: "finding",
+    link_kind: "印证",
+    rules: "F1,F2,F3,F4",
+    placement: Placement::Anchor,
+    candidate_source: "sections",
+};
+
+const EMPIRICAL: [&Empirical; 2] = [&EVENTS, &FINDINGS];
+
+fn empirical_unit(layer: &Empirical, number: u64) -> String {
+    format!("{}/g{number:03}@1", layer.layer)
+}
+
+fn empirical_group_key(number: u64) -> String {
+    format!("g{number:03}")
+}
+
+fn empirical_candidate_id(number: u64, index: usize) -> String {
+    format!("{}/c{:03}", empirical_group_key(number), index + 1)
+}
+
+/// The unit and group of a registered Events/Findings layer unit, if `unit` is one.
+fn empirical_unit_of(unit: &str) -> Option<(&'static Empirical, u64)> {
+    for layer in EMPIRICAL {
+        if let Some(number) = unit
+            .strip_prefix(layer.layer)
+            .and_then(|rest| rest.strip_prefix("/g"))
+            .and_then(|rest| rest.strip_suffix("@1"))
+            .and_then(|rest| rest.parse::<u64>().ok())
+            .filter(|number| *number > 0)
+        {
+            return Some((layer, number));
+        }
+    }
+    None
+}
+
+fn prepared_group(p: &Prepared, number: u64) -> Result<&Value> {
+    p.contract["groups"]
+        .as_array()
+        .context("missing prepared groups")?
+        .iter()
+        .find(|group| group["n"].as_u64() == Some(number))
+        .context("prepared group does not exist")
+}
+
+/// One declared candidate: its stable id, the source span it was read from, and its text.
+struct Candidate {
+    id: String,
+    src: String,
+    text: String,
+}
+
+impl Candidate {
+    fn value(&self) -> Value {
+        json!({"id": self.id, "src": self.src, "text": self.text})
+    }
+}
+
+/// The frozen event candidates of one group: the prepared `events.json` artifact rows of
+/// that group, in order, as the preparation enumerated them.
+fn event_candidates(p: &Prepared, number: u64) -> Result<Vec<Candidate>> {
+    let record = &p.contract["artifacts"]["events"];
+    check_file(record, "events candidate artifact")?;
+    let value = util::read_json(field(record, "path")?).context("invalid events candidate artifact")?;
+    let rows = value
+        .as_array()
+        .context("the events candidate artifact is not an array")?;
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for row in rows {
+        if ps::int(prop(row, "group"))? != number as i64 {
+            continue;
+        }
+        let (src, text) = (s(prop(row, "src")), s(prop(row, "text")));
+        if src.trim().is_empty() {
+            bail!("the events candidate artifact holds a candidate without a source span");
+        }
+        let index = candidates.len();
+        candidates.push(Candidate {
+            id: empirical_candidate_id(number, index),
+            src,
+            text,
+        });
+    }
+    Ok(candidates)
+}
+
+/// The frozen result candidates of one group: its prepared section lines that report data
+/// with a number, in order and at most `cap` per group, exactly as the compiler plans them.
+fn finding_candidates(p: &Prepared, number: u64, cap: usize) -> Result<Vec<Candidate>> {
+    let group = prepared_group(p, number)?;
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for section in group["sections"]
+        .as_array()
+        .context("missing group source sections")?
+    {
+        if candidates.len() >= cap {
+            break;
+        }
+        check_file(section, "group source section")?;
+        let path = field(section, "path")?;
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("group source section has no file name")?;
+        let text = util::read_text(path)?;
+        for (index, line) in text.lines().enumerate() {
+            if candidates.len() >= cap {
+                break;
+            }
+            if let Some(clip) = crate::finding::candidate(line) {
+                let place = candidates.len();
+                candidates.push(Candidate {
+                    id: empirical_candidate_id(number, place),
+                    src: format!("sections/{name}:{}", index + 1),
+                    text: clip,
+                });
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+/// The layer's accepted plan manifest and its file record: the candidates of every planned
+/// group with stable ids and source spans, and the jobs that carry them. It must name this
+/// prepared staging folder, so it cannot be reused from another run.
+fn empirical_plan(p: &Prepared, layer: &Empirical) -> Result<(Value, Value)> {
+    let path = p.out.join(layer.work_dir).join("plan.json");
+    if !path.exists() {
+        bail!(
+            "missing accepted {} candidate manifest `{}`: run zt-digest {} -Step plan before completing the unit",
+            layer.layer,
+            path.display(),
+            layer.tool
+        );
+    }
+    let bytes = std::fs::read(&path)?;
+    let plan: Value = serde_json::from_slice(&bytes).context("invalid accepted plan manifest")?;
+    let staging = std::fs::canonicalize(&p.out)?.to_string_lossy().into_owned();
+    if plan["schema_version"] != 1
+        || plan["layer"] != layer.layer
+        || plan["tool"] != layer.tool
+        || plan["staging"] != json!(staging)
+        || !plan["candidates"].is_object()
+        || plan["jobs"].as_array().is_none()
+        || plan["candidate_source"]["kind"] != layer.candidate_source
+    {
+        bail!(
+            "the accepted {} candidate manifest does not describe this prepared run",
+            layer.layer
+        );
+    }
+    let record = json!({"path":std::fs::canonicalize(&path)?.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)});
+    Ok((plan, record))
+}
+
+/// The compiler's own state: every applied job keeps its answer, the candidate entries it
+/// accepted and the entries it refused, and a failed job stays under `partial`. A missing
+/// state is no applied answer at all, which the job checks below report precisely.
+fn empirical_state(p: &Prepared, layer: &Empirical) -> Result<Value> {
+    let path = p.out.join(layer.work_dir).join("state.json");
+    if !path.exists() {
+        return Ok(json!({"applied": {}, "partial": {}}));
+    }
+    let state = util::read_json(&path).context("invalid layer compiler state")?;
+    if state["applied"].as_object().is_none() || state["partial"].as_object().is_none() {
+        bail!("incomplete {} compiler state: applied and partial must be objects", layer.layer);
+    }
+    Ok(state)
+}
+
+/// The accepted answer of one applied job: its bytes are still the ones it was applied from.
+fn saved_answer(path: &str) -> Result<Value> {
+    let path = std::fs::canonicalize(path)
+        .with_context(|| format!("missing applied answer file `{path}`"))?;
+    let bytes = std::fs::read(&path)?;
+    Ok(json!({"path":path.to_string_lossy(),"sha256":canon::sha256_hex(&bytes)}))
+}
+
+/// The producer contract: the group's digest unit is a done completion of this group and the
+/// accepted plan hash the layer unit was registered against.
+fn empirical_producer(p: &Prepared, inputs: &Value, layer: &Empirical, number: u64) -> Result<()> {
+    let unit = empirical_unit(layer, number);
+    let producer = format!("digest/g{number:03}@1");
+    if field(inputs, "producer")? != producer {
+        bail!("{unit} input does not name its group producer");
+    }
+    if canon::hash_value(prepared_group(p, number)?) != canon::hash_value(&inputs["group"]) {
+        bail!("{unit} frozen group contract no longer matches the prepared group");
+    }
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let row: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT state,input_hash,result_json FROM units WHERE id=?1",
+            [&producer],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let (state, hash, result) =
+        row.with_context(|| format!("{unit} producer {producer} is not registered"))?;
+    if state != "done" {
+        bail!("{unit} producer {producer} is {state}, not a checked completion");
+    }
+    if inputs["producer_input_hash"] != json!(hash) {
+        bail!("{unit} producer input hash changed");
+    }
+    let result: Value = serde_json::from_str(
+        result
+            .as_deref()
+            .with_context(|| format!("{unit} producer result is missing"))?,
+    )?;
+    if inputs["plan_hash"] != result["plan_hash"] {
+        bail!("{unit} producer plan hash changed");
+    }
+    Ok(())
+}
+
+/// The kinded Link every supported Idea Card holds for one accepted Card.
+fn empirical_link(idea: &Value, layer: &Empirical, card: &str) -> Result<bool> {
+    let body = idea["body"].as_str().unwrap_or_default();
+    Ok(body.lines().any(|line| {
+        line.trim_start()
+            .starts_with(&format!("{} [[{card}]]", layer.link_kind))
+    }))
+}
+
+/// The stated value of one fixed Card label: its own text, or the first list item a label
+/// introduces (`结果：` followed by `- …`). None when the label is absent or empty.
+fn stated_label(body: &str, name: &str) -> Option<String> {
+    fn value_of(line: &str, name: &str) -> Option<String> {
+        let mut text = line.trim();
+        if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {
+            text = rest;
+        }
+        let text = text.strip_prefix("**").unwrap_or(text);
+        let rest = text.strip_prefix(name)?;
+        let rest = rest.strip_prefix("**").unwrap_or(rest);
+        let rest = rest.strip_prefix('：').or_else(|| rest.strip_prefix(':'))?;
+        Some(rest.trim().to_string())
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(value) = value_of(line, name) else {
+            continue;
+        };
+        if !value.is_empty() {
+            return Some(value);
+        }
+        // A label that introduces a list states its value in the first list item under it.
+        return lines[index + 1..]
+            .iter()
+            .find(|line| !line.trim().is_empty())
+            .and_then(|line| {
+                let item = line.trim();
+                [item.strip_prefix("- "), item.strip_prefix("* ")]
+                    .into_iter()
+                    .flatten()
+                    .map(str::trim)
+                    .find(|item| !item.is_empty())
+                    .map(str::to_string)
+            });
+    }
+    None
+}
+
+/// The fixed labels every accepted Card of one layer must state with a value.
+fn empirical_labels(layer: &Empirical) -> &'static [&'static str] {
+    match layer.layer {
+        "events" => &["时间", "地点", "参与者", "经过"],
+        _ => &["测量", "数据", "方法", "结果", "局限"],
+    }
+}
+
+/// The complete checked outcome of one empirical group: the accepted candidate manifest
+/// against the frozen source, every job applied with no pending answer, every accepted Card
+/// reread, and its layer rules.
+fn empirical_result(
+    p: &Prepared,
+    zt: &mut Zt,
+    layer: &Empirical,
+    number: u64,
+    token: i64,
+    input_hash: &str,
+    inputs: &Value,
+) -> Result<Value> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let unit = empirical_unit(layer, number);
+    let key = field(&p.contract, "citation_key")?.to_string();
+    let anchor = field(prepared_group(p, number)?, "anchor")?.to_string();
+    let (plan, plan_record) = empirical_plan(p, layer)?;
+    let state = empirical_state(p, layer)?;
+    let owned = frozen_owned(p, inputs, &format!("{} unit", layer.layer))?;
+    // 1. The declared candidates, recomputed from the frozen source.
+    let declared = match layer.candidate_source {
+        "artifact" => {
+            if plan["candidate_source"]["path"] != p.contract["artifacts"]["events"]["path"]
+                || plan["candidate_source"]["sha256"] != p.contract["artifacts"]["events"]["sha256"]
+            {
+                bail!(
+                    "the accepted events candidate manifest names another source than the prepared events artifact"
+                );
+            }
+            event_candidates(p, number)?
+        }
+        _ => {
+            let cap = plan["candidate_source"]["max_candidates"]
+                .as_u64()
+                .context("the accepted finding plan holds no candidate bound")?;
+            if cap == 0 || cap > 256 {
+                bail!("the accepted finding plan holds an unusable candidate bound {cap}");
+            }
+            finding_candidates(p, number, cap as usize)?
+        }
+    };
+    let declared_values: Vec<Value> = declared.iter().map(Candidate::value).collect();
+    let manifest_candidates = plan["candidates"][empirical_group_key(number)].clone();
+    let manifest_candidates = if manifest_candidates.is_null() {
+        json!([])
+    } else {
+        manifest_candidates
+    };
+    if manifest_candidates != json!(declared_values) {
+        bail!(
+            "the accepted {} candidate manifest no longer describes group {number} of the frozen source",
+            layer.layer
+        );
+    }
+    // 2. The jobs that carry this group, and the applied evidence of each.
+    let mut covering: Vec<Value> = Vec::new();
+    let mut job_ids = BTreeSet::new();
+    for job in plan["jobs"].as_array().context("missing planned jobs")? {
+        let id = field(job, "id")?;
+        if id.len() > 40 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+            bail!("the accepted plan holds an unreadable job id");
+        }
+        if !job_ids.insert(id.to_string()) {
+            bail!("the accepted plan names job {id} twice");
+        }
+        let answer = field(job, "answer")?;
+        if !Path::new(answer).starts_with(&p.out) {
+            bail!("the accepted plan's answer `{answer}` escaped the prepared output directory");
+        }
+        let groups = job["groups"]
+            .as_array()
+            .with_context(|| format!("the accepted plan's job {id} enumerates no groups"))?;
+        if groups.iter().any(|group| group.as_u64() == Some(number)) {
+            covering.push(job.clone());
+        }
+    }
+    let applied = state["applied"]
+        .as_object()
+        .context("missing applied jobs")?
+        .clone();
+    let partial = state["partial"]
+        .as_object()
+        .context("missing pending jobs")?
+        .clone();
+    let covering_ids: BTreeSet<String> = covering.iter().map(|job| s(prop(job, "id"))).collect();
+    let mut accepted: Vec<Value> = Vec::new();
+    let mut jobs_evidence: Vec<Value> = Vec::new();
+    for (id, entry) in &applied {
+        if entry["entries"].as_array().is_none() || entry["refused"].as_array().is_none() {
+            bail!(
+                "applied {} job {id} holds no accepted candidate manifest; apply it again with the current tool",
+                layer.layer
+            );
+        }
+        let saved = saved_answer(field(&entry["answer"], "path")?)?;
+        if entry["answer"]["sha256"] != saved["sha256"] {
+            bail!(
+                "the applied {} answer `{}` changed after it was accepted",
+                layer.layer,
+                s(prop(&saved, "path"))
+            );
+        }
+        let group_entries = entry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["group"].as_u64() == Some(number))
+            .cloned()
+            .collect::<Vec<_>>();
+        let group_refused = entry["refused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["group"].as_u64() == Some(number))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !covering_ids.contains(id) && !(group_entries.is_empty() && group_refused.is_empty()) {
+            bail!(
+                "{unit} names work of group {number} in {} job {id}, which the accepted plan does not cover",
+                layer.layer
+            );
+        }
+        if !covering_ids.contains(id) {
+            continue;
+        }
+        let planned = covering
+            .iter()
+            .find(|job| s(prop(job, "id")) == *id)
+            .context("missing covering job")?;
+        if std::fs::canonicalize(field(planned, "answer")?)? != std::fs::canonicalize(field(&saved, "path")?)? {
+            bail!("{unit} applied answer path differs from the accepted plan's");
+        }
+        if let Some(pending) = partial.get(id) {
+            bail!("{} job {id} is pending: {}", layer.layer, s(prop(pending, "error")));
+        }
+        if let Some(item) = group_refused.first() {
+            bail!(
+                "{unit} holds a refused {} entry of group {number}: {}",
+                layer.layer,
+                s(prop(item, "fault"))
+            );
+        }
+        // A refused entry for this group is unresolved work, so reaching here means none.
+        accepted.extend(group_entries.iter().cloned());
+        jobs_evidence.push(json!({
+            "id": id,
+            "answer": saved,
+            "entries": group_entries.len(),
+            "refused": group_refused.len()
+        }));
+    }
+    for job in &covering {
+        let id = s(prop(job, "id"));
+        if !applied.contains_key(&id) {
+            if let Some(pending) = partial.get(&id) {
+                bail!("{} job {id} is pending: {}", layer.layer, s(prop(pending, "error")));
+            }
+            bail!(
+                "{} job {id} covers group {number} but was never applied; apply it before completing the unit",
+                layer.layer
+            );
+        }
+    }
+    if !declared.is_empty() && covering.is_empty() {
+        bail!(
+            "the accepted {} candidate manifest lists {} candidates for group {number} but no planned job covers it",
+            layer.layer,
+            declared.len()
+        );
+    }
+    if declared.is_empty() && !accepted.is_empty() {
+        bail!(
+            "group {number} has accepted {} Cards but the accepted plan declares no candidate",
+            layer.layer
+        );
+    }
+    let disposition = if !accepted.is_empty() {
+        "verified"
+    } else if declared.is_empty() {
+        "no_candidates"
+    } else {
+        "no_cards"
+    };
+    // 3. Reread every accepted Card and every supported Card it names.
+    let mut addresses: BTreeSet<String> = BTreeSet::new();
+    for entry in &accepted {
+        addresses.insert(field(entry, "card")?.to_string());
+        for support in entry["supports"]
+            .as_array()
+            .with_context(|| format!("{unit} accepted entry has no supports"))?
+        {
+            addresses.insert(s(support));
+        }
+    }
+    let address_list: Vec<String> = addresses.into_iter().collect();
+    let read = zt.cards(&address_list, "text")?;
+    let mut cards: BTreeMap<String, Value> = BTreeMap::new();
+    for card in &read.cards {
+        let at = field(card, "address")?.to_string();
+        if !address_list.iter().any(|address| *address == at) {
+            bail!("the archive read returned the unrequested Card `{at}`");
+        }
+        cards.insert(at, card.clone());
+    }
+    for at in &address_list {
+        if !cards.contains_key(at) {
+            bail!("the accepted {unit} work names `{at}`, which does not exist");
+        }
+    }
+    let declared_by_id: BTreeMap<String, Candidate> =
+        declared.iter().map(|item| (item.id.clone(), Candidate { id: item.id.clone(), src: item.src.clone(), text: item.text.clone() })).collect();
+    let mut accepted_out: Vec<Value> = Vec::new();
+    let mut links: Vec<Value> = Vec::new();
+    let mut created: BTreeSet<String> = BTreeSet::new();
+    let mut fingerprints: BTreeMap<String, String> = BTreeMap::new();
+    let mut trees: BTreeSet<String> = BTreeSet::new();
+    for entry in &accepted {
+        let card_at = field(entry, "card")?;
+        let candidate = field(entry, "candidate")?;
+        let candidate_entry = declared_by_id
+            .get(candidate)
+            .with_context(|| format!("{unit} accepted an undeclared candidate `{candidate}`"))?;
+        if candidate_entry.src != field(entry, "src")? {
+            bail!("{unit} candidate `{candidate}` changed its source span");
+        }
+        let card = cards
+            .get(card_at)
+            .with_context(|| format!("{unit} accepted Card `{card_at}` is missing"))?;
+        if card["workspace"] != "agent" {
+            bail!("accepted {unit} Card `{card_at}` is not in the agent Workspace");
+        }
+        if card["type"] != layer.card_type {
+            bail!("accepted {unit} Card `{card_at}` is not a {} Card", layer.card_type);
+        }
+        if owned.iter().any(|address| address == card_at) {
+            bail!("accepted {unit} work `{card_at}` is a group Card, not a new Card");
+        }
+        let merged = entry["merged"] == true;
+        let source = format!(
+            "来源：[[{}]] {}",
+            if layer.placement == Placement::Support { &key } else { &anchor },
+            field(entry, "section")?
+        );
+        let body = card["body"].as_str().context("accepted Card has no body")?;
+        if !body.lines().any(|line| line.trim() == source) {
+            bail!("accepted {unit} Card `{card_at}` holds no accepted source line `{source}`");
+        }
+        for label in empirical_labels(layer) {
+            if stated_label(body, label).is_none() {
+                bail!("accepted {unit} Card `{card_at}` states no {label} value");
+            }
+        }
+        if !merged {
+            if card["title"].as_str().unwrap_or_default() != field(entry, "title")? {
+                bail!("accepted {unit} Card `{card_at}` title changed");
+            }
+            if card["tree"] != json!(key) {
+                bail!("accepted {unit} Card `{card_at}` is outside the book tree");
+            }
+            let supports = entry["supports"].as_array().unwrap();
+            let target = match layer.placement {
+                Placement::Support => supports
+                    .first()
+                    .and_then(Value::as_str)
+                    .with_context(|| format!("{unit} accepted entry names no support"))?,
+                Placement::Anchor => &anchor,
+            };
+            if card["parent_address"] != json!(target) {
+                bail!("accepted {unit} Card `{card_at}` is not filed at its accepted place");
+            }
+            if !created.insert(card_at.to_string()) {
+                bail!("two accepted {unit} entries created the same Card `{card_at}`");
+            }
+        }
+        for support in entry["supports"].as_array().unwrap() {
+            let at = support
+                .as_str()
+                .with_context(|| format!("{unit} accepted entry holds an invalid support"))?;
+            if !owned.iter().any(|address| address == at) {
+                bail!("{unit} accepted entry supports `{at}`, which is not a group Card");
+            }
+            let idea = cards
+                .get(at)
+                .with_context(|| format!("{unit} supported Card `{at}` is missing"))?;
+            if workspace_of(idea) != "agent" {
+                bail!("{unit} supported Card `{at}` is not in the agent Workspace");
+            }
+            if !empirical_link(idea, layer, card_at)? {
+                bail!(
+                    "supported Card `{at}` holds no `{} [[{card_at}]]` Link to the accepted Card",
+                    layer.link_kind
+                );
+            }
+            links.push(json!({"card":card_at,"idea":at,"kind":layer.link_kind}));
+            fingerprints.insert(at.to_string(), crate::calls::authored_fingerprint(idea));
+            if let Some(tree) = idea["tree"].as_str() {
+                trees.insert(tree.to_string());
+            }
+        }
+        fingerprints.insert(card_at.to_string(), crate::calls::authored_fingerprint(card));
+        if let Some(tree) = card["tree"].as_str() {
+            trees.insert(tree.to_string());
+        }
+        accepted_out.push(json!({
+            "candidate": candidate,
+            "card": card_at,
+            "title": card["title"],
+            "merged": merged,
+            "supports": entry["supports"],
+            "source": source,
+            "fingerprint": crate::calls::authored_fingerprint(card)
+        }));
+    }
+    // 4. The layer's own Card rules over the accepted set.
+    let check_cards: Vec<String> = created
+        .iter()
+        .cloned()
+        .chain(
+            accepted_out
+                .iter()
+                .filter(|entry| entry["merged"] == true)
+                .filter_map(|entry| entry["card"].as_str().map(str::to_string)),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let self_check = if check_cards.is_empty() {
+        json!({"ran":true,"rules":layer.rules,"count":0,"reported_count":0,"faults":[],"advisories":[],"lines":[]})
+    } else {
+        let check = crate::check::Check {
+            cards: check_cards.join(","),
+            book: key.clone(),
+            rules: layer.rules.to_string(),
+            ..Default::default()
+        };
+        let lines = check.run(zt)?;
+        let mut checked = checked_lines(lines, false)?;
+        checked["rules"] = json!(layer.rules);
+        checked
+    };
+    if self_check["count"] != 0 {
+        bail!(
+            "the accepted {} Cards fail their rules: {}",
+            layer.layer,
+            self_check["faults"][0]
+        );
+    }
+    if zt.archive_view()?["archive_revision"].as_u64() != Some(read.archive_revision) {
+        bail!("read_view_changed: {unit} Card read");
+    }
+    let candidates_out = declared
+        .iter()
+        .map(|candidate| {
+            let accepted = accepted_out
+                .iter()
+                .find(|entry| entry["candidate"] == json!(candidate.id));
+            match accepted {
+                Some(entry) => json!({"id":candidate.id,"src":candidate.src,"text":candidate.text,"outcome":"card","card":entry["card"]}),
+                None => json!({"id":candidate.id,"src":candidate.src,"text":candidate.text,"outcome":"not_accepted"}),
+            }
+        })
+        .collect::<Vec<_>>();
+    let tree_list: Vec<String> = trees.iter().cloned().collect();
+    let list = json!({
+        "schema_version": 1,
+        "kind": format!("{}_list", layer.layer),
+        "unit": unit,
+        "token": token,
+        "group": empirical_group_key(number),
+        "anchor": anchor,
+        "disposition": disposition,
+        "candidate_source": plan["candidate_source"],
+        "candidates": candidates_out,
+        "accepted": accepted_out,
+        "jobs": jobs_evidence,
+        "refused": json!([]),
+        "self_check": self_check,
+        "archive_revision": read.archive_revision
+    });
+    let inputs_manifest = json!({
+        "schema_version": 1,
+        "kind": format!("{}_inputs", layer.layer),
+        "unit": unit,
+        "tree": key,
+        "trees": tree_list,
+        "anchor": anchor,
+        "link": {"cards": fingerprint_addresses(&fingerprints), "links": links},
+        "organize": {"anchor": anchor, "touched_trees": tree_list, "accepted": accepted_out.iter().map(|entry| entry["card"].clone()).collect::<Vec<_>>()},
+        "hubs": {"touched_trees": tree_list}
+    });
+    Ok(json!({
+        "schema_version": 1,
+        "kind": layer.completion_kind,
+        "unit": unit,
+        "token": token,
+        "state": "done",
+        "complete": true,
+        "reused": false,
+        "input_hash": input_hash,
+        "unit_input_hash": input_hash,
+        "producer": field(inputs, "producer")?,
+        "producer_input_hash": field(inputs, "producer_input_hash")?,
+        "plan_hash": field(inputs, "plan_hash")?,
+        "anchor": anchor,
+        "disposition": disposition,
+        "candidate_source": plan["candidate_source"],
+        "manifest": plan_record,
+        "expected_jobs": covering.len(),
+        "candidates": list["candidates"],
+        "accepted": list["accepted"],
+        "jobs": jobs_evidence,
+        "refused": json!([]),
+        "links": links,
+        "owned": owned,
+        "trees": tree_list,
+        "self_check": self_check,
+        "card_fingerprints": fingerprints,
+        "archive_revision": read.archive_revision,
+        "list": list,
+        "inputs_manifest": inputs_manifest
+    }))
+}
+
+/// The Card's workspace id (`agent` or `human`).
+fn workspace_of(card: &Value) -> &str {
+    card["workspace"].as_str().unwrap_or_default()
+}
+
+/// The sorted addresses a fingerprint map names.
+fn fingerprint_addresses(fingerprints: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    fingerprints.keys().cloned().collect()
+}
+
+/// The required output registration of one completed empirical unit.
+fn empirical_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
+    if result["schema_version"] != 1
+        || result["state"] != "done"
+        || result["complete"] != true
+        || result["self_check"]["ran"] != true
+        || result["self_check"]["count"] != 0
+    {
+        bail!("incomplete typed Events/Findings completion evidence");
+    }
+    let layer = empirical_unit_of(&s(&result["unit"])).map(|(layer, _)| layer).context("invalid Events/Findings completion unit")?;
+    if result["kind"] != layer.completion_kind {
+        bail!("Events/Findings completion evidence names another layer");
+    }
+    let files = result["files"]
+        .as_object()
+        .context("missing Events/Findings evidence enumeration")?;
+    let names = ["list", "source", "inputs", "check", "completion"];
+    if files.len() != names.len() || files.keys().any(|key| !names.contains(&key.as_str())) {
+        bail!("incomplete Events/Findings evidence enumeration");
+    }
+    let mut keys = std::collections::BTreeSet::from(names.map(str::to_string));
+    for name in names {
+        field(&files[name], "path")?;
+        field(&files[name], "sha256")?;
+    }
+    for at in result["card_fingerprints"]
+        .as_object()
+        .context("missing Events/Findings Card enumeration")?
+        .keys()
+    {
+        keys.insert(format!("card/{at}"));
+    }
+    Ok(keys)
+}
+
+/// Repeated completion rereads the accepted Cards and re-runs their rules; a changed Card or
+/// a changed answer makes the retained completion stale.
+fn empirical_done(p: &Prepared, zt: &mut Zt, layer: &Empirical, number: u64, token: i64) -> Result<Value> {
+    let unit = empirical_unit(layer, number);
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_binding(&tx, p)?;
+    let raw: String = tx.query_row(
+        "SELECT result_json FROM units WHERE id=?1 AND state='done' AND claim_token=?2",
+        params![unit, token],
+        |row| row.get(0),
+    )?;
+    let mut result: Value = serde_json::from_str(&raw)?;
+    let rows = tx
+        .prepare("SELECT output_key,kind,locator,fingerprint FROM outputs WHERE unit_id=?1 ORDER BY output_key")?
+        .query_map([&unit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.commit()?;
+    drop(conn);
+    let expected = empirical_output_keys(&result)?;
+    if rows
+        .iter()
+        .map(|(key, _, _, _)| key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        bail!("incomplete Events/Findings completion output registration");
+    }
+    for (key, kind, locator, fingerprint) in &rows {
+        match kind.as_str() {
+            "file" => {
+                if result["files"][key]["path"] != *locator
+                    || result["files"][key]["sha256"] != *fingerprint
+                {
+                    bail!("changed Events/Findings evidence registration");
+                }
+                check_file(
+                    &json!({"path":locator,"sha256":fingerprint}),
+                    "Events/Findings completion evidence",
+                )?;
+            }
+            "card" => {}
+            _ => bail!("unknown Events/Findings evidence kind"),
+        }
+    }
+    let inputs = frozen_inputs(p, &unit)?;
+    if canon::hash_value(&inputs) != field(&result, "unit_input_hash")? {
+        bail!("{unit} input hash mismatch");
+    }
+    empirical_producer(p, &inputs, layer, number)?;
+    let current = empirical_result(p, zt, layer, number, token, field(&result, "unit_input_hash")?, &inputs)?;
+    if current["candidates"] != result["candidates"]
+        || current["accepted"] != result["accepted"]
+        || current["disposition"] != result["disposition"]
+        || current["jobs"] != result["jobs"]
+    {
+        bail!(
+            "completed {unit} no longer describes its accepted Cards; keep the checked result and re-run from a new claim"
+        );
+    }
+    if current["self_check"]["lines"] != result["self_check"]["lines"] {
+        bail!("completed {unit} rules no longer describe the accepted Cards");
+    }
+    if current["card_fingerprints"] != result["card_fingerprints"] {
+        bail!("completed {unit} Cards changed; re-run the layer from a new claim");
+    }
+    result["reused"] = json!(true);
+    Ok(result)
+}
+
+fn empirical_finish(
+    p: &Prepared,
+    zt: &mut Zt,
+    layer: &Empirical,
+    number: u64,
+    token: i64,
+    check_only: bool,
+) -> Result<Value> {
+    let unit = empirical_unit(layer, number);
+    finish_claim(p, &unit, token)?;
+    let _guard = unit_guard(p, &unit)?;
+    let (claimed, _progress, _run, done) = finish_claim(p, &unit, token)?;
+    let inputs = frozen_inputs(p, &unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("{unit} input hash mismatch");
+    }
+    empirical_producer(p, &inputs, layer, number)?;
+    if done {
+        let mut result = empirical_done(p, zt, layer, number, token)?;
+        if check_only {
+            result["check_only"] = json!(true);
+            result["applied"] = json!(false);
+        }
+        return Ok(result);
+    }
+    let mut result = empirical_result(p, zt, layer, number, token, &claimed.input_hash, &inputs)?;
+    if check_only {
+        result["check_only"] = json!(true);
+        result["applied"] = json!(false);
+        return Ok(result);
+    }
+    renew(p, &unit, token)?;
+    let tag = format!("g{number:03}");
+    let list_record = publish(
+        &p.out.join(format!("{}-list-{tag}.json", layer.layer)),
+        &serde_json::to_string_pretty(&result["list"])?,
+    )?;
+    let source: String = result["accepted"]
+        .as_array()
+        .context("missing accepted Cards")?
+        .iter()
+        .map(|entry| {
+            Ok(format!(
+                "{}\t{}\n",
+                field(entry, "card")?,
+                field(entry, "candidate")?
+            ))
+        })
+        .collect::<Result<String>>()?;
+    let source_record = publish(
+        &p.out.join(format!("{}-src-{tag}.txt", layer.layer)),
+        &source,
+    )?;
+    let inputs_record = publish(
+        &p.out.join(format!("{}-inputs-{tag}.json", layer.layer)),
+        &serde_json::to_string_pretty(&result["inputs_manifest"])?,
+    )?;
+    let check_record = publish(
+        &p.out.join(format!("{}-check-{tag}.json", layer.layer)),
+        &serde_json::to_string_pretty(
+            &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"manifest":result["manifest"],"disposition":result["disposition"],"self_check":result["self_check"],"archive_revision":result["archive_revision"]}),
+        )?,
+    )?;
+    result["files"] = json!({
+        "list": list_record,
+        "source": source_record,
+        "inputs": inputs_record,
+        "check": check_record
+    });
+    let completion = publish(
+        &p.out.join(format!("{}-completion-{tag}.json", layer.layer)),
+        &serde_json::to_string_pretty(&result)?,
+    )?;
+    result["files"]["completion"] = completion.clone();
+    empirical_output_keys(&result)?;
+    for name in ["list", "source", "inputs", "check", "completion"] {
+        check_file(&result["files"][name], "Events/Findings completion evidence")?;
+    }
+    let final_view = zt.archive_view()?;
+    if final_view["archive_identity"] != p.contract["archive_identity"]
+        || final_view["archive_revision"].as_u64()
+            != Some(result["archive_revision"].as_u64().unwrap())
+    {
+        bail!("read_view_changed: Events/Findings completion evidence changed before ledger commit");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    for name in ["list", "source", "inputs", "check", "completion"] {
+        let record = &result["files"][name];
+        output(
+            &tx,
+            &unit,
+            name,
+            "file",
+            field(record, "path")?,
+            field(record, "sha256")?,
+            record,
+        )?;
+    }
+    for (at, fingerprint) in result["card_fingerprints"]
+        .as_object()
+        .context("missing Events/Findings Card enumeration")?
+    {
+        output(
+            &tx,
+            &unit,
+            &format!("card/{at}"),
+            "card",
+            at,
+            fingerprint
+                .as_str()
+                .context("invalid Events/Findings Card fingerprint")?,
+            &json!({"layer":layer.layer}),
+        )?;
+    }
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":result["disposition"],"completion":completion,"accepted":result["accepted"],"trees":result["trees"],"jobs":result["jobs"],"self_check":{"rules":result["self_check"]["rules"],"count":result["self_check"]["count"]}}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+fn empirical_finish_cli(argv: &[String], layer: &Empirical, name: &str) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64, bool)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Group must be positive")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), group, token, a.flag("CheckOnly")))
+    })();
+    let (out, group, token, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest {name}: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = empirical_finish(&p, &mut zt, layer, group, token, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
+
+pub fn events_finish_cli(argv: &[String]) -> Result<i32> {
+    empirical_finish_cli(argv, &EVENTS, "events-finish")
+}
+
+pub fn findings_finish_cli(argv: &[String]) -> Result<i32> {
+    empirical_finish_cli(argv, &FINDINGS, "findings-finish")
+}
+
 // ==== The Models/model unit (R218, R235, R236) =============================================
 
 const MODEL_STATES: [&str; 3] = ["built", "derived", "reviewed"];
@@ -9451,6 +10517,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 proof_finish(&p, &unit, token, &mut zt, Path::new(&path))?
             } else if unit.starts_with("notes/") {
                 note_disposition(&p, &mut zt, &unit, token, Path::new(&path))?
+            } else if let Some((layer, number)) = empirical_unit_of(&unit) {
+                // The Events/Findings unit's checked output is its own compiler state and the
+                // accepted candidate manifest: caller-supplied addresses cannot establish it.
+                if evidence["schema_version"] != 1
+                    || evidence["kind"] != layer.completion_kind
+                    || evidence["unit"] != unit
+                    || evidence["token"] != token
+                {
+                    bail!("invalid {} completion evidence", layer.layer);
+                }
+                if std::fs::canonicalize(&path)?
+                    != std::fs::canonicalize(
+                        p.out
+                            .join(format!("{}-completion-g{number:03}.json", layer.layer)),
+                    )?
+                {
+                    bail!("completion evidence locator mismatch");
+                }
+                empirical_finish(&p, &mut zt, layer, number, token, false)?
             } else if let Some(number) = cards_number(&unit) {
                 // The Cards/group unit has no caller-supplied draft: its deterministic
                 // verifier re-runs the offline SELF-CHECK over the frozen owned set.
@@ -9560,4 +10645,48 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     } else {
         0
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empirical_unit_names_its_layer_and_group() {
+        let (layer, number) = empirical_unit_of("events/g007@1").expect("an Events unit");
+        assert_eq!(layer.layer, "events");
+        assert_eq!(number, 7);
+        let (layer, number) = empirical_unit_of("findings/g012@1").expect("a Findings unit");
+        assert_eq!(layer.layer, "findings");
+        assert_eq!(number, 12);
+        assert!(empirical_unit_of("events/g000@1").is_none());
+        assert!(empirical_unit_of("cards/g001@1").is_none());
+        assert!(empirical_unit_of("events/g001@2").is_none());
+        assert_eq!(empirical_candidate_id(3, 0), "g003/c001");
+        assert_eq!(empirical_group_key(12), "g012");
+    }
+
+    #[test]
+    fn a_stated_label_reads_its_value_or_the_list_under_it() {
+        let body = "测量：比例。\n数据：48 家企业。\n方法：访谈。\n结果：\n  - 31 家推迟投资。\n局限：自报原因。\n来源：[[K/1]] §1";
+        assert_eq!(stated_label(body, "测量").as_deref(), Some("比例。"));
+        assert_eq!(stated_label(body, "结果").as_deref(), Some("31 家推迟投资。"));
+        assert_eq!(stated_label(body, "局限").as_deref(), Some("自报原因。"));
+        assert_eq!(stated_label(body, "来源").as_deref(), Some("[[K/1]] §1"));
+        assert!(stated_label(body, "样本").is_none());
+        // A label left empty with nothing listed under it states no value.
+        let empty = "测量：比例。\n局限：\n来源：[[K/1]] §1";
+        assert!(stated_label(empty, "局限").is_none());
+        // The bold and list spellings the checker accepts read the same value.
+        assert_eq!(stated_label("- **局限**：自报原因。", "局限").as_deref(), Some("自报原因。"));
+        assert_eq!(stated_label("结果:\n- 31 家推迟投资。", "结果").as_deref(), Some("31 家推迟投资。"));
+    }
+
+    #[test]
+    fn the_fixed_labels_of_each_layer() {
+        assert_eq!(empirical_labels(&EVENTS), ["时间", "地点", "参与者", "经过"]);
+        assert_eq!(empirical_labels(&FINDINGS), ["测量", "数据", "方法", "结果", "局限"]);
+        assert_eq!(EVENTS.rules, "E1,E2,E5");
+        assert_eq!(FINDINGS.rules, "F1,F2,F3,F4");
+    }
 }

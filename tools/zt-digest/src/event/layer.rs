@@ -5,6 +5,7 @@
 //! the `Layer` trait; the texts that differ are in `Spec`.
 
 use crate::calls;
+use crate::canon;
 use crate::check::Check;
 use crate::model;
 use crate::ps::{self, CiMap, NL, join_path};
@@ -29,6 +30,8 @@ pub(crate) struct Spec {
     pub prefix: &'static str,
     /// The fault code of an answer file that is missing or not JSON.
     pub code0: &'static str,
+    /// The fault code of an entry that names no declared candidate.
+    pub candidate_code: &'static str,
     /// The default -Work folder under -Staging.
     pub work_dir: &'static str,
     /// The instruction file in the scripts folder.
@@ -62,6 +65,8 @@ pub(crate) trait Layer {
     fn spec(&self) -> &'static Spec;
     /// plan: the number of candidates and the candidates by group (`src`, `text`), in order.
     fn candidates(&self, ctx: &Ctx) -> Result<(usize, Vec<(i64, Vec<(String, String)>)>)>;
+    /// plan: the frozen source the candidate enumeration reads, recorded in the accepted plan.
+    fn candidate_source(&self, ctx: &Ctx) -> Result<Value>;
     /// The faults of an answer that apply refuses: `<item>:<place> <code> <text>`.
     fn test(&self, ctx: &mut Ctx, items: &[Value]) -> Result<Vec<String>>;
     /// The new Cards as zt-check `--json` entries.
@@ -100,6 +105,111 @@ pub(crate) fn d2(n: i64) -> String {
 /// `[int]` of a string (Get-Field's result).
 pub(crate) fn int_of(text: &str) -> Result<i64> {
     ps::int(&Value::String(text.to_string()))
+}
+
+/// `g001`: the group key a unit, a candidate id and the plan manifest share.
+pub(crate) fn group_key(n: i64) -> String {
+    format!("g{n:03}")
+}
+
+/// The stable id of one planned candidate: its group and its place in that group's
+/// enumeration (`g001/c001`). A later plan pass recomputes the same enumeration from
+/// the frozen source, so the id names the same sentence.
+pub(crate) fn candidate_id(n: i64, index: usize) -> String {
+    format!("{}/c{:03}", group_key(n), index + 1)
+}
+
+/// The accepted candidate manifest of every planned group, with stable ids and source
+/// spans: what the layer's completion verifies against the frozen source.
+pub(crate) fn candidate_manifest(by_group: &[(i64, Vec<(String, String)>)]) -> Value {
+    let mut map = Map::new();
+    for (n, list) in by_group {
+        let items = list
+            .iter()
+            .enumerate()
+            .map(|(index, (src, text))| json!({"id": candidate_id(*n, index), "src": src, "text": text}))
+            .collect::<Vec<_>>();
+        map.insert(group_key(*n), Value::Array(items));
+    }
+    Value::Object(map)
+}
+
+/// The declared candidate span of every group, in order. An answer entry names the
+/// candidate it writes, so no text is written for a sentence the plan never listed.
+pub(crate) fn declared_spans(layer: &dyn Layer, ctx: &Ctx) -> Result<Vec<(i64, Vec<String>)>> {
+    let (_, by_group) = layer.candidates(ctx)?;
+    Ok(by_group
+        .into_iter()
+        .map(|(n, list)| (n, list.into_iter().map(|(src, _)| src).collect()))
+        .collect())
+}
+
+/// The place of `src` among a group's declared candidates, if any.
+pub(crate) fn candidate_at(spans: &[(i64, Vec<String>)], n: i64, src: &str) -> Option<usize> {
+    let (_, list) = spans.iter().find(|(group, _)| *group == n)?;
+    list.iter().position(|span| span == src)
+}
+
+/// The plans folder's accepted manifest: `<work>/plan.json`.
+fn plan_path(ctx: &Ctx) -> String {
+    join_path(&ctx.work, "plan.json")
+}
+
+/// Writes the accepted plan manifest: the candidates of every planned group with stable
+/// ids and source spans, and the jobs that carry them. It is keep-by-id and refuses a
+/// changed candidate enumeration after its first jobs were planned, so an accepted
+/// enumeration cannot be silently shortened by a later plan pass.
+fn write_plan(ctx: &Ctx, spec: &Spec, source: &Value, candidates: &Value, jobs: &[Value]) -> Result<Value> {
+    let path = plan_path(ctx);
+    let staging = std::fs::canonicalize(&ctx.staging)?.to_string_lossy().into_owned();
+    let mut plan = if ps::exists(&path) {
+        ps::parse_json(&util::read_text(&path)?)?
+    } else {
+        json!({
+            "schema_version": 1,
+            "layer": spec.work_dir,
+            "tool": spec.tool,
+            "staging": staging,
+            "candidate_source": source,
+            "candidates": {},
+            "jobs": []
+        })
+    };
+    if plan["schema_version"] != 1
+        || plan["layer"] != spec.work_dir
+        || plan["tool"] != spec.tool
+        || plan["staging"] != json!(staging)
+        || !plan["candidates"].is_object()
+        || !plan["jobs"].is_array()
+    {
+        bail!("the accepted plan manifest {path} belongs to another layer or staging folder");
+    }
+    if plan["candidate_source"]["kind"] != source["kind"] {
+        bail!("the accepted plan candidate source changed; use a new output directory");
+    }
+    let planned = plan["jobs"].as_array().map(|jobs| !jobs.is_empty()).unwrap_or(false);
+    if plan["candidates"] != *candidates {
+        if planned {
+            bail!("the candidate manifest changed after jobs were planned; use a new output directory");
+        }
+        plan["candidates"] = candidates.clone();
+        plan["candidate_source"] = source.clone();
+    }
+    let known = plan["jobs"].as_array_mut().expect("jobs is an array");
+    for job in jobs {
+        let id = ps::s(prop(job, "id"));
+        match known.iter().find(|old| ps::s(prop(old, "id")) == id) {
+            Some(old) => {
+                if old["groups"] != job["groups"] || old["answer"] != job["answer"] {
+                    bail!("planned job {id} changed since it was accepted; use a new output directory");
+                }
+            }
+            None => known.push(job.clone()),
+        }
+    }
+    let text = ps::json_pretty(&plan);
+    util::write_atomic(&path, &text)?;
+    Ok(json!({"path": std::fs::canonicalize(&path)?.to_string_lossy(), "sha256": canon::sha256_hex(text.as_bytes())}))
 }
 
 /// The folder of the scripts: ZT_DIGEST_SCRIPTS (the forwarder sets it), else the
@@ -434,17 +544,27 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
     let applied = state.get("applied").cloned().unwrap_or(Value::Null);
     let book_title = ps::s(prop(&ctx.manifest, "book_title"));
     let mut jobs: Vec<Value> = Vec::new();
+    let mut planned: Vec<Value> = Vec::new();
     let per = per_job.max(1) as usize;
     let mut j = 0usize;
     while j * per < groups.len() {
         let id = format!("{}-{}", spec.prefix, d2(j as i64 + 1));
         let start = j * per;
         j += 1;
+        let end = (start + per).min(groups.len());
+        let job_groups: Vec<i64> = groups[start..end].to_vec();
+        // The answer does not exist yet at the first plan; its folder does, so the accepted
+        // plan records a stable path. A job is recorded even after it was applied, so a plan
+        // pass that follows an apply still states which groups each answer covers.
+        let answer = std::fs::canonicalize(&ctx.out)
+            .map(|dir| join_path(&dir.to_string_lossy(), &format!("{id}.json")))
+            .unwrap_or_else(|_| join_path(&ctx.out, &format!("{id}.json")));
+        planned.push(json!({ "id": id, "groups": job_groups, "answer": answer }));
         if applied.get(&id).is_some() {
             continue;
         }
         let mut blocks: Vec<GroupBlock> = Vec::new();
-        for k in start..(start + per).min(groups.len()) {
+        for k in start..end {
             let n = groups[k];
             let g = ctx.group(n)?.cloned().unwrap_or(Value::Null);
             let headings: Vec<String> = ps::pipe(prop(&g, "headings")).into_iter().map(ps::s).collect();
@@ -477,7 +597,10 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
         util::write_text(&job_file, &job_text(spec, &id, &book_title, &answer, &check, &ctx.key, &blocks))?;
         jobs.push(json!({ "id": id, "files": [doc_copy, job_file], "prompt": spec.prompt }));
     }
-    util::print_line(&ps::json_compact(&json!({ "candidates": count, "groups": groups.len(), "jobs": jobs })))
+    let candidates = candidate_manifest(&by_group);
+    let source = layer.candidate_source(ctx)?;
+    let manifest = write_plan(ctx, spec, &source, &candidates, &planned)?;
+    util::print_line(&ps::json_compact(&json!({ "candidates": count, "groups": groups.len(), "jobs": jobs, "expected_jobs": planned.len(), "manifest": manifest })))
 }
 
 /// `<step> precheck`: the faults of out\<Job>.json, then `faults: N`.
@@ -553,10 +676,22 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
             Some(dot) => name[..dot].to_string(),
             None => name.clone(),
         };
-        if state["applied"].get(&id).is_some() {
-            continue;
+        let answer_file = join_path(&ctx.out, &name);
+        let answer_hash = std::fs::read(&answer_file)
+            .map(|bytes| canon::sha256_hex(&bytes))
+            .unwrap_or_default();
+        let previous = state["applied"].get(&id).cloned();
+        if let Some(entry) = &previous {
+            if entry["answer"]["sha256"].as_str() == Some(answer_hash.as_str()) {
+                continue;
+            }
+            // A revised answer is a new attempt at the same job: its Cards are reused by
+            // place, so no Card is made twice and the corrected entries can be accepted.
+            if let Some(applied) = state["applied"].as_object_mut() {
+                applied.shift_remove(&id);
+            }
         }
-        let items = match ctx.read_answer(spec, &join_path(&ctx.out, &name)) {
+        let items = match ctx.read_answer(spec, &answer_file) {
             Ok(items) => items,
             Err(_) => {
                 refused.push(Value::String(format!("{id}: the answer is not JSON")));
@@ -584,6 +719,30 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         if !write {
             continue;
         }
+        let answer_path = join_path(&ctx.out, &name);
+        let answer_record = json!({
+            "path": std::fs::canonicalize(&answer_path)?.to_string_lossy(),
+            "sha256": canon::sha256_hex(&std::fs::read(&answer_path)?)
+        });
+        let spans = declared_spans(layer, ctx)?;
+        let group_of = |e: &Value| int_of(&get_field(e, "group")).unwrap_or(0);
+        let mut job_groups: Vec<i64> = Vec::new();
+        let mut refused_facts: Vec<Value> = Vec::new();
+        for (place, fault) in &bad {
+            let entry = items.get(place.saturating_sub(1)).cloned().unwrap_or(Value::Null);
+            let group = group_of(&entry);
+            let src = get_field(&entry, "src").trim().to_string();
+            if group > 0 && !job_groups.contains(&group) {
+                job_groups.push(group);
+            }
+            refused_facts.push(json!({
+                "place": place,
+                "group": group,
+                "src": src,
+                "candidate": candidate_at(&spans, group, &src).map(|index| candidate_id(group, index)),
+                "fault": fault
+            }));
+        }
         let bad_places: Vec<usize> = bad.iter().map(|(p, _)| *p).collect();
         // A run of this job that failed part way left the Cards it made (place -> address): reuse them,
         // so the rerun makes no Card twice and writes the Links that run missed.
@@ -592,6 +751,13 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         if let Some(m) = prop(&partial, "made").as_object() {
             for (p, a) in m {
                 made.insert(p, ps::s(a));
+            }
+        }
+        if let Some(entries) = previous.as_ref().and_then(|entry| entry["entries"].as_array()) {
+            for entry in entries {
+                if let (Some(place), Some(card)) = (entry["place"].as_i64(), entry["card"].as_str()) {
+                    made.insert(&place.to_string(), card.to_string());
+                }
             }
         }
         let mut entry_linked = ps::int(prop(&partial, "linked"))?;
@@ -665,6 +831,44 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         ps::ps_sort(&mut places, |a, b| a.0.cmp(&b.0));
         let created_list: Vec<Value> = places.into_iter().map(|(_, a)| Value::String(a)).collect();
         created += new;
+        // Every written entry keeps the candidate it accepted and the Card it produced: the
+        // layer's completion rereads these Cards instead of trusting a printed count.
+        let mut entries: Vec<Value> = Vec::new();
+        if error.is_empty() {
+            for (index, e) in items.iter().enumerate() {
+                let place = index + 1;
+                if bad_places.contains(&place) {
+                    continue;
+                }
+                let key = place.to_string();
+                let card = first.refs.get(&key).or_else(|| made.get(&key)).cloned().unwrap_or_default();
+                if card.is_empty() {
+                    error = format!("{}{place} was written without a returned Card address", spec.prefix);
+                    break;
+                }
+                let group = group_of(e);
+                if group > 0 && !job_groups.contains(&group) {
+                    job_groups.push(group);
+                }
+                let src = get_field(e, "src").trim().to_string();
+                let candidate = candidate_at(&spans, group, &src).map(|index| candidate_id(group, index));
+                let Some(candidate) = candidate else {
+                    error = format!("{}{place} src `{src}` is not a declared candidate of group {group}", spec.prefix);
+                    break;
+                };
+                entries.push(json!({
+                    "place": place,
+                    "group": group,
+                    "src": src,
+                    "candidate": candidate,
+                    "title": get_field(e, "title").trim(),
+                    "section": get_field(e, "section").trim(),
+                    "supports": supports(e),
+                    "merged": first.refs.contains(&key),
+                    "card": card
+                }));
+            }
+        }
         let partial_map = state["partial"].as_object_mut().expect("partial is an object");
         if !error.is_empty() {
             // Not applied: the rerun tries the job again with the Cards made so far.
@@ -685,6 +889,10 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
             }
             entry.insert("linked".into(), json!(entry_linked));
             entry.insert("error".into(), json!(""));
+            entry.insert("answer".into(), answer_record);
+            entry.insert("groups".into(), json!(job_groups));
+            entry.insert("entries".into(), Value::Array(entries));
+            entry.insert("refused".into(), Value::Array(refused_facts));
             if !state["applied"].is_object() {
                 state["applied"] = json!({});
             }

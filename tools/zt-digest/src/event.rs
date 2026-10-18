@@ -41,6 +41,7 @@ static SPEC: Spec = Spec {
     list: "events",
     prefix: "ev",
     code0: "EV0",
+    candidate_code: "EV6",
     work_dir: "events",
     doc: "dsh-event-instructions.zh.md",
     job_title: "事件任务",
@@ -105,9 +106,20 @@ impl Layer for Events {
         Ok((candidates.len(), by_group))
     }
 
+    fn candidate_source(&self, ctx: &Ctx) -> Result<Value> {
+        let file = ps::join_path(&ctx.staging, "events.json");
+        Ok(if ps::exists(&file) {
+            let bytes = std::fs::read(&file)?;
+            json!({"kind":"artifact","path":std::fs::canonicalize(&file)?.to_string_lossy(),"sha256":crate::canon::sha256_hex(&bytes)})
+        } else {
+            json!({"kind":"absent","reason":"the staging folder holds no events.json"})
+        })
+    }
+
     fn test(&self, ctx: &mut Ctx, items: &[Value]) -> Result<Vec<String>> {
         let mut faults: Vec<String> = Vec::new();
         let mut titles: CiMap<usize> = CiMap::new();
+        let spans = layer::declared_spans(self, ctx)?;
         for (index, e) in items.iter().enumerate() {
             let i = index + 1;
             let id = format!("event:{i}");
@@ -137,6 +149,14 @@ impl Layer for Events {
                 if !ps::is_in(s, &owned) {
                     faults.push(format!("{id} EV2 {s} is not a Card of group {n}"));
                 }
+            }
+            // The entry names the candidate sentence it writes: no Event Card comes from
+            // a sentence the plan never enumerated.
+            let src = get_field(e, "src").trim().to_string();
+            if src.is_empty() {
+                faults.push(format!("{id} {} src names no candidate of group {n}", self.spec().candidate_code));
+            } else if layer::candidate_at(&spans, n, &src).is_none() {
+                faults.push(format!("{id} {} src `{src}` is not a candidate of group {n}", self.spec().candidate_code));
             }
             let role = get_field(e, "role");
             if !supports.is_empty() && !supports.iter().any(|s| role.contains(&format!("[[{s}]]"))) {

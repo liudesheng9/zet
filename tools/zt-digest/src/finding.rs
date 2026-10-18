@@ -43,6 +43,7 @@ static SPEC: Spec = Spec {
     list: "findings",
     prefix: "fd",
     code0: "FD0",
+    candidate_code: "FD5",
     work_dir: "findings",
     doc: "dsh-finding-instructions.zh.md",
     job_title: "实证结果任务",
@@ -123,9 +124,15 @@ impl Layer for Findings {
         Ok((total, by_group))
     }
 
+    fn candidate_source(&self, ctx: &Ctx) -> Result<Value> {
+        let _ = ctx;
+        Ok(json!({"kind":"sections","max_candidates":self.max}))
+    }
+
     fn test(&self, ctx: &mut Ctx, items: &[Value]) -> Result<Vec<String>> {
         let mut faults: Vec<String> = Vec::new();
         let mut titles: CiMap<usize> = CiMap::new();
+        let spans = layer::declared_spans(self, ctx)?;
         for (index, e) in items.iter().enumerate() {
             let i = index + 1;
             let id = format!("finding:{i}");
@@ -157,6 +164,14 @@ impl Layer for Findings {
                 if !ps::is_in(s, &owned) {
                     faults.push(format!("{id} FD2 {s} is not a Card of group {n}"));
                 }
+            }
+            // The entry names the candidate sentence it writes: no Finding Card comes from
+            // a sentence the plan never enumerated.
+            let src = get_field(e, "src").trim().to_string();
+            if src.is_empty() {
+                faults.push(format!("{id} {} src names no candidate of group {n}", self.spec().candidate_code));
+            } else if layer::candidate_at(&spans, n, &src).is_none() {
+                faults.push(format!("{id} {} src `{src}` is not a candidate of group {n}", self.spec().candidate_code));
             }
             let role = get_field(e, "role");
             if !supports.is_empty() && !supports.iter().any(|s| role.contains(&format!("[[{s}]]"))) {

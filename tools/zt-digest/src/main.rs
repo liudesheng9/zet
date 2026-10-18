@@ -63,6 +63,8 @@ fn main() {
         "group-finish" => ledger::group_finish_cli(&rest),
         "link-finish" => ledger::link_finish_cli(&rest),
         "cards-finish" => ledger::cards_finish_cli(&rest),
+        "events-finish" => ledger::events_finish_cli(&rest),
+        "findings-finish" => ledger::findings_finish_cli(&rest),
         "model-finish" => ledger::model_finish_cli(&rest),
         "model-deps" => ledger::model_deps_cli(&rest),
         "prepare-link" => prepare::link_cli(&rest),
@@ -73,7 +75,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
-       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics, ledger, group-start, group-finish, link-finish, cards-finish, model-finish, model-deps");
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, snapshot-topics, ledger, group-start, group-finish, link-finish, cards-finish, events-finish, findings-finish, model-finish, model-deps");
             Ok(2)
         }
     };
