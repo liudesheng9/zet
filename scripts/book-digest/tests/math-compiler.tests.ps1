@@ -156,8 +156,8 @@ try {
             model = $cor; level = 'formal'; card = '动机：奇次多项式为何有实根。'
             symbols = @(, @('$p$', '奇次实系数多项式')); terms = @(, @('实根', '实零点'))
             parts = @(
-                [ordered]@{ id = 'P'; line = 'main'; facet = '前提'; title = '前提：p 是奇次多项式'; spec = 'p 的次数与系数'; rests = @(, @($th, '用到介值定理')) },
-                [ordered]@{ id = 'S'; line = 'main'; facet = '证明：两端变号'; emphasis = 'core'; title = '证明：p 在两端变号'; spec = '极限'; rests = @(, @('P', '用到前提')) })
+                [ordered]@{ id = 'P'; line = 'main'; facet = '前提'; title = '前提：p 是奇次多项式'; spec = 'p 的次数与系数'; rests = @(, @($th, '用到介值定理')); src = @('sections/s01.md:1-2') },
+                [ordered]@{ id = 'S'; line = 'main'; facet = '证明：两端变号'; emphasis = 'core'; title = '证明：p 在两端变号'; spec = '极限'; rests = @(, @('P', '用到前提')); src = @('sections/s01.md:3-4') })
         })
     $validated = @(pwsh -NoProfile -File $modelCompiler -Step validate -Work $work -Plan (Join-Path $dir 'plan.json') 2>&1)
     Assert (($validated | Select-Object -Last 1) -eq 'faults: 0') "model-compiler: a plan that starts with 前提 and cites a unit validates ($($validated -join ' | '))"

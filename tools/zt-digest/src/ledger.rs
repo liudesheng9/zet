@@ -2543,6 +2543,9 @@ fn verify_coverage(
         }
         return Ok(json!(checked));
     }
+    if layer == "cards-book" {
+        return verify_cards_book_coverage(p, zt, artifacts);
+    }
     if layer == "organize" {
         // Organize disposes every registered note suggestion, and the ledger checks
         // the recorded disposition against the suggestion's own retained outcome.
@@ -2640,6 +2643,454 @@ fn verify_coverage(
         checked.push(json!({"ref":reference,"outcome":outcome,"reason":reason,"producer":producer}));
     }
     Ok(json!(checked))
+}
+/// R217, R247, R296-R298: the checked coverage of one whole-book Card cycle revision.
+///
+/// The cycle's report must describe the exact Cards it checked, and the deterministic pass is
+/// re-derived here from that recorded checked set: the recorded fault lines, the Cards' current
+/// authoring fingerprints and the archive they were read at must agree, so a later edit or a
+/// hand-written report can never stand in for a real pass. Every Model draft of the book must
+/// have one reviewed owner: the model chain's own checked source-review artifact when the layer
+/// is enabled, or this cycle's recorded review when no chain elaborates it. The Idea sample
+/// records its population, seed, addresses, source spans and group coverage, and it is reported
+/// as a sample, never as proof for every Idea Card. A residual hard fault is a named obligation.
+fn verify_cards_book_coverage(
+    p: &Prepared,
+    zt: &mut Zt,
+    artifacts: &serde_json::Map<String, Value>,
+) -> Result<Value> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let key = field(&p.contract, "citation_key")?;
+    let report_path = artifacts
+        .get("report")
+        .and_then(|record| record["path"].as_str())
+        .context("a cards-book revision requires the whole-book Card cycle's report")?;
+    let report = util::read_json(report_path).context("invalid whole-book Card cycle report")?;
+    if report["kind"] != "cards_cycle" || report["unit_kind"] != "book" {
+        bail!("a cards-book revision needs a whole-book Card cycle report");
+    }
+    if !ps::eq(&s(&report["book"]), &key) {
+        bail!("the Card cycle report describes `{}`, not `{key}`", s(&report["book"]));
+    }
+    let audit_dir = Path::new(field(&report["audit"], "after")?);
+    let cards_file = audit_dir.join("audit-cards.json");
+    let faults_file = audit_dir.join("audit-faults.txt");
+    let coverage_file = audit_dir.join("audit.json");
+    for file in [&cards_file, &faults_file, &coverage_file] {
+        if !file.is_file() {
+            bail!("the Card cycle left no checked pass at {}", file.display());
+        }
+    }
+    let cards = util::read_json(&cards_file)?;
+    let cards = cards.as_array().context("the Card cycle's checked Card view is not an array")?;
+    let checked_pass = util::read_json(&coverage_file)?;
+    let checked: Vec<String> = checked_pass["scope"]["checked_addresses"]
+        .as_array()
+        .context("the checked pass names no checked Cards")?
+        .iter()
+        .map(&s)
+        .collect();
+    if checked.is_empty() {
+        bail!("the whole-book Card cycle checked no Card of `{key}`");
+    }
+    let rules: String = match &report["rules"] {
+        Value::Array(list) => list.iter().map(|rule| s(rule)).collect::<Vec<_>>().join(","),
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    };
+    if rules.trim().is_empty() {
+        bail!("the whole-book Card cycle report names no rules");
+    }
+    let declared_rules: std::collections::BTreeSet<&str> = rules.split(',').map(str::trim).collect();
+    for rule in crate::card::DEFAULT_CARD_RULES.split(',') {
+        if !declared_rules.contains(rule) {
+            bail!("the whole-book Card cycle ran without the {rule} rule; a cards-book revision needs the full deterministic pass");
+        }
+    }
+    let by_address: BTreeMap<String, Value> = cards
+        .iter()
+        .map(|card| (ps::key(&s(&card["address"])), card.clone()))
+        .collect();
+    let term = cards
+        .iter()
+        .find(|card| s(&card["tree"]) == key && s(&card["title"]).trim_start().starts_with("术语表"))
+        .cloned();
+    let mut entries = Vec::new();
+    for at in &checked {
+        let card = by_address
+            .get(&ps::key(at))
+            .with_context(|| format!("the checked pass names `{at}`, which its Card view does not hold"))?;
+        let body = s(&card["body"]);
+        let mut entry = json!({
+            "address": s(&card["address"]),
+            "title": card["title"],
+            "body": body,
+            "category": card["category"],
+            "book": card["book"],
+            "parent": card["parent"],
+            "links": crate::card::text::link_targets(&body),
+            "kinds": crate::card::text::link_kinds(&body),
+        });
+        if card["inbound"].is_array() {
+            entry["inbound"] = card["inbound"].clone();
+        }
+        if !card["inbound_kinded"].is_null() {
+            entry["inbound_kinded"] = card["inbound_kinded"].clone();
+        }
+        entries.push(entry);
+    }
+    let setting = term.as_ref().map(|card| s(&card["address"])).unwrap_or_default();
+    let mut all = entries.clone();
+    if let Some(term) = &term {
+        if !checked.iter().any(|at| ps::eq(at, &s(&term["address"]))) {
+            all.push(json!({"address": term["address"], "title": term["title"], "body": term["body"]}));
+        }
+    }
+    let mut file = tempfile::NamedTempFile::new()?;
+    serde_json::to_writer(&mut file, &Value::Array(all))?;
+    std::io::Write::flush(&mut file)?;
+    let check = crate::check::Check {
+        json: file.path().to_string_lossy().into_owned(),
+        setting,
+        ..Default::default()
+    };
+    // The pass is the cycle's own rule set: the recorded report names it.
+    let lines = zt_check::check::run_lines(&check.args(), None)
+        .context("the whole-book deterministic pass did not run")?;
+    lines
+        .last()
+        .and_then(|line| line.strip_prefix("faults: "))
+        .and_then(|n| n.parse::<usize>().ok())
+        .context("the whole-book deterministic pass did not report completeness")?;
+    let derived: BTreeSet<String> = lines[..lines.len() - 1]
+        .iter()
+        .filter(|line| {
+            let at = line.split(' ').next().unwrap_or_default();
+            checked.iter().any(|known| known == at)
+        })
+        .cloned()
+        .collect();
+    let recorded: BTreeSet<String> = std::fs::read_to_string(&faults_file)
+        .context("unreadable checked fault list")?
+        .replace('\r', "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    let missing: Vec<&String> = recorded.difference(&derived).collect();
+    let invented: Vec<&String> = derived.difference(&recorded).collect();
+    if !missing.is_empty() || !invented.is_empty() {
+        bail!(
+            "the recorded deterministic pass does not describe the checked Cards (missing {}, invented {})",
+            missing.iter().map(|l| l.as_str()).take(3).collect::<Vec<_>>().join(" | "),
+            invented.iter().map(|l| l.as_str()).take(3).collect::<Vec<_>>().join(" | ")
+        );
+    }
+    // The checked Cards must still be the Cards this report describes.
+    let read = zt.cards(&checked, "text")?;
+    let fresh: BTreeMap<String, Value> = read
+        .cards
+        .iter()
+        .map(|card| (ps::key(&s(&card["address"])), card.clone()))
+        .collect();
+    for at in &checked {
+        let now = fresh
+            .get(&ps::key(at))
+            .with_context(|| format!("the checked Card `{at}` no longer exists"))?;
+        let then = by_address.get(&ps::key(at)).context("incomplete checked Card view")?;
+        if crate::calls::authored_fingerprint(now) != crate::calls::authored_fingerprint(then) {
+            bail!("the checked Card `{at}` changed after the cycle; run the Card cycle again");
+        }
+        if now["workspace"] != "agent" {
+            bail!("the checked Card `{at}` is not in the agent Workspace");
+        }
+    }
+    let mut covered: Vec<Value> = Vec::new();
+    // R247: one reviewed owner per Model draft of the book.
+    let declared = target(&p.contract)?;
+    let models_enabled = declared["enabled"]
+        .as_array()
+        .context("incomplete declared target")?
+        .iter()
+        .any(|layer| layer == "models");
+    let tree = zt.call("get_tree", json!({"tree":key}))?;
+    // A Model draft is a whole-model Model Card the digest wrote: not a Model part, and not a
+    // mathematical unit or Theory Card, which the mathematics layers build and check (R238).
+    let model_drafts: Vec<String> = tree["cards"]
+        .as_array()
+        .context("incomplete book tree read")?
+        .iter()
+        .filter(|card| {
+            card["type"] == "model"
+                && card["facet"].is_null()
+                && !["theory", "definition", "axiom", "theorem", "proposition", "lemma", "corollary"]
+                    .iter()
+                    .any(|form| card["form"] == json!(form))
+        })
+        .map(|card| s(&card["address"]))
+        .collect();
+    let reviews: Vec<Value> = report["reviews"].as_array().cloned().unwrap_or_default();
+    let review_of = |at: &str| reviews.iter().find(|review| ps::eq(&s(&review["address"]), at)).cloned();
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    for at in &model_drafts {
+        let current = zt.cards(&[at.clone()], "text")?;
+        let fingerprint = current
+            .cards
+            .first()
+            .map(crate::calls::authored_fingerprint)
+            .unwrap_or_default();
+        if models_enabled {
+            let (unit, _) = model_unit_for_header(&conn, at)?.with_context(|| {
+                format!("the Model draft `{at}` has no registered model unit; register its chain first")
+            })?;
+            let state: String = conn.query_row("SELECT state FROM units WHERE id=?1", [&unit], |row| row.get(0))?;
+            if state != "done" {
+                covered.push(json!({"kind":"model","ref":at,"owner":"chain","outcome":"unfinished_chain","unit":unit,"state":state}));
+                continue;
+            }
+            let result = unit_result(p, &unit)?;
+            let review = &result["source_review"];
+            let path = review["path"].as_str().unwrap_or_default();
+            let artifact = crate::model::source_review::read(path, at, &s(&result["plan_hash"]))
+                .with_context(|| format!("the model chain of `{at}` recorded no checked source review"))?;
+            if artifact["complete"] != json!(true) {
+                bail!("the model chain of `{at}` holds an incomplete source review");
+            }
+            // R247: one writer. The elaborated Model Card must still be the Card its own chain
+            // completed, so no later Card cycle changed the reviewed draft behind the review.
+            if let Some(completed) = result["card_fingerprints"].get(at.as_str()).and_then(Value::as_str)
+                && completed != fingerprint
+            {
+                bail!(
+                    "the Model draft `{at}` changed after its model chain completed; the chain keeps the review, so the Card cycle must not rewrite it"
+                );
+            }
+            covered.push(json!({"kind":"model","ref":at,"owner":"architect","outcome":"reviewed","unit":unit,"artifact":review}));
+        } else {
+            let review = review_of(at)
+                .with_context(|| format!("the Card cycle reviewed no source for the Model draft `{at}`"))?;
+            let verdict = s(&review["verdict"]);
+            if verdict.is_empty() || verdict == "unreviewed" {
+                bail!("the Card cycle left the Model draft `{at}` unreviewed");
+            }
+            if s(&review["fingerprint"]) != fingerprint {
+                bail!("the cycle's review of `{at}` describes another Card");
+            }
+            covered.push(json!({"kind":"model","ref":at,"owner":"cycle","outcome":"reviewed","verdict":verdict,"spans":review["spans"]}));
+        }
+    }
+    // R297: the deterministic Idea sample and its recorded coverage.
+    let sample = &report["sample"];
+    if sample["proves"] != "sample" {
+        bail!("the Idea sample must be recorded as a sample, never as proof for every Idea Card");
+    }
+    let population = sample["population"].as_i64().unwrap_or(-1);
+    let eligible = sample["eligible"].as_i64().unwrap_or(-1);
+    let size = sample["size"].as_i64().unwrap_or(-1);
+    if population < 0 || eligible < 0 || size < 0 || population < eligible {
+        bail!("the Idea sample record is inconsistent");
+    }
+    if sample["sampled"] == json!(true) {
+        if sample["seed"] != report["seed"] {
+            bail!("the Idea sample names another seed than its cycle");
+        }
+        if size == 0 || size < sample["target"].as_i64().unwrap_or(0) {
+            bail!("the Idea sample reviewed fewer Cards than its own target");
+        }
+        for group in sample["by_group"].as_array().context("the Idea sample names no groups")? {
+            if group["eligible"].as_i64().unwrap_or(0) > 0
+                && group["picked"].as_array().is_none_or(|picked| picked.is_empty())
+                && sample["feasible"] == json!(true)
+            {
+                bail!("the Idea sample leaves group {} with no reviewed Card", s(&group["group"]));
+            }
+        }
+        let addresses: Vec<String> = sample["addresses"]
+            .as_array()
+            .context("the Idea sample names no addresses")?
+            .iter()
+            .map(&s)
+            .collect();
+        let current = zt.cards(&addresses, "text")?;
+        let fresh: BTreeMap<String, Value> = current
+            .cards
+            .iter()
+            .map(|card| (ps::key(&s(&card["address"])), card.clone()))
+            .collect();
+        for at in &addresses {
+            let review = review_of(at)
+                .with_context(|| format!("the Idea sample names `{at}`, but no review outcome records it"))?;
+            let now = fresh
+                .get(&ps::key(at))
+                .with_context(|| format!("the sampled Card `{at}` no longer exists"))?;
+            if s(&review["fingerprint"]) != crate::calls::authored_fingerprint(now) {
+                bail!("the review of the sampled Card `{at}` describes another Card");
+            }
+        }
+        covered.push(json!({
+            "kind": "sample", "ref": "idea-sample", "outcome": "reviewed",
+            "population": population, "eligible": eligible, "size": size,
+            "seed": sample["seed"], "target": sample["target"],
+            "groups": sample["groups"], "covered": sample["covered"], "feasible": sample["feasible"],
+            "addresses": sample["addresses"], "spans": sample["spans"],
+            "source_flagged": sample["source_flagged"], "proves": "sample"
+        }));
+    } else {
+        covered.push(json!({
+            "kind": "sample", "ref": "idea-sample", "outcome": "no_eligible_cards",
+            "population": population, "eligible": eligible, "size": 0, "proves": "sample"
+        }));
+    }
+    // R298: a residual hard fault stays an explicit targeted-correction obligation. The cycle's
+    // own rule set decides what it undertakes; a rule it does not run is not its obligation.
+    for line in &recorded {
+        let mut parts = line.splitn(3, ' ');
+        let at = parts.next().unwrap_or_default();
+        let rule = parts.next().unwrap_or_default();
+        if !declared_rules.contains(rule) {
+            continue;
+        }
+        covered.push(json!({"kind":"fault","ref":line,"at":at,"rule":rule,"outcome":"unresolved","obligation":"final-fix"}));
+    }
+    Ok(json!(covered))
+}
+
+// ==== The Cards-book/book revision (R217, R247, R296-R298) ===================================
+
+/// The whole-book Card cycle revision this command completes: the named unit, or the latest
+/// registered one. A cards-book revision is built by `ledger publish -Layer cards-book`.
+fn cards_book_unit(p: &Prepared, unit: &str) -> Result<String> {
+    if !unit.trim().is_empty() {
+        let (layer, _, _) = publication_unit(unit)?;
+        if layer != "cards-book" {
+            bail!("`{unit}` is not a whole-book Card cycle revision");
+        }
+        return Ok(unit.to_string());
+    }
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    conn.query_row(
+        "SELECT id FROM units WHERE layer='cards-book' ORDER BY revision DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()?
+    .context("no cards-book revision is registered; publish one with ledger publish -Layer cards-book")
+}
+
+/// The publication completion evidence of one whole-book Card cycle revision: its retained
+/// report as the bound artifact, every registered contribution consumed, every unsettled input
+/// named instead of hidden.
+fn cards_book_evidence(
+    p: &Prepared,
+    unit: &str,
+    token: i64,
+    work: &str,
+) -> Result<(Value, serde_json::Map<String, Value>)> {
+    let (layer, key, _revision) = publication_unit(unit)?;
+    if layer != "cards-book" {
+        bail!("`{unit}` is not a whole-book Card cycle revision");
+    }
+    if work.trim().is_empty() {
+        bail!("-Work must name the card compiler's work folder");
+    }
+    let report = Path::new(work).join("report.json");
+    if !report.is_file() {
+        bail!("the whole-book Card cycle left no report at {}", report.display());
+    }
+    let record = bind_file(report.to_string_lossy().as_ref(), "Card cycle report")?;
+    let manifest = unit_inputs(p, unit)?;
+    let contributions = manifest["contributions"]
+        .as_array()
+        .context("publication manifest is missing its contributions")?;
+    let dispositions = manifest["dispositions"]
+        .as_array()
+        .context("publication manifest is missing its dispositions")?;
+    let consumed: Vec<Value> = contributions
+        .iter()
+        .map(|item| json!({"unit": item["unit"], "fingerprint": item["fingerprint"]}))
+        .collect();
+    let unresolved: Vec<Value> = dispositions
+        .iter()
+        .map(|item| json!({"unit": item["unit"], "disposition": item["disposition"], "fault": item["fault"]}))
+        .collect();
+    let disposition = if contributions.is_empty() && dispositions.is_empty() {
+        "no_work"
+    } else if unresolved.is_empty() {
+        "published"
+    } else {
+        "partial"
+    };
+    let plan = json!({
+        "schema_version": 1,
+        "kind": "publication_completion",
+        "unit": unit,
+        "token": token,
+        "layer": layer,
+        "key": key,
+        "input_hash": canon::hash_value(&manifest),
+        "disposition": disposition,
+        "consumed": consumed,
+        "unresolved": unresolved,
+        "artifacts": {"report": record["path"]},
+    });
+    let mut artifacts = serde_json::Map::new();
+    artifacts.insert("report".into(), record);
+    Ok((plan, artifacts))
+}
+
+fn book_cards_finish(
+    p: &Prepared,
+    zt: &mut Zt,
+    unit: &str,
+    token: i64,
+    work: &str,
+    check_only: bool,
+) -> Result<Value> {
+    let (_, key, revision) = publication_unit(unit)?;
+    let (plan, artifacts) = cards_book_evidence(p, unit, token, work)?;
+    if check_only {
+        let manifest = unit_inputs(p, unit)?;
+        let coverage = verify_coverage(p, zt, "cards-book", &manifest, &plan, &artifacts)?;
+        return Ok(json!({
+            "schema_version": 1, "check_only": true, "applied": false, "unit": unit,
+            "layer": "cards-book", "key": key, "revision": revision,
+            "disposition": plan["disposition"], "consumed": plan["consumed"],
+            "unresolved": plan["unresolved"], "coverage": coverage, "artifacts": artifacts,
+        }));
+    }
+    let path = p.out.join(format!("publication-cards-book-{key}-{revision}.json"));
+    publish(&path, &serde_json::to_string_pretty(&plan)?)?;
+    publication_finish(p, zt, unit, token, &path)
+}
+
+pub fn book_cards_finish_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, i64, String, bool)> {
+        let a = Args::parse(argv, &["Out", "Work", "Token", "Unit"], &["CheckOnly"])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), a.str("Work"), token, a.str("Unit"), a.flag("CheckOnly")))
+    })();
+    let (out, work, token, declared, check_only) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest book-cards-finish: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = Zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let unit = cards_book_unit(&p, &declared)?;
+    let result = book_cards_finish(&p, &mut zt, &unit, token, &work, check_only)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
 }
 
 /// The mathematics theory revision (R241). The archive decides its members: every
@@ -8971,6 +9422,23 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
     if canon::sha256_hex(&std::fs::read(context_path).context("missing brief context pack")?) != context_hash {
         bail!("the brief's context pack changed after the brief; a source review cannot be claimed from different bytes");
     }
+    // R247: the accepted plan's checked source review is the one owner of this model draft's
+    // review. It must describe this plan and the exact source pack the architect read.
+    let review_path = _dir.join("source-review.json");
+    let review = crate::model::source_review::read(
+        review_path.to_string_lossy().as_ref(),
+        header,
+        &plan_hash,
+    )
+    .with_context(|| {
+        format!("no checked source-review artifact for `{header}`; run the model compiler's validate or apply step")
+    })?;
+    if review["complete"] != json!(true) {
+        bail!("the source-review artifact of `{header}` is incomplete; every written part needs a reviewed source span");
+    }
+    if !ps::eq(&s(&review["context"]["sha256"]), &context_hash) {
+        bail!("the source-review artifact of `{header}` describes another context pack");
+    }
     let plan_step = require_step(entry, "plan")?;
     if field(&plan_step, "plan_hash")? != plan_hash || plan_step["faults"] != json!(0) {
         bail!("the accepted plan's validation evidence does not describe plan.json");
@@ -9063,6 +9531,42 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
     }
     if model_todo(&s(&head_card["body"])) || s(&head_card["body"]).trim().is_empty() {
         bail!("the Model Card is still unwritten; resume the model from its first missing part");
+    }
+    // R298: a part the review records as an independently supplied step carries one of the two
+    // established Chinese markers, and no Card of the model carries a malformed one.
+    let mut supplied = Vec::new();
+    for part in review["parts"].as_array().context("the source-review artifact has no parts")? {
+        let id = s(&part["part"]);
+        let outcome = s(&part["outcome"]);
+        let address = part_ids
+            .iter()
+            .find(|(_, mapped)| **mapped == id)
+            .map(|(address, _)| address.clone());
+        let body = address.as_ref().and_then(|address| cards.get(address)).map(|card| s(&card["body"])).unwrap_or_default();
+        if !crate::model::source_review::markers_ok(&body) {
+            bail!(
+                "part `{id}` carries a malformed supplied-step marker; use {} or {}",
+                crate::model::source_review::MARKERS[0],
+                crate::model::source_review::MARKERS[1]
+            );
+        }
+        if outcome == "supplied" {
+            if !crate::model::source_review::supplied_marked(&body) {
+                bail!(
+                    "part `{id}` is reviewed as an independently supplied step but carries no {} or {} marker",
+                    crate::model::source_review::MARKERS[0],
+                    crate::model::source_review::MARKERS[1]
+                );
+            }
+            supplied.push(json!({"part":id,"address":address}));
+        }
+    }
+    if !crate::model::source_review::markers_ok(&s(&head_card["body"])) {
+        bail!(
+            "the Model Card carries a malformed supplied-step marker; use {} or {}",
+            crate::model::source_review::MARKERS[0],
+            crate::model::source_review::MARKERS[1]
+        );
     }
     let level = s(&model["level"]);
     if !ps::eq(&level, &s(&plan["level"])) || level.is_empty() {
@@ -9230,6 +9734,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "model": header,
         "level": level,
         "plan_hash": plan_hash,
+        "source_review": {"path": review_path.to_string_lossy(), "complete": true, "parts": review["parts"].as_array().map(Vec::len).unwrap_or(0), "outcomes": review["outcomes"], "supplied": supplied},
         "producer": producer,
         "producer_input_hash": field(base, "producer_input_hash")?,
         "plan_parts": plan_parts.len(),
@@ -9312,7 +9817,7 @@ fn model_done(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
         bail!("Model unit input hash mismatch");
     }
     let current = model_evidence(p, zt, unit, token, &inputs)?;
-    for key in ["parts", "card_fingerprints", "plan_hash", "steps", "explanation", "structure"] {
+    for key in ["parts", "card_fingerprints", "plan_hash", "steps", "explanation", "structure", "source_review"] {
         if current[key] != result[key] {
             bail!("completed Model unit changed ({key}); keep the checked result and re-run from a new claim");
         }
@@ -11291,3 +11796,4 @@ mod tests {
         assert_eq!(explained["explained"], json!(2));
     }
 }
+

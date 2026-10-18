@@ -237,7 +237,16 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
     'econ full: the ported scripts run as zt-digest tools, never through pwsh')
   check(calls.filter(c => /^(digest|link) manager/.test(c.label)).every(c => /zt-digest call/.test(c.prompt)), 'econ full: digest and link managers approve the zt-digest helper')
   check(labels.indexOf('terms: plan') > labels.indexOf('prepare book') && labels.indexOf('terms: plan') < labels.findIndex(l => /^digest manager/.test(l)), 'econ full: the term table runs after Prepare and before the digest')
-  check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -Book Key -Staging "D:\\x\\Key".* -Groups "1,2" -Sample 0\.1 -NoOrphans/.test(c)), 'econ full: a card cycle per digest block, with -Groups, the sample, and no orphans')
+  // R296: one whole-book card cycle, no cycle per block, and model work is not queued behind it.
+  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
+  const wholeBookPlan = cmds.find(c => /card-compiler\.ps1" -Step plan .* -Book Key -Staging "D:\\x\\Key"/.test(c)) || ''
+  check(/-Sample 0\.1/.test(wholeBookPlan) && !/-Groups /.test(wholeBookPlan) && !/-ModelReview/.test(wholeBookPlan),
+    'econ full: one whole-book card cycle with the sample, no per-block -Groups, and no model review the model chain owns')
+  check(!cmds.some(c => /cards-g\d\d/.test(c)), 'econ full: no per-block card work folder is left')
+  const wholeBook = labels.findIndex(l => /^cards whole book: plan/.test(l))
+  check(wholeBook > lastDigest && labels.indexOf('find models: whole book') > lastDigest, 'econ full: the whole-book card cycle and the model layer both start after the digest managers')
+  check(labels.indexOf('prepare link pass') > wholeBook && labels.indexOf('prepare link pass') > labels.indexOf('find models: whole book'), 'econ full: the link pass waits for the whole-book card cycle and the model layer')
+  check(result.terms && result.terms.ok && result.cards && result.cards.book && result.cards.book.status === 'done' && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, the whole-book card cycle, the link check, organize, and audit')
   check(cmds.some(c => /-Step plan -Work "[^"]*cards-link"/.test(c)) && !cmds.some(c => /cards-link".*-Rules/.test(c)), 'econ full: the link check runs with the default hard rules')
   check(cmds.filter(c => /-Rules/.test(c)).every(c => (c.match(/-Rules/g) || []).length === 1), 'econ full: no command passes -Rules twice')
   check(labels.filter(l => /^link manager/.test(l)).length === 1 && labels.includes('link manager 1: groups 1-2'), 'econ full: one link manager runs both groups')
@@ -246,11 +255,10 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   check(cmds.some(c => /cards-notes"/.test(c)) && cmds.some(c => /-Notes "D:\\x\\Key\\organize\\decisions\.json" -NoOrphans/.test(c)) && !cmds.some(c => /cards-notes".*-Rules/.test(c)), 'econ full: the notes go to a card cycle with the default hard rules')
   check(cmds.some(c => /book-skeleton\.ps1" -Step apply .* -Decisions "D:\\x\\Key\\organize\\decisions\.json" -Apply/.test(c)), 'econ full: the skeleton applies with the decisions')
   check(labels[labels.length - 1] === 'audit cards', 'econ full: the audit runs last')
-  check(result.terms && result.terms.ok && result.cards && result.cards.blocks.length === 1 && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, cards, organize, and audit')
+  check(result.terms && result.terms.ok && result.cards && result.cards.book && result.cards.book.status === 'done' && result.cards.link && result.organize && result.organize.skeleton.ok && result.audit.status === 'done', 'econ full: the result holds terms, the whole-book card cycle, the link check, organize, and audit')
   check(phases.includes('Cards') || calls.some(c => c.phase === 'Cards'), 'econ full: the card cycle runs in the Cards phase')
   check(/shared-prefix\.md/.test(calls.find(c => /^digest manager/.test(c.label)).prompt) && /link-prefix\.md/.test(calls.find(c => /^link manager/.test(c.label)).prompt), 'econ full: the digest and link runs read the economics profile\'s prefixes')
   check(cmds.some(c => /prepare-book-digest\.ps1"? .* -Instructions 'dsh-digest-base\.zh\.md,dsh-model-cards\.zh\.md' -NoEventCandidates -Apply/.test(c)), 'econ full: Prepare builds the prompt from the base and the model-card supplement, with no event candidates')
-  const lastDigest = labels.map((l, i) => (/^digest manager/.test(l) ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
   check(labels.indexOf('find models: whole book') > lastDigest && labels.indexOf('events: write') > lastDigest && labels.indexOf('events: report') < labels.indexOf('prepare link pass'), 'econ full: the model layer and the event layer run after the digest and before the link pass')
   check(cmds.some(c => /event-compiler\.ps1" -Step apply -Staging "D:\\x\\Key" -Apply/.test(c)) && result.events && result.events.status === 'done' && result.events.applied.created === 1, 'econ full: the event layer applies and reports its Event Cards')
   check(!logs.some(l => /failed(?! none)/.test(l)), `econ full: no stage logs a failure${logs.filter(l => /failed(?! none)/.test(l)).map(l => ` (${l})`).join('')}`)
@@ -337,7 +345,7 @@ planJobs = 21
 {
   const { result } = await run('econ', { ...base, mode: 'full', figures: false, hubs: true }, { failStep: /(hub|card)-compiler\.ps1" -Step apply/ })
   check(result && result.hubs && result.hubs.status === 'failed' && /apply/.test(result.hubs.error || ''), 'econ full: a hub apply crash fails the hub stage')
-  check(result && result.cards && result.cards.blocks.every(b => b.status === 'failed'), 'econ full: a card apply crash fails its card cycle')
+  check(result && result.cards && result.cards.book && result.cards.book.status === 'failed', 'econ full: a card apply crash fails the whole-book card cycle')
 }
 
 {
@@ -352,7 +360,15 @@ planJobs = 21
 }
 {
   const { calls } = await run('econ', { ...base, mode: 'full', figures: false, events: false, models: false })
+  const cmds = calls.map(c => c.cmd).filter(Boolean)
   check(!calls.some(c => /^(events:|find models)/.test(c.label)) && calls.some(c => /^findings:/.test(c.label)), 'econ full: events false and models false skip their layers (findings still runs)')
+  // R247: with no model chain in this run, the whole-book card cycle owns every Model draft's review.
+  check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -ModelReview/.test(c)), 'econ full: with the model layer off, the whole-book card cycle reviews the Model drafts itself')
+}
+{
+  const { calls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards' })
+  const cmds = calls.map(c => c.cmd).filter(Boolean)
+  check(cmds.some(c => /card-compiler\.ps1" -Step plan .* -ModelReview/.test(c)) && cmds.some(c => /-Sample 0\.1/.test(c)), 'econ cards: mode cards is one whole-book cycle that reviews the Model drafts (no model chain runs)')
 }
 {
   const { result, calls } = await run('econ', { ...base, mode: 'full', figures: false })
@@ -453,3 +469,4 @@ for(const kind of ['econ','math']) {
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+

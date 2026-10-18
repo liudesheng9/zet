@@ -81,11 +81,11 @@ try {
         symbols = @(, @('$L$', '清算价值'), , @('$P$', '还款额')); terms = @(, @('清算', '卖资产', '变卖资产'))
         parts = @(
             [ordered]@{ id = 'S'; line = 'main'; facet = '设定'; emphasis = 'core'; title = '设定：企业家、项目与清算价值'; spec = '参与者与时点'; src = @('sections/s01.md:2-3') },
-            [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('S', '用到 $L$')) },
-            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 2; rests = @(, @('S', '用到 $L$')) },
-            [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：项目价值要超过成本'; from = '(5.10)'; to = '$$y_1+fy_2>K$$'; steps = 2; rests = @(, @('D1', '用到 (5.5)')) },
-            [ordered]@{ id = 'D3'; line = 'main'; derive = $true; facet = '推导：净资产条件'; title = '推导：净资产要为正'; from = '(5.10)'; to = '$$K-w\le L$$'; steps = 2; rests = @(, @('D2', '用到 (5.10)')) },
-            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D3', '用到净资产条件')) }
+            [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('S', '用到 $L$')); src = @('sections/s01.md:2-2') }
+            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 2; rests = @(, @('S', '用到 $L$')); src = @('sections/s01.md:4-4') }
+            [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：项目价值要超过成本'; from = '(5.10)'; to = '$$y_1+fy_2>K$$'; steps = 2; rests = @(, @('D1', '用到 (5.5)')); src = @('sections/s01.md:5-5') }
+            [ordered]@{ id = 'D3'; line = 'main'; derive = $true; facet = '推导：净资产条件'; title = '推导：净资产要为正'; from = '(5.10)'; to = '$$K-w\le L$$'; steps = 2; rests = @(, @('D2', '用到 (5.10)')); src = @('sections/s01.md:5-5') }
+            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D3', '用到净资产条件')); src = @('sections/s01.md:5-5') }
         )
     }
     Save-Json (Join-Path $dir 'plan.json') $plan
@@ -134,7 +134,7 @@ try {
         symbols = @(, @('$y_1$', '项目第一期的收益')); terms = @(, @('参与', '加入', '进场'))
         parts = @(
             [ordered]@{ id = 'S'; line = 'main'; facet = '设定'; emphasis = 'core'; title = '设定：投资者与项目的价值'; spec = '参与者与时点'; src = @('sections/s01.md:2') },
-            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：价值超过成本才参与'; spec = '命题'; rests = @(, @('S', '用到价值')) }
+            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：价值超过成本才参与'; spec = '命题'; rests = @(, @('S', '用到价值')); src = @('sections/s01.md:2-2') }
         )
     }
     Save-Json (Join-Path $plainDir 'plan.json') $plainPlan

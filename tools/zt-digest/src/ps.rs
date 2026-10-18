@@ -614,6 +614,9 @@ pub fn group_by<T: Clone>(items: &[T], key: impl Fn(&T) -> String) -> Vec<(Strin
 // --- [Random]::new(seed) -----------------------------------------------------------------------
 
 /// .NET's seeded `System.Random` (Knuth's subtractive generator, the Net5Compat implementation).
+/// The card sample used it before the deterministic group-covered sample (R297) replaced it; the
+/// port stays with its tests as the documented semantic rather than a silently changed one.
+#[allow(dead_code)]
 pub struct DotNetRandom {
     seed_array: [i32; 56],
     inext: usize,
@@ -621,6 +624,7 @@ pub struct DotNetRandom {
 }
 
 impl DotNetRandom {
+    #[allow(dead_code)]
     pub fn new(seed: i32) -> Self {
         const MBIG: i32 = i32::MAX;
         const MSEED: i32 = 161_803_398;
@@ -658,6 +662,7 @@ impl DotNetRandom {
     }
 
     /// `Next()`: an int in [0, int.MaxValue).
+    #[allow(dead_code)]
     pub fn next(&mut self) -> i32 {
         let mut a = self.inext + 1;
         if a >= 56 {

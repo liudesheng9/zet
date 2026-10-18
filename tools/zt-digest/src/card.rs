@@ -17,7 +17,7 @@
 //! files dsh-card-instructions.zh.md and dsh-orphan-instructions.zh.md are read from there too.
 
 pub(crate) mod relatedness;
-mod text;
+pub(crate) mod text;
 
 use crate::args::Args;
 use crate::audit;
@@ -71,6 +71,8 @@ struct Params {
     max_jobs: i64,
     job: String,
     file: String,
+    /// R247: this whole-book cycle also reviews the Model drafts no model chain owns.
+    model_review: bool,
 }
 
 /// The audit's view: faults per Card and the Cards the layer rules read (audit-cards.json).
@@ -79,6 +81,8 @@ struct AuditView {
     cards: Vec<Value>,
     by: HashMap<String, usize>,
     orphan_check: Value,
+    /// The archive revision every Card of the view was read at.
+    archive_revision: Value,
 }
 
 impl AuditView {
@@ -538,7 +542,7 @@ impl Compiler {
                 card["inbound"] = json!(inbound.get(&at).cloned().unwrap_or_default());
                 card["inbound_kinded"] = json!(kinded.get(&at).copied().unwrap_or(0));
             }
-            if primary && is_in(&category, WRITABLE) {
+            if primary && is_in(&category, WRITABLE) || (primary && self.p.model_review && category == "model") {
                 entries.push(card.clone());
             }
             by.insert(ci(&at), cards.len());
@@ -632,6 +636,7 @@ impl Compiler {
             by,
             faults,
             orphan_check,
+            archive_revision: json!(revision),
         })
     }
 
@@ -728,6 +733,15 @@ impl Compiler {
         if HEADING.is_match(body.trim_start()) {
             return Ok(Some("the body starts with a # heading".into()));
         }
+        // R298: an independently supplied step is labelled with one of the two established
+        // markers; any other `（补…` form is refused, so a supplied claim cannot pass unmarked.
+        if !crate::model::source_review::markers_ok(&body) {
+            return Ok(Some(format!(
+                "a supplied-step marker must be exactly {} or {}",
+                crate::model::source_review::MARKERS[0],
+                crate::model::source_review::MARKERS[1]
+            )));
+        }
         let mut new = format!("{title}\n{body}");
         if eq(&field(entry, "verdict"), "split") {
             let parts = ps_array(&entry["split"]);
@@ -785,12 +799,219 @@ impl Compiler {
         }
         let src = field(&self.state["src"], &field(card, "address"));
         if !src.is_empty() {
-            return format!("`{}`（只读这几行）", join_path(&staging, &src));
+            // `src-gNN.txt` carries one `file:from-to` span, or the group's section files.
+            let files: Vec<&str> = src.split(';').map(str::trim).filter(|f| !f.is_empty()).collect();
+            if files.len() == 1 && files[0].contains(':') {
+                return format!("`{}`（只读这几行）", join_path(&staging, files[0]));
+            }
+            if !files.is_empty() {
+                return format!(
+                    "对照原文：在 `{}` 中读 {} 的相关段落",
+                    join_path(&staging, "sections"),
+                    files.iter().map(|f| leaf(f)).collect::<Vec<_>>().join("、")
+                );
+            }
         }
         if let Some(m) = SECTION.captures(&field(card, "body")) {
             return format!("小节 §{}：在 `{}` 中用 Select-String 找到它，只读相关段落", &m[1], join_path(&staging, "sections"));
         }
         format!("在 `{}` 中用 Select-String 找到这张卡的出处，只读相关段落", join_path(&staging, "sections"))
+    }
+
+    /// `src-gNN.txt`: the source span each created Card reports, by address.
+    fn spans_of(&self, address: &str) -> Vec<String> {
+        let span = field(&self.state["src"], address);
+        if span.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![span]
+        }
+    }
+
+    /// A Card this cycle may write: the Idea/Event/Finding/anchor layers, and, when this cycle
+    /// owns the review of a Model draft no model chain elaborates, that Model Card itself (R247).
+    fn writable(&self, address: &str, category: &str) -> bool {
+        is_in(category, WRITABLE)
+            || (self.p.model_review && eq(category, "model") && truthy(&self.state["models"][address]))
+    }
+
+    /// The reviewed Cards with what was reviewed, what was decided, and the fingerprint of the
+    /// Card the report describes, so the completion can prove the review is not stale.
+    fn review_records(&self, audit: &AuditView) -> Vec<Value> {
+        let mut out = Vec::new();
+        for at in ps::keys(&self.state["reviews"]) {
+            let entry = &self.state["reviews"][&at];
+            let applied = &self.state["applied"][&at];
+            let card = audit.card(&at);
+            out.push(json!({
+                "address": at,
+                "kind": field(entry, "kind"),
+                "spans": entry["spans"].clone(),
+                "category": card.map(|c| field(c, "category")).unwrap_or_default(),
+                "verdict": if applied.is_null() { json!("unreviewed") } else { applied["verdict"].clone() },
+                "fingerprint": card.map(crate::calls::authored_fingerprint).unwrap_or_default(),
+            }));
+        }
+        out
+    }
+
+    /// R297: the deterministic Idea-Card sample the cycle reviews against the source.
+    ///
+    /// The order is fixed by the seed, the group and the address, so the same archive and the
+    /// same seed give the same sample. Every group with at least one eligible Card is covered
+    /// when the budget allows it (the groups' own hash order decides which groups give way when
+    /// it does not), and a Card the retained source-fault record names for this book is always
+    /// reviewed. The record states the population, the eligible set, the exact addresses, their
+    /// source spans and the per-group coverage; the sample is never reported as proof for every
+    /// Idea Card of the book.
+    fn sample_cards(&mut self, audit: &AuditView, picked: &[Value]) -> Result<(Vec<Value>, Value)> {
+        let staging = field(&self.state, "staging");
+        let idea: Vec<Value> = picked.iter().filter(|c| eq(&field(c, "category"), "idea")).cloned().collect();
+        let eligible: Vec<Value> = idea
+            .iter()
+            .filter(|c| self.hard_faults(audit, &field(c, "address")).is_empty())
+            .cloned()
+            .collect();
+        let mut record = json!({
+            "fraction": self.p.sample, "seed": self.p.seed, "sampled": true,
+            "population": idea.len(), "eligible": eligible.len(), "target": 0, "size": 0,
+            "groups": 0, "covered": 0, "feasible": true, "source_flagged": [],
+            "addresses": [], "spans": {}, "proves": "sample"
+        });
+        if eligible.is_empty() {
+            record["sampled"] = json!(false);
+            return Ok((Vec::new(), record));
+        }
+        let group_of: HashMap<String, i64> = self.group_manifests(&staging)?;
+        let flagged: BTreeSet<String> = self.source_flagged(&staging);
+        let key = |at: &str, group: i64| {
+            crate::canon::sha256_hex(format!("{}:{}:{}", self.p.seed, group, at).as_bytes())
+        };
+        let mut groups: BTreeMap<i64, Vec<(String, String)>> = BTreeMap::new();
+        for card in &eligible {
+            let at = field(card, "address");
+            let group = group_of.get(&ci(&at)).copied().unwrap_or(0);
+            groups.entry(group).or_default().push((key(&at, group), at));
+        }
+        for list in groups.values_mut() {
+            ps_sort(list, |a, b| a.0.cmp(&b.0));
+        }
+        let target = ((self.p.sample * eligible.len() as f64).ceil() as usize).max(1);
+        let mut chosen: BTreeSet<String> = BTreeSet::new();
+        // One Card of every group first, in the groups' own deterministic order.
+        let mut order: Vec<(String, i64)> =
+            groups.iter().map(|(group, list)| (list[0].0.clone(), *group)).collect();
+        ps_sort(&mut order, |a, b| a.0.cmp(&b.0));
+        let mut covered = 0usize;
+        for (_, group) in &order {
+            if chosen.len() >= target {
+                break;
+            }
+            if let Some((_, at)) = groups[group].first().cloned() {
+                chosen.insert(ci(&at));
+                covered += 1;
+            }
+        }
+        // Then the lowest hashes of what is left.
+        let mut rest: Vec<(String, String)> = groups
+            .values()
+            .flat_map(|list| list.iter().skip(1).cloned().collect::<Vec<_>>())
+            .collect();
+        ps_sort(&mut rest, |a, b| a.0.cmp(&b.0));
+        for (_, at) in rest {
+            if chosen.len() >= target {
+                break;
+            }
+            chosen.insert(ci(&at));
+        }
+        // A Card the source-fault record already names for this book is always reviewed.
+        let mut flagged_kept: Vec<String> = Vec::new();
+        for card in &eligible {
+            let at = field(card, "address");
+            if flagged.contains(&ci(&at)) {
+                flagged_kept.push(at.clone());
+                chosen.insert(ci(&at));
+            }
+        }
+        let chosen_cards: Vec<Value> = eligible
+            .iter()
+            .filter(|c| chosen.contains(&ci(&field(c, "address"))))
+            .cloned()
+            .collect();
+        let addresses: Vec<String> = chosen_cards.iter().map(|c| field(c, "address")).collect();
+        let spans: Map<String, Value> = addresses
+            .iter()
+            .map(|at| (at.clone(), json!(self.spans_of(at))))
+            .collect();
+        let per_group: Vec<Value> = groups
+            .iter()
+            .map(|(group, list)| {
+                let picked: Vec<String> = list
+                    .iter()
+                    .map(|(_, at)| at.clone())
+                    .filter(|at| chosen.contains(&ci(at)))
+                    .collect();
+                json!({"group":group,"eligible":list.len(),"picked":picked})
+            })
+            .collect();
+        record["target"] = json!(target);
+        record["size"] = json!(addresses.len());
+        record["groups"] = json!(groups.len());
+        record["covered"] = json!(covered);
+        record["feasible"] = json!(covered == groups.len());
+        record["source_flagged"] = json!(flagged_kept);
+        record["addresses"] = json!(addresses);
+        record["spans"] = json!(spans);
+        record["by_group"] = json!(per_group);
+        Ok((chosen_cards, record))
+    }
+
+    /// The group each owned Card belongs to, from the staged `owned-gNN.txt` manifests.
+    fn group_manifests(&self, staging: &str) -> Result<HashMap<String, i64>> {
+        let mut groups = HashMap::new();
+        if staging.is_empty() {
+            return Ok(groups);
+        }
+        for name in ps::child_files(staging, "owned-g", ".txt") {
+            let number: i64 = name
+                .trim_start_matches("owned-g")
+                .trim_end_matches(".txt")
+                .parse()
+                .unwrap_or(0);
+            let path = join_path(staging, &name);
+            for line in ps::read_lines(&path)? {
+                let at = line.trim();
+                if !at.is_empty() {
+                    groups.insert(ci(at), number);
+                }
+            }
+        }
+        Ok(groups)
+    }
+
+    /// The Cards the retained source-fault record names for this book (R297).
+    fn source_flagged(&self, staging: &str) -> BTreeSet<String> {
+        let mut flagged = BTreeSet::new();
+        if staging.is_empty() {
+            return flagged;
+        }
+        let store = join_path(staging, "source-faults.json");
+        if !Path::new(&store).is_file() {
+            return flagged;
+        }
+        let Ok(store) = util::read_json(&store) else { return flagged };
+        for fault in ps_array(&store["faults"]) {
+            if !eq(&field(&fault, "kind"), "source") {
+                continue;
+            }
+            for at in ps_array(&fault["affected"]) {
+                let at = s(&at);
+                if !at.trim().is_empty() {
+                    flagged.insert(ci(at.trim()));
+                }
+            }
+        }
+        flagged
     }
 
     /// `New-OrphanJobs`: one orphan job per 2 x -PerJob orphans, each orphan with its best
@@ -913,10 +1134,11 @@ impl Compiler {
             bail!("plan needs -Book");
         }
         self.state = json!({
-            "book": p.book, "staging": p.staging, "groups": p.groups, "rules": p.rules, "sample": p.sample,
+            "book": p.book, "staging": p.staging, "groups": p.groups, "rules": p.rules, "sample": p.sample, "seed": p.seed,
+            "work": p.work, "model_review": p.model_review,
             "jobs": {}, "seq": 0, "picked": [], "before": {}, "plan": {}, "no_orphans": p.no_orphans,
             "applied": {}, "refused": {}, "merges": [], "splits": [], "orphan_links": [], "orphan_none": [],
-            "src": {}, "notes": {}
+            "src": {}, "notes": {}, "reviews": {}, "models": {}, "sampled": {}
         });
         let mut audit = self.invoke_audit(&join_path(&self.p.work, "before"))?;
         let p = &self.p;
@@ -998,17 +1220,38 @@ impl Compiler {
         }
         let mut review: Vec<Value> = Vec::new();
         if self.p.sample > 0.0 && !self.p.staging.is_empty() {
-            let clean: Vec<Value> = picked
+            let (sampled, record) = self.sample_cards(&audit, &picked)?;
+            review = sampled;
+            self.state["sampled"] = record;
+        }
+        // R247: a Model draft no model chain owns is reviewed and corrected by this cycle;
+        // a draft an active chain owns reuses that chain's checked review instead.
+        let mut models: Vec<Value> = Vec::new();
+        if self.p.model_review {
+            let book = self.p.book.clone();
+            models = audit
+                .cards
                 .iter()
-                .filter(|c| eq(&field(c, "category"), "idea") && self.hard_faults(&audit, &field(c, "address")).is_empty())
+                .filter(|card| {
+                    eq(&field(card, "category"), "model") && eq(&field(card, "book"), &book)
+                })
                 .cloned()
                 .collect();
-            let count = clean.len().min((self.p.sample * clean.len() as f64).ceil() as usize);
-            let mut rng = ps::DotNetRandom::new(self.p.seed);
-            let mut keyed: Vec<(i32, Value)> = clean.into_iter().map(|c| (rng.next(), c)).collect();
-            ps_sort(&mut keyed, |a, b| a.0.cmp(&b.0));
-            review = keyed.into_iter().take(count).map(|(_, c)| c).collect();
-            ps_sort(&mut review, |a, b| culture_cmp(&field(a, "address"), &field(b, "address")));
+            ps_sort(&mut models, |a, b| culture_cmp(&field(a, "address"), &field(b, "address")));
+        }
+        for card in &models {
+            let at = field(card, "address");
+            self.state["models"][&at] = json!({
+                "title": field(card, "title"),
+                "body": field(card, "body"),
+                "category": field(card, "category"),
+                "spans": self.spans_of(&at),
+            });
+            self.state["reviews"][&at] = json!({"kind":"model","spans":self.spans_of(&at)});
+        }
+        for card in &review {
+            let at = field(card, "address");
+            self.state["reviews"][&at] = json!({"kind":"sample","spans":self.spans_of(&at)});
         }
         let mut orphans: Vec<Value> = Vec::new();
         if !self.p.no_orphans {
@@ -1023,7 +1266,7 @@ impl Compiler {
                 orphans.truncate(self.p.max_cards as usize);
             }
         }
-        for c in with_faults.iter().chain(&review).chain(&orphans) {
+        for c in with_faults.iter().chain(&review).chain(&models).chain(&orphans) {
             let a = field(c, "address");
             self.state["plan"][&a] = json!({ "title": field(c, "title"), "body": field(c, "body"), "category": field(c, "category") });
             let rules: Vec<String> = self.hard_faults(&audit, &a).into_iter().map(|(r, _)| r).collect();
@@ -1037,8 +1280,12 @@ impl Compiler {
             audit.card(a).map(|c| field(c, "title")).unwrap_or_default()
         };
         let mut jobs: Vec<Value> = Vec::new();
-        let fix_cards: Vec<(Value, bool)> =
-            with_faults.iter().map(|c| (c.clone(), false)).chain(review.iter().map(|c| (c.clone(), true))).collect();
+        let fix_cards: Vec<(Value, bool)> = with_faults
+            .iter()
+            .map(|c| (c.clone(), false))
+            .chain(review.iter().map(|c| (c.clone(), true)))
+            .chain(models.iter().map(|c| (c.clone(), true)))
+            .collect();
         let size = self.p.per_job.max(1) as usize;
         for chunk in fix_cards.chunks(size) {
             let seq = self.next_seq();
@@ -1072,6 +1319,7 @@ impl Compiler {
         let faults: usize = with_faults.iter().map(|c| self.hard_faults(&audit, &field(c, "address")).len()).sum();
         let mut out = json!({
             "book": self.p.book, "picked": picked.len(), "with_faults": with_faults.len(), "review": review.len(),
+            "models": models.len(), "sample": self.state["sampled"],
             "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len(), "faults": faults, "jobs": jobs
         });
         self.add_compact(&mut out, &jobs);
@@ -1201,7 +1449,7 @@ impl Compiler {
                         refuse(&mut self.state, &mut counts, format!("unknown verdict `{verdict}`"));
                         continue;
                     }
-                    if !is_in(&field(&old, "category"), WRITABLE) {
+                    if !self.writable(&a, &field(&old, "category")) {
                         refuse(&mut self.state, &mut counts, format!("category {} is not writable", field(&old, "category")));
                         continue;
                     }
@@ -1534,17 +1782,26 @@ impl Compiler {
                 json!({ "address": a, "job": r["job"], "reason": r["reason"] })
             })
             .collect();
+        let faults_after: i64 = after.iter().map(|x| x.1).sum();
+        let review_records = self.review_records(&audit);
         let report = json!({
             "book": self.state["book"], "groups": self.state["groups"], "rules": rules,
             "cards": before_keys.len(), "picked": ps_items(&self.state["picked"]).len(),
-            "faults_before": before.iter().map(|x| x.1).sum::<i64>(), "faults_after": after.iter().map(|x| x.1).sum::<i64>(),
+            "faults_before": before.iter().map(|x| x.1).sum::<i64>(), "faults_after": faults_after,
             "by_rule_before": as_map(&before), "by_rule_after": as_map(&after),
             "verdicts": as_map(&verdicts), "splits": ps_items(&self.state["splits"]).len(), "merges": ps_items(&self.state["merges"]).len(),
             "refused": refused,
             "orphan_links": ps_items(&self.state["orphan_links"]).len(), "orphan_none": ps_items(&self.state["orphan_none"]).len(),
             "orphans_after": orphans_after,
             "orphan_check": audit.orphan_check,
-            "job_count": ps::keys(&self.state["jobs"]).len()
+            "job_count": ps::keys(&self.state["jobs"]).len(),
+            "kind": "cards_cycle", "unit_kind": if self.p.groups.is_empty() { "book" } else { "groups" },
+            "work": self.state["work"], "staging": self.state["staging"], "seed": self.state["seed"],
+            "model_review": self.state["model_review"],
+            "audit": {"before": join_path(&self.p.work, "before"), "after": join_path(&self.p.work, "after"), "revision": audit.archive_revision, "rules": rules},
+            "sample": self.state["sampled"],
+            "reviews": review_records,
+            "quality_complete": faults_after == 0,
         });
         util::write_text(join_path(&self.p.work, "report.json"), &ps::json_pretty(&report))?;
         let decisions = json!({
@@ -1654,7 +1911,7 @@ impl Compiler {
                 continue;
             }
             let old = self.state["plan"][&a].clone();
-            if !is_in(&field(&old, "category"), WRITABLE) {
+            if !self.writable(&a, &field(&old, "category")) {
                 add(&a, "refuse", &format!("category {} is not writable", field(&old, "category")));
                 continue;
             }
@@ -1829,7 +2086,7 @@ pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,
 /// `zt-digest card`.
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = ["Step", "Work", "Book", "Staging", "Groups", "PerJob", "Sample", "Seed", "Rules", "MaxCards", "Notes", "MaxJobs", "Job", "File"];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoOrphans", "Compact"])?;
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoOrphans", "Compact", "ModelReview"])?;
     let seed = a.int_or("Seed", 1)?;
     let p = Params {
         step: a.choice("Step", &["plan", "apply", "check", "report", "precheck"])?,
@@ -1848,6 +2105,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         max_jobs: a.int_or("MaxJobs", 0)?,
         job: a.str("Job"),
         file: a.str("File"),
+        model_review: a.flag("ModelReview"),
     };
     let out_dir = join_path(&p.work, "out");
     // precheck writes nothing, not even the folders.
@@ -1885,3 +2143,7 @@ mod tests {
         assert!(format_card(&card, &[], "", "").contains("这是抽查"));
     }
 }
+
+
+
+

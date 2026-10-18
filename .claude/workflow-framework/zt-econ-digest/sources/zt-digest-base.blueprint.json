@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "The shared base of the ZT digest workflows: Prepare, Digest with per-block card cycles, Link, Cleanup, Organize, Figures, Hubs, Audit, with slots where a book type installs its own layers (models, events, math stages), and report-first cross-book Bridges after Figures",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -552,16 +552,36 @@
     {
       "id": "cards-book",
       "title": "Cards",
-      "detail": "mode cards: the card layer cycle on the whole book",
+      "detail": "one whole-book card cycle after the digest runs (mode full), or on its own (mode cards); it also reviews the source of every Model draft no model chain elaborates",
       "after": [
-        "terms"
+        "digest"
       ],
       "module": "zt-cards-book",
       "when": [
         {
-          "path": "mode",
-          "op": "==",
-          "value": "cards"
+          "op": "or",
+          "value": [
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "cards"
+            },
+            {
+              "op": "and",
+              "value": [
+                {
+                  "path": "mode",
+                  "op": "==",
+                  "value": "full"
+                },
+                {
+                  "path": "args.cardChecks",
+                  "op": "!=",
+                  "value": false
+                }
+              ]
+            }
+          ]
         }
       ],
       "params": {
@@ -575,9 +595,9 @@
     {
       "id": "digest",
       "title": "Digest",
-      "detail": "Haiku managers drive the DeepSeek digest runs per block (Idea Cards and anchors; the book type's prompt supplements add its own Cards); each block's card cycle follows at once",
+      "detail": "Haiku managers drive the DeepSeek digest runs per block (Idea Cards and anchors; the book type's prompt supplements add its own Cards); the cheap per-group deterministic check is the group completion's own offline check",
       "after": [
-        "cards-book"
+        "terms"
       ],
       "module": "zt-digest-blocks",
       "params": {
@@ -624,7 +644,8 @@
       "title": "Link",
       "detail": "prepare-link-pass.ps1: link files and the pending groups",
       "after": [
-        "hubs-first"
+        "hubs-first",
+        "cards-book"
       ],
       "module": "zt-link-prepare",
       "params": {
@@ -1028,3 +1049,4 @@
     "$ref": "stages.report.output"
   }
 }
+

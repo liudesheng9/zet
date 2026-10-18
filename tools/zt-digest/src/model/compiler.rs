@@ -1058,6 +1058,26 @@ impl Compiler {
 
     // --- steps ----------------------------------------------------------------------------------
 
+    /// R247: the accepted plan's checked source review, recorded beside the plan. It names the
+    /// exact source spans the architect reviewed per part and refuses a written part it cannot
+    /// account for, so the whole-book Card cycle can report coverage without a second review.
+    fn source_review(&mut self, plan: &Value, model: &str, plan_path: &str) -> (Value, Vec<String>) {
+        let plan_hash = Self::file_hash(plan_path).unwrap_or_default();
+        let brief = self.m(model)["steps"]["brief"].clone();
+        let dir = self.dir(model);
+        let staging = self.run_folder();
+        let review = crate::model::source_review::Review {
+            staging: &staging,
+            dir: &dir,
+            model,
+            plan_path,
+            plan_hash: &plan_hash,
+            context: &s(&brief["context"]),
+            context_hash: &s(&brief["context_hash"]),
+        };
+        crate::model::source_review::record(&review, plan)
+    }
+
     fn step_brief(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
         let mut skipped = Vec::new();
@@ -1133,6 +1153,8 @@ impl Compiler {
         // own structure is judged: a bad observation names its entry and counts as a plan fault.
         let path = self.p.plan.clone();
         let mut faults = self.record_source_faults(&plan, &path);
+        let (reviewed, review_faults) = self.source_review(&plan, &model, &path);
+        faults.extend(review_faults);
         faults.extend(self.test_plan(&plan, &st, &model)?);
         let mut lines = Vec::new();
         if let Some(report) = &self.source_report {
@@ -1143,6 +1165,12 @@ impl Compiler {
                 s(&report["report"])
             ));
         }
+        lines.push(format!(
+            "source-review: {} {} parts in {}",
+            if reviewed["complete"] == json!(true) { "complete" } else { "incomplete" },
+            s(&reviewed["parts"]),
+            s(&reviewed["path"])
+        ));
         lines.extend(faults.clone());
         lines.push(format!("faults: {}", faults.len()));
         util::print_lines(&lines)
@@ -1237,6 +1265,17 @@ impl Compiler {
             m["error"] = json!(format!("source faults: {}", source_faults.join("; ")));
             return Ok(Vec::new());
         }
+        // R247: the accepted plan's source review is recorded beside the plan, and a written part
+        // this build cannot account for keeps the model unbuilt.
+        let (reviewed, review_faults) = self.source_review(&plan, model, &plan_path);
+        if !review_faults.is_empty() {
+            let m = self.m_mut(model);
+            m["status"] = json!("failed");
+            m["error"] = json!(format!("source review: {}", review_faults.join("; ")));
+            return Ok(Vec::new());
+        }
+        self.m_mut(model)["source_review"] = reviewed.clone();
+        self.record_step(model, "source_review", reviewed);
         if ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null() {
             self.m_mut(model)["status"] = json!("skipped");
             return Ok(Vec::new());

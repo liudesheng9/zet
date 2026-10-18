@@ -87,7 +87,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `rests` | premises: `[ref, why]` or `[ref, why, kind]`; `ref` is an id, `<model>#<id>`, or an address; `kind` is `rests` (default), `substitutes`, `illustrates`, `contrasts`, `relaxes`, `corresponds`, or `objects` |
 | `of`, `kind`, `why` | a side part: the part it stands beside, and the relation to it |
 | `derive`, `from`, `to`, `steps` | a Derivation part: its start, its result equation (with the book's number), and its estimated lines |
-| `src` | source lines, `file:from-to`, relative to the staging folder; the script copies them into the job |
+| `src` | **required** for every part this build writes: the source lines you reviewed for it, `file:from-to`, relative to the staging folder; the script copies them into the job and records them in the model's source-review artifact |
 | `chart` | the chart the part needs, in a few words; DeepSeek draws it |
 | `figure` | the book's own figure the part shows, by its label, e.g. `2.F.1` or `IV` (the brief's `## 图` lists them, and `figures.json` in the staging folder holds every one); the script hands DeepSeek the figure's Markdown to paste. Prefer a book figure to a `chart` that redraws it; add a `chart` only for what the book does not draw |
 | `existing`, `refill` | keep an existing part (and rewrite its body) |
@@ -95,7 +95,34 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `take`, `use` | take in a shared part, with one line on what this model uses from it |
 | `merge` | `[{"from": address, "into": id}]` |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
+| `source_review` | the reviewed outcome of a part whose source does not simply support it (see "Review the source") |
 | `source_faults` | the source's own faults you observed (see below) |
+
+## Review the source
+
+You are the one owner of this model draft's source review. No other agent reviews the Model Card the digest wrote; the whole-book card cycle reads your recorded review instead of repeating it. So the plan must say, part by part, the source span you checked and what you found there.
+
+- Every part this build writes needs `src`: the `file:from-to` lines you read to judge the draft and to write `spec`. A part without a span fails `validate` (`source_review: part … has no reviewed source span`).
+- A part the source supports needs nothing more: its outcome is `supported`.
+- When the source does not simply support the part, add an entry to `source_review`:
+
+  ```json
+  "source_review": [
+    {"part": "E", "outcome": "narrowed", "note": "原书只在 L=6 时给出例子。"},
+    {"part": "P", "outcome": "supplied", "note": "命题的等价形式由补写给出。", "span": "sections/s05.md:200-212"}
+  ]
+  ```
+
+| `outcome` | Meaning |
+| --- | --- |
+| `supported` | the source states the part; the default for a part with `src` |
+| `narrowed` | the draft claimed more than the source says; the part states the source's narrower claim |
+| `supplied` | the part is an independently supplied step: the body must carry `（补：书中未写）` or `（补：书中略去）`, and `note` says what is supplied |
+| `absent` | the source does not state the part at all (for example a worked example you add); `note` says why the part belongs |
+
+`span` is optional when the part's `src` already names the lines. `validate` prints `source-review: complete N parts` and writes `<DIR>\source-review.json`; the artifact is bound to the accepted plan and to the context pack you read. Any of these is a plan fault: a written part with no reviewed span, an unknown `outcome`, a `supplied` entry with no note, a span the prepared source does not hold.
+
+A fabricated claim cannot pass because its prose is fluent: remove it, narrow it to the source, or mark it as supplied. Mathematical content the source prints must not change; a change that moves an accepted plan needs a new plan revision.
 
 ## Report the source's faults
 

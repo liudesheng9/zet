@@ -52,12 +52,12 @@ try {
         symbols = @(, @('$L$', '清算价值')); terms = @(, @('清算', '卖资产', '变卖资产'))
         parts = @(
             [ordered]@{ id = 'S'; line = 'main'; facet = '设定'; emphasis = 'core'; title = '设定：企业家、项目与清算价值'; spec = '参与者与时点'; src = @('sections/s01.md:2-3') },
-            [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('P', '用到命题')) },
-            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(, @('S', '用到 $L$')) },
-            [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5 },
-            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D2', '用到 (5.10)')) },
-            [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; chart = '画出 L 与 K-w 的比较' },
-            [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史' },
+            [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('P', '用到命题')); src = @('sections/s01.md:2-2') },
+            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(, @('S', '用到 $L$')); src = @('sections/s01.md:4-4') },
+            [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5; src = @('sections/s01.md:5-5') },
+            [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D2', '用到 (5.10)')); src = @('sections/s01.md:5-5') },
+            [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; chart = '画出 L 与 K-w 的比较'; src = @('sections/s01.md:3-3') },
+            [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史'; src = @('sections/s01.md:1-1') },
             [ordered]@{ id = 'T'; take = $shared; use = '还款上限的另一种推导' }
         )
     }

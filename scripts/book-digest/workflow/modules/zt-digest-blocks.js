@@ -1,12 +1,13 @@
-// ==== module zt-digest-blocks v2 ====
+// ==== module zt-digest-blocks v3 ====
 // The Digest stage (mode full). One Haiku manager per block of perManager groups drives the DeepSeek digest runs
-// (the profile's digest prefix plus the group file). As each block finishes, its Idea Cards and anchors go to
-// the card layer cycle (a pipeline, not a barrier). Model Cards, Event Cards, and other layers are a book type's
-// own stages after this one (docs/zt-digest-framework.md). Fails the stage when no group is done (a host fault:
-// zt or DeepSeek Harness down).
+// (the profile's digest prefix plus the group file). The group work is content only: the cheap per-group deterministic
+// check is the group completion's own offline check (R216, #70), and the one whole-book card cycle runs as its own
+// stage after this one (R296) instead of a cycle per block. Model Cards, Event Cards, and other layers are a book
+// type's own stages after this one (docs/zt-digest-framework.md). Fails the stage when no group is done (a host
+// fault: zt or DeepSeek Harness down).
 defineModule({
-  id: 'zt-digest-blocks', version: '2', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: the digest blocks, each block\'s card cycle as soon as it finishes (mode full).',
+  id: 'zt-digest-blocks', version: '3', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: the digest blocks, with the whole-book card cycle left to its own stage (mode full).',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
@@ -18,19 +19,14 @@ defineModule({
     const Z = zdMake(ctx, p)
     const groups = Z.groupsOf(p.groups)
     const blocks = Z.toBlocks(groups)
-    log(`${p.groups} groups in ${Z.KEY}; ${blocks.length} Haiku managers, up to ${Z.PER_MANAGER} DeepSeek runs each${Z.CARD_CHECKS ? '; each block\'s Cards go to the card cycle as soon as the block finishes' : ''}.`)
-    const cardReports = []
-    const afterBlock = Z.CARD_CHECKS ? async (block) => {
-      cardReports.push(await Z.cardBlock(block).catch(error => ({ status: 'failed', error: String(error) })))
-      return []
-    } : null
-    const { reports } = await Z.runStage('digest', blocks, afterBlock)
+    log(`${p.groups} groups in ${Z.KEY}; ${blocks.length} Haiku managers, up to ${Z.PER_MANAGER} DeepSeek runs each.`)
+    const { reports } = await Z.runStage('digest', blocks)
     if (!reports.some(r => r.status === 'done')) {
       const why = [...new Set(reports.map(r => r.errors).filter(Boolean))].slice(0, 3).join(' | ')
-      log(`Digest: every group failed; the run stops before the link pass. ${why}`)
+      log(`Digest: every group failed; the run stops before the card cycle and the link pass. ${why}`)
       throw new Error(`every digest group failed: ${why}`)
     }
-    return { reports, cards: cardReports, managers: blocks.length }
+    return { reports, managers: blocks.length }
   },
 })
 // ==== end module zt-digest-blocks ====

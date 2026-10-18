@@ -1,8 +1,10 @@
-// ==== module zt-digest-lib v6 ====
+// ==== module zt-digest-lib v7 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), and the card layer cycle (runCards). The model compiler is zt-model-lib (the
 // model layer, which each book type installs). A library module: the stage modules call zdMake(ctx, params) and use what it returns.
+// One card cycle per book, not one per block (R296): `runCards` runs the whole-book cycle, and its
+// `-ModelReview` option lets that cycle own the source review of a Model draft no model chain elaborates (R247).
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
@@ -105,7 +107,8 @@ function zdMake(ctx, p) {
   const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
   const CARD_COMPILER = zdTool('card-compiler', SCRIPTS)
   const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
-  const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? (MODE === 'full' ? 0.1 : 0)))
+  // R297: the deterministic Idea sample of the one whole-book card cycle (modes cards and full).
+  const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? ((MODE === 'full' || MODE === 'cards') ? 0.1 : 0)))
   const CARD_SKILLS = ['asd-ste100-zh']
   const APPLY_SHARE = Math.max(1, A.applyShare || 30)
   const DSH_MANAGERS = Math.min(ZD_MAX_MANAGERS, Math.max(1, A.dshManagers || 8))
@@ -323,7 +326,9 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
   const answerLines = (driven) => ((driven && driven.results) || []).flatMap(r => String(r.answer || '').split('\n').map(zdJsonIn).filter(Boolean))
 
   // --- Cards: the card layer cycle -----------------------------------------------------------------
-  const runCards = async (label, work, extra = '', only = '') => {
+  // One cycle over one scope. o.modelReview: this whole-book cycle also reviews the Model drafts no
+  // model chain owns (R247); a draft an active chain owns reuses that chain's checked review.
+  const runCards = async (label, work, extra = '', only = '', o = {}) => {
     const cstep = (s, more = '') => `${CARD_COMPILER} -Step ${s} -Work "${work}" -Compact${more}`
     const sessions = {}
     let jobs = 0
@@ -341,7 +346,8 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     }
     const rules = only ? ` -Rules "${only}"` : A.cardRules ? ` -Rules "${A.cardRules}"` : ''
     const max = A.cardMax ? ` -MaxCards ${A.cardMax}` : ''
-    const planned = await crun('plan', cstep('plan', ` -Book ${KEY} -Staging "${OUT}"${rules}${max}${extra}`))
+    const models = o.modelReview ? ' -ModelReview' : ''
+    const planned = await crun('plan', cstep('plan', ` -Book ${KEY} -Staging "${OUT}"${rules}${max}${models}${extra}`))
     const plan = zdLastJson(planned && planned.output)
     if (plan) plan.jobs = expandJobs(plan)
     if (!plan) return { status: 'failed', label, error: `plan failed: ${(planned && planned.error) || 'no output'}` }
@@ -371,10 +377,8 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     if (reported) log(`Cards ${label}: faults ${reported.faults_before} → ${reported.faults_after} on ${reported.cards} Cards; verdicts ${JSON.stringify(reported.verdicts)}; ${reported.splits} splits, ${reported.merges} merge proposals, ${reported.refused} refused; ${reported.orphan_links} orphan Links (${reported.orphans_after} orphans left); ${jobs} DeepSeek jobs.`)
     return { status: reported && applied ? 'done' : 'failed', label, plan, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from the card compiler -Step apply' }) }
   }
-  const cardBlock = async (block) => {
-    const groups = block.map(g => g.n).join(',')
-    return runCards(`groups ${block[0].n}-${block[block.length - 1].n}`, `${OUT}\\cards-g${String(block[0].n).padStart(2, '0')}`, ` -Groups "${groups}" -Sample ${IDEA_SAMPLE} -NoOrphans`)
-  }
+
+
 
   return {
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
@@ -384,13 +388,14 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     tool: name => zdTool(name, SCRIPTS),
     // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
     cleanupDsh: (label, o) => driveAgent(label, o, 'cleanup'),
-    runCards, cardBlock, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
+    runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '6', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '7', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, drive, model compiler, card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====
+

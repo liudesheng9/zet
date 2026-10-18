@@ -12,6 +12,7 @@ mod compiler;
 mod context;
 mod list;
 
+pub(crate) mod source_review;
 pub(crate) mod text;
 
 use crate::zt::Zt;
