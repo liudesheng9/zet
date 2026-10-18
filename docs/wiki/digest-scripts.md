@@ -7,7 +7,7 @@ paths:
   - "scripts/book-digest/tests/*.json"
   - "scripts/book-digest/tests/*.cmd"
   - "scripts/book-digest/tests/audit-bulk-faults-fixture.txt"
-synced: 476363d7befc
+synced: 432808526473
 updated: 2026-10-18
 ---
 
@@ -776,7 +776,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 ## Change history
 
-- `2026-10-18` — `prepare-book-digest.ps1` extracts the book's chapter endnotes outside the digest range (`notes/<chapter-id>.md`, `-NoteMaxChars`), records each chapter's id, original line spans, note ids and hashes in `manifest.json`, appends the chapter's notes (or their labelled parts and the missing-note warning) to every group file, and keeps the notes faults in the run's `source-faults.json` and `source-faults.md`. New public suite `source-notes.tests.ps1` (54 assertions) covers the notes, the group and model context packs, the mapping faults, the source-fault report and the compiler's plan recording.
+- `2026-10-18` — `prepare-book-digest.ps1` extracts the book's chapter endnotes outside the digest range (`notes/<chapter-id>.md`, `-NoteMaxChars`), records each chapter's id, original line spans, note ids and hashes in `manifest.json`, appends the chapter's notes (or their labelled parts and the missing-note warning) to every group file, and keeps the notes faults in the run's `source-faults.json` and `source-faults.md` (rendered once more after the manifest so the report names the book). New public suite `source-notes.tests.ps1` (55 assertions) covers the notes, the group and model context packs, the mapping faults, the source-fault report and the compiler's plan recording.
 
 - `2026-10-18` — `prepare-book-digest.ps1 -Book <Work id|title>` resolves the book through the read-only Scholar Archive bridge: the Work, its ranked Chinese/bilingual Markdown, the generated BibTeX with the collision-checked Citation key, and the proposed start/end/skip headings, with `preparation.json` (source hash and every excluded section) written before any group work and exit 3 when a choice stays open. New public suite `book-preparation.tests.ps1` (50 assertions) covers the resolution, the selections, the conflicts and the bridge faults on a scratch archive with a fixture in the MCP seam.
 
