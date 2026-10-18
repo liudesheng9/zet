@@ -26,6 +26,7 @@ readline.createInterface({ input: real.stdout }).on('line', line => {
 real.on('exit', () => process.exit(0))
 
 let own = 1_000_000_000
+let identityViews = 0
 const ask = message => new Promise(resolve => { waiting.set(message.id, resolve); real.stdin.write(JSON.stringify(message) + '\n') })
 const call = (name, args) => ask({ jsonrpc: '2.0', id: own++, method: 'tools/call', params: { name, arguments: args } })
 const send = message => process.stdout.write(JSON.stringify(message) + '\n')
@@ -56,8 +57,10 @@ async function handle(line) {
   const reply = await ask(message)
   if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent
+    identityViews++
     if (env.ZT_IDENTITY_FAULT === 'missing') delete value.archive_identity
     if (env.ZT_IDENTITY_FAULT === 'incomplete') value.complete = false
+    if (env.ZT_IDENTITY_FAULT === 'after_read' && identityViews >= 2) value.archive_identity.id = '00000000000000000000000000000000'
     reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
   }
   if (tool === 'apply_batch' && at.preview && env.ZT_DRAFT_FAULT && !failed(reply)) {

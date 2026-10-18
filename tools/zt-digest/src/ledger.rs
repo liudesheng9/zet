@@ -60,6 +60,34 @@ const COMMON: &[&str] = &[
     "cleanup",
 ];
 
+const MATH: &[&str] = &[
+    "math-index",
+    "math-docs",
+    "math-skeleton",
+    "notation",
+    "boundary",
+    "proof",
+    "theory",
+    "math-check",
+];
+const BOOK: &[&str] = &[
+    "cards-book",
+    "link-check",
+    "organize",
+    "skeleton",
+    "figures",
+    "bridge",
+    "audit",
+];
+const MATH_BOOK: &[&str] = &[
+    "math-index",
+    "math-docs",
+    "math-skeleton",
+    "notation",
+    "theory",
+    "math-check",
+];
+
 /// The initial reliable full-run target; date extraction is not an Event-layer switch.
 fn target(contract: &Value) -> Value {
     let mut enabled = COMMON.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -70,17 +98,9 @@ fn target(contract: &Value) -> Value {
     }
     if contract["variant"] == "econ" {
         enabled.extend(["events".into(), "findings".into()]);
+        excluded.extend_from_slice(MATH);
     } else {
-        enabled.extend([
-            "math-index".into(),
-            "math-docs".into(),
-            "math-skeleton".into(),
-            "notation".into(),
-            "boundary".into(),
-            "proof".into(),
-            "theory".into(),
-            "math-check".into(),
-        ]);
+        enabled.extend(MATH.iter().map(|s| s.to_string()));
         excluded.extend(["events", "findings"]);
     }
     json!({"enabled":enabled,"excluded":excluded})
@@ -248,6 +268,12 @@ impl Prepared {
         {
             bail!("prepared Literature metadata mismatch");
         }
+        let after = zt.archive_view()?;
+        if after["archive_identity"] != contract["archive_identity"]
+            || after["archive_revision"].as_u64() != Some(cards.archive_revision)
+        {
+            bail!("archive changed while checking preparation; retry without publishing work");
+        }
         let hash = canon::hash_value(&contract);
         Ok(Self {
             out,
@@ -411,15 +437,7 @@ fn init(p: &Prepared) -> Result<Value> {
         groups.push(id);
     }
     // These fixed obligations cannot disappear when their dynamic producers have no ready rows.
-    for layer in [
-        "cards-book",
-        "link-check",
-        "organize",
-        "skeleton",
-        "figures",
-        "bridge",
-        "audit",
-    ] {
+    for &layer in BOOK {
         if !target["enabled"]
             .as_array()
             .unwrap()
@@ -441,14 +459,7 @@ fn init(p: &Prepared) -> Result<Value> {
         }
     }
     if p.contract["variant"] == "math" {
-        for layer in [
-            "math-index",
-            "math-docs",
-            "math-skeleton",
-            "notation",
-            "theory",
-            "math-check",
-        ] {
+        for &layer in MATH_BOOK {
             let id = register(
                 &tx,
                 layer,
@@ -464,7 +475,7 @@ fn init(p: &Prepared) -> Result<Value> {
         put_meta(
             &tx,
             &format!("barrier/{}", layer.as_str().unwrap()),
-            &json!({"sealed":matches!(layer.as_str(),Some("prepare"|"terms"|"digest")),"producers_settled":false}),
+            &json!({"sealed":matches!(layer.as_str(),Some("prepare"|"terms"|"digest"))}),
         )?;
     }
     tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
@@ -495,8 +506,28 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
     if meta(&tx, "preparation_hash")? != canon::hash_value(&meta(&tx, "preparation")?) {
         bail!("ledger preparation hash mismatch");
     }
-    let mut statement=tx.prepare("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,inputs_json,fault_json,progress_json,result_json FROM units WHERE (?1='' OR layer=?1) ORDER BY id")?;
-    let units=statement.query_map([layer],|r|Ok(json!({"id":r.get::<_,String>(0)?,"layer":r.get::<_,String>(1)?,"logical_key":r.get::<_,String>(2)?,"revision":r.get::<_,i64>(3)?,"state":r.get::<_,String>(4)?,"attempts":r.get::<_,i64>(5)?,"owner":r.get::<_,Option<String>>(6)?,"token":r.get::<_,i64>(7)?,"input_hash":r.get::<_,String>(8)?,"inputs_json":r.get::<_,String>(9)?,"fault_json":r.get::<_,Option<String>>(10)?,"progress_json":r.get::<_,String>(11)?,"result_json":r.get::<_,Option<String>>(12)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut statement=tx.prepare("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,inputs_json,fault_json,progress_json,result_json,lease_until,retry_after FROM units WHERE (?1='' OR layer=?1) ORDER BY id")?;
+    let units = statement
+        .query_map([layer], |r| {
+            Ok(json!({
+                "id":r.get::<_,String>(0)?,
+                "layer":r.get::<_,String>(1)?,
+                "logical_key":r.get::<_,String>(2)?,
+                "revision":r.get::<_,i64>(3)?,
+                "state":r.get::<_,String>(4)?,
+                "attempts":r.get::<_,i64>(5)?,
+                "owner":r.get::<_,Option<String>>(6)?,
+                "token":r.get::<_,i64>(7)?,
+                "input_hash":r.get::<_,String>(8)?,
+                "inputs_json":r.get::<_,String>(9)?,
+                "fault_json":r.get::<_,Option<String>>(10)?,
+                "progress_json":r.get::<_,String>(11)?,
+                "result_json":r.get::<_,Option<String>>(12)?,
+                "lease_until":r.get::<_,Option<i64>>(13)?,
+                "retry_after":r.get::<_,Option<i64>>(14)?
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut units = units;
     for unit in &mut units {
         for key in ["inputs", "fault", "progress", "result"] {
@@ -513,10 +544,378 @@ fn status(out: &Path, layer: &str) -> Result<Value> {
         }
     }
     let target = meta(&tx, "target")?;
-    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"archive_verification":"not_requested","complete":false,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    let excluded = target["excluded"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l == layer);
+    let layers = target["enabled"]
+        .as_array()
+        .context("missing declared target")?;
+    let mut sealed = true;
+    for name in layers
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| layer.is_empty() || *name == layer)
+    {
+        sealed &= meta(&tx, &format!("barrier/{name}"))?["sealed"] == true;
+    }
+    let mut counts = json!({"total":units.len(),"done":0,"failed":0,"blocked":0,"open":0});
+    let mut unresolved = Vec::new();
+    for unit in &units {
+        let state = unit["state"].as_str().unwrap();
+        let bucket = if matches!(state, "done" | "failed" | "blocked") {
+            state
+        } else {
+            "open"
+        };
+        counts[bucket] = json!(counts[bucket].as_u64().unwrap() + 1);
+        if state != "done" {
+            unresolved.push(unit["id"].clone());
+        }
+    }
+    let preparation = meta(&tx, "preparation")?;
+    let mut coverage_faults = Vec::new();
+    let mut required = vec!["prepare", "terms"];
+    required.extend(
+        BOOK.iter()
+            .copied()
+            .filter(|layer| layers.iter().any(|l| l == *layer)),
+    );
+    if preparation["variant"] == "math" {
+        required.extend_from_slice(MATH_BOOK);
+    }
+    let root_hash = canon::hash_value(&json!({"preparation_hash":meta(&tx,"preparation_hash")?}));
+    for layer in required {
+        let id = format!("{layer}/book@1");
+        let hash: Option<String> = tx
+            .query_row("SELECT input_hash FROM units WHERE id=?1", [&id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if hash.as_deref() != Some(root_hash.as_str()) {
+            coverage_faults.push(json!({"code":"required_unit_missing_or_changed","unit":id}));
+        }
+    }
+    for group in preparation["groups"]
+        .as_array()
+        .context("missing prepared group target")?
+    {
+        let id = format!(
+            "digest/g{:03}@1",
+            group["n"]
+                .as_u64()
+                .context("invalid prepared group number")?
+        );
+        let hash: Option<String> = tx
+            .query_row("SELECT input_hash FROM units WHERE id=?1", [&id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if hash.as_deref() != Some(canon::hash_value(group).as_str()) {
+            coverage_faults.push(json!({"code":"prepared_group_missing_or_changed","unit":id}));
+        }
+    }
+    let settled = sealed && counts["open"] == 0;
+    let complete = settled
+        && !excluded
+        && counts["failed"] == 0
+        && counts["blocked"] == 0
+        && coverage_faults.is_empty();
+    let mut deps_query = tx.prepare("SELECT d.unit_id,d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id JOIN units child ON child.id=d.unit_id WHERE (?1='' OR child.layer=?1) ORDER BY d.unit_id,d.needs_id")?;
+    let dependencies=deps_query.query_map([layer],|r|Ok(json!({"unit":r.get::<_,String>(0)?,"needs":r.get::<_,String>(1)?,"condition":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let result = json!({"schema_version":1,"run_id":meta(&tx,"run_id")?,"invocation":meta(&tx,"invocation")?,"archive_verification":"not_requested","layer":layer,"sealed":sealed,"settled":settled,"complete":complete,"excluded":excluded,"counts":counts,"unresolved":unresolved,"coverage_faults":coverage_faults,"dependencies":dependencies,"units":units,"excluded_layers":target["excluded"],"enabled_layers":target["enabled"]});
+    drop(deps_query);
     drop(statement);
     tx.commit()?;
     Ok(result)
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn event(
+    tx: &Transaction,
+    unit: &str,
+    owner: Option<&str>,
+    token: Option<i64>,
+    name: &str,
+    facts: &Value,
+) -> Result<()> {
+    tx.execute("INSERT INTO events(unit_id,invocation,utc,owner,claim_token,event,facts_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![unit,meta(tx,"invocation")?.as_i64().context("invalid invocation number")?,canon::utc_now_o(),owner,token,name,canon::canonical_json(facts)])?;
+    Ok(())
+}
+
+fn writer(p: &Prepared) -> Result<Connection> {
+    // Refuse a changed binding before opening a connection that can change WAL mode.
+    verify_binding(&connect(&p.out.join("ledger.sqlite3"), false)?, p)?;
+    connect(&p.out.join("ledger.sqlite3"), true)
+}
+
+/// Dependency waiting consumes no attempt. Aggregates wait for their explicit enumeration barrier.
+fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
+    loop {
+        let mut statement=tx.prepare("SELECT id,layer,state,retry_after,fault_class FROM units WHERE state IN ('registered','ready','blocked','retry') ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let mut changed = false;
+        for (id, layer, state, retry_after, fault_class) in rows {
+            let mut deps=tx.prepare_cached("SELECT d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id WHERE d.unit_id=?1 ORDER BY d.needs_id")?;
+            let deps = deps
+                .query_map([&id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let failed = deps
+                .iter()
+                .filter(|(_, c, s)| c == "success" && matches!(s.as_str(), "failed" | "blocked"))
+                .map(|(id, _, _)| id.clone())
+                .collect::<Vec<_>>();
+            let fault = if failed.is_empty() {
+                Value::Null
+            } else {
+                json!({"code":"dependency_failed","prerequisites":failed})
+            };
+            let ready = deps.iter().all(|(_, c, s)| {
+                s == "done" || (c == "settled" && matches!(s.as_str(), "failed" | "blocked"))
+            });
+            let aggregate = matches!(
+                layer.as_str(),
+                "cards-book"
+                    | "link-check"
+                    | "organize"
+                    | "skeleton"
+                    | "figures"
+                    | "bridge"
+                    | "audit"
+                    | "theory"
+                    | "math-check"
+            );
+            let enumerated = !aggregate || meta(tx, &format!("barrier/{layer}"))?["sealed"] == true;
+            let next = if !failed.is_empty() {
+                "blocked"
+            } else if state == "retry" && retry_after.is_some_and(|at| at > now) {
+                "retry"
+            } else if ready && enumerated {
+                "ready"
+            } else {
+                "registered"
+            };
+            if state == next {
+                continue;
+            }
+            tx.execute("UPDATE units SET state=?2,fault_class=CASE WHEN ?2='blocked' THEN 'dependency' WHEN fault_class='dependency' THEN NULL ELSE fault_class END,fault_json=CASE WHEN ?2='blocked' THEN ?3 WHEN fault_class='dependency' THEN NULL ELSE fault_json END WHERE id=?1",params![id,next,if fault.is_null(){None}else{Some(canon::canonical_json(&fault))}])?;
+            event(
+                tx,
+                &id,
+                None,
+                None,
+                "readiness",
+                &json!({"from":state,"to":next,"fault":fault,"previous_fault_class":fault_class}),
+            )?;
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn next(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let now = now_seconds();
+    reconcile(&tx, now)?;
+    let mut statement=tx.prepare("SELECT id,input_hash,inputs_json,claim_token FROM units WHERE layer=?1 AND state='ready' ORDER BY logical_key,revision,id LIMIT ?2")?;
+    let rows = statement
+        .query_map(params![layer, take], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let mut claimed = Vec::new();
+    for (id, input_hash, inputs, old_token) in rows {
+        let token = old_token.checked_add(1).context("claim token exhausted")?;
+        tx.execute("UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",params![id,owner,token,now+120])?;
+        let claim = json!({"id":id,"owner":owner,"token":token,"lease_until":now+120,"input_hash":input_hash,"inputs":serde_json::from_str::<Value>(&inputs)?});
+        event(
+            &tx,
+            &id,
+            Some(owner),
+            Some(token),
+            "claimed",
+            &json!({"input_hash":input_hash,"lease_until":now+120}),
+        )?;
+        claimed.push(claim);
+    }
+    tx.commit()?;
+    let mut result = status(&p.out, layer)?;
+    result["units"] = json!(claimed);
+    Ok(result)
+}
+
+struct Claim {
+    owner: String,
+    input_hash: String,
+    attempts: i64,
+}
+
+fn claim(tx: &Transaction, unit: &str, token: i64) -> Result<Claim> {
+    tx.query_row("SELECT owner,input_hash,attempts FROM units WHERE id=?1 AND state='claimed' AND claim_token=?2 AND lease_until>?3",params![unit,token,now_seconds()],|r|Ok(Claim{owner:r.get(0)?,input_hash:r.get(1)?,attempts:r.get(2)?})).optional()?.with_context(||format!("stale_claim: {unit} has no current unexpired claim for token {token}"))
+}
+
+fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claim = claim(&tx, unit, token)?;
+    let until = now_seconds() + 120;
+    tx.execute(
+        "UPDATE units SET lease_until=?2 WHERE id=?1",
+        params![unit, until],
+    )?;
+    event(
+        &tx,
+        unit,
+        Some(&claim.owner),
+        Some(token),
+        "renewed",
+        &json!({"lease_until":until}),
+    )?;
+    tx.commit()?;
+    Ok(json!({"unit":unit,"token":token,"lease_until":until}))
+}
+
+fn fault_class(code: &str) -> Result<&'static str> {
+    Ok(match code {
+        "lock_busy"
+        | "sharing_violation"
+        | "sqlite_busy"
+        | "transport_closed"
+        | "command_timeout"
+        | "service_unavailable"
+        | "provider_cap"
+        | "provider_transient"
+        | "missing_result"
+        | "missing_jobs"
+        | "pending_jobs"
+        | "lease_lost" => "retryable",
+        "access_refused"
+        | "invalid_arguments"
+        | "identity_mismatch"
+        | "operation_conflict"
+        | "owned_paragraph_conflict"
+        | "unreconciled_move" => "operator",
+        "invalid_plan" | "dependency_cycle" | "source_unavailable" | "unsupported_claim"
+        | "stale_content" | "check_failed" => "content",
+        _ => bail!("unknown fault code `{code}`"),
+    })
+}
+
+fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claim = claim(&tx, unit, token)?;
+    if fault_class(field(fault, "code")?)? != class {
+        bail!("fault classification mismatch: code does not permit class {class}");
+    }
+    if field(fault, "unit")? != unit || field(fault, "input_hash")? != claim.input_hash {
+        bail!("fault unit/input hash mismatch");
+    }
+    field(fault, "cause")?;
+    let retry = class == "retryable" && claim.attempts < 3;
+    let now = now_seconds();
+    let retry_after = if retry {
+        let mut jitter = [0u8; 1];
+        getrandom::fill(&mut jitter).map_err(|e| anyhow::anyhow!("retry jitter: {e}"))?;
+        Some(now + if claim.attempts == 1 { 5 } else { 20 } + i64::from(jitter[0] % 2))
+    } else {
+        None
+    };
+    let state = if retry { "retry" } else { "failed" };
+    tx.execute("UPDATE units SET state=?2,owner=NULL,lease_until=NULL,retry_after=?3,fault_class=?4,fault_json=?5 WHERE id=?1",params![unit,state,retry_after,class,canon::canonical_json(fault)])?;
+    event(
+        &tx,
+        unit,
+        Some(&claim.owner),
+        Some(token),
+        "faulted",
+        &json!({"state":state,"class":class,"fault":fault,"attempt":claim.attempts,"attempt_budget_exhausted":class=="retryable" && !retry,"retry_after":retry_after}),
+    )?;
+    reconcile(&tx, now)?;
+    tx.commit()?;
+    Ok(json!({"unit":unit,"token":token,"state":state,"fault":fault,"retry_after":retry_after}))
+}
+
+fn rerun_list(out: &Path) -> Result<Value> {
+    let view = status(out, "")?;
+    let units = view["units"].as_array().unwrap();
+    let unfinished = units
+        .iter()
+        .filter(|u| u["state"] != "done")
+        .filter_map(|u| u["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let roots = units
+        .iter()
+        .filter(|u| {
+            matches!(
+                u["state"].as_str(),
+                Some("failed" | "blocked" | "retry" | "claimed")
+            )
+        })
+        .filter_map(|u| u["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let closure = |downstream: bool| {
+        let mut seen = roots.clone();
+        loop {
+            let before = seen.len();
+            for dep in view["dependencies"].as_array().unwrap() {
+                let (from, to) = if downstream {
+                    ("needs", "unit")
+                } else {
+                    ("unit", "needs")
+                };
+                let from = dep[from].as_str().unwrap();
+                let to = dep[to].as_str().unwrap();
+                if seen.contains(from) && unfinished.contains(to) {
+                    seen.insert(to);
+                }
+            }
+            if before == seen.len() {
+                break;
+            }
+        }
+        seen.into_iter().collect::<Vec<_>>()
+    };
+    Ok(
+        json!({"schema_version":1,"run_id":view["run_id"],"complete":view["complete"],"unresolved":view["unresolved"],"prerequisites":closure(false),"downstream":closure(true),"units":units.iter().filter(|u|u["state"]!="done").collect::<Vec<_>>(),"dependencies":view["dependencies"],"archive_verification":"not_requested"}),
+    )
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
@@ -525,16 +924,76 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     let parsed = (|| -> Result<Args> {
-        if !matches!(command.as_str(), "init" | "status") {
-            bail!("ledger requires init or status");
+        if !matches!(
+            command.as_str(),
+            "init" | "status" | "gate" | "next" | "renew" | "fail" | "rerun-list"
+        ) {
+            bail!("ledger requires init, status, gate, next, renew, fail or rerun-list");
         }
-        let a = Args::parse(&argv[1..], &["Out", "Layer"], &[])?;
+        let params = if command == "next" {
+            vec!["Out", "Layer", "Take", "Owner"]
+        } else if command == "renew" {
+            vec!["Out", "Unit", "Token"]
+        } else if command == "fail" {
+            vec!["Out", "Unit", "Token", "Class", "Fault"]
+        } else {
+            vec!["Out", "Layer"]
+        };
+        let a = Args::parse(&argv[1..], &params, &[])?;
         a.required("Out")?;
+        if a.str("Out").trim().is_empty() {
+            bail!("-Out is required");
+        }
+        if matches!(command.as_str(), "gate" | "next") {
+            a.required("Layer")?;
+        }
+        if command == "next" {
+            a.required("Take")?
+                .parse::<i64>()
+                .ok()
+                .filter(|n| (1..=64).contains(n))
+                .context("-Take must be a positive integer from 1 through 64")?;
+            if a.required("Owner")?.trim().is_empty() || a.str("Owner").len() > 256 {
+                bail!("-Owner must be nonempty and at most 256 bytes");
+            }
+        }
+        if matches!(command.as_str(), "renew" | "fail") {
+            if a.required("Unit")?.trim().is_empty() {
+                bail!("-Unit is required");
+            }
+            a.required("Token")?
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .context("-Token must be a positive integer")?;
+        }
+        if command == "fail" {
+            a.choice("Class", &["retryable", "operator", "content"])?;
+            a.required("Fault")?;
+        }
+        if a.has("Layer")
+            && !COMMON.contains(&a.str("Layer").as_str())
+            && ![
+                "events",
+                "findings",
+                "math-index",
+                "math-docs",
+                "math-skeleton",
+                "notation",
+                "boundary",
+                "proof",
+                "theory",
+                "math-check",
+            ]
+            .contains(&a.str("Layer").as_str())
+        {
+            bail!("unknown ledger layer");
+        }
         if !a.positional.is_empty() {
             bail!("unexpected ledger positional arguments");
         }
-        if command == "init" && a.has("Layer") {
-            bail!("init does not accept -Layer");
+        if matches!(command.as_str(), "init" | "rerun-list") && a.has("Layer") {
+            bail!("{command} does not accept -Layer");
         }
         Ok(a)
     })();
@@ -545,13 +1004,38 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             return Ok(2);
         }
     };
-    let result = if command == "init" {
+    let result = if matches!(command.as_str(), "init" | "next" | "renew" | "fail") {
         let mut zt = Zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
-        init(&p)?
+        if command == "init" {
+            init(&p)?
+        } else if command == "renew" {
+            renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
+        } else if command == "fail" {
+            let path = a.str("Fault");
+            if std::fs::metadata(&path)?.len() > 65536 {
+                bail!("fault evidence exceeds 64 KiB");
+            }
+            let fault = util::read_json(&path)?;
+            fail(
+                &p,
+                &a.str("Unit"),
+                a.str("Token").parse()?,
+                &a.choice("Class", &["retryable", "operator", "content"])?,
+                &fault,
+            )?
+        } else {
+            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"))?
+        }
+    } else if command == "rerun-list" {
+        rerun_list(Path::new(&a.str("Out")))?
     } else {
         status(Path::new(&a.str("Out")), &a.str("Layer"))?
     };
     util::print_line(&serde_json::to_string(&result)?)?;
-    Ok(0)
+    Ok(if command == "gate" && result["settled"] != true {
+        3
+    } else {
+        0
+    })
 }

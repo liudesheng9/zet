@@ -61,6 +61,7 @@ try {
     $sourceBytes = [IO.File]::ReadAllBytes($source)
     [IO.File]::AppendAllText($source,"`n改变了来源。",$utf8)
     Refuses @('ledger','init','-Out',$out) 'source hash mismatch'
+    Refuses @('ledger','next','-Out',$out,'-Layer','terms','-Take','1','-Owner','mismatch-manager') 'source hash mismatch'
     Assert ((Evidence) -ceq $evidence) 'a source mismatch leaves every ledger row unchanged'
     [IO.File]::WriteAllBytes($source,$sourceBytes)
     $groupFile = $manifest.groups[0].file
@@ -85,6 +86,11 @@ try {
     [IO.File]::WriteAllBytes($manifestPath,$originalManifest)
     $statusAgain = Run-Digest @('ledger','status','-Out',$out,'-Layer','digest')
     Assert ($statusAgain.units.Count -eq $groups.Count -and (Evidence) -ceq $evidence) 'status is a read-only layer-scoped projection of durable coverage'
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_IDENTITY_FAULT = 'after_read'
+    Refuses @('ledger','next','-Out',$out,'-Layer','terms','-Take','1','-Owner','raced-manager') 'archive changed while checking preparation'
+    Assert ((Evidence) -ceq $evidence) 'an identity change during the actual read cannot publish a claim'
+    Remove-Item Env:ZT_IDENTITY_FAULT,Env:ZT_CHECK_ZT
     $invalid = @(& $Digest ledger status 2>&1)
     Assert ($LASTEXITCODE -eq 2 -and ($invalid -join ' ').Contains('-Out is required')) 'ledger commands require an explicit output directory and distinguish invalid invocation'
     zt down | Out-Null
@@ -93,7 +99,7 @@ try {
     Assert ($offline.run_id -eq $init.run_id -and (Evidence) -ceq $evidence) 'read-only ledger status remains available without an archive service or executable'
     Remove-Item Env:ZT_CHECK_ZT
 } finally {
-    Remove-Item Env:ZT_CHECK_ZT -ErrorAction SilentlyContinue
+    Remove-Item Env:ZT_CHECK_ZT,Env:ZT_IDENTITY_FAULT -ErrorAction SilentlyContinue
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
