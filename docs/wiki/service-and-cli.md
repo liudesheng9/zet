@@ -12,7 +12,7 @@ paths:
   - "tests/autostart.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: cde3f403cd7b
+synced: 9de9651969ed
 updated: 2026-10-18
 ---
 
