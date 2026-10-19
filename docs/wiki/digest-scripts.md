@@ -738,6 +738,7 @@ pwsh -NoProfile -File scripts\book-digest\tests\attach-figures.tests.ps1 [-Zt <z
 pwsh -NoProfile -File scripts\book-digest\tests\prepare.tests.ps1
 pwsh -NoProfile -File scripts\book-digest\tests\zt-calls.tests.ps1 [-Script <list-models.ps1>]
 pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1 [-Zt <zt.exe>]
+pwsh -NoProfile -File scripts\book-digest\tests\concepts.tests.ps1
 pwsh -NoProfile -File scripts\book-digest\tests\book-of.tests.ps1
 pwsh -NoProfile -File scripts\book-digest\tests\bridge-compiler.tests.ps1 [-Zt <zt.exe>]
 pwsh -NoProfile -File scripts\book-digest\tests\bridge-planning.tests.ps1
@@ -823,6 +824,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+- `2026-10-19` — Re-verify `tests/concepts.tests.ps1` for #97 (S04) on the tree that carries #98–#106. It now shares one canned-answer builder (`New-Judgments`) between its two frozen evidence sets and asserts the incomplete read that no pair names: a Topic root hidden from its read by the seam's `ZT_BULK_MISSING` never becomes a candidate, every shortlisted pair is judged, and the report is still `partial`, names that address in `completeness.unread`, and lists it among the `unread_endpoint` reasons and the `unresolved` items. It also refuses a `concept-review.json` edited after the review by that report's own id, and it counts 59 assertions.
 
 - `2026-10-19` — Add `tests/standalone-placement.tests.ps1` (#103, S06): the place-beside rule through the writer's `-Beneath` helper and a real group, including the permission matrix, the unchanged earlier authored bodies, the group-start place-beside file and the receipt-owned replay.
 

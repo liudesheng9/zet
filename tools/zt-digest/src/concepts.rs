@@ -1574,7 +1574,13 @@ fn report_payload(evidence: &Value, judged: Option<&Value>) -> Result<Value> {
     let judged_rows: Vec<Value> = judged.map(|value| ps::ps_items(&value["judgments"])).unwrap_or_default();
     let mut findings: Vec<Value> = Vec::new();
     let mut unjudged = 0usize;
-    let mut unread: Vec<String> = Vec::new();
+    // D082: every read the frozen evidence missed is named here, whether or not the missing Card
+    // became a candidate. A read that failed before the shortlist existed is still a missing read.
+    let mut unread: Vec<String> = ps::ps_items(&evidence["unread"])
+        .iter()
+        .map(|row| f(row, "address"))
+        .filter(|at| !at.is_empty())
+        .collect();
     let mut unresolved: Vec<String> = Vec::new();
     let mut summaries: Vec<Value> = Vec::new();
     for proposal in ps::ps_items(&evidence["proposals"]) {
@@ -1781,11 +1787,11 @@ fn report_payload(evidence: &Value, judged: Option<&Value>) -> Result<Value> {
     for (index, row) in findings.iter_mut().enumerate() {
         row["id"] = json!(format!("c{:03}", index + 1));
     }
+    unread.sort_by(|a, b| canon::ordinal_cmp(a, b));
+    unread.dedup();
     for at in &unread {
         unresolved.push(format!("`{at}` 没有读到：这一对端点不能进入干净结论"));
     }
-    unread.sort_by(|a, b| canon::ordinal_cmp(a, b));
-    unread.dedup();
     let table_read = ps::truthy(&evidence["term_table"]["read"]);
     let mut reasons: Vec<String> = Vec::new();
     if !table_read {
@@ -2157,6 +2163,23 @@ mod tests {
     }
 
     #[test]
+    fn a_long_endpoint_body_is_retained_within_its_bound() {
+        let work = std::env::temp_dir().join(format!("zt-concepts-retained-{}", std::process::id()));
+        std::fs::create_dir_all(work.join("endpoints")).unwrap();
+        let body = "均衡的陈述。".repeat(1_200);
+        assert!(ps::len16(&body) > ENDPOINT_BODY);
+        let card = json!({ "address": "K/4", "title": "长卡", "body": body });
+        let (path, sha256) = retain_endpoint(&work.to_string_lossy(), &card).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(canon::sha256_hex(text.as_bytes()), sha256);
+        let retained = text.split("\n\n").nth(1).unwrap().trim_end_matches('\n');
+        assert!(ps::len16(retained) <= ENDPOINT_BODY + 1, "the retained body is cut to its bound: {}", ps::len16(retained));
+        assert!(retained.ends_with('…'), "a cut body is marked as cut");
+        assert!(retained.starts_with("均衡的陈述。"));
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
     fn a_statement_keeps_the_claim_not_the_labels() {
         let body = "对称参与者的重复博弈有两个均衡。\n\n假设：参与者对称。\n\n来源：[[K]] §2.1\n\n第二段不是陈述。";
         assert_eq!(statement(body), "对称参与者的重复博弈有两个均衡。");
@@ -2280,6 +2303,28 @@ mod tests {
         let report = report_payload(&without, None).unwrap();
         assert!(ps::ps_items(&report["completeness"]["reasons"]).iter().any(|row| ps::s(row) == "term_table_missing"));
         assert_eq!(report["status"], "partial");
+    }
+
+    #[test]
+    fn a_card_the_review_could_not_read_keeps_the_report_partial() {
+        let mut evidence = evidence();
+        // A Card the catalogue named but the read did not return: it never became a candidate, so
+        // no pair names it, yet the frozen evidence says the read is missing (D082).
+        evidence["unread"] = json!([{ "address": "K/9", "why": "the Card read did not return it" }]);
+        let judged = validate_answer(
+            &evidence,
+            &answer(&evidence, json!([
+                { "kind": "topic-concept", "proposal": "p001", "candidate": "T/0", "verdict": "same", "scope": "s", "reason": "r", "evidence": ["T/0"], "entry": "T/1" },
+                { "kind": "restatement", "proposal": "p001", "candidate": "K/4", "verdict": "different", "reason": "r", "evidence": ["K/4"] }
+            ])),
+        )
+        .unwrap();
+        let report = report_payload(&evidence, Some(&judged)).unwrap();
+        let unread: Vec<String> = ps::ps_items(&report["completeness"]["unread"]).iter().map(ps::s).collect();
+        assert_eq!(unread, ["K/9"], "the report names every read the frozen evidence missed");
+        assert_eq!(report["completeness"]["complete"], false);
+        assert_eq!(report["status"], "partial");
+        assert!(ps::ps_items(&report["completeness"]["reasons"]).iter().any(|row| ps::s(row) == "unread_endpoint"));
     }
 
     #[test]

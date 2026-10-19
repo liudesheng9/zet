@@ -95,6 +95,29 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = "$learn/0"; title = '重复练习改变个体技能'; body = "同一个体重复练习，技能提高。`n`n来源：[[Rev2026]] §3.1" } }
     )
     $multiEntry = "$multi/1"
+    # The canned answers for one frozen evidence set: every shortlisted pair judged, the two 学习
+    # senses kept apart, the shared formula under different assumptions kept a difference.
+    function New-Judgments($evidence, $multi, $learn) {
+        $rows = @()
+        foreach ($proposal in $evidence.proposals) {
+            foreach ($c in @($proposal.topic_candidates)) {
+                $same = $proposal.id -eq 'p001' -and $c.address -eq "$multi/0"
+                $entry = if ($same) { "$multi/1" } else { $null }
+                $learnDifferent = $c.address -eq "$learn/0"
+                $rows += [ordered]@{ kind = 'topic-concept'; proposal = $proposal.id; candidate = $c.address; verdict = $(if ($same) { 'same' } else { 'different' })
+                    scope = $(if ($same) { '策略互补时的均衡多重性' } else { $null }); assumptions = $(if ($same) { @('参与者同时选择策略') } else { @() })
+                    entry = $entry; reason = $(if ($same) { '两张卡讨论同一个均衡条件与同一组问题。' } elseif ($learnDifferent) { '个体技能的改变与产业生产率的提高是两个不同的意思。' } else { '两个入口讨论的条件不同。' })
+                    evidence = $(if ($same) { @("$multi/0", "$multi/1") } else { @($c.address) }) }
+            }
+            foreach ($s in @($proposal.restatement_candidates)) {
+                $formula = $s.title -match '对称参与者'
+                $rows += [ordered]@{ kind = 'restatement'; proposal = $proposal.id; candidate = $s.address; verdict = 'different'
+                    reason = $(if ($formula) { '公式相同，但候选卡以参与者对称为前提，提议的陈述没有这个前提。' } else { '两处陈述的假设不同。' })
+                    assumptions = @($s.assumptions); evidence = @($s.address) }
+            }
+        }
+        , $rows
+    }
 
     $proposals = @{ schema_version = 1; proposals = @(
             @{ title = '均衡的多重性'; question = '什么条件下同一个经济有多个均衡？'
@@ -135,24 +158,7 @@ try {
     $out = Join-Path $work 'out'
     New-Item -ItemType Directory -Force $out | Out-Null
     $answerFile = Join-Path $out 'cj-01.json'
-    $judgments = @()
-    foreach ($proposal in $evidence.proposals) {
-        foreach ($c in @($proposal.topic_candidates)) {
-            $same = $proposal.id -eq 'p001' -and $c.address -eq "$multi/0"
-            $entry = if ($same) { "$multi/1" } else { $null }
-            $learnDifferent = $c.address -eq "$learn/0"
-            $judgments += [ordered]@{ kind = 'topic-concept'; proposal = $proposal.id; candidate = $c.address; verdict = $(if ($same) { 'same' } else { 'different' })
-                scope = $(if ($same) { '策略互补时的均衡多重性' } else { $null }); assumptions = $(if ($same) { @('参与者同时选择策略') } else { @() })
-                entry = $entry; reason = $(if ($same) { '两张卡讨论同一个均衡条件与同一组问题。' } elseif ($learnDifferent) { '个体技能的改变与产业生产率的提高是两个不同的意思。' } else { '两个入口讨论的条件不同。' })
-                evidence = $(if ($same) { @("$multi/0", "$multi/1") } else { @($c.address) }) }
-        }
-        foreach ($s in @($proposal.restatement_candidates)) {
-            $formula = $s.title -match '对称参与者'
-            $judgments += [ordered]@{ kind = 'restatement'; proposal = $proposal.id; candidate = $s.address; verdict = 'different'
-                reason = $(if ($formula) { '公式相同，但候选卡以参与者对称为前提，提议的陈述没有这个前提。' } else { '两处陈述的假设不同。' })
-                assumptions = @($s.assumptions); evidence = @($s.address) }
-        }
-    }
+    $judgments = New-Judgments $evidence $multi $learn
     Write-Json $answerFile @{ schema_version = 1; evidence_id = $evidence.evidence_id; judgments = $judgments }
     $judge = Invoke-Concepts @('-Step', 'judge', '-Staging', $staging, '-File', $answerFile)
     Assert ($judge.code -eq 0 -and $judge.last.judged -eq $judgments.Count -and $judge.last.unjudged -eq 0) "judge accepts the canned answers ($($judgments.Count) prepared, refused: $($judge.text))"
@@ -235,6 +241,16 @@ try {
     Assert ($accepted.code -eq 0 -and $accepted.last.accepted -eq 1 -and $accepted.last.decision_id -match '^d-[0-9a-f]{64}$') 'decision accepts a reviewed decision that binds the report id and the finding'
     $decision = Read-Json (Join-Path $work 'decision.json')
     Assert ($decision.report_id -eq $review.report_id -and @($decision.decisions)[0].finding -eq $same.id) 'the accepted decision is retained with its report id'
+    # A report file edited after the review no longer matches its own content id, so no decision
+    # binds it (the wrong-hash refusal of 11.3).
+    $reportPath = Join-Path $staging 'concept-review.json'
+    $savedReport = [IO.File]::ReadAllBytes($reportPath)
+    [IO.File]::WriteAllText($reportPath, [Text.Encoding]::UTF8.GetString($savedReport).Replace('c001', 'c901'), $utf8)
+    $tamperedReport = & $decide @{ schema_version = 1; report_id = $review.report_id; decisions = @(@{ finding = 'c001'; action = 'reuse_topic'; verdict = 'same'; note = '复用。' }) }
+    Assert ($tamperedReport.code -ne 0 -and $tamperedReport.text -match 'report id') 'an edited report file is refused by its own report id'
+    [IO.File]::WriteAllBytes($reportPath, $savedReport)
+    $restored = Invoke-Concepts @('-Step', 'report', '-Staging', $staging)
+    Assert ($restored.code -eq 0 -and $restored.last.report_id -eq $review.report_id) 'the restored report is the reviewed one again'
 
     # --- incomplete reads: an endpoint that could not be read stays visible -------------------
     $unreadStaging = New-Staging 'staging-unread' @{ schema_version = 1; proposals = @(@{ title = '均衡的多重性'; question = '什么条件下同一个经济有多个均衡？'
@@ -262,6 +278,30 @@ try {
         Assert (@($partialReview.unresolved).Count -ge 1 -and @($partialReview.findings | Where-Object { $_.unjudged }).Count -ge 1) 'unjudged pairs become uncertain findings with what must be read, not a clean result'
         $emptyDecision = & $decide @{ schema_version = 1; report_id = $partialReview.report_id; decisions = @(@{ finding = @($partialReview.findings)[0].id; action = 'reuse_topic'; verdict = 'uncertain'; note = 'x' }) } $unreadStaging
         Assert ($emptyDecision.code -ne 0) 'decision refuses a finding the partial report leaves unresolved'
+    } finally { Remove-Item Env:ZT_BULK_MISSING -ErrorAction SilentlyContinue }
+    # A read the archive answered as missing for a Card that never became a candidate: the frozen
+    # evidence records it, so no complete review can be declared over it (D082) even when every
+    # shortlisted pair is judged.
+    $hiddenStaging = New-Staging 'staging-hidden' $proposals
+    # 控制权: the one Topic no proposal names, so it can only be an unread catalogue entry.
+    $hiddenAddress = $topics[13]
+    Assert ($hiddenAddress -match '^\d+/0$') "the hidden Topic root has a Topic address ($hiddenAddress)"
+    $env:ZT_CHECK_ZT = $seam
+    $env:ZT_BULK_MISSING = $hiddenAddress
+    try {
+        $hidden = Invoke-Concepts @('-Step', 'prepare', '-Staging', $hiddenStaging)
+        Assert ($hidden.code -eq 0 -and $hidden.last.unread -eq 1) "prepare records a read the archive answered as missing: $($hidden.text)"
+        $hiddenEvidence = Read-Json (Join-Path $hiddenStaging 'concepts\evidence.json')
+        $hiddenAnswer = Join-Path $hiddenStaging 'concepts\out\cj-01.json'
+        New-Item -ItemType Directory -Force (Split-Path -Parent $hiddenAnswer) | Out-Null
+        Write-Json $hiddenAnswer @{ schema_version = 1; evidence_id = $hiddenEvidence.evidence_id; judgments = (New-Judgments $hiddenEvidence $multi $learn) }
+        $hiddenJudge = Invoke-Concepts @('-Step', 'judge', '-Staging', $hiddenStaging, '-File', $hiddenAnswer)
+        $hiddenReport = Invoke-Concepts @('-Step', 'report', '-Staging', $hiddenStaging)
+        Assert ($hiddenJudge.code -eq 0 -and $hiddenReport.code -eq 0) "the judged review over the incomplete set renders: $($hiddenJudge.text) $($hiddenReport.text)"
+        Assert ($hiddenReport.last.judged -eq $judgments.Count -and $hiddenReport.last.unjudged -eq 0 -and -not $hiddenReport.last.complete -and $hiddenReport.last.status -eq 'partial') 'every shortlisted pair judged, yet the Card the review could not read keeps it partial'
+        $hiddenReview = Read-Json (Join-Path $hiddenStaging 'concept-review.json')
+        Assert (@($hiddenReview.completeness.unread).Count -eq 1 -and @($hiddenReview.completeness.unread) -contains $hiddenAddress) 'the partial review names the address it could not read'
+        Assert (@($hiddenReview.completeness.reasons) -contains 'unread_endpoint' -and @($hiddenReview.unresolved | Where-Object { $_ -match [regex]::Escape($hiddenAddress) }).Count -ge 1) 'the missed read is named among the reasons and the unresolved items'
     } finally { Remove-Item Env:ZT_BULK_MISSING -ErrorAction SilentlyContinue }
 
     # --- a changing archive revision: retried once, then a fault -------------------------------
