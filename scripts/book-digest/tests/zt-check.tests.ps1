@@ -21,7 +21,8 @@ $expected = @(
     'K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.'
     'K/1|a|a|4 R13 (13 sentences > 12) split the part'
     'K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts'
-    'faults: 13'
+    'Other/1|a|a R21 (advisory) unnamed referent `这张卡` with no named Link in its sentence: 这张卡属于另一个模型。'
+    'faults: 14'
 )
 $failed = 0
 if ($lines.Count -ne $expected.Count) {
@@ -36,9 +37,11 @@ for ($i = 0; $i -lt [Math]::Min($lines.Count, $expected.Count); $i++) {
     }
 }
 # The setting's own tables, the quotation, chart, and formulas, and a shared part's words under
-# another model's term table raise nothing.
+# another model's term table raise nothing. The shared part's one bare deictic is the pilot's
+# advice (R21), which its own text earns.
 foreach ($line in $lines) {
-    if ($line -match '引文|图里|清算价值；|^Other/') { Write-Output "checked text it must skip: $line"; $failed++ }
+    $sharedAdvice = $line.StartsWith('Other/') -and $line.Contains(' R21 (advisory) ')
+    if (($line -match '引文|图里|清算价值；|^Other/') -and -not $sharedAdvice) { Write-Output "checked text it must skip: $line"; $failed++ }
 }
 # R13 counts prose characters too, against -MaxChars; a Derivation part's steps count under R14 only.
 $small = Join-Path ([IO.Path]::GetTempPath()) "card-style-size-$PID.json"

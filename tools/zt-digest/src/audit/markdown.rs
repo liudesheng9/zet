@@ -147,15 +147,17 @@ pub fn render(report: &Value, p: &Params) -> String {
             n(&b["topics"]["sizes"]["max"])
         ));
         line(&format!(
-            "- **Card language**: {} faults in {} of {} Cards. By rule: {}.",
+            "- **Card language**: {} faults in {} of {} Cards. By rule: {}. Standalone advice (R20, R21): {} by rule: {}.",
             n(&b["style"]["faults"]),
             n(&b["style"]["cards_with_faults"]),
             n(&b["style"]["cards_checked"]),
-            tally(&b["style"]["by_rule"])
+            tally(&b["style"]["by_rule"]),
+            n(&b["style"]["advisory"]),
+            tally(&b["style"]["advice_by_rule"])
         ));
         let term = if truthy(&b["layer"]["term_table"]) { format!("`{}`", n(&b["layer"]["term_table"])) } else { "none".into() };
         line(&format!(
-            "- **Card layer rules** (I, E, L): {} faults in {} Cards, {} advisory (I1, I6, E5, L3). By rule: {}. Term table: {term}.",
+            "- **Card layer rules** (I, E, F, L): {} faults in {} Cards, {} advisory (I1, I6, E5, L3, I7 unknown). By rule: {}. Term table: {term}.",
             n(&b["layer"]["faults"]),
             n(&b["layer"]["cards_with_faults"]),
             n(&b["layer"]["advisory"]),

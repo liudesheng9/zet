@@ -2104,7 +2104,7 @@ fn push(list: &mut Value, item: Value) {
 /// The rules the whole-book Card cycle checks an owned scope with. The Cards/group
 /// completion runs the same set, so the work it hands to the book cycle is exactly
 /// the work that cycle will see (R216).
-pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2";
+pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2";
 
 /// `zt-digest card`.
 pub fn cli(argv: &[String]) -> Result<i32> {

@@ -136,7 +136,9 @@ zt-check --addresses <a,b,...>
 zt-check --json <file>                                                      # drafts, offline
 ```
 
-Output: one line per fault `<address> <rule> <text>`, then `faults: N`. A run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R19 (Card language, size and exact corruption) and the Card layer rules I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links).
+Output: one line per fault `<address> <rule> <text>`, then `faults: N`. A run that prints no `faults:` line did not run, and nothing may be written on it. Rules: R2 to R21 (Card language, size, exact corruption, and the standalone heuristics R20/R21) and the Card layer rules I, E, F, L (Idea Cards, Event Cards, Finding Cards, Links), including I7 (a Topic Idea Card resting on its own source's Literature tree).
+
+R20 and R21 are **advice in the pilot** (`(advisory)`): a local label that stands in for its content (`式 (12) 有该项`), and a deictic with no named Link in its sentence (`该卡`, `那里`). They name the fragment and the text; a semantic review decides. They are counted apart from blocking faults by `zt-check --cards` and by `zt-digest audit` (`style.advisory`). I7's unknown-source line is advice too. The writer guidance is the Card prompt's 改写规则 (R20, R21, I7), and the replacement of `依赖` by `对应` to silence a rule is never a repair.
 
 The SELF-CHECK of each base task:
 

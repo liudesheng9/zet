@@ -427,6 +427,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "facet": facets.get(&ci(&a)).cloned().map(Value::String).unwrap_or(Value::Null), "line": null,
                 "category": category(c), "tree": field(c, "tree"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
                 "parent": field(c, "parent"), "links": str_list(&c["links"]), "kinds": ps::keys(&c["kinds"]),
+                // The kinded relation of each Link, which I7 reads; the array above keeps its order.
+                "relations": c["kinds"].clone(),
                 "inbound": inbound_from.get(&ci(&a)).cloned().unwrap_or_default(),
                 "inbound_kinded": kinded_from.get(&ci(&a)).copied().unwrap_or(0)
             })
@@ -536,8 +538,11 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             .collect();
         let majority = tree_rows.iter().filter(|r| r["cards"].as_i64().unwrap_or(0) * 2 > r["size"].as_i64().unwrap_or(0)).count();
 
-        // Card language and Card layer.
-        let my_faults: Vec<&Fault> = faults.iter().filter(|f| mine_set.contains_key(&ci(&f.address)) && ps::starts_ci(&f.rule, "R")).collect();
+        // Card language and Card layer. The standalone heuristics (R20, R21) are advice in
+        // the pilot, so they are reported apart from the blocking style faults (D138).
+        let my_style: Vec<&Fault> = faults.iter().filter(|f| mine_set.contains_key(&ci(&f.address)) && ps::starts_ci(&f.rule, "R")).collect();
+        let my_faults: Vec<&Fault> = my_style.iter().copied().filter(|f| !f.line.contains("(advisory)")).collect();
+        let my_advice: Vec<&Fault> = my_style.iter().copied().filter(|f| f.line.contains("(advisory)")).collect();
         let my_layer: Vec<&Fault> = faults.iter().filter(|f| mine_set.contains_key(&ci(&f.address)) && !ps::starts_ci(&f.rule, "R")).collect();
         let mut rule_by_category = Map::new();
         for (name, group) in group_by(&my_faults, |f| category(mine_set[&ci(&f.address)])) {
@@ -643,8 +648,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "style": {
                 "cards_checked": mine.iter().filter(|c| bodies.contains_key(&ci(&field(c, "address")))).count(),
                 "faults": my_faults.len(),
+                "advisory": my_advice.len(),
                 "cards_with_faults": ps_sort_unique(&my_faults.iter().map(|f| f.address.clone()).collect::<Vec<_>>()).len(),
                 "by_rule": tally(&my_faults.iter().map(|f| f.rule.clone()).collect::<Vec<_>>()),
+                "advice_by_rule": tally(&my_advice.iter().map(|f| f.rule.clone()).collect::<Vec<_>>()),
                 "by_category": rule_by_category
             },
             "layer": {
@@ -717,6 +724,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "hubs_missing": w["hubs"]["missing"], "broken_links": w["broken_links"], "unattributed": w["unattributed"]["count"],
         "books": ps_items(&report["books"]).iter().map(|b| json!({
             "key": b["key"], "cards": b["cards"], "topic_trees": b["topics"]["trees"], "style_faults": b["style"]["faults"],
+            "style_advisory": b["style"]["advisory"],
             "bridges": b["bridges"],
             "layer_faults": b["layer"]["faults"], "layer_advisory": b["layer"]["advisory"],
             "orphans": b["orphans"]["count"], "no_source": b["no_source"]["count"], "unkinded": b["unkinded"]["count"],

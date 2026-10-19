@@ -62,6 +62,17 @@ pattern!(
     r"的[^，。、：；！？,.;:!?\s的]{0,7}的[^，。、：；！？,.;:!?\s的]{0,7}的"
 );
 pattern!(DERIVATION, r"(?i)^derivation");
+// The standalone text rules (R20, R21). Not every digit and not every 第 is a
+// local reference: 第一福利定理 is a name, and a label with the content beside
+// it is a statement.
+pattern!(LOCAL_EQUATION, r"式\s*[（(]\s*[0-9A-Za-z][0-9A-Za-z.]*\s*[)）]");
+pattern!(
+    LOCAL_NAMED_NUMBER,
+    r"(命题|引理|定理|推论|模型)\s*[（(]?\s*\d+(?:[.．][0-9A-Za-z]+)*"
+);
+pattern!(LOCAL_CHAPTER, r"第\s*\d+\s*[章节]");
+pattern!(LOCAL_THIS, r"本节|本章");
+pattern!(LOCAL_SIGN, r"§\s*\d+(?:[.．][0-9A-Za-z]+)*");
 pattern!(SECTION, r"^\*{0,2}(思路|起点|步骤|结果|解读)\*\*\s*$");
 pattern!(POSITION, r"^第 \d+ 张，共 \d+ 张");
 pattern!(NOTE, r"^说明\s*[：:]");
@@ -144,9 +155,18 @@ static FINDING_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
 
 const SECTIONS: [&str; 5] = ["思路", "起点", "步骤", "结果", "解读"];
 
+/// R20's named constant: the characters of content a sentence must carry beside
+/// a local label. `式 (12) 的加成项来自需求弹性` states content; `式 (12) 有该项`
+/// does not. It is calibrated on annotated examples before it can block (D294).
+const LOCAL_REFERENCE_CONTENT: i64 = 5;
+
+/// The deictic phrases R21 reports when no named Link is in the same sentence.
+/// It is a detector of two things it can see, never a Chinese coreference engine.
+const DEICTIC: [&str; 6] = ["那里", "那儿", "那张卡", "这张卡", "该卡", "该卡片"];
+
 /// The rules self-check.ps1 reports by default: every hard rule but R6.
 const DEFAULT_RULES: &str =
-    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,I1,I2,I3,I4,L1,L2,E1,E2,F1,F2,F3";
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3";
 
 const USAGE: &str = "usage:
   zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
@@ -860,6 +880,10 @@ impl Check {
         let title = text(prop(card, "title"));
         corruption(&text(prop(card,"body")),&title,address,faults);
         let facet = text(prop(card, "facet"));
+        // A root, an anchor's section index, and a hub's navigation list are not claims; the
+        // standalone rules read the authored prose that states one (D126's Literature prose
+        // excludes a locator, and an index line is a locator).
+        let navigation = ps_in(&text(prop(card, "category")), &["anchor", "root", "hub"]);
         let shared = ps_in(address, &self.shared);
         let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);
         if !title.is_empty() {
@@ -875,6 +899,9 @@ impl Check {
             if SEMICOLON.is_match(&plain(&title)) {
                 faults.add(address, "R12", &format!("two claims: {title}"));
             }
+            // A title names its content, so a bare local number is the same fault there.
+            local_reference(faults, address, &title);
+            unnamed_referent(faults, address, &title);
         }
         let mut sentences = 0;
         let mut chars = 0;
@@ -930,6 +957,11 @@ impl Check {
             }
             for sentence in split_sentences(&line_text) {
                 self.sentence(faults, address, shared, &sentence, is_step);
+                // A source locator (`来源：[[book]] §11.D`) may carry the number.
+                if !navigation && !SOURCE_LINE.is_match(&line.text) {
+                    local_reference(faults, address, &sentence);
+                    unnamed_referent(faults, address, &sentence);
+                }
                 if is_step {
                     continue;
                 }
@@ -1308,6 +1340,10 @@ impl Check {
                     );
                 }
             }
+            // I7 reads the relationship evidence, so only a Card that carries it is in scope.
+            if is(&["idea"]) {
+                own_source_dependency(card, &address, faults);
+            }
         }
         // I6 and E5 compare Cards with each other. Group-Object sorts its groups.
         let mut groups: Vec<(String, Vec<(String, HashSet<String>)>)> = Vec::new();
@@ -1377,6 +1413,153 @@ impl Check {
 /// or an anchor (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
 fn book_place(target: &str) -> bool {
     BOOK_CARD.is_match(target) || BOOK_ANCHOR.is_match(target)
+}
+
+/// R20: a local label that stands in for its content (`式 (12) 有该项`). The
+/// content is what the rest of the text says once the labels are taken out, so
+/// `式 (12) 的加成项来自需求弹性` passes and a source locator is tested by its
+/// caller only. Advice in the pilot: the label may stay as a secondary name.
+fn local_reference(faults: &mut Faults, address: &str, text: &str) {
+    let text_plain = plain(text);
+    let mut labels: Vec<String> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for pattern in [
+        &*LOCAL_EQUATION,
+        &*LOCAL_NAMED_NUMBER,
+        &*LOCAL_CHAPTER,
+        &*LOCAL_THIS,
+        &*LOCAL_SIGN,
+    ] {
+        for found in pattern.find_iter(&text_plain) {
+            if spans
+                .iter()
+                .any(|(start, end)| *start < found.end() && found.start() < *end)
+            {
+                continue;
+            }
+            spans.push((found.start(), found.end()));
+            labels.push(found.as_str().to_string());
+        }
+    }
+    if labels.is_empty() {
+        return;
+    }
+    let mut order = (0..labels.len()).collect::<Vec<_>>();
+    order.sort_by_key(|index| spans[*index].0);
+    let mut rest = String::new();
+    let mut at = 0;
+    for index in order {
+        rest.push_str(&text_plain[at..spans[index].0]);
+        at = spans[index].1;
+    }
+    rest.push_str(&text_plain[at..]);
+    if length(&REASON_STRIP.replace_all(&rest, "")) >= LOCAL_REFERENCE_CONTENT {
+        return;
+    }
+    for label in labels {
+        faults.add(
+            address,
+            "R20",
+            &format!("(advisory) local reference `{label}` names no content: {text}"),
+        );
+    }
+}
+
+/// R21: a deictic phrase with no named Link in its own sentence (`该卡` alone,
+/// `那里` alone). A Link in the same sentence names the referent; a Link in the
+/// sentence before does not. It decides only what it can see.
+fn unnamed_referent(faults: &mut Faults, address: &str, text: &str) {
+    let text_plain = plain(text);
+    let Some(word) = DEICTIC.iter().find(|word| text_plain.contains(**word)) else {
+        return;
+    };
+    if LINK.is_match(text) {
+        return;
+    }
+    faults.add(
+        address,
+        "R21",
+        &format!("(advisory) unnamed referent `{word}` with no named Link in its sentence: {text}"),
+    );
+}
+
+/// The Literature tree a Link target names: the Citation key of a book Card or
+/// of one of its anchors. A Topic address names no Literature tree.
+fn literature_tree(target: &str) -> Option<String> {
+    if BOOK_ANCHOR.is_match(target) {
+        return target.split_once('/').map(|(key, _)| key.to_string());
+    }
+    BOOK_CARD.is_match(target).then(|| target.to_string())
+}
+
+/// The source evidence of one Card as the audit derives it: an explicit `sources`
+/// set, else the Citation keys its `来源` lines name, else the Literature tree it
+/// is filed in. Empty is unknown, which is not a pass.
+fn source_evidence(card: &Value) -> Vec<String> {
+    let explicit = strings(prop(card, "sources"));
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    fn push(sources: &mut Vec<String>, tree: String) {
+        if !sources.iter().any(|seen| key(seen) == key(&tree)) {
+            sources.push(tree);
+        }
+    }
+    let mut sources: Vec<String> = Vec::new();
+    for line in text(prop(card, "body")).split('\n') {
+        if !SOURCE_LINE.is_match(line.trim()) {
+            continue;
+        }
+        for caps in LINK_TARGET.captures_iter(line) {
+            if let Some(tree) = literature_tree(caps[1].trim()) {
+                push(&mut sources, tree);
+            }
+        }
+    }
+    if sources.is_empty()
+        && let Some(tree) = literature_tree(&text(prop(card, "tree")))
+    {
+        push(&mut sources, tree);
+    }
+    sources
+}
+
+/// I7: a Topic Idea Card whose `rests-on` Link enters its own source's Literature
+/// tree. The claim has to carry its necessary conditions instead. A Card filed in
+/// that tree rests on it by design, and an `illustrates`, `corresponds`, or
+/// `contrasts` Link is no dependency.
+fn own_source_dependency(card: &Value, address: &str, faults: &mut Faults) {
+    let Some(relations) = card.get("relations").and_then(Value::as_object) else {
+        return;
+    };
+    let tree = text(prop(card, "tree"));
+    let sources = source_evidence(card);
+    for (target, kind) in relations {
+        if !ps_eq(&ps_string(Some(kind)), "rests-on") {
+            continue;
+        }
+        let Some(book) = literature_tree(target) else {
+            continue;
+        };
+        if !tree.is_empty() && key(&tree) == key(&book) {
+            continue;
+        }
+        if sources.is_empty() {
+            faults.add(
+                address,
+                "I7",
+                &format!(
+                    "(advisory) source evidence unknown, so [[{target}]] may be an own-source premise"
+                ),
+            );
+        } else if sources.iter().any(|source| key(source) == key(&book)) {
+            faults.add(
+                address,
+                "I7",
+                &format!("`rests-on` [[{target}]] enters its own source `{book}`"),
+            );
+        }
+    }
 }
 
 /// The Finding Card rules. F1: the fixed labels. F2: the `来源` line names its
@@ -1763,9 +1946,12 @@ pub(crate) fn check_cards(
                 .map(|kinds| kinds.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
             item.insert("category".into(), json!(category));
+            item.insert("tree".into(), json!(tree));
             item.insert("parent".into(), json!(parent));
             item.insert("links".into(), json!(links));
             item.insert("kinds".into(), json!(kinds));
+            // The relationship evidence of I7: the kind word of every kinded Link.
+            item.insert("relations".into(), card["kinds"].clone());
             let key = if !book.is_empty() {
                 book.to_string()
             } else if in_book {
@@ -2125,14 +2311,21 @@ mod tests {
                 "K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.",
                 "K/1|a|a|4 R13 (13 sentences > 12) split the part",
                 "K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts",
-                "faults: 13",
+                // The card-style fixture also holds a bare deictic, which the pilot reports as advice.
+                "Other/1|a|a R21 (advisory) unnamed referent `这张卡` with no named Link in its sentence: 这张卡属于另一个模型。",
+                "faults: 14",
             ],
         );
         // The setting's own tables, the quotation, chart, and formulas, and a shared part's words
-        // under another model's term table raise nothing.
+        // under another model's term table raise nothing. The shared part's one bare deictic is
+        // the pilot's advice, which its own text earns.
         let skipped = Regex::new(r"引文|图里|清算价值；|^Other/").unwrap();
         for line in &lines {
-            assert!(!skipped.is_match(line), "checked text it must skip: {line}");
+            let shared_advice = line.starts_with("Other/") && line.contains(" R21 (advisory) ");
+            assert!(
+                !skipped.is_match(line) || shared_advice,
+                "checked text it must skip: {line}"
+            );
         }
     }
 
@@ -2314,6 +2507,87 @@ mod tests {
             "F4 is not a default rule"
         );
         assert!(count >= 5);
+    }
+
+    fn of_rule<'a>(lines: &'a [String], rule: &str) -> Vec<&'a str> {
+        lines
+            .iter()
+            .map(String::as_str)
+            .filter(|line| line.split(' ').nth(1) == Some(rule))
+            .collect()
+    }
+
+    /// R20 and R21: a local label that stands in for its content, and a deictic
+    /// with no named Link in its sentence. Both are advice, not blocking faults.
+    #[test]
+    fn local_references_and_referents_are_advice() {
+        let cards = json!([
+            { "address": "T/1|a", "title": "式 (12) 有该项", "body": "这一张只给了编号。" },
+            { "address": "T/1|b", "title": "加成项来自需求弹性",
+              "body": "式 (12) 的加成项来自需求弹性。\n\n命题 3.G.3 说明均衡唯一。\n\n来源：[[book]] §11.D" },
+            { "address": "T/1|c", "title": "第一福利定理成立", "body": "第一福利定理在这里成立。\n\n§11.D 有该项。" },
+            { "address": "T/1|d", "title": "代码里的编号", "body": "```\n式 (12) 有该项\n```\n\n> 式 (12) 有该项\n\n`式 (12)` 有该项。" },
+            { "address": "T/1|e", "title": "该卡说明了均衡", "body": "那里给出了答案。" },
+            { "address": "T/1|f", "title": "均衡的存在性", "body": "该卡 [[T/1|a]] 说明了均衡。\n\n先看 [[T/1|a]] 的方法。该卡给出了结果。" },
+            { "address": "T/1|g", "title": "平均分成三份", "body": "第 6 章给出了结论。\n\n本章。" },
+            { "address": "T/1|h", "category": "anchor", "title": "第 3 组", "body": "§3.1 稀缺与配置\n\n§3.2 市场均衡" },
+        ]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "R20"),
+            [
+                "T/1|a R20 (advisory) local reference `式 (12)` names no content: 式 (12) 有该项",
+                "T/1|c R20 (advisory) local reference `§11.D` names no content: §11.D 有该项。",
+                "T/1|g R20 (advisory) local reference `本章` names no content: 本章。",
+            ]
+        );
+        assert_eq!(
+            of_rule(&lines, "R21"),
+            [
+                "T/1|e R21 (advisory) unnamed referent `该卡` with no named Link in its sentence: 该卡说明了均衡",
+                "T/1|e R21 (advisory) unnamed referent `那里` with no named Link in its sentence: 那里给出了答案。",
+                "T/1|f R21 (advisory) unnamed referent `该卡` with no named Link in its sentence: 该卡给出了结果。",
+            ]
+        );
+        // Advice: a default self-check reports the lines but counts no fault for them.
+        let (kept, faults) = filter_rules(&lines, DEFAULT_RULES);
+        assert!(kept.iter().any(|line| line.contains(" R20 (advisory) ")));
+        assert_eq!(faults, 0);
+    }
+
+    /// I7: a Topic Idea Card whose `rests-on` Link enters its own source's
+    /// Literature tree. A source Link, `illustrates`, another book, and a Card
+    /// in that Literature tree are no fault; missing source evidence is unknown.
+    #[test]
+    fn own_source_dependencies_are_reported() {
+        let idea = |address: &str, tree: &str, body: &str, target: &str, kind: &str| {
+            json!({
+                "address": address, "category": "idea", "tree": tree, "parent": format!("{tree}/1"),
+                "title": format!("{} 的前提", address), "body": body,
+                "links": [target], "kinds": [target], "relations": { target: kind },
+            })
+        };
+        let mut own = idea("12/3/1|a", "12/3", "依赖 [[book/4]] 的定义：所有者能拒绝合作。", "book/4", "rests-on");
+        own["sources"] = json!(["book"]);
+        let mut illustrates = idea("12/3/1|b", "12/3", "例示 [[book/5]] 的两期模型。", "book/5", "illustrates");
+        illustrates["sources"] = json!(["book"]);
+        let mut other = idea("12/3/1|c", "12/3", "依赖 [[other/2]] 的前提：投资不可转用。", "other/2", "rests-on");
+        other["sources"] = json!(["book"]);
+        let mut in_book = idea("book/4|a", "book", "依赖 [[book/4]] 的定义：控制权随状态转移。", "book/4", "rests-on");
+        in_book["sources"] = json!(["book"]);
+        let unknown = idea("12/3/1|d", "12/3", "依赖 [[book/6]] 的结论：事后分配由地位决定。", "book/6", "rests-on");
+        let mut from_body = idea("12/3/1|e", "12/3", "依赖 [[book/7]] 的设定。\n\n来源：[[book]] §3.2", "book/7", "rests-on");
+        from_body["links"] = json!(["book/7", "book"]);
+        let cards = json!([own, illustrates, other, in_book, unknown, from_body]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I7"),
+            [
+                "12/3/1|a I7 `rests-on` [[book/4]] enters its own source `book`",
+                "12/3/1|d I7 (advisory) source evidence unknown, so [[book/6]] may be an own-source premise",
+                "12/3/1|e I7 `rests-on` [[book/7]] enters its own source `book`",
+            ]
+        );
     }
 
     #[test]

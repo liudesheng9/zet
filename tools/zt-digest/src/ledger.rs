@@ -110,6 +110,22 @@ fn math_prerequisite(layer: &str) -> Option<&'static str> {
     })
 }
 
+/// The rule a recorded whole-book Card cycle left out, if any. A report written
+/// before the standalone rules of #93 S02 joined the default set is a complete
+/// deterministic pass over the rules it ran, so it still completes its own run;
+/// a report written now must name every current default rule.
+fn card_cycle_rule_missing<'a>(declared: &std::collections::BTreeSet<&str>) -> Option<&'a str> {
+    /// The Card cycle's default rule set before #93 S02.
+    const PRIOR_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2";
+    let complete = |rules: &'a str| rules.split(',').all(|rule| declared.contains(rule));
+    if complete(crate::card::DEFAULT_CARD_RULES) || complete(PRIOR_CARD_RULES) {
+        return None;
+    }
+    crate::card::DEFAULT_CARD_RULES
+        .split(',')
+        .find(|rule| !declared.contains(rule))
+}
+
 const RUN_FLAGS: &[&str] = &[
     "terms", "models", "events", "findings", "hubs", "figures", "bridge", "notation", "boundary",
     "proof", "theory",
@@ -2750,10 +2766,8 @@ fn verify_cards_book_coverage(
         bail!("the whole-book Card cycle report names no rules");
     }
     let declared_rules: std::collections::BTreeSet<&str> = rules.split(',').map(str::trim).collect();
-    for rule in crate::card::DEFAULT_CARD_RULES.split(',') {
-        if !declared_rules.contains(rule) {
-            bail!("the whole-book Card cycle ran without the {rule} rule; a cards-book revision needs the full deterministic pass");
-        }
+    if let Some(missing) = card_cycle_rule_missing(&declared_rules) {
+        bail!("the whole-book Card cycle ran without the {missing} rule; a cards-book revision needs the full deterministic pass");
     }
     let by_address: BTreeMap<String, Value> = cards
         .iter()
@@ -14801,6 +14815,22 @@ mod tests {
         assert_eq!(claim_lease(120, 1500), 1500);
         assert_eq!(claim_lease(2, 60), 60);
         assert_eq!(LEASE_MAX, 7200);
+    }
+
+    #[test]
+    fn a_prior_card_cycle_rule_list_still_completes_its_own_report() {
+        fn declared(rules: &'static str) -> std::collections::BTreeSet<&'static str> {
+            rules.split(',').collect()
+        }
+        // The current default set, and the set a report written before #93 S02 names.
+        assert_eq!(card_cycle_rule_missing(&declared(crate::card::DEFAULT_CARD_RULES)), None);
+        assert_eq!(
+            card_cycle_rule_missing(&declared("R2,R3,R4,R5,R7,R9,R12,R18,R19,I1,I2,I3,I4,L1,L2,E1,E2")),
+            None
+        );
+        // A report that left out a rule of both sets names the missing rule.
+        assert_eq!(card_cycle_rule_missing(&declared("R2,R3,R4")), Some("R5"));
+        assert!(crate::card::DEFAULT_CARD_RULES.split(',').any(|rule| rule == "I7"));
     }
 
     #[test]

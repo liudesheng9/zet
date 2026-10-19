@@ -16,13 +16,15 @@
                  "unattributed".
     topics       the Topic trees that hold Cards of the book, and the trees where the book holds
                  most of the Cards.
-    style        the Card language faults (zt-check, rules R2 to R19) per rule and per
-                 category. A model is checked with its own term table and level, the other Cards of
-                 a book with the book's term table (a Literature-tree Card titled 术语表…) when it
-                 has one.
+    style        the Card language faults (zt-check, rules R2 to R21) per rule and per
+                 category, with the standalone heuristics R20 and R21 counted apart as advice
+                 (advisory and advice_by_rule). A model is checked with its own term table and level,
+                 the other Cards of a book with the book's term table (a Literature-tree Card titled
+                 术语表…) when it has one.
     layer        the Card layer faults (rules I1 to L3 of zt-check) per rule, with the
-                 advisory rules (I1, I6, E5, L3) counted apart. The script gives the checker each
-                 Card's category, Links, kinded Links, parent, and inbound Links.
+                 advisory rules (I1, I6, E5, L3, and I7's unknown-source line) counted apart. The
+                 script gives the checker each Card's category, Links, kinded Links, parent, and
+                 inbound Links.
     orphans      Regular Cards that no Card links to (inbound 0).
     no_source    idea, event, and finding Cards with no source line: no Link to the book's Literature Card or
                  to one of its anchors.

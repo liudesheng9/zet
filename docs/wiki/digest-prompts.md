@@ -248,7 +248,7 @@ The fixed Card bodies the prompts teach are also formats that zt-check reads: th
 
 ### Change a writing rule
 
-1. Edit the rule in every prompt that states it. The Card-language list is repeated in `dsh-instructions.zh.md`, `dsh-digest-base.zh.md`, `dsh-link-instructions.zh.md`, `dsh-fill-instructions.zh.md` (as a table), `dsh-card-instructions.zh.md`, and in short form in the explain, orphan, terms, skeleton, event, finding, hub, and math prompts.
+1. Edit the rule in every prompt that states it. The Card-language list is repeated in `dsh-instructions.zh.md`, `dsh-digest-base.zh.md`, `dsh-link-instructions.zh.md`, `dsh-fill-instructions.zh.md` (as a table), `dsh-card-instructions.zh.md`, and in short form in the explain, orphan, terms, skeleton, event, finding, hub, and math prompts. The three standalone rules of #93 S02 (a local number must carry its content, a deictic must name its referent, a Topic claim must not rest on its own source tree) are in `dsh-instructions.zh.md` and `dsh-digest-base.zh.md` (items 12–14), `dsh-fill-instructions.zh.md` (rows 18–20), and `dsh-card-instructions.zh.md` (items 9–11, plus R20, R21, and I7 in 各类问题怎样改).
 2. If the rule is a number zt-check checks, change `tools/zt-check` at the same time (see [zt-check](zt-check.md)). Otherwise the writer's `SELF-CHECK` disagrees with the prompt.
 3. If you change the digest prompt, make the same change in both `dsh-instructions.zh.md` and `dsh-digest-base.zh.md`. A change to the Model Card section goes into both `dsh-instructions.zh.md` and `dsh-model-cards.zh.md`.
 
