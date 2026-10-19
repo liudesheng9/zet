@@ -2334,6 +2334,3 @@ mod tests {
         assert!(canon::integer_option("11", "MaxTopics", 1, TOPIC_CANDIDATES).is_err());
     }
 }
-
-
-
