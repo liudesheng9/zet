@@ -123,7 +123,7 @@ limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences
 | `--json <file>` | A JSON array of entries, or one entry (BOM allowed) | no | `--setting` names an entry in the file; its body gives the table | `--level`, else none (formal rules) | yes, for entries with `category` | every line |
 | `--addresses <list>` | Addresses (split on commas and white space) | Bounded `get_cards` text batches; `get_model` for the first Card only when it is a Model Card/part; final revision probe | `--setting`, else the first model's `build.setting`; a required external setting is another lean batch | `--level`, else the first model's `level` | no | every line |
 | `--model <address>` | Any Card of a model | `get_model` head/parts; revision probes; lean external setting when required | `--setting`, else `build.setting` | `--level`, else the model's `level` | no | every line |
-| `--cards <list>` / `--log <file>` | Addresses from the list plus one per line of the log file | Bounded lean batches; required primary model contexts shared across known filed members; final revision probe | each model's own setting | each model's own level | yes, by computed category | hard (non-advisory) lines of the selected rules |
+| `--cards <list>` / `--log <file>` | Addresses from the list plus one per line of the log file | Bounded lean batches; required primary model contexts shared across known filed members; one complete `export_titles` that is also I6's Workspace context; final revision probe | each model's own setting | each model's own level | yes, by computed category | hard (non-advisory) lines of the selected rules |
 
 Flags:
 
@@ -180,7 +180,7 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 | I3 | A Link to the book's Literature Card or one of its anchors (`<key>/<n>`) | `idea`, `event` with `book` and `links` | yes | `no source line: no Link to [[key]] or one of its anchors` |
 | I4 | A kinded Link to a Card other than the parent | `idea` with `kinds` | yes | `no kinded Link to a Card other than the parent` |
 | I5 | Another Card has a valid authored inbound Link here; a self-Link does not count | substantive categories with `inbound` | no | `no other Card has an authored Link here` |
-| I6 | Advisory: no title in the same tree with bigram (Dice) similarity of 0.8 or more | `idea` with `tree` | no | `(advisory) a title very similar to [[a]]` |
+| I6 | Advisory: no other title in the same Workspace with bigram (Dice) similarity of 0.8 or more, or an exact normalized equality. Candidates come from an inverted bigram index over the Workspace title context; only pairs touching the checked Cards are reported, once per unordered pair | `idea` (a checked Idea Card; the context is read-only) | no | `(advisory) a title very similar to [[a]]` |
 | I7 | A Topic Idea Card's `rests-on` Link enters its own source's Literature tree. `illustrates`, `corresponds`, and `contrasts` are no dependency, another book is none, and a Card filed in that tree rests on it by design. Missing source evidence is reported as unknown, never as a pass | `idea` with `relations` | yes | `` `rests-on` [[a]] enters its own source `key` `` or `(advisory) source evidence unknown, so [[a]] may be an own-source premise` |
 | E1 | A date in the title (a year 1000–2099, or a number + `年`/`世纪`) | `event` | yes | `no date in the title: <title>` |
 | E2 | The labels `时间`, `地点`, `参与者`, `经过`, `来源` at line starts (list marker and bold allowed) | `event` | yes | `missing labels: 参与者、经过、来源` |
@@ -270,7 +270,7 @@ R19 reports every authored level-one heading that repeats the Card title, with i
 
 ### Rules the code keeps
 
-- Fault order: per Card in input order: structural R18/R19 in body scan order, R12, then per sentence R2, R3, R4, R5, R6, R7, R9 (R17 position faults inline), then R15, R16, R17, then R13, R14. Layer faults follow all language faults: per Card I1, I2, I3, I4, I5, E1, E2, E4, F1–F4, L1, L2, L3; then I6 per tree (trees in culture order), then E5. In `--cards` mode the model groups come before the other Cards. Callers and tests compare lines in this order.
+- Fault order: per Card in input order: structural R18/R19 in body scan order, R12, then per sentence R2, R3, R4, R5, R6, R7, R9 (R17 position faults inline), then R15, R16, R17, then R13, R14. Layer faults follow all language faults: per Card I1, I2, I3, I4, I5, E1, E2, E4, F1–F4, L1, L2, L3; then I6 in checked-Card order (candidates in catalogue order), then E5. In `--cards` mode the model groups come before the other Cards. Callers and tests compare lines in this order.
 - R13 and R14 apply only when the level is not `concept`; R15 to R17 likewise. R13 applies only to Cards with a facet, so a Model Card is never size-checked.
 - One `Zt` process per run; calls are sequential. zt-check never writes: it calls only read tools.
 - Every mode except `--cards` counts advisory lines in `faults: N`.
@@ -287,8 +287,17 @@ The `--json` entry (fields read with case-insensitive names; all but `address` o
   { "address": "S/1|a|a|1", "facet": "推导：参与约束", "title": "推导：参与约束", "body": "**思路**\n…", "line": "shared" },
   { "address": "5/1", "title": "税", "body": "依赖 [[5/3]] 的结论，税负落在买方。",
     "category": "idea", "parent": "", "links": ["5/3"], "kinds": ["5/3"],
-    "book": "Hart1995", "tree": "5", "inbound": ["5/2"], "inbound_kinded": 1 }
+    "relations": { "5/3": "rests-on" }, "book": "Hart1995", "tree": "5", "workspace": "agent",
+    "inbound": ["5/2"], "inbound_kinded": 1 }
 ]
+```
+
+I6's Workspace context is a separate read-only catalogue, either in the bundle around the
+entries or from the mode's own bulk reader:
+
+```json
+{ "cards": [ … ], "context": { "complete": true,
+  "titles": [ { "address": "5/1", "title": "税", "workspace": "agent" } ] } }
 ```
 
 | Field | Meaning | Used by |
@@ -303,7 +312,8 @@ The `--json` entry (fields read with case-insensitive names; all but `address` o
 | `relations` | The kind word of every kinded Link (`{ "<target>": "rests-on" }`, as `get_card` returns it). Without it I7 sees no dependency | I7 |
 | `sources` | The Card's explicit source evidence: the Citation keys of its Literature trees. Absent, I7 derives them from the `来源` line, else from the Card's own Literature tree | I7 |
 | `book` | The Citation key | I3, F2 |
-| `tree` | The tree id | I6, I7 |
+| `tree` | The tree id | I7 |
+| `workspace` | `agent` or `human`; I6 compares only inside one Workspace | I6 |
 | `inbound` | Addresses that link here | I5 |
 | `inbound_kinded` | How many Idea Cards link here with a kind word | E4, F4 |
 
@@ -386,7 +396,7 @@ Read it with `prop(card, "<name>")` and the PowerShell conversions (`text`, `str
 
 The PowerShell tests run the `zt-check` found on PATH (`$script:ZtCheck` in `zt-calls.ps1`), not the source: install first. `finding-compiler.tests.ps1` copies the debug builds from `D:\zt-target` and `D:\zt-check-target` into a scratch `bin` at the front of PATH and sets `ZT_CONFIG_DIR`, so zt-check's `zt mcp` reaches the scratch archive.
 
-Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards` (they need a live `zt mcp`; only the compiler tests exercise `--addresses`); no test of `Options::parse` errors; I5, I6, E4, F4 are tested only through `--json` fields, and I6's Workspace-wide scope is still tree-scoped in `--cards` mode.
+Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards` (they need a live `zt mcp`; the compiler tests exercise `--addresses` and `scripts/book-digest/tests/workspace-titles.tests.ps1` exercises `--cards` with its Workspace context); no test of `Options::parse` errors; I5, I6, E4, F4 are tested only through `--json` fields apart from that I6 test, and `--addresses` sets no layer category, so it checks no layer rule at all (including I6 and I7).
 
 ## Decisions and pitfalls
 
@@ -403,6 +413,8 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 
 ### Pitfalls
 
+- **I6 reads a Workspace title context, and only advice comes of it.** `--cards` builds it from one complete `export_titles` read (the same read that classifies the Cards) and refuses a partial or changing catalogue; `--json` accepts it as the bundle's `context` object. Rows are comparisons only: I6 reports on the checked Card, never on a context Card, and never edits, merges, or deletes. A pair is reported once, on the later checked Card. Without a context the comparison is limited to the entries the run holds, which is why a digest's scoped review passes the catalogue through its own reader.
+- **`anchor-title` is a hub fault, not similarity.** `src/hub.rs` normalizes whitespace and case only and refuses an exact match with the anchor's title in a new draft (`zt-digest hub -Step precheck`); a differently worded navigation title is no fault, and an existing hub is reported read-only until its correction is authorized.
 - **`faults: N` means different things.** In `--cards` it counts hard lines of the selected rules; in `--json`, `--model`, `--addresses` it counts every line, advisory included. A `--json` run on layer entries can report `faults: N > 0` with only advisory lines.
 - **`--cards` never fires I5, E4, F4.** `check_cards` sets no `inbound` or `inbound_kinded`, so those rules need `--json` entries that carry them (as `digest-audit.ps1` writes). They are also outside `DEFAULT_RULES`.
 - **I7 needs the relationship evidence.** `get_card` returns `kinds` as a `{target: kind}` object; `check_cards` passes it as `relations` and `digest-audit` writes it into every entry. An entry without `relations` reports nothing for I7 — it is not a silent pass, because the published-Card path always carries it, and the audit and card cycle both use that path.
@@ -422,6 +434,7 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 
 ## Change history
 
+- `2026-10-19` — #93 S03: I6 compares a checked Idea title with every title of its own Workspace through a read-only title context (an inverted bigram index, the same Dice function, one line per unordered pair, only pairs touching the checked Cards). `--cards` builds the context from its complete `export_titles` read; `--json` accepts a `{"cards": …, "context": …}` bundle. The entry contract gains `workspace`.
 - `2026-10-19` — The standalone pilot rules of #93 S02: R20 (an unexplained local reference, with its content constant), R21 (a deictic with no named Link in its sentence), and I7 (a Topic Idea Card resting on its own source's Literature tree, with unknown source evidence reported as unknown). `relations` (the kind word of every kinded Link), `sources`, and `tree` join the entry contract; `check_cards` supplies `tree` and `relations` from the bulk readers, `digest-audit` writes `relations`, and both default rule lists carry R20, R21, and I7. The audit splits advice from blocking style faults (`style.advisory`, `style.advice_by_rule`).
 - `2026-10-17` — Bound MCP writes/reads and shutdown using one in-process I/O worker and owned process containment. Add typed cleanup facts, native Windows kill-on-close ownership and public hangs/parent-death/real receipt-recovery/service-lifetime tests.
 

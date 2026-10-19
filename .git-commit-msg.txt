@@ -1,0 +1,24 @@
+Compare Workspace titles and refuse hubs that copy anchor titles (#96)
+
+S03 of #93.
+
+I6 leaves the single tree: a checked Idea title is compared with every title
+of its own Workspace, through a read-only title context. Candidates come from
+an inverted bigram index and the existing Dice function still decides (0.8, or
+an exact normalized equality); an unordered pair is reported once, on the later
+checked Card; only pairs touching the checked Cards are reported, and a
+context Card is never the subject of a line. --cards builds the context from
+its one complete export_titles read and refuses a partial or changing
+catalogue; --json accepts the context as a {"cards": ..., "context": ...}
+bundle; the entry contract gains workspace. digest-audit passes the complete
+title projection it already read, so its I6 is Workspace-wide with no second
+read.
+
+Hub Cards gain the anchor-title fault: a line or topic hub whose title repeats
+the title of the Card it hangs under, with whitespace collapsed and case
+ignored and never broad similarity. get_hub reports it read-only, and the hub
+compiler's precheck refuses a new draft that has it, naming the anchor.
+
+Tests: two zt-check unit tests (context scope, one line per pair), a public
+zt-check --cards test (workspace-titles.tests.ps1), a hub_cards.rs test of the
+read-only report, and three precheck cases in hub-compiler.tests.ps1.

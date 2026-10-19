@@ -565,9 +565,26 @@ impl<'a> Graph<'a> {
                 "a Hub Card needs a hub level: line, topic, field, or register".into(),
             );
         }
+        // `anchor-title` (D130, D169): a line or topic hub whose title copies the title of
+        // the Card it hangs under tells the reader nothing about its navigation role. Case
+        // and whitespace are normalized; broad semantic similarity is not a refusal.
+        if matches!(level, Some(HubLevel::Line) | Some(HubLevel::Topic))
+            && let Some(anchor) = crate::parent_location(address)
+        {
+            let own = normalized_title(&self.snapshot.title(address));
+            let upper = normalized_title(&self.snapshot.title(&anchor));
+            if !own.is_empty() && own == upper {
+                fault(
+                    &mut faults,
+                    "anchor-title",
+                    format!(
+                        "the title repeats the anchor `{anchor}` title; name what the hub navigates, for example 消费需求的分解入口"
+                    ),
+                );
+            }
+        }
         // H5: size. The register's size is its number of terms; each term names 1 to 3 ways in.
-        if level == Some(HubLevel::Register) {
-            for line in body.lines.iter().filter(|line| line.targets.len() > 3) {
+        if level == Some(HubLevel::Register) {            for line in body.lines.iter().filter(|line| line.targets.len() > 3) {
                 fault(
                     &mut faults,
                     "oversize",
@@ -1022,6 +1039,12 @@ fn is_neighbour_group(group: Option<&str>) -> bool {
         let group = group.trim();
         group.starts_with("邻近") || group.eq_ignore_ascii_case("neighbours")
     })
+}
+
+/// A title for exact comparison: whitespace collapsed, case ignored. `anchor-title` uses
+/// only this much normalization — a differently worded navigation title is no fault.
+fn normalized_title(title: &str) -> String {
+    title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 /// True when `inner`'s anchor lies strictly inside `outer`'s branch: the line hub of a

@@ -284,6 +284,14 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     // --- Card language: zt-check --json ---
     let tmp = ps::join_path(&out_dir, "audit-tmp");
     std::fs::create_dir_all(&tmp)?;
+    // I6's Workspace title context: the same complete title projection the audit already
+    // read, so a comparison never becomes an edit target and no second read is needed.
+    let title_context = json!({
+        "complete": true,
+        "titles": all_trees.iter().flat_map(|tree| ps_items(&tree["cards"]))
+            .map(|card| json!({"address": field(&card,"address"), "title": field(&card,"title"), "workspace": field(&card,"workspace")}))
+            .collect::<Vec<_>>()
+    });
     let mut fault_lines: Vec<String> = Vec::new();
     let mut fault_seen: HashSet<String> = HashSet::new();
     let mut invoke_check = |zt: &mut Zt, entries: &[Value], setting: &str, level: &str| -> Result<()> {
@@ -291,7 +299,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             return Ok(());
         }
         let file = ps::join_path(&tmp, "cards.json");
-        util::write_text(&file, &ps::json_pretty(&Value::Array(entries.to_vec())))?;
+        let bundle = json!({ "cards": entries, "context": title_context });
+        util::write_text(&file, &ps::json_pretty(&bundle))?;
         let check = Check {
             json: file,
             setting: setting.to_string(),
@@ -425,7 +434,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             json!({
                 "address": a, "title": title, "body": body,
                 "facet": facets.get(&ci(&a)).cloned().map(Value::String).unwrap_or(Value::Null), "line": null,
-                "category": category(c), "tree": field(c, "tree"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
+                "category": category(c), "tree": field(c, "tree"), "workspace": field(c, "workspace"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
                 "parent": field(c, "parent"), "links": str_list(&c["links"]), "kinds": ps::keys(&c["kinds"]),
                 // The kinded relation of each Link, which I7 reads; the array above keeps its order.
                 "relations": c["kinds"].clone(),

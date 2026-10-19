@@ -133,6 +133,14 @@ try {
     Assert (@($dead -match ('^topic:' + [regex]::Escape($a) + ' broken ' + [regex]::Escape("$a/99"))).Count) "precheck: a ref to a Card that does not exist ($($dead -join ' | '))"
     $semicolon = Precheck-Variant 'style.json' { param($p) $p.topic.groups[0].items[1].reason = '极端时市场完全瓦解；没有交易。' }
     Assert (@($semicolon -match ('^topic:' + [regex]::Escape($a) + ' R3 ')).Count) "precheck: zt-check finds a semicolon ($($semicolon -join ' | '))"
+    # #93 S03: a new hub may not repeat the title of the Card it hangs under.
+    $anchorCopy = Precheck-Variant 'anchor-title.json' { param($p) $p.topic.title = '逆向选择' }
+    Assert (@($anchorCopy -match ('^topic:' + [regex]::Escape($a) + ' anchor-title ')).Count) "precheck: a topic hub that copies its anchor's title is refused ($($anchorCopy -join ' | '))"
+    $lineCopy = Precheck-Variant 'line-anchor-title.json' { param($p) $p.lines[0].title = '多重均衡' }
+    Assert (@($lineCopy -match ('^line:' + [regex]::Escape($made[4]) + ' anchor-title ')).Count) "precheck: a line hub that copies its anchor's title is refused ($($lineCopy -join ' | '))"
+    $navTitle = Precheck-Variant 'nav-title.json' { param($p) $p.topic.title = '逆向选择市场的分解入口' }
+    $navCopy = @(@($navTitle) | Where-Object { $_ -match ' anchor-title ' })
+    Assert ($navCopy.Count -eq 0) "precheck: a title that names the navigation role is accepted ($($navTitle -join ' | '))"
     $alone = Precheck-Variant 'alone.json' { param($p) $p.topic.neighbours = @(); $p.lines = @(); $p.topic.groups[1].items = @($p.topic.groups[1].items | Where-Object { $_.ref -notlike 'line:*' -and $_.ref -ne $made[8] }) }
     Assert (@($alone -match ' isolated ').Count -and @($alone -match (' unlisted .*' + [regex]::Escape("[[$($made[8])]]"))).Count -and @($alone -match (' unlisted .*' + [regex]::Escape("[[$($made[4])]]"))).Count) "precheck: isolated, an unlisted Model Card, a missing line hub ($($alone -join ' | '))"
     $fieldCheck = Run 'precheck' @('-File', (Join-Path $out 'fields.json'))

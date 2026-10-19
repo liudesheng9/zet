@@ -8,6 +8,11 @@ use super::{Hub, gt_limit, lt_limit, read_json};
 use crate::check::Check;
 use crate::ps::{self, CiMap};
 use crate::util;
+
+/// A title for exact comparison: whitespace collapsed, case ignored (D169).
+fn normalize_title(title: &str) -> String {
+    title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -240,6 +245,39 @@ impl Hub {
         Ok(address)
     }
 
+    /// `anchor-title` (D130, D169): a new line or topic hub may not repeat the title of
+    /// the Card it hangs under — the reader learns nothing about the way in. Whitespace
+    /// and case are normalized; a differently worded title is no fault.
+    fn test_anchor_title(&mut self, ctx: &Ctx, survey: &Value, hub: &Value) {
+        let title = normalize_title(&st(&hub["title"]));
+        if title.is_empty() {
+            return;
+        }
+        let (anchor, tree) = if ps::eq(&ctx.level, "line") {
+            (ctx.anchor.clone(), String::new())
+        } else if ps::eq(&ctx.level, "topic") {
+            let tree = ctx.at.trim_start_matches("topic:").to_string();
+            let anchor = format!("{tree}/0");
+            (anchor, tree)
+        } else {
+            return;
+        };
+        let upper = match self.card(&anchor) {
+            Some(card) => normalize_title(&st(&card["title"])),
+            None => normalize_title(
+                &survey["trees"].as_object().and_then(|m| m.get(&tree)).map(|s| st(&s["title"])).unwrap_or_default(),
+            ),
+        };
+        if upper.is_empty() || title != upper {
+            return;
+        }
+        self.add_pre(
+            &ctx.at,
+            "anchor-title",
+            format!("标题和锚点 `{anchor}` 的标题相同。改写成说明入口作用的标题，例如 消费需求的分解入口。"),
+        );
+    }
+
     /// `Test-Draft`: one hub of a draft — its shape, its lines, and its size (邻近 does not count).
     fn test_draft(&mut self, ctx: &Ctx, survey: &Value, hub: &Value) -> Result<Draft> {
         let at = ctx.at.clone();
@@ -251,6 +289,7 @@ impl Hub {
         if st(&hub["title"]).trim().is_empty() {
             self.add_pre(&at, "shape", "缺少 title。");
         }
+        self.test_anchor_title(ctx, survey, hub);
         if st(&hub["scope"]).trim().is_empty() {
             self.add_pre(&at, "shape", "缺少 scope。");
         }

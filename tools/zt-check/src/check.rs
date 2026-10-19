@@ -799,6 +799,50 @@ fn read_terms(body: &str) -> Terms {
 
 // --- the checks -------------------------------------------------------------------------------
 
+/// One title projection of the Workspace context: a read-only comparison row.
+#[derive(Clone, Debug)]
+pub(crate) struct TitleRow {
+    pub(crate) address: String,
+    pub(crate) title: String,
+    pub(crate) workspace: String,
+}
+
+/// The Workspace title context I6 compares with (D135): rows of one bulk title
+/// projection, never an edit target. `complete` is false when the reader could not
+/// supply the whole Workspace, so no run claims a Workspace-wide check from one tree.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TitleContext {
+    pub(crate) titles: Vec<TitleRow>,
+    pub(crate) complete: bool,
+}
+
+impl TitleContext {
+    /// The context of one `export_titles` answer (or its rows).
+    pub(crate) fn from_titles(titles: &[Value]) -> Self {
+        let mut rows = Vec::new();
+        for row in titles {
+            let address = text(prop(row, "address"));
+            if address.is_empty() {
+                continue;
+            }
+            rows.push(TitleRow {
+                address,
+                title: text(prop(row, "title")),
+                workspace: text(prop(row, "workspace")),
+            });
+        }
+        Self { titles: rows, complete: true }
+    }
+
+    /// The context of a `--json` bundle's `context` object.
+    fn from_json(context: &Value) -> Self {
+        let rows = context["titles"].as_array().cloned().unwrap_or_default();
+        let mut parsed = Self::from_titles(&rows);
+        parsed.complete = context["complete"] == true;
+        parsed
+    }
+}
+
 /// The limits of card-style-check.ps1 and self-check.ps1.
 #[derive(Clone, Debug)]
 pub(crate) struct Limits {
@@ -833,6 +877,8 @@ pub(crate) struct Check {
     pub(crate) limits: Limits,
     pub(crate) require_explain: bool,
     pub(crate) level: String,
+    /// The Workspace title context I6 compares with; empty means one tree only.
+    context: TitleContext,
     terms: Terms,
     shared: Vec<String>,
 }
@@ -843,9 +889,16 @@ impl Check {
             limits,
             require_explain,
             level: level.to_string(),
+            context: TitleContext::default(),
             terms: Vec::new(),
             shared: Vec::new(),
         }
+    }
+
+    /// The Workspace title context from the mode's bulk reader, or a bundle's context.
+    pub(crate) fn with_context(mut self, context: TitleContext) -> Self {
+        self.context = context;
+        self
     }
 
     /// The term table from the setting Card's body.
@@ -1143,6 +1196,99 @@ impl Check {
         }
     }
 
+    /// I6: the checked Idea titles against every title of their Workspace (D129). The
+    /// candidates come from an inverted bigram index, the existing Dice function decides,
+    /// and an unordered pair is reported once, on the later checked Card. A copied title
+    /// is advice: it never merges, deletes, or edits either Card.
+    fn similar_titles(&self, cards: &[&Value], faults: &mut Faults) {
+        let mut checked: Vec<TitleRow> = Vec::new();
+        for card in cards {
+            if !ps_eq(&text(prop(card, "category")), "idea") {
+                continue;
+            }
+            let address = text(prop(card, "address"));
+            if address.is_empty() {
+                continue;
+            }
+            let row = TitleRow {
+                address,
+                title: text(prop(card, "title")),
+                workspace: text(prop(card, "workspace")),
+            };
+            if checked.iter().any(|known| key(&known.address) == key(&row.address)) {
+                continue;
+            }
+            checked.push(row);
+        }
+        if checked.is_empty() {
+            return;
+        }
+        // The context rows, then the checked rows: a checked Card is its own row.
+        let mut rows = self.context.titles.clone();
+        for row in &checked {
+            match rows.iter_mut().find(|known| key(&known.address) == key(&row.address)) {
+                Some(known) => *known = row.clone(),
+                None => rows.push(row.clone()),
+            }
+        }
+        let checked_at: HashMap<String, usize> =
+            checked.iter().enumerate().map(|(index, row)| (key(&row.address), index)).collect();
+        let row_at: HashMap<String, usize> =
+            rows.iter().enumerate().map(|(index, row)| (key(&row.address), index)).collect();
+        let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut titles: Vec<HashSet<String>> = Vec::with_capacity(rows.len());
+        // A title of one character has no bigram; it can still be an exact copy.
+        let mut single: Vec<usize> = Vec::new();
+        for (at, row) in rows.iter().enumerate() {
+            let grams = bigrams(&row.title);
+            if grams.is_empty() {
+                single.push(at);
+            }
+            for gram in &grams {
+                index.entry(gram.clone()).or_default().push(at);
+            }
+            titles.push(grams);
+        }
+        for (at, row) in checked.iter().enumerate() {
+            let own = &titles[row_at[&key(&row.address)]];
+            let mut candidates: BTreeSet<usize> = BTreeSet::new();
+            for gram in own {
+                for other in index.get(gram).into_iter().flatten() {
+                    candidates.insert(*other);
+                }
+            }
+            if own.is_empty() {
+                candidates.extend(single.iter().copied());
+            }
+            for other_at in rows.iter().enumerate().filter(|(_, other)| key(&other.title) == key(&row.title)).map(|(at, _)| at) {
+                candidates.insert(other_at);
+            }
+            for other_at in candidates {
+                let other = &rows[other_at];
+                if key(&other.address) == key(&row.address) {
+                    continue;
+                }
+                // One Workspace only: a same title in the other Workspace is no candidate.
+                if !row.workspace.is_empty() && !other.workspace.is_empty() && !ps_eq(&row.workspace, &other.workspace) {
+                    continue;
+                }
+                // One report per unordered pair: the later checked Card names the earlier.
+                if checked_at.get(&key(&other.address)).is_some_and(|earlier| *earlier > at) {
+                    continue;
+                }
+                let same = key(&other.title) == key(&row.title);
+                if !same && similarity(own, &titles[other_at]) < 0.8 {
+                    continue;
+                }
+                faults.add(
+                    &row.address,
+                    "I6",
+                    &format!("(advisory) a title very similar to [[{}]]", other.address),
+                );
+            }
+        }
+    }
+
     /// The Card layer rules (I, E, F, L): only for entries that name their category.
     fn layer(&self, cards: &[Value], prose_chars: &HashMap<String, i64>, faults: &mut Faults) {
         let layer = cards
@@ -1345,41 +1491,9 @@ impl Check {
                 own_source_dependency(card, &address, faults);
             }
         }
-        // I6 and E5 compare Cards with each other. Group-Object sorts its groups.
-        let mut groups: Vec<(String, Vec<(String, HashSet<String>)>)> = Vec::new();
-        for card in &layer {
-            if !ps_eq(&text(prop(card, "category")), "idea")
-                || !prop(card, "tree").is_some_and(truthy)
-            {
-                continue;
-            }
-            let tree = text(prop(card, "tree"));
-            let item = (
-                text(prop(card, "address")),
-                bigrams(&text(prop(card, "title"))),
-            );
-            match groups
-                .iter_mut()
-                .find(|(name, _)| culture(name).to_lowercase() == culture(&tree).to_lowercase())
-            {
-                Some((_, items)) => items.push(item),
-                None => groups.push((tree, vec![item])),
-            }
-        }
-        groups.sort_by(|a, b| culture_cmp(&a.0, &b.0));
-        for (_, items) in &groups {
-            for i in 0..items.len() {
-                for j in i + 1..items.len() {
-                    if similarity(&items[i].1, &items[j].1) >= 0.8 {
-                        faults.add(
-                            &items[j].0,
-                            "I6",
-                            &format!("(advisory) a title very similar to [[{}]]", items[i].0),
-                        );
-                    }
-                }
-            }
-        }
+        // I6: the checked Idea titles against their Workspace. It reads the context, not
+        // only this run, so a tree-only read is never reported as a Workspace-wide check.
+        self.similar_titles(&layer, faults);
         let events = layer
             .iter()
             .filter(|card| ps_eq(&text(prop(card, "category")), "event"))
@@ -1714,7 +1828,9 @@ impl Faults {
 
 // --- inputs -----------------------------------------------------------------------------------
 
-/// `--json`: a JSON array of entries (or one entry), as card-style-check.ps1 -Json reads it.
+/// `--json`: a JSON array of entries (or one entry), as card-style-check.ps1 -Json reads
+/// it, or a bundle `{"cards": [...], "context": {"titles": [...], "complete": true}}`
+/// whose context is the read-only Workspace title comparison I6 needs (D135).
 pub(crate) fn check_json(
     raw: &str,
     setting: &str,
@@ -1723,9 +1839,18 @@ pub(crate) fn check_json(
     level: &str,
 ) -> Result<Vec<String>> {
     let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
-    let cards = match serde_json::from_str::<Value>(raw).context("the file is not JSON")? {
-        Value::Array(items) => items,
-        other => vec![other],
+    let (cards, context) = match serde_json::from_str::<Value>(raw).context("the file is not JSON")? {
+        Value::Object(map) if map.contains_key("cards") => {
+            let context = map.get("context").map(TitleContext::from_json).unwrap_or_default();
+            let cards = match map.get("cards") {
+                Some(Value::Array(items)) => items.clone(),
+                Some(other) => vec![other.clone()],
+                None => Vec::new(),
+            };
+            (cards, context)
+        }
+        Value::Array(items) => (items, TitleContext::default()),
+        other => (vec![other], TitleContext::default()),
     };
     let shared = cards
         .iter()
@@ -1743,7 +1868,8 @@ pub(crate) fn check_json(
         .flatten();
     let check = Check::new(limits, require_explain, level)
         .with_terms(setting_body.as_deref())
-        .with_shared(shared);
+        .with_shared(shared)
+        .with_context(context);
     Ok(check.run(&cards))
 }
 
@@ -1851,6 +1977,8 @@ pub(crate) fn check_cards(
     {
         bail!("incomplete checker classification: changing or partial title view");
     }
+    // The same complete title projection is I6's Workspace context: one bulk read.
+    let context = TitleContext::from_titles(titles);
     let literature: HashSet<String> = titles
         .iter()
         .filter_map(|card| card["tree"].as_str())
@@ -1947,6 +2075,8 @@ pub(crate) fn check_cards(
                 .unwrap_or_default();
             item.insert("category".into(), json!(category));
             item.insert("tree".into(), json!(tree));
+            // I6 compares only inside one Workspace, so the entry says which one it is.
+            item.insert("workspace".into(), card["workspace"].clone());
             item.insert("parent".into(), json!(parent));
             item.insert("links".into(), json!(links));
             item.insert("kinds".into(), json!(kinds));
@@ -1978,7 +2108,7 @@ pub(crate) fn check_cards(
         lines.extend(check.run(&checked));
     }
     if !plain.is_empty() {
-        lines.extend(Check::new(limits, false, "").run(&plain));
+        lines.extend(Check::new(limits, false, "").with_context(context).run(&plain));
     }
     if zt.cards(&[], "text")?.archive_revision != batch.archive_revision {
         bail!("incomplete checker inputs: changing read view");
@@ -2588,6 +2718,40 @@ mod tests {
                 "12/3/1|e I7 `rests-on` [[book/7]] enters its own source `book`",
             ]
         );
+    }
+
+    /// I6 compares a checked Idea title with its own Workspace (D129, D135): another
+    /// Workspace stays separate, a context Card is never the reported subject, and an
+    /// unordered pair is reported once.
+    #[test]
+    fn similar_titles_read_the_workspace_context() {
+        let bundle = json!({
+            "cards": [
+                { "address": "12/1|a", "category": "idea", "workspace": "agent", "tree": "12",
+                  "title": "剩余控制权决定契约空白处", "body": "所有者能拒绝合作，所以契约的空白处由所有者决定。" }
+            ],
+            "context": { "complete": true, "titles": [
+                { "address": "12/1|b", "title": "剩余控制权决定契约空白处", "workspace": "agent", "tree": "12" },
+                { "address": "41/1|b", "title": "剩余控制权决定契约的空白处", "workspace": "agent", "tree": "41" },
+                { "address": "h/1", "title": "剩余控制权决定契约空白处", "workspace": "human", "tree": "h" },
+                { "address": "12/1|c", "title": "所有权的配置影响投资激励", "workspace": "agent", "tree": "12" }
+            ] }
+        });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I6"),
+            [
+                "12/1|a I6 (advisory) a title very similar to [[12/1|b]]",
+                "12/1|a I6 (advisory) a title very similar to [[41/1|b]]",
+            ]
+        );
+        // Two checked Cards with one title: the later one reports the pair once.
+        let pair = json!({ "cards": [
+            { "address": "12/1|a", "category": "idea", "workspace": "agent", "title": "剩余控制权决定契约空白处" },
+            { "address": "12/1|d", "category": "idea", "workspace": "agent", "title": "剩余控制权决定契约空白处" }
+        ] });
+        let lines = run_json(&pair, "", Limits::default(), false, "");
+        assert_eq!(of_rule(&lines, "I6"), ["12/1|d I6 (advisory) a title very similar to [[12/1|a]]"]);
     }
 
     #[test]

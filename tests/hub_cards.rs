@@ -316,6 +316,30 @@ fn get_hub_reports_faults_and_list_hubs_finds_the_missing_hubs() {
 }
 
 #[test]
+fn a_hub_that_copies_its_anchor_title_is_named() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 4);
+    let anchor = mcp.ok("get_card", json!({ "at": format!("{a}/1") }));
+    let line = format!("- [[{a}/2]]：第二张卡说明机制。");
+    // The title repeats the anchor's title; whitespace is the only difference.
+    let copied = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/1"), "kind": "side", "type": "hub", "level": "line",
+                "title": "逆向选择  第 1 张卡", "body": format!("## 主线\n{line}") }),
+    ));
+    let found = faults(&mcp.ok("get_hub", json!({ "at": copied })));
+    assert!(found.contains(&"anchor-title".to_string()), "{found:?}");
+    assert_eq!(anchor["title"], "逆向选择 第 1 张卡");
+    // A title that names the navigation role is no fault.
+    mcp.ok("edit_card", json!({ "at": copied, "title": "逆向选择 第 1 张卡的分解入口" }));
+    let found = faults(&mcp.ok("get_hub", json!({ "at": copied })));
+    assert!(!found.contains(&"anchor-title".to_string()), "{found:?}");
+    // The report is read-only: the anchor Card itself is unchanged.
+    assert_eq!(mcp.ok("get_card", json!({ "at": format!("{a}/1") }))["title"], anchor["title"]);
+}
+
+#[test]
 fn a_line_hub_lists_the_line_hub_of_its_sub_branch_and_neighbours_do_not_count_toward_size() {
     let home = TestHome::new();
     let mut mcp = home.mcp();

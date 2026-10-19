@@ -43,7 +43,7 @@ updated: 2026-10-18
 | | `tools/zt-digest/src/card.rs` — `card`: `plan`, `apply`, `check`, `report`, `precheck` |
 | | `tools/zt-digest/src/card/text.rs` — what a rewrite must keep, kind words, Link kinds (`Get-Keep`, `Test-Kinded`, `Get-LinkKinds`) |
 | | `tools/zt-digest/src/card/relatedness.rs` — TF-IDF over character bigrams (`relatedness.ps1`); `pub(crate)`, also used by `bridge` and `prepare` |
-| | `tools/zt-digest/src/hub.rs` — `hub`: survey, plan, precheck, apply, check, report (hub-compiler.ps1) |
+| | `tools/zt-digest/src/hub.rs` and `src/hub/` — `hub`: survey, plan, precheck, apply, check, report (hub-compiler.ps1); the precheck also refuses a new line/topic hub whose title copies its anchor's title (`anchor-title`, whitespace and case normalized only) |
 | | `tools/zt-digest/src/bridge.rs` and `src/bridge/` — `bridge`: plan, precheck, report, apply; `answer.rs` (judge answers), `report.rs` (the immutable report), `apply.rs` (guarded apply) |
 | | `tools/zt-digest/src/canon.rs` — shared SHA-256, canonical JSON, repeated-key refusal, bounds/order/time helpers; the unchanged Bridge helpers also serve identified compiler plans and receipt verification |
 | | `tools/zt-digest/src/math.rs` and `src/math/text.rs` — `math`: the 13 steps of math-compiler.ps1; the statement index (`scan_index`, `check_value`), the notation table (`notation_table`), the group extension marker, `Set-Section`, the dependency map |
@@ -578,7 +578,7 @@ Input: a UTF-8 JSON file, or `-` for stdin, holding one call or an array of call
 
 The port of `digest-audit.ps1`; [Digest scripts](digest-scripts.md) describes what it reports. It makes only read calls: one fresh title export, bounded lean Card batches, `get_model` for required scoped models unless `-SkipModels`, `list_hubs` and `list_broken_links`. Its archive-wide category, attribution, Bridge and orphan report requires the complete graph; the indexed lean facts supply outgoing relations and complete inbound counts. Bodies are reused from that read, without a second per-Card pass. Model contexts are read only for the selected report scope.
 
-Missing required input or a revision change is an explicit error, so it cannot produce a successful zero-fault report. A completed report records `complete: true` and `archive_revision`, after checking that the graph, model and relationship inputs share the revision. `-Throttle` and `-Chunk` remain accepted integer compatibility options; server limits control adaptive batches and the command always uses one client. It runs zt-check `--json` in-process, once per model and once per book. A `-CitationKey` that is not an agent Literature tree fails with ``no agent Literature tree `<key>` ``.
+Missing required input or a revision change is an explicit error, so it cannot produce a successful zero-fault report. A completed report records `complete: true` and `archive_revision`, after checking that the graph, model and relationship inputs share the revision. `-Throttle` and `-Chunk` remain accepted integer compatibility options; server limits control adaptive batches and the command always uses one client. It runs zt-check `--json` in-process, once per model and once per book. Those `--json` calls carry a bundle whose `context` is the same complete title projection the audit already read, so I6 compares each checked Idea title with its own Workspace without a second read, and every entry names its `workspace`, `tree`, `relations` (I7), and `book`. A `-CitationKey` that is not an agent Literature tree fails with ``no agent Literature tree `<key>` ``.
 
 | Output | Content |
 |---|---|
@@ -586,7 +586,7 @@ Missing required input or a revision change is an explicit error, so it cannot p
 | `audit.json` | the report: `generated`, `complete`, `archive_revision`, `scope`, `limits`, `seconds`, `workspace`, `books[]` |
 | `audit.md` | the report for people |
 | `audit-faults.txt` | every Card language and Card layer fault line, sorted by address |
-| `audit-cards.json` | every Card checked outside a model, with body, Links, kinds, inbound Links, category, tree, book, parent |
+| `audit-cards.json` | every Card checked outside a model, with body, Links, kinds, their `relations`, inbound Links, category, tree, book, parent |
 | `audit-addresses.txt` | every agent Card address |
 
 ### `finalize`
