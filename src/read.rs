@@ -775,7 +775,7 @@ pub(crate) fn hubs(
         if value["level"] == json!("register") {
             let identity = archive_identity(&tx, root)?;
             let hub_faults = value["faults"].as_array().cloned().unwrap_or_default();
-            let projection = register_view(&tx, &read, at, entries, identity)?;
+            let projection = register_view(&tx, &read, at, entries, identity, None)?;
             if let Some(fields) = projection.as_object() {
                 for (key, field) in fields {
                     value[key] = field.clone();
@@ -802,11 +802,14 @@ pub(crate) fn hubs(
 
 /// The register of one Workspace as a flattened entry view (§4.1, §8.5, D276, D296). An absent
 /// register is an honest empty answer with `register_missing`; two registers are reported, never
-/// chosen between.
+/// chosen between. `terms_for` names one Card whose accepted terms the answer carries (`terms_at`
+/// and `terms`): the register rows that name it and the accepted terms its own title and prose
+/// state (§9.1, D196).
 pub(crate) fn register(
     root: &Path,
     workspace: crate::Workspace,
     entries: &crate::entry::EntryArgs,
+    terms_for: Option<&str>,
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
@@ -838,6 +841,8 @@ pub(crate) fn register(
         "faults": [],
         "complete": false,
         "terms_by_card": {},
+        "terms_at": Value::Null,
+        "terms": [],
         "restatements": [],
         "bounds": crate::entry::bounds(),
         "archive_revision": read.revision,
@@ -857,7 +862,14 @@ pub(crate) fn register(
         [at] => {
             value["register"] = json!(at);
             value["title"] = json!(read.snapshot.title(at));
-            let projection = register_view(&tx, &read, at, entries, value["archive_identity"].clone())?;
+            let projection = register_view(
+                &tx,
+                &read,
+                at,
+                entries,
+                value["archive_identity"].clone(),
+                terms_for,
+            )?;
             if let Some(fields) = projection.as_object() {
                 for (key, field) in fields {
                     value[key] = field.clone();
@@ -884,12 +896,15 @@ pub(crate) fn register(
 
 /// The flattened projection of one register: its rows and its declared parts with the bounded
 /// authored bodies of their targets. Read in the same transaction as the hub graph (§8.5, D049).
+/// `terms_for` names one Card whose accepted terms the projection carries (§9.1, D196); its own
+/// authored body is read here, so no other body enters this read.
 fn register_view(
     conn: &Connection,
     read: &HubRead,
     at: &str,
     entries: &crate::entry::EntryArgs,
     identity: Value,
+    terms_for: Option<&str>,
 ) -> Result<Value> {
     let body = read
         .snapshot
@@ -941,6 +956,18 @@ fn register_view(
         }
     }
     let view = crate::entry::View::read(&read.snapshot, at, &bodies, &restatement_sections);
-    Ok(view.json(*entries, read.revision, &identity))
+    let mut value = view.json(*entries, read.revision, &identity);
+    if let Some(address) = terms_for {
+        // One Card's own authored body, read here and nowhere else: its accepted terms are the
+        // register rows that name it plus the terms its substantive title and prose state (D196).
+        let body = crate::load_card(conn, address)
+            .ok()
+            .and_then(|card| crate::parse_card_text(&card.text).ok())
+            .map(|parsed| parsed.body)
+            .unwrap_or_default();
+        value["terms_at"] = json!(address);
+        value["terms"] = json!(view.terms_at(&read.snapshot, address, &body));
+    }
+    Ok(value)
 }
 

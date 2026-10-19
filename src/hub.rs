@@ -267,6 +267,17 @@ pub(crate) const REGISTER_TERM_GROUPS: [&str; 2] = ["词条", "关键词"];
 /// The group heading that declares a register's parts.
 pub(crate) const REGISTER_PART_GROUP: &str = "词条分册";
 
+/// True for a body group that lists ways into other Cards rather than stating anything itself:
+/// the neighbour group, a Topic body's entry section, and a register's term and part groups.
+/// A term occurrence derivation reads prose, so it skips these sections (§9.1, D196).
+pub(crate) fn is_navigation_group(group: &str) -> bool {
+    let group = group.trim();
+    is_neighbour_group(Some(group))
+        || is_entry_group(Some(group))
+        || REGISTER_TERM_GROUPS.contains(&group)
+        || group == REGISTER_PART_GROUP
+}
+
 /// One term row of a register: one term before a colon and one to three Links to the Cards that
 /// carry the term's substance (§8.4). `line` is the 1-based line in the body, so a fault can name
 /// the exact row (D297).
@@ -1728,7 +1739,7 @@ fn is_entry_group(group: Option<&str>) -> bool {
 
 /// True for a body line that labels its Links as the Card's source (`来源：[[book]] §3`): the one
 /// authored place source evidence is written, beside the Literature tree a Card is filed in.
-fn is_source_line(line: &str) -> bool {
+pub(crate) fn is_source_line(line: &str) -> bool {
     let Some((label, _)) = line.split_once(['：', ':']) else {
         return false;
     };

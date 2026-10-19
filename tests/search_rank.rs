@@ -688,3 +688,326 @@ fn the_entry_order_is_deterministic_and_bounded() {
     assert_eq!(clamped["bounds"]["results_limit_max"], json!(200));
     assert_eq!(clamped["bounds"]["matched_line_max_chars"], json!(200));
 }
+
+#[test]
+fn a_register_part_is_evidence_not_a_competitor() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "政策", 2);
+    let one = format!("{tree}/1");
+    let two = format!("{tree}/2");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": one, "title": "干中学提高生产率", "body": "累计产量提高。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": two, "title": "经验积累", "body": "人们在生产过程中学习。" }),
+    );
+    // The register keeps no rows itself: its declared part holds them, so the part's body repeats
+    // the term far more often than either target does.
+    let index = address(mcp.ok(
+        "create_topic",
+        json!({ "title": "索引", "body": "本主题收放代理工作区的入口。" }),
+    ));
+    let register = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": index,
+            "type": "hub",
+            "level": "register",
+            "title": "索引：代理工作区的入口",
+            "body": "## 词条分册\n",
+        }),
+    ));
+    let part = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": register,
+            "kind": "side",
+            "title": "词条 A–F",
+            "body": format!("## 词条\n- 学习：[[{one}]]\n- 学习曲线：[[{two}]]\n"),
+        }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": register, "body": format!("## 词条分册\n- [[{part}]] A–F\n") }),
+    );
+
+    let found = mcp.ok("search_cards", json!({ "query": "学习", "mode": "entry" }));
+    assert_eq!(found["registers"][1]["entry_total"], json!(2));
+    let row = &found["results"][position(&found, &one)];
+    assert_eq!(row["role"], json!("entry"));
+    assert_eq!(row["rank_tier"], json!(2));
+    assert_eq!(row["origin"]["card"], json!(part));
+    assert_eq!(row["origin"]["part"], json!(part));
+    assert_eq!(row["entry_targets"], json!([one]));
+    // The part opens nothing itself: its repeating rows never outrank a real destination.
+    let at_part = position(&found, &part);
+    assert_eq!(found["results"][at_part]["rank_tier"], json!(6));
+    assert!(position(&found, &one) < at_part);
+    assert!(position(&found, &two) < at_part);
+    // The declared part is never a target and never a term.
+    assert!(
+        rows(&found).iter().all(|row| row["role"] != json!("entry") || row["address"] != json!(part)),
+        "{found}"
+    );
+}
+
+#[test]
+fn the_form_filter_applies_to_targets_before_rows_and_counts() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "形式", 1);
+    let idea = format!("{tree}/1");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": idea, "title": "学习提高生产率", "body": "累计产量提高。" }),
+    );
+    // A unit states the same term with a Math form; the term names both destinations.
+    let unit = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": idea,
+            "kind": "side",
+            "title": "学习定理",
+            "type": "model",
+            "form": "theorem",
+        }),
+    ));
+    register(&mut mcp, &format!("## 词条\n- 学习：[[{idea}]] [[{unit}]]\n"));
+
+    let theorem = mcp.ok(
+        "search_cards",
+        json!({ "query": "学习", "mode": "entry", "form": "theorem" }),
+    );
+    assert_eq!(addresses(&theorem), vec![unit.clone()]);
+    assert_eq!(theorem["results"][0]["role"], json!("entry"));
+    assert_eq!(theorem["results"][0]["rank_tier"], json!(2));
+    assert_eq!(
+        theorem["results"][0]["entry_targets"],
+        json!([unit]),
+        "the row names only the destination that survives the form filter"
+    );
+    assert_eq!(theorem["total"], json!(1));
+
+    // A form no target states returns no row: a term with no surviving destination is not usable.
+    let theory = mcp.ok(
+        "search_cards",
+        json!({ "query": "学习", "mode": "entry", "form": "theory" }),
+    );
+    assert_eq!(theory["results"], json!([]));
+    assert_eq!(theory["total"], json!(0));
+    assert_eq!(theory["types"], json!({}));
+}
+
+#[test]
+fn the_cached_gui_read_follows_a_register_row_and_a_title_edit() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "政策", 2);
+    let one = format!("{tree}/1");
+    let two = format!("{tree}/2");
+    mcp.ok("edit_card", json!({ "at": two, "title": "别的题目", "body": "与它无关。" }));
+    let register = register(&mut mcp, &format!("## 词条\n- 学习：[[{one}]]\n"));
+    let gui = home.gui();
+    let route = format!("/api/search?q={}&mode=entry", enc("学习"));
+    // The first answer fills the GUI's cached Snapshot.
+    let first = gui.get(&route);
+    assert_eq!(first["results"][0]["address"], json!(one));
+    assert_eq!(first["results"][0]["role"], json!("entry"));
+    let fingerprint = first["archive_fingerprint"].clone();
+    assert!(fingerprint.as_str().is_some_and(|value| value.len() == 24));
+
+    // A register row edit retargets the term; the next read must not serve the old ranking.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": register, "body": format!("## 词条\n- 学习：[[{two}]]\n") }),
+    );
+    let retargeted = gui.get(&route);
+    assert_eq!(retargeted["results"][0]["address"], json!(two));
+    assert_eq!(retargeted["results"][0]["role"], json!("entry"));
+    assert_ne!(
+        retargeted["archive_fingerprint"], fingerprint,
+        "the reply names the read it was made from"
+    );
+
+    // A title edit reaches the ranking too: the Card becomes a title hit, not a body hit.
+    mcp.ok("edit_card", json!({ "at": two, "title": "学习曲线" }));
+    let retitled = gui.get(&route);
+    let row = &retitled["results"][position(&retitled, &two)];
+    assert_eq!(row["role"], json!("entry"), "the term row outranks the title: {row}");
+    assert_eq!(row["rank_tier"], json!(2));
+    // A Card that only its body names is an ordinary body hit, below every entry.
+    mcp.ok("edit_card", json!({ "at": one, "title": "甲", "body": "这里讨论学习。" }));
+    let body = gui.get(&route);
+    let row = &body["results"][position(&body, &one)];
+    assert_eq!(row["role"], json!("hit"));
+    assert_eq!(row["rank_tier"], json!(6));
+    assert!(position(&body, &two) < position(&body, &one));
+}
+
+#[test]
+fn the_cached_gui_read_follows_a_part_and_a_hub_member_line() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "成本", 2);
+    let one = format!("{tree}/1");
+    let two = format!("{tree}/2");
+    let gui = home.gui();
+    let route = format!("/api/search?q={}&mode=entry", enc("学习"));
+    // A Card with no hub way in yet: only its own body names the term.
+    mcp.ok("edit_card", json!({ "at": one, "title": "干中学", "body": "学习在生产中发生。" }));
+    let before = gui.get(&route);
+    assert_eq!(before["results"][position(&before, &one)]["role"], json!("hit"));
+
+    // A hub member line added to the open Card's hub makes the Card a way in (tier 3), and the
+    // GUI's cached Snapshot must follow the Link edit.
+    let hub = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": one,
+            "kind": "side",
+            "type": "hub",
+            "level": "line",
+            "title": "这一支的入口",
+        }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": hub, "body": format!("## 邻近\n- [[{two}]] 讨论学习的外部性。\n") }),
+    );
+    mcp.ok("edit_card", json!({ "at": two, "title": "经验积累" }));
+    let way_in = gui.get(&route);
+    let row = &way_in["results"][position(&way_in, &two)];
+    assert_eq!(row["role"], json!("member"));
+    assert_eq!(row["rank_tier"], json!(3));
+    assert_eq!(row["origin"]["card"], json!(hub));
+
+    // A declared part of the register moves the row's origin without changing the row's target.
+    let index = address(mcp.ok(
+        "create_topic",
+        json!({ "title": "索引", "body": "本主题收放代理工作区的入口。" }),
+    ));
+    let register = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": index,
+            "type": "hub",
+            "level": "register",
+            "title": "索引：代理工作区的入口",
+            "body": "## 词条分册\n",
+        }),
+    ));
+    let part = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": register,
+            "kind": "side",
+            "title": "词条 A–F",
+            "body": format!("## 词条\n- 学习：[[{one}]]\n"),
+        }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": register, "body": format!("## 词条分册\n- [[{part}]] A–F\n") }),
+    );
+    let declared = gui.get(&route);
+    let row = &declared["results"][position(&declared, &one)];
+    assert_eq!(row["role"], json!("entry"));
+    assert_eq!(row["rank_tier"], json!(2));
+    assert_eq!(row["origin"]["card"], json!(part));
+    assert_eq!(row["origin"]["part"], json!(part));
+}
+
+#[test]
+fn an_exact_term_precedes_a_prefix_term_whatever_the_score() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "均衡", 2);
+    let exact = format!("{tree}/1");
+    let prefix = format!("{tree}/2");
+    mcp.ok("edit_card", json!({ "at": exact, "title": "甲", "body": "无关。" }));
+    // The prefix term's target repeats the query, so its lexical score is the higher one.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": prefix, "title": "乙", "body": "学习。学习。学习。学习。" }),
+    );
+    register(
+        &mut mcp,
+        &format!("## 词条\n- 学习：[[{exact}]]\n- 学习曲线：[[{prefix}]]\n"),
+    );
+    let found = mcp.ok("search_cards", json!({ "query": "学习", "mode": "entry" }));
+    assert_eq!(found["results"][position(&found, &exact)]["matched_term"], json!("学习"));
+    assert_eq!(
+        found["results"][position(&found, &prefix)]["matched_term"],
+        json!("学习曲线")
+    );
+    assert!(
+        found["results"][position(&found, &exact)]["score"]
+            .as_i64()
+            .is_some_and(|score| found["results"][position(&found, &prefix)]["score"]
+                .as_i64()
+                .is_some_and(|other| score < other)),
+        "the prefix term's target scores higher: {found}"
+    );
+    assert!(
+        position(&found, &exact) < position(&found, &prefix),
+        "the exact label precedes the prefix label before any score: {}",
+        addresses(&found).join(", ")
+    );
+}
+
+#[test]
+fn within_a_tier_the_lexical_score_orders_the_ties() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "政策", 2);
+    let once = format!("{tree}/1");
+    let thrice = format!("{tree}/2");
+    // Neither title holds the term, so both are body hits; the repeated body scores higher.
+    mcp.ok("edit_card", json!({ "at": once, "title": "甲", "body": "这里讨论学习。" }));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": thrice, "title": "乙", "body": "学习。学习。学习。" }),
+    );
+    let found = mcp.ok("search_cards", json!({ "query": "学习", "mode": "entry" }));
+    assert_eq!(found["results"][position(&found, &once)]["rank_tier"], json!(6));
+    assert_eq!(found["results"][position(&found, &thrice)]["rank_tier"], json!(6));
+    assert!(
+        found["results"][position(&found, &thrice)]["score"]
+            .as_i64()
+            .is_some_and(|score| score > found["results"][position(&found, &once)]["score"].as_i64().unwrap_or(i64::MAX)),
+        "{found}"
+    );
+    assert!(
+        position(&found, &thrice) < position(&found, &once),
+        "the higher lexical score orders a tie inside the tier: {}",
+        addresses(&found).join(", ")
+    );
+
+    // One term with three destinations: every row names all three, and address order breaks the
+    // remaining tie.
+    let unit_tree = topic(&mut mcp, "均衡", 3);
+    let one = format!("{unit_tree}/1");
+    let two = format!("{unit_tree}/2");
+    let three = format!("{unit_tree}/3");
+    register(
+        &mut mcp,
+        &format!("## 词条\n- 均衡：[[{one}]] [[{two}]] [[{three}]]\n"),
+    );
+    let tied = mcp.ok("search_cards", json!({ "query": "均衡", "mode": "entry" }));
+    let entry_rows = rows(&tied)
+        .into_iter()
+        .filter(|row| row["role"] == json!("entry"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_rows
+            .iter()
+            .map(|row| row["address"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        vec![one.clone(), two.clone(), three.clone()],
+        "natural address order breaks the final tie: {tied}"
+    );
+    assert!(entry_rows.iter().all(|row| row["entry_targets"] == json!([one, two, three])));
+}

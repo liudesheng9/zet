@@ -402,7 +402,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         "get_register" => {
             let workspace = crate::Workspace::parse(&string_arg(args, "workspace")?)?;
             let entries = crate::entry::EntryArgs::from_args(args)?;
-            crate::read::register(&root, workspace, &entries)
+            let terms_for = optional_string(args, "at")?;
+            let terms_for = (!terms_for.is_empty()).then_some(terms_for);
+            crate::read::register(&root, workspace, &entries, terms_for.as_deref())
         }
         "search_cards" => {
             let mode = crate::entry::Mode::from_args(args)?;
@@ -1061,7 +1063,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_register",
             "Get register",
-            "Read the concept register of one Workspace: the Hub Card of level `register` and its accepted `entries`, one per term row of the `词条` section (or the older `关键词` section). Each entry names its `term`, its origin (`card`, `line`, and the declared `part` when it lives in one), every one of its one to three `targets` (address, title, type, Workspace, `exists`, and the bounded authored `body` with `body_chars`, `body_lines`, `body_truncated`), whether it is `complete`, and its `faults`. The view also carries the declared `parts` (each with the accepted initial range its `词条分册` row states, its address, title, `place`, and row count), `duplicates` (a row an earlier equivalent row already serves, left behind by an interrupted publication and counted once), the register's own `faults` (a row fault; a part fault: `part-place`, `part-missing`, `part-hub`, `part-duplicate`, `part-nested`, or `part-unlisted`; a `part-label` fault when a declaration states no accepted range; one `ambiguous` fault when one term label is written with different destinations, where every destination stays its own entry and no sense is chosen; and a restatement fault), `complete`, `terms_by_card` (which terms name each target), the confirmed `restatements` (`## 同述入口` entries), the `bounds` of the body projection, and the `archive_revision`/`archive_identity` it was read at. `entry_offset` and `entry_limit` page the entries (default 200, maximum 1000); `entry_next_offset` is null on the last page. A Workspace with no register answers `register_missing: true` with no entries, not an error; two registers are reported, never chosen between.",
+            "Read the concept register of one Workspace: the Hub Card of level `register` and its accepted `entries`, one per term row of the `词条` section (or the older `关键词` section). Each entry names its `term`, its origin (`card`, `line`, and the declared `part` when it lives in one), every one of its one to three `targets` (address, title, type, Workspace, `exists`, and the bounded authored `body` with `body_chars`, `body_lines`, `body_truncated`), whether it is `complete`, and its `faults`. The view also carries the declared `parts` (each with the accepted initial range its `词条分册` row states, its address, title, `place`, and row count), `duplicates` (a row an earlier equivalent row already serves, left behind by an interrupted publication and counted once), the register's own `faults` (a row fault; a part fault: `part-place`, `part-missing`, `part-hub`, `part-duplicate`, `part-nested`, or `part-unlisted`; a `part-label` fault when a declaration states no accepted range; one `ambiguous` fault when one term label is written with different destinations, where every destination stays its own entry and no sense is chosen; and a restatement fault), `complete`, `terms_by_card` (which terms name each target), the confirmed `restatements` (`## 同述入口` entries), the `bounds` of the body projection, and the `archive_revision`/`archive_identity` it was read at. Pass `at` to name one Card: `terms_at` echoes it and `terms` lists every accepted term that Card carries, from the register rows that name it and from the terms its own substantive title and prose state (not a `来源` line, a navigation list, a Hub Card, a tree root, or a register part); a scoped label is matched whole. `entry_offset` and `entry_limit` page the entries (default 200, maximum 1000); `entry_next_offset` is null on the last page. A Workspace with no register answers `register_missing: true` with no entries, not an error; two registers are reported, never chosen between.",
             {
                 let mut properties = serde_json::Map::new();
                 properties.insert(
@@ -1074,6 +1076,13 @@ fn tool_definitions() -> Vec<Value> {
                 );
                 properties.insert("entry_offset".to_string(), entry_offset.clone());
                 properties.insert("entry_limit".to_string(), entry_limit.clone());
+                properties.insert(
+                    "at".to_string(),
+                    json!({
+                        "type": "string",
+                        "description": "One Card address to name the accepted terms it carries: `terms_at` echoes it and `terms` lists the register rows that name it plus the accepted terms its own substantive title and prose state, in register order. A navigation Card (a Hub Card, a tree root, the register, or one of its parts) or a `来源` line and a `邻近`/`入口`/`词条` list adds no term.",
+                    }),
+                );
                 Value::Object(properties)
             },
             &["workspace"],

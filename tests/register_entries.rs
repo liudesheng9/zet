@@ -439,6 +439,160 @@ fn several_accepted_spellings_are_separate_lines_with_the_same_entries() {
 }
 
 #[test]
+fn a_card_that_states_an_accepted_term_carries_it_without_being_its_target() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "学习与政策", 2);
+    let target = format!("{tree}/1");
+    let held = format!("{tree}/2");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": target, "title": "干中学提高生产率", "body": "累计产量提高时单位成本下降。" }),
+    );
+    // A Card that is not one of the term's selected entry targets, but states the term in its
+    // own prose. The held Card of a distant selection is exactly this case (D196).
+    mcp.ok(
+        "edit_card",
+        json!({ "at": held, "title": "政策争论", "body": "这里讨论学习对生产率的作用。" }),
+    );
+    let reg = register(&mut mcp, &format!("## 词条\n- 学习：[[{target}]]\n"));
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        view["terms_by_card"][&target],
+        json!(["学习"]),
+        "the explicit destination still names the target: {view}"
+    );
+    assert!(
+        view["terms_by_card"].get(&held).is_none(),
+        "the page's map is the explicit targets; a Card's own terms are asked for: {view}"
+    );
+    assert_eq!(view["terms_at"], Value::Null);
+    assert_eq!(view["terms"], json!([]));
+
+    // Ask for one Card: the explicit row that names it, or the term its own prose states.
+    let named = mcp.ok("get_register", json!({ "workspace": "agent", "at": target }));
+    assert_eq!(named["terms_at"], json!(target));
+    assert_eq!(named["terms"], json!(["学习"]));
+    let stated = mcp.ok("get_register", json!({ "workspace": "agent", "at": held }));
+    assert_eq!(stated["terms_at"], json!(held));
+    assert_eq!(
+        stated["terms"],
+        json!(["学习"]),
+        "a Card that states the accepted term carries it: {stated}"
+    );
+    assert_eq!(stated["entries"], view["entries"], "one page, one projection");
+    // A tree root and the register are navigation, not substance: their own text supplies no term.
+    let root = mcp.ok(
+        "get_register",
+        json!({ "workspace": "agent", "at": format!("{tree}/0") }),
+    );
+    assert_eq!(root["terms"], json!([]), "a Topic body is not prose: {root}");
+    let at_register = mcp.ok("get_register", json!({ "workspace": "agent", "at": reg }));
+    assert_eq!(at_register["terms"], json!([]), "the register is navigation");
+    // One projection, three readers: `get_hub` on the register and the GUI route agree.
+    let hub = mcp.ok("get_hub", json!({ "at": reg }));
+    assert_eq!(hub["terms_by_card"], view["terms_by_card"]);
+    let route = home.gui().get(&format!("/api/register?ws=agent&at={held}"));
+    assert_eq!(route["terms"], stated["terms"]);
+    assert_eq!(route["terms_by_card"], view["terms_by_card"]);
+}
+
+#[test]
+fn a_source_line_a_navigation_list_and_a_hub_line_are_not_prose() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "成本与政策", 3);
+    let target = format!("{tree}/1");
+    let cited = format!("{tree}/2");
+    let member = format!("{tree}/3");
+    mcp.ok("edit_card", json!({ "at": target, "title": "干中学", "body": "累计产量提高。" }));
+    // A source locator names the term; it is not the Card's own statement.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": cited, "title": "引文", "body": "这一句不谈它。\n\n来源：《学习手册》第 3 章。" }),
+    );
+    // A navigation list names the term; it is a way in, not prose.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": member, "title": "邻近一看", "body": format!("## 邻近\n- [[{target}]] 讨论学习的外部性。\n") }),
+    );
+    // A Hub Card's member lines are navigation too.
+    let hub = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": member,
+            "kind": "side",
+            "type": "hub",
+            "level": "line",
+            "title": "这一支的入口",
+            "body": format!("## 邻近\n- [[{target}]] 讨论学习。\n"),
+        }),
+    ));
+    register(&mut mcp, &format!("## 词条\n- 学习：[[{target}]]\n"));
+    let terms = |mcp: &mut Mcp, at: &str| -> Value {
+        mcp.ok("get_register", json!({ "workspace": "agent", "at": at }))["terms"].clone()
+    };
+    assert_eq!(terms(&mut mcp, &target), json!(["学习"]));
+    assert_eq!(
+        terms(&mut mcp, &cited),
+        json!([]),
+        "a 来源 line is a source locator, not prose"
+    );
+    assert_eq!(
+        terms(&mut mcp, &member),
+        json!([]),
+        "a 邻近 list is navigation, not prose"
+    );
+    assert_eq!(
+        terms(&mut mcp, &hub),
+        json!([]),
+        "a Hub Card is navigation, not substance"
+    );
+}
+
+#[test]
+fn a_scoped_term_is_never_reduced_to_its_bare_word() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "多重均衡", 3);
+    let individual = format!("{tree}/1");
+    let industry = format!("{tree}/2");
+    let bare = format!("{tree}/3");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": bare, "title": "一般讨论", "body": "学习是一件复杂的事。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": individual, "title": "个体行为", "body": "学习（个体行为）提高技能。" }),
+    );
+    register(
+        &mut mcp,
+        &format!(
+            "## 词条\n- 学习（个体行为）：[[{individual}]]\n- 学习（产业生产率）：[[{industry}]]\n"
+        ),
+    );
+    let terms = |mcp: &mut Mcp, at: &str| -> Value {
+        mcp.ok("get_register", json!({ "workspace": "agent", "at": at }))["terms"].clone()
+    };
+    assert_eq!(
+        terms(&mut mcp, &individual),
+        json!(["学习（个体行为）"]),
+        "the scoped label is matched whole"
+    );
+    assert_eq!(
+        terms(&mut mcp, &bare),
+        json!([]),
+        "a bare word is no confident evidence for either scoped sense"
+    );
+    assert_eq!(
+        terms(&mut mcp, &industry),
+        json!(["学习（产业生产率）"]),
+        "an explicit destination keeps its own sense"
+    );
+}
+
+#[test]
 fn a_missing_target_is_named_and_the_entry_stays_incomplete() {
     let home = TestHome::new();
     let mut mcp = home.mcp();

@@ -305,7 +305,7 @@ An ordinary Idea Card that holds the register's term rows, filed as an immediate
 _Avoid_: Sub-register, index page, keyword sheet, hub part
 
 **Register entry**:
-The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on, with the declared part when it lives in one. A row an earlier equivalent row already serves is counted once and named as a duplicate; the same label with other destinations stays two entries and is an ambiguity fault. The entry view also names the archive revision it was read at and the terms each target Card carries. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
+The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on, with the declared part when it lives in one. A row an earlier equivalent row already serves is counted once and named as a duplicate; the same label with other destinations stays two entries and is an ambiguity fault. The entry view also names the archive revision it was read at, and, for one named Card, the accepted terms that Card carries: the rows that name it and the terms its own substantive title or prose states. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
 _Avoid_: Concept record, keyword, term row (that is the written item)
 
 **Entry-first search**:

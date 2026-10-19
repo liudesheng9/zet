@@ -367,8 +367,9 @@ term label and the explanation in those Cards. A register with more than 120 ter
 into ordinary Idea Cards declared under `## 词条分册`, one per accepted pinyin-initial range
 (`- [[2/1|a]] A–F`, `其他` for a term whose reading is missing or uncertain); each part has its own
 `## 词条` section, is an immediate Side successor of the register, and never holds parts of its own.
-`get_register` reads those rows as one paged catalog, and
-`scripts/book-digest/register-compiler.ps1` plans, publishes and re-checks it.
+`get_register` reads those rows as one paged catalog; with `at` it also names every accepted term
+one Card carries — the rows that name it and the terms its own substantive title and prose state —
+and `scripts/book-digest/register-compiler.ps1` plans, publishes and re-checks it.
 
 ## The MCP server
 

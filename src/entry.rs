@@ -246,7 +246,8 @@ pub(crate) struct View {
     pub(crate) faults: Vec<Value>,
     /// The declared `词条分册` parts, in declaration order.
     pub(crate) parts: Vec<Value>,
-    /// The terms each entry Card carries, in register order, derived from the explicit targets.
+    /// The terms each Card carries: the register rows that name it, in register order, then the
+    /// accepted terms its substantive title or prose states literally, in register order (D196).
     pub(crate) terms_by_card: BTreeMap<String, Vec<String>>,
     /// Confirmed restatement entries (`## 同述入口`): entry Card → the substantive Card.
     pub(crate) restatements: Vec<Value>,
@@ -630,6 +631,78 @@ impl View {
                 .cmp(b["entry"].as_str().unwrap_or_default())
         });
         self.restatements = confirmed;
+    }
+
+    /// The accepted terms one Card carries (§9.1, D196): the register rows that name it, in
+    /// register order, then the accepted terms its substantive title and prose state literally, in
+    /// register order. `body` is the Card's authored body, which the caller read.
+    ///
+    /// A term row is not the only place a Card carries a term: a Card that states an accepted term
+    /// shares it even when it is not one of that term's selected entry targets, which is exactly
+    /// what a distant selection asks about a held Card. The register, its parts (declared or left
+    /// behind), Hub Cards and tree roots are navigation, and a source locator line or a navigation
+    /// section is not prose, so none of them supplies a term. A label is matched whole, so a scoped
+    /// term is never reduced to its bare word, and an incomplete row is no evidence (D297).
+    pub(crate) fn terms_at(
+        &self,
+        snapshot: &Snapshot,
+        address: &str,
+        body: &str,
+    ) -> Vec<String> {
+        let mut terms = self
+            .terms_by_card
+            .get(address)
+            .cloned()
+            .unwrap_or_default();
+        let Some(card) = snapshot.by_address.get(address) else {
+            return terms;
+        };
+        if card.card_type == CardType::Hub
+            || crate::is_tree_root(card)
+            || self.navigation(snapshot).contains(address)
+        {
+            return terms;
+        }
+        let mut accepted: Vec<&str> = Vec::new();
+        for entry in &self.entries {
+            if !entry.complete() {
+                continue;
+            }
+            let label = entry.term.trim();
+            if !label.is_empty() && !accepted.contains(&label) {
+                accepted.push(label);
+            }
+        }
+        if accepted.is_empty() {
+            return terms;
+        }
+        let index = TermIndex::new(&accepted);
+        let found = index.occurrences(&snapshot.title(address), body);
+        for position in found {
+            let label = accepted[position];
+            if !terms.iter().any(|known| known == label) {
+                terms.push(label.to_string());
+            }
+        }
+        terms
+    }
+
+    /// The Cards of this register's own navigation: the register, its declared parts, and every
+    /// immediate Side successor that holds term rows (a part an interrupted publication left
+    /// undeclared). They are ways in, never substance.
+    fn navigation(&self, snapshot: &Snapshot) -> BTreeSet<String> {
+        let mut navigation = BTreeSet::new();
+        navigation.insert(self.register.clone());
+        for part in &self.parts {
+            if let Some(address) = part["address"].as_str() {
+                navigation.insert(address.to_string());
+            }
+        }
+        navigation.extend(crate::hub::register_side_successors(
+            snapshot,
+            &self.register,
+        ));
+        navigation
     }
 
     /// The flattened, paged entry view. `entry_offset` and `entry_limit` page the entries;
@@ -1406,6 +1479,89 @@ pub(crate) fn bounded_body(body: &str) -> (String, bool) {
     (kept, truncated)
 }
 
+/// The `## 同述入口` section: a Card's confirmed restatement entry (§4.5).
+const RESTATEMENT_GROUP: &str = "同述入口";
+
+/// One authored body's prose: its lines outside the navigation sections (`## 邻近`, `## 入口`,
+/// `## 词条`, `## 词条分册`, `## 同述入口`), its source locator lines, and its fenced code. A term
+/// written in a way-in list, a citation, or a chart is not the Card's own statement (§9.1, D196).
+fn prose(body: &str) -> String {
+    let mut kept = String::with_capacity(body.len());
+    let mut navigation = false;
+    let mut fenced = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+        {
+            let heading = heading.trim();
+            navigation =
+                heading == RESTATEMENT_GROUP || crate::hub::is_navigation_group(heading);
+            continue;
+        }
+        if navigation || crate::hub::is_source_line(trimmed) {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept
+}
+
+/// The accepted term labels as one matcher: a Card's title or prose states a term when the whole
+/// label occurs in it. Case is folded and the label's own spacing is kept, so `学习（个体行为）` is
+/// never widened into the bare word `学习`. The labels are grouped by their first character, so one
+/// Card's text is walked once instead of once per term.
+struct TermIndex {
+    folded: Vec<String>,
+    by_first: std::collections::HashMap<char, Vec<usize>>,
+}
+
+impl TermIndex {
+    fn new(labels: &[&str]) -> Self {
+        let folded = labels
+            .iter()
+            .map(|label| label.to_lowercase())
+            .collect::<Vec<_>>();
+        let mut by_first: std::collections::HashMap<char, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (index, label) in folded.iter().enumerate() {
+            if let Some(first) = label.chars().next() {
+                by_first.entry(first).or_default().push(index);
+            }
+        }
+        Self { folded, by_first }
+    }
+
+    /// The positions of the accepted labels the title or prose states, in label order.
+    fn occurrences(&self, title: &str, body: &str) -> Vec<usize> {
+        let mut text = String::with_capacity(title.len() + body.len());
+        text.push_str(&title.to_lowercase());
+        text.push('\n');
+        text.push_str(&prose(body).to_lowercase());
+        let mut found = BTreeSet::new();
+        for (at, ch) in text.char_indices() {
+            let Some(candidates) = self.by_first.get(&ch) else {
+                continue;
+            };
+            for index in candidates {
+                if text[at..].starts_with(self.folded[*index].as_str()) {
+                    found.insert(*index);
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+}
+
 /// The Links of a Card's `## 同述入口` section, in body order. A Card without that section has
 /// no restatement entry, so nothing is recorded for it.
 pub(crate) fn restatement_links(body: &str) -> Vec<String> {
@@ -1425,7 +1581,7 @@ pub(crate) fn restatement_links(body: &str) -> Vec<String> {
             .strip_prefix("## ")
             .or_else(|| trimmed.strip_prefix("### "))
         {
-            inside = heading.trim() == "同述入口";
+            inside = heading.trim() == RESTATEMENT_GROUP;
             continue;
         }
         if inside && trimmed.starts_with("# ") {
@@ -1611,5 +1767,47 @@ mod tests {
         assert_eq!(words.quality("曲线的学习"), Some(Quality::Partial));
         assert_eq!(words.quality("学习"), None);
         assert_eq!(Query::new("").quality("学习"), None);
+    }
+
+    #[test]
+    fn prose_leaves_out_source_lines_navigation_sections_and_code() {
+        let body = "作者自己的陈述。\n\n来源：《学习手册》第 3 章。\n\n## 邻近\n- [[5/1]] 讨论学习。\n\n## 主张\n学习提高生产率。\n\n```\n学习\n```\n";
+        let kept = prose(body);
+        assert!(kept.contains("作者自己的陈述。"), "{kept}");
+        assert!(kept.contains("学习提高生产率。"), "{kept}");
+        assert!(!kept.contains("手册"), "a 来源 line is not prose: {kept}");
+        assert!(!kept.contains("讨论学习"), "a 邻近 list is not prose: {kept}");
+        assert!(!kept.contains("```"), "fenced code is not prose: {kept}");
+        assert_eq!(
+            kept.matches("学习").count(),
+            1,
+            "only the ordinary prose line states the term: {kept}"
+        );
+        // A section after a navigation group is prose again.
+        assert!(prose("## 入口\n- [[1/1]] 说明。\n\n## 历史\n学习。\n").contains("学习。"));
+    }
+
+    #[test]
+    fn a_term_index_matches_a_whole_label_and_keeps_scoped_senses_apart() {
+        let index = TermIndex::new(&["学习", "学习（个体行为）", "Learning by Doing"]);
+        assert_eq!(
+            index.occurrences("个体行为", "学习（个体行为）提高技能。"),
+            vec![0, 1],
+            "the scoped label states its own sense and the bare label occurs in it"
+        );
+        assert_eq!(
+            index.occurrences("一般讨论", "学习是一件复杂的事。"),
+            vec![0],
+            "a bare word is no scoped sense"
+        );
+        assert_eq!(
+            index.occurrences("干中学", "累计产量提高。"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            index.occurrences("learning", "Learning by Doing raises productivity."),
+            vec![2],
+            "case is folded for a Latin label"
+        );
     }
 }

@@ -705,6 +705,7 @@ impl App {
 
     /// The concept register's flattened entry view (`src/entry.rs`): the same reading the MCP
     /// `get_register` tool returns, from one coherent read, so both clients show one contract.
+    /// `at` names one Card whose accepted terms the answer carries (`terms_at`, `terms`).
     fn register(&self, query: &BTreeMap<String, String>) -> ApiResult {
         let workspace = query
             .get("ws")
@@ -726,7 +727,13 @@ impl App {
             "entry_limit": number("entry_limit")?,
         });
         let entries = crate::entry::EntryArgs::from_args(&args).map_err(ApiError::from)?;
-        Ok(crate::read::register(&self.root, workspace, &entries)?)
+        let terms_for = query.get("at").filter(|value| !value.is_empty());
+        Ok(crate::read::register(
+            &self.root,
+            workspace,
+            &entries,
+            terms_for.map(String::as_str),
+        )?)
     }
 
     fn card(&self, target: &str) -> ApiResult {
