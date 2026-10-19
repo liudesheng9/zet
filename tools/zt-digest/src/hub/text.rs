@@ -124,6 +124,69 @@ pub fn format_body(scope: &str, groups: &Value, neighbours: &Value, resolve: &mu
     Ok(out.trim_end().to_string())
 }
 
+/// A Topic body's `## 入口` section (§8.2, D167): one to three entry Cards, each with what it
+/// adds. It replaces a topic hub whose lines would only repeat the tree map; refs that do not
+/// resolve are left out, so the section this writes is the one `list_hubs` reads.
+pub fn entries_body(entries: &Value, resolve: &mut Resolve) -> Result<String> {
+    let mut lines = Vec::new();
+    for item in ps::pipe(entries) {
+        let r = st(&item["ref"]);
+        let address = resolve(&r)?;
+        match format_item(&r, &st(&item["reason"]), address.as_deref(), "") {
+            Some(line) => lines.push(line),
+            None => continue,
+        }
+    }
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = format!("## 入口{NL}");
+    for line in &lines {
+        out.push_str(line);
+        out.push_str(NL);
+    }
+    Ok(out.trim_end().to_string())
+}
+
+/// A Topic body with its entry section replaced (§8.2, D167): an existing `## 入口` group (or
+/// its English spelling) is dropped and the new section is appended. Every other group and the
+/// Topic's own description stay as they are.
+pub fn replace_entries(body: &str, section: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+        {
+            skipping = is_entries_heading(heading);
+            if skipping {
+                continue;
+            }
+        }
+        if skipping {
+            continue;
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n").trim_end().to_string();
+    if !section.is_empty() {
+        if !out.is_empty() {
+            out.push_str(NL);
+            out.push_str(NL);
+        }
+        out.push_str(section);
+    }
+    out
+}
+
+/// True for the heading of a Topic body's entry section: `入口`, `entries`, or `entrance`.
+fn is_entries_heading(heading: &str) -> bool {
+    let heading = heading.trim();
+    heading.starts_with("入口") || heading.eq_ignore_ascii_case("entries") || heading.eq_ignore_ascii_case("entrance")
+}
+
 /// `Get-Quantiles`: n, min, p25, median, p75, p90, max (nearest rank, rounding half up).
 pub fn quantiles(values: &[i64]) -> Value {
     let mut sorted = values.to_vec();

@@ -22,6 +22,9 @@ use std::sync::LazyLock;
 /// zt-check's Card language rules the precheck reports on bodies and group names.
 const STYLE_RULES: &[&str] = &["2", "3", "4", "5", "7", "9"];
 
+/// The most entry Cards a Topic body's `## 入口` section may name (§8.2, D167).
+const ENTRY_MAX: usize = 3;
+
 static BRACKETS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[\[").unwrap());
 static LINE_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^line:").unwrap());
 static FIELD_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^field:").unwrap());
@@ -30,6 +33,22 @@ static REF_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(line|tr
 static NEAR_GROUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(邻近|neighbours$)").unwrap());
 static HUB_LEAF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^hub-(.+)\.json$").unwrap());
 static CHECK_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(e\d+) R(\d+) (.*)$").unwrap());
+
+/// Folgezettel order as `get_hub` computes it (`model::address_order` in the zt binary):
+/// numbers by value, side letters by length then alphabet, so `3/2|b` precedes `3/2|aa` and
+/// `3/10` follows `3/9`. The precheck's `mirror` test needs the same order the report uses.
+fn address_order(a: &str, b: &str) -> std::cmp::Ordering {
+    fn segments(address: &str) -> Vec<(u8, u64, &str)> {
+        address
+            .split(['/', '|'])
+            .map(|segment| match segment.parse::<u64>() {
+                Ok(number) => (0, number, ""),
+                Err(_) => (1, segment.len() as u64, segment),
+            })
+            .collect()
+    }
+    segments(a).cmp(&segments(b)).then_with(|| a.cmp(b))
+}
 
 /// `$HubRank`: the level of a hub (0 when it is none of these).
 fn hub_rank(level: &str) -> i64 {
@@ -321,6 +340,126 @@ impl Hub {
         );
     }
 
+    /// The entry Cards a draft writes into the Topic body instead of a topic hub (§8.2, D167,
+    /// D168): one to three Cards of the tree, each saying what it adds. Returns true when the
+    /// draft takes that alternative, so no topic hub is judged for the tree.
+    fn test_entries(&mut self, at: &str, tree: &str, s: &Value, survey: &Value, plan: &Value) -> Result<bool> {
+        let entries = &plan["topic"]["entries"];
+        // `ps_count` counts null as one; a draft with no `entries` key has no entry section.
+        if !ps::truthy(entries) || ps::each(entries).is_empty() {
+            return Ok(false);
+        }
+        // A tree with line hubs needs a topic hub to list them (H3: a line hub no higher hub
+        // lists is unanchored), so the entry section cannot replace one there.
+        let line_min = self.limit("line_min");
+        let branched = ps::each(&s["branches"]).into_iter().any(|b| {
+            ge_value(&b["cards"], &line_min) || ge_value(&b["models"], &json!(2))
+        });
+        let mut existing: Vec<String> = Vec::new();
+        let known = self.topic_hubs(survey).get(tree).cloned().unwrap_or_default();
+        if !known.is_empty() {
+            existing.push(known);
+        }
+        if let Some(legacy) = ps::each(&s["legacy"]).into_iter().map(st).next()
+            && !legacy.is_empty()
+        {
+            existing.push(legacy);
+        }
+        if let Some(hub) = existing.first() {
+            self.add_pre(at, "entry", format!("主题 {tree} 已经有主题枢纽 [[{hub}]]，entries 会被丢掉。写主题枢纽的 groups。"));
+            return Ok(false);
+        }
+        if branched {
+            self.add_pre(
+                at,
+                "entry",
+                format!("主题 {tree} 有需要线索枢纽的分支，线索枢纽要由主题枢纽列出。写主题枢纽的 groups，不要写 entries。"),
+            );
+            return Ok(false);
+        }
+        let items = ps::each(entries);
+        if items.len() > ENTRY_MAX {
+            self.add_pre(at, "oversize", format!("entries 有 {} 项，最多 {ENTRY_MAX} 项。只留读者应当从这里进入的卡。", items.len()));
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for item in &items {
+            if !item.is_object() || st(&item["ref"]).is_empty() {
+                self.add_pre(at, "shape", format!("entries 的每一项要有 ref 和 reason：{}", text::piped_json(item, 4)));
+                continue;
+            }
+            let r = st(&item["ref"]);
+            if REF_PREFIX.is_match(&r) {
+                self.add_pre(at, "broken", format!("entries 只写主题里的卡片地址：{r}"));
+                continue;
+            }
+            if !self.exists(&r)? {
+                self.add_pre(at, "broken", format!("entries 里的 {r} 不存在，脚本会丢掉这一项。"));
+                continue;
+            }
+            let tree_of = tree_id(&r);
+            if !ps::eq(&tree_of, tree) || ps::eq(&r, &format!("{tree}/0")) {
+                self.add_pre(at, "entry", format!("entries 里的 {r} 不是主题 {tree} 的卡。入口只能是本树的卡。"));
+                continue;
+            }
+            if self.card(&r).is_some_and(|c| ps::eq(&st(&c["type"]), "hub")) {
+                self.add_pre(at, "entry", format!("entries 里的 {r} 是枢纽卡。入口写读者要进入的实质卡。"));
+                continue;
+            }
+            if ps::is_in(&r, &seen) {
+                self.add_pre(at, "entry", format!("entries 把 {r} 写了两遍。每张卡只写一次。"));
+                continue;
+            }
+            seen.push(r.clone());
+            if st(&item["reason"]).trim().is_empty() {
+                self.add_pre(at, "bare", format!("entries 里的 {r} 没有理由。写一句话，说这张卡贡献了什么。"));
+            }
+        }
+        Ok(true)
+    }
+
+    /// `mirror` as `get_hub` computes it (§8.2, D167): a topic hub of four or more lines whose
+    /// every line lies in its own tree in non-decreasing address order repeats the tree map. Such
+    /// a draft is refused; the writer lists one to three entry Cards in the Topic body instead.
+    fn test_mirror(&mut self, at: &str, tree: &str, hub: &Value) {
+        let mut lines: Vec<String> = Vec::new();
+        let mut outside = false;
+        let push = |this: &Self, item: &Value, lines: &mut Vec<String>, outside: &mut bool| {
+            if !item.is_object() {
+                return;
+            }
+            let r = st(&item["ref"]);
+            let address = if let Some(c) = LINE_REF.captures(&r) { c[1].to_string() } else { r };
+            if address.is_empty() || (!LINE_PREFIX.is_match(&st(&item["ref"])) && this.card(&address).is_none()) {
+                return;
+            }
+            if !ps::eq(&tree_id(&address), tree) {
+                *outside = true;
+            }
+            lines.push(address);
+        };
+        for g in ps::pipe(&hub["groups"]) {
+            for item in ps::pipe(&g["items"]) {
+                push(self, item, &mut lines, &mut outside);
+            }
+        }
+        for item in ps::pipe(&hub["neighbours"]) {
+            push(self, item, &mut lines, &mut outside);
+        }
+        if outside || lines.len() < 4 {
+            return;
+        }
+        let ordered = lines.windows(2).all(|pair| address_order(&pair[0], &pair[1]) != std::cmp::Ordering::Greater);
+        if ordered {
+            self.add_pre(
+                at,
+                "mirror",
+                format!(
+                    "主题枢纽按地址顺序抄了主题 {tree} 的图，读者在树图里已经看得到。不要写这张枢纽：在 topic 里写 entries（一到三项，每项 ref 和 reason），脚本把它们写进主题卡的“## 入口”一节。"
+                ),
+            );
+        }
+    }
+
     /// `Test-Draft`: one hub of a draft — its shape, its lines, and its size (邻近 does not count).
     fn test_draft(&mut self, ctx: &Ctx, survey: &Value, hub: &Value) -> Result<Draft> {
         let at = ctx.at.clone();
@@ -463,8 +602,27 @@ impl Hub {
             line_titles: line_titles.clone(),
         };
         let mut drafts: Vec<Draft> = Vec::new();
+        // §8.2 D167: a topic hub whose only useful lines would repeat the tree map is not written.
+        // The writer lists one to three entry Cards in the Topic body instead, and a tree that
+        // takes that alternative needs no topic hub here (D168).
+        let entries = self.test_entries(&at, &tree, &s, survey, plan)?;
         let topic_ctx = ctx(at.clone(), "topic", String::new(), &line_hubs, &line_titles);
+        if entries && lines.is_empty() {
+            drafts.push(Draft {
+                at: at.clone(),
+                members: Vec::new(),
+                body: text::entries_body(&plan["topic"]["entries"], &mut |r: &str| Ok(Some(r.to_string())))?,
+                names: Vec::new(),
+            });
+            // The entry section is the whole answer: no topic hub exists to list model Cards,
+            // line hubs, or a neighbour, so the hub coverage checks do not apply (D168).
+            return Ok(drafts);
+        }
+        if entries {
+            self.add_pre(&at, "entry", "entries 和 lines 只能选一种：有线索枢纽就要写主题枢纽。");
+        }
         drafts.push(self.test_draft(&topic_ctx, survey, &plan["topic"])?);
+        self.test_mirror(&at, &tree, &plan["topic"]);
         for line in &lines {
             let anchor = st(&line["anchor"]);
             let key = format!("line:{anchor}");
@@ -782,5 +940,68 @@ mod tests {
         assert!(!reach(&edges, "line:3/2").contains("3/1"));
         assert_eq!(hub_rank("Topic"), 2);
         assert!(NEAR_GROUP.is_match("邻近主题") && NEAR_GROUP.is_match("Neighbours") && !NEAR_GROUP.is_match("neighbours x"));
+    }
+
+    /// A precheck with the named Cards imported, as `test_hub_file` leaves it.
+    fn hub_with(addresses: &[&str]) -> crate::hub::Hub {
+        let mut cards = HashMap::new();
+        for address in addresses {
+            cards.insert(ps::key(address), json!({"address": address, "title": format!("卡 {address}"), "type": "idea"}));
+        }
+        crate::hub::Hub {
+            p: crate::hub::Params {
+                step: "precheck".into(),
+                file: String::new(),
+                limits: String::new(),
+                trees: String::new(),
+                per_job: 0,
+                rebuild: false,
+            },
+            work: String::new(),
+            out: String::new(),
+            state_file: String::new(),
+            state: json!({}),
+            doc: String::new(),
+            zt: None,
+            cards: Some(cards),
+            pre: Vec::new(),
+            pre_limits: json!({ "topic_min": 7, "line_min": 12, "max_lines": 25, "max_groups": 7, "min_reason": 8, "neighbour_links": 3 }),
+        }
+    }
+
+    /// Four or more lines of one tree in address order repeat the tree map; a line from another
+    /// tree, or an order that is not the map's, is a hub that adds a way in (D167).
+    #[test]
+    fn a_topic_hub_in_address_order_is_a_mirror() {
+        let mut hub = hub_with(&["3/1", "3/2", "3/3", "3/4", "3/10", "4/1"]);
+        let map = json!({"groups": [{"name": "主线", "items": [
+            {"ref": "3/1", "reason": "第一步。"}, {"ref": "3/2", "reason": "第二步。"},
+            {"ref": "3/3", "reason": "第三步。"}, {"ref": "3/10", "reason": "第十步。"}]}], "neighbours": []});
+        hub.test_mirror("topic:3", "3", &map);
+        assert!(hub.pre.iter().any(|line| line.contains(" mirror ")), "{:?}", hub.pre);
+        // Numbers compare by value, so 3/10 after 3/3 is still the map's order.
+        assert_eq!(address_order("3/10", "3/9"), std::cmp::Ordering::Greater);
+        // A Card from another tree is a way out of the tree: no mirror.
+        let mut hub = hub_with(&["3/1", "3/2", "3/3", "3/4", "4/1"]);
+        let neighbour = json!({"groups": [{"name": "主线", "items": [
+            {"ref": "3/1", "reason": "第一步。"}, {"ref": "3/2", "reason": "第二步。"},
+            {"ref": "3/3", "reason": "第三步。"}]}],
+            "neighbours": [{"kind": "对照", "ref": "4/1", "reason": "另一本书的讲法。"}]});
+        hub.test_mirror("topic:3", "3", &neighbour);
+        assert!(hub.pre.is_empty(), "{:?}", hub.pre);
+        // A hub that groups by concept is not in address order: no mirror.
+        let mut hub = hub_with(&["3/1", "3/2", "3/3", "3/4"]);
+        let grouped = json!({"groups": [{"name": "后果", "items": [
+            {"ref": "3/3", "reason": "第三步。"}, {"ref": "3/1", "reason": "第一步。"},
+            {"ref": "3/4", "reason": "第四步。"}, {"ref": "3/2", "reason": "第二步。"}]}], "neighbours": []});
+        hub.test_mirror("topic:3", "3", &grouped);
+        assert!(hub.pre.is_empty(), "{:?}", hub.pre);
+        // Three lines are too few to repeat the map.
+        let mut hub = hub_with(&["3/1", "3/2", "3/3"]);
+        let short = json!({"groups": [{"name": "主线", "items": [
+            {"ref": "3/1", "reason": "第一步。"}, {"ref": "3/2", "reason": "第二步。"},
+            {"ref": "3/3", "reason": "第三步。"}]}], "neighbours": []});
+        hub.test_mirror("topic:3", "3", &short);
+        assert!(hub.pre.is_empty(), "{:?}", hub.pre);
     }
 }

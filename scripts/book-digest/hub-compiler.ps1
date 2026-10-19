@@ -24,16 +24,23 @@
                            -PerJob trees and one field job; prints the jobs.
     apply                  reads out\hub-<tree>.json and out\fields.json, drops members that do
                            not exist, creates or updates the line, topic, and field hubs and the
-                           register (Topic 索引), and links each topic hub from its Topic body.
+                           register (Topic 索引), and links each topic hub from its Topic body. A
+                           tree file that names one to three entry Cards in `topic.entries` and no
+                           lines instead writes the Topic body's `## 入口` section and gets no
+                           topic hub; an existing topic hub is reported, never deleted (#93 S12).
     check                  runs get_hub on every hub of the state with the limits; prints one
-                           follow-up job per writer conversation whose hubs have faults.
-    report                 list_hubs with the limits: counts, faults, missing hubs; writes
-                           report.json.
+                           follow-up job per writer conversation whose hubs have faults, the
+                           `one-book` advice as a report only, and a fix job for a tree whose
+                           `## 入口` section broke or disappeared.
+    report                 list_hubs with the limits: counts, faults, missing hubs, the entry
+                           sections; writes report.json.
     precheck -File <file>  read-only: judges one DeepSeek file (out\hub-<tree>.json or
                            out\fields.json) before its writer replies, the way apply builds it and
                            get_hub judges it, as far as that is known before the Cards exist; runs
                            zt-check (R2, R3, R4, R5, R7, R9) on the reasons and group
-                           names. It writes no Card and no state. Prints one line per fault,
+                           names, and refuses a topic hub whose lines only repeat the tree map
+                           (`mirror`) or an unusable `entries` section (#93 S12). It writes no
+                           Card and no state. Prints one line per fault,
                            `<file or hub> <code> <text>`, then `faults: N` as its last line (not
                            JSON). Each job file names this command for each of its files
                            (`SELF-CHECK: zt-digest hub -Step precheck ...`).

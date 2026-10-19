@@ -202,6 +202,84 @@ try {
     $newTree = Last (Run 'apply')
     $state = Get-Content -Raw (Join-Path $work 'state.json') | ConvertFrom-Json -AsHashtable
     Assert ($newTree.created -ge 1 -and $state.trees[$c].topic -eq "$c/1|a") "apply: a new Topic gets its topic hub under $c/1 ($($state.trees[$c].topic))"
+
+    # #93 S12: a tree whose topic hub would only repeat the map gets one to three entry Links in
+    # its Topic body instead, and no topic hub; the policy then requires none.
+    $d = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '消费需求'; body = '本主题追问：消费需求怎样分解。' } }))[0] -replace '/0$', ''
+    $dCalls = @(@{ tool = 'create_successor'; arguments = @{ at = "$d/0"; title = '消费需求分成数量与结构' } })
+    $dCalls += @(1..6 | ForEach-Object { @{ tool = 'create_successor'; arguments = @{ at = "$d/$_"; title = "分解的第 $_ 步" } } })
+    $dCards = Write-Calls $dCalls
+    $null = Run 'survey'
+    $dPlan = [ordered]@{
+        tree = $d
+        topic = [ordered]@{
+            title = '消费需求的分解入口'
+            scope = "主题 $d 的入口。"
+            groups = @([ordered]@{ name = '分解'; items = @(0..4 | ForEach-Object {
+                            [ordered]@{ ref = $dCards[$_]; reason = "第 $($_ + 1) 步说明分解的一部分。" } }) })
+            neighbours = @()
+        }
+        lines = @()
+    }
+    Save-Json (Join-Path $out "hub-$d.json") $dPlan
+    # get_hub would call this hub a mirror: the same Cards in address order, all in one tree.
+    $mirror = Run 'precheck' @('-File', (Join-Path $out "hub-$d.json"))
+    Assert (@($mirror -match ('^topic:' + [regex]::Escape($d) + ' mirror ')).Count) "precheck: a topic hub that only repeats the address order is refused ($($mirror -join ' | '))"
+    Assert (@($mirror)[-1] -eq 'faults: 1') "precheck: the mirror draft is one fault ($(@($mirror)[-1]))"
+    # The entry-section alternative: one to three entry Cards of the tree, each with its reason.
+    $dEntry = [ordered]@{
+        tree = $d
+        topic = [ordered]@{ entries = @(
+                [ordered]@{ ref = $dCards[0]; reason = '需求分成数量与结构两部分。' },
+                [ordered]@{ ref = $dCards[2]; reason = '结构变化改变总量的构成。' },
+                [ordered]@{ ref = $dCards[5]; reason = '分解方法用于预测需求。' }) }
+        lines = @()
+    }
+    $drafts = Join-Path $work 'drafts'
+    function Entry-Variant($name, [scriptblock]$change) {
+        $copy = $dEntry | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+        & $change $copy
+        $path = Join-Path $drafts $name
+        Save-Json $path $copy
+        Run 'precheck' @('-File', $path)
+    }
+    Save-Json (Join-Path $out "hub-$d.json.entries") $dEntry
+    $clean = Run 'precheck' @('-File', (Join-Path $out "hub-$d.json.entries"))
+    Assert (@($clean)[-1] -eq 'faults: 0') "precheck: an entry section with three Cards of the tree is accepted ($($clean -join ' | '))"
+    $four = Entry-Variant 'entries-four.json' { param($p) $p.topic.entries = @($p.topic.entries) + @([ordered]@{ ref = $dCards[2]; reason = '数量与结构互相影响。' }) }
+    Assert (@($four -match ' oversize ').Count) "precheck: four entries are too many ($($four -join ' | '))"
+    $outsideTree = Entry-Variant 'entries-outside.json' { param($p) $p.topic.entries[0].ref = $made[0] }
+    Assert (@($outsideTree -match ('^topic:' + [regex]::Escape($d) + ' entry ')).Count) "precheck: an entry outside the tree is refused ($($outsideTree -join ' | '))"
+    $bareEntry = Entry-Variant 'entries-bare.json' { param($p) $p.topic.entries[0].reason = '' }
+    Assert (@($bareEntry -match ' bare ').Count) "precheck: an entry with no reason is refused ($($bareEntry -join ' | '))"
+    # The entry draft is what apply reads: the Topic body gets the section, no hub is created.
+    Copy-Item -LiteralPath (Join-Path $out "hub-$d.json.entries") -Destination (Join-Path $out "hub-$d.json") -Force
+    $entryApplied = Last (Run 'apply')
+    $state = Get-Content -Raw (Join-Path $work 'state.json') | ConvertFrom-Json -AsHashtable
+    Assert ($null -eq $state.trees[$d].topic) "apply: the entry tree gets no topic hub ($($state.trees[$d].topic))"
+    Assert ($entryApplied.created -eq 0) "apply: the entry tree creates no Cards ($($entryApplied.created))"
+    $topicCard = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = "$d/0" } })
+    Assert ($topicCard.body -match '(?m)^## 入口$' -and $topicCard.body -match [regex]::Escape("[[$($dCards[0])]]") -and $topicCard.body -match [regex]::Escape("[[$($dCards[5])]]")) "apply: the entry section is written into the Topic body ($($topicCard.body))"
+    $policy = Invoke-Zt @(@{ tool = 'list_hubs'; arguments = @{ workspace = 'agent' } })
+    Assert (-not @($policy.missing | Where-Object { $_.tree -eq $d }).Count) "apply: a valid entry section means the tree needs no topic hub ($($policy.missing | ConvertTo-Json -Compress))"
+    $section = @($policy.entries | Where-Object { $_.tree -eq $d })
+    Assert ($section.Count -eq 1 -and $section[0].valid -and @($section[0].entries).Count -eq 3) "apply: list_hubs reports the entry section as valid ($($section | ConvertTo-Json -Compress))"
+    # A second apply of the same file writes the same section and no new Card.
+    $again = Last (Run 'apply')
+    $topicCard = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = "$d/0" } })
+    Assert ($again.created -eq 0 -and ([regex]::Matches($topicCard.body, '(?m)^## 入口$').Count -eq 1)) "apply again: the entry section is rewritten once, with no new Card ($($again | ConvertTo-Json -Compress))"
+    # check has nothing to send for the entry tree, and report counts the entry section.
+    $check = Last (Run 'check')
+    Assert (@($check.entry_faults).Count -eq 0) "check: the entry section is still valid ($($check.entry_faults | ConvertTo-Json -Compress))"
+    Assert ($check.one_book -is [array]) 'check: one-book advice is reported as its own list'
+    $report = Last (Run 'report')
+    Assert ($report.entries_valid -ge 1 -and $report.entries_invalid -eq 0) "report: the entry section is counted ($($report.entries_valid))"
+    # A removed entry returns the missing-hub advice, and check names the lost section.
+    Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = "$d/0"; body = '本主题追问：消费需求怎样分解。' } }) | Out-Null
+    $check = Last (Run 'check')
+    Assert (@($check.entry_faults).Count -eq 1 -and @($check.entry_faults)[0] -match [regex]::Escape($d)) "check: a removed entry section is reported ($($check.entry_faults | ConvertTo-Json -Compress))"
+    $policy = Invoke-Zt @(@{ tool = 'list_hubs'; arguments = @{ workspace = 'agent' } })
+    Assert (@($policy.missing | Where-Object { $_.tree -eq $d }).Count -eq 1) "check: the removed section returns the missing topic hub ($($policy.missing | ConvertTo-Json -Compress))"
 }
 finally {
     zt down 2>&1 | Out-Null

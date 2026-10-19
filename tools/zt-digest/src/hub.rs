@@ -451,6 +451,18 @@ impl Hub {
                 missing.insert(ps::key(&st(&m["tree"])));
             }
         }
+        // A tree whose Topic body carries an accepted `## 入口` section needs no topic hub (§8.2,
+        // D168): the plan does not send it to a writer again.
+        let mut satisfied = HashSet::new();
+        for entry in ps::pipe(&graph["entries"]) {
+            if ps::truthy(&entry["valid"])
+                && !ps::pipe(&graph["hubs"]).into_iter().any(|h| {
+                    ps::eq(&st(&h["tree"]), &st(&entry["tree"])) && ps::eq(&st(&h["level"]), "topic")
+                })
+            {
+                satisfied.insert(ps::key(&st(&entry["tree"])));
+            }
+        }
         let only: Vec<String> = self.p.trees.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
         let topic_min = limits["topic_min"].as_i64().unwrap_or(0);
         let line_min = limits["line_min"].as_i64().unwrap_or(0);
@@ -461,7 +473,8 @@ impl Hub {
             if !only.is_empty() && !ps::is_in(&tree, &only) {
                 continue;
             }
-            let needs = ge(&s["cards"], topic_min) || ps::each(&s["branches"]).iter().any(required);
+            let needs = (ge(&s["cards"], topic_min) || ps::each(&s["branches"]).iter().any(required))
+                && !satisfied.contains(&ps::key(&tree));
             if !needs {
                 continue;
             }
@@ -534,7 +547,10 @@ impl Hub {
                     for b in required {
                         line(&format!("- [[{}]] {}（{} 张，模型 {}）", st(&b["anchor"]), st(&b["title"]), st(&b["cards"]), st(&b["models"])));
                     }
+                } else {
+                    line("如果这张主题枢纽只会按地址顺序抄本树的图，不要写它：在 topic 里写 entries（一到三项，每项 ref 和 reason），脚本把它们写进主题卡的“## 入口”一节，这棵树就不再要求主题枢纽。预检按 mirror 拒绝抄地址顺序的稿子。");
                 }
+                line("只讲一本书的枢纽会被报告为 one-book：同一个概念在别的书里也有讲法时，在 neighbours 里写出那张卡和关系。");
                 line("");
                 line("本树卡片（地址 | 类型 | 标题 | 摘要）：");
                 for c in ps::each(&data["cards"]) {
@@ -684,14 +700,60 @@ impl Hub {
                 self.add_known(&address)?;
                 created += 1;
             }
-            // 2. The topic hub: rewrite the existing or legacy one, or create it under <n>/1.
+            // 2. The topic hub: rewrite the existing or legacy one, or create it under <n>/1. A
+            // tree whose draft names one to three entry Cards instead writes the Topic body's
+            // `## 入口` section and gets no topic hub (§8.2, D167, D168).
+            let entry_only = ps::pipe(&plan["topic"]["entries"])
+                .iter()
+                .any(|item| ps::truthy(item))
+                && !ps::pipe(&plan["lines"]).iter().any(|line| ps::truthy(line))
+                && !ps::pipe(&plan["topic"]["groups"]).iter().any(|group| ps::truthy(group));
             let state_topic = st(&entry["topic"]);
-            let topic = if ps::truthy(&entry["topic"]) && self.exists(&state_topic)? {
-                state_topic
-            } else if let Some(h) = topic_hub.get(&tree).filter(|h| !h.is_empty()) {
-                h.clone()
-            } else if ps::ps_count(&s["legacy"]) > 0 {
-                st(&ps::at(&ps::pipe(&s["legacy"]), 0))
+            let existing_topic = (ps::truthy(&entry["topic"]) && self.exists(&state_topic)?)
+                .then(|| state_topic.clone())
+                .or_else(|| topic_hub.get(&tree).filter(|h| !h.is_empty()).cloned())
+                .or_else(|| {
+                    ps::pipe(&s["legacy"])
+                        .first()
+                        .map(|legacy| st(legacy))
+                        .filter(|legacy| !legacy.is_empty())
+                });
+            if entry_only {
+                match existing_topic.as_ref() {
+                    // An existing mirror hub is reported, never deleted (D167): the entry section
+                    // is not written over it until a separate change removes the hub.
+                    Some(hub) => dropped.push(format!(
+                        "entries (主题 {tree} 已经有主题枢纽 [[{hub}]]；删掉旧枢纽要另外授权，这次不改它)"
+                    )),
+                    None => {
+                        let root = self.read_one("get_card", json!({ "at": format!("{tree}/0") }))?;
+                        let section = text::entries_body(
+                            &plan["topic"]["entries"],
+                            &mut |r: &str| Ok(Some(r.to_string())),
+                        )?;
+                        if section.is_empty() {
+                            dropped.push(format!("{name}: entries 都解析不出来"));
+                        } else {
+                            let body = text::replace_entries(&st(&root["body"]), &section);
+                            self.write(vec![json!({ "tool": "edit_card", "arguments": {
+                                "at": format!("{tree}/0"), "body": body } })])?;
+                            entry["topic"] = Value::Null;
+                            entry["entries"] = json!(ps::pipe(&plan["topic"]["entries"])
+                                .iter()
+                                .map(|item| st(&item["ref"]))
+                                .collect::<Vec<_>>());
+                            entry["lines"] = json!({});
+                            entry["hash"] = s["hash"].clone();
+                            self.state["trees"][&tree] = entry;
+                            self.save_state()?;
+                            updated += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            let topic = if let Some(hub) = existing_topic {
+                hub
             } else {
                 let made = self.write(vec![json!({ "tool": "create_successor", "arguments": {
                     "at": format!("{tree}/1"), "kind": "side", "type": "hub", "level": "topic", "title": st(&plan["topic"]["title"]), "body": PENDING_BODY } })])?;
@@ -925,6 +987,8 @@ impl Hub {
             .collect();
         let reports = self.reads(&calls)?;
         let mut by_tree: CiMap<Vec<String>> = CiMap::new();
+        let mut one_book: Vec<Value> = Vec::new();
+        let mut entry_faults: Vec<String> = Vec::new();
         let mut total = 0;
         for (i, (address, tree)) in hubs.iter().enumerate() {
             let report = reports.get(i).cloned().unwrap_or(Value::Null);
@@ -939,6 +1003,18 @@ impl Hub {
             if ps::truthy(&report["mirror"]) {
                 faults.push("mirror：只按地址顺序抄了本树，没有按主题分组，也没有树外的卡".into());
             }
+            // `one-book` is advice, not a fault (§8.2, D166): it is reported for the hub manager,
+            // and no fix job demands a relation the writer cannot state.
+            for candidate in ps::pipe(&report["one_book"]["candidates"]) {
+                one_book.push(json!({
+                    "tree": tree,
+                    "hub": address,
+                    "candidate": candidate["address"],
+                    "source": candidate["source"],
+                    "term": candidate["term"],
+                    "member": candidate["member"],
+                }));
+            }
             if faults.is_empty() {
                 continue;
             }
@@ -946,6 +1022,36 @@ impl Hub {
             let mut list = by_tree.get(tree).cloned().unwrap_or_default();
             list.push(format!("- [[{}]]（{}）：{}", st(address), st(&report["level"]), faults.join("；")));
             by_tree.insert(tree, list);
+        }
+        // A tree that took the entry-section alternative has no hub to check; its section is
+        // checked through `list_hubs`, and a broken one becomes the writer's fix job (§8.2, D168).
+        if !obj(&self.state["trees"]).values().all(|e| !ps::truthy(&e["entries"])) {
+            let mut arguments = Self::limit_args(&limits)?;
+            arguments.insert("workspace".into(), json!("agent"));
+            let graph = self.read_one("list_hubs", Value::Object(arguments))?;
+            for (tree, e) in obj(&self.state["trees"]) {
+                if !ps::truthy(&e["entries"]) {
+                    continue;
+                }
+                let section = ps::pipe(&graph["entries"]).into_iter().find(|row| ps::eq(&st(&row["tree"]), &tree));
+                let problem = match section {
+                    None => Some("主题卡的“## 入口”一节不见了。".to_string()),
+                    Some(row) if !ps::truthy(&row["valid"]) => Some(format!(
+                        "主题卡的“## 入口”一节不再有效（{}：{}）。",
+                        st(&row["fault"]),
+                        st(&row["detail"])
+                    )),
+                    Some(_) => None,
+                };
+                if let Some(problem) = problem {
+                    total += 1;
+                    let line = format!("- 主题 [[{tree}/0]]（入口）：{problem}在 entries 里重写一到三项，或写主题枢纽。");
+                    entry_faults.push(line.clone());
+                    let mut list = by_tree.get(&tree).cloned().unwrap_or_default();
+                    list.push(line);
+                    by_tree.insert(&tree, list);
+                }
+            }
         }
         let mut jobs = Vec::new();
         let seq = st(&self.state["seq"]);
@@ -973,7 +1079,13 @@ impl Hub {
             jobs.push(json!({ "id": format!("{id}-fix"), "continue": id, "files": [file], "fallback": [self.doc, job["file"], file], "prompt": FIX_PROMPT }));
         }
         self.save_state()?;
-        util::print_line(&ps::json_compact(&json!({ "jobs": jobs, "hubs": hubs.len(), "faults": total })))
+        util::print_line(&ps::json_compact(&json!({
+            "jobs": jobs,
+            "hubs": hubs.len(),
+            "faults": total,
+            "one_book": one_book,
+            "entry_faults": entry_faults,
+        })))
     }
 
     // --- report --------------------------------------------------------------------------------
@@ -993,9 +1105,13 @@ impl Hub {
         }
         let faults: Map<String, Value> = faults.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
         let missing = ps::pipe(&graph["missing"]);
+        let entries = ps::pipe(&graph["entries"]);
         let report = json!({
             "counts": graph["counts"], "faults": faults,
             "mirror": ps::pipe(&graph["hubs"]).into_iter().filter(|h| ps::truthy(&h["mirror"])).count(),
+            "entries": entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>(),
+            "entries_valid": entries.iter().filter(|e| ps::truthy(&e["valid"])).count(),
+            "entries_invalid": entries.iter().filter(|e| !ps::truthy(&e["valid"])).count(),
             "missing": missing.iter().take(30).map(|m| (*m).clone()).collect::<Vec<_>>(), "missing_count": missing.len(),
             "register": self.state["register"], "fields": self.state["fields"], "limits": limits,
         });
