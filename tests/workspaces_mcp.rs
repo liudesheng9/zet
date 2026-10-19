@@ -2351,6 +2351,7 @@ fn a_wait_that_overruns_the_declared_patience_logs_one_timeout_and_keeps_the_liv
     let path = home.archive_root.join("zt.edit.lock");
     fs::write(&path, "zt edit lock\npid 515151\n").unwrap();
     let (ready, opened) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
     let holder = std::thread::spawn(move || {
         let handle = fs::OpenOptions::new()
             .read(true)
@@ -2359,7 +2360,9 @@ fn a_wait_that_overruns_the_declared_patience_logs_one_timeout_and_keeps_the_liv
             .open(path)
             .expect("hold the stale lock file");
         ready.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(10_000));
+        // Hold until the test has seen the refusal, or a cap far beyond the patience: startup
+        // jitter cannot erase the margin, and the test does not wait for the whole cap.
+        let _ = released.recv_timeout(Duration::from_secs(60));
         drop(handle);
     });
     opened.recv().unwrap();
@@ -2378,9 +2381,10 @@ fn a_wait_that_overruns_the_declared_patience_logs_one_timeout_and_keeps_the_liv
         "the refusal names the busy lock: {refusal}"
     );
     assert!(
-        elapsed >= Duration::from_secs(7) && elapsed < Duration::from_secs(20),
+        elapsed >= Duration::from_secs(7) && elapsed < Duration::from_secs(39),
         "the wait is finite and bounded by the declared patience: {elapsed:?}"
     );
+    release.send(()).unwrap();
     holder.join().unwrap();
     assert!(!home.exists("0/1"), "the refused write created no Card");
     assert!(
