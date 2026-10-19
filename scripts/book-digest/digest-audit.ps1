@@ -45,13 +45,28 @@
   It reads the trees of both Workspaces: human Cards are Bridge endpoints, never part of a book.
   For the Workspace it adds the hub counts, the missing hubs (list_hubs), the broken Links, and
   the islands.
-  Writes audit.json, audit.md, audit-faults.txt (every Card language and Card layer fault), and
-  audit-cards.json (every Card checked outside a model, with its body and Links) in -Out, and
-  prints one compact JSON summary line last.
+  Writes audit.json, audit.md, audit-faults.txt (every Card language and Card layer fault),
+  audit-cards.json (every Card checked outside a model, with its body and Links), and
+  audit-sources.json (the explicit source evidence of every Card), in -Out, and prints one compact
+  JSON summary line last.
+
+  #94 S01 adds the reproducible baseline: report.baseline records the archive identity and
+  revision, the software and rule versions, the thresholds, the exact scope, the sample seed and
+  the addresses it drew, every input it read, and every piece of missing evidence. It also reports
+  the explicit source set of every Card beside the existing inferred attribution, the P1-P15
+  measures with their denominators, the fixed manual task sheet, and the comparison with an
+  earlier report. A measure whose evidence is missing is `known: false` with its reason; it is
+  never a zero. Nothing here starts a monitoring service or writes a Card.
 
   Parameters: -CitationKey <key> (one book; empty: every agent Literature tree), -Out <folder>
   (required), -MaxSentences 12, -MaxChars 400, -MaxSteps 6, -Throttle 6, -Chunk 40, -Sample 15
-  (addresses listed per finding in audit.md), -SkipModels (no get_model, no model checks).
+  (addresses listed per finding in audit.md, and the size of the annotation sample),
+  -SampleSeed 1 (the seed of that sample), -Baseline <folder|audit.json> (an earlier report; its
+  audit-addresses.txt defines the new Cards), -ConceptReport <folder|concept-review.json> (P2;
+  a decision.json beside it counts the resolved pairs), -Decisions <decision.json>, -RunReport
+  <folder|run-report.json> (the Link jobs and the exact per-run provider usage, P4), -TaskSheet
+  <sheet.json> (the fixed manual task sheet: P9's annotation, P12/P13 and P15),
+  -SkipModels (no get_model, no model checks).
 
   This script forwards every argument to `zt-digest audit`, which does the work in one process
   with one `zt mcp` and zt-check in-process. ZT_DIGEST names another zt-digest build.

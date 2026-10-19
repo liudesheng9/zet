@@ -1131,6 +1131,12 @@ fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
             max_steps: 6,
             sample: 15,
             skip_models: false,
+            sample_seed: 1,
+            baseline: String::new(),
+            concept_report: String::new(),
+            decisions: String::new(),
+            run_report: String::new(),
+            task_sheet: String::new(),
         };
         audit::run(zt, &params, &mut |line| {
             let _ = util::print_line(line);

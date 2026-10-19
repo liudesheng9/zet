@@ -89,6 +89,18 @@ flowchart TD
 
 `mcp::Zt::archive_view()` makes one `get_cards` call with no addresses and validates the complete empty read, revision, persisted 32-hex archive id and nonempty resolved path. It returns that verified view for preparation/ledger binding. Missing identity or incomplete protocol data raises an explicit error before a caller begins writing; ordinary bulk readers retain their existing API.
 
+`mcp::Zt::server_version()` returns the `version` of the `zt` build from the `initialize` answer the client already received (empty when the server named none). The digest audit records it as the software version that measured the archive (#94 S01), so no report parses `zt --version` or starts a second process.
+
+### Shared title and source evidence (#94 S01)
+
+Three functions are public so a digest report uses the checker's rules instead of a second copy of them:
+
+| Item | Behaviour |
+|---|---|
+| `check::source_evidence(card)` | D068–D072's direct set: an explicit `sources` array, else the Citation keys the Card's `来源` lines name, else the Literature tree it is filed in. Empty is unknown, which is not a pass. I7 and the digest audit's `audit-sources.json` call it. |
+| `check::title_key(title)` | The title's identity for an exact pair: its letters and digits, lower cased, so case, spacing and punctuation never split two spellings of one title. |
+| `check::title_bigrams(title)`, `check::title_similarity(a, b)`, `check::TITLE_SIMILARITY` | I6's own bigram set, the Dice coefficient between two titles, and the 0.8 threshold I6 reports at. A report builds one inverted index over these bigrams, so a near-title scan is not a pairwise scan. |
+
 
 ### Shared graph classification and orphan evidence
 

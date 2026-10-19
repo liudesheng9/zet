@@ -1667,10 +1667,13 @@ fn literature_tree(target: &str) -> Option<String> {
     BOOK_CARD.is_match(target).then(|| target.to_string())
 }
 
-/// The source evidence of one Card as the audit derives it: an explicit `sources`
-/// set, else the Citation keys its `来源` lines name, else the Literature tree it
-/// is filed in. Empty is unknown, which is not a pass.
-fn source_evidence(card: &Value) -> Vec<String> {
+/// The source evidence of one Card as the audit derives it (design §4.3, D068–D072): an
+/// explicit `sources` set, else the Citation keys its `来源` lines name, else the Literature
+/// tree it is filed in. Empty is unknown, which is not a pass.
+///
+/// This is the checker's one derivation, shared with a report that reports the same source
+/// sets, so the checker and the report can never disagree about what a Card's source is.
+pub fn source_evidence(card: &Value) -> Vec<String> {
     let explicit = strings(prop(card, "sources"));
     if !explicit.is_empty() {
         return explicit;
@@ -1857,6 +1860,29 @@ fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     }
     let common = a.iter().filter(|bigram| b.contains(*bigram)).count();
     2.0 * common as f64 / (a.len() + b.len()) as f64
+}
+
+/// I6's near-title threshold (D129): the Dice coefficient of the two bigram sets.
+pub const TITLE_SIMILARITY: f64 = 0.8;
+
+/// A title's identity for an exact or near pair report (D361): its letters and digits, lower
+/// cased, so case, spacing and punctuation never split two spellings of one title. The audit
+/// and the checker read one normalization, so a report never introduces a second title rule.
+pub fn title_key(title: &str) -> String {
+    let plain = PLACEHOLDERS.replace_all(&plain(title), "").into_owned();
+    NOT_LETTER_OR_NUMBER.replace_all(&plain, "").to_lowercase()
+}
+
+/// The bigrams of a title, as the checker's I6 compares them: for a candidate index in a
+/// report so that a near-title scan is not a pairwise scan of the whole archive.
+pub fn title_bigrams(title: &str) -> HashSet<String> {
+    bigrams(title)
+}
+
+/// I6's near-title measure between two titles: the Dice coefficient of their bigrams, 0.0
+/// when either title has no bigram. `TITLE_SIMILARITY` is the threshold I6 reports at.
+pub fn title_similarity(a: &str, b: &str) -> f64 {
+    similarity(&bigrams(a), &bigrams(b))
 }
 
 #[derive(Default)]

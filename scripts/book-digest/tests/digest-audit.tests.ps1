@@ -64,6 +64,9 @@ try {
     Assert ($report.books[0].bridges.island -eq $true -and $report.books[0].bridges.peers -gt 0 -and $md -match '\| Islands \(books with no semantic Bridge in or out\) \| `Lone2030`') 'a book with peers and no Bridge is an island that audit.md names'
     # Retain the fda5cf1 report. Adapt only #76's explicit semantic changes:
     # notation is excluded by classification; anchors are not orphan targets.
+    # #93 S01 (#94) adds one section (`baseline`): its evidence, source sets, measures, task
+    # sheet and comparison are checked by audit-baseline.tests.ps1, and every pre-existing
+    # field of this report stays byte-identical.
     $baselineFaults = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'audit-bulk-faults-fixture.txt'))
     $baselineReport = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'audit-bulk-report-fixture.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     $baselineReport.workspace.cards_by_category = [ordered]@{root=4;anchor=3;idea=3;finding=1;hub=1;model=1;notation=1;part=1}
@@ -82,7 +85,7 @@ try {
     Assert (@($trace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'global audit uses one client without per-Card or per-tree projections'
     $bulkReport = Get-Content -LiteralPath (Join-Path $bulkOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     Assert ($bulkReport.complete -and $bulkReport.archive_revision -is [long]) 'the completed audit records its consistent graph revision'
-    foreach ($key in @('generated','seconds','complete','archive_revision','orphan_check')) { $report.Remove($key); $bulkReport.Remove($key) }
+    foreach ($key in @('generated','seconds','complete','archive_revision','orphan_check','baseline')) { $report.Remove($key); $bulkReport.Remove($key) }
     Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'the bulk audit preserves the frozen graph, Bridge and quality fields after the named shared orphan/classification changes'
     Assert ($baselineFaults -ceq [IO.File]::ReadAllText((Join-Path $bulkOut 'audit-faults.txt'))) 'bulk and pre-migration audit fault lines match exactly'
     $modelOut = Join-Path $scratch 'model-audit'

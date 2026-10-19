@@ -238,7 +238,349 @@ pub fn render(report: &Value, p: &Params) -> String {
         line(&format!("- **Broken Links** from the book's Cards: {}", n(&b["broken_links"])));
         line("");
     }
+    if truthy(&report["baseline"]) {
+        baseline(&mut line, &report["baseline"], p);
+    }
     md
+}
+
+/// `## Baseline measures (#94 S01)`: the evidence, the source sets, the P1–P15 measures, the
+/// fixed manual task sheet, and the comparison. Every unknown measure names what is missing;
+/// nothing here is a zero that stands in for missing evidence.
+fn baseline(line: &mut impl FnMut(&str), b: &Value, p: &Params) {
+    let e = &b["evidence"];
+    line("## Baseline measures (#94 S01)");
+    line("");
+    line(&format!(
+        "- **Evidence**: archive `{}` at `{}`, revision {}. Software: zt-digest {}, zt-check {}, zt {}.",
+        n(&e["archive"]["id"]),
+        n(&e["archive"]["path"]),
+        n(&e["archive"]["revision"]),
+        n(&e["software"]["zt_digest"]),
+        n(&e["software"]["zt_check"]),
+        n(&e["software"]["zt"])
+    ));
+    let thresholds = e["thresholds"]
+        .as_object()
+        .map(|map| map.iter().map(|(name, value)| format!("{name} {value}")).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+    line(&format!("- **Thresholds**: {thresholds}. Rules: {}.", n(&e["software"]["rules"])));
+    line(&format!(
+        "- **Scope**: `{}` ({}), {} Cards in {} Topic trees; books: {}.",
+        n(&e["scope"]["name"]),
+        n(&e["scope"]["kind"]),
+        n(&e["scope"]["cards"]),
+        n(&e["scope"]["trees"]),
+        cut(&strings(&e["scope"]["books"]), p.sample)
+    ));
+    line(&format!(
+        "- **Sample**: seed {}, drew {} of {} Idea Cards: {}.",
+        n(&e["sample"]["seed"]),
+        n(&e["sample"]["drawn"]),
+        n(&e["sample"]["population"]),
+        cut(&strings(&e["sample"]["addresses"]), p.sample)
+    ));
+    let inputs: Vec<String> = ["baseline", "concept_report", "decisions", "run_report", "task_sheet"]
+        .iter()
+        .map(|name| {
+            let input = &e["inputs"][*name];
+            if truthy(&input["read"]) { format!("{name} `{}`", n(&input["path"])) } else { format!("{name} absent") }
+        })
+        .collect();
+    line(&format!("- **Inputs**: {}.", inputs.join(", ")));
+    let missing = ps_items(&e["missing"]);
+    if missing.is_empty() {
+        line("- **Missing evidence**: none. Every measure below has the evidence it names.");
+    } else {
+        line(&format!("- **Missing evidence**: {}. No measure below is reported as a zero in its place.", missing.len()));
+        for entry in &missing {
+            line(&format!("  - `{}`: {}. Measures without it: {}.", n(&entry["kind"]), n(&entry["reason"]), cut(&strings(&entry["measures"]), p.sample)));
+        }
+    }
+    line("");
+    line("| Measure | Known | Value | Denominator | Per 100 | Note |");
+    line("| --- | --- | --- | --- | --- | --- |");
+    for name in ["P1", "P2", "P3_P5", "P4", "P7", "P8", "P9", "P11", "P12_P13", "P14", "P15"] {
+        let m = &b["measures"][name];
+        if m.is_null() {
+            continue;
+        }
+        let known = if truthy(&m["known"]) {
+            "yes".to_string()
+        } else {
+            format!("**no** — {}", n(&m["reason"]))
+        };
+        line(&format!(
+            "| {} | {known} | {} | {} | {} | {} |",
+            name,
+            n(&m["values"]["value"]),
+            n(&m["values"]["denominator"]),
+            n(&m["rate"]["per_100"]),
+            n(&m["measure"])
+        ));
+    }
+    line("");
+    let s = &b["sources"];
+    line("### Source evidence");
+    line("");
+    line(&format!(
+        "- **Sets**: {} of {} Cards have explicit evidence ({} from their Literature tree, {} from a `来源` line; {} derived from a model head). {} are unknown and {} name several books.",
+        n(&s["cards"]["known"]),
+        n(&s["cards"]["total"]),
+        n(&s["direct"]["literature_tree"]),
+        n(&s["direct"]["source_line"]),
+        n(&s["cards"]["derived"]),
+        n(&s["cards"]["unknown"]),
+        n(&s["cards"]["multiple"])
+    ));
+    line(&format!(
+        "- **Differs from the existing inferred attribution**: {} Cards. The complete evidence set is `audit-sources.json`.",
+        n(&s["differs"])
+    ));
+    for row in ps_items(&s["differences"]) {
+        line(&format!(
+            "  - `{}` 推断 `{}` → 证据 {}（{}）",
+            n(&row["address"]),
+            if truthy(&row["inferred"]) { n(&row["inferred"]) } else { "none".into() },
+            cut(&strings(&row["sources"]), p.sample),
+            n(&row["title"])
+        ));
+    }
+    line(&format!(
+        "- **Human Workspace**: {} Cards, {} authored Links into agent Cards.",
+        n(&s["human"]["cards"]),
+        n(&s["human"]["to_agent_links"])
+    ));
+    line("");
+    let p7 = &b["measures"]["P7"];
+    line("### Cross-book hub lines");
+    line("");
+    line(&format!(
+        "- **Cross-book lines**: {} of {} hub member lines ({} per 100). A member line crosses books only on explicit evidence, so an unsupported Link cannot improve a ratio.",
+        n(&p7["cross_book_lines"]["value"]),
+        n(&p7["cross_book_lines"]["denominator"]),
+        n(&p7["cross_book_lines"]["per_100"])
+    ));
+    line(&format!(
+        "- **Hubs**: {} with lines; {} stay in one book and {} are `mirror` advice. Unsupported lines (an endpoint without explicit evidence): {}.",
+        n(&p7["hubs"]["total"]),
+        n(&p7["hubs"]["one_book"]),
+        n(&p7["hubs"]["mirror"]),
+        n(&p7["unsupported"]["value"])
+    ));
+    let p8 = &b["measures"]["P8"];
+    line("");
+    line("### Register and reach (P8)");
+    line("");
+    if truthy(&p8["known"]) {
+        line(&format!(
+            "- **Accepted terms**: {} entries, {} rows, {} unresolved rows, {} incomplete entries.",
+            n(&p8["terms"]["accepted"]),
+            n(&p8["terms"]["rows"]),
+            n(&p8["terms"]["unresolved_rows"]),
+            n(&p8["terms"]["incomplete_entries"])
+        ));
+        line(&format!(
+            "- **Direct destinations**: {} substantive Cards. **Reach within {} semantic Links** (outbound): {} at one Link, {} at two. A register part is no hop.",
+            n(&p8["direct"]["value"]),
+            n(&p8["reach"]["hops"]),
+            n(&p8["reach"]["at_1"]),
+            n(&p8["reach"]["at_2"])
+        ));
+    } else {
+        line(&format!("- Not known: {}.", n(&p8["reason"])));
+    }
+    line(&format!(
+        "- **Hub unreached** (a different definition, reported apart): {} Cards in {} hubs.",
+        n(&p8["hub_unreached"]["unreached"]),
+        n(&p8["hub_unreached"]["hubs_with_unreached"])
+    ));
+    let p4 = &b["measures"]["P4"];
+    line("");
+    line("### Appended tails and cost (P4)");
+    line("");
+    line(&format!(
+        "- **`关联：` tails**: {} in {} of {} Cards ({} per 100). **Duplicate owned paragraphs**: {}.",
+        n(&p4["tails"]["value"]),
+        n(&p4["tails"]["cards"]),
+        n(&p4["tails"]["denominator"]),
+        n(&p4["tails"]["per_100"]),
+        n(&p4["duplicate_owned_paragraphs"]["value"])
+    ));
+    if truthy(&p4["run"]["known"]) {
+        line(&format!(
+            "- **Link jobs**: {}. **Exact per-run usage**: {} (status `{}`, {} known runs, {} missing).",
+            tally(&p4["run"]["link"]),
+            n(&p4["run"]["usage"]["totals"]),
+            n(&p4["run"]["usage"]["status"]),
+            n(&p4["run"]["usage"]["known_runs"]),
+            n(&p4["run"]["usage"]["missing_runs"])
+        ));
+    } else {
+        line(&format!("- **Link jobs and usage**: not known: {}.", n(&p4["run"]["reason"])));
+    }
+    let p9 = &b["measures"]["P9"];
+    line("");
+    line("### Standalone rates (P9)");
+    line("");
+    line(&format!(
+        "- **Local reference (R20)**: {} Cards of {} ({} per 100). **Unnamed referent (R21)**: {} Cards ({} per 100).",
+        n(&p9["local_reference"]["cards"]),
+        n(&p9["local_reference"]["denominator"]),
+        n(&p9["local_reference"]["per_100"]),
+        n(&p9["unnamed_referent"]["cards"]),
+        n(&p9["unnamed_referent"]["per_100"])
+    ));
+    if truthy(&p9["manual"]["known"]) {
+        line(&format!(
+            "- **Manual annotation**: {} sampled Cards; {} local-reference and {} unnamed-referent false positives.",
+            n(&p9["manual"]["annotated"]),
+            n(&p9["manual"]["local_reference_false_positive"]),
+            n(&p9["manual"]["unnamed_referent_false_positive"])
+        ));
+    } else {
+        line(&format!("- **Manual annotation**: not known: {}.", n(&p9["manual"]["reason"])));
+    }
+    let p11 = &b["measures"]["P11"];
+    line("");
+    line("### Titles (P11)");
+    line("");
+    line(&format!(
+        "- **Idea population**: {} Cards; {} exact and {} near title pairs. **Navigation population**: {} Cards; {} exact and {} near pairs. Threshold {}.",
+        n(&p11["idea"]["cards"]),
+        n(&p11["idea"]["exact_pairs"]),
+        n(&p11["idea"]["near_pairs"]),
+        n(&p11["navigation"]["cards"]),
+        n(&p11["navigation"]["exact_pairs"]),
+        n(&p11["navigation"]["near_pairs"]),
+        n(&p11["threshold"])
+    ));
+    line(&format!("- **Anchor-title faults**: {}.", n(&p11["anchor_title_faults"])));
+    let sheet = &b["task_sheet"];
+    line("");
+    line("### Fixed manual task sheet (P12/P13, P15)");
+    line("");
+    if truthy(&sheet["present"]) {
+        let p12 = &b["measures"]["P12_P13"];
+        line(&format!(
+            "- **Sheet**: `{}`, {} tasks over {}. Valid: {}.",
+            n(&sheet["path"]),
+            ps_items(&sheet["tasks"]).len(),
+            format!("{}..{}", n(&sheet["interval"]["from"]), n(&sheet["interval"]["to"])),
+            if truthy(&sheet["valid"]) { "yes" } else { "no" }
+        ));
+        for fault in ps_items(&sheet["faults"]) {
+            line(&format!("  - Fault `{}` on `{}`: {}", n(&fault["fault"]), n(&fault["task"]), n(&fault["detail"])));
+        }
+        if truthy(&p12["known"]) {
+            line(&format!(
+                "- **Time to the first useful Card**: median {} s over {} tasks. **Kept Spread**: median {} s over {} tasks. **Entry rank**: median {}.",
+                n(&p12["first_useful_card"]["median_seconds"]),
+                n(&p12["first_useful_card"]["tasks"]),
+                n(&p12["kept_spread"]["median_seconds"]),
+                n(&p12["kept_spread"]["tasks"]),
+                n(&p12["entry_rank"]["median"])
+            ));
+            line(&format!(
+                "- **Removed Cards**: {} recorded, {} verified absent. **Human replies**: {}.",
+                n(&p12["removed_cards"]["recorded"]),
+                n(&p12["removed_cards"]["verified_absent"]),
+                n(&p12["human_replies"])
+            ));
+        } else {
+            line(&format!("- Not known: {}.", n(&p12["reason"])));
+        }
+        let p15 = &b["measures"]["P15"];
+        line(&format!(
+            "- **Distant Cards**: {} tasks, {} offered, {} opened, {} laid.",
+            n(&p15["tasks"]),
+            n(&p15["offered"]),
+            n(&p15["opened"]),
+            n(&p15["laid"])
+        ));
+    } else {
+        line(&format!("- Not known: {}.", n(&sheet["reason"])));
+    }
+    let p14 = &b["measures"]["P14"];
+    line("");
+    line("### The human half (P14)");
+    line("");
+    line(&format!(
+        "- **Observed**: {} human Cards; {} authored and {} semantic Links from a human Card into an agent Card. An observation, not a quota.",
+        n(&p14["human_cards"]),
+        n(&p14["to_agent_links"]["authored"]),
+        n(&p14["to_agent_links"]["semantic"])
+    ));
+    if truthy(&p14["interval"]) {
+        line(&format!(
+            "- **Interval**: since revision {}, human Cards {:+}, human-to-agent Links {:+}. A net change between two reads, not a count of events.",
+            n(&p14["interval"]["baseline_revision"]),
+            n(&p14["interval"]["human_cards_net_change"]).parse::<i64>().unwrap_or(0),
+            n(&p14["interval"]["to_agent_links_net_change"]).parse::<i64>().unwrap_or(0)
+        ));
+    } else {
+        line("- **Interval**: none. A baseline report that recorded the human counts is required.");
+    }
+    let c = &b["comparison"];
+    line("");
+    line("### Comparison with an earlier report (S01-AC06)");
+    line("");
+    if truthy(&c["known"]) {
+        line(&format!(
+            "- **Baseline**: `{}`, generated {}, scope `{}`, revision {}, {} addresses.",
+            n(&c["baseline"]["path"]),
+            n(&c["baseline"]["generated"]),
+            n(&c["baseline"]["scope"]),
+            n(&c["baseline"]["archive_revision"]),
+            n(&c["baseline"]["addresses"])
+        ));
+        if truthy(&c["matched"]) {
+            line("- **Scopes match**: the deltas below compare one population with itself.");
+        } else {
+            line(&format!("- **Scope change, no delta**: {}.", n(&c["scope_change"])));
+        }
+        if truthy(&c["new_cards"]) {
+            line(&format!("- **New Cards**: {} (inside this scope, absent from the baseline's address list).", n(&c["new_cards"]["count"])));
+        }
+        line("");
+        line("| Value | Baseline | Current | Delta | Status |");
+        line("| --- | --- | --- | --- | --- |");
+        if let Some(rows) = c["measures"].as_object() {
+            for (name, row) in rows {
+                line(&format!(
+                    "| {name} | {} | {} | {} | {} |",
+                    n(&row["baseline"]),
+                    n(&row["current"]),
+                    n(&row["delta"]),
+                    n(&row["status"])
+                ));
+            }
+        }
+    } else {
+        line(&format!("- Not known: {}.", n(&c["reason"])));
+    }
+    line("");
+    let proposal = &b["proposal"];
+    line(&format!(
+        "### The accepted proposal's baseline, in its original scope ({})",
+        n(&proposal["source"])
+    ));
+    line("");
+    line(&format!(
+        "- Measured {} on {} Cards of the whole agent Workspace ({} Topic Cards, {} Topics, {} Literature Cards). {}.",
+        n(&proposal["measured"]),
+        n(&proposal["scope"]["cards"]),
+        n(&proposal["scope"]["topic_cards"]),
+        n(&proposal["scope"]["topics"]),
+        n(&proposal["scope"]["literature_cards"]),
+        n(&b["comparison"]["proposal"]["scope_change"])
+    ));
+    if let Some(values) = proposal["values"].as_object() {
+        for (name, row) in values {
+            line(&format!("  - **{name}**: {} — {}.", n(&row["measure"]), n(&row["value"])));
+        }
+    }
+    line("");
 }
 
 #[cfg(test)]

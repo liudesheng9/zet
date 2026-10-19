@@ -7,6 +7,7 @@
 
 pub mod book_of;
 mod markdown;
+mod measures;
 
 
 use crate::args::Args;
@@ -30,6 +31,18 @@ pub struct Params {
     pub max_steps: i64,
     pub sample: i64,
     pub skip_models: bool,
+    /// #94 S01: the seed of the reproducible annotation sample.
+    pub sample_seed: i64,
+    /// #94 S01: an earlier report folder or `audit.json`, the new-Card interval.
+    pub baseline: String,
+    /// #94 S01: a reviewed concept report's folder or `concept-review.json` (P2).
+    pub concept_report: String,
+    /// #94 S01: the accepted decision file beside a concept report.
+    pub decisions: String,
+    /// #94 S01: a run report's folder or `run-report.json` (Link jobs and exact usage, P4).
+    pub run_report: String,
+    /// #94 S01: the fixed manual task sheet (P9, P12/P13, P15).
+    pub task_sheet: String,
 }
 
 /// One fault line of zt-check: `<address> <rule> <text>`.
@@ -191,6 +204,13 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     // The public global report needs every category, book attribution and
     // Bridge endpoint. Load that graph once, without model projections per Card.
     let revision = zt.cards(&[], "text")?.archive_revision;
+    // #94 S01: the archive's own identity, so a report names the archive it measured and a
+    // later comparison can refuse a baseline from another one.
+    let identity_view = zt.archive_view().context("incomplete audit archive identity")?;
+    let identity = identity_view["archive_identity"].clone();
+    if identity_view["archive_revision"].as_u64() != Some(revision) {
+        bail!("incomplete audit inputs: changing archive identity view");
+    }
     let mut all_trees = crate::snapshot::read_title_trees(zt)?;
     if all_trees.iter().any(|tree| tree["archive_revision"].as_u64() != Some(revision)) {
         bail!("incomplete audit inputs: changing title view");
@@ -475,6 +495,22 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     if !hubs["hubs"].is_array() || !hubs["missing"].is_array() || !hubs["counts"].is_object() {
         bail!("incomplete audit hub data");
     }
+    // #94 S01: each hub's own report, so a cross-book hub line is read from the hub's parsed
+    // lines and its unreached count, never from a second parser of the same body.
+    let hub_reports: Vec<Value> = ps_items(&hubs["hubs"])
+        .iter()
+        .map(|hub| {
+            let at = field(hub, "address");
+            let report = zt.call("get_hub", json!({ "at": at })).with_context(|| format!("incomplete audit hub `{at}`"))?;
+            if report["lines"].is_array() && report["unreached_count"].is_number() {
+                Ok(report)
+            } else {
+                bail!("incomplete audit hub `{at}`: missing lines or unreached count")
+            }
+        })
+        .collect::<Result<_>>()?;
+    // #94 S01: the accepted register entries (P8), every page of them.
+    let register = read_register(zt)?;
     let broken_from: Vec<String> = broken
         .iter()
         .map(|b| {
@@ -705,6 +741,30 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete audit inputs: changing read view");
     }
+    // --- #94 S01: the reproducible baseline ---
+    let inputs = read_inputs(p, &graph_cards, &identity, revision)?;
+    let baseline = measures::build(&measures::Facts {
+        p,
+        scope: &scope_name,
+        books: &books,
+        cards: &scope,
+        graph: &graph_cards,
+        trees: &trees,
+        index: &index,
+        models: &structures,
+        hubs: &hub_reports,
+        register: Some(&register),
+        book_rows: &book_reports,
+        workspace_row: &workspace,
+        revision,
+        identity: &identity,
+        faults: &faults,
+        baseline: inputs.baseline.as_ref(),
+        concept: inputs.concept.as_ref(),
+        run_report: inputs.run.as_ref(),
+        sheet: &inputs.sheet,
+        zt_version: &zt.server_version(),
+    })?;
     let seconds = secs(&sw);
     let report = json!({
         "generated": ps::local_minute(),
@@ -715,7 +775,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "limits": limits,
         "seconds": seconds,
         "workspace": workspace,
-        "books": book_reports
+        "books": book_reports,
+        "baseline": baseline
     });
 
     // --- files ---
@@ -731,6 +792,14 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let summary = json!({
         "scope": report["scope"], "out": p.out, "seconds": seconds, "cards": cards.len(),
         "hubs_missing": w["hubs"]["missing"], "broken_links": w["broken_links"], "unattributed": w["unattributed"]["count"],
+        "baseline": {
+            "complete": report["baseline"]["complete"],
+            "measures_known": report["baseline"]["measures"].as_object()
+                .map(|measures| measures.values().filter(|measure| measure["known"] == json!(true)).count())
+                .unwrap_or(0),
+            "measures": report["baseline"]["measures"].as_object().map(serde_json::Map::len).unwrap_or(0),
+            "missing": ps::ps_count(&report["baseline"]["evidence"]["missing"])
+        },
         "books": ps_items(&report["books"]).iter().map(|b| json!({
             "key": b["key"], "cards": b["cards"], "topic_trees": b["topics"]["trees"], "style_faults": b["style"]["faults"],
             "style_advisory": b["style"]["advisory"],
@@ -745,9 +814,120 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     Ok(Outcome { summary })
 }
 
+/// #94 S01's named inputs: every one is optional, and an input that was named but cannot be read
+/// is an error rather than a silent absence.
+struct Inputs {
+    baseline: Option<measures::Baseline>,
+    concept: Option<measures::Concept>,
+    run: Option<measures::Input>,
+    sheet: Value,
+}
+
+fn read_inputs(p: &Params, graph_cards: &[Value], identity: &Value, revision: u64) -> Result<Inputs> {
+    let addresses: HashSet<String> = graph_cards.into_iter().map(|card| field(card, "address")).collect();
+    let baseline = if p.baseline.trim().is_empty() {
+        None
+    } else {
+        let dir = std::path::Path::new(&p.baseline);
+        let report_path = if dir.is_dir() { dir.join("audit.json") } else { dir.to_path_buf() };
+        if !report_path.is_file() {
+            bail!("the baseline report `{}` does not exist", report_path.display());
+        }
+        let report = util::read_json(&report_path)?;
+        if report["scope"].as_str().is_none() || report["workspace"].is_null() {
+            bail!("`{}` is not an audit report: it names no scope or Workspace", report_path.display());
+        }
+        // A baseline from another archive, or from a later revision, cannot define what is new.
+        if let Some(id) = report["baseline"]["evidence"]["archive"]["id"].as_str()
+            && !id.is_empty()
+            && id != field(identity, "id")
+        {
+            bail!("the baseline report `{}` measures another archive", report_path.display());
+        }
+        if let Some(before) = report["archive_revision"].as_u64()
+            && before > revision
+        {
+            bail!("the baseline report `{}` is at revision {before}, later than this read's {revision}", report_path.display());
+        }
+        let beside = report_path.parent().unwrap_or(std::path::Path::new(".")).join("audit-addresses.txt");
+        let addresses = if beside.is_file() {
+            let text = util::read_text(&beside)?;
+            Some(text.lines().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).collect())
+        } else {
+            None
+        };
+        let sources = report["baseline"]["sources"].as_object().map(|_| report["baseline"]["sources"].clone());
+        Some(measures::Baseline { path: report_path.display().to_string(), report, addresses, sources })
+    };
+    let concept = if p.concept_report.trim().is_empty() {
+        None
+    } else {
+        let dir = std::path::Path::new(&p.concept_report);
+        let review_path = if dir.is_dir() { dir.join("concept-review.json") } else { dir.to_path_buf() };
+        if !review_path.is_file() {
+            bail!("the concept report `{}` does not exist", review_path.display());
+        }
+        let review = util::read_json(&review_path)?;
+        if review["report_id"].as_str().is_none_or(str::is_empty) {
+            bail!("`{}` is not a concept review: it names no report id", review_path.display());
+        }
+        let decisions_path = if !p.decisions.trim().is_empty() {
+            std::path::PathBuf::from(&p.decisions)
+        } else if dir.is_dir() {
+            dir.join("decision.json")
+        } else {
+            std::path::PathBuf::new()
+        };
+        let decisions = if !decisions_path.as_os_str().is_empty() && decisions_path.is_file() {
+            let json = util::read_json(&decisions_path)?;
+            Some(measures::Input { path: decisions_path.display().to_string(), json })
+        } else {
+            None
+        };
+        Some(measures::Concept { review: measures::Input { path: review_path.display().to_string(), json: review }, decisions })
+    };
+    let run = if p.run_report.trim().is_empty() {
+        None
+    } else {
+        let dir = std::path::Path::new(&p.run_report);
+        let path = if dir.is_dir() { dir.join("run-report.json") } else { dir.to_path_buf() };
+        if !path.is_file() {
+            bail!("the run report `{}` does not exist", path.display());
+        }
+        let json = util::read_json(&path)?;
+        if !json["usage"].is_object() {
+            bail!("`{}` is not a run report: it records no usage", path.display());
+        }
+        Some(measures::Input { path: path.display().to_string(), json })
+    };
+    let sheet = measures::task_sheet(&p.task_sheet, &addresses)?;
+    Ok(Inputs { baseline, concept, run, sheet })
+}
+
+/// The agent Workspace's accepted register entries, every page of them (#94 S01, P8).
+fn read_register(zt: &mut Zt) -> Result<Value> {
+    const PAGE: i64 = 1000;
+    let mut page = zt.call("get_register", json!({ "workspace": "agent", "entry_offset": 0, "entry_limit": PAGE }))?;
+    let mut last = 0i64;
+    while let Some(next) = page["entry_next_offset"].as_i64() {
+        if next <= last {
+            bail!("incomplete audit register: the page cursor did not advance from {last}");
+        }
+        last = next;
+        let more = zt.call("get_register", json!({ "workspace": "agent", "entry_offset": next, "entry_limit": PAGE }))?;
+        let rows = more["entries"].as_array().cloned().unwrap_or_default();
+        page["entries"].as_array_mut().context("incomplete audit register: entries")?.extend(rows);
+        page["entry_next_offset"] = more["entry_next_offset"].clone();
+    }
+    Ok(page)
+}
+
 /// `zt-digest audit`.
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk", "Sample", "OrphanTargets"];
+    let params = [
+        "CitationKey", "Out", "MaxSentences", "MaxChars", "MaxSteps", "Throttle", "Chunk", "Sample", "OrphanTargets", "SampleSeed", "Baseline",
+        "ConceptReport", "Decisions", "RunReport", "TaskSheet",
+    ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["SkipModels"])?;
     // Accept existing wrappers' integer options. The bulk path owns its
     // server-limited chunk size and always uses this command's one client.
@@ -761,6 +941,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         max_steps: a.int_or("MaxSteps", 6)?,
         sample: a.int_or("Sample", 15)?,
         skip_models: a.flag("SkipModels"),
+        sample_seed: a.int_or("SampleSeed", 1)?,
+        baseline: a.str("Baseline"),
+        concept_report: a.str("ConceptReport"),
+        decisions: a.str("Decisions"),
+        run_report: a.str("RunReport"),
+        task_sheet: a.str("TaskSheet"),
     };
     let mut zt = crate::zt::start()?;
     let outcome = run(&mut zt, &p, &mut |line| {

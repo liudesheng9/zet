@@ -48,6 +48,8 @@ pub struct Zt {
     deadline: Duration,
     shutdown: Duration,
     next: u64,
+    /// The server's own `initialize` answer, so a report can name the binary it read through.
+    server_info: Value,
 }
 
 fn limits() -> (Duration, Duration) {
@@ -299,14 +301,27 @@ impl Zt {
             deadline,
             shutdown,
             next: 1,
+            server_info: Value::Null,
         };
-        zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize")?;
+        let hello = zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize")?;
+        zt.server_info = hello["result"]["serverInfo"].clone();
         zt.exchange(
             json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
             None,
             "initialized notification",
         )?;
         Ok(zt)
+    }
+
+    /// The `zt` build this client reads through: the version in the server's `initialize`
+    /// answer, or an empty string when the server named none. A report names it so a reader can
+    /// tell which binary measured the archive.
+    pub fn server_version(&self) -> String {
+        self.server_info
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     fn exchange(&mut self, message: Value, id: Option<Value>, operation: &str) -> Result<Value> {

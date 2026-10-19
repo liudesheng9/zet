@@ -94,6 +94,12 @@ pub fn run_audit(zt: &mut Zt, key: &str, out: &str) -> Result<()> {
         max_steps: 6,
         sample: 15,
         skip_models: false,
+        sample_seed: 1,
+        baseline: String::new(),
+        concept_report: String::new(),
+        decisions: String::new(),
+        run_report: String::new(),
+        task_sheet: String::new(),
     };
     if let Err(error) = audit::run(zt, &params, &mut |_| {}) {
         bail!("digest-audit failed: {error:#}");
