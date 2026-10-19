@@ -110,9 +110,16 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2021/1'; kind = 'side'; title = '市场失灵使企业出现'; body = "企业替代市场。`n`n来源：[[Test2021]] §Intro.1" } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2021/2'; kind = 'side'; title = '契约不完全留下剩余控制权'; body = "剩余控制权归所有者。`n`n来源：[[Test2021]] §1.1" } },
         @{ tool = 'create_topic'; arguments = @{ title = '企业边界'; body = '追问企业边界。' } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@2'; title = '敲竹杠使专用性投资不足'; body = "§1.2 敲竹杠让投资方担心被压价。`n`n来源：[[Test2021]] §1.2" } }
+        @{ tool = 'create_successor'; arguments = @{ at = '@@2'; title = '敲竹杠使专用性投资不足'; body = "§1.2 敲竹杠让投资方担心被压价。`n`n来源：[[Test2021]] §1.2" } },
+        @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{Other2020,title={另一本书}}'; body = '另一本书的书卡。' } },
+        @{ tool = 'create_successor'; arguments = @{ at = 'Other2020'; kind = 'direct'; title = '别的书里的卡片'; body = "这本书也谈契约。`n`n来源：[[Test2021]] §1.2" } },
+        @{ tool = 'create_successor'; arguments = @{ at = '0/1'; kind = 'side'; title = '旧主题里的旁支'; body = "§1.1 与 §1.2 都与这张卡片无关。" } }
     )
+    # The groups' own write receipts: the helper's -Log, which group-finish republishes. A folder
+    # without a ledger (no declared variant) has only these (#92).
     [IO.File]::WriteAllText((Join-Path $staging 'owned-g01.txt'), "Test2021/1|a`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $staging 'owned-g02.txt'), "Test2021/2|a`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $staging 'owned-g03.txt'), "0/1`n", $utf8)
 
     # --- snapshot-topics ------------------------------------------------------------------------------
     $snapshotFile = Join-Path $staging 'snapshot-g01.md'
@@ -125,7 +132,7 @@ try {
     $env:ZT_FAIL_TREE = 'Test2021'
     try {
     $snap = Invoke-Script 'snapshot-topics.ps1' @('-Out', $snapshotFile)
-    Assert ($snap.code -eq 0 -and $snap.last -eq "8 cards -> $snapshotFile") "snapshot-topics counts every Card: $($snap.lines -join ' | ')"
+    Assert ($snap.code -eq 0 -and $snap.last -eq "11 cards -> $snapshotFile") "snapshot-topics counts every Card: $($snap.lines -join ' | ')"
     $snapText = Get-Content -LiteralPath $snapshotFile -Raw -Encoding utf8
     Assert ($snapText.Contains("- ``Test2021`` ") -and $snapText.Contains("  - ``Test2021/2|a`` 契约不完全留下剩余控制权") -and $snapText.Contains('## 人类工作区（只读，可链接）')) 'the snapshot lists each Card under its Workspace'
     $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = 'Test2021/2|a'; title = '契约不完全使未来条款留下空缺' } })
@@ -168,9 +175,13 @@ try {
     $summary = $link.last | ConvertFrom-Json
     $trace = @(Get-Content -LiteralPath $linkTrace -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($trace | Where-Object tool -eq 'export_titles').Count -eq 1 -and @($trace | Where-Object tool -eq 'get_cards').Count -eq 1 -and @($trace | Where-Object tool -in @('get_card', 'get_tree', 'list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'prepare-link uses one title export and one scoped bulk read through one MCP process'
-    Assert (($summary.pending -join ',') -eq '1,2,3' -and ($summary.groups.owned -join ',') -eq '2,2,2' -and $summary.unowned -eq 1) "each group owns its anchor and one Card: $($link.last)"
+    Assert (($summary.pending -join ',') -eq '1,2,3' -and ($summary.groups.owned -join ',') -eq '2,2,2' -and $summary.unowned -eq 4) "each group owns its own receipts and anchor: $($link.last)"
+    Assert ($summary.digest_state -eq 'receipts' -and @($summary.blocked).Count -eq 0) 'a folder without a ledger reports its receipts as the completion evidence'
     $allow3 = Get-Content -LiteralPath (Join-Path $staging 'allow-g03.txt') -Encoding utf8
-    Assert ($allow3.Count -eq 2 -and $allow3[0] -eq '0/1' -and $allow3[1] -eq 'Test2021/3') "a section reference gives a Topic Card to its group: $($allow3 -join ',')"
+    Assert ($allow3.Count -eq 2 -and $allow3[0] -eq '0/1' -and $allow3[1] -eq 'Test2021/3') "a group's own write receipt gives it the Topic Card it made: $($allow3 -join ',')"
+    # #92: no Card outside the digested book's own trees is owned because its body names a section.
+    $everyAllow = @(Get-Content -LiteralPath (Join-Path $staging 'allow-g01.txt'), (Join-Path $staging 'allow-g02.txt'), (Join-Path $staging 'allow-g03.txt') -Encoding utf8)
+    Assert (('Other2020/1' -notin $everyAllow) -and ('0/1|a' -notin $everyAllow) -and ('Other2020' -notin $everyAllow)) "another book's Card that cites a section, and an unowned Topic Card that names one, stay unowned: $($everyAllow -join ',')"
     $l2 = Get-Content -LiteralPath (Join-Path $staging 'link-g02.md') -Raw -Encoding utf8
     $allow2 = Join-Path $staging 'allow-g02.txt'
     Assert ($l2.Contains("- 写入命令：``... | zt-digest call - -Allow `"$allow2`"``") -and $l2.Contains("- SELF-CHECK: ``zt-check --log `"$allow2`" --cards `"`" --book Test2021 --rules L1,L2,R2,R3,R4,R5,R7,R9``")) 'the link file names the helper and keeps its SELF-CHECK line'
@@ -196,13 +207,19 @@ try {
     [IO.File]::WriteAllText((Join-Path $staging 'linked-g01.txt'), "done`n", $utf8)
     $rerun = (Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)).last | ConvertFrom-Json
     Assert (($rerun.pending -join ',') -eq '2,3' -and $rerun.groups[0].done) 'linked-gNN.txt takes a group off the pending list'
-    # Group 2 has no owned log, so the structure/index inference guard runs.
+    # Group 2 has a receipt, and the structure Card's eight distinct outbound Links keep it out.
     $targets = @('Test2021','Test2021/1','Test2021/2','Test2021/3','Test2021/1|a','Test2021/2|a','0/0','0/1')
     $indexBody = "来源：[[Test2021]] §1.1`n`n" + (($targets | ForEach-Object { "[[$_]]" }) -join "`n")
     $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at='Test2021/2';kind='side';title='结构索引';body=$indexBody}})
     $structureRun = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)
     $structureAllow = @(Get-Content -LiteralPath (Join-Path $staging 'allow-g02.txt') -Encoding utf8)
     Assert ($structureRun.code -eq 0 -and 'Test2021/2|b' -notin $structureAllow) 'bulk ownership inference preserves the eight-distinct-outbound structure guard with repeated targets'
+    # A group with no completion receipt gets no link job: its allow-list is empty (#92).
+    Remove-Item -LiteralPath (Join-Path $staging 'owned-g03.txt')
+    $noReceipt = (Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)).last | ConvertFrom-Json
+    $blocked3 = @($noReceipt.blocked) | Where-Object { $_.n -eq 3 }
+    Assert (($noReceipt.pending -join ',') -eq '2' -and $blocked3 -and $blocked3.state -eq 'unverified' -and @(Get-Content -LiteralPath (Join-Path $staging 'allow-g03.txt') -Encoding utf8 | Where-Object { $_ -ne '' }).Count -eq 0) "a group without a completion receipt is blocked with an empty allow-list: $($noReceipt.pending -join ',') / $(@($noReceipt.blocked | ForEach-Object { "$($_.n):$($_.state)" }) -join ',')"
+    [IO.File]::WriteAllText((Join-Path $staging 'owned-g03.txt'), "0/1`n", $utf8)
     # export_titles has ZET numeric order; the digest snapshot retains the former
     # list_trees/get_tree rendering order, including multi-digit Topic ids.
     $null = Invoke-Zt @(1..12 | ForEach-Object { @{tool='create_topic';arguments=@{title="Ordering $_"}} })

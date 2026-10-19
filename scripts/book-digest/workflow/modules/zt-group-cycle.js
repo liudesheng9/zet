@@ -1,15 +1,17 @@
-// ==== module zt-group-cycle v2 ====
+// ==== module zt-group-cycle v3 ====
 // The Digest stage of a managed run: one ready group per chain. Each chain claims one `digest/gNNN@1` unit
 // from the ledger's ready work, starts it (the snapshot is generated before any usable job manifest exists,
 // R262), runs the one frozen DeepSeek job that start wrote, and records the checked completion with
 // `group-finish` (R250/R251/R253). The claim is the chain's first command, so a chain that waits for a free
 // manager slot never holds a stale lease. A unit that fails is recorded against its own attempt and claimed
 // again by a later attempt of this chain; the stage is never rerun as a whole (R258).
+// #92: the claim requests a lease that covers the frozen provider-run cap, so the group's six-minute job can
+// never be re-readied under a healthy claim while it runs.
 // #87 (R280): `group-start` reconciles a retained accepted plan against the archive receipts. When every call
 // already committed, its job declares `expected_jobs: 0` and the rebound draft, so this chain runs no DeepSeek
 // job at all and completes the group from the committed result.
 defineModule({
-  id: 'zt-group-cycle', version: '2', requires: ['zt-digest-lib'],
+  id: 'zt-group-cycle', version: '3', requires: ['zt-digest-lib'],
   summary: 'ZT digest: one verified group per manager chain, claimed from the ledger ready work (mode full), recovering a group whose accepted plan already committed.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -25,8 +27,9 @@ defineModule({
     const retryable = (text) => /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs/.test(String(text || ''))
     for (let attempt = 1; attempt <= Z.MAX_ATTEMPTS; attempt++) {
       const steps = [
-        // The bounded claim: one unit, and a bounded readiness wait after the first attempt.
-        { name: 'claim', claim: true, command: `${Z.LEDGER} next -Out "${Z.OUT}" -Layer digest -Take 1 -Owner "${label} a${attempt}"${attempt > 1 ? ' -Wait 60' : ''}` },
+        // The bounded claim: one unit, a lease that covers the frozen run cap (#92), and a bounded
+        // readiness wait after the first attempt.
+        { name: 'claim', claim: true, command: `${Z.LEDGER} next -Out "${Z.OUT}" -Layer digest -Take 1 -Owner "${label} a${attempt}"${attempt > 1 ? ' -Wait 60' : ''} -Lease ${Z.CLAIM_LEASE}` },
         // The start publishes the snapshot and the frozen job manifest, then the chain runs that job. A
         // recovered group's manifest declares no job: its accepted plan already committed.
         { name: 'start', jobs: true, command: `${Z.DIGEST} group-start -Out "${Z.OUT}" -Group {{group}} -Token {{token}}` },

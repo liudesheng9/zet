@@ -25,7 +25,15 @@
 //!
 //! prepare-link: reads manifest.json in -Staging and every tree; writes cards-all.md, and per
 //! group link-gNN.md (the Cards it owns, with bodies and candidate targets) and allow-gNN.txt.
-//! Prints `{pending, groups, unowned, cards_all}`.
+//! Prints `{pending, blocked, groups, unowned, digest_state, cards_all}`.
+//!
+//! A group owns exactly the Cards its own receipts name: the helper's `owned-gNN.txt` log (which
+//! `group-finish` republishes from the checked results), the group's anchor, and Cards of the
+//! digested book's own Literature tree under that anchor. No other Card is assigned by body text,
+//! so a `§1.2`-style reference in another book's Card never hands that Card to a link job (#92).
+//! A group whose `digest/gNNN@R` unit is not `done` in the staging ledger gets no link job at all:
+//! its allow-list is empty, it is reported in `blocked`, and the link stage names it. A folder
+//! without a ledger (a preparation with no declared variant) falls back to its write receipts.
 //!
 //! The instruction files come from ZT_DIGEST_SCRIPTS (the forwarder sets it to its own folder) or
 //! the scripts\book-digest folder of the repository this binary was built from.
@@ -57,9 +65,6 @@ static NOT_EVENT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(
 static CITATION_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\?\[[^\]]*\d{4}[^\]]*\\?\]|[（(]\s*\d{4}[a-z]?\s*[)）]").unwrap());
 static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(1[5-9]\d\d|20[0-2]\d)\s*年").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static SECTION_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(Intro\.\d+|A\d+|\d+(\.\d+)?)\s").unwrap());
-static CHAPTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^第(.)章").unwrap());
-const SECTION: &str = r"(Intro\.\d+|A\d+|\d+(?:\.\d+)*|导论)";
 
 /// The text of a UTF-8 file as `Get-Content -Raw -Encoding utf8` reads it (a BOM dropped).
 fn read_raw(path: &str) -> Result<String> {
@@ -873,35 +878,31 @@ impl<V> ByAddress<V> {
     }
 }
 
-/// `Group-OfSection`: the group of a section id (`2.3.1` falls back to `2.3`, then `2`).
-fn group_of_section(section_group: &CiMap<i64>, id: &str) -> Option<i64> {
-    if let Some(&n) = section_group.get(id) {
-        return Some(n);
+/// The digest state of every prepared group, read from the staging folder's own ledger (#92).
+/// `None` when the folder holds no ledger (a preparation with no declared variant): such a folder
+/// can only offer its write receipts. A folder with a ledger names the exact state of each group's
+/// `digest/gNNN@R` unit, so a group that never completed is refused instead of guessed.
+fn digest_states(staging: &str) -> Result<Option<std::collections::BTreeMap<i64, String>>> {
+    let path = join_path(staging, "ledger.sqlite3");
+    if !Path::new(&path).exists() {
+        return Ok(None);
     }
-    let parts: Vec<&str> = id.split('.').collect();
-    if parts.len() > 2
-        && let Some(&n) = section_group.get(&format!("{}.{}", parts[0], parts[1]))
-    {
-        return Some(n);
+    let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("open the prepared ledger {path}"))?;
+    let mut statement = conn.prepare("SELECT id,state FROM units WHERE layer='digest'")?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut revisions: std::collections::BTreeMap<i64, (i64, String)> = std::collections::BTreeMap::new();
+    for row in rows {
+        let (id, state) = row?;
+        let Some(rest) = id.strip_prefix("digest/g") else { continue };
+        let Some((number, revision)) = rest.split_once('@') else { continue };
+        let (Ok(number), Ok(revision)) = (number.parse::<i64>(), revision.parse::<i64>()) else { continue };
+        let entry = revisions.entry(number).or_insert((revision, state.clone()));
+        if revision > entry.0 {
+            *entry = (revision, state);
+        }
     }
-    if ps::like(id, "Intro*")
-        && let Some(&n) = section_group.get("导论")
-    {
-        return Some(n);
-    }
-    section_group.get(parts[0]).copied()
-}
-
-/// The section id a heading names (`2.3 …`, `A1 …`, `Intro.2 …`, `第三章…`, `导论`).
-fn section_id(heading: &str) -> Option<String> {
-    if let Some(c) = SECTION_ID.captures(heading) {
-        return Some(c[1].to_string());
-    }
-    if let Some(c) = CHAPTER.captures(heading) {
-        let numerals = ["一", "二", "三", "四", "五", "六", "七", "八", "九"];
-        return numerals.iter().position(|x| *x == &c[1]).map(|i| (i + 1).to_string());
-    }
-    if eq(heading, "导论") { Some("导论".to_string()) } else { None }
+    Ok(Some(revisions.into_iter().map(|(number, (_, state))| (number, state)).collect()))
 }
 
 /// `zt-digest prepare-link -Staging <folder> [-TitleChars 40]` (prepare-link-pass.ps1).
@@ -937,17 +938,10 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let cards_all = join_path(&staging, "cards-all.md");
     write(&cards_all, &text)?;
 
-    // --- section id -> group ---
-    let mut section_group: CiMap<i64> = CiMap::new();
-    for group in &groups {
-        for heading in ps::each(&group["headings"]) {
-            if let Some(id) = section_id(&s(heading))
-                && !section_group.contains(&id)
-            {
-                section_group.insert(&id, ps::int(&group["n"])?);
-            }
-        }
-    }
+    // --- digest completion: the staging ledger is the authority, a folder without one has only its
+    // write receipts (#92) ---
+    let states = digest_states(&staging)?;
+    let digest_state = if states.is_some() { "ledger" } else { "receipts" };
 
     // --- ownership ---
     let agent_cards: Vec<Value> = details
@@ -994,8 +988,6 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         set_owner(&mut owner, &s(&group["anchor"]), n);
     }
     let in_anchor = Regex::new(&format!(r"(?i)^{}/(\d+)\|", regex::escape(&key)))?;
-    let cites_section = Regex::new(&format!(r"(?i)来源[：:]\s*\[\[{}\]\]\s*§?\s*{SECTION}", regex::escape(&key)))?;
-    let names_section = Regex::new(&format!(r"(?i)§\s*{SECTION}"))?;
     let source_mark = Regex::new(r"(?i)§|来源")?;
     for card in &agent_cards {
         let address = s(&card["address"]);
@@ -1016,16 +1008,15 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         if outbound >= 8 {
             continue;
         }
+        // Only the digested book's own Literature tree (`<key>/<n>…`) is assigned by address. A
+        // `§1.2`-style reference in another Card's body is not a receipt: the group's own writes
+        // are named by its `owned-gNN.txt` log, so no card of another book or of an existing Topic
+        // tree is ever handed to a link job (#92).
         let mut n: Option<i64> = None;
-        if let Some(c) = in_anchor.captures(&address) {
-            let anchor_group = ps::int(&json!(c[1].to_string()))?;
-            if source_mark.is_match(&body) {
-                n = Some(anchor_group);
-            }
-        } else if let Some(c) = cites_section.captures(&body) {
-            n = group_of_section(&section_group, &c[1]);
-        } else if let Some(c) = names_section.captures(&body) {
-            n = group_of_section(&section_group, &c[1]);
+        if let Some(c) = in_anchor.captures(&address)
+            && source_mark.is_match(&body)
+        {
+            n = Some(ps::int(&json!(c[1].to_string()))?);
         }
         if let Some(n) = n
             && n != 0
@@ -1064,6 +1055,7 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
 
     // --- per-group files ---
     let mut summary: Vec<Value> = Vec::new();
+    let mut blocked: Vec<Value> = Vec::new();
     for group in &groups {
         let n = ps::int(&group["n"])?;
         let id = s(&group["id"]);
@@ -1071,8 +1063,28 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         ps::ps_sort(&mut mine, |a, b| culture_cmp(a, b));
         // The workflow writes linked-gNN.txt when a group's link pass succeeds; a rerun skips it.
         let done = Path::new(&join_path(&staging, &format!("linked-{id}.txt"))).exists();
+        // #92: a group whose digest did not complete gets no link job. Its write fence is an empty
+        // allow-list, so a job started by mistake could change no Card at all.
+        let (completed, state) = match &states {
+            Some(states) => {
+                let state = states.get(&n).cloned().unwrap_or_else(|| "unregistered".to_string());
+                (state == "done", state)
+            }
+            None => {
+                let receipt = Path::new(&join_path(&staging, &format!("owned-{id}.txt"))).exists();
+                (receipt, if receipt { "receipt".to_string() } else { "unverified".to_string() })
+            }
+        };
         let allow = join_path(&staging, &format!("allow-{id}.txt"));
-        write(&allow, &format!("{}\n", mine.join("\n")))?;
+        if completed {
+            write(&allow, &format!("{}\n", mine.join("\n")))?;
+        } else {
+            write(&allow, "")?;
+            blocked.push(json!({
+                "n":n, "unit":format!("digest/{id}@1"), "state":state,
+                "reason":format!("the digest unit digest/{id}@1 is {state}, not done; this group gets no link job"),
+            }));
+        }
         let section_list = ps::each(&group["sections"])
             .iter()
             .map(|x| format!("`{}`", join_path(&staging, &format!("sections\\{}", s(x)))))
@@ -1084,6 +1096,15 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
             text.push_str(t);
             text.push_str(NL);
         };
+        if !completed {
+            line(&format!("# 你的组：第 {n} 组（digest 未完成，本次不做连接）"));
+            line("");
+            line(&format!("- 状态：本组的 digest 单元 `digest/{id}@1` 是 `{state}`，不是 `done`。"));
+            line("- 本次没有可连接的卡片：允许清单为空，写入命令不能改动任何卡片。等该组 digest 完成后重新准备连接。");
+            write(&join_path(&staging, &format!("link-{id}.md")), &text)?;
+            summary.push(json!({"n":n,"owned":mine.len(),"done":done,"digest":state,"blocked":true}));
+            continue;
+        }
         line(&format!("# 你的组：第 {n} 组"));
         line("");
         line(&format!("- 锚点卡片：`{}`；小节：{headings}", s(&group["anchor"])));
@@ -1114,14 +1135,20 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
             }
         }
         write(&join_path(&staging, &format!("link-{id}.md")), &text)?;
-        summary.push(json!({ "n": n, "owned": mine.len(), "done": done }));
+        summary.push(json!({"n":n,"owned":mine.len(),"done":done,"digest":state,"blocked":false}));
     }
     let unowned = agent_cards.iter().filter(|c| !owner.has(&s(&c["address"]))).count();
-    let pending: Vec<Value> = summary.iter().filter(|g| g["done"] != json!(true)).map(|g| g["n"].clone()).collect();
+    let pending: Vec<Value> = summary
+        .iter()
+        .filter(|g| g["done"] != json!(true) && g["blocked"] != json!(true))
+        .map(|g| g["n"].clone())
+        .collect();
     util::print_line(&ps::json_compact(&json!({
         "pending": pending,
+        "blocked": blocked,
         "groups": summary,
         "unowned": unowned,
+        "digest_state": digest_state,
         "cards_all": cards_all,
     })))?;
     Ok(0)
@@ -1196,24 +1223,6 @@ mod tests {
         event_candidates(&unit, "s01.md", 2, 12, &mut found);
         assert_eq!(found, vec![json!({ "group": 2, "src": "sections/s01.md:5", "text": "通用汽车在 1926 年收购了费雪。" })]);
         assert!(names_a_year("1990年代与1991年") && !names_a_year("1990年代"));
-    }
-
-    #[test]
-    fn sections_name_groups() {
-        assert_eq!(section_id("2.3 契约").as_deref(), Some("2.3"));
-        assert_eq!(section_id("a1 附录").as_deref(), Some("a1"));
-        assert_eq!(section_id("第三章 企业").as_deref(), Some("3"));
-        assert_eq!(section_id("第十章"), None);
-        let mut map: CiMap<i64> = CiMap::new();
-        map.insert("2.3", 4);
-        map.insert("A1", 7);
-        map.insert("导论", 1);
-        map.insert("5", 9);
-        assert_eq!(group_of_section(&map, "2.3.1"), Some(4));
-        assert_eq!(group_of_section(&map, "a1"), Some(7));
-        assert_eq!(group_of_section(&map, "Intro.2"), Some(1));
-        assert_eq!(group_of_section(&map, "5.2"), Some(9));
-        assert_eq!(group_of_section(&map, "6"), None);
     }
 
     #[test]

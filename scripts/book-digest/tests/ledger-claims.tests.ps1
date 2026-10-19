@@ -181,6 +181,35 @@ db.close();if(changed.changes!==1)throw new Error('the current claim was not exp
     Assert ($reclaimed.reclaimed.Count -eq 1 -and $reclaimed.reclaimed[0].previous_owner -eq 'expired-manager' -and $reclaimed.reclaimed[0].token -gt $claim.token) 'only the guarded reclaim of the expired owner offers the next attempt and fences the old token'
     $replacement = Run-Digest @('ledger','next','-Out',$out,'-Layer','terms','-Take','1','-Owner','replacement-manager')
     Assert ($replacement.units.Count -eq 1 -and $replacement.units[0].id -eq $claim.id -and $replacement.units[0].token -gt $reclaimed.reclaimed[0].token) 'the replacement attempt needs a newer token than the reclaimed claim'
+
+    # #92: a claim that starts a provider run asks for a lease that covers the run's whole cap, so a
+    # healthy job that outlives the 120-second base lease keeps its original claim.
+    $leaseOut = Join-Path $scratch 'lease-prepared'
+    $null = Run-Digest @('prepare','-Source',$source,'-Out',$leaseOut,'-CitationKey','LeaseBook','-BibTeX','@book{LeaseBook,title={Lease book}}','-StartHeading','导论','-EndHeading','参考','-MaxUnits','1','-MinUnitChars','1','-NoFigures','-Variant','econ','-Apply')
+    $savedLease = $env:ZT_LEDGER_LEASE_SECONDS
+    $env:ZT_LEDGER_LEASE_SECONDS = '2'
+    try {
+        $slow = Run-Digest @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','slow-job','-Lease','60')
+        $slowClaim = $slow.units[0]
+        Assert ($slowClaim.lease_seconds -ge 60) "a claim can request the lease its provider run needs ($($slowClaim.lease_seconds) s over a 2 s base)"
+        Start-Sleep -Seconds 3
+        $during = Run-Digest @('ledger','status','-Out',$leaseOut,'-Layer','terms')
+        Assert ($during.units[0].state -eq 'claimed' -and $during.units[0].token -eq $slowClaim.token) 'the claim outlives the base lease without any renewal'
+        $renewed = Run-Digest @('ledger','renew','-Out',$leaseOut,'-Unit',$slowClaim.id,'-Token',"$($slowClaim.token)")
+        Assert ($renewed.token -eq $slowClaim.token -and $renewed.lease_until -ge $slowClaim.lease_until) 'the original token still renews its claim after the base lease passed'
+        Refuses @('ledger','reclaim','-Out',$leaseOut,'-Unit',$slowClaim.id) 'claim_active'
+        Assert $true 'no guarded reclaim can revoke a claim whose lease covers its job'
+        # The control: the same guarded reclaim does take a claim whose lease really expired, so the
+        # refusal above is the lease, not a dead code path.
+        & node --no-warnings -e $expire (Join-Path $leaseOut 'ledger.sqlite3') $slowClaim.id "$($slowClaim.token)"
+        if ($LASTEXITCODE) { throw 'isolated lease expiry injection failed' }
+        $expiredLease = Run-Digest @('ledger','reclaim','-Out',$leaseOut,'-Unit',$slowClaim.id)
+        Assert (@($expiredLease.reclaimed).Count -eq 1 -and $expiredLease.reclaimed[0].previous_token -eq $slowClaim.token) 'an expired claim is the only one the guarded reclaim takes'
+        Refuses @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','out-of-range','-Lease','0') '-Lease must be a whole number of seconds from 1 through 7200' 2
+        Refuses @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','out-of-range','-Lease','99999') '-Lease must be a whole number of seconds from 1 through 7200' 2
+    } finally {
+        $env:ZT_LEDGER_LEASE_SECONDS = $savedLease
+    }
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

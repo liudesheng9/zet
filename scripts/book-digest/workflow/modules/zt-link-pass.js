@@ -1,4 +1,4 @@
-// ==== module zt-link-pass v2 ====
+// ==== module zt-link-pass v3 ====
 // The cross-part link pass: each Haiku manager starts up to linkPerManager DeepSeek runs at once (the profile's
 // link prefix plus the group's link file); each run appends reasoned Links to the Cards its group owns, through
 // the helper. The Link units (`link/gNNN@1`) are claimed here and recorded honestly: the pass still writes
@@ -7,9 +7,11 @@
 // the Link layer settles as a visible partial result instead of staying open forever, and downstream aggregate
 // work records the exact unresolved Link units instead of guessing. The group draft transport (R263's group
 // half) is implemented in zt-group-cycle.
+// #92: only the pending groups run. A group whose digest did not complete is passed through as blocked, and the
+// stage reports it instead of starting a link job on Cards the run did not digest.
 defineModule({
-  id: 'zt-link-pass', version: '2', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: the cross-part link runs on the pending groups, with the Link units recorded as unverified legacy-transport work.',
+  id: 'zt-link-pass', version: '3', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: the cross-part link runs on the pending groups, with the blocked groups and the Link units recorded.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -18,6 +20,7 @@ defineModule({
     profile: { type: 'object', required: true, description: 'the book profile (consts.profile)' },
     groups: { type: 'number', required: true, description: 'the group count from the prepare stage' },
     pending: { type: 'array', required: true, description: 'the pending group numbers from the link preparation' },
+    blocked: { type: 'array', default: [], description: 'the groups the link preparation blocked because their digest did not complete' },
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
@@ -43,7 +46,9 @@ defineModule({
       }
     }
     if (linkUnits.length) log(`Link: ${linkUnits.length} Link units recorded as unverified legacy-transport work; the layer gate reports them instead of claiming completion.`)
-    return { reports, link_units: linkUnits }
+    const blocked = (p.blocked || []).filter(b => b && !pending.some(g => g.n === b.n))
+    if (blocked.length) log(`Link: ${blocked.length} group(s) stay blocked (their digest unit is not done): ${blocked.map(b => `group ${b.n}`).join(', ')}.`)
+    return { reports, link_units: linkUnits, blocked }
   },
 })
 // ==== end module zt-link-pass ====

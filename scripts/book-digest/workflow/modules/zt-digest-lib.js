@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v12 ====
+// ==== module zt-digest-lib v13 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -9,7 +9,9 @@
 // 11 adds `fixRounds`: the finalization's one correction cycle is declared, not inherited from the pilot
 // setting (#86, R299). 12 resolves the run's Citation key from the prepared run (parameter `key`, from
 // `stages.prepare.output.citation_key`), so mode resume uses the ledger's retained key instead of requiring
-// the operator to repeat args.citationKey (#87, R274/R276).
+// the operator to repeat args.citationKey (#87, R274/R276). 13 makes every claim cover the provider run it
+// starts: `ledger next -Lease <dshRunCap + 300>` (#92), and a chain renews that claim after every wait that
+// reports a running job, so a healthy job that outlives the 120-second base lease is never re-readied.
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
 // manager (Haiku), architect (Sonnet), organizer (Opus). Managers share the DeepSeek Subagent Managed
 // Protocol pool (dsmpSlot): at most 8 managers alive in the whole run.
@@ -126,6 +128,9 @@ function zdMake(ctx, p) {
   // preparation, so a resume reuses the frozen effective values.
   const MAX_ATTEMPTS = Math.max(1, Math.min(10, A.maxAttempts ?? 3))
   const DSH_RUN_CAP = Math.max(60, Math.min(3600, A.dshRunCap ?? 1200))
+  // #92: a claim that will start a provider run holds a lease that covers the whole frozen run cap
+  // plus the command margin, so a healthy six-minute group job is never re-readied under itself.
+  const CLAIM_LEASE = Math.min(7200, DSH_RUN_CAP + 300)
   // The one runner prompt line every manager gets: no general shell, no timers, no handoff (R260).
   const RUNNER = `You have only these tools: the bounded PowerShell command named below (always with timeout_ms: ${ZD_COMMAND_TIMEOUT_MS}), file reads and writes under the paths named here, and the DeepSeek Harness tools. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Do not set environment variables: the tools keep their own bounds.`
 
@@ -383,6 +388,14 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
   // step's `units[0]` (its `id`, `token` and the number in `gNNN`) and a start step's `draft`.
   const chainPrompt = (label, o) => {
     const steps = o.steps || []
+    // #92: a chain that holds a claim keeps it current while its jobs run, so a job that outlives
+    // the base lease still finishes under its own token.
+    const claimedUnit = o.unit ? `"${o.unit}"` : '{{unit}}'
+    const claimedToken = o.unit ? String(o.token) : '{{token}}'
+    const holdsClaim = !!o.unit || steps.some(s => s.claim)
+    const renewLine = holdsClaim
+      ? `\n- While any job of this chain runs, keep the claim current: after every deepseek_wait that answers "running", run this command in the same message (it changes no Card; it renews the claim this chain holds):\n   ${ZD_LEDGER} renew -Out "${OUT}" -Unit ${claimedUnit} -Token ${claimedToken}`
+      : ''
     const listed = steps.map((s, i) => {
       const lines = [`${i + 1}. ${s.name}: run this command in the foreground with timeout_ms: ${ZD_COMMAND_TIMEOUT_MS} and wait for it, then read its last output line (compact JSON, it may be tens of kilobytes; keep it whole):`, `   ${s.command}`]
       if (s.claim) lines.push(`   This is the claim step. If its JSON has an empty "units" array, stop the chain here: run no later step and no job, and return the steps you ran. Otherwise remember its "units"[0].id, "units"[0].token and the group number in that id (the digits in gNNN) for the commands below.`)
@@ -404,7 +417,7 @@ Jobs (for every step that prints them):
 - continue: reuse the session_id of the earlier job of this chain with that id (from this chain's own results); without one, deepseek_run with prompt_files = fallback (or files when it names none).
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start independent jobs in one message and start the next job when one ends.
 Follow "status" until each job ends:
-- "running": deepseek_wait (session_id, wait_seconds 600).
+- "running": deepseek_wait (session_id, wait_seconds 90), then start the next waiting job and keep polling; never wait longer than 90 seconds at once.${renewLine}
 - "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1), or the check zt-check (read-only); a read-only self-check of a draft: the card, hub, event, or finding compiler (${ZD_DIGEST} card, hub, event, or finding, or card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, finding-compiler.ps1) with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or the book skeleton (${ZD_DIGEST} skeleton, or book-skeleton.ps1) with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
@@ -466,8 +479,9 @@ Return steps: one entry per step with name, ok (true when it exited without an e
   // readiness, attempts and completion evidence; a module never reads a clock or a file to decide it (R270).
   const ledgerCommand = (args) => `${ZD_LEDGER} ${args}`
   // Claims ready units of one layer in a bounded block. `wait` is the tool-side readiness wait (seconds).
+  // The claim requests a lease that covers the frozen provider-run cap (#92).
   const claim = async (label, layer, take, wait = 0) => {
-    const out = await runScript(label, LEDGER_PHASE, ledgerCommand(`next -Out "${OUT}" -Layer ${layer} -Take ${take} -Owner "${label}"${wait ? ` -Wait ${wait}` : ''}`))
+    const out = await runScript(label, LEDGER_PHASE, ledgerCommand(`next -Out "${OUT}" -Layer ${layer} -Take ${take} -Owner "${label}"${wait ? ` -Wait ${wait}` : ''} -Lease ${CLAIM_LEASE}`))
     const parsed = out.json
     if (!parsed) return { ok: false, error: (out.run && out.run.output) || 'no output from ledger next', units: [] }
     return { ok: true, units: parsed.units || [], layer: parsed.layer, settled: parsed.settled, complete: parsed.complete, counts: parsed.counts }
@@ -720,7 +734,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
   return {
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
     HUB_WORK, HUB_COMPILER, HUB_EFFORT, HUB_FIX_ROUNDS, HUB_SKILLS, PER_MANAGER, LINK_PER_MANAGER, raised,
-    MAX_ATTEMPTS, DSH_RUN_CAP, RUNNER, COMMAND_TIMEOUT_MS: ZD_COMMAND_TIMEOUT_MS,
+    MAX_ATTEMPTS, DSH_RUN_CAP, CLAIM_LEASE, RUNNER, COMMAND_TIMEOUT_MS: ZD_COMMAND_TIMEOUT_MS,
     // The command prefixes and skills a stage module builds a chain with.
     LEDGER: ZD_LEDGER, DIGEST: ZD_DIGEST, CALL: ZD_CALL, DSH_SKILLS,
     zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
@@ -738,7 +752,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '12', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '13', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====

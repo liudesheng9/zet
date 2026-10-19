@@ -939,7 +939,7 @@ fn complete_publication(
             "touched_trees": scope["touched_trees"],
         }));
     }
-    let claimed = ledger::next(p, layer, 1, "finalize", 30)?;
+    let claimed = ledger::next(p, layer, 1, "finalize", 30, 0)?;
     let Some(entry) = ps::ps_items(&claimed["units"])
         .into_iter()
         .find(|entry| entry["id"] == json!(unit))

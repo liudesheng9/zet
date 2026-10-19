@@ -489,7 +489,7 @@ function runtime(kind, opts = {}) {
       return { reports: groups.map((g) => ({ group: g, status: 'done', cards: 3, models: 0, events: 0, links: 2, topics: [], errors: '无', deleted: true })) }
     }
     if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
-    if (/^prepare link pass$/.test(label)) return { ok: true, ...CANNED['prepare-link']() }
+    if (/^prepare link pass$/.test(label)) return { ok: true, ...(opts.linkBlocked ? { pending: [], blocked: opts.linkBlocked, groups: [], unowned: 0, cards_all: '' } : CANNED['prepare-link']()) }
     if (/^cleanup DeepSeek/.test(label)) {
       // The recorded resources the prompt lists: the mock agent deletes exactly these ids.
       const plan = JSON.parse((text.match(/Recorded resources \(JSON\):\n(.+)/) || [])[1] || '[]')
@@ -720,6 +720,22 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(result.schedule && result.schedule.settings.maxAttempts === 3 && result.schedule.settings.dshRunCap === 1200, 'report: the result carries the effective settings and the schedule summary')
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
+  // #92: every claim covers the frozen provider-run cap, and a chain renews it while its job runs.
+  check(cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 1 .* -Lease 1500/.test(c)).length === 2, `lease: each group claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 1500/.test(c)).length} claims)`)
+  check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 1500/.test(c)), 'lease: the Link units are claimed with the same covering lease')
+  const chainPrompts = calls.map((c) => c.prompt).join('\n')
+  check(chainPrompts.includes('ledger renew -Out "D:\\x\\Key" -Unit') && chainPrompts.includes('wait_seconds 90'), 'lease: a chain renews its claim after every wait on a running job, and never waits longer than 90 seconds')
+}
+{
+  // #92: a group whose digest unit is not done is blocked: no link job runs for it, and the run names it.
+  const blocked = [
+    { n: 1, unit: 'digest/g001@1', state: 'failed', reason: 'the digest unit digest/g001@1 is failed, not done; this group gets no link job' },
+    { n: 2, unit: 'digest/g002@1', state: 'ready', reason: 'the digest unit digest/g002@1 is ready, not done; this group gets no link job' },
+  ]
+  const { calls, result } = await run('econ', { ...base, figures: false }, { linkBlocked: blocked })
+  const labels = calls.map((c) => c.label)
+  check(!labels.some((l) => /^link manager/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
+  check(result && Array.isArray(result.link_blocked) && result.link_blocked.length === 2 && result.link_blocked.every((b) => b.unit && b.state && b.reason && b.group), `report: the run names the blocked groups and their units (${result && JSON.stringify(result.link_blocked)})`)
 }
 {
   // A transient group failure is recorded against its own unit and claimed again by a later attempt.

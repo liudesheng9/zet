@@ -4934,6 +4934,10 @@ pub(crate) fn now_seconds() -> i64 {
         .as_secs() as i64
 }
 
+/// The longest claim lifetime a caller may request (`ledger next -Lease`): the frozen run cap
+/// tops out at 3600 seconds (`dshRunCap`), and the claim holds a margin over it.
+const LEASE_MAX: i64 = 7200;
+
 /// R178: the lease is 120 seconds and a held claim renews it every 30 seconds. The two
 /// variables exist only so a public test can observe a renewal inside one command.
 fn lease_seconds() -> i64 {
@@ -5284,10 +5288,10 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
 /// settles, or the deadline passes. Timekeeping lives here, never in a workflow
 /// module. The wait never spends an attempt and never changes a unit state except
 /// by the ordinary bounded claim.
-pub(crate) fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64) -> Result<Value> {
+pub(crate) fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64, lease: i64) -> Result<Value> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait.max(0) as u64);
     loop {
-        let claimed = next_once(p, layer, take, owner)?;
+        let claimed = next_once(p, layer, take, owner, lease)?;
         let empty = claimed["units"].as_array().is_none_or(|units| units.is_empty());
         if !empty || wait <= 0 || std::time::Instant::now() >= deadline {
             return Ok(claimed);
@@ -5299,7 +5303,21 @@ pub(crate) fn next(p: &Prepared, layer: &str, take: i64, owner: &str, wait: i64)
     }
 }
 
-fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value> {
+/// One claim's lease: the longer of the base lease and the lifetime its caller asks for.
+///
+/// A caller that starts a provider run asks for that run's whole frozen cap (`-Lease`), so a healthy
+/// job can never be re-readied under itself (#92). The base lease and its heartbeat stay the floor.
+fn claim_lease(base: i64, requested: i64) -> i64 {
+    base.max(requested)
+}
+
+/// One bounded claim of `take` ready units.
+///
+/// `lease` is the claim's own requested lifetime in seconds: the workflow passes the frozen
+/// `dshRunCap` of the prepared run, because a claim whose holder starts a provider run must stay
+/// current for at least that run's whole cap. A claim therefore never expires under a healthy job
+/// (#92); the base lease and its heartbeat remain the floor and the ordinary renewal (#R178).
+fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str, lease: i64) -> Result<Value> {
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
@@ -5320,9 +5338,9 @@ fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str) -> Result<Value>
     let mut claimed = Vec::new();
     for (id, input_hash, inputs, old_token) in rows {
         let token = old_token.checked_add(1).context("claim token exhausted")?;
-        let lease_until = now + lease_seconds();
+        let lease_until = now + claim_lease(lease_seconds(), lease);
         tx.execute("UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",params![id,owner,token,lease_until])?;
-        let claim = json!({"id":id,"owner":owner,"token":token,"lease_until":lease_until,"input_hash":input_hash,"inputs":serde_json::from_str::<Value>(&inputs)?});
+        let claim = json!({"id":id,"owner":owner,"token":token,"lease_until":lease_until,"lease_seconds":lease_until-now,"input_hash":input_hash,"inputs":serde_json::from_str::<Value>(&inputs)?});
         event(
             &tx,
             &id,
@@ -14267,7 +14285,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
         } else if command == "next" {
-            vec!["Out", "Layer", "Take", "Owner", "Wait"]
+            vec!["Out", "Layer", "Take", "Owner", "Wait", "Lease"]
         } else if command == "renew" {
             vec!["Out", "Unit", "Token"]
         } else if command == "fail" {
@@ -14338,6 +14356,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .ok()
                     .filter(|n| (0..=600).contains(n))
                     .context("-Wait must be a whole number of seconds from 0 through 600")?;
+            }
+            if a.has("Lease") {
+                a.required("Lease")?
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|n| (1..=LEASE_MAX).contains(n))
+                    .with_context(|| format!("-Lease must be a whole number of seconds from 1 through {LEASE_MAX}"))?;
             }
         }
         if matches!(command.as_str(), "renew" | "fail" | "done") {
@@ -14701,7 +14726,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 &fault,
             )?
         } else {
-            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?)?
+            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?, a.int_or("Lease", 0)?)?
         }
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?
@@ -14767,6 +14792,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #92: a claim that starts a provider run asks for that run's cap, and the base lease never
+    // shortens the request.
+    #[test]
+    fn a_claim_lease_covers_a_requested_provider_run() {
+        assert_eq!(claim_lease(120, 0), 120);
+        assert_eq!(claim_lease(120, 1500), 1500);
+        assert_eq!(claim_lease(2, 60), 60);
+        assert_eq!(LEASE_MAX, 7200);
+    }
 
     #[test]
     fn a_done_bridge_publication_names_its_report_and_counts_its_proposals() {
