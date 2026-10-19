@@ -30,6 +30,7 @@ mod faults;
 mod figures;
 mod finalize;
 mod finding;
+mod gate;
 mod hub;
 mod ledger;
 mod math;
@@ -150,6 +151,7 @@ fn main() {
         "source-faults" => faults::cli(&rest),
         "ledger" => ledger::cli(&rest),
         "finalize" => finalize::cli(&rest),
+        "gate" => gate::cli(&rest),
         "concepts" => concepts::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
@@ -169,7 +171,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, bridge, math, event, finding,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, bridge, math, event, finding, gate,
        terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }

@@ -2,6 +2,7 @@
 $ErrorActionPreference='Stop'
 $scratch=Join-Path ([IO.Path]::GetTempPath()) "bridge-math-test-$PID"
 $staging=Join-Path $scratch 'staging'
+if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 New-Item -ItemType Directory -Force $staging | Out-Null
 $env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')

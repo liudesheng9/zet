@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'; $utf8 = [Text.UTF8Encoding]::new($false)
 $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "earlier-context-test-$PID"))
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
 if (-not $scratch.StartsWith($tempRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch escaped temp directory' }
+if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 New-Item -ItemType Directory -Force $scratch | Out-Null
 if ($Zt) { $env:PATH = "$(Split-Path -Parent $Zt);$env:PATH" }
 if (-not $Digest) { $Digest = (Get-Command zt-digest -CommandType Application | Select-Object -First 1).Source }

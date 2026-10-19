@@ -114,6 +114,11 @@ impl Relatedness {
 
     /// One weighted vector scored against every other document, most similar first.
     fn score(&self, vector: &[(String, f64)], top: usize, exclude: impl Fn(&str) -> bool) -> Vec<String> {
+        self.score_scored(vector, top, exclude).into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// One weighted vector scored against every other document, with each score.
+    fn score_scored(&self, vector: &[(String, f64)], top: usize, exclude: impl Fn(&str) -> bool) -> Vec<(String, f64)> {
         let mut scores: Vec<(String, f64)> = Vec::new();
         let mut at: HashMap<String, usize> = HashMap::new();
         for (term, weight) in vector {
@@ -133,13 +138,19 @@ impl Relatedness {
         }
         // OrderByDescending: stable.
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scores.into_iter().take(top).map(|(k, _)| k).collect()
+        scores.into_iter().take(top).collect()
     }
 
     /// The documents most similar to one text that is not itself a document: the same weighted
     /// terms and cosine scoring, so a caller may rank a question, a section or a whole group
     /// against the corpus without adding the text to it (S05, #98).
     pub fn rank_text(&self, text: &str, top: usize, exclude: impl Fn(&str) -> bool) -> Vec<String> {
+        self.rank_text_scored(text, top, exclude).into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// `rank_text` with the cosine score of each document, so a caller can keep only a meaningful
+    /// match instead of every card that shares one common bigram.
+    pub fn rank_text_scored(&self, text: &str, top: usize, exclude: impl Fn(&str) -> bool) -> Vec<(String, f64)> {
         let mut weights: Vec<(String, f64)> = Vec::new();
         for (term, tf) in terms(text) {
             // A term no document uses matches nothing, and one every document uses carries no
@@ -157,7 +168,7 @@ impl Relatedness {
             norm = 1.0;
         }
         let vector: Vec<(String, f64)> = weights.into_iter().map(|(t, w)| (t, w / norm)).collect();
-        self.score(&vector, top, exclude)
+        self.score_scored(&vector, top, exclude)
     }
 
     /// `Find-Related`: the `top` ids most similar to `id`, without those `exclude` refuses.

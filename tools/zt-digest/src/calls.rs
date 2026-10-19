@@ -327,7 +327,21 @@ pub(crate) fn invoke_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false)?.0)
+    Ok(execute_identified(zt, calls, prefix, allow, false, None)?.0)
+}
+
+/// Apply an immutable accepted call list whose Topic creation was cleared by a concept decision
+/// (S07, #100). A committed operation returns its receipt before any new concept decision; an
+/// uncommitted `create_topic` takes the archive-shared Topic gate, revalidates the decision and
+/// holds the lock until its receipt is known (D146–D153).
+pub(crate) fn invoke_identified_gated(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+    concept: &Value,
+) -> Result<Vec<Value>> {
+    Ok(execute_identified(zt, calls, prefix, allow, false, Some(concept))?.0)
 }
 
 /// Validate a complete accepted sequence against real archive validators. The
@@ -338,7 +352,7 @@ pub(crate) fn preview_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
 ) -> Result<Value> {
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None)?;
     let draft = draft.context("incomplete identified preview: no draft")?;
     if draft["preview"] != true
         || draft["applied"] != false
@@ -383,6 +397,7 @@ fn execute_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
     preview: bool,
+    concept: Option<&Value>,
 ) -> Result<(Vec<Value>, Option<Value>)> {
     let segments: Vec<_> = prefix.split('/').collect();
     if segments.len() != 4
@@ -542,12 +557,49 @@ fn execute_identified(
             items.push(json!({"op_key":format!("{prefix}/item-{index:06}"),"client_ref":index.to_string(),"tool":calls[index]["tool"],"arguments":args}));
         }
         let count = items.len();
+        // S07 (#100): a Topic creation in this chunk needs the concept gate. A committed operation
+        // is replayed by that same call, so its receipt comes back before any new decision; an
+        // uncommitted one takes the archive-shared lock, revalidates the decision and holds the lock
+        // until its receipt is known.
+        let mut concept_lock: Option<crate::gate::Held> = None;
+        if !preview
+            && let Some(decision) = concept
+        {
+            for (offset, item) in items.iter().enumerate() {
+                if item["tool"] != "create_topic" {
+                    continue;
+                }
+                let peek = zt.call(
+                    "apply_batch",
+                    json!({"preview":true,"preview_items":[item.clone()]}),
+                )?;
+                let replayed = peek["results"]
+                    .as_array()
+                    .and_then(|results| results.first())
+                    .is_some_and(|result| result["replayed"] == json!(true));
+                if replayed {
+                    continue;
+                }
+                if concept_lock.is_none() {
+                    concept_lock = Some(crate::gate::acquire(zt, decision)?);
+                }
+                let expected = decision["proposed"]["title"].as_str().unwrap_or_default();
+                let wanted = item["arguments"]["title"].as_str().unwrap_or_default();
+                if title_key(expected) != title_key(wanted) {
+                    bail!(
+                        "identified call {} creates Topic `{wanted}`, which the concept decision did not clear (`{expected}`)",
+                        start + offset
+                    );
+                }
+            }
+        }
         let request = if preview {
             json!({"preview":true,"preview_items":items})
         } else {
             json!({"items":items})
         };
         let reply=zt.call("apply_batch",request).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
+        drop(concept_lock);
         let results = reply["results"]
             .as_array()
             .context("incomplete identified batch: missing results")?;
@@ -616,7 +668,7 @@ fn precheck_identified(
             "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
         );
     }
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None)?;
     let draft = draft.context("incomplete Link draft: no preview")?;
     if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {
         bail!("incomplete Link draft: explicit complete, unapplied preview required");
@@ -784,7 +836,7 @@ pub(crate) fn authored_fingerprint(card: &Value) -> String {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(
         argv,
-        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix"],
+        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix", "ConceptGate"],
         &["CheckOnly"],
     )?;
     let calls: Vec<Value> = if a.has("Tool") {
@@ -819,10 +871,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             util::print_lines(&lines)?;
             return Ok(code);
         }
-        let results=invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?;
+        // S07 (#100): a concept decision may accompany an identified Topic creation. It is the one
+        // combination the legacy Topic gate options cannot express, so it is permitted here and
+        // nowhere else; the decision file is checked against the live concept inputs at the write.
+        let results = if a.has("ConceptGate") {
+            let concept = crate::canon::read_json(&a.required("ConceptGate")?)?;
+            crate::gate::check_decision(&concept)?;
+            invoke_identified_gated(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref(),&concept)?
+        } else {
+            invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?
+        };
         let lines:Vec<_>=results.iter().enumerate().map(|(index,result)|format!("{index} ok {}",result["result"]["address"].as_str().unwrap())).collect();
         util::print_lines(&lines)?;
         return Ok(0);
+    }
+    if a.has("ConceptGate") {
+        bail!("ConceptGate requires OperationPrefix and a receipt-owned Topic creation");
     }
     let mut options = Options::new().allow_file(&a.str("Allow"))?;
     options.from = a.int_or("From", 0)?.max(0) as usize;
