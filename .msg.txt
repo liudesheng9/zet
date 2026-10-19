@@ -1,0 +1,8 @@
+Exit quietly when a consumer closes zt's stdout
+
+`zt status --check-links | Select-Object -Last 1` and `head` close the pipe while zt
+is still printing, so Rust's println! panics with a broken-pipe write: the command
+printed its result and then reported a panic and exit 101. main now keeps the default
+panic hook for every other panic and exits 0 for exactly that write (failed printing
+to stdout with OS error 32 or 232). tests/closed_stdout.rs drives the real process
+boundary with no reader.

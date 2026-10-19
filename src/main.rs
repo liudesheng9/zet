@@ -44,10 +44,33 @@ pub(crate) use workspace::{Access, Workspace};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
+    quit_quietly_when_stdout_has_no_reader();
     if let Err(err) = run() {
         eprintln!("{err:#}");
         std::process::exit(1);
     }
+}
+
+/// A consumer that closes the pipe early (`head`, `Select-Object -Last 1`) is not a command
+/// failure: the work is done and only the last write had no reader. Rust's `println!` panics
+/// on that write, so the default hook is kept for every other panic and this one case exits 0.
+fn quit_quietly_when_stdout_has_no_reader() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        // "failed printing to stdout: <io error>", whose OS codes are 32 (EPIPE) and 232 (Windows).
+        let closed = text.contains("failed printing to stdout")
+            && (text.contains("os error 32)") || text.contains("os error 232)"));
+        if closed {
+            std::process::exit(0);
+        }
+        default(info);
+    }));
 }
 
 fn run() -> Result<()> {
