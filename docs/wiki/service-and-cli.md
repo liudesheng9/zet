@@ -10,10 +10,11 @@ paths:
   - "src/dump.rs"
   - "tests/cli_service.rs"
   - "tests/autostart.rs"
+  - "tests/closed_stdout.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: 909f04aa4052
-updated: 2026-10-18
+synced: b49db77678f3
+updated: 2026-10-19
 ---
 
 # Service, CLI and storage

@@ -5,3 +5,6 @@ tools/*/target/
 
 # scratch: a commit message file is never tracked
 .git-commit-msg.txt
+
+# scratch message files used while committing
+/.msg.txt
