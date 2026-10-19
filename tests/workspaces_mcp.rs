@@ -2241,7 +2241,7 @@ fn a_contended_batch_write_logs_one_wait_event_and_one_completion_with_both_dura
             .open(path)
             .expect("hold the stale lock file");
         ready.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(6500));
+        std::thread::sleep(Duration::from_millis(20_000));
         drop(handle);
     });
     opened.recv().unwrap();
