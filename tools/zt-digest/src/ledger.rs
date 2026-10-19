@@ -1,6 +1,7 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 mod adopt;
 use crate::event::layer::prop;
+use crate::link_gap;
 use crate::ps::{self, list, pipe, s, truthy};
 use crate::{args::Args, canon, report, util, zt::Zt};
 use anyhow::{Context, Result, bail};
@@ -8,7 +9,7 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use serde_json::{Value, json};
-use std::{
+use std::{collections::BTreeMap, 
     collections::BTreeSet,
     path::{Path, PathBuf},
     time::Duration,
@@ -6858,6 +6859,7 @@ fn completion_fault(p: &Prepared, point: &str) -> Result<()> {
                 "model-dependencies-test-",
                 "explain-finish-test-",
                 "ledger-resume-test-",
+                "ledger-link-gaps-test-",
             ]
             .iter()
             .any(|prefix| n.to_string_lossy().starts_with(prefix))
@@ -8269,9 +8271,115 @@ fn link_owned(p: &Prepared, inputs: &Value, number: u64) -> Result<Vec<String>> 
 }
 
 /// The accepted plan: one owned paragraph per written Card, and one checked
-/// disposition for every other owned Card. A Card is never silently omitted.
-fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+/// The Link unit's frozen gap scope: the prepared enumeration when `link-start` published it,
+/// else the same deterministic classification over the unit's owned Cards (the compatibility path
+/// for a Link unit claimed before the start step existed).
+struct LinkScope {
+    book: String,
+    anchor: String,
+    gaps: Vec<link_gap::Gap>,
+    skipped: Vec<String>,
+    revision: u64,
+}
+
+fn link_scope(
+    p: &Prepared,
+    zt: &mut Zt,
+    number: u64,
+    owned: &[String],
+    progress: &Value,
+) -> Result<LinkScope> {
+    let book = field(&p.contract, "citation_key")?.to_string();
+    let anchor = p.contract["groups"]
+        .as_array()
+        .context("incomplete prepared groups")?
+        .iter()
+        .find(|group| group["n"].as_i64() == Some(number as i64))
+        .and_then(|group| group["anchor"].as_str())
+        .with_context(|| format!("the prepared group {number} has no anchor"))?
+        .to_string();
+    if progress.get("link_start").is_some_and(Value::is_object) {
+        let record = &progress["link_start"]["gap"];
+        check_file(record, "Link gap scope")?;
+        let value = util::read_json(field(record, "path")?)?;
+        let group = &value["group"];
+        let mut frozen: Vec<String> = ps::ps_items(&group["owned"]).iter().map(s).collect();
+        let mut here: Vec<String> = owned.to_vec();
+        ps::ps_sort(&mut frozen, |a, b| ps::culture_cmp(a, b));
+        ps::ps_sort(&mut here, |a, b| ps::culture_cmp(a, b));
+        if frozen != here {
+            bail!(
+                "the prepared Link gap scope does not match the unit's frozen owned enumeration; rerun prepare-link"
+            );
+        }
+        let mut gaps = Vec::new();
+        for gap in ps::ps_items(&group["gaps"]) {
+            gaps.push(link_gap::Gap {
+                at: field(&gap, "at")?.to_string(),
+                reasons: ps::ps_items(&gap["reasons"]).iter().map(s).collect(),
+            });
+        }
+        return Ok(LinkScope {
+            book: field(&value, "book")?.to_string(),
+            anchor,
+            gaps,
+            skipped: ps::ps_items(&group["skipped"]).iter().map(s).collect(),
+            revision: value["archive_revision"]
+                .as_u64()
+                .context("the prepared Link gap scope has no archive revision")?,
+        });
+    }
+    // The accepted plan is immutable once written, so a lost final reply re-reads the same frozen
+    // gap scope instead of classifying Cards the first attempt already changed (AC08).
+    let accepted = p.out.join(format!("link-accepted-g{number:03}.json"));
+    if accepted.exists() {
+        let plan = canon::read_json(&accepted.to_string_lossy())?;
+        if plan["unit"] == json!(link_unit(number)) {
+            let mut gaps = Vec::new();
+            for gap in ps::ps_items(&plan["gap"]) {
+                gaps.push(link_gap::Gap {
+                    at: field(&gap, "at")?.to_string(),
+                    reasons: ps::ps_items(&gap["reasons"]).iter().map(s).collect(),
+                });
+            }
+            return Ok(LinkScope {
+                book,
+                anchor,
+                gaps,
+                skipped: ps::ps_items(&plan["skipped"]).iter().map(s).collect(),
+                revision: plan["archive_revision"].as_u64().unwrap_or(0),
+            });
+        }
+    }
+    let facts = link_gap::read(zt, &book, owned)?;
+    let groups = link_gap::classify(
+        &facts,
+        &[link_gap::Group {
+            n: number as i64,
+            id: format!("g{number:02}"),
+            anchor: anchor.clone(),
+            owned: owned.to_vec(),
+        }],
+    )?;
+    let scope = &groups[0];
+    Ok(LinkScope {
+        book,
+        anchor,
+        gaps: scope.gaps.clone(),
+        skipped: scope.skipped.clone(),
+        revision: facts.revision,
+    })
+}
+/// The accepted plan: one owned paragraph or one checked disposition for every gap Card, and a
+/// verified `already_linked` disposition for every owned Card the frozen gap set excluded. A gap
+/// Card is never silently omitted, and the job can never widen to a Card outside the gap set.
+fn link_plan(
+    owned: &[String],
+    gaps: &[link_gap::Gap],
+    draft: &Value,
+) -> Result<(Vec<Value>, Vec<Value>)> {
     let in_owned = |at: &str| owned.iter().any(|owned| owned == at);
+    let gap_of = |at: &str| gaps.iter().find(|gap| gap.at == at);
     let mut calls = Vec::new();
     let mut written = std::collections::BTreeMap::new();
     let mut bytes = 0usize;
@@ -8306,6 +8414,10 @@ fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)
         if !in_owned(at) {
             bail!("Link draft call {index} names `{at}`, which is not an owned Card of this Link unit");
         }
+        let Some(gap) = gap_of(at) else {
+            // AC01/AC02: only the gap set receives a Link job. A Card outside it is already linked.
+            bail!("Link draft call {index} names `{at}`, which is not a semantic gap of this Link unit");
+        };
         if written.insert(at.to_string(), index).is_some() {
             bail!("Link draft writes `{at}` twice; a correction needs a new plan revision");
         }
@@ -8330,6 +8442,15 @@ fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
             .context("Link draft call has an empty owned paragraph")?;
+        // D121/AC05: the anchor's one coordinator-owned paragraph is its `在全书中的位置` statement.
+        if gap.reasons.iter().any(|reason| reason == link_gap::ANCHOR_MISSING)
+            && !text.starts_with(link_gap::POSITION_PREFIX)
+        {
+            bail!(
+                "the anchor `{at}` has no `{}` paragraph; its owned paragraph must start with it",
+                link_gap::POSITION_PREFIX
+            );
+        }
         bytes += text.len();
         calls.push(call.clone());
     }
@@ -8348,9 +8469,9 @@ fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)
         if entry.as_object().is_none_or(|value| {
             value
                 .keys()
-                .any(|key| !["at", "outcome", "reason"].contains(&key.as_str()))
+                .any(|key| !["at", "outcome", "reason", "from"].contains(&key.as_str()))
         }) {
-            bail!("Link disposition {index} must contain only at, outcome and reason");
+            bail!("Link disposition {index} must contain only at, outcome, reason and from");
         }
         let at = entry["at"]
             .as_str()
@@ -8358,16 +8479,33 @@ fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)
         if !in_owned(at) {
             bail!("Link disposition {index} names `{at}`, which is not an owned Card of this Link unit");
         }
-        let outcome = entry["outcome"].as_str().unwrap_or_default();
-        if !["already_linked", "no_link"].contains(&outcome) {
-            bail!("Link disposition {index} must be already_linked or no_link");
+        if gap_of(at).is_none() {
+            bail!("Link disposition {index} names `{at}`, which is not a semantic gap of this Link unit");
         }
+        // AC06 writes the outcome `none`; `no_link` is the retained name of the same result.
+        let outcome = match entry["outcome"].as_str().unwrap_or_default() {
+            "none" => "no_link",
+            other => other,
+        };
         let reason = entry["reason"].as_str().unwrap_or_default().trim();
         if reason.is_empty() || reason.chars().count() > 500 || reason.contains(['\r', '\n']) {
             bail!("Link disposition for `{at}` needs one reason line of at most 500 characters");
         }
+        if outcome == "linked_from" {
+            let from = entry["from"]
+                .as_str()
+                .context("a linked_from outcome needs the Card that holds the new sentence")?;
+            if !in_owned(from) {
+                bail!("Link disposition for `{at}` names the unowned source `{from}`");
+            }
+            if !written.contains_key(from) {
+                bail!("`{at}` is recorded as linked_from `{from}`, which this draft does not write");
+            }
+        } else if !["already_linked", "no_link"].contains(&outcome) {
+            bail!("Link disposition {index} must be already_linked, no_link, none or linked_from");
+        }
         if dispositions
-            .insert(at.to_string(), (outcome.to_string(), reason.to_string()))
+            .insert(at.to_string(), (outcome.to_string(), reason.to_string(), entry["from"].as_str().unwrap_or_default().to_string()))
             .is_some()
         {
             bail!("Link draft disposes `{at}` twice");
@@ -8375,21 +8513,36 @@ fn link_plan(owned: &[String], draft: &Value) -> Result<(Vec<Value>, Vec<Value>)
     }
     let mut outcomes = Vec::new();
     for at in owned {
+        let gap = gap_of(at);
         match (written.get(at), dispositions.get(at)) {
             (Some(index), None) => {
                 outcomes.push(json!({"at":at,"outcome":"linked","call":index}))
             }
-            (None, Some((outcome, reason))) => {
-                outcomes.push(json!({"at":at,"outcome":outcome,"reason":reason}))
+            (None, Some((outcome, reason, from))) => {
+                if outcome == "linked_from" {
+                    outcomes.push(json!({"at":at,"outcome":"linked_from","from":from,"reason":reason}))
+                } else {
+                    outcomes.push(json!({"at":at,"outcome":outcome,"reason":reason}))
+                }
             }
             (Some(_), Some(_)) => {
                 bail!("Link draft gives `{at}` both an owned paragraph and a disposition")
             }
-            (None, None) => bail!("Link draft has no outcome for the owned Card `{at}`"),
+            (None, None) => {
+                if gap.is_none() {
+                    // The frozen gap set excluded it: it already carries a valid semantic Link.
+                    outcomes.push(json!({"at":at,"outcome":"already_linked","reason":NO_GAP_REASON}));
+                } else {
+                    bail!("Link draft has no outcome for the gap Card `{at}`");
+                }
+            }
         }
     }
     Ok((calls, outcomes))
 }
+
+/// The reason recorded for an owned Card the frozen gap set excluded (AC01/AC07).
+const NO_GAP_REASON: &str = "no semantic gap: the Card already carries a valid kinded Link outside its own group";
 
 /// A Card's kinded Link targets, as the archive itself computes them: a Link
 /// whose Relation kind is not a plain `refers` statement.
@@ -8421,14 +8574,49 @@ fn paragraph_targets(text: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Every owned Card's required kinded Link, its receipt-owned paragraph and its
-/// changed-Card set. Missing or invented Card facts are refused, never skipped.
+/// Every gap Card's outcome, the receipt-owned paragraph it wrote, and its changed-Card set. A
+/// false claim is refused, never skipped: a written paragraph must carry a kinded Link outside the
+/// Card's own group, `already_linked` must be true, and `linked_from` must name a written Card
+/// whose paragraph links the gap Card.
 fn link_verify(
+    scope: &LinkScope,
     owned: &[String],
     outcomes: &[Value],
     receipts: &[Value],
     cards: &std::collections::BTreeMap<String, Value>,
 ) -> Result<(Vec<Value>, Vec<String>)> {
+    let own = |target: &str| owned.iter().any(|at| at == target);
+    let parent_of = |card: &Value| s(&card["parent_address"]);
+    // D119/D122: the Link must be kinded and name a Card outside the group, not the parent, and not
+    // a source place (the book Card or one of its anchors).
+    let closed_by = |card: &Value, targets: &[String]| -> Vec<String> {
+        let parent = parent_of(card);
+        let Ok(kinds) = kinded_links(card) else {
+            return Vec::new();
+        };
+        targets
+            .iter()
+            .filter(|target| {
+                kinds.contains(*target)
+                    && !ps::eq(target, &parent)
+                    && !link_gap::is_book_place(target)
+                    && !own(target)
+            })
+            .cloned()
+            .collect()
+    };
+    let anchor_position = |card: &Value| -> bool {
+        let paragraphs = link_gap::position_paragraphs(&s(&card["body"]));
+        paragraphs.len() == 1
+            && paragraph_targets(&paragraphs[0]).is_ok_and(|targets| {
+                targets.iter().any(|target| {
+                    !ps::eq(target, &scope.book)
+                        && !ps::eq(target, &scope.anchor)
+                        && !own(target)
+                })
+            })
+    };
+    let gap_of = |at: &str| scope.gaps.iter().find(|gap| gap.at == at);
     let mut detail = Vec::new();
     for outcome in outcomes {
         let at = field(outcome, "at")?;
@@ -8438,6 +8626,7 @@ fn link_verify(
         if card["workspace"] != "agent" {
             bail!("the owned Card `{at}` is not in the agent Workspace");
         }
+        let gap = gap_of(at);
         match field(outcome, "outcome")? {
             "linked" => {
                 let index = outcome["call"]
@@ -8459,6 +8648,12 @@ fn link_verify(
                 if !card["body"].as_str().unwrap_or_default().contains(text) {
                     bail!("the owned paragraph of `{at}` is absent from its persisted Card");
                 }
+                if at == scope.anchor && !text.starts_with(link_gap::POSITION_PREFIX) {
+                    bail!(
+                        "the anchor `{at}` owns its `{}` paragraph; the written sentence does not start with it",
+                        link_gap::POSITION_PREFIX
+                    );
+                }
                 let targets = paragraph_targets(text)?;
                 let kinds = kinded_links(card)?;
                 let kinded: Vec<String> = targets
@@ -8469,14 +8664,67 @@ fn link_verify(
                 if kinded.is_empty() {
                     bail!("the owned paragraph of `{at}` carries no kinded Link");
                 }
-                detail.push(json!({"at":at,"outcome":"linked","receipt":field(receipt,"op_key")?,"paragraph":text,"links":targets,"kinded":kinded}));
+                let closed = closed_by(card, &kinded);
+                if gap.is_some_and(|gap| {
+                    gap.reasons
+                        .iter()
+                        .any(|reason| reason == link_gap::NO_SEMANTIC_LINK)
+                }) && closed.is_empty()
+                {
+                    bail!(
+                        "the owned paragraph of `{at}` names no Card outside its own group; it does not close the semantic gap"
+                    );
+                }
+                detail.push(json!({"at":at,"outcome":"linked","receipt":field(receipt,"op_key")?,"paragraph":text,"links":targets,"kinded":kinded,"closed":closed}));
             }
             "already_linked" => {
-                let kinds = kinded_links(card)?.into_iter().collect::<Vec<_>>();
-                if kinds.is_empty() {
+                let is_anchor = at == scope.anchor;
+                let kinds: Vec<String> = kinded_links(card)?.into_iter().collect();
+                let closed = closed_by(card, &kinds);
+                if is_anchor {
+                    if !anchor_position(card) {
+                        bail!("the anchor `{at}` is recorded as already_linked but holds no linked `{}` paragraph", link_gap::POSITION_PREFIX);
+                    }
+                } else if kinds.is_empty() {
                     bail!("`{at}` is recorded as already_linked but carries no kinded Link");
                 }
-                detail.push(json!({"at":at,"outcome":"already_linked","reason":outcome["reason"],"kinds":kinds}));
+                if gap.is_some_and(|gap| {
+                    gap.reasons
+                        .iter()
+                        .any(|reason| reason == link_gap::NO_SEMANTIC_LINK)
+                }) && closed.is_empty()
+                    && !is_anchor
+                {
+                    bail!("`{at}` is recorded as already_linked but carries no kinded Link outside its own group");
+                }
+                detail.push(json!({"at":at,"outcome":"already_linked","reason":outcome["reason"],"kinds":kinds,"closed":closed}));
+            }
+            "linked_from" => {
+                let from = field(outcome, "from")?;
+                let source = cards
+                    .get(from)
+                    .with_context(|| format!("the source Card `{from}` of `{at}` is missing"))?;
+                let source_outcome = outcomes
+                    .iter()
+                    .find(|other| {
+                        field(other, "at").is_ok_and(|other_at| other_at == from)
+                            && field(other, "outcome").is_ok_and(|kind| kind == "linked")
+                    })
+                    .with_context(|| format!("`{at}` is recorded as linked_from `{from}`, which the plan does not write"))?;
+                let index = source_outcome["call"]
+                    .as_u64()
+                    .context("missing Link call index")? as usize;
+                let receipt = receipts
+                    .get(index)
+                    .with_context(|| format!("missing the owned paragraph receipt of `{from}`"))?;
+                let text = field(&receipt["result"]["owned_paragraph"], "text")?;
+                if !paragraph_targets(text)?.iter().any(|target| target == at) {
+                    bail!("`{at}` is recorded as linked_from `{from}`, whose owned paragraph does not link it");
+                }
+                if !kinded_links(source)?.contains(at) {
+                    bail!("`{at}` is recorded as linked_from `{from}`, whose Link to it is not kinded");
+                }
+                detail.push(json!({"at":at,"outcome":"linked_from","from":from,"reason":outcome["reason"]}));
             }
             "no_link" => detail.push(json!({"at":at,"outcome":"no_link","reason":outcome["reason"]})),
             other => bail!("unknown Link outcome `{other}`"),
@@ -8719,7 +8967,7 @@ fn link_finish(
     let unit = link_unit(number);
     finish_claim(p, &unit, token)?;
     let _guard = unit_guard(p, &unit)?;
-    let (claimed, _progress, run, done) = finish_claim(p, &unit, token)?;
+    let (claimed, progress, run, done) = finish_claim(p, &unit, token)?;
     let inputs = frozen_inputs(p, &unit)?;
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Link unit input hash mismatch");
@@ -8733,6 +8981,9 @@ fn link_finish(
         }
         return Ok(result);
     }
+    // The frozen gap scope: only these Cards may receive a Link. It is read from the start's
+    // retained evidence when one published it, else classified from the same archive read.
+    let scope = link_scope(p, zt, number, &owned, &progress)?;
     let path = std::fs::canonicalize(draft_path).context("missing Link draft JSON")?;
     if !path.starts_with(&p.out) {
         bail!("Link draft binding path mismatch");
@@ -8756,10 +9007,10 @@ fn link_finish(
     {
         bail!("unknown Link draft field");
     }
-    let (calls, outcomes) = link_plan(&owned, &draft)?;
+    let (calls, outcomes) = link_plan(&owned, &scope.gaps, &draft)?;
     let run_id = run.as_str().context("missing run id")?;
     let prefix = format!("{run_id}/link-g{number:03}/1/apply");
-    let plan = json!({"schema_version":1,"kind":"link_plan","unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"operation_prefix":prefix,"owned":owned,"outcomes":outcomes,"calls":calls});
+    let plan = json!({"schema_version":1,"kind":"link_plan","unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"operation_prefix":prefix,"owned":owned,"gap":scope.gaps.iter().map(link_gap::Gap::json).collect::<Vec<_>>(),"skipped":scope.skipped,"archive_revision":scope.revision,"outcomes":outcomes,"calls":calls});
     let accepted_path = p.out.join(format!("link-accepted-g{number:03}.json"));
     if accepted_path.exists() && canon::read_json(&accepted_path.to_string_lossy())? != plan {
         bail!("accepted_plan_changed: the Link draft differs from the immutable accepted plan");
@@ -8803,7 +9054,7 @@ fn link_finish(
             .clone(),
         None => Vec::new(),
     };
-    let (detail, draft_changed) = link_verify(&owned, &outcomes, &draft_receipts, &cards)?;
+    let (detail, draft_changed) = link_verify(&scope, &owned, &outcomes, &draft_receipts, &cards)?;
     let self_check = link_self_check(
         &owned
             .iter()
@@ -8815,8 +9066,23 @@ fn link_finish(
         bail!("read_view_changed: Link draft check");
     }
     check_file(&draft_record, "Link draft")?;
+    let evidence = json!({
+        "gap": scope.gaps.iter().map(link_gap::Gap::json).collect::<Vec<_>>(),
+        "skipped": scope.skipped,
+        "scope_revision": scope.revision,
+        "counts": {
+            "owned": owned.len(),
+            "gaps": scope.gaps.len(),
+            "skipped": scope.skipped.len(),
+            "linked": detail.iter().filter(|outcome| outcome["outcome"] == "linked").count(),
+            "linked_from": detail.iter().filter(|outcome| outcome["outcome"] == "linked_from").count(),
+            "already_linked": detail.iter().filter(|outcome| outcome["outcome"] == "already_linked").count(),
+            "no_link": detail.iter().filter(|outcome| outcome["outcome"] == "no_link").count(),
+        },
+        "quality": {"rules": LINK_RULES, "faults": self_check["count"], "checked": self_check["checked"]},
+    });
     if check_only {
-        return Ok(json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"check_only":true,"applied":false,"complete":true,"owned":owned,"outcomes":detail,"changed":draft_changed,"self_check":self_check,"archive_revision":read.archive_revision}));
+        return Ok(json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"check_only":true,"applied":false,"complete":true,"owned":owned,"outcomes":detail,"changed":draft_changed,"self_check":self_check,"archive_revision":read.archive_revision,"gap":evidence["gap"],"skipped":evidence["skipped"],"counts":evidence["counts"],"quality":evidence["quality"]}));
     }
     renew(p, &unit, token)?;
     let accepted = accept_plan(&accepted_path, &plan)?;
@@ -8839,7 +9105,7 @@ fn link_finish(
             bail!("the persisted Link unit is missing its owned Card `{at}`");
         }
     }
-    let (detail, changed) = link_verify(&owned, &outcomes, &receipts, &cards)?;
+    let (detail, changed) = link_verify(&scope, &owned, &outcomes, &receipts, &cards)?;
     let self_check = link_self_check(
         &owned
             .iter()
@@ -8872,7 +9138,7 @@ fn link_finish(
             &json!({"schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,"plan_hash":plan_hash,"rules":LINK_RULES,"self_check":self_check}),
         )?,
     )?;
-    let result = json!({"schema_version":1,"kind":"link_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":claimed.input_hash,"unit_input_hash":claimed.input_hash,"plan_hash":plan_hash,"draft":draft_record,"disposition":if calls.is_empty(){"no_link"}else{"linked"},"owned":owned,"outcomes":detail,"changed":changed,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"self_check":self_check,"files":{"accepted":accepted,"coverage":coverage,"self_check":check_record},"archive_revision":revision});
+    let result = json!({"schema_version":1,"kind":"link_completion","unit":unit,"token":token,"state":"done","complete":true,"applied":!calls.is_empty(),"reused":false,"input_hash":claimed.input_hash,"unit_input_hash":claimed.input_hash,"plan_hash":plan_hash,"draft":draft_record,"disposition":if calls.is_empty(){"no_link"}else{"linked"},"owned":owned,"outcomes":detail,"changed":changed,"card_fingerprints":card_fingerprints,"receipt_keys":receipt_keys,"self_check":self_check,"files":{"accepted":accepted,"coverage":coverage,"self_check":check_record},"archive_revision":revision,"gap":evidence["gap"],"skipped":evidence["skipped"],"counts":evidence["counts"],"quality":evidence["quality"]});
     let completion = publish(
         &p.out.join(format!("link-completion-g{number:03}.json")),
         &serde_json::to_string_pretty(&result)?,
@@ -8948,6 +9214,211 @@ fn link_finish(
     Ok(result)
 }
 
+/// The start of one claimed Link unit: it freezes the prepared gap scope against the unit's owned
+/// receipts, writes the one job that writes the draft, and hands the chain the exact binding. An
+/// empty gap set starts no provider run: the empty draft it publishes completes through the same
+/// checked `link-finish`, and the stage records the group as skipped (AC07).
+fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
+    let unit = link_unit(number);
+    let (claimed, mut progress, run, done) = finish_claim(p, &unit, token)?;
+    let inputs = frozen_inputs(p, &unit)?;
+    if canon::hash_value(&inputs) != claimed.input_hash {
+        bail!("Link unit input hash mismatch");
+    }
+    let owned = link_owned(p, &inputs, number)?;
+    let id = p.contract["groups"]
+        .as_array()
+        .context("incomplete prepared groups")?
+        .iter()
+        .find(|group| group["n"].as_i64() == Some(number as i64))
+        .and_then(|group| group["id"].as_str())
+        .with_context(|| format!("the prepared group {number} has no id"))?
+        .to_string();
+    let gap_path = p.out.join(format!("link-gap-{id}.json"));
+    let (gap_value, gap_record) = json_artifact(&gap_path).with_context(|| {
+        format!(
+            "missing the prepared Link gap scope {}; run prepare-link first",
+            gap_path.display()
+        )
+    })?;
+    let group = &gap_value["group"];
+    let mut frozen: Vec<String> = ps::ps_items(&group["owned"]).iter().map(s).collect();
+    let mut here: Vec<String> = owned.clone();
+    ps::ps_sort(&mut frozen, |a, b| ps::culture_cmp(a, b));
+    ps::ps_sort(&mut here, |a, b| ps::culture_cmp(a, b));
+    if frozen != here {
+        bail!("the prepared Link gap scope does not match the unit's frozen owned enumeration; rerun prepare-link");
+    }
+    let gaps = ps::ps_items(&group["gaps"]);
+    let skipped: Vec<String> = ps::ps_items(&group["skipped"]).iter().map(s).collect();
+    let draft_path = p.out.join(format!("link-draft-g{number:03}.json"));
+    let prefix = p.out.join("link-prefix.md");
+    let gap_doc = p.out.join(format!("link-{id}.md"));
+    let job_file = p.out.join(format!("link-job-g{number:03}.md"));
+    let empty = gaps.is_empty();
+    // A group with no gap still completes its Link unit: the empty draft is bound to this claim
+    // and checked by the same `link-finish`, which records every owned Card as already linked.
+    let draft_record = if empty {
+        Some(publish(
+            &draft_path,
+            &serde_json::to_string_pretty(&json!({
+                "schema_version":1,"unit":unit,"token":token,"input_hash":claimed.input_hash,
+                "calls":[],"dispositions":[],
+            }))?,
+        )?)
+    } else {
+        None
+    };
+    let cards = zt.cards(&owned, "text")?;
+    let mut fingerprints: BTreeMap<String, String> = BTreeMap::new();
+    for card in &cards.cards {
+        fingerprints.insert(
+            field(card, "address")?.to_string(),
+            crate::calls::authored_fingerprint(card),
+        );
+    }
+    if zt.cards(&[], "text")?.archive_revision != cards.archive_revision {
+        bail!("read_view_changed: Link start facts");
+    }
+    let self_check = format!(
+        "zt-digest link-finish -Out \"{}\" -Group {number} -Token {token} -Draft \"{}\" -CheckOnly",
+        p.out.display(),
+        draft_path.display()
+    );
+    let mut body = String::new();
+    let mut line = |text: &str| {
+        body.push_str(text);
+        body.push('\n');
+    };
+    line(&format!("# 第 {number} 组的连接任务"));
+    line("");
+    line(&format!("本组拥有 {} 张卡片，语义缺口 {} 张；只改下面列出的缺口卡片（AC01、AC02）。", owned.len(), gaps.len()));
+    line(&format!("- 共享连接规则：`{}`（先读它）", prefix.display()));
+    line(&format!("- 本组缺口清单与卡片正文：`{}`", gap_doc.display()));
+    line(&format!("- 只写一个 JSON 草稿：`{}`，绑定字段原样保留。", draft_path.display()));
+    line(&format!("- 绑定字段：schema_version=1，unit=`{unit}`，token={token}，input_hash=`{}`。", claimed.input_hash));
+    line("");
+    line("## 草稿格式");
+    line("");
+    line("```json");
+    line("{\"schema_version\":1,\"unit\":\"…\",\"token\":0,\"input_hash\":\"…\",\"calls\":[],\"dispositions\":[]}");
+    line("```");
+    line("");
+    line("- `calls`：每项 `{\"tool\":\"edit_card\",\"arguments\":{\"at\":\"缺口卡片地址\",\"base_fingerprint\":\"该卡当前指纹\",\"owned_paragraph\":{\"text\":\"一句带关系词的链接句\"}}}`。");
+    line("- `dispositions`：每项 `{\"at\":\"缺口卡片地址\",\"outcome\":\"already_linked|no_link|linked_from\",\"reason\":\"一句话理由\"}`；`linked_from` 还要加 `\"from\":\"写入新句的缺口卡片地址\"`。");
+    line("- 每张缺口卡片恰好一个结果：写入一句说明关系的链接句，或记 `no_link`（即 none）并写明理由。没有真实关系时不要编造。");
+    line(&format!("- 锚点：它的 `{}` 段由这里写（段落以它开头）。本组锚点状态：{}。", link_gap::POSITION_PREFIX, group["position"].as_str().unwrap_or("absent")));
+    line("");
+    line("## 缺口卡片");
+    line("");
+    for gap in &gaps {
+        let at = s(&gap["at"]);
+        let fingerprint = fingerprints.get(&at).cloned().unwrap_or_default();
+        line(&format!("- `{at}`（{}）base_fingerprint=`{fingerprint}`", ps::ps_items(&gap["reasons"]).iter().map(s).collect::<Vec<_>>().join("、")));
+    }
+    line("");
+    line(&format!("SELF-CHECK: {self_check}"));
+    let job_record = publish(&job_file, &body)?;
+    let expected = if empty { 0 } else { 1 };
+    let jobs = if empty {
+        json!([])
+    } else {
+        json!([{
+            "id": format!("link-g{number:03}-t{token}"),
+            "kind": "link",
+            "files": [
+                prefix.to_string_lossy(),
+                gap_doc.to_string_lossy(),
+                job_file.to_string_lossy(),
+            ],
+            "prompt": format!("按任务说明把连接草稿写入 {}，保留绑定字段。", draft_path.display()),
+            "output": draft_path.to_string_lossy(),
+            "permissions": {"archive_read": true, "archive_write": false},
+        }])
+    };
+    let no_op = if empty {
+        json!({"reason":"no_semantic_gaps","gaps":0,"skipped":skipped.len()})
+    } else {
+        Value::Null
+    };
+    let job = json!({
+        "schema_version": 1, "unit": unit, "token": token, "run_id": run,
+        "unit_input_hash": claimed.input_hash, "input_hash": claimed.input_hash,
+        "mode": "draft_only", "expected_jobs": expected, "draft": draft_path.to_string_lossy(),
+        "gap": gaps, "skipped": skipped, "counts": group["counts"], "position": group["position"],
+        "no_op": no_op, "done": done,
+        "artifacts": {"job": job_record, "gap": gap_record, "draft": draft_record},
+        "jobs": jobs,
+    });
+    let record = publish(
+        &p.out.join(format!("link-start-g{number:03}.json")),
+        &serde_json::to_string_pretty(&job)?,
+    )?;
+    progress["link_start"] = json!({
+        "token": token, "input_hash": claimed.input_hash, "job": record, "gap": gap_record,
+    });
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, &unit, token)?;
+    let lease_until = now_seconds() + lease_seconds();
+    tx.execute(
+        "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress), lease_until],
+    )?;
+    event(
+        &tx,
+        &unit,
+        Some(&claimed.owner),
+        Some(token),
+        "link_started",
+        &json!({"input_hash":claimed.input_hash,"job":record,"gap":gap_record,"expected_jobs":expected,"gaps":ps::ps_items(&group["gaps"]).len(),"skipped":skipped.len(),"lease_until":lease_until}),
+    )?;
+    tx.commit()?;
+    Ok(json!({
+        "schema_version":1,"unit":unit,"token":token,"run_id":run,
+        "input_hash":claimed.input_hash,"unit_input_hash":claimed.input_hash,
+        "job": record["path"], "draft": draft_path.to_string_lossy(),
+        "expected_jobs": expected, "no_op": no_op, "done": done,
+        "gap": ps::ps_items(&group["gaps"]), "skipped": skipped,
+        "position": group["position"], "counts": group["counts"],
+        "lease_until": lease_until,
+    }))
+}
+
+pub fn link_start_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, u64, i64)> {
+        let a = Args::parse(argv, &["Out", "Group", "Token"], &[])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let group = a
+            .required("Group")?
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Group must be positive")?;
+        let token = a
+            .required("Token")?
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .context("-Token must be positive")?;
+        Ok((a.str("Out"), group, token))
+    })();
+    let (out, group, token) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest link-start: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = crate::zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = link_start(&p, &mut zt, group, token)?;
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
+}
 pub fn link_finish_cli(argv: &[String]) -> Result<i32> {
     let parsed = (|| -> Result<(String, u64, i64, String, bool)> {
         let a = Args::parse(argv, &["Out", "Group", "Token", "Draft"], &["CheckOnly"])?;
@@ -15233,4 +15704,8 @@ mod tests {
         );
     }
 }
+
+
+
+
 

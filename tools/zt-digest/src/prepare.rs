@@ -42,6 +42,7 @@ use crate::args::Args;
 use crate::calls;
 use crate::card::relatedness::Relatedness;
 use crate::figures::{self, Figure};
+use crate::link_gap;
 use crate::ps::{self, CiMap, NL, culture_cmp, eq, is_in, join_path, key as ci, len16, s};
 use crate::snapshot;
 use crate::util;
@@ -49,7 +50,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -870,9 +871,6 @@ impl<V> ByAddress<V> {
     fn get(&self, k: &str) -> Option<&V> {
         self.0.get(&ci(k))
     }
-    fn has(&self, k: &str) -> bool {
-        self.0.contains_key(&ci(k))
-    }
     fn set(&mut self, k: &str, v: V) {
         self.0.insert(ci(k), v);
     }
@@ -906,6 +904,17 @@ fn digest_states(staging: &str) -> Result<Option<std::collections::BTreeMap<i64,
 }
 
 /// `zt-digest prepare-link -Staging <folder> [-TitleChars 40]` (prepare-link-pass.ps1).
+///
+/// Reads the staging manifest and the archive, then computes each completed group's semantic gap
+/// set from its own write receipts (§5.5; D118–D124, #110). Only the gap set becomes a Link job:
+/// an Idea Card with no valid kinded Link to another group or earlier material, a substantive
+/// orphan, and the anchor whose `在全书中的位置` paragraph needs writing. A group whose
+/// `digest/gNNN@R` unit is not `done` gets no Link job and an empty allow-list (#92).
+///
+/// Ownership is receipt-based: a Card is in a group's scope exactly when its own
+/// `owned-gNN.txt` names it, and the anchor. No body text, section number, older Card of the same
+/// tree, or inferred address ever widens that scope (AC02, AC03). A Card two groups' receipts name
+/// is a preparation fault, and so is a receipt that names a Card the archive does not hold.
 pub fn link_cli(argv: &[String]) -> Result<i32> {
     let params = ["Staging", "TitleChars"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
@@ -943,90 +952,63 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let states = digest_states(&staging)?;
     let digest_state = if states.is_some() { "ledger" } else { "receipts" };
 
-    // --- ownership ---
-    let agent_cards: Vec<Value> = details
-        .iter()
-        .filter(|t| eq(&s(&t["workspace"]), "agent"))
-        .flat_map(|t| ps::ps_items(&t["cards"]))
-        .filter(|c| !eq(&s(&c["kind"]), "topic"))
-        .collect();
-    // Ranking uses complete agent bodies, but the previous compact excerpts
-    // for human Cards and Topic roots. All are bulk inputs to the same process.
-    let addresses: Vec<String> = details.iter().flat_map(|tree|ps::ps_items(&tree["cards"]))
-        .map(|c|s(&c["address"])).collect();
-    let read=zt.cards(&addresses,"text")?;
-    let title_revision=details.first().and_then(|tree|tree["archive_revision"].as_u64());
-    if title_revision!=Some(read.archive_revision) {bail!("incomplete prepare-link input: changing view between titles and Card bodies");}
-    let mut bodies: ByAddress<Value> = ByAddress::new();
-    for card in read.cards {
-        bodies.set(&s(&card["address"]),card);
+    // --- every Card's authored text facts, once: bodies, kind facts, and the candidate catalogue ---
+    let addresses: Vec<String> = details.iter().flat_map(|tree| ps::ps_items(&tree["cards"]))
+        .map(|c| s(&c["address"])).collect();
+    let read = zt.cards(&addresses, "text")?;
+    let title_revision = details.first().and_then(|tree| tree["archive_revision"].as_u64());
+    if title_revision != Some(read.archive_revision) {
+        bail!("incomplete prepare-link input: changing view between titles and Card bodies");
     }
-    if bodies.0.len() != addresses.len() {
-        bail!("read {} of {} required Cards", bodies.0.len(), addresses.len());
+    let mut bodies: BTreeMap<String, Value> = BTreeMap::new();
+    for card in &read.cards {
+        bodies.insert(ps::key(&s(&card["address"])), card.clone());
     }
-    let mut owner: ByAddress<i64> = ByAddress::new();
-    let mut owner_keys: Vec<String> = Vec::new();
-    let mut set_owner = |owner: &mut ByAddress<i64>, address: &str, n: i64| {
-        if !owner.has(address) {
-            owner_keys.push(address.to_string());
-        }
-        owner.set(address, n);
-    };
-    let mut logged: HashSet<i64> = HashSet::new();
+    if bodies.len() != addresses.len() {
+        bail!("read {} of {} required Cards", bodies.len(), addresses.len());
+    }
+    // The archive-wide facts the gap classifier reads: every authored Link, both registers, and the
+    // Literature trees with their anchors.
+    let links_view = zt.call("list_links", json!({}))?;
+    let mut register_views = Vec::new();
+    for workspace in ["agent", "human"] {
+        register_views.push(zt.call(
+            "get_register",
+            json!({"workspace": workspace, "entry_offset": 0, "entry_limit": 1}),
+        )?);
+    }
+    let archive = link_gap::Archive::from_views(&details, &links_view, &register_views)?;
+    let facts = link_gap::Facts::new(&key, bodies, archive, read.archive_revision);
+    if zt.cards(&[], "text")?.archive_revision != read.archive_revision {
+        bail!("incomplete prepare-link input: changing view while the gap scope is read");
+    }
+
+    // --- ownership: the group's own receipts, and its anchor. Nothing is inferred ---
+    let mut owners: Vec<link_gap::Group> = Vec::new();
     for group in &groups {
         let n = ps::int(&group["n"])?;
-        let log = join_path(&staging, &format!("owned-{}.txt", s(&group["id"])));
+        let id = s(&group["id"]);
+        let log = join_path(&staging, &format!("owned-{id}.txt"));
+        let mut owned = vec![s(&group["anchor"])];
         if Path::new(&log).exists() {
-            logged.insert(n);
             for line in ps::read_lines(&log)? {
                 let line = line.trim();
-                if !line.is_empty() && bodies.has(line) {
-                    set_owner(&mut owner, line, n);
+                if line.is_empty() {
+                    continue;
+                }
+                if !facts.cards.contains_key(&ps::key(line)) {
+                    bail!("incomplete prepare-link input: the receipt of group {n} names the missing Card `{line}`");
+                }
+                if !owned.iter().any(|at| eq(at, line)) {
+                    owned.push(line.to_string());
                 }
             }
         }
-        set_owner(&mut owner, &s(&group["anchor"]), n);
+        owners.push(link_gap::Group { n, id, anchor: s(&group["anchor"]), owned });
     }
-    let in_anchor = Regex::new(&format!(r"(?i)^{}/(\d+)\|", regex::escape(&key)))?;
-    let source_mark = Regex::new(r"(?i)§|来源")?;
-    for card in &agent_cards {
-        let address = s(&card["address"]);
-        if owner.has(&address) {
-            continue;
-        }
-        let full = bodies.get(&address).cloned().unwrap_or(Value::Null);
-        let body = s(&full["body"]);
-        // Hub Cards belong to the hub stage, and structure Cards (long lists of Links) to the
-        // coordinator, not to a group.
-        if eq(&s(&full["type"]), "hub") {
-            continue;
-        }
-        let outbound=match full["outbound_count"].as_u64() {
-            Some(count)=>count,
-            None=>bail!("incomplete prepare-link input: missing outbound count for `{address}`"),
-        };
-        if outbound >= 8 {
-            continue;
-        }
-        // Only the digested book's own Literature tree (`<key>/<n>…`) is assigned by address. A
-        // `§1.2`-style reference in another Card's body is not a receipt: the group's own writes
-        // are named by its `owned-gNN.txt` log, so no card of another book or of an existing Topic
-        // tree is ever handed to a link job (#92).
-        let mut n: Option<i64> = None;
-        if let Some(c) = in_anchor.captures(&address)
-            && source_mark.is_match(&body)
-        {
-            n = Some(ps::int(&json!(c[1].to_string()))?);
-        }
-        if let Some(n) = n
-            && n != 0
-            && !logged.contains(&n)
-        {
-            set_owner(&mut owner, &address, n);
-        }
-    }
+    let scopes = link_gap::classify(&facts, &owners)?;
 
-    // --- candidate targets: the most similar Cards outside the owner's group ---
+    // --- candidate targets: the most similar Cards outside the gap Card's own group ---
     let mut titles: ByAddress<String> = ByAddress::new();
     let mut cards_by_address: ByAddress<Value> = ByAddress::new();
     let mut documents: Vec<(String, String)> = Vec::new();
@@ -1035,33 +1017,48 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
             let address = s(&card["address"]);
             let title = s(&card["title"]);
             titles.set(&address, title.clone());
-            let full=bodies.get(&address).with_context(||format!("incomplete candidate input: missing `{address}`"))?;
-            let content=if eq(&s(&card["workspace"]),"agent") && !eq(&s(&card["kind"]),"topic") {s(&full["body"])} else {s(&full["excerpt"])};
-            let text=format!("{title} {title} {content}");
+            let full = facts.cards.get(&ps::key(&address))
+                .with_context(|| format!("incomplete candidate input: missing `{address}`"))?;
+            let content = if eq(&s(&card["workspace"]), "agent") && !eq(&s(&card["kind"]), "topic") {
+                s(&full["body"])
+            } else {
+                s(&full["excerpt"])
+            };
+            let text = format!("{title} {title} {content}");
             cards_by_address.set(&address, card);
             documents.push((address, text));
         }
     }
     let card_model = Relatedness::new(&documents, 80);
+    let group_owns = |n: i64, target: &str| -> bool {
+        owners.iter().any(|owner| owner.n == n && owner.owned.iter().any(|at| eq(at, target)))
+    };
     let candidates_of = |address: &str, n: i64| -> Vec<String> {
         let mut linked: HashSet<String> = HashSet::new();
-        if let Some(full) = bodies.get(address) {
+        if let Some(full) = facts.cards.get(&ps::key(address)) {
             for target in ps::each(&full["links"]) {
-                linked.insert(ci(&s(&target)));
+                linked.insert(ps::key(&s(&target)));
             }
         }
-        card_model.find(address, 5, |id| owner.get(id) == Some(&n) || linked.contains(&ci(id)) || ps::like(id, "*/0"))
+        card_model.find(address, 5, |id| {
+            group_owns(n, id)
+                || linked.contains(&ps::key(id))
+                || ps::like(id, "*/0")
+                || link_gap::is_book_place(id)
+        })
     };
 
-    // --- per-group files ---
+    // --- per-group files, and the public scope evidence ---
     let mut summary: Vec<Value> = Vec::new();
     let mut blocked: Vec<Value> = Vec::new();
+    let mut pending: Vec<i64> = Vec::new();
+    let mut no_gap: Vec<i64> = Vec::new();
+    let (mut owned_total, mut gap_total, mut skipped_total) = (0usize, 0usize, 0usize);
     for group in &groups {
         let n = ps::int(&group["n"])?;
         let id = s(&group["id"]);
-        let mut mine: Vec<String> = owner_keys.iter().filter(|k| owner.get(k) == Some(&n)).cloned().collect();
-        ps::ps_sort(&mut mine, |a, b| culture_cmp(a, b));
-        // The workflow writes linked-gNN.txt when a group's link pass succeeds; a rerun skips it.
+        let scope = scopes.iter().find(|scope| scope.n == n)
+            .with_context(|| format!("the gap scope of group {n} is missing"))?;
         let done = Path::new(&join_path(&staging, &format!("linked-{id}.txt"))).exists();
         // #92: a group whose digest did not complete gets no link job. Its write fence is an empty
         // allow-list, so a job started by mistake could change no Card at all.
@@ -1075,81 +1072,123 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
                 (receipt, if receipt { "receipt".to_string() } else { "unverified".to_string() })
             }
         };
+        owned_total += scope.owned.len();
+        skipped_total += scope.skipped.len();
         let allow = join_path(&staging, &format!("allow-{id}.txt"));
-        if completed {
-            write(&allow, &format!("{}\n", mine.join("\n")))?;
-        } else {
+        let headings = ps::each(&group["headings"]).iter().map(|h| s(h)).collect::<Vec<_>>().join("；");
+        if !completed {
             write(&allow, "")?;
             blocked.push(json!({
                 "n":n, "unit":format!("digest/{id}@1"), "state":state,
                 "reason":format!("the digest unit digest/{id}@1 is {state}, not done; this group gets no link job"),
             }));
-        }
-        let section_list = ps::each(&group["sections"])
-            .iter()
-            .map(|x| format!("`{}`", join_path(&staging, &format!("sections\\{}", s(x)))))
-            .collect::<Vec<_>>()
-            .join("、");
-        let headings = ps::each(&group["headings"]).iter().map(|h| s(h)).collect::<Vec<_>>().join("；");
-        let mut text = String::new();
-        let mut line = |t: &str| {
-            text.push_str(t);
-            text.push_str(NL);
-        };
-        if !completed {
+            let mut text = String::new();
+            let mut line = |t: &str| {
+                text.push_str(t);
+                text.push_str(NL);
+            };
             line(&format!("# 你的组：第 {n} 组（digest 未完成，本次不做连接）"));
             line("");
             line(&format!("- 状态：本组的 digest 单元 `digest/{id}@1` 是 `{state}`，不是 `done`。"));
             line("- 本次没有可连接的卡片：允许清单为空，写入命令不能改动任何卡片。等该组 digest 完成后重新准备连接。");
             write(&join_path(&staging, &format!("link-{id}.md")), &text)?;
-            summary.push(json!({"n":n,"owned":mine.len(),"done":done,"digest":state,"blocked":true}));
+            summary.push(json!({"n":n,"id":id,"owned":scope.owned.len(),"done":done,"digest":state,"blocked":true,"gaps":scope.gaps.len(),"skipped":scope.skipped.len(),"position":scope.position}));
             continue;
         }
-        line(&format!("# 你的组：第 {n} 组"));
+        let gap_addresses: Vec<String> = scope.gaps.iter().map(|gap| gap.at.clone()).collect();
+        gap_total += gap_addresses.len();
+        // The write fence is the gap set: only these Cards receive a Link job.
+        write(&allow, &format!("{}\n", gap_addresses.join("\n")))?;
+        let mut candidates: Map<String, Value> = Map::new();
+        for at in &gap_addresses {
+            candidates.insert(at.clone(), json!(candidates_of(at, n)));
+        }
+        write(
+            &join_path(&staging, &format!("link-gap-{id}.json")),
+            &serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "book": key,
+                "archive_revision": read.archive_revision,
+                "group": scope.json(),
+                "candidates": candidates,
+            }))?,
+        )?;
+        let mut text = String::new();
+        let mut line = |t: &str| {
+            text.push_str(t);
+            text.push_str(NL);
+        };
+        line(&format!("# 第 {n} 组的连接缺口（digest 已完成）"));
         line("");
-        line(&format!("- 锚点卡片：`{}`；小节：{headings}", s(&group["anchor"])));
-        line(&format!("- 你这一部分的原文：{section_list}"));
-        line(&format!("- 全书索引：`{}`；全部卡片索引：`{cards_all}`", s(&manifest["index"])));
-        line(&format!("- 写入命令：`... | zt-digest call - -Allow \"{allow}\"`"));
-        // The link writer answers for its new Links and their sentences, not for the rest of the Card.
-        line(&format!("- SELF-CHECK: `zt-check --log \"{allow}\" --cards \"\" --book {key} --rules L1,L2,R2,R3,R4,R5,R7,R9`"));
-        line(&format!("- 你负责的卡片（{} 张）：", mine.len()));
+        line(&format!("- 锚点卡片：`{}`；小节：{headings}", scope.anchor));
+        line(&format!("- 本组拥有的卡片 {} 张，其中语义缺口 {} 张；已有跨部分关系的卡片 {} 张（不要动）。", scope.owned.len(), scope.gaps.len(), scope.skipped.len()));
+        line(&format!("- 锚点的“在全书中的位置”段：{}。", match scope.position.as_str() {
+            "missing" => "缺失，本组要写这一段",
+            "duplicate" => "有不止一段，本次只记录原因，不追加第二段",
+            "unlinked" => "只有一段但没有链接到其他部分，本次记录原因，不追加第二段",
+            _ => "已有一段并链接到其他部分，不要追加",
+        }));
+        line(&format!("- 原文：{}；全书索引：`{}`；全部卡片索引：`{cards_all}`", ps::each(&group["sections"]).iter().map(|x| format!("`{}`", join_path(&staging, &format!("sections\\{}", s(x))))).collect::<Vec<_>>().join("、"), s(&manifest["index"])));
         line("");
-        for address in &mine {
-            let card = bodies.get(address).cloned().unwrap_or(Value::Null);
-            line(&format!("### `{address}` {}", s(&card["title"])));
-            line("");
-            line(s(&card["body"]).trim());
-            line("");
-            let candidates: Vec<String> = candidates_of(address, n)
-                .iter()
-                .map(|c| {
-                    let mark = cards_by_address.get(c).map(snapshot::mark).unwrap_or_default();
-                    let title = titles.get(c).cloned().unwrap_or_default();
-                    format!("`{c}`{mark} {}", snapshot::cut(&title, title_chars))
-                })
-                .collect();
-            if !candidates.is_empty() {
-                line(&format!("> 候选目标（用词最接近、尚未链接、属于其他部分）：{}", candidates.join("；")));
+        if gap_addresses.is_empty() {
+            line("本组没有语义缺口：所有卡片都已有有效的跨部分关系。写入命令的允许清单为空，不需要模型任务。");
+        } else {
+            for gap in &scope.gaps {
+                let card = facts.cards.get(&ps::key(&gap.at)).cloned().unwrap_or(Value::Null);
+                line(&format!("### `{}` {}", gap.at, s(&card["title"])));
                 line("");
+                line(&format!("缺口：{}", gap.reasons.join("、")));
+                line("");
+                line(s(&card["body"]).trim());
+                line("");
+                let list: Vec<String> = ps::ps_items(&candidates.get(&gap.at).cloned().unwrap_or_else(|| json!([])))
+                    .iter()
+                    .map(|c| {
+                        let address = s(c);
+                        let mark = cards_by_address.get(&address).map(snapshot::mark).unwrap_or_default();
+                        let title = titles.get(&address).cloned().unwrap_or_default();
+                        format!("`{address}`{mark} {}", snapshot::cut(&title, title_chars))
+                    })
+                    .collect();
+                if !list.is_empty() {
+                    line(&format!("> 候选目标（用词最接近、尚未链接、属于其他部分）：{}", list.join("；")));
+                    line("");
+                }
             }
         }
         write(&join_path(&staging, &format!("link-{id}.md")), &text)?;
-        summary.push(json!({"n":n,"owned":mine.len(),"done":done,"digest":state,"blocked":false}));
+        if !done {
+            if gap_addresses.is_empty() {
+                no_gap.push(n);
+            } else {
+                pending.push(n);
+            }
+        }
+        summary.push(json!({"n":n,"id":id,"owned":scope.owned.len(),"done":done,"digest":state,"blocked":false,"gaps":gap_addresses.len(),"skipped":scope.skipped.len(),"position":scope.position}));
     }
-    let unowned = agent_cards.iter().filter(|c| !owner.has(&s(&c["address"]))).count();
-    let pending: Vec<Value> = summary
+    let owned_keys: HashSet<String> = owners.iter().flat_map(|group| group.owned.iter().map(|at| ps::key(at))).collect();
+    let unowned = details
         .iter()
-        .filter(|g| g["done"] != json!(true) && g["blocked"] != json!(true))
-        .map(|g| g["n"].clone())
-        .collect();
+        .filter(|tree| eq(&s(&tree["workspace"]), "agent"))
+        .flat_map(|tree| ps::ps_items(&tree["cards"]))
+        .filter(|card| !eq(&s(&card["kind"]), "topic"))
+        .filter(|card| !owned_keys.contains(&ps::key(&s(&card["address"]))))
+        .count();
     util::print_line(&ps::json_compact(&json!({
         "pending": pending,
+        "no_gap": no_gap,
         "blocked": blocked,
         "groups": summary,
+        "owned_total": owned_total,
+        "gap_total": gap_total,
+        "skipped_total": skipped_total,
+        "pending_count": pending.len(),
+        "no_gap_count": no_gap.len(),
+        "scheduled": pending.len(),
         "unowned": unowned,
         "digest_state": digest_state,
         "cards_all": cards_all,
+        "archive_revision": read.archive_revision,
     })))?;
     Ok(0)
 }
@@ -1239,3 +1278,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+
+
+
+

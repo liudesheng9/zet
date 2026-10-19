@@ -34,6 +34,7 @@ mod finding;
 mod gate;
 mod hub;
 mod ledger;
+mod link_gap;
 mod math;
 mod model;
 mod organize;
@@ -160,6 +161,7 @@ fn main() {
         "restate" => restate::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
+        "link-start" => ledger::link_start_cli(&rest),
         "link-finish" => ledger::link_finish_cli(&rest),
         "cards-finish" => ledger::cards_finish_cli(&rest),
         "book-cards-finish" => ledger::book_cards_finish_cli(&rest),

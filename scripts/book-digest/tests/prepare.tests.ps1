@@ -174,7 +174,7 @@ try {
     Assert ($link.code -eq 0) "prepare-link-pass runs: $($link.lines -join ' | ')"
     $summary = $link.last | ConvertFrom-Json
     $trace = @(Get-Content -LiteralPath $linkTrace -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
-    Assert (@($trace | Where-Object tool -eq 'export_titles').Count -eq 1 -and @($trace | Where-Object tool -eq 'get_cards').Count -eq 1 -and @($trace | Where-Object tool -in @('get_card', 'get_tree', 'list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'prepare-link uses one title export and one scoped bulk read through one MCP process'
+    Assert (@($trace | Where-Object tool -eq 'export_titles').Count -eq 1 -and @($trace | Where-Object tool -eq 'get_cards').Count -eq 2 -and @($trace | Where-Object tool -eq 'list_links').Count -eq 1 -and @($trace | Where-Object tool -eq 'get_register').Count -eq 2 -and @($trace | Where-Object tool -in @('get_card', 'get_tree', 'list_trees')).Count -eq 0 -and @($trace.process_id | Sort-Object -Unique).Count -eq 1) 'prepare-link reads one title export, one scoped bulk read and the archive-wide gap facts through one MCP process'
     Assert (($summary.pending -join ',') -eq '1,2,3' -and ($summary.groups.owned -join ',') -eq '2,2,2' -and $summary.unowned -eq 4) "each group owns its own receipts and anchor: $($link.last)"
     Assert ($summary.digest_state -eq 'receipts' -and @($summary.blocked).Count -eq 0) 'a folder without a ledger reports its receipts as the completion evidence'
     $allow3 = Get-Content -LiteralPath (Join-Path $staging 'allow-g03.txt') -Encoding utf8
@@ -184,7 +184,7 @@ try {
     Assert (('Other2020/1' -notin $everyAllow) -and ('0/1|a' -notin $everyAllow) -and ('Other2020' -notin $everyAllow)) "another book's Card that cites a section, and an unowned Topic Card that names one, stay unowned: $($everyAllow -join ',')"
     $l2 = Get-Content -LiteralPath (Join-Path $staging 'link-g02.md') -Raw -Encoding utf8
     $allow2 = Join-Path $staging 'allow-g02.txt'
-    Assert ($l2.Contains("- 写入命令：``... | zt-digest call - -Allow `"$allow2`"``") -and $l2.Contains("- SELF-CHECK: ``zt-check --log `"$allow2`" --cards `"`" --book Test2021 --rules L1,L2,R2,R3,R4,R5,R7,R9``")) 'the link file names the helper and keeps its SELF-CHECK line'
+    Assert ($l2.Contains('- 本组拥有的卡片') -and $l2.Contains('语义缺口') -and $l2.Contains('缺口：')) 'the link file states the group''s gap scope rather than the whole owned set'
     Assert ($l2.Contains("### ``Test2021/2|a`` 契约不完全留下剩余控制权") -and $l2.Contains('剩余控制权归所有者。')) 'the link file shows each owned Card with its body'
     $candidateLines = @($l2 -split "`n" | Where-Object { $_ -match '^> 候选目标' }) -join "`n"
     Assert (-not $candidateLines.Contains('`0/1`')) 'bulk preparation preserves the exclusion of already-linked candidate targets'
@@ -213,7 +213,7 @@ try {
     $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at='Test2021/2';kind='side';title='结构索引';body=$indexBody}})
     $structureRun = Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)
     $structureAllow = @(Get-Content -LiteralPath (Join-Path $staging 'allow-g02.txt') -Encoding utf8)
-    Assert ($structureRun.code -eq 0 -and 'Test2021/2|b' -notin $structureAllow) 'bulk ownership inference preserves the eight-distinct-outbound structure guard with repeated targets'
+    Assert ($structureRun.code -eq 0 -and 'Test2021/2|b' -notin $structureAllow) 'receipt ownership keeps an unowned structure Card out of the allow-list, even with eight outbound Links'
     # A group with no completion receipt gets no link job: its allow-list is empty (#92).
     Remove-Item -LiteralPath (Join-Path $staging 'owned-g03.txt')
     $noReceipt = (Invoke-Script 'prepare-link-pass.ps1' @('-Staging', $staging)).last | ConvertFrom-Json
@@ -233,3 +233,4 @@ try {
 }
 if ($failed) { Write-Output "$failed failed"; exit 1 }
 Write-Output 'all passed'
+

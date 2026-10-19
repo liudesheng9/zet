@@ -39,6 +39,8 @@ try {
     )}
     Save-Json $started.draft $groupDraft
     $group=Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($claim.token)",'-Draft',$started.draft)
+    # A semantic Link needs a target outside the group; the anchor and the book are source places (#110).
+    $null=Invoke-Zt @(@{tool='create_topic';arguments=@{title='融资约束';body='一个已有主题。'}},@{tool='create_successor';arguments=@{at='0/0';title='融资成本影响投资';body='融资成本影响企业的投资选择。'}})
     $owned=@($group.owned)
     $created=$group.substantive[0]
     Assert ($owned.Count -eq 2 -and $owned -contains 'LinkBook/1' -and $owned -contains $created) 'the group completion enumerates its anchor and substantive owned Card'
@@ -49,7 +51,7 @@ try {
     Assert ($cardsDone.state -eq 'done' -and $cardsDone.complete -and $cardsDone.disposition -eq 'deferred' -and $cardsDone.deferred[0].consumer -eq 'cards-book/book@1') 'the Cards/group obligation completes through its own offline check'
     $linkClaim=(Run-Digest @('ledger','next','-Out',$out,'-Layer','link','-Take','1','-Owner','link-manager')).units[0]
     Assert ($linkClaim.id -eq 'link/g001@1' -and $linkClaim.inputs.owned.path -like '*owned-*' -and $linkClaim.input_hash) 'the claim freezes the exact owned enumeration of the Link unit'
-    $paragraph='依赖 [[LinkBook/1]]，后者给出这家企业的融资约束。'
+    $paragraph='依赖 [[0/1]]，后者给出这家企业的融资约束。'
     $linkDraft=@{schema_version=1;unit='link/g001@1';token=$linkClaim.token;input_hash=$linkClaim.input_hash;calls=@(
         @{tool='edit_card';arguments=@{at=$created;base_receipt=$group.receipt_keys[1];owned_paragraph=@{text=$paragraph}}}
     );dispositions=@(@{at='LinkBook/1';outcome='no_link';reason='锚点只承接本组的写作分支，它的 Link 由全书卡片周期决定。'})}
@@ -70,7 +72,7 @@ try {
     function Copy-Draft { $savedDraft | ConvertFrom-Json -AsHashtable }
     $omitted=Copy-Draft; $omitted.dispositions=@()
     Save-Json $draftPath $omitted
-    Refused $checkArgs 'no outcome for the owned Card' 'an owned Card without a Link or a checked disposition cannot complete the unit'
+    Refused $checkArgs 'no outcome for the gap Card' 'a gap Card without a Link or a checked disposition cannot complete the unit'
     $invented=Copy-Draft; $invented.dispositions=@($invented.dispositions)+@(@{at='LinkBook/999';outcome='no_link';reason='编造的卡片。'})
     Save-Json $draftPath $invented
     Refused $checkArgs 'not an owned Card of this Link unit' 'a disposition cannot invent a Card outside the frozen owned enumeration'
@@ -80,14 +82,14 @@ try {
     $unkinded=Copy-Draft; $unkinded.calls=@(@{tool='edit_card';arguments=@{at=$created;base_receipt=$group.receipt_keys[1];owned_paragraph=@{text='参见 [[LinkBook/1]]。'}}})
     Save-Json $draftPath $unkinded
     Refused $checkArgs 'no kinded Link' 'an owned paragraph whose Link reads as a plain reference is refused'
-    $noreason=Copy-Draft; $noreason.calls=@(@{tool='edit_card';arguments=@{at=$created;base_receipt=$group.receipt_keys[1];owned_paragraph=@{text='依赖 [[LinkBook/1]]。'}}})
+    $noreason=Copy-Draft; $noreason.calls=@(@{tool='edit_card';arguments=@{at=$created;base_receipt=$group.receipt_keys[1];owned_paragraph=@{text='依赖 [[0/1]]。'}}})
     Save-Json $draftPath $noreason
     Refused $checkArgs 'L2' 'the Link SELF-CHECK refuses a Link with no reason'
     $falseClaim=Copy-Draft; $falseClaim.calls=@(); $falseClaim.dispositions=@(
         @{at='LinkBook/1';outcome='already_linked';reason='锚点已有 Link。'},
         @{at=$created;outcome='no_link';reason='本卡暂时没有目标。'})
     Save-Json $draftPath $falseClaim
-    Refused $checkArgs 'carries no kinded Link' 'a Card claimed as already_linked must really carry a kinded Link'
+    Refused $checkArgs 'holds no linked' 'a Card claimed as already_linked must really carry its required Link'
     $rawEdit=Copy-Draft; $rawEdit.calls=@(@{tool='edit_card';arguments=@{at=$created;body='直接改正文。';base_receipt=$group.receipt_keys[1]}})
     Save-Json $draftPath $rawEdit
     Refused $checkArgs 'owned paragraph' 'a Link revision cannot rewrite a Card body outside its owned paragraph'
@@ -118,7 +120,7 @@ try {
     Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT
     Assert ((Run-Digest @('ledger','status','-Out',$out,'-Layer','link')).units[0].state -eq 'claimed') 'the injected fault leaves the Link unit claimed'
     $changedDraft=Copy-Draft
-    $changedDraft.calls[0].arguments.owned_paragraph.text='依赖 [[LinkBook/1]]，后者限定这家企业可选的融资方式。'
+    $changedDraft.calls[0].arguments.owned_paragraph.text='依赖 [[0/1]]，后者限定这家企业可选的融资方式。'
     Save-Json $draftPath $changedDraft
     Refused $finishArgs 'accepted_plan_changed' 'a different draft cannot replace the accepted plan after its first write'
     [IO.File]::WriteAllText($draftPath,$savedDraft,$utf8)
@@ -155,3 +157,4 @@ try {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'all passed'
+
