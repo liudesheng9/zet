@@ -16,6 +16,9 @@ function Write-Cards($calls) {
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
 try {
+    # The scratch folder is named by PID, so a reused PID must not inherit an older run's
+    # archive: a stale one already holds similar titles and changes the first assertion.
+    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
     zt config set archive_root (Join-Path $scratch 'archive') | Out-Null
     zt up | Out-Null
     # Two Topic trees in the agent Workspace, each with one Idea Card; the second title is the
@@ -55,4 +58,7 @@ try {
     Assert ($revision.Count -eq 1) 'the checker leaves the archive service record intact'
     zt status --check-links | Out-Null
     Assert ($LASTEXITCODE -eq 0) 'the link index still matches every stored Reverse section'
-} finally { zt down | Out-Null }
+} finally {
+    zt down | Out-Null
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+}
