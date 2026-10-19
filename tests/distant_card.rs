@@ -431,6 +431,18 @@ fn one_explained_distant_card_serves_the_reader_and_the_table_without_a_write() 
         css.contains(".distant:hover") && css.contains(".distant:focus-within"),
         "the slot stays faint until focus or hover"
     );
+
+    // Reply from the slot is the ordinary human draft: the candidate's own authored fingerprint is
+    // the one `/api/reply` re-checks, so the suggestion can be answered without opening it first.
+    let reply = gui.post("/api/reply", &json!({
+        "at": other,
+        "base": candidate["authored_fingerprint"],
+        "text": format!("# 另一个说法\n\n印证 [[{other}]]：同一机制在另一本书里也成立。\n"),
+    }));
+    assert_eq!(reply["saved"], json!(true), "{reply}");
+    assert_eq!(reply["kind"], json!("illustrates"), "{reply}");
+    assert_eq!(reply["target"]["address"], json!(other));
+    assert!(reply["address"].is_string(), "the reply was filed: {reply}");
 }
 
 /// AC07: the cached GUI read answers from a fresh revision, and evidence that is gone leaves the
