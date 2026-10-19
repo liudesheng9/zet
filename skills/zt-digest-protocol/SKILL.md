@@ -62,7 +62,7 @@ args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ dig
 | terms (`zt-book-terms`) | `zt-digest terms` plan → one DeepSeek job → apply: the book term table (术语表) that rule R6 reads. | the 术语表 Card | continue |
 | cards-book (`zt-cards-book`) | Mode `cards` only: the card cycle on the whole book, with orphans. | rewrites | halt |
 | digest (`zt-digest-blocks`) | One Haiku manager per block of `perManager` groups (at most 8). Each group: `zt-digest snapshot-topics`, then one DeepSeek run on the digest prefix (built from the profile's instruction files) and the group file; it writes Cards with the helper (`-Log`, `-SrcLog`, `-TopicGate`), then runs its SELF-CHECK. When a block's manager returns, its card cycle starts (`zt-digest card -Groups … -Sample … -NoOrphans`). | yes | halt when no group is done |
-| link-prepare, link (`zt-link-prepare`, `zt-link-pass`) | `zt-digest prepare-link`, then link managers (up to `linkPerManager` runs each) whose DeepSeek runs append reasoned Links (`dsh-link-instructions.zh.md`, `-Allow allow-gNN.txt`), each with its SELF-CHECK. | Links | halt |
+| link-prepare, link (`zt-link-prepare`, `zt-link-pass`) | `zt-digest prepare-link` computes each completed group's receipt-owned semantic gap set (`pending`, `no_gap`); then one chain per group claims `link/gNNN@1`, `zt-digest link-start` freezes the gap scope and writes the job, the group's DeepSeek run fills only those gaps (`dsh-link-instructions.zh.md`), and `zt-digest link-finish` applies and checks it. A group with no gap starts no provider run. | Links | halt |
 | link-check (`zt-link-check`) | A card cycle after the link pass (`-Work <out>\cards-link`, with orphan jobs): every hard rule in mode `full`, otherwise `cardRules` or L1 and L2. | rewrites, Links | halt |
 | cleanup (`zt-dsh-cleanup`) | Delete leftover DeepSeek conversations, remove the workspace, delete scratch files, read the usage ledger. | no | halt |
 | organize (`zt-organize`) | `zt-digest organize-survey` → Opus `decisions.json` → `zt-digest organize-apply` → a notes card cycle (`-Notes`) → `zt-digest skeleton` plan → DeepSeek → apply (Literature index, structure Card, Topic bodies). | yes | continue |
@@ -147,7 +147,7 @@ The SELF-CHECK of each base task:
 | Task | SELF-CHECK |
 | --- | --- |
 | Digest run | `zt-check --cards <anchor> --log <owned> --book <key>` (in the group file) |
-| Link run | `zt-check --log <allow> --cards "" --book <key> --rules L1,L2,R2,R3,R4,R5,R7,R9` |
+| Link run | `zt-digest link-finish -Out <out> -Group <n> -Token <n> -Draft <file> -CheckOnly` (binding, gap coverage, `L1,L2`) |
 | Card cycle fix and orphan | `zt-digest card -Step precheck -Work <work> -Job <id>` |
 | Hubs | `zt-digest hub -Step precheck -Work <work> -File <hub json>` |
 | Skeleton | `zt-digest skeleton -Step apply -Staging <out> -Work <work>` without `-Apply` |
@@ -172,3 +172,4 @@ Report-only: use a fresh output folder, inspect `bridge/report.md` and immutable
 A judge loads `zettelkasten` and `asd-ste100-zh`, reads only frozen candidates, writes its assigned answer, and runs its exact precheck up to three times. Its manager approves only the Bridge precheck, `zt-check`, the zt helper with the empty `read-only.allow.txt`, reads under `out`, and JSON writes under `bridge\out`. A judge never writes, splits, or moves Cards, and never grants acceptance. One source has at most two proposals, and one pair of Cards has at most one relation (the reverse of a proposed pair is refused). A Link names a whole Card. Human Cards are read-only. The tool checks BR1 to BR9 and the Card rules before a report and before each accepted edit.
 
 Before the first live edit, get the user's actual selections and make a consistent archive backup (`zt dp`, or the SQLite `VACUUM INTO` backup with an integrity check). Keep filing quiet: no insert, move, delete, key rename, retype, or Organize alongside apply. The tool uses the raw `edit_card` base, per-report locking, and durable per-carrier intents. A stale report needs a fresh folder and a new review. Retries keep accepted text, verify persisted effects, and never restore an archive on their own. Keep old frozen workflow versions and reports.
+

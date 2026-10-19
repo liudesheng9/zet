@@ -157,7 +157,7 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 3. The base stage graph of mode `full` with its four empty slots (`after-prepare`, `after-digest`, `after-link`, `after-audit`), a table of every base stage with its module, steps, writes, and failure policy, the base modes (`link`, `cards`, `hubs`, `figures`, `audit`, `bridge`), the checkpoint `until: "digest"`, and the base's args.
 4. What a variant fills: the profile fields the base stages read (`instructions`, `noEventCandidates`, `digestPrefix`, `linkPrefix`, `bridgeProfile`), the slot fills, its own modes and extra reports, and the steps to build and install one. It names no variant's layers.
 5. Rules every run keeps: the DeepSeek Subagent Managed Protocol, the manager approval list (`zt-digest call`, `zt-check`, the job tool's `-Step precheck`, reads under `out`, the job's own JSON file), skills sent in the `skills` field, `state.json` per compiler, compact JSON last lines, the zt helper `zt-digest call` and its flags, source fidelity marks `（补：书中略去）`.
-6. `zt-check` as the only checker, its command forms, its output (`faults: N`), and the SELF-CHECK command of each base task.
+6. `zt-check` as the only checker, its command forms, its output (`faults: N`), and the SELF-CHECK command of each base task. The Link run's SELF-CHECK is `zt-digest link-finish … -CheckOnly`: the Link stage works only the receipt-owned semantic gap set (one `link-start` frozen scope per group), so its check covers the binding, the gap coverage and `L1,L2` instead of the old `zt-check --log` list.
 7. Operating rules (back up with `VACUUM INTO`, run installed workflows by `scriptPath`, do not deploy zt during a run, build on D:, install `zt-digest` from `E:\zet`, the test commands, script traps) and the cross-book Bridge contract.
 
 ### Helper command line (`zt-digest call`, or `zt-mcp.ps1`)
@@ -446,6 +446,8 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - `2026-10-16` — `zt-mcp.ps1` forwards to `zt-digest call` ([zt-digest](zt-digest.md)): the helper runs in Rust with the same parameters and output lines; `ZT_DIGEST` names another build.
 - `2026-10-16` — `zt-mcp.ps1` carries the line `zt-calls: direct reads`: `scripts/book-digest/zt-calls.ps1` sends batches of read calls straight to one long-lived `zt mcp` and must keep this helper's read output and stop-at-first-error rule. A replacement helper without the line (a test seam) gets every call.
 
+- `2026-10-19` — #110: the `zt-digest-protocol` skill names the gap-only Link stage: `prepare-link` computes the receipt-owned semantic gap set, `link-start` freezes it and writes the bound job, a gap-free group starts no provider run, and the Link SELF-CHECK is `zt-digest link-finish -CheckOnly` (binding, gap coverage, `L1,L2`).
+
 - `2026-10-16` — Review fixes: `zt-digest-protocol` shows Bridge between Figures and Hubs in the stage diagram, adds Bridge counts and islands to the Audit row, and states that a Bridge report is published only when every judge job answered and that the cleanup always runs. `zettelkasten/references/luhmann-and-practice.md` cites repository paths instead of github.com URLs and adds Luhmann's 57/12a and `insert_card before`.
 - `2026-10-16` — Implement report-first Bridge selection, guarded apply/recovery, math citation direction, semantic audits and workflow adapters; installed and live gates are recorded separately.
 - `2026-10-16` — C1: insertion, Placement, and Maintenance agree with `insert_card before`; whole-Card Links and human read-only splitting are explicit. Rollout verifies installed hashes and freshly loaded client guidance.
@@ -467,3 +469,4 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - `2026-10-10` `4e990a0` — Scholar Archive tools in the `zt` skill.
 - `2026-10-10` `f3eec44` — `zt` skill, its `agents/openai.yaml`, and the Claude Code and Codex installer.
 - `2026-10-16` — Wiki doc created.
+

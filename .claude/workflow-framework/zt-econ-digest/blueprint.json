@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "4.5.0",
+  "version": "4.6.0",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -917,7 +917,7 @@
     {
       "id": "link-prepare",
       "title": "Link",
-      "detail": "prepare-link-pass.ps1: link files and the pending groups",
+      "detail": "prepare-link-pass.ps1: the receipt-owned semantic gap set and the scheduled, gap-free and blocked groups",
       "after": [
         "events",
         "findings",
@@ -937,7 +937,7 @@
     {
       "id": "link",
       "title": "Link",
-      "detail": "DeepSeek link runs append reasoned cross-part Links",
+      "detail": "DeepSeek Link runs fill only the receipt-owned semantic gaps",
       "after": [
         "link-prepare"
       ],
@@ -957,6 +957,14 @@
         "blocked": {
           "$ref": "stages.link-prepare.output.blocked",
           "default": []
+        },
+        "noGap": {
+          "$ref": "stages.link-prepare.output.no_gap",
+          "default": []
+        },
+        "gaps": {
+          "$ref": "stages.link-prepare.output.gaps",
+          "default": {}
         },
         "key": {
           "$ref": "stages.prepare.output.citation_key"
@@ -1485,6 +1493,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "3.5.0"
+    "version": "3.6.0"
   }
 }

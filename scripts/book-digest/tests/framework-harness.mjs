@@ -106,7 +106,8 @@ const CANNED = {
   'bridge report': () => ({ ok: true, step: 'report', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [] }),
   'audit': () => ({ hubs_missing: 0, broken_links: 0, books: [{ key: 'Key', cards: 9, topic_trees: 1, style_faults: 0, orphans: 0, no_source: 0, unkinded: 0, models: 0, not_self_sufficient: 0, figures_missing: 0 }] }),
   'figures': () => ({ shown: 0, cards: 0, figures: 0, labelled: 0, literature: false }),
-  'prepare-link': () => ({ pending: [1, 2], groups: [{ n: 1, owned: 3, done: false }, { n: 2, owned: 3, done: false }], unowned: 0, cards_all: 'D:\\x\\Key\\cards-all.md' }),
+  // #110: group 1 has semantic gaps; group 2's owned Cards are all linked, so it needs no job.
+  'prepare-link': () => ({ pending: [1], no_gap: [2], blocked: [], groups: [{ n: 1, id: 'g01', owned: 3, done: false, digest: 'done', blocked: false, gaps: 2, skipped: 1, position: 'anchor_position_missing' }, { n: 2, id: 'g02', owned: 3, done: false, digest: 'done', blocked: false, gaps: 0, skipped: 3, position: 'linked' }], owned_total: 6, gap_total: 2, skipped_total: 4, pending_count: 1, no_gap_count: 1, scheduled: 1, unowned: 0, digest_state: 'ledger', cards_all: 'D:\\x\\Key\\cards-all.md' }),
   'snapshot-topics': () => ({ ok: true }),
   'math index': () => ({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }),
   'math docs': () => ({ ok: true, files: [] }),
@@ -209,6 +210,12 @@ function runtime(kind, opts = {}) {
         if (layerEnabled('models')) led.add(`models/g${n}-m0000@1`, 'models', { header: 'Key/2|c', model: 'Key/2|c' })
       }
       if (tool === 'model-finish') led.add('explain/g001-m0000@1', 'explain', { model: 'Key/2|c' })
+      if (tool === 'link-finish') {
+        // #110: the gap scope, outcomes and L1/L2 quality travel with the completion.
+        const n = String(group).padStart(3, '0')
+        const gap = Number((cmd.match(/-Group (\d+)/) || [])[1]) === 2 ? 0 : 2
+        return { ok: true, output: json({ schema_version: 1, kind: 'link_completion', unit: id, token: Number((cmd.match(/-Token (\d+)/) || [])[1]) || 1, state: 'done', complete: true, applied: gap > 0, disposition: gap > 0 ? 'linked' : 'no_link', owned: ['Key/1|a'], changed: gap > 0 ? [`Key/${n}|a`] : [], counts: { owned: 3, gaps: gap, skipped: gap > 0 ? 1 : 3, linked: gap > 0 ? 1 : 0, linked_from: 0, already_linked: gap > 0 ? 1 : 3, no_link: gap > 0 ? 1 : 0 }, quality: { rules: 'L1,L2', faults: 0, checked: 3 }, reused: false }) }
+      }
       return { ok: true, output: json({ schema_version: 1, kind: 'digest_completion', unit: id, token: Number((cmd.match(/-Token (\d+)/) || [])[1]) || 1, state: 'done', complete: true, disposition: 'verified', owned: ['Key/1|a'], reused: false }) }
     }
     if (/ ledger resume /.test(cmd)) {
@@ -347,6 +354,18 @@ function runtime(kind, opts = {}) {
         return { ok: true, exit: 0, output: json(value) }
       }
     }
+    const startLink = cmd.match(/zt-digest link-start -Out "[^"]*" -Group (\d+) -Token (\d+)/)
+    if (startLink) {
+      // #110: link-start freezes the gap scope; an empty gap set starts no job.
+      const group = Number(startLink[1])
+      const token = Number(startLink[2])
+      const unit = `link/g${String(group).padStart(3, '0')}@1`
+      const gap = group === 2 ? 0 : 2
+      const draft = `D:\\x\\Key\\link-jobs\\g${String(group).padStart(3, '0')}\\draft.json`
+      const job = `D:\\x\\Key\\link-jobs\\g${String(group).padStart(3, '0')}\\start.json`
+      const jobs = gap > 0 ? [{ id: `link-g${String(group).padStart(3, '0')}-t${token}`, files: ['D:\\x\\Key\\link-prefix.md', `D:\\x\\Key\\link-g0${group}.md`, job], prompt: 'p', output: draft }] : []
+      return { ok: true, output: json({ schema_version: 1, unit, token, run_id: 'r1', input_hash: `ih-${unit}`, unit_input_hash: `ih-${unit}`, job, draft, expected_jobs: gap > 0 ? 1 : 0, no_op: gap > 0 ? null : { reason: 'no_semantic_gaps', gaps: 0, skipped: 3 }, done: false, gap: [], skipped: [], position: gap > 0 ? 'anchor_position_missing' : 'linked', counts: { owned: 3, gaps: gap, skipped: gap > 0 ? 1 : 3 }, jobs, lease_until: 1000 }) }
+    }
     const direct = cmd.match(/^zt-digest (organize-survey|organize-apply|audit|figures|prepare-link|snapshot-topics|list-models) /)
     if (direct) {
       if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
@@ -397,7 +416,7 @@ function runtime(kind, opts = {}) {
       }
       if (parsed && parsed.draft) draft = parsed.draft
       steps.push({ name: st.name, ok: answer.ok, exit: answer.exit || 0, output: answer.output, ...(answer.ok ? {} : { error: answer.output }) })
-      if (parsed && parsed.job) {
+      if (parsed && parsed.job && !Array.isArray(parsed.jobs) && (parsed.expected_jobs === undefined || parsed.expected_jobs > 0)) {
         results.push({ id: `digest-g${group}-t${token}`, step: st.name, session_id: `s-digest-${group}`, status: 'done', answer: '{}' })
       }
       if (st.jobs && parsed && Array.isArray(parsed.jobs) && parsed.jobs.length) {
@@ -716,7 +735,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
   check(gateCmds.length >= 3 && gateCmds.some((c) => /-Layer cards/.test(c)) && gateCmds.some((c) => /-Layer models/.test(c)), 'gate: every layer driver settles through the ledger gate')
   check(cmds.some((c) => /ledger publish -Out "D:\\x\\Key" -Layer cards-book/.test(c)) && cmds.some((c) => /book-cards-finish .* -Unit "?cards-book\/book@1"?/.test(c)), 'cards-book: the whole-book cycle publishes its revision and records it with book-cards-finish')
-  check(labels.includes('prepare link pass') && labels.some((l) => /^link manager/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /ledger fail .* -Class content/.test(c)), 'link: the link pass runs and its units are recorded as explicit unverified work')
+  check(labels.includes('prepare link pass') && labels.some((l) => /^link group 1 attempt/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
+  check(cmds.some((c) => /link-start .* -Group 2/.test(c)) && cmds.some((c) => /link-finish .* -Group 2/.test(c)) && !cmds.some((c) => /ledger fail .* -Class content/.test(c) && /link/.test(c)), 'link: a group with no semantic gap settles its unit without a provider job or a legacy content fault')
+  check(result.link_gaps && result.link_gaps.scheduled === 1 && result.link_gaps.skipped === 1 && result.link_gaps.gaps === 2 && result.link_gaps.provider_runs === 1 && result.link_gaps.quality && result.link_gaps.quality.faults === 0, `report: the run carries the scheduled/skipped/gap counts, the actual provider runs and the L1/L2 quality (${JSON.stringify(result.link_gaps)})`)
+  check(Array.isArray(result.link) && result.link.some((r) => r.group === 1 && r.status === 'done' && r.gaps === 2 && r.provider_runs === 1) && result.link.some((r) => r.group === 2 && r.scheduled === 0 && r.provider_runs === 0), 'report: each group names its gap count, whether it was scheduled and its provider runs')
   check(result.schedule && result.schedule.settings.maxAttempts === 3 && result.schedule.settings.dshRunCap === 1200, 'report: the result carries the effective settings and the schedule summary')
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
@@ -734,7 +756,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   ]
   const { calls, result } = await run('econ', { ...base, figures: false }, { linkBlocked: blocked })
   const labels = calls.map((c) => c.label)
-  check(!labels.some((l) => /^link manager/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
+  check(!labels.some((l) => /^link group/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
   check(result && Array.isArray(result.link_blocked) && result.link_blocked.length === 2 && result.link_blocked.every((b) => b.unit && b.state && b.reason && b.group), `report: the run names the blocked groups and their units (${result && JSON.stringify(result.link_blocked)})`)
 }
 {
@@ -820,9 +842,10 @@ for (const kind of ['econ', 'math']) {
   const askedPrompt = (calls.find((c) => /^cleanup DeepSeek$/.test(c.label)) || {}).prompt || ''
   check(records.every((r) => r.conversations.every((c) => askedPrompt.includes(c.id))), `${kind} full: the cleanup agent may delete only the recorded ids`)
   check(cmds.some((c) => / ledger resource .*-Observe /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Unit "?cleanup\/book@1"?/.test(c)), `${kind} full: the provider facts are observed and the run-level cleanup is settled by its verifier`)
-  // The stand-in link units stay explicit content failures (#82), so content is incomplete while the
-  // cleanup itself settles: the two halves are reported apart and the run is partial.
-  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.content_complete === false && result.cleanup.status === 'partial', `${kind} full: the report carries content_complete apart from cleanup_complete`)
+  // #110: the Link units now settle through link-finish, so content is complete while the cleanup
+  // still reports its own half: the two are still reported apart.
+  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness`)
+  if (kind === 'econ') check(result.cleanup.content_complete === true, 'econ full: the settled Link units leave no content gap')
   check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
 {
@@ -862,3 +885,11 @@ for (const kind of ['econ', 'math']) {
 }
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+
+
+
+
+
+
+
+

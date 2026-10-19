@@ -20,7 +20,7 @@ Every base stage runs a `zt-digest <tool>` (`tools/zt-digest`, installed beside 
 | --- | --- | --- | --- |
 | `zt-digest prepare` (`prepare-book-digest.ps1`) | prepare | Chinese-only text, section groups (`groups\gNN.md` with their write command and `SELF-CHECK` line), the shared DeepSeek prefixes from `-Instructions`, and with `-Apply` the agent Literature tree with one anchor per group. | anchors |
 | `zt-digest snapshot-topics` (`snapshot-topics.ps1`) | digest | A compact list of every Topic tree for one digest run, so it places and links Cards without searching. | no |
-| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | link-prepare | A snapshot of every Card; per group, the Cards it owns, the candidate targets, the allow list, and the `SELF-CHECK` line; the groups still pending. | no |
+| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | link-prepare | A snapshot of every Card; per group, the receipt-owned Cards, the semantic gap set with its reasons and candidates, the gap-only allow list and the frozen `link-gap-gNN.json`; the scheduled, gap-free and blocked groups. | no |
 | `zt-digest organize-survey` (`organize-survey.ps1`) | organize | Everything Opus must decide: duplicate and small Topics, merge proposals, model faults, broken Links, missing hubs. Read-only. | no |
 | `zt-digest organize-apply` (`organize-apply.ps1`) | organize | Carry out Opus's `decisions.json`: Topic merges and Card moves, logged. | yes |
 | `zt-digest figures` (`attach-figures.ps1`) | figures | Show the book's figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes |
@@ -41,7 +41,7 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | File | Task | Output |
 | --- | --- | --- |
 | `dsh-digest-base.zh.md` | Digest run: the Idea Cards of one group and its anchor. A variant adds supplements through `profile.instructions`; `dsh-instructions.zh.md` is only the default of `zt-digest prepare` without `-Instructions`. | Cards through the helper |
-| `dsh-link-instructions.zh.md` | Link run: reasoned Links from a group's own Cards | Links through the helper |
+| `dsh-link-instructions.zh.md` | Link run: only the semantic gap Cards, one reasoned Link sentence or a `no_link`/`none` reason each | One bound JSON draft, checked by `zt-digest link-finish -CheckOnly` |
 | `dsh-card-instructions.zh.md` | Card cycle fix and review | JSON |
 | `dsh-orphan-instructions.zh.md` | Links to orphan Cards | JSON |
 | `dsh-terms-instructions.zh.md` | Book term table | JSON |
@@ -69,3 +69,4 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | `bridge-compiler`, `bridge-planning`, `bridge-validation`, `bridge-math`, `bridge-attribution-retry`, `bridge-human`, `book-of` `.tests.ps1` | The Bridge tool on scratch archives, and book attribution. |
 | `zt-check.tests.ps1`, `card-layer.tests.ps1` + fixtures; `cargo test` in `tools/zt-check` and `tools/zt-digest` | zt-check's rules, and the tools' unit tests. |
 | `zt-calls.tests.ps1`, `zt-helper-gate.tests.ps1`, `requires-version.tests.ps1` | The helper (`-SrcLog`, `-TopicGate`, parallel helpers), UTF-8 under a GBK console, and the PowerShell 7.5 declarations. |
+

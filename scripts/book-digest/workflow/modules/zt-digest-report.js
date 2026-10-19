@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v10 ====
+// ==== module zt-digest-report v11 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -9,9 +9,11 @@
 // per-run usage and the supported resume invocation), so a run's result carries the report's own facts
 // instead of an agent's summary (#85, R331-R346). 9 adds finalize: the finite finalization's plan, one
 // correction cycle, changed-Card manifest, refreshed publications and final audit (#86, R299/R300). 10 adds
-// link_blocked: the groups the Link pass did not work because their digest unit is not done (#92).
+// link_blocked: the groups the Link pass did not work because their digest unit is not done (#92). 11 adds
+// link_gaps: the scheduled, skipped and gap counts and the L1/L2 quality of the gap-only Link pass, with each
+// group's own outcome and actual provider runs (#110).
 defineModule({
-  id: 'zt-digest-report', version: '10', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '11', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -63,6 +65,7 @@ defineModule({
       explain: layerSummary(p.explain),
       events: layerSummary((extra && extra.events) || null),
       findings: layerSummary((extra && extra.findings) || null),
+      link: p.link ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, verified: p.link.verified ?? 0, failed: p.link.failed ?? 0, provider_runs: p.link.provider_runs ?? 0 } : null,
     }
     if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
     if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
@@ -75,14 +78,18 @@ defineModule({
     if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null), run_report: runReport }
     if (!['full', 'link', 'models', 'hubs', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
     const modelReports = (p.models && p.models.models) || []
-    const linkReports = (p.link && p.link.reports) || []
+    const linkReports = (p.link && p.link.groups) || []
+    const linkGaps = p.link
+      ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, gaps: p.link.gap ?? 0, skipped_cards: p.link.skipped_cards ?? 0, linked: p.link.linked ?? 0, linked_from: p.link.linked_from ?? 0, already_linked: p.link.already_linked ?? 0, no_link: p.link.no_link ?? 0, provider_runs: p.link.provider_runs ?? 0, quality: p.link.quality || null }
+      : null
     const groupCount = p.groups || 0
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
       digest: digestReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, disposition: r.disposition || null, owned: r.owned ?? null, errors: r.errors || null })),
       models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: (r.parts || []).length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
       model_cleanup: (p.models && p.models.model_cleanup) || null,
-      link: linkReports.map(r => ({ group: r.group, status: r.status, cards_linked: r.cards, links: r.links, tool_calls: r.tool_calls ?? null, errors: r.errors })),
+      link: linkReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, gaps: r.gaps ?? null, skipped: r.skipped ?? null, scheduled: r.scheduled ?? null, linked: r.linked ?? null, linked_from: r.linked_from ?? null, already_linked: r.already_linked ?? null, no_link: r.no_link ?? null, provider_runs: r.provider_runs ?? null, changed: r.changed || [], quality: r.quality || null, errors: r.errors || null })),
+      link_gaps: linkGaps,
       link_blocked: (p.linkBlocked || []).map(b => ({ group: b.n, unit: b.unit, state: b.state, reason: b.reason })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
@@ -93,3 +100,5 @@ defineModule({
   },
 })
 // ==== end module zt-digest-report ====
+
+
