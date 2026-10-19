@@ -14,7 +14,7 @@ ignore:
   - Cargo.lock
   - "src/gui/vendor/**"
   - ".claude/workflow-framework/*/history/**"
-updated: 2026-10-16
+updated: 2026-10-19
 ---
 
 # ZT wiki

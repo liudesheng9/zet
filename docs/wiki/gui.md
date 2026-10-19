@@ -6,8 +6,8 @@ paths:
   - "src/gui/**"
   - "!src/gui/vendor/**"
   - "src/spread.rs"
-synced: fe5d77864def
-updated: 2026-10-16
+synced: afeccf94d718
+updated: 2026-10-19
 ---
 
 # GUI
