@@ -215,6 +215,54 @@ fn a_hub_card_carries_a_hub_level_and_only_a_hub_card_does() {
 }
 
 #[test]
+fn a_register_with_declared_parts_needs_no_topic_hub_of_its_own() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "被分册的领域", 2);
+    let one = format!("{tree}/1");
+    // A register with eight declared parts: more non-hub Cards than `topic_min` in the 索引 tree.
+    // Each part is an immediate Side successor holding `词条` rows (S11, #104, D188).
+    let index = address(mcp.ok(
+        "create_topic",
+        json!({ "title": "索引", "body": "本主题收放代理工作区的入口。" }),
+    ));
+    let reg = address(mcp.ok(
+        "create_successor",
+        json!({ "at": index, "type": "hub", "level": "register", "title": "索引：代理工作区的入口", "body": "范围：代理工作区的入口。" }),
+    ));
+    let mut declarations = String::new();
+    for i in 0..8 {
+        let part = address(mcp.ok(
+            "create_successor",
+            json!({ "at": reg, "kind": "side", "title": format!("词条 其他{i}"), "body": format!("## 词条\n- 词条{i}：[[{one}]]\n") }),
+        ));
+        declarations.push_str(&format!("- [[{part}]] 其他\n"));
+    }
+    mcp.ok(
+        "edit_card",
+        json!({ "at": reg, "body": format!("范围：代理工作区的入口。\n\n## 词条分册\n{declarations}") }),
+    );
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(view["entry_total"], json!(8), "{view}");
+    assert_eq!(view["complete"], json!(true), "{view}");
+    // The parts are navigation: the 索引 tree still needs no topic hub of its own, and a part is
+    // not a branch that would need a line hub either.
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent", "topic_min": 3 }));
+    let missing = graph["missing"].as_array().expect("missing hubs");
+    let index_tree = index.split('/').next().expect("tree id");
+    assert!(
+        !missing
+            .iter()
+            .any(|row| row["tree"].as_str() == Some(index_tree)),
+        "the register tree requires no topic hub: {missing:?}"
+    );
+    assert!(
+        !missing.iter().any(|row| row["level"] == "line"),
+        "a declared part is no branch: {missing:?}"
+    );
+}
+
+#[test]
 fn get_hub_reports_faults_and_list_hubs_finds_the_missing_hubs() {
     let home = TestHome::new();
     let mut mcp = home.mcp();

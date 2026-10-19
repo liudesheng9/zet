@@ -1203,8 +1203,7 @@ impl<'a> Graph<'a> {
 
     /// Every hub of a Workspace with its level, upper and lower hubs, and
     /// faults, and the hubs the policy requires but the Workspace lacks.
-    pub(crate) fn list(&self, workspace: Option<Workspace>, limits: &Limits) -> Value {
-        let in_workspace =
+    pub(crate) fn list(&self, workspace: Option<Workspace>, limits: &Limits) -> Value {        let in_workspace =
             |card: &Card| workspace.is_none_or(|workspace| card.workspace == workspace);
         let mut hubs = Vec::new();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1243,6 +1242,15 @@ impl<'a> Graph<'a> {
 
     /// H1, H2, and H4: the required hubs that do not exist yet.
     fn missing(&self, workspace: Option<Workspace>, limits: &Limits) -> Vec<Value> {
+        // A register's declared parts are navigation Cards of the 索引 tree, not content of it
+        // (§8.5, D188): they neither make the tree require a topic hub of its own nor form a branch.
+        let register_parts: BTreeSet<String> = self
+            .hubs
+            .values()
+            .flat_map(|(_, body)| body.lines.iter())
+            .filter(|line| line.group.as_deref() == Some(REGISTER_PART_GROUP))
+            .flat_map(|line| line.targets.iter().cloned())
+            .collect();
         let mut missing = Vec::new();
         let roots = self
             .snapshot
@@ -1264,7 +1272,7 @@ impl<'a> Graph<'a> {
                 .collect::<Vec<_>>();
             let content = members
                 .iter()
-                .filter(|card| card.card_type != CardType::Hub)
+                .filter(|card| card.card_type != CardType::Hub && !register_parts.contains(&card.address))
                 .count();
             // The register tree holds hubs only; it requires none of its own.
             if content == 0 && !hubs_here.is_empty() {
@@ -1286,7 +1294,7 @@ impl<'a> Graph<'a> {
             // A branch: a Side successor that is not part of a model.
             for branch in members.iter().filter(|card| {
                 card.card_type == CardType::Idea
-                    && crate::valid_side_label(crate::last_segment(&card.address))
+                    && !register_parts.contains(&card.address)
             }) {
                 let prefix = format!("{}|", branch.address);
                 let inside = members
