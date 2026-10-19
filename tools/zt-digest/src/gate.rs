@@ -104,14 +104,24 @@ struct Inputs {
 }
 
 /// The book's term table at `<staging>/terms.md`: one `|`-separated row per term. A run with the
-/// terms layer disabled has none, and the gate reports that rather than inventing meanings.
+/// terms layer disabled has none (`absent`); a file that exists but cannot be read is `failed`, not
+/// absent, so the gate never reports an unknown table as a fact.
 fn read_terms(staging: &str) -> (Value, Vec<TermRow>) {
     let path = Path::new(staging).join("terms.md");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (
-            json!({"status":"absent","path":path.to_string_lossy()}),
-            Vec::new(),
-        );
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                json!({"status":"absent","path":path.to_string_lossy()}),
+                Vec::new(),
+            );
+        }
+        Err(error) => {
+            return (
+                json!({"status":"failed","path":path.to_string_lossy(),"fault":format!("{error}")}),
+                Vec::new(),
+            );
+        }
     };
     let mut rows = Vec::new();
     for line in text.lines() {
@@ -510,8 +520,19 @@ fn prepare(zt: &mut Zt, staging: &str, title: &str, question: &str) -> Result<Va
     if s(&inputs.terms["status"]) != "read" {
         missing.push(json!({"input":"term_table","status":s(&inputs.terms["status"])}));
     }
-    let complete = true;
-    let outcome = if candidates.is_empty() { "new" } else { "judge" };
+    // AC02: a clearance claims the comparison ran over complete concept inputs. An absent register
+    // or term table is a fact (there are no accepted terms to compare), and is reported as such; an
+    // ambiguous or unreadable one is unknown, so the evidence stays incomplete, `new` is never
+    // reported, and `create` refuses it (D302: a failure is never a create).
+    let read = |status: &str| matches!(status, "read" | "absent");
+    let complete = read(&s(&inputs.register["status"])) && read(&s(&inputs.terms["status"]));
+    let outcome = if !complete {
+        "incomplete"
+    } else if candidates.is_empty() {
+        "new"
+    } else {
+        "judge"
+    };
     let fingerprint = fingerprint(&proposed, &inputs.topics, &inputs.register, &inputs.rows);
     let mut evidence = json!({
         "schema_version": SCHEMA,
@@ -873,11 +894,13 @@ fn create(zt: &mut Zt, staging: &str, decision_file: &str, prefix: &str) -> Resu
         bail!("the concept decision does not belong to this gate evidence");
     }
     if evidence["complete"] != json!(true) {
+        let missing = evidence["inputs"]["optional_missing"].clone();
         return Ok((
             json!({
                 "created": false,
                 "reason": "incomplete_evidence",
                 "detail": "the gate has no complete concept input; nothing may be cleared as new",
+                "missing": missing,
             }),
             3,
         ));
@@ -1048,6 +1071,7 @@ fn report(staging: &str) -> Result<Value> {
         "step": "report",
         "complete": complete,
         "outcome": prepared["outcome"],
+        "evidence_complete": prepared["complete"],
         "evidence_id": prepared["evidence_id"],
         "missing": prepared["missing"],
         "shortlist": prepared["shortlist"].as_array().map_or(0, |list| list.len()),
@@ -1066,6 +1090,10 @@ fn render(value: &Value) -> String {
     text.push_str("# Topic gate\n\n");
     text.push_str(&format!("- outcome: {}\n", s(&value["outcome"])));
     text.push_str(&format!("- shortlist: {}\n", value["shortlist"]));
+    text.push_str(&format!(
+        "- evidence complete: {}\n",
+        if value["evidence_complete"] == json!(true) { "true" } else { "false" }
+    ));
     // AC08: a missing or ambiguous concept input reaches the report, never silently substituted.
     if let Some(missing) = value["missing"].as_array().filter(|list| !list.is_empty()) {
         text.push_str("- optional inputs missing:\n");
@@ -1250,6 +1278,12 @@ mod tests {
         std::fs::write(dir.join("terms.md"), "没有表格。\n").unwrap();
         let (facts, rows) = read_terms(&dir.to_string_lossy());
         assert_eq!(facts["rows"], json!(0));
+        assert!(rows.is_empty());
+        // A table that exists but cannot be read is failed evidence, never reported as absent.
+        std::fs::remove_file(dir.join("terms.md")).unwrap();
+        std::fs::create_dir_all(dir.join("terms.md")).unwrap();
+        let (facts, rows) = read_terms(&dir.to_string_lossy());
+        assert_eq!(facts["status"], json!("failed"));
         assert!(rows.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

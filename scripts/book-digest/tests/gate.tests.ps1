@@ -311,6 +311,15 @@ try {
     $bounded = Run-Digest @('gate','-Step','prepare','-Staging',$out,'-Title','均衡多重性','-Question','为什么同一市场会同时存在多个均衡？')
     Assert ($bounded.outcome -eq 'judge' -and @($bounded.shortlist).Count -eq 10) 'the shortlist is bounded at ten plausible Topics'
 
+    # --- a term table that exists but cannot be read is not absent evidence ---
+    $out2 = Join-Path $scratch 'prepared2'
+    New-Item -ItemType Directory -Force $out2 | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $out2 'terms.md') | Out-Null
+    $unread = Run-Digest @('gate','-Step','prepare','-Staging',$out2,'-Title','利率平价','-Question','两国的利率差如何决定汇率变动？')
+    Assert ($unread.complete -eq $false -and $unread.outcome -eq 'incomplete') 'a term table that cannot be read leaves the concept inputs incomplete'
+    $unreadTerm = @($unread.missing | Where-Object { $_.input -eq 'term_table' })
+    Assert ($unreadTerm.Count -eq 1 -and $unreadTerm[0].status -eq 'failed') 'an unreadable term table is reported as failed, not substituted'
+
     # --- an ambiguous register and the optional gaps reach both reports ---
     $null = Invoke-Zt @(@{ tool='create_topic'; arguments=@{ title='索引二'; body='第二个概念索引。' } })
     $secondIndex = (@(Invoke-Zt @(@{ tool='export_titles'; arguments=@{} })).titles | Where-Object { $_.title -eq '索引二' } | Select-Object -First 1).address
@@ -320,14 +329,18 @@ try {
     $ambiguous = Run-Digest @('gate','-Step','prepare','-Staging',$out,'-Title','均衡多重性','-Question','为什么同一市场会同时存在多个均衡？')
     $badRegister = @($ambiguous.missing | Where-Object { $_.input -eq 'register' })
     Assert ($badRegister.Count -eq 1 -and $badRegister[0].status -eq 'ambiguous') 'two registers are reported as ambiguous input, never chosen between'
+    Assert ($ambiguous.complete -eq $false -and $ambiguous.outcome -eq 'incomplete') 'an ambiguous register leaves the concept inputs incomplete'
     $null = Run-Digest @('gate','-Step','decide','-Staging',$out,'-Answer',(Write-Answer 'answer-ambiguous.json' @{
         proposed_title='均衡多重性'; question='为什么同一市场会同时存在多个均衡？'; verdict='different'
         reason='短名单中的 Topic 追问别的问题，概念输入里没有可采纳的登记簿。'
         evidence=@($ambiguous.shortlist | ForEach-Object { $_.address }); inputs_fingerprint=$ambiguous.inputs_fingerprint
         candidates=@($ambiguous.shortlist | ForEach-Object { @{ address = $_.address; verdict = 'different' } })
     }))
+    $incomplete = Try-Digest @('gate','-Step','create','-Staging',$out,'-Decision',(Join-Path $out 'gate/decision.json'),'-OperationPrefix','gate-run/topic/13/create')
+    Assert ($incomplete.code -eq 3 -and $incomplete.text.Contains('incomplete_evidence')) 'an incomplete concept input cannot clear a new Topic'
     $report = Run-Digest @('gate','-Step','report','-Staging',$out)
-    Assert ($report.complete -and $report.outcome -eq 'judge' -and $report.shortlist -eq 10) 'the gate report carries the prepared outcome and the shortlist size'
+    Assert ($report.complete -and $report.outcome -eq 'incomplete' -and $report.shortlist -eq 10) 'the gate report carries the prepared outcome and the shortlist size'
+    Assert ($report.evidence_complete -eq $false) 'the report names the incomplete concept evidence'
     Assert (@($report.missing | Where-Object { $_.status -eq 'ambiguous' }).Count -eq 1) 'the report carries the ambiguous concept input'
     $markdown = [IO.File]::ReadAllText((Join-Path $out 'gate/gate-report.md'))
     Assert ($markdown.Contains('register: ambiguous')) 'the Markdown report carries the optional-missing concept input'
