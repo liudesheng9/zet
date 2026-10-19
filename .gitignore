@@ -2,3 +2,6 @@
 .claude/settings.local.json
 
 tools/*/target/
+
+# scratch: a commit message file is never tracked
+.git-commit-msg.txt
