@@ -2,13 +2,17 @@
 # S06 (#103): a standalone claim filed beside earlier thought, with the kinded reason in its first
 # sentence, and a book-bound claim kept in the Literature tree.
 #
-# Two seams are exercised on a scratch archive. First the writer's helper (`zt-digest call -Beneath`):
+# Three seams are exercised on a scratch archive. First the writer's helper (`zt-digest call -Beneath`):
 # a Side successor beneath an earlier agent Topic Card that the group read in full is permitted, a
 # Direct successor there, an edit there and any unlisted parent are refused, a human Card is refused,
-# and the earlier Card's authored text never changes. Second the group: `group-start` publishes the
-# place-beside file from its earlier-context pack, and a draft that files one Card beside the earlier
-# thought and one under its own anchor completes through the receipt-owned path, replays without a
-# second Card, and leaves every older authored body byte-identical.
+# and the earlier Card's authored text never changes. Second the prompt the frozen workflows assemble:
+# `prepare` builds shared-prefix.md from `dsh-digest-base.zh.md` plus the book type's files, so that
+# assembled prompt must carry the ordered filing decision, the `-Beneath` call and the inline-Link
+# rule with no fixed quota. Third the group: `group-start` publishes the place-beside file from its
+# earlier-context pack, `group-finish` refuses a draft that continues a listed Card as a Direct
+# successor, and a draft that files one Card beside the earlier thought and one under its own anchor
+# completes through the receipt-owned path, replays without a second Card, and leaves every older
+# authored body byte-identical.
 param([string]$Zt = '', [string]$Digest = $env:ZT_DIGEST)
 $ErrorActionPreference = 'Stop'; $utf8 = [Text.UTF8Encoding]::new($false)
 $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "standalone-placement-test-$PID"))
@@ -61,6 +65,7 @@ try {
     $gui = Gui
     $human = Gui-Create $gui @{ kind='topic'; workspace='human'; text="# 人类的工作台`n`n只供人写的地方。`n" }
     $humanAt = $human.address
+    $humanText = (Card $humanAt).body
     Assert $humanAt 'a human Topic exists to be refused as a destination'
 
     # --- the writer's helper: -Beneath permits one Side successor and nothing else ----------------------
@@ -109,7 +114,14 @@ try {
     $source = Join-Path $scratch 'book.md'; $options = Join-Path $scratch 'options.json'
     [IO.File]::WriteAllText($source, "# 导论`n`n剩余控制权决定谈判地位。所有者取得事后谈判优势。`n`n# 参考`n未选择。", $utf8)
     [IO.File]::WriteAllText($options, '{"terms":false}', $utf8)
-    $manifest = Run-Digest @('prepare','-Source',$source,'-Out',$out,'-CitationKey','LaterBook','-BibTeX','@book{LaterBook,title={Later book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-MaxUnits','1','-NoFigures','-Variant','econ','-RunOptions',$options,'-Apply')
+    $manifest = Run-Digest @('prepare','-Source',$source,'-Out',$out,'-CitationKey','LaterBook','-BibTeX','@book{LaterBook,title={Later book}}','-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-MaxUnits','1','-NoFigures','-Variant','econ','-RunOptions',$options,'-Instructions','dsh-digest-base.zh.md,dsh-model-cards.zh.md','-Apply')
+    # The frozen econ/math workflows send `dsh-digest-base.zh.md` plus their book type's files; the
+    # writer reads the assembled shared-prefix.md. The S06 filing decision has to reach that prompt,
+    # not only the standalone `dsh-instructions.zh.md` the workflows no longer load.
+    $prefixText = [IO.File]::ReadAllText((Join-Path $out 'shared-prefix.md'))
+    Assert ($prefixText.Contains('依附本书才能读懂的内容')) 'the live digest prompt states the ordered filing decision'
+    Assert ($prefixText.Contains('可续写的早前主题卡') -and $prefixText.Contains('-Beneath')) 'the live digest prompt names the place-beside file and the -Beneath call'
+    Assert ($prefixText.Contains('没有固定的 Link 条数') -and -not $prefixText.Contains('至少一半的卡片链接全书') -and -not $prefixText.Contains('父卡以外')) 'the live digest prompt writes Links in place with no fixed quota'
     $next = Run-Digest @('ledger','next','-Out',$out,'-Layer','digest','-Take','1','-Owner','group-manager')
     $unit = @($next.units)[0]
     $started = Run-Digest @('group-start','-Out',$out,'-Group','1','-Token',"$($unit.token)")
@@ -131,10 +143,19 @@ try {
         disposition = 'cards'
         calls = @(
             @{ tool='create_successor'; arguments=@{ at=$anchor; kind='side'; title='本组对剩余控制权的界定'; body='本组把剩余控制权写成对资产剩余收益的控制。来源：[[LaterBook]] §1。' } },
-            @{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='剩余控制权也约束经理'; body=('对照 [[{0}]]：剩余控制权也约束经理，因为所有者能撤换经理。这个效果要求经理的任期短于所有者。来源：[[LaterBook]] §1。' -f $earlier) } },
+            @{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='剩余控制权也约束经理'; body=('对照 [[{0}]] 与人类工作区的 [[{1}]]：剩余控制权也约束经理，因为所有者能撤换经理。这个效果要求经理的任期短于所有者。来源：[[LaterBook]] §1。' -f $earlier, $humanAt) } },
             @{ tool='edit_card'; arguments=@{ at=$anchor; title='剩余控制权界定导论'; body='本组界定剩余控制权。'; base_fingerprint=$anchorFingerprint } }
         )
     }
+    [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
+    # The group applies its draft through group-finish, so the same rule the helper enforces must
+    # hold there: a Card read in full is continued only as a Side successor. Its Direct chain belongs
+    # to its own line of thought, and `0/2` is still free, so only the rule can refuse this draft.
+    $draft.calls[1].arguments.kind = 'direct'
+    [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
+    $directGroup = Try-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
+    Assert ($directGroup.code -eq 1 -and $directGroup.text.Contains('Side successor') -and $directGroup.text.Contains($earlier)) 'the group refuses a Direct successor beneath the earlier Card it read in full'
+    $draft.calls[1].arguments.kind = 'side'
     [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
     $check = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
     Assert ($check.preview -eq $true -or $check.check_only -eq $true) 'the group preview accepts one Card under its anchor and one beside the earlier Topic Card'
@@ -147,6 +168,8 @@ try {
     Assert (((Card $earlier).body -ceq $earlierText) -and ((Card $earlierSide).body -ceq $earlierSideText)) 'the earlier thought and its chain keep their authored bodies after the group'
     $placedCard = Card $placed[0]
     Assert ($placedCard.body.TrimStart().StartsWith('对照 [[') -and $placedCard.body.Contains($earlier)) 'the placed Card states its relation to the earlier Card in its first sentence'
+    Assert ($placedCard.body.Contains("[[$humanAt]]")) 'an agent Card links a human Card as a read-only reference'
+    Assert (((Card $humanAt).body -ceq $humanText) -and (Card $humanAt).text.Contains($placed[0])) 'the human Card keeps its authored text and gains only the generated Reverse link'
 } finally {
     Remove-Item Env:ZT_CHECK_ZT,Env:ZT_TRACE_TOOLS -ErrorAction SilentlyContinue
     zt down 2>&1 | Out-Null

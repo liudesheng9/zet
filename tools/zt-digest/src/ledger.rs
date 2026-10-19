@@ -7661,6 +7661,23 @@ fn group_finish(
         .context("group draft calls must be an array")?
         .clone();
     let anchor = field(group, "anchor")?;
+    // S06 (#103, D100/D104): a Card this group read in full may be continued only as a Side
+    // successor. A Direct successor would extend the earlier line of thought, so the rule the
+    // writer's helper enforces while it writes holds here too, where the group actually applies its
+    // draft: the new Card is created, and nothing of the earlier Card, tree or chain becomes
+    // writable.
+    let beside: HashSet<String> = if done {
+        HashSet::new()
+    } else {
+        let text = job["artifacts"]["place_beside"]["path"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .map(std::fs::read_to_string)
+            .transpose()
+            .context("missing place-beside file")?
+            .unwrap_or_default();
+        text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect()
+    };
     let mut source_notes = BTreeMap::new();
     for (i, call) in calls.iter_mut().enumerate() {
         if call.as_object().is_none_or(|v| {
@@ -7697,6 +7714,15 @@ fn group_finish(
         {
             bail!(
                 "create a Side successor beneath the group anchor to preserve direct group positions"
+            );
+        }
+        if tool == "create_successor"
+            && at != anchor
+            && beside.contains(at)
+            && args.get("kind").and_then(Value::as_str) != Some("side")
+        {
+            bail!(
+                "file a new Card beside `{at}` only as a Side successor; its Direct chain belongs to its own line of thought"
             );
         }
         if let Some(src) = call["arguments"].as_object_mut().unwrap().remove("src") {
