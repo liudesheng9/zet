@@ -7,7 +7,7 @@ paths:
   - "tests/hub_cards.rs"
   - "tests/register_entries.rs"
   - "tests/search_rank.rs"
-synced: 6a75302018b4
+synced: 7dfaf5f
 updated: 2026-10-19
 ---
 
