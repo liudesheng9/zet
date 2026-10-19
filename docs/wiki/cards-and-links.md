@@ -112,6 +112,7 @@ All items are `pub(crate)`; ZT is one binary crate (`src/main.rs`), so there is 
 | `card_template` | `fn(title: &str) -> String` | `# {title}\n\n\n<!-- zt:reverse-links -->\n`: heading, blank line, empty body line, marker. |
 | `topic_template` / `regular_template` | `fn(&str) -> String` / `fn() -> String` | `card_template(title)` and `card_template("")`. |
 | `from_legacy_text` | `fn(&str) -> Option<String>` | Converts the pre-Markdown format (`title lines`, `<--->`, body, `<--->`, old reverse text). Title lines are joined with spaces, the body is trimmed, the old reverse text is dropped. `None` unless the text has exactly two `<--->` lines. |
+| `authored_fingerprint` | `fn(&Card) -> Result<String>` | The Card's authored identity: SHA-256 over its title, body, BibTeX and type fields (type, facet, emphasis, level or hub level, form), each followed by a NUL byte. The generated Reverse section is not authored, so writing a reply that links the Card changes its Reverse links without changing this value; a reader's captured fingerprint (the GUI's Reply, S18) therefore stays valid exactly while the authored text does. |
 
 Title rule (`title_from_heading`): the first non-blank line before the marker must be `# Title` with `#` in column 0 and one space, or the bare line `#` (which gives an empty title). A closing `#` run is dropped only when a space precedes it: `# Closed #` gives `Closed`, `# C#` gives `C#`. `#Title`, `## Title`, and an indented heading are refused for Topic and Regular Cards.
 
@@ -408,6 +409,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ## Change history
 
+- `2026-10-19` — Add `card::authored_fingerprint` (S18, #99): the SHA-256 of a Card's title, body, BibTeX and type fields, with the generated Reverse section left out, so the GUI's Reply can capture a target and refuse a Save when its authored text changed while its own generated Reverse links may change freely.
 - `2026-10-17` — Expose the existing `line_around` helper to the indexed Broken-link reader so repeated occurrences retain the original source-line rendering.
 
 - `2026-10-17` — Keep the body parser and exact Reverse link rendering as the oracle for the new transactional occurrence index; production target validation is scoped and the full lifecycle validator is test-only.

@@ -610,6 +610,7 @@ impl App {
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
             (Method::Post, "/api/insert") => self.insert_card(body),
+            (Method::Post, "/api/reply") => self.reply(body),
             (Method::Get, "/api/artifact") => self.artifact(&param("sha")?),
             (Method::Get, "/api/scholar/works") => self.scholar_works(&param("q")?),
             (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
@@ -746,6 +747,8 @@ impl App {
             "title": parsed.title,
             "text": card.text,
             "body": parsed.body,
+            // The authored identity a Reply captures and re-checks before it saves (S18, #99).
+            "authored_fingerprint": crate::card::authored_fingerprint(card)?,
             "html": render_markdown(&parsed.body, &snapshot, &self.charts),
             "bibtex": card.bibtex,
             "citation_key": card.citation_key,
@@ -1101,6 +1104,22 @@ impl App {
     fn save_spreads(&self, body: &Value) -> ApiResult {
         let conn = crate::open_db(&self.root)?;
         Ok(crate::spread::save(&conn, body)?)
+    }
+
+    /// Reply to an agent Card with one human Card (S18, #99). Owner-only, like every GUI write, and
+    /// there is no MCP route that writes a human Card. A refusal is a 200 answer that says why, so
+    /// the reader keeps the draft and sees the fresh context.
+    fn reply(&self, body: &Value) -> ApiResult {
+        let outcome = crate::reply::write(
+            &self.root,
+            &crate::reply::Request {
+                target: &str_field(body, "at")?,
+                base: &str_field(body, "base")?,
+                text: &str_field(body, "text")?,
+                topic: body.get("topic").and_then(Value::as_str),
+            },
+        )?;
+        Ok(outcome.into_value())
     }
 
     /// Move a Card to a free Location (`to`) or into another Card's place
@@ -1864,6 +1883,33 @@ mod tests {
         );
         clear_record(temp.path());
         assert_eq!(recorded_url(temp.path()), None);
+    }
+
+    /// S18 (#99): the reader's Reply action, its `r` key, the four offered relation words, the
+    /// destination selector, the browser-local preference and the refusal path all exist in the
+    /// shipped page, and the page never posts a human write through any other route.
+    #[test]
+    fn the_front_end_replies_to_an_agent_card_from_the_human_workspace() {
+        let reply = &APP_JS[APP_JS.find("const REPLY_KINDS = [").expect("REPLY_KINDS")..];
+        let reply = &reply[..reply.find("];").expect("end of REPLY_KINDS")];
+        for word in ["印证", "反驳", "放宽", "对应"] {
+            assert!(reply.contains(word), "the reply selector offers {word}: {reply}");
+        }
+        assert!(APP_JS.contains("async function replyTo()"), "the page has one reply path");
+        assert!(
+            APP_JS.contains("case 'r': return card && card.workspace === 'agent' ? run(replyTo) : undefined;"),
+            "r opens Reply only for an agent Card, and only outside an input"
+        );
+        assert!(APP_JS.contains("actionButton('Reply', 'r', replyTo"), "the reader shows the Reply action");
+        assert!(APP_JS.contains("api('reply'"), "Reply saves through the GUI-only route");
+        assert!(APP_JS.contains("store.set('zt-reply-topic'"), "the destination is remembered after a save");
+        assert!(APP_JS.contains("store.get('zt-reply-topic')"), "a stale destination is resolved, not followed");
+        assert!(APP_JS.contains("new Topic ${reply.fallback}"), "an empty archive offers the default Topic");
+        assert!(APP_JS.contains("target.fingerprint = result.target.authored_fingerprint;"), "a changed target refreshes the captured fingerprint");
+        assert!(APP_JS.contains("'agent-card'"), "the command bar offers reply only for an agent Card");
+        // No MCP tool writes a human Card, and Reply adds no route of its own beyond /api/reply.
+        assert_eq!(APP_JS.matches("api('reply'").count(), 1);
+        assert!(!include_str!("mcp.rs").contains("\"reply\""), "Reply is not an MCP tool");
     }
 
     #[test]

@@ -16,6 +16,7 @@
 //! marker is an HTML comment so that rendered Markdown hides it.
 
 use anyhow::{Result, bail};
+use sha2::Digest;
 
 pub(crate) const REVERSE_MARKER: &str = "<!-- zt:reverse-links -->";
 pub(crate) const REVERSE_HEADING: &str = "## Reverse links";
@@ -84,6 +85,35 @@ fn parse(text: &str, require_title: bool) -> Result<ParsedCard> {
         body: trim_blank_lines(&head[body_start..]).join("\n"),
         reverse,
     })
+}
+
+/// The authored identity of one Card (S18, #99): its title, its body and its type fields, hashed.
+/// The Reverse section is generated, so it is not authored and not in the hash: writing a reply that
+/// links a Card changes that Card's Reverse links without changing this value, so a reader's
+/// captured fingerprint stays valid exactly while the authored text does.
+pub(crate) fn authored_fingerprint(card: &crate::Card) -> Result<String> {
+    let parsed = parse_card_text(&card.text)?;
+    let authored = [
+        parsed.title,
+        parsed.body,
+        card.bibtex.clone().unwrap_or_default(),
+        card.card_type.id().to_string(),
+        card.facet.as_ref().map_or(String::new(), |facet| facet.id().to_string()),
+        card.emphasis
+            .map_or(String::new(), |emphasis| emphasis.id().to_string()),
+        card.level_id().unwrap_or_default().to_string(),
+        card.form.map_or(String::new(), |form| form.id().to_string()),
+    ];
+    let mut hasher = sha2::Sha256::new();
+    for field in &authored {
+        hasher.update(field.as_bytes());
+        hasher.update([0u8]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// The title of an ATX level-one heading line, such as `# Title` or `# Title #`.

@@ -100,6 +100,10 @@ _Avoid_: Section, folder
 **Access**:
 Which Workspaces a client may change. Every client may read both Workspaces. The human's own tools (the Session, the GUI, and shell commands) may change both; the MCP server may change only the agent Workspace, and refuses any change that would rewrite the body of a human Card. Regenerating a human Card's Reverse links is not a change to it.
 
+**Reply**:
+One human Card an owner writes to answer one agent Card. It opens with a relation word (`印证`, `反驳`, `放宽`, or `对应`) and a Link to that agent Card, carries the owner's own thought, and is filed in a human Topic, not beneath the agent Card. Its Link and the generated Reverse link carry the connection across the Workspaces; the agent Card's authored text never changes.
+_Avoid_: Comment, response Card, human note
+
 **MCP server**:
 The Model Context Protocol server started with `zt mcp`. It speaks JSON-RPC over stdio, offers every Card operation as a tool, and acts with agent Access.
 _Avoid_: API, bot

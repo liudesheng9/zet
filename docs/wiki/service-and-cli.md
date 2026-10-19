@@ -119,6 +119,7 @@ flowchart TD
 | Editor bridge | `src/main.rs` (`run_editor`, `run_editor_with_suffix`) | Opens `EDITOR` on a temp file. |
 | Dump | `src/dump.rs` | Builds and compresses the dump. |
 | Autostart | `src/autostart.rs`, `src/bin/zt-boot.rs` | Sign-in start. |
+| Reply write | `src/reply.rs` (registered by `mod reply` in `src/main.rs`) | The GUI-only Owner write that answers an agent Card with one human Card; see [GUI](gui.md#reply-srcreplyrs). It owns no new table and no new command. |
 
 Control and data flow: a CLI process resolves the archive root from the config, checks the service (`require_service_up` also runs `ensure_markdown_cards`), takes the edit lock for a write, opens its own SQLite connection, and commits the authored change, derived Links and generated sections together. Ordinary writes finalize one source with `link_index::source_changed`; structural changes use `regenerate_reverse_links_tx`. The daemon itself does not serve Card writes from the CLI; it holds the daemon lock, keeps the record, and runs the GUI thread. Every CLI process and the GUI open the database directly.
 
@@ -688,6 +689,7 @@ Gaps:
 ## Change history
 
 - `2026-10-19` — #93 S10 (#101): the crate declares one more module, `src/entry.rs` (the concept register's shared entry projection); no command, flag, schema column, or migration changes.
+- `2026-10-19` — Register `src/reply.rs` (S18, #99) as the GUI-only Reply write: one human Card per reply, no MCP tool, no new table or command. The component table names it; the behaviour, access boundary and tests live in the [GUI](gui.md) block.
 - `2026-10-19` — A consumer that closes zt's stdout early (`head`, `Select-Object -Last 1`) no longer makes the command panic with a broken-pipe write: `main`'s panic hook exits 0 for that one case and keeps the default hook for every other panic (`tests/closed_stdout.rs`).
 - `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65): a migration that repairs a stored Reverse section now advances `archive_revision` once, so a reader's held revision never covers changed text. Public tests add the T01 migration oracle (repeated, Broken and cross-Workspace Links, human Cards, BibTeX, authored bytes preserved, second migration a no-op), the T02 aborted-migration state (no marker, no index, no changed Card, one consistent backup, retry after repair) and the T10 live-holder refusal. GUI and Session writes now verify `status --check-links` at their own boundaries, a Spread follows a Side-successor compaction, and the pre-Markdown conversion checks that its converted archive has a matching Link index.
 

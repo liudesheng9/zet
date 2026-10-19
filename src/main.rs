@@ -29,6 +29,7 @@ mod model;
 mod ops;
 mod place;
 mod read;
+mod reply;
 mod scholar;
 mod session;
 mod shutdown;

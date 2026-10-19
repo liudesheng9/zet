@@ -294,6 +294,7 @@
     ['n', 'create the direct successor', 'card'],
     ['b', 'create the next side successor', 'regular'],
     ['e', 'edit the current card', 'card'],
+    ['reply', 'answer the open agent Card with a human Card: 印证/反驳/放宽/对应 then [[the agent card]]', 'agent-card'],
     ['del', 'delete the current card and its successors', 'card'],
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
@@ -309,7 +310,8 @@
   ];
   const context = () => (!state.card ? 'root' : state.card.context === 'tree-root' ? 'tree-root' : 'regular');
   const available = (scope) =>
-    scope === 'always' || (scope === 'card' && context() !== 'root') || (scope === 'regular' && context() === 'regular');
+    scope === 'always' || (scope === 'card' && context() !== 'root') || (scope === 'regular' && context() === 'regular')
+    || (scope === 'agent-card' && context() !== 'root' && !!state.card && state.card.workspace === 'agent');
 
   async function runCommand(line) {
     const parts = line.trim().split(/\s+/).filter(Boolean);
@@ -355,6 +357,7 @@
         if (context() !== 'regular') throw new Error(`side successors cannot start from a ${state.card.kind === 'literature' ? 'Literature' : 'Topic'} Card`);
         return newCard('side');
       case 'e': needCard(); return editCard();
+      case 'reply': return replyTo();
       case 'del': needCard(); return deleteCard();
       case 'ins': needCard(); return insertCard();
       case 'mv': {
@@ -2580,6 +2583,10 @@
           cls: 'study-btn',
         }) : null,
         actionButton('Edit', 'e', editCard, { primary: true }),
+        card.workspace === 'agent' ? actionButton('Reply', 'r', replyTo, {
+          title: 'Answer this agent Card with a human Card: 印证, 反驳, 放宽, or 对应, then the Link back',
+          cls: 'reply-btn',
+        }) : null,
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
         actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),
         actionButton('Insert', 'i', insertCard, { disabled: !regular, title: regular ? 'Insert a new card in this place; this card and its successors move down' : 'Nothing goes before a tree root' }),
@@ -4053,7 +4060,7 @@
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, reply }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
       // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
@@ -4091,8 +4098,7 @@
         h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick, levelPick,
         h('datalist', { id: 'zt-facets' }, Object.entries(FACETS).map(([id, info]) => h('option', { value: id, label: info.note }))),
       ) : null;
-      const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },
-        h('span', { class: 'lbl', text: 'Type' }),
+      const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },        h('span', { class: 'lbl', text: 'Type' }),
         Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
           class: id + (id === cardType ? ' on' : ''), role: 'radio', 'aria-checked': id === cardType ? 'true' : 'false',
           title: `${info.label} Card — ${info.note}`, text: info.label, dataset: { type: id },
@@ -4111,6 +4117,47 @@
       ) : null;
       const text = h('textarea', { spellcheck: 'true', 'aria-label': 'Card Markdown' });
       text.value = initial;
+      // Reply: the relation selector rewrites only the supplied prefix, never the reader's own
+      // sentences, and the destination selector names the human Topic the reply is filed in.
+      const replyBar = reply ? (() => {
+        const { target, destinations, draft, kinds } = reply;
+        const prefixOf = (index) => `${kinds[index][0]} [[${target.address}]]：`;
+        const relationPick = h('select', {
+          class: 'reply-kind', 'aria-label': 'Relation to the agent Card',
+          title: 'The relation word supplied before the Link; your own sentences stay as you wrote them',
+          onchange: (event) => {
+            const index = Number(event.target.value);
+            const before = prefixOf(draft.relation);
+            const after = prefixOf(index);
+            if (text.value.startsWith(before)) text.setRangeText(after, 0, before.length, 'end');
+            else text.setRangeText(after + '\n\n', 0, 0, 'end');
+            draft.relation = index;
+            dirty = true;
+            update();
+          },
+        }, kinds.map(([word, note], index) => h('option', { value: String(index), text: word, title: note })));
+        const destinationPick = h('select', {
+          class: 'reply-dest', 'aria-label': 'Destination Topic',
+          title: 'The human Topic this reply is filed in: a side successor of its last card, or the first direct successor of an empty Topic',
+          onchange: (event) => {
+            draft.destinationIndex = Number(event.target.value);
+            draft.destination = destinations[draft.destinationIndex] || null;
+            setMsg(draft.destination ? `filed in ${draft.destination.title} (${draft.destination.address})` : `filed in a new Topic ${reply.fallback}`);
+          },
+        },
+          destinations.map((topic, index) => h('option', { value: String(index), text: `${topic.title || '(untitled)'} · ${topic.address}` })),
+          h('option', { value: '-1', text: `new Topic ${reply.fallback}` }),
+        );
+        destinationPick.value = String(draft.destination ? Math.max(0, destinations.indexOf(draft.destination)) : -1);
+        relationPick.value = String(draft.relation);
+        return h('div', { class: 'reply-bar' },
+          h('span', { class: 'lbl', text: `Reply to ${target.address}` }),
+          relationPick,
+          h('span', { class: 'lbl', text: 'in' }),
+          destinationPick,
+          draft.note,
+        );
+      })() : null;
       const bib = bibtex !== undefined
         ? h('textarea', { class: 'bib', spellcheck: 'false', 'aria-label': 'BibTeX', placeholder: '@book{Smith2024,\n  title = {Example Book}\n}' })
         : null;
@@ -4151,6 +4198,7 @@
 
       const close = openOverlay(h('div', { class: 'sheet-dlg', role: 'dialog' },
         h('div', { class: 'dlg-head' }, h('h3', { text: heading }), typePick),
+        replyBar,
         h('div', { class: 'dlg-body' },
           h('div', { class: 'pane' },
             bib ? h('div', { class: 'pane-label' }, h('span', { text: 'BibTeX metadata' })) : null,
@@ -4299,6 +4347,87 @@
     if (!address) return;
     await afterChange(address, `created ${address}`);
     if (preset.onTable) { pull([address]); renderStage(); }
+  }
+
+  // A Reply answers one agent Card from the human Workspace (S18, #99). The four words are the
+  // Relation kinds a Link can announce; the selector supplies the prefix, and changing it never
+  // rewrites text the reader composed. The reply is filed in a human Topic, never under the agent
+  // Card: its Link and the generated Reverse link carry the connection across the Workspaces.
+  const REPLY_KINDS = [
+    ['印证', 'the card shows or supports this'],
+    ['反驳', 'this counters the card'],
+    ['放宽', 'this relaxes one of its assumptions'],
+    ['对应', 'the same mechanism holds elsewhere'],
+  ];
+  const REPLY_DEFAULT_TOPIC = '回应';
+
+  /** The human Topic the reader replied in last, while it still exists. */
+  function replyRecentTopic() {
+    const wanted = store.get('zt-reply-topic');
+    if (!wanted) return null;
+    return (state.nodes || []).find((node) => node.address === wanted && node.kind === 'topic' && node.workspace === 'human') || null;
+  }
+
+  /** The human Topics a reply may be filed in, the last used one first. */
+  function replyDestinations() {
+    const recent = replyRecentTopic();
+    const topics = (state.nodes || [])
+      .filter((node) => node.kind === 'topic' && node.workspace === 'human')
+      .sort((a, b) => String(a.address).localeCompare(String(b.address), undefined, { numeric: true }));
+    const list = [];
+    if (recent) list.push(recent);
+    for (const topic of topics) if (!list.some((seen) => seen.address === topic.address)) list.push(topic);
+    return list;
+  }
+
+  /** Reply to the open agent Card: one human Card, written in the writing desk. */
+  async function replyTo() {
+    const card = state.card;
+    if (!card) throw new Error('r needs a Card; use go <target> first');
+    if (card.workspace !== 'agent') {
+      throw new Error('Reply answers an agent Card; open one of the agent workspace first (w switches workspace)');
+    }
+    if (!card.authored_fingerprint) throw new Error('this Card view carries no authored fingerprint; reload the page and try again');
+    const target = { address: card.address, title: card.title || '', fingerprint: card.authored_fingerprint };
+    const destinations = replyDestinations();
+    const chosen = destinations.find((topic) => (topic.title || '').trim() === REPLY_DEFAULT_TOPIC) || destinations[0] || null;
+    const draft = {
+      destination: chosen,
+      destinationIndex: chosen ? destinations.indexOf(chosen) : -1,
+      relation: 0,
+      note: h('span', { class: 'reply-note' }),
+    };
+    const address = await openEditor({
+      heading: 'Reply · human workspace',
+      initial: `# \n\n${REPLY_KINDS[draft.relation][0]} [[${target.address}]]：\n\n<!-- zt:reverse-links -->\n`,
+      cardType: null,
+      reply: { target, destinations, draft, kinds: REPLY_KINDS, fallback: REPLY_DEFAULT_TOPIC },
+      save: async (text) => {
+        const result = await api('reply', {
+          at: target.address,
+          base: target.fingerprint,
+          text,
+          topic: draft.destination ? draft.destination.address : undefined,
+        });
+        if (result.saved) {
+          // Remember the destination only after the save succeeded, so a refused reply leaves the
+          // previous preference alone.
+          store.set('zt-reply-topic', result.destination.topic);
+          return result.address;
+        }
+        // A refusal keeps the draft: show the fresh context the reader must decide against, take its
+        // new fingerprint so a renewed Save is checked against the Card they now see, and stop.
+        if (result.target && result.reason === 'target_changed') {
+          target.fingerprint = result.target.authored_fingerprint;
+          target.title = result.target.title;
+        }
+        draft.note.textContent = result.detail || 'the reply was not saved';
+        draft.note.className = 'reply-note err';
+        throw new Error(result.detail || 'the reply was not saved');
+      },
+    });
+    if (!address) return;
+    await afterChange(address, `replied to ${target.address}`);
   }
 
   async function newLiterature() {
@@ -4621,6 +4750,7 @@
         case 'n': return run(() => runCommand('n'));
         case 'b': return run(() => runCommand('b'));
         case 'e': return run(() => runCommand('e'));
+        case 'r': return card && card.workspace === 'agent' ? run(replyTo) : undefined;
         case 't': return run(() => newCard('topic', ''));
         case 'l': return run(() => newLiterature());
         case 'm': return card ? run(() => moveCard()) : undefined;

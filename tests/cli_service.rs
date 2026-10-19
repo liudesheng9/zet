@@ -4043,3 +4043,144 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
 
     home.cmd().arg("down").assert().success();
 }
+
+/// S18 (#99): Reply is the Owner's answer to an agent Card, written as one human Card through the
+/// GUI only. Every assertion goes through the real HTTP API on a scratch archive: the captured
+/// authored fingerprint, the four relation words, the destination Topic (remembered, default,
+/// missing), the placement computed at save time, the generated Reverse link on the agent Card, and
+/// the refusals that keep the reader's draft.
+#[test]
+fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let port = gui_port(&home);
+    let token = gui_token(port);
+    let auth = [("X-ZT-Token", token.as_str())];
+    let api = |method: &str, path: &str, body: Option<&str>| {
+        let (status, text) = http_request(port, method, path, &auth, body);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        (status, value)
+    };
+    let post = |path: &str, body: serde_json::Value| api("POST", path, Some(&body.to_string()));
+    let get = |path: &str| api("GET", path, None);
+    let card_of = |at: &str| get(&format!("/api/card?at={}", at.replace('/', "%2F"))).1;
+
+    let (_, topic) = post("/api/create", serde_json::json!({
+        "kind": "topic", "text": "# 剩余控制权\n\n代理工作区的一个主题。\n", "workspace": "agent",
+    }));
+    let agent_topic = topic["address"].as_str().expect("agent topic").to_string();
+    let (_, made) = post("/api/create", serde_json::json!({
+        "kind": "direct", "at": agent_topic, "text": "# 剩余控制权决定谈判地位\n\n剩余控制权决定谈判地位。\n",
+    }));
+    let agent = made["address"].as_str().expect("agent card").to_string();
+    let card = card_of(&agent);
+    let fingerprint = card["authored_fingerprint"].as_str().expect("authored fingerprint").to_string();
+    assert_eq!(fingerprint.len(), 64);
+    let authored_before = card["text"].as_str().expect("text").to_string();
+
+    // A bare supplied prefix is not a reply, and neither is an unkinded or absent Link.
+    let (status, bare) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fingerprint, "text": format!("# 回应剩余控制权\n\n印证 [[{agent}]]：\n"),
+    }));
+    assert_eq!(status, 200);
+    assert_eq!(bare["saved"], false);
+    assert_eq!(bare["reason"], "reply_bare");
+    let (_, unkinded) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fingerprint, "text": format!("# 关于剩余控制权\n\n参见 [[{agent}]] 与相关讨论。\n"),
+    }));
+    assert_eq!((unkinded["saved"].clone(), unkinded["reason"].clone()), (serde_json::json!(false), serde_json::json!("link_unkinded")));
+    let (_, unlinked) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fingerprint, "text": "# 关于剩余控制权\n\n印证 [[9/9]]：这是一条回应。\n",
+    }));
+    assert_eq!(unlinked["reason"], "target_link_missing");
+
+    // A Card that changed since the page read it is a renewed-Save refusal, with fresh context.
+    let (_, edited) = post("/api/edit", serde_json::json!({
+        "at": agent, "text": "# 剩余控制权决定谈判地位\n\n剩余控制权决定谈判地位，并影响融资。\n", "base": authored_before,
+    }));
+    assert_eq!(edited["address"], agent);
+    let (_, stale) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fingerprint, "text": format!("# 融资约束\n\n印证 [[{agent}]]：融资约束放大了这一效应。\n"),
+    }));
+    assert_eq!(stale["saved"], false);
+    assert_eq!(stale["reason"], "target_changed");
+    let fresh = stale["target"]["authored_fingerprint"].as_str().expect("fresh fingerprint").to_string();
+    assert_ne!(fresh, fingerprint, "the edited Card has a new authored fingerprint");
+    assert_eq!(stale["target"]["title"], "剩余控制权决定谈判地位");
+
+    // A valid reply: an empty human archive creates the default Topic and its first Direct successor.
+    let (_, saved) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fresh, "text": format!("# 融资约束放大剩余控制权的效应\n\n印证 [[{agent}]]：外部融资越贵，剩余控制权越值钱。\n"),
+    }));
+    assert_eq!(saved["saved"], true, "{saved}");
+    let reply = saved["address"].as_str().expect("reply address").to_string();
+    assert_eq!(saved["kind"], "illustrates");
+    assert_eq!(saved["destination"]["title"], "回应");
+    assert_eq!(saved["destination"]["created_topic"], true);
+    assert_eq!(saved["destination"]["edge"], "direct");
+    let reply_topic = saved["destination"]["topic"].as_str().expect("topic").to_string();
+    let human = card_of(&reply);
+    assert_eq!(human["workspace"], "human");
+    assert_eq!(human["parent"]["address"], reply_topic);
+
+    // The agent Card kept its authored text and gained the generated Reverse link.
+    let after = card_of(&agent);
+    assert_eq!(after["authored_fingerprint"], fresh);
+    assert!(after["inbound"].as_array().expect("inbound").iter().any(|link| link["address"] == reply.as_str()));
+    assert_eq!(
+        after["body"].as_str().unwrap(),
+        "剩余控制权决定谈判地位，并影响融资。",
+        "the reply's text never enters the agent Card"
+    );
+
+    // The remembered destination is followed, and the next reply is a Side successor of its last Card.
+    let (_, again) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fresh, "topic": reply_topic,
+        "text": format!("# 契约不完全时结论会变\n\n放宽 [[{agent}]]：完全契约的假设，才能得到这个结论。\n"),
+    }));
+    assert_eq!(again["saved"], true, "{again}");
+    assert_eq!(again["kind"], "relaxes");
+    assert_eq!(again["destination"]["created_topic"], false);
+    assert_eq!(again["destination"]["topic"], reply_topic);
+    assert_eq!(again["destination"]["edge"], "side");
+    assert_eq!(again["destination"]["parent"], reply);
+
+    // A destination that no longer exists falls back to the default Topic, never a stale occupant.
+    let (_, fallen) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fresh, "topic": "999/0",
+        "text": format!("# 这个结论只在一个方向上成立\n\n反驳 [[{agent}]]：反例出现在控制权不可转让时。\n"),
+    }));
+    assert_eq!(fallen["saved"], true, "{fallen}");
+    assert_eq!(fallen["kind"], "objects");
+    assert_eq!(fallen["destination"]["topic"], reply_topic);
+    assert_eq!(fallen["destination"]["created_topic"], false);
+
+    // A human Card is not a target, and the route is Owner-only.
+    let (_, human_topic) = post("/api/create", serde_json::json!({
+        "kind": "topic", "text": "# 人类的主题\n\n人类工作区的一个主题。\n", "workspace": "human",
+    }));
+    let human_at = human_topic["address"].as_str().expect("human topic").to_string();
+    let (_, wrong_ws) = post("/api/reply", serde_json::json!({
+        "at": human_at, "base": "0".repeat(64), "text": format!("# 回应\n\n印证 [[{human_at}]]：这不成立。\n"),
+    }));
+    assert_eq!(wrong_ws["saved"], false);
+    assert_eq!(wrong_ws["reason"], "target_not_agent");
+    assert_eq!(http_request(port, "POST", "/api/reply", &[], Some("{}")).0, 403);
+    let (status, _) = post("/api/reply", serde_json::json!({
+        "at": "7/7", "base": "0".repeat(64), "text": "# 回应\n\n印证 [[7/7]]：没有这张卡。\n",
+    }));
+    assert_eq!(status, 400, "a missing Card is an input error, not a saved reply");
+
+    // Every saved reply exists, the link index agrees, and only the owner's writes happened.
+    let (_, graph) = get("/api/graph");
+    let addresses: Vec<&str> = graph["nodes"].as_array().expect("nodes").iter()
+        .filter_map(|node| node["address"].as_str()).collect();
+    for address in [&reply, again["address"].as_str().unwrap(), fallen["address"].as_str().unwrap()] {
+        assert!(addresses.contains(&address), "{address} exists in the graph");
+    }
+    let output = home.cmd().args(["status", "--check-links"]).assert().success()
+        .get_output().stdout.clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("Link report");
+    assert_eq!(report["ok"], true, "{report}");
+    home.cmd().arg("down").assert().success();
+}

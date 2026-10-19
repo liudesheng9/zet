@@ -1102,6 +1102,23 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .type-stamp.part.aside { opacity: .6; }
 .type-stamp.part { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* A reply names its relation and its destination before the reader writes: one row under the
+   dialog heading, the note carrying the refused-save context. */
+.reply-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 18px;
+  border-bottom: 1px solid var(--hairline); background: var(--line-soft);
+  font: 11.5px var(--sans); color: var(--ink-soft); flex-wrap: wrap;
+}
+.reply-bar .lbl { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+.reply-kind, .reply-dest {
+  font: 600 11.5px var(--sans); color: var(--ink); background: var(--paper);
+  border: 1.5px solid var(--line); border-radius: 4px; padding: 2px 6px;
+}
+.reply-dest { max-width: 320px; }
+.reply-note { font: 11.5px var(--sans); color: var(--ink-faint); flex: 1 1 180px; min-width: 0; }
+.reply-note.err { color: var(--link); font-weight: 600; }
+.reply-btn { border-color: color-mix(in srgb, var(--link) 55%, var(--line)); }
+
 /* ---------- math and charts ---------- */
 .md .math-display { display: block; margin: .4em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .md .katex { font-size: 1.04em; }
