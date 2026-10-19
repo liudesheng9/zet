@@ -39,11 +39,13 @@ use std::path::Path;
 use std::sync::LazyLock;
 use zt_check::mcp::{reply_error, reply_text};
 
-const PARAMS: [&str; 12] = ["Step", "Staging", "CitationKey", "Work", "Profile", "MaxSources", "Candidates", "Books", "Job", "ReportId", "Accept", "AcceptEarlier"];
+const PARAMS: [&str; 14] = ["Step", "Staging", "CitationKey", "Work", "Profile", "MaxSources", "Candidates", "Books", "Job", "ReportId", "Accept", "AcceptEarlier", "Report", "At"];
 const READ_TOOLS: [&str; 4] = ["list_trees", "get_tree", "get_card", "get_model"];
 const JOB_PROMPT: &str = "按任务文件完成桥接判断，运行 SELF-CHECK，只回复一行 JSON。";
 const CHUNK: usize = 40;
 const WORKERS: usize = 6;
+/// The most current candidates one projection of a selected report returns (§12.2, D293).
+const PROJECT_MAX: usize = 20;
 
 static WS_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\r?\n\s*").unwrap());
 static JOB_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^br-[0-9]{3}$").unwrap());
@@ -140,6 +142,32 @@ pub(super) fn endpoint(card: &Value, index: &BookIndex) -> Value {
     record.insert("links".into(), Value::Array(links));
     record.insert("model".into(), get(card, "model").clone());
     Value::Object(record)
+}
+
+/// Why a projected endpoint is no longer the one the report froze: a compared field (workspace,
+/// tree, kind, type, facet, emphasis, level, form, title), its inferred book, or its authored
+/// fingerprint changed, or the report never snapshotted it. This is the apply path's own endpoint
+/// check (`selection_states`), reused so a projection and an apply agree on what is current
+/// (§10.3, D258; S20-AC04). Generated Reverse links are outside the fingerprint: only authored
+/// text changes it.
+fn changed_endpoint(card: &Value, snapshot: Option<&Value>, index: &BookIndex) -> Option<String> {
+    let address = field_of(card, "address");
+    let Some(snapshot) = snapshot else {
+        return Some(format!("missing endpoint {address} in the report"));
+    };
+    let now = endpoint(card, index);
+    for name in ["workspace", "tree", "kind", "type", "facet", "emphasis", "level", "form", "title"] {
+        if !ceqv(get(&now, name), get(snapshot, name)) {
+            return Some(format!("changed endpoint {address} {name}"));
+        }
+    }
+    if !ceqv(get(&now, "book"), get(snapshot, "book")) {
+        return Some(format!("changed endpoint {address} book"));
+    }
+    if !ceqv(get(&now, "fingerprint"), get(snapshot, "fingerprint")) {
+        return Some(format!("changed body or endpoint {address}"));
+    }
+    None
 }
 
 /// `Substantive`: a Regular Card that a Bridge may join.
@@ -246,6 +274,9 @@ pub(super) struct Bridge {
     accept: String,
     accept_earlier: String,
     apply: bool,
+    /// `project`: the selected immutable report and the Card its read-only projection answers for.
+    report: String,
+    at: String,
     plan_file: String,
     proposal_file: String,
     zt: Option<Zt>,
@@ -742,6 +773,11 @@ impl Bridge {
     /// The steps after the parameters are bound (the script's `try` block). Returns the lines
     /// to print and the exit code.
     fn run(&mut self, lines: &mut Vec<String>) -> Result<i32> {
+        if self.step == "project" {
+            let projected = self.project()?;
+            lines.push(ps::json_compact(&projected));
+            return Ok(0);
+        }
         self.staging = full_path(&self.staging);
         if self.work.is_empty() {
             self.work = ps::join_path(&self.staging, "bridge");
@@ -824,16 +860,112 @@ impl Bridge {
         lines.push(ps::json_compact(&result));
         Ok(0)
     }
+
+    /// `Project-Report`: the read-only nearby-candidate projection of one selected immutable
+    /// report (§10.3, D258; the GUI's optional distant source, S20-AC02/AC04/AC05). It re-reads
+    /// the report's own endpoints through `zt mcp`, reuses the report-id schema check and the
+    /// apply path's endpoint fingerprints, and returns only the proposals that name the requested
+    /// Card and are still current. It writes no Card, runs no judge, and publishes no report.
+    fn project(&mut self) -> Result<Value> {
+        let published = canon::read_json(&self.report)
+            .map_err(|e| refuse(format!("the selected report cannot be read: {e:#}")))?;
+        report::validate_published(&published)?;
+        let at = self.at.trim().to_string();
+        if at.is_empty() || at.chars().count() > 512 {
+            return Err(refuse("invalid Card address for the projection"));
+        }
+        let report_id = get(&published, "report_id").clone();
+        let snapshots = get(&published, "cards");
+        let proposals = ps_items(get(&published, "proposals"));
+        let mut named: Vec<(String, Value)> = Vec::new();
+        let mut total = 0usize;
+        for proposal in &proposals {
+            let carrier = field_of(proposal, "carrier");
+            let target = field_of(proposal, "target");
+            let other = if carrier == at {
+                Some(target)
+            } else if target == at {
+                Some(carrier)
+            } else {
+                None
+            };
+            let Some(other) = other.filter(|other| !other.is_empty()) else { continue };
+            total += 1;
+            if named.len() < PROJECT_MAX {
+                named.push((other, proposal.clone()));
+            }
+        }
+        let mut candidates: Vec<Value> = Vec::new();
+        let mut stale: Vec<Value> = Vec::new();
+        if !named.is_empty() {
+            let mut addresses = vec![at.clone()];
+            for (other, _) in &named {
+                if !addresses.contains(other) {
+                    addresses.push(other.clone());
+                }
+            }
+            let ctx = self.current_context(&addresses)?;
+            for (other, proposal) in &named {
+                let mut why = None;
+                for address in [&at, other] {
+                    let Some(card) = ctx.cards.get(address) else {
+                        why = Some(format!("missing endpoint {address}"));
+                        break;
+                    };
+                    if let Some(reason) = changed_endpoint(card, snapshots.get(address), &ctx.index) {
+                        why = Some(reason);
+                        break;
+                    }
+                }
+                let Some(why) = why else {
+                    candidates.push(json!({
+                        "report": report_id,
+                        "proposal": get(proposal, "id"),
+                        "target": other,
+                        "relation": get(proposal, "kind"),
+                        "sentence": get(proposal, "sentence"),
+                        "section": get(proposal, "section"),
+                        "carrier": get(proposal, "carrier"),
+                        "focus": if ceq(get(proposal, "carrier"), &at) { "carrier" } else { "target" },
+                    }));
+                    continue;
+                };
+                stale.push(json!({ "proposal": get(proposal, "id"), "target": other, "why": why }));
+            }
+        }
+        let status = if candidates.is_empty() {
+            if named.is_empty() { "not_in_report" } else { "stale" }
+        } else {
+            "done"
+        };
+        let counts = json!({
+            "proposals": proposals.len(),
+            "at": total,
+            "current": candidates.len(),
+            "stale": stale.len(),
+            "omitted": total.saturating_sub(named.len()),
+        });
+        Ok(json!({
+            "ok": true,
+            "step": "project",
+            "status": status,
+            "report_id": report_id,
+            "citation_key": get(&published, "citation_key"),
+            "at": at,
+            "candidates": candidates,
+            "stale": stale,
+            "counts": counts,
+            "bounds": { "candidates_max": PROJECT_MAX },
+        }))
+    }
 }
 
 /// `zt-digest bridge`.
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(&util::bind_positional(argv, &PARAMS)?, &PARAMS, &["Apply"])?;
-    for name in ["Step", "Staging", "CitationKey"] {
-        if a.required(name)?.is_empty() {
-            bail!("Cannot bind argument to parameter '{name}' because it is an empty string.");
-        }
-    }
+    // `project` is the read-only projection of one selected report: it takes that report and the
+    // Card to answer for instead of a staging folder and a Citation key (§10.3, D258).
+    let project = a.str("Step") == "project";
     let mut bridge = Bridge {
         step: a.str("Step"),
         staging: a.str("Staging"),
@@ -848,15 +980,26 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         accept: a.str("Accept"),
         accept_earlier: a.str("AcceptEarlier"),
         apply: a.flag("Apply"),
+        report: a.str("Report"),
+        at: a.str("At"),
         plan_file: String::new(),
         proposal_file: String::new(),
         zt: None,
         tree_index: None,
     };
+    let required: &[&str] = if project { &["Step", "Report", "At"] } else { &["Step", "Staging", "CitationKey"] };
     let mut lines: Vec<String> = Vec::new();
     let options = (|| -> Result<()> {
-        if !["plan", "precheck", "report", "apply"].contains(&bridge.step.as_str()) {
+        for name in required {
+            if a.required(name)?.is_empty() {
+                bail!("Cannot bind argument to parameter '{name}' because it is an empty string.");
+            }
+        }
+        if !["plan", "precheck", "report", "apply", "project"].contains(&bridge.step.as_str()) {
             return Err(refuse("unknown Bridge step"));
+        }
+        if project {
+            return Ok(());
         }
         if !["book", "math"].contains(&bridge.profile.as_str()) {
             return Err(refuse("unknown Bridge profile"));
@@ -873,7 +1016,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         Ok(code) => code,
         Err(error) => {
             let text = message(&error);
-            let mut failure = json!({ "ok": false, "step": bridge.step, "status": "failed", "errors": [text] });
+            // A projection's input refusal is a report status the reader can show and fall back
+            // from (S20-AC06); an operational failure is its own status.
+            let status = if project && is_refusal(&error) { "invalid_report" } else { "failed" };
+            let mut failure = json!({ "ok": false, "step": bridge.step, "status": status, "errors": [text] });
             if bridge.step == "precheck" {
                 lines.push(format!("BR1 {}", LINE_BREAKS.replace_all(&text, " ")));
                 lines.push("faults: 1".into());
@@ -911,6 +1057,27 @@ mod tests {
     }
 
     #[test]
+    fn a_projected_endpoint_is_stale_when_its_snapshot_changed() {
+        let index = BookIndex { category: HashMap::new(), book_of: HashMap::new(), books: Vec::new(), book_set: HashSet::new() };
+        let card = json!({ "address": "Old/1", "workspace": "agent", "tree": "Old", "kind": "regular", "type": "idea",
+                           "facet": null, "emphasis": null, "level": null, "form": null, "title": "标题", "body": "正文",
+                           "outbound": [], "model": null });
+        let snapshot = endpoint(&card, &index);
+        assert_eq!(changed_endpoint(&card, Some(&snapshot), &index), None);
+        let mut changed = card.clone();
+        changed["title"] = json!("另一个标题");
+        assert_eq!(changed_endpoint(&changed, Some(&snapshot), &index), Some("changed endpoint Old/1 title".into()));
+        let mut changed = card.clone();
+        changed["body"] = json!("另一段正文");
+        assert_eq!(changed_endpoint(&changed, Some(&snapshot), &index), Some("changed body or endpoint Old/1".into()));
+        // Generated Reverse-link churn changes neither the authored body nor the fingerprint.
+        let mut reverse = card.clone();
+        reverse["inbound"] = json!([{ "address": "0/9" }]);
+        assert_eq!(changed_endpoint(&reverse, Some(&snapshot), &index), None);
+        assert_eq!(changed_endpoint(&card, None, &index), Some("missing endpoint Old/1 in the report".into()));
+    }
+
+    #[test]
     fn job_files_name_the_tool_as_their_self_check() {
         let bridge = Bridge {
             step: "plan".into(),
@@ -926,6 +1093,8 @@ mod tests {
             accept: String::new(),
             accept_earlier: String::new(),
             apply: false,
+            report: String::new(),
+            at: String::new(),
             plan_file: "D:\\s\\bridge\\plan.json".into(),
             proposal_file: String::new(),
             zt: None,

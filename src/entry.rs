@@ -1925,16 +1925,21 @@ pub(crate) const DISTANT_TABLE_MAX: usize = 400;
 /// The most model heads one distant selection reads, in natural address order.
 pub(crate) const DISTANT_MODEL_MAX: usize = 2000;
 
+/// The most report proposals one distant selection reads: the Bridge projection's own bound
+/// (§12.2, D293).
+pub(crate) const DISTANT_REPORT_MAX: usize = 20;
+
 /// One distant selection request (§10.2, design D249-D256; `/api/distant`, D280): the Card the
 /// reader has open or holds, the Cards already on the Table, and — when the reader has selected
-/// one — a still-current target of an immutable Bridge report.
+/// one — the still-current proposals of an immutable Bridge report.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DistantArgs {
     pub(crate) at: String,
     pub(crate) table: Vec<String>,
-    /// The validated output of the Bridge report projection (S20, #112). This pure function takes
-    /// that input and opens no report itself; `None` is the ordinary term and model-name evidence.
-    pub(crate) report: Option<ReportTarget>,
+    /// The validated current proposals of the reader's selected Bridge report, in report order
+    /// (S20, #112, design §10.3, D251). This pure function takes that projection as input and
+    /// opens no report itself; an empty list is the ordinary term and model-name evidence.
+    pub(crate) reports: Vec<ReportTarget>,
 }
 
 impl DistantArgs {
@@ -1942,7 +1947,7 @@ impl DistantArgs {
         Self {
             at: at.to_string(),
             table: Vec::new(),
-            report: None,
+            reports: Vec::new(),
         }
     }
 }
@@ -2140,10 +2145,13 @@ pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> 
     }
 
     let mut offers = Vec::new();
-    // The selected Bridge report's target comes first (§10.2, D251): "still valid" here means the
+    // The selected Bridge report's targets come first (§10.2, D251): "still valid" here means the
     // Card exists and passes the same exclusions. The report itself was validated by the Bridge
-    // compiler (#112), which is why a report target needs no source check of this read.
-    if let Some(report) = &args.report {
+    // compiler (#112), which is why a report target needs no source check of this read. The
+    // proposals are tried in report order, so the first one the exclusions leave answers.
+    let mut reports = 0usize;
+    for (n, report) in args.reports.iter().take(DISTANT_REPORT_MAX).enumerate() {
+        reports += 1;
         let target = report.target.trim().to_string();
         if !snapshot.by_address.contains_key(&target) {
             excluded.skip("stale_report");
@@ -2152,7 +2160,7 @@ pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> 
         } else {
             offers.push(Offer {
                 rank: RANK_REPORT,
-                seq: 0,
+                seq: n,
                 sources: crate::hub::source_evidence(snapshot, &target).0,
                 address: target,
                 term: None,
@@ -2301,7 +2309,7 @@ pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> 
         "candidate": candidate,
         "source": chosen.as_ref().map(Offer::source),
         "excluded": excluded.json(),
-        "bounds": {"table_max": DISTANT_TABLE_MAX, "models_max": DISTANT_MODEL_MAX},
+        "bounds": {"table_max": DISTANT_TABLE_MAX, "models_max": DISTANT_MODEL_MAX, "reports_max": DISTANT_REPORT_MAX},
         "scanned": {
             "table": table.len(),
             "table_truncated": table_truncated,
@@ -2309,6 +2317,7 @@ pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> 
             "entries": entries,
             "offers": scanned_offers,
             "models": models,
+            "reports": reports,
         },
         "archive_fingerprint": snapshot.fingerprint(),
     }))
@@ -3190,7 +3199,7 @@ mod tests {
         let args = DistantArgs {
             at: "bookA/1".to_string(),
             table: vec!["bookB/1".to_string(), " bookB/1 ".to_string()],
-            report: None,
+            reports: Vec::new(),
         };
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(value["candidate"], Value::Null, "{value}");
@@ -3254,7 +3263,7 @@ mod tests {
         let args = DistantArgs {
             at: "bookA/1".to_string(),
             table: vec!["bookB/1".to_string()],
-            report: None,
+            reports: Vec::new(),
         };
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(value["candidate"], Value::Null, "{value}");
@@ -3304,7 +3313,7 @@ mod tests {
         let args = DistantArgs {
             at: "bookA/1".to_string(),
             table: vec!["bookC/2".to_string()],
-            report: None,
+            reports: Vec::new(),
         };
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(
@@ -3476,12 +3485,12 @@ mod tests {
         let snapshot = Snapshot::read(temp.path()).expect("snapshot");
         // A still-current target of the report the reader selected is the first source.
         let mut args = DistantArgs::new("bookA/1");
-        args.report = Some(ReportTarget {
+        args.reports = vec![ReportTarget {
             report: "bridge-2026-10-19".to_string(),
             proposal: "b003".to_string(),
             target: "bookB/1".to_string(),
             relation: Some("contrasts".to_string()),
-        });
+        }];
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(value["candidate"]["source"], json!("bridge_report"), "{value}");
         assert_eq!(value["candidate"]["address"], json!("bookB/1"));
@@ -3492,24 +3501,24 @@ mod tests {
         );
         // A stale target falls back to the term evidence and says why it was dropped.
         let mut args = DistantArgs::new("bookA/1");
-        args.report = Some(ReportTarget {
+        args.reports = vec![ReportTarget {
             report: "bridge-2026-10-19".to_string(),
             proposal: "b004".to_string(),
             target: "bookB/9".to_string(),
             relation: Some("contrasts".to_string()),
-        });
+        }];
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(value["candidate"]["source"], json!("register_term"), "{value}");
         assert_eq!(value["excluded"]["stale_report"], json!(1), "{value}");
         // A report target already on the Table or already reached by a Link is no suggestion.
         let mut args = DistantArgs::new("bookA/1");
         args.table = vec!["bookB/1".to_string()];
-        args.report = Some(ReportTarget {
+        args.reports = vec![ReportTarget {
             report: "bridge-2026-10-19".to_string(),
             proposal: "b005".to_string(),
             target: "bookB/1".to_string(),
             relation: None,
-        });
+        }];
         let value = distant(&snapshot, &args).expect("a distant read");
         assert_eq!(value["candidate"], Value::Null, "{value}");
 
@@ -3550,6 +3559,65 @@ mod tests {
             "{reason}"
         );
         assert_eq!(value["candidate"]["origin"]["card"], json!(register));
+    }
+
+    /// S20-AC05, D251: a selected report may project more than one current proposal for a Card.
+    /// The ordered proposals are tried in report order; one the exclusions remove falls through to
+    /// the next, and only when none survives does the term evidence answer.
+    #[test]
+    fn distant_takes_the_next_current_report_proposal() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n\n来源：[[bookB]]\n",
+                ),
+                (
+                    "bookC",
+                    "# 多重均衡的第三种说法\n\n策略互补也在这里出现。\n\n来源：[[bookC]]\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let target = |proposal: &str, at: &str, relation: &str| ReportTarget {
+            report: "r-one".to_string(),
+            proposal: proposal.to_string(),
+            target: at.to_string(),
+            relation: Some(relation.to_string()),
+        };
+        let mut args = DistantArgs::new("bookA/1");
+        args.reports = vec![
+            target("b001", "bookB/1", "contrasts"),
+            target("b002", "bookC/1", "illustrates"),
+        ];
+        // The first proposal names a Card already on the Table: the second current one answers.
+        args.table = vec!["bookB/1".to_string()];
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"]["address"], json!("bookC/1"), "{value}");
+        assert_eq!(value["candidate"]["report"]["proposal"], json!("b002"));
+        assert_eq!(
+            value["candidate"]["reason"],
+            json!("Bridge report r-one, proposal b002: illustrates")
+        );
+        assert_eq!(value["excluded"]["table"], json!(1));
+        // A proposal whose target is gone is skipped as stale, and the next one answers.
+        args.table.clear();
+        args.reports[0].target = "bookZ/9".to_string();
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"]["address"], json!("bookC/1"), "{value}");
+        assert_eq!(value["excluded"]["stale_report"], json!(1));
+        // No current proposal left: the term evidence answers, never an invented report target.
+        args.reports[1].target = "bookZ/8".to_string();
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"]["source"], json!("register_term"), "{value}");
+        assert_eq!(value["excluded"]["stale_report"], json!(2));
     }
 
     /// S19-AC04, S19-AC07: zero or one, the same answer twice, and nothing when the evidence is

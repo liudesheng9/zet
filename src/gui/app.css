@@ -727,6 +727,21 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 }
 .distant-actions button:hover { border-color: var(--line); color: var(--ink); }
 .distant-actions button:focus-visible, .distant-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The selected Bridge report's status (S20, #112): one faint line, never a second tray. It says
+   only what the helper answered, so a missing helper, an invalid report, a changed endpoint, or a
+   timeout is visible beside the slot while the term and model evidence stays usable. */
+.bridge-status {
+  display: flex; align-items: baseline; gap: 8px; margin-top: 6px;
+  font: 11px/1.45 var(--sans); color: var(--ink-faint);
+}
+.bridge-status[hidden] { display: none; }
+.bridge-status .t { font-style: italic; }
+.bridge-status .bridge-clear {
+  border: 0; background: none; padding: 0 2px; color: var(--ink-faint);
+  font: 13px/1 var(--sans); cursor: pointer;
+}
+.bridge-status .bridge-clear:hover { color: var(--ink); }
+.bridge-status .bridge-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hairline);

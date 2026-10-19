@@ -12,9 +12,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::link::{LinkBody, LinkStatus};
@@ -69,6 +70,19 @@ const KATEX_FONTS: &[(&str, &[u8])] = katex_fonts![
 const CHART_CAPACITY: usize = 512;
 /// How many hits the search tray asks for, in either mode.
 const SEARCH_LIMIT: usize = 80;
+/// The most current candidates the optional Bridge report projection may return (§12.2, D293).
+const BRIDGE_CANDIDATES_MAX: usize = 20;
+/// How long the optional installed helper may run before it is cancelled (§12.2, D293).
+const BRIDGE_HELPER_LIFETIME: Duration = Duration::from_secs(10);
+/// The most report projections the server keeps: one per report content, archive revision, and
+/// Card.
+const BRIDGE_PROJECTION_CACHE: usize = 32;
+/// The largest Bridge report the reader may select: a report reviews one frozen plan.
+const BRIDGE_REPORT_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// The longest report path the reader may select.
+const BRIDGE_REPORT_MAX_PATH: usize = 4096;
+/// Names the installed `zt-digest` helper when it is not on `PATH` (tests name one exactly).
+const BRIDGE_HELPER_ENV: &str = "ZT_DIGEST_HELPER";
 const DEFAULT_PORT: u16 = 4717;
 /// Overrides the port the service's GUI listens on; `0` lets the system choose one.
 const PORT_ENV: &str = "ZT_GUI_PORT";
@@ -147,6 +161,7 @@ pub(crate) fn start(root: &Path) -> Result<Running> {
         port,
         charts: Charts::default(),
         snapshots: Snapshots::new(root),
+        projections: Projections::installed(),
     };
     fs::write(record_path(root), format!("{url}\n"))
         .with_context(|| format!("failed to write {}", record_path(root).display()))?;
@@ -264,6 +279,334 @@ struct App {
     port: u16,
     charts: Charts,
     snapshots: Snapshots,
+    /// The optional Bridge report projection behind `/api/distant` (§10.3, S20).
+    projections: Projections,
+}
+
+/// The optional Bridge-report projection behind `/api/distant` (§10.3, D257-D261; S20).
+///
+/// The reader selects one existing immutable report once; this keeps that choice's projection in
+/// memory, keyed by the report file's content hash, the archive revision, and the Card, and reads
+/// it through the installed `zt-digest` helper with a fixed argument vector. It never scans a
+/// folder, never assembles a shell command from the path, and never starts a helper per repaint:
+/// the first read of a key starts one run in the background, so a slow or stuck helper never
+/// holds the reader, and the next read of that key uses the answer. A run past its lifetime is
+/// cancelled. A missing helper, missing report, invalid report, stale endpoint, or timeout leaves
+/// the reader with its ordinary term and model evidence and a small report status.
+struct Projections {
+    /// The installed helper, or the bare name to find on `PATH`.
+    helper: PathBuf,
+    /// How long one run may live before it is cancelled.
+    lifetime: Duration,
+    /// The run behind the seam; the unit tests answer without starting a process.
+    run: Arc<dyn Fn(&Path, &[String], Duration) -> HelperRun + Send + Sync>,
+    /// The answers and the runs in flight, oldest first; bounded.
+    cache: Arc<Mutex<VecDeque<(String, CachedProjection)>>>,
+}
+
+/// One report projection, or the run still making it.
+enum CachedProjection {
+    Pending { started: Instant },
+    Ready(Projection),
+}
+
+/// One answer of a selected report's projection: only current candidates for one Card.
+#[derive(Clone, Debug, Default)]
+struct Projection {
+    status: String,
+    hash: String,
+    report_id: String,
+    candidates: Vec<crate::entry::ReportTarget>,
+    counts: Value,
+    errors: Vec<String>,
+    /// Whether this answer came from the in-memory cache rather than a helper run in flight.
+    cached: bool,
+}
+
+impl Projection {
+    fn pending(hash: &str) -> Self {
+        Self {
+            status: "pending".to_string(),
+            hash: hash.to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn failed(status: &str, hash: &str, error: impl Into<String>) -> Self {
+        Self {
+            status: status.to_string(),
+            hash: hash.to_string(),
+            errors: vec![error.into()],
+            ..Self::default()
+        }
+    }
+
+    /// What the reader's small status line shows and what a client may report: the selected path,
+    /// the report's content hash, the status, the exact report id when the helper answered, the
+    /// candidate count, and the helper's own errors.
+    fn json(&self, selected: &str) -> Value {
+        json!({
+            "selected": selected,
+            "hash": self.hash,
+            "status": self.status,
+            "report_id": self.report_id,
+            "candidates": self.candidates.len(),
+            "counts": self.counts,
+            "errors": self.errors,
+            "cached": self.cached,
+        })
+    }
+}
+
+/// One run of the installed helper, as the seam returns it.
+enum HelperRun {
+    Output(String),
+    Missing,
+    Failed(String),
+    Timeout,
+}
+
+impl Projections {
+    /// The installed helper: `ZT_DIGEST_HELPER` names one exactly, else `zt-digest` on `PATH`.
+    fn installed() -> Self {
+        let helper = std::env::var_os(BRIDGE_HELPER_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("zt-digest"));
+        Self::new(helper, BRIDGE_HELPER_LIFETIME, Arc::new(run_helper))
+    }
+
+    fn new(helper: PathBuf, lifetime: Duration, run: Arc<dyn Fn(&Path, &[String], Duration) -> HelperRun + Send + Sync>) -> Self {
+        Self {
+            helper,
+            lifetime,
+            run,
+            cache: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    /// The projection of one selected report for one Card. The report's content hash and the
+    /// archive revision make the key, so a changed report or archive is read again; a key already
+    /// answered is reused, and a key with a run in flight reports `pending` instead of starting a
+    /// second run.
+    fn read(&self, selected: &str, at: &str, revision: &str) -> Projection {
+        let selected = selected.trim();
+        let Some((path, hash)) = report_file(selected) else {
+            return Projection::failed(
+                "missing_report",
+                "",
+                "the selected Bridge report is not a readable file, so nothing was read",
+            );
+        };
+        let key = format!("{hash}\u{0}{revision}\u{0}{at}");
+        let cached = {
+            let cache = self.cache.lock().unwrap_or_else(|poison| poison.into_inner());
+            cache
+                .iter()
+                .rev()
+                .find(|(seen, _)| seen == &key)
+                .map(|(_, cached)| match cached {
+                    CachedProjection::Ready(projection) => Ok(projection.clone()),
+                    CachedProjection::Pending { started } => Err(started.elapsed()),
+                })
+        };
+        match cached {
+            Some(Ok(projection)) => return Projection { cached: true, ..projection },
+            Some(Err(elapsed)) => {
+                let mut pending = Projection::pending(&hash);
+                pending.counts = json!({ "elapsed_ms": elapsed.as_millis() as u64 });
+                return pending;
+            }
+            None => {}
+        }
+        let args = projection_args(&path, at);
+        let helper = self.helper.clone();
+        let lifetime = self.lifetime;
+        let run = Arc::clone(&self.run);
+        let cache = Arc::clone(&self.cache);
+        let (worker_key, worker_hash) = (key.clone(), hash.clone());
+        {
+            let mut cache = self.cache.lock().unwrap_or_else(|poison| poison.into_inner());
+            cache.push_back((key, CachedProjection::Pending { started: Instant::now() }));
+            while cache.len() > BRIDGE_PROJECTION_CACHE {
+                cache.pop_front();
+            }
+        }
+        thread::spawn(move || {
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| run(&helper, &args, lifetime)))
+                .unwrap_or_else(|_| HelperRun::Failed("the Bridge report helper runner stopped unexpectedly".to_string()));
+            let projection = projection_from_run(outcome, &worker_hash);
+            let mut cache = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+            if let Some((_, slot)) = cache.iter_mut().find(|(seen, _)| seen == &worker_key) {
+                *slot = CachedProjection::Ready(projection);
+            }
+        });
+        let mut pending = Projection::pending(&hash);
+        pending.counts = json!({ "elapsed_ms": 0 });
+        pending
+    }
+}
+
+/// The fixed argument vector of one projection: the `bridge` tool, its `project` step, and the
+/// selected path as one argument. No shell sees the path, so a space, `&`, `;`, or quote in a
+/// file name is never interpreted (§10.3, D258; S20-AC03).
+fn projection_args(report: &Path, at: &str) -> Vec<String> {
+    vec![
+        "bridge".to_string(),
+        "-Step".to_string(),
+        "project".to_string(),
+        "-Report".to_string(),
+        report.display().to_string(),
+        "-At".to_string(),
+        at.to_string(),
+    ]
+}
+
+/// The selected report's path and content hash, or `None` when the reader named no readable
+/// file. The exact path is used; no folder is listed and no guessed latest report is chosen.
+fn report_file(selected: &str) -> Option<(PathBuf, String)> {
+    use sha2::{Digest, Sha256};
+    if selected.is_empty() || selected.chars().count() > BRIDGE_REPORT_MAX_PATH {
+        return None;
+    }
+    let path = PathBuf::from(selected);
+    if !path.is_absolute() {
+        return None;
+    }
+    let meta = fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > BRIDGE_REPORT_MAX_BYTES {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let digest = Sha256::digest(&bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Some((path, format!("sha256:{hex}")))
+}
+
+/// One helper answer as a projection status (S20-AC06, D309): only the helper's own successful
+/// projection is used; every other answer is a small status the reader can show while keeping the
+/// ordinary term and model evidence.
+fn projection_from_run(run: HelperRun, hash: &str) -> Projection {
+    let text = match run {
+        HelperRun::Missing => {
+            return Projection::failed("missing_helper", hash, "the Bridge report helper (zt-digest) is not installed")
+        }
+        HelperRun::Timeout => {
+            return Projection::failed("timeout", hash, "the Bridge report helper did not answer within ten seconds and was cancelled")
+        }
+        HelperRun::Failed(message) => return Projection::failed("failed", hash, message),
+        HelperRun::Output(text) => text,
+    };
+    let Some(line) = text.lines().rev().map(str::trim).find(|line| line.starts_with('{')) else {
+        return Projection::failed("invalid_report", hash, "the Bridge report helper printed no projection");
+    };
+    let value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(error) => {
+            return Projection::failed("invalid_report", hash, format!("the Bridge report helper printed an unreadable projection: {error}"))
+        }
+    };
+    if value["ok"] != json!(true) {
+        let errors: Vec<String> = value["errors"]
+            .as_array()
+            .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_else(|| vec!["the Bridge report helper refused the selected report".to_string()]);
+        let status = match value["status"].as_str() {
+            Some("invalid_report") => "invalid_report",
+            _ => "failed",
+        };
+        return Projection {
+            status: status.to_string(),
+            hash: hash.to_string(),
+            errors,
+            ..Projection::default()
+        };
+    }
+    let status = match value["status"].as_str() {
+        Some(status @ ("done" | "stale" | "not_in_report")) => status.to_string(),
+        _ => return Projection::failed("invalid_report", hash, "the Bridge report helper returned an unknown projection status"),
+    };
+    let mut candidates = Vec::new();
+    for item in value["candidates"].as_array().into_iter().flatten().take(BRIDGE_CANDIDATES_MAX) {
+        let (Some(report), Some(proposal), Some(target)) = (item["report"].as_str(), item["proposal"].as_str(), item["target"].as_str()) else {
+            return Projection::failed("invalid_report", hash, "the Bridge report helper returned a malformed candidate");
+        };
+        candidates.push(crate::entry::ReportTarget {
+            report: report.to_string(),
+            proposal: proposal.to_string(),
+            target: target.to_string(),
+            relation: item["relation"].as_str().filter(|relation| !relation.is_empty()).map(str::to_string),
+        });
+    }
+    Projection {
+        status,
+        hash: hash.to_string(),
+        report_id: value["report_id"].as_str().unwrap_or_default().to_string(),
+        candidates,
+        counts: value["counts"].clone(),
+        errors: Vec::new(),
+        cached: false,
+    }
+}
+
+/// Run the installed helper with a fixed argument vector, bounded by `lifetime`. Its output goes
+/// to temporary files, so a helper that writes too much cannot block on a full pipe; on the
+/// deadline the child is killed and reaped.
+fn run_helper(program: &Path, args: &[String], lifetime: Duration) -> HelperRun {
+    let folder = match tempfile::Builder::new().prefix("zt-bridge-").tempdir() {
+        Ok(folder) => folder,
+        Err(error) => return HelperRun::Failed(format!("a temporary folder is unavailable: {error}")),
+    };
+    let out = folder.path().join("stdout");
+    let err = folder.path().join("stderr");
+    let (Ok(stdout), Ok(stderr)) = (fs::File::create(&out), fs::File::create(&err)) else {
+        return HelperRun::Failed("a temporary file is unavailable".to_string());
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        // The GUI lives inside the daemon, which has no console to lend the helper.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return HelperRun::Missing,
+        Err(error) => return HelperRun::Failed(format!("the Bridge report helper did not start: {error}")),
+    };
+    let deadline = Instant::now() + lifetime;
+    let mut pause = Duration::from_millis(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                if text.lines().any(|line| line.trim_start().starts_with('{')) {
+                    return HelperRun::Output(text);
+                }
+                let message = fs::read_to_string(&err).unwrap_or_default();
+                let message: String = message.chars().take(500).collect();
+                return HelperRun::Failed(format!("the Bridge report helper failed ({status}): {}", message.trim()));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                return HelperRun::Failed(format!("the Bridge report helper could not be observed: {error}"));
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return HelperRun::Timeout;
+        }
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(50));
+    }
 }
 
 /// The last Snapshot read, kept until the Cards change. Reading and parsing every Card takes
@@ -604,9 +947,11 @@ impl App {
             (Method::Get, "/api/card") => self.card(&param("at")?),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
-            (Method::Get, "/api/distant") => {
-                self.distant(&param("at")?, query.get("table").map(String::as_str))
-            }
+            (Method::Get, "/api/distant") => self.distant(
+                &param("at")?,
+                query.get("table").map(String::as_str),
+                query.get("report").map(String::as_str),
+            ),
             (Method::Get, "/api/search") => self.search(
                 &param("q")?,
                 query.get("ws").map(String::as_str),
@@ -741,10 +1086,12 @@ impl App {
 
     /// The one distant Card of the Card the reader has open or holds (§10.2, D249-D256; `/api/distant`
     /// in D280): at most one candidate, the Cards already on the Table as exclusions, and one line of
-    /// evidence. A selected Bridge report's validated target is the first candidate source; the
-    /// projection that reads a report belongs to the Bridge compiler (S20, #112), so this route
-    /// supplies none. Read-only: it writes no Card, Link, or viewing record.
-    fn distant(&self, at: &str, table: Option<&str>) -> ApiResult {
+    /// evidence. When the reader has selected a Bridge report, its validated current proposals are
+    /// the first candidate source (§10.3, D257-D261; S20): the projection is read through the
+    /// installed helper with a fixed argument vector, cached by report hash and archive revision,
+    /// and reported as a small status even when it fails. Read-only: it writes no Card, Link, or
+    /// viewing record, and it never applies a proposal.
+    fn distant(&self, at: &str, table: Option<&str>, report: Option<&str>) -> ApiResult {
         let table = table
             .map(|list| {
                 list.split(',')
@@ -757,7 +1104,19 @@ impl App {
         let snapshot = self.snapshot()?;
         let mut args = crate::entry::DistantArgs::new(at);
         args.table = table;
-        Ok(crate::entry::distant(&snapshot, &args)?)
+        let mut status = Value::Null;
+        if let Some(selected) = report.map(str::trim).filter(|selected| !selected.is_empty()) {
+            let projection = self
+                .projections
+                .read(selected, at.trim(), &snapshot.fingerprint());
+            args.reports = projection.candidates.clone();
+            status = projection.json(selected);
+        }
+        let mut value = crate::entry::distant(&snapshot, &args)?;
+        if !status.is_null() {
+            value["report"] = status;
+        }
+        Ok(value)
     }
 
     fn card(&self, target: &str) -> ApiResult {
@@ -2173,7 +2532,7 @@ mod tests {
     #[test]
     fn the_front_end_offers_one_distant_card_beside_the_neighbours() {
         let section = &APP_JS[APP_JS
-            .find("const distant = { key: null, value: null, pending: null };")
+            .find("const distant = { key: null, value: null, pending: null, poll: null };")
             .expect("the distant cache")..];
         let section = &section[..section
             .find("// ----------------------------------------------------------------- reader")
@@ -2224,6 +2583,68 @@ mod tests {
             !include_str!("mcp.rs").contains("\"distant\""),
             "a distant suggestion is no MCP tool"
         );
+    }
+
+    /// S20 (#112, AC01, AC03, AC04, AC05, AC06, AC07): one reader action selects one existing
+    /// Bridge report for this browser session, the route is asked again with that exact path as
+    /// one argument, a pending helper answer is polled instead of blocking a repaint, and every
+    /// failure is one small status line beside the slot. Nothing in the page applies a proposal.
+    #[test]
+    fn the_front_end_uses_one_selected_bridge_report() {
+        let start = APP_JS
+            .find("// ------------------------------------------------------- bridge report (S20, #112)")
+            .expect("the bridge report section");
+        let section = &APP_JS[start..];
+        let section = &section[..section
+            .find("// ----------------------------------------------------------------- reader")
+            .expect("end of the bridge report section")];
+        // The reader action names the exact file and keeps the choice in the browser session.
+        assert!(APP_JS.contains("actionButton('Bridge report', null, useBridgeReport"));
+        assert!(section.contains("const BRIDGE_SELECTION = 'zt-bridge-report';"));
+        assert!(section.contains("sessionStorage.getItem(BRIDGE_SELECTION)"));
+        assert!(section.contains("sessionStorage.setItem(BRIDGE_SELECTION, path)"));
+        assert!(section.contains("sessionStorage.removeItem(BRIDGE_SELECTION)"));
+        assert!(
+            section.contains("await promptValue('Use a Bridge report'"),
+            "the reader chooses one existing report path"
+        );
+        // The path travels as one encoded query argument; nothing scans a folder for a report.
+        assert!(APP_JS.contains("(report ? '&report=' + encodeURIComponent(report) : '')"));
+        assert!(!APP_JS.contains("readdir") && !APP_JS.contains("latest report"));
+        // The answer is keyed by the selection, so changing it reads again; a repaint does not.
+        assert!(APP_JS.contains("return [at, state.fingerprint || '', lying, bridgeReport()].join('|');"));
+        assert!(section.contains("if (!report || report.status !== 'pending') return;"));
+        assert!(
+            APP_JS.contains("if (value && value.report && value.report.status === 'pending') scheduleBridgePoll(card.address);"),
+            "a helper answer that is still pending is asked for again, never awaited in a paint"
+        );
+        // Every helper answer the service can report has a line, and the line is not a tray.
+        for phrase in [
+            "Bridge report: reading the selected report",
+            "current proposal",
+            "its endpoints changed, so no proposal is current",
+            "no proposal names this Card",
+            "Bridge report not found at the selected path",
+            "Bridge report helper is not installed",
+            "Bridge report helper took longer than ten seconds",
+            "Bridge report is not a valid immutable report",
+        ] {
+            assert!(section.contains(phrase), "the status line never says `{phrase}`");
+        }
+        assert!(APP_JS.contains("card.context === 'regular' ? bridgeStatusSlot() : null"));
+        assert!(section.contains("class: 'bridge-status', 'data-bridge-status': 'reader'"));
+        // Reading or selecting a report never applies a Bridge: no write route and no proposal
+        // acceptance lives in the page's bridge section.
+        assert!(
+            !section.contains("api('edit'") && !section.contains("api('create'") && !section.contains("api('apply'"),
+            "the bridge section writes nothing: {section}"
+        );
+        assert!(APP_JS.contains("no proposal is applied"));
+        let css = &APP_CSS[APP_CSS.find(".bridge-status {").expect("the status style")..];
+        let css = &css[..css.find(".actions {").expect("the actions style")];
+        assert!(css.contains(".bridge-status[hidden] { display: none; }"));
+        assert!(css.contains(".bridge-status .bridge-clear:focus-visible"));
+        assert!(!css.contains("animation") && !css.contains("box-shadow"), "the line is not a tray: {css}");
     }
 
     /// The search tray draws a folded row: the statement it stands for, its `+N`, and every member
@@ -2327,6 +2748,175 @@ mod tests {
             let name = rest.split_whitespace().next().unwrap_or_default();
             assert!(seen.insert(name), "@keyframes {name} is defined twice in app.css");
         }
+    }
+
+    // --- the optional Bridge report projection (S20, #112, design §10.3) ---
+
+    /// Poll a projection until its run answers, as the page's next read would.
+    fn wait_projection(projections: &Projections, selected: &str, at: &str, revision: &str) -> Projection {
+        for _ in 0..300 {
+            let projection = projections.read(selected, at, revision);
+            if projection.status != "pending" {
+                return projection;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the Bridge projection never left pending");
+    }
+
+    /// S20-AC06, D309: every helper answer becomes a status the reader can show beside the
+    /// ordinary term and model evidence; only a successful projection supplies candidates.
+    #[test]
+    fn a_bridge_projection_reports_every_helper_answer() {
+        let hash = "sha256:abc";
+        let status = |run| projection_from_run(run, hash);
+        assert_eq!(status(HelperRun::Missing).status, "missing_helper");
+        assert_eq!(status(HelperRun::Timeout).status, "timeout");
+        assert_eq!(status(HelperRun::Failed("boom".into())).status, "failed");
+        assert_eq!(status(HelperRun::Output("no projection here".into())).status, "invalid_report");
+        assert_eq!(status(HelperRun::Output("{not json".into())).status, "invalid_report");
+        let refused = status(HelperRun::Output(
+            r#"{"ok":false,"step":"project","status":"invalid_report","errors":["invalid published report schema or fingerprint"]}"#.into(),
+        ));
+        assert_eq!(refused.status, "invalid_report");
+        assert_eq!(refused.errors, vec!["invalid published report schema or fingerprint"]);
+        assert_eq!(
+            status(HelperRun::Output(r#"{"ok":false,"status":"failed","errors":["zt mcp failed"]}"#.into())).status,
+            "failed",
+            "an operational failure is not described as an invalid report"
+        );
+        // A successful status with no candidate is still a status, not an error.
+        let stale = status(HelperRun::Output(
+            r#"{"ok":true,"step":"project","status":"stale","report_id":"r-1","candidates":[],"stale":[{"proposal":"b001","why":"changed endpoint"}],"counts":{"at":1,"current":0}}"#.into(),
+        ));
+        assert_eq!(stale.status, "stale");
+        assert!(stale.candidates.is_empty());
+        assert_eq!(stale.report_id, "r-1");
+        assert_eq!(
+            status(HelperRun::Output(r#"{"ok":true,"status":"not_in_report","candidates":[]}"#.into())).status,
+            "not_in_report"
+        );
+        let done = status(HelperRun::Output(
+            r#"{"ok":true,"step":"project","status":"done","report_id":"r-1","candidates":[{"report":"r-1","proposal":"b003","target":"Old/1|a","relation":"contrasts"}],"counts":{"at":1,"current":1}}"#.into(),
+        ));
+        assert_eq!(done.status, "done");
+        assert_eq!(done.candidates.len(), 1);
+        assert_eq!(done.candidates[0].proposal, "b003");
+        assert_eq!(done.candidates[0].target, "Old/1|a");
+        assert_eq!(done.candidates[0].relation.as_deref(), Some("contrasts"));
+        assert_eq!(done.counts["current"], json!(1));
+        // A malformed candidate is a schema mismatch, never a silent suggestion.
+        assert_eq!(
+            status(HelperRun::Output(r#"{"ok":true,"status":"done","candidates":[{"proposal":"b001"}]}"#.into())).status,
+            "invalid_report"
+        );
+        // The twenty-candidate bound holds at this seam too.
+        let many: Vec<String> = (1..=25)
+            .map(|i| format!(r#"{{"report":"r-1","proposal":"b{i:03}","target":"Old/{i}"}}"#))
+            .collect();
+        let bounded = status(HelperRun::Output(format!(
+            r#"{{"ok":true,"status":"done","candidates":[{}]}}"#,
+            many.join(",")
+        )));
+        assert_eq!(bounded.candidates.len(), BRIDGE_CANDIDATES_MAX);
+    }
+
+    /// S20-AC03, AC04: one fixed argument vector with the path as a single argument, one helper run
+    /// per report content, archive revision, and Card, and a new report or revision reads again.
+    #[test]
+    fn the_bridge_projection_runs_once_per_report_revision_and_card() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let report = temp.path().join("odd & del; report.json");
+        fs::write(&report, r#"{"schema":1,"report_id":"r-1"}"#).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let seen = Arc::clone(&calls);
+        let projections = Projections::new(
+            PathBuf::from("zt-digest-test"),
+            Duration::from_secs(5),
+            Arc::new(move |program, args, _| {
+                seen.lock().unwrap().push(
+                    std::iter::once(program.display().to_string())
+                        .chain(args.iter().cloned())
+                        .collect(),
+                );
+                HelperRun::Output(
+                    r#"{"ok":true,"step":"project","status":"done","report_id":"r-1","candidates":[{"report":"r-1","proposal":"b001","target":"Old/1|a","relation":"contrasts"}],"counts":{"at":1,"current":1}}"#
+                        .into(),
+                )
+            }),
+        );
+        let selected = report.display().to_string();
+        // The first read starts the run and answers pending: the reader keeps its Card and its
+        // ordinary term and model evidence while the helper works.
+        assert_eq!(projections.read(&selected, "0/1", "revision-1").status, "pending");
+        let ready = wait_projection(&projections, &selected, "0/1", "revision-1");
+        assert_eq!(ready.status, "done");
+        assert_eq!(ready.candidates[0].target, "Old/1|a");
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        // The same read is answered from memory: no helper per repaint or hover.
+        let reused = projections.read(&selected, "0/1", "revision-1");
+        assert_eq!(reused.status, "done");
+        assert!(reused.cached, "a repeated read is answered from memory");
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        // The exact fixed argument vector, with the whole path in one argument.
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            vec!["zt-digest-test", "bridge", "-Step", "project", "-Report", &selected, "-At", "0/1"]
+        );
+        assert!(
+            calls.lock().unwrap()[0].iter().any(|arg| arg == &selected),
+            "the path is one argument, never part of a command line"
+        );
+        // A changed archive revision invalidates the endpoint evidence: the next read revalidates.
+        assert_eq!(projections.read(&selected, "0/1", "revision-2").status, "pending");
+        assert_eq!(wait_projection(&projections, &selected, "0/1", "revision-2").status, "done");
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        // A changed report file is a different report.
+        fs::write(&report, r#"{"schema":1,"report_id":"r-2"}"#).unwrap();
+        assert_eq!(projections.read(&selected, "0/1", "revision-2").status, "pending");
+        assert_eq!(wait_projection(&projections, &selected, "0/1", "revision-2").status, "done");
+        assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    /// S20-AC01, AC06: no folder is scanned and no guessed report is read; a path that names no
+    /// readable file costs no helper run.
+    #[test]
+    fn a_bridge_projection_without_a_readable_report_starts_no_helper() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let calls = Arc::new(Mutex::new(0usize));
+        let seen = Arc::clone(&calls);
+        let projections = Projections::new(
+            PathBuf::from("zt-digest-test"),
+            Duration::from_secs(5),
+            Arc::new(move |_, _, _| {
+                *seen.lock().unwrap() += 1;
+                HelperRun::Missing
+            }),
+        );
+        let missing = temp.path().join("missing.json").display().to_string();
+        let folder = temp.path().display().to_string();
+        for selected in ["", "relative/proposals.json", &missing, &folder] {
+            let projection = projections.read(selected, "0/1", "revision-1");
+            assert_eq!(projection.status, "missing_report", "{selected}");
+            assert!(projection.candidates.is_empty());
+        }
+        assert_eq!(*calls.lock().unwrap(), 0, "an unreadable report starts no helper");
+    }
+
+    /// S20-AC03, D260: a helper past its lifetime is cancelled instead of holding the reader.
+    #[test]
+    fn a_bridge_helper_past_its_lifetime_is_cancelled() {
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/c".to_string(), "ping -n 30 127.0.0.1 >nul".to_string()]);
+        #[cfg(not(windows))]
+        let (program, args) = ("/bin/sh", vec!["-c".to_string(), "sleep 30".to_string()]);
+        let started = Instant::now();
+        let run = run_helper(Path::new(program), &args, Duration::from_millis(300));
+        assert!(matches!(run, HelperRun::Timeout), "a stuck helper is cancelled");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the cancelled helper returns at its deadline"
+        );
     }
 }
 

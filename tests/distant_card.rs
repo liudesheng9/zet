@@ -20,10 +20,16 @@ struct TestHome {
     _tmp: TempDir,
     config_dir: std::path::PathBuf,
     archive_root: std::path::PathBuf,
+    /// Environment the service daemon starts with; a test names an exact helper here.
+    env: Vec<(String, String)>,
 }
 
 impl TestHome {
     fn new() -> Self {
+        Self::new_with(&[])
+    }
+
+    fn new_with(env: &[(&str, &str)]) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path().join("config");
         let archive_root = tmp.path().join("archive");
@@ -31,6 +37,7 @@ impl TestHome {
             _tmp: tmp,
             config_dir,
             archive_root,
+            env: env.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect(),
         };
         home.cmd()
             .args([
@@ -49,6 +56,9 @@ impl TestHome {
         let mut cmd = Command::cargo_bin("zt").expect("zt binary");
         cmd.env("ZT_CONFIG_DIR", &self.config_dir)
             .env("ZT_GUI_PORT", "0");
+        for (name, value) in &self.env {
+            cmd.env(name, value);
+        }
         cmd
     }
 
@@ -208,6 +218,33 @@ impl Gui {
         self.get(&path)
     }
 
+    /// The distant slot with one selected Bridge report: the first read starts the optional
+    /// helper, so the answer may still be pending.
+    fn distant_report(&self, at: &str, table: &[&str], report: &std::path::Path) -> Value {
+        let mut path = format!(
+            "/api/distant?at={}&report={}",
+            enc(at),
+            report.display().to_string().replace('/', "%2F")
+        );
+        if !table.is_empty() {
+            let list = table.iter().map(|at| enc(at)).collect::<Vec<_>>().join(",");
+            path.push_str(&format!("&table={list}"));
+        }
+        self.get(&path)
+    }
+
+    /// The same read, waiting for the helper's answer instead of its pending status.
+    fn distant_report_ready(&self, at: &str, table: &[&str], report: &std::path::Path) -> Value {
+        for _ in 0..400 {
+            let value = self.distant_report(at, table, report);
+            if value["report"]["status"] != json!("pending") {
+                return value;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the Bridge report projection never left pending");
+    }
+
     /// The served page's script and style, for the front end's own wiring.
     fn asset(&self, path: &str) -> String {
         use std::net::TcpStream;
@@ -243,6 +280,130 @@ fn http_page(port: u16) -> String {
 
 fn enc(value: &str) -> String {
     value.replace('/', "%2F").replace('|', "%7C")
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The `zt-digest` this checkout carries: `ZT_DIGEST_HELPER` when set, else the installed binary
+/// on `PATH` (the one the GUI runs in production), else the crate's own debug or release build.
+fn zt_digest_helper() -> Option<std::path::PathBuf> {
+    if let Some(value) = std::env::var_os("ZT_DIGEST_HELPER").filter(|value| !value.is_empty()) {
+        return Some(std::path::PathBuf::from(value));
+    }
+    let name = if cfg!(windows) { "zt-digest.exe" } else { "zt-digest" };
+    let installed = std::process::Command::new(name)
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()
+        .map(|_| std::path::PathBuf::from(name));
+    if installed.is_some() {
+        return installed;
+    }
+    let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tools")
+        .join("zt-digest")
+        .join("target");
+    ["debug", "release"]
+        .iter()
+        .map(|profile| built.join(profile).join(name))
+        .find(|path| path.is_file())
+}
+
+/// The endpoint snapshot the Bridge compiler freezes: its compared fields, the inferred book,
+/// and the fingerprint over its ten fields. `get_card` answers the fields it reads.
+fn bridge_endpoint(card: &Value) -> Value {
+    let text = |name: &str| {
+        card[name]
+            .as_str()
+            .unwrap_or_default()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+    };
+    let mut snapshot = json!({
+        "address": card["address"],
+        "workspace": card["workspace"],
+        "tree": card["tree"],
+        "kind": card["kind"],
+        "type": card["type"],
+        "facet": card["facet"],
+        "emphasis": card["emphasis"],
+        "level": card["level"],
+        "form": card["form"],
+        "title": text("title"),
+        "body": text("body"),
+        "category": "idea",
+        "book": card["tree"],
+    });
+    let values: Vec<Value> = ["workspace", "tree", "kind", "type", "facet", "emphasis", "level", "form", "title", "body"]
+        .iter()
+        .map(|name| snapshot[*name].clone())
+        .collect();
+    snapshot["fingerprint"] = json!(format!(
+        "sha256:{}",
+        sha256_hex(&serde_json::to_string(&values).expect("compact JSON"))
+    ));
+    snapshot
+}
+
+/// One immutable published Bridge report for two Cards, identified exactly as the compiler
+/// identifies it: `r-` and the content hash without `report_id` and `created_at`.
+fn published_bridge_report(focus: &Value, other: &Value, id: &str, kind: &str) -> Value {
+    let focus_at = focus["address"].as_str().expect("focus address").to_string();
+    let other_at = other["address"].as_str().expect("target address").to_string();
+    let (focus_snapshot, other_snapshot) = (bridge_endpoint(focus), bridge_endpoint(other));
+    let sentence = format!("对应 [[{other_at}]]：两处讲同一机制。");
+    let mut cards = serde_json::Map::new();
+    cards.insert(focus_at.clone(), focus_snapshot.clone());
+    cards.insert(other_at.clone(), other_snapshot.clone());
+    let mut report = json!({
+        "schema": 1,
+        "plan_id": "p-distant-report",
+        "citation_key": focus["tree"],
+        "book_title": "Book A",
+        "profile": "book",
+        "options": { "max_sources": 1, "candidates": 1, "books": [] },
+        "read_coverage": { "complete": true },
+        "empty_reason": "",
+        "cards": Value::Object(cards),
+        "term_tables": {},
+        "plan_sources": [],
+        "proposals": [{
+            "source": focus_at,
+            "carrier": focus_at,
+            "target": other_at,
+            "word": "对应",
+            "sentence": sentence,
+            "why": "两张卡讨论同一机制。",
+            "section": "new",
+            "kind": kind,
+            "id": id,
+            "carrier_fingerprint": focus_snapshot["fingerprint"],
+            "target_fingerprint": other_snapshot["fingerprint"],
+        }],
+        "sources": [],
+        "omitted_sources": [],
+        "refused": [],
+        "counts": { "proposals": 1 },
+        "status": "done",
+    });
+    let mut content = report.as_object().expect("report").clone();
+    content.remove("report_id");
+    content.remove("created_at");
+    let report_id = format!(
+        "r-{}",
+        sha256_hex(&serde_json::to_string(&Value::Object(content)).expect("canonical JSON"))
+    );
+    report["report_id"] = json!(report_id);
+    report["created_at"] = json!("2026-10-19T00:00:00.0000000Z");
+    report
 }
 
 fn address(value: Value) -> String {
@@ -483,4 +644,143 @@ fn the_cached_gui_read_follows_changed_evidence() {
     // The reader is still usable: the Card reads as before.
     let card = gui.get(&format!("/api/card?at={}", enc(&focus)));
     assert_eq!(card["title"], json!("无关的陈述"));
+}
+
+/// S20-AC01, AC05, AC06, AC07: one selected Bridge report makes its current proposal the distant
+/// slot's first source with the exact report and proposal id; a changed, invalid, or missing
+/// report leaves the term suggestion and the reader usable; nothing is applied or written.
+#[test]
+fn a_selected_bridge_report_supplies_the_distant_slot_without_applying_it() {
+    let Some(helper) = zt_digest_helper() else {
+        eprintln!("skipping the selected-report read: no zt-digest is built or installed");
+        return;
+    };
+    let home = TestHome::new_with(&[("ZT_DIGEST_HELPER", helper.to_str().expect("helper path"))]);
+    let (gui, focus, other) = two_books(&home);
+    let mut mcp = home.mcp();
+    let focus_card = mcp.ok("get_card", json!({ "at": focus }));
+    let other_card = mcp.ok("get_card", json!({ "at": other }));
+    let report = published_bridge_report(&focus_card, &other_card, "b001", "corresponds");
+    let report_id = report["report_id"].as_str().expect("report id").to_string();
+    let report_path = home._tmp.path().join("bridge-report.json");
+    fs::write(&report_path, serde_json::to_string(&report).expect("report JSON")).expect("write report");
+    let before = json!({
+        "graph": gui.get("/api/graph"),
+        "overview": gui.get("/api/overview"),
+        "spreads": gui.get("/api/spreads"),
+        "register": gui.register(),
+        "broken": gui.get("/api/broken"),
+    });
+
+    // The first read starts the optional helper and answers pending: the reader keeps its Card
+    // and its ordinary term evidence while the helper works in the background.
+    let first = gui.distant_report(&focus, &[], &report_path);
+    assert_eq!(first["report"]["status"], json!("pending"), "{first}");
+    assert_eq!(first["report"]["cached"], json!(false));
+    assert_eq!(first["candidate"]["source"], json!("register_term"), "{first}");
+    assert_eq!(first["candidate"]["address"], json!(other));
+    // The answered projection is a current validated proposal: it takes priority and carries the
+    // exact report and proposal id, and the same read is then cached by report hash and revision.
+    let value = gui.distant_report_ready(&focus, &[], &report_path);
+    assert_eq!(value["report"]["status"], json!("done"), "{value}");
+    assert_eq!(value["report"]["report_id"], json!(report_id));
+    assert_eq!(value["report"]["cached"], json!(true), "the answered read is cached");
+    assert_eq!(value["candidate"]["source"], json!("bridge_report"), "{value}");
+    assert_eq!(value["candidate"]["address"], json!(other));
+    assert_eq!(value["candidate"]["report"]["proposal"], json!("b001"));
+    assert_eq!(value["candidate"]["report"]["report"], json!(report_id));
+    let reason = value["candidate"]["reason"].as_str().expect("one-line reason");
+    assert!(
+        reason.starts_with("Bridge report r-") && reason.ends_with("proposal b001: corresponds"),
+        "{reason}"
+    );
+    let again = gui.distant_report(&focus, &[], &report_path);
+    assert_eq!(again["report"]["status"], json!("done"));
+    assert_eq!(again["report"]["cached"], json!(true));
+    assert_eq!(again["candidate"], value["candidate"]);
+    // Reading a report writes nothing: no Card, Link, Spread, register row, or archive revision.
+    let read_only = json!({
+        "graph": gui.get("/api/graph"),
+        "overview": gui.get("/api/overview"),
+        "spreads": gui.get("/api/spreads"),
+        "register": gui.register(),
+        "broken": gui.get("/api/broken"),
+    });
+    assert_eq!(read_only, before, "reading the selected report changed the archive");
+
+    // A changed endpoint makes the reviewed proposal stale: the slot says so and falls back to
+    // the register term, and the changed archive revision reads the report again.
+    mcp.ok("edit_card", json!({ "at": other, "title": "多重均衡的另一种说法（改）" }));
+    let stale = gui.distant_report_ready(&focus, &[], &report_path);
+    assert_eq!(stale["report"]["status"], json!("stale"), "{stale}");
+    assert_eq!(stale["candidate"]["source"], json!("register_term"), "{stale}");
+    assert_eq!(stale["candidate"]["address"], json!(other));
+    assert!(stale["report"]["counts"]["at"].as_u64().unwrap_or(0) >= 1, "{stale}");
+    mcp.ok("edit_card", json!({ "at": other, "title": "多重均衡的另一种说法" }));
+    let restored = gui.distant_report_ready(&focus, &[], &report_path);
+    assert_eq!(restored["report"]["status"], json!("done"), "{restored}");
+    assert_eq!(restored["candidate"]["source"], json!("bridge_report"));
+
+    // An edited report no longer recomputes its own id: show the status, offer the term result,
+    // and write nothing.
+    let settled = json!({
+        "graph": gui.get("/api/graph"),
+        "overview": gui.get("/api/overview"),
+        "spreads": gui.get("/api/spreads"),
+        "register": gui.register(),
+        "broken": gui.get("/api/broken"),
+    });
+    let mut tampered = report.clone();
+    tampered["proposals"][0]["sentence"] = json!("对应 [[bookB/1]]：被改过的一句话。");
+    let tampered_path = home._tmp.path().join("tampered-report.json");
+    fs::write(&tampered_path, serde_json::to_string(&tampered).expect("tampered JSON")).expect("write");
+    let invalid = gui.distant_report_ready(&focus, &[], &tampered_path);
+    assert_eq!(invalid["report"]["status"], json!("invalid_report"), "{invalid}");
+    assert_eq!(invalid["candidate"]["source"], json!("register_term"), "{invalid}");
+    assert!(
+        invalid["report"]["errors"][0].as_str().unwrap_or_default().contains("fingerprint"),
+        "{invalid}"
+    );
+    // A missing report path is a status, not a broken reader: no helper run, and the term
+    // suggestion still answers.
+    let missing = gui.distant_report(&focus, &[], &home._tmp.path().join("missing.json"));
+    assert_eq!(missing["report"]["status"], json!("missing_report"), "{missing}");
+    assert_eq!(missing["candidate"]["source"], json!("register_term"), "{missing}");
+
+    // No Card, Link, Spread, or report changed: the selection is read-only, and applying still
+    // needs the compiler's exact report and proposal acceptance.
+    let after = json!({
+        "graph": gui.get("/api/graph"),
+        "overview": gui.get("/api/overview"),
+        "spreads": gui.get("/api/spreads"),
+        "register": gui.register(),
+        "broken": gui.get("/api/broken"),
+    });
+    assert_eq!(after["graph"], settled["graph"], "the projection changed a Card or a Link");
+    assert_eq!(after["register"]["archive_revision"], settled["register"]["archive_revision"], "the projection bumped the archive revision");
+    assert_eq!(after["spreads"], settled["spreads"]);
+    assert_eq!(after["broken"], settled["broken"]);
+    assert_eq!(fs::read_to_string(&report_path).expect("report"), serde_json::to_string(&report).expect("report JSON"));
+    assert_eq!(mcp.ok("get_card", json!({ "at": focus }))["body"], focus_card["body"]);
+}
+
+/// S20-AC06: a missing installed helper is one small status; the term suggestion and the reader
+/// stay usable, and the selected report is never read by anything else.
+#[test]
+fn a_missing_bridge_helper_leaves_the_term_suggestion() {
+    let home = TestHome::new_with(&[("ZT_DIGEST_HELPER", "Z:\\no-such-zt-digest.exe")]);
+    let (gui, focus, other) = two_books(&home);
+    let mut mcp = home.mcp();
+    let focus_card = mcp.ok("get_card", json!({ "at": focus }));
+    let other_card = mcp.ok("get_card", json!({ "at": other }));
+    let report = published_bridge_report(&focus_card, &other_card, "b007", "illustrates");
+    let report_path = home._tmp.path().join("bridge-report.json");
+    fs::write(&report_path, serde_json::to_string(&report).expect("report JSON")).expect("write report");
+    let value = gui.distant_report_ready(&focus, &[], &report_path);
+    assert_eq!(value["report"]["status"], json!("missing_helper"), "{value}");
+    assert_eq!(value["report"]["cached"], json!(true));
+    assert_eq!(value["candidate"]["source"], json!("register_term"), "{value}");
+    assert_eq!(value["candidate"]["address"], json!(other));
+    let card = gui.get(&format!("/api/card?at={}", enc(&focus)));
+    assert_eq!(card["title"], json!("多重均衡的陈述"));
 }

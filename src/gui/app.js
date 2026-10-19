@@ -2575,12 +2575,12 @@
   // with the held Card's ink, place, or motion. Opening, laying, or replying writes no Link: Reply
   // opens the ordinary human draft for an agent Card, and laying a Card is the Table's own action.
   // The answer is cached per read (Card, archive fingerprint, Table) so a repaint asks nothing.
-  const distant = { key: null, value: null, pending: null };
+  const distant = { key: null, value: null, pending: null, poll: null };
 
   /** The Table's Cards and the archive read an answer belongs to. */
   function distantKey(at) {
     const lying = (spreads.now()?.cards || []).map((card) => card.at).sort().join(',');
-    return [at, state.fingerprint || '', lying].join('|');
+    return [at, state.fingerprint || '', lying, bridgeReport()].join('|');
   }
 
   /** Ask for the open Card's one distant Card; an answer for the same read is reused. */
@@ -2598,12 +2598,15 @@
     if (distant.key === key || distant.pending === key) return;
     distant.pending = key;
     const lying = spreads.cards().map((item) => item.at);
-    api('distant?at=' + enc(card.address) + (lying.length ? '&table=' + lying.map(enc).join(',') : '')).then((value) => {
+    const report = bridgeReport();
+    api('distant?at=' + enc(card.address) + (lying.length ? '&table=' + lying.map(enc).join(',') : '') + (report ? '&report=' + encodeURIComponent(report) : '')).then((value) => {
       if (distant.pending !== key) return;
       distant.pending = null;
       distant.key = key;
       distant.value = value && value.at === card.address ? value : null;
       paintDistant();
+      // The helper may answer after this paint: ask once more shortly while it is pending.
+      if (value && value.report && value.report.status === 'pending') scheduleBridgePoll(card.address);
     }, () => {
       // An unreadable suggestion leaves the reader as it is: no slot and no message (AC07).
       if (distant.pending !== key) return;
@@ -2667,6 +2670,109 @@
       slot.replaceChildren(...(body ? [body] : []));
       slot.hidden = !body;
     }
+    paintBridgeStatus();
+  }
+
+  // ------------------------------------------------------- bridge report (S20, #112)
+  // The reader may select one existing immutable Bridge report. Its exact path stays in this
+  // browser session only, never in the archive: the service projects that one file read-only
+  // through the installed helper, caches the answer by report hash and archive revision, and the
+  // distant slot prefers its still-current proposals. A missing report, a missing helper, a
+  // changed endpoint, or a timeout leaves the term or model suggestion and the Card usable, and
+  // one small line says what happened. Nothing here applies a Bridge: acceptance still names the
+  // report id and its exact proposal ids in the digest compiler.
+  const BRIDGE_SELECTION = 'zt-bridge-report';
+
+  /** The report path the reader selected in this browser session, or an empty string. */
+  function bridgeReport() {
+    try { return sessionStorage.getItem(BRIDGE_SELECTION) || ''; } catch { return ''; }
+  }
+
+  /** Keep the selected path for this browser session and read the slot again. */
+  function setBridgeReport(path) {
+    try {
+      if (path) sessionStorage.setItem(BRIDGE_SELECTION, path);
+      else sessionStorage.removeItem(BRIDGE_SELECTION);
+    } catch { /* private mode */ }
+    stopBridgePoll();
+    distant.key = null;
+    distant.value = null;
+    distant.pending = null;
+    paintDistant();
+    requestDistant();
+  }
+
+  /** The reader chooses one existing report; an empty answer stops using one. */
+  async function useBridgeReport() {
+    const path = await promptValue('Use a Bridge report',
+      'The exact path of an existing proposals.json. The service reads only that file and never scans a folder for a newer report. Leave it empty to stop using a report.',
+      bridgeReport());
+    if (path === null) return;
+    setBridgeReport(path.trim());
+  }
+
+  /** The selected report's status for one Card, when the last read carries one. */
+  function bridgeStatus(at) {
+    const value = distant.value;
+    return value && value.at === at && value.report ? value.report : null;
+  }
+
+  /** One line for the selected report: what the helper answered, and what it means for the slot. */
+  function bridgeStatusText(report) {
+    if (!report) return '';
+    const count = report.candidates || 0;
+    const first = (report.errors || [])[0];
+    switch (report.status) {
+      case 'pending': return 'Bridge report: reading the selected report…';
+      case 'done': return `Bridge report ${report.report_id}: ${count} current proposal${count === 1 ? '' : 's'}`;
+      case 'stale': return `Bridge report ${report.report_id}: its endpoints changed, so no proposal is current`;
+      case 'not_in_report': return `Bridge report ${report.report_id}: no proposal names this Card`;
+      case 'missing_report': return 'Bridge report not found at the selected path; showing term and model evidence.';
+      case 'missing_helper': return 'Bridge report helper is not installed; showing term and model evidence.';
+      case 'timeout': return 'Bridge report helper took longer than ten seconds; showing term and model evidence.';
+      case 'invalid_report': return `Bridge report is not a valid immutable report${first ? ': ' + first : ''}`;
+      default: return `Bridge report could not be read${first ? ': ' + first : ''}`;
+    }
+  }
+
+  /** The one small line under the slot; it carries the clear action and never a candidate tray. */
+  function bridgeStatusSlot() {
+    return h('div', { class: 'bridge-status', 'data-bridge-status': 'reader', role: 'status', 'aria-live': 'polite', hidden: true });
+  }
+
+  /** Fill the report status line; the helper may answer after the slot was first painted. */
+  function paintBridgeStatus() {
+    for (const slot of document.querySelectorAll('[data-bridge-status]')) {
+      const at = state.card?.address;
+      const text = at ? bridgeStatusText(bridgeStatus(at)) : '';
+      slot.hidden = !text;
+      slot.replaceChildren(...(text ? [
+        h('span', { class: 't', text }),
+        h('button', {
+          class: 'bridge-clear', title: 'Stop using this Bridge report; nothing in the archive changes',
+          text: '×', onclick: () => setBridgeReport(''),
+        }),
+      ] : []));
+    }
+  }
+
+  /** Stop a scheduled re-read of a pending helper answer. */
+  function stopBridgePoll() {
+    if (distant.poll) clearTimeout(distant.poll);
+    distant.poll = null;
+  }
+
+  /** Ask once more shortly while the installed helper is still working; never per repaint. */
+  function scheduleBridgePoll(at) {
+    stopBridgePoll();
+    distant.poll = setTimeout(() => {
+      distant.poll = null;
+      if (!state.card || state.card.address !== at || !bridgeReport()) return;
+      const report = bridgeStatus(at);
+      if (!report || report.status !== 'pending') return;
+      distant.key = null;
+      requestDistant();
+    }, 700);
   }
 
   // ----------------------------------------------------------------- reader
@@ -2761,8 +2867,10 @@
         h('pre', { text: card.bibtex })) : null,
       card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
-      // One distant Card beside the neighbours, faint until focus or hover (S19, #108).
+      // One distant Card beside the neighbours, faint until focus or hover (S19, #108), and the
+      // selected Bridge report's one-line status (S20, #112).
       card.context === 'regular' ? distantSlot('reader') : null,
+      card.context === 'regular' ? bridgeStatusSlot() : null,
       h('div', { class: 'actions' },
         actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p', () => toggleTable(card.address), {
           title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
@@ -2776,6 +2884,10 @@
         card.workspace === 'agent' ? actionButton('Reply', 'r', replyTo, {
           title: 'Answer this agent Card with a human Card: 印证, 反驳, 放宽, or 对应, then the Link back',
           cls: 'reply-btn',
+        }) : null,
+        card.context === 'regular' ? actionButton('Bridge report', null, useBridgeReport, {
+          title: 'Use one existing Bridge report as the distant slot’s first source; it is read only and no proposal is applied',
+          cls: 'bridge-btn',
         }) : null,
         actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
         actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),

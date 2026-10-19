@@ -15,6 +15,17 @@ use std::sync::LazyLock;
 static PROPOSAL_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^b[0-9]{3}$").unwrap());
 const KIND_ORDER: [&str; 7] = ["corresponds", "contrasts", "illustrates", "relaxes", "objects", "rests-on", "specializes"];
 
+/// `Validate-Published`: the report's schema and its content id, without the Citation key that
+/// an apply also binds. The read-only projection of one selected report reuses this check
+/// (§10.3, D258; S20-AC02), so a projection and an apply agree on what an immutable report is.
+pub(super) fn validate_published(value: &Value) -> Result<()> {
+    let id = format!("r-{}", canon::content_hash(value, &["report_id", "created_at"]));
+    if ne_one(get(value, "schema")) || !ceq(get(value, "report_id"), &id) {
+        return Err(refuse("invalid published report schema or fingerprint"));
+    }
+    Ok(())
+}
+
 /// `Markdown-Cell`.
 pub fn cell(value: &Value) -> String {
     s(value).replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('|', "\\|").replace('\r', " ").replace('\n', " ")
@@ -163,9 +174,9 @@ impl Bridge {
     /// `Load-Published`.
     pub(super) fn load_published(&self) -> Result<Value> {
         let value = canon::read_json(&self.proposal_file)?;
-        let id = format!("r-{}", canon::content_hash(&value, &["report_id", "created_at"]));
-        if ne_one(get(&value, "schema")) || !ceq(get(&value, "citation_key"), &self.key) || !ceq(get(&value, "report_id"), &id) {
-            return Err(refuse("invalid published report schema, Citation key, or fingerprint"));
+        validate_published(&value)?;
+        if !ceq(get(&value, "citation_key"), &self.key) {
+            return Err(refuse("invalid published report Citation key"));
         }
         Ok(value)
     }
