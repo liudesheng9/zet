@@ -1,5 +1,6 @@
 //! zt-check: the book digest's Card quality check as one binary.
 //!
+//!   zt-check --version
 //!   zt-check --json <file> [--setting <address>] [--level concept|formal]
 //!   zt-check --model <address> [--skip-shared]
 //!   zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,R3,...]

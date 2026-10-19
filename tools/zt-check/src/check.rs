@@ -169,6 +169,7 @@ const DEFAULT_RULES: &str =
     "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3";
 
 const USAGE: &str = "usage:
+  zt-check --version
   zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
   zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal] [--require-explain] [limits]
   zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
@@ -2389,8 +2390,20 @@ pub(crate) fn check_addresses(
         .run(&cards))
 }
 
+/// The checker's own identity: a report that records the software version of a run
+/// reads it here instead of guessing it from a path or a file date.
+fn version() -> String {
+    format!("zt-check {}", crate::VERSION)
+}
+
 /// `zt-check …`.
 pub fn run_cli(args: &[String]) -> Result<()> {
+    // `--version` is answered before any archive is read: a review records the checker
+    // that produced its lines, and a copied binary must be able to state which one it is.
+    if args.len() == 1 && matches!(args[0].to_ascii_lowercase().as_str(), "--version" | "-v") {
+        println!("{}", version());
+        return Ok(());
+    }
     write_lines(&run_lines(args, None)?)
 }
 
@@ -3054,5 +3067,14 @@ mod tests {
             ]
         );
         assert_eq!(count, 1);
+    }
+
+    /// The calibration review records the checker that produced its lines, so the
+    /// binary states its own version rather than being identified by a path.
+    #[test]
+    fn the_checker_states_its_version() {
+        assert_eq!(version(), format!("zt-check {}", env!("CARGO_PKG_VERSION")));
+        // Any other argument set is still a check, never a version answer.
+        assert!(run_lines(&["--version".to_string(), "--json".to_string()], None).is_err());
     }
 }

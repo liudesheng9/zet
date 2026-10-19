@@ -91,6 +91,8 @@ flowchart TD
 
 `mcp::Zt::server_version()` returns the `version` of the `zt` build from the `initialize` answer the client already received (empty when the server named none). The digest audit records it as the software version that measured the archive (#94 S01), so no report parses `zt --version` or starts a second process.
 
+`check::VERSION` is `lib.rs`'s `zt_check::VERSION` (the crate version), and `zt-check --version` prints it as `zt-check <version>` without starting a client (#102 S25). A review records the checker that produced its lines from the binary itself, so a copied or replaced `zt-check.exe` states which one it is; the version argument is answered before any option parsing or archive read.
+
 ### Shared title and source evidence (#94 S01)
 
 Three functions are public so a digest report uses the checker's rules instead of a second copy of them:
@@ -120,6 +122,7 @@ Three functions are public so a digest report uses the checker's rules instead o
 ### Command line
 
 ```text
+zt-check --version
 zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
 zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal] [--require-explain] [limits]
 zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
@@ -128,7 +131,7 @@ limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences
         --max-explain-chars 600 --min-idea-chars 40 --max-idea-chars 300 --min-reason 8
 ```
 
-(`USAGE` in `tools/zt-check/src/check.rs`; the doc comment in `main.rs` lists only three of the modes.)
+(`USAGE` in `tools/zt-check/src/check.rs`; the doc comment in `main.rs` lists the modes.)
 
 | Mode | Input | Reads zt | Term table (R6) | Level | Layer rules | `faults: N` counts |
 |---|---|---|---|---|---|---|
@@ -141,6 +144,7 @@ Flags:
 
 | Flag | Applies to | Effect |
 |---|---|---|
+| `--version`, `-v` | alone | Prints `zt-check <crate version>` and exits 0 before any archive read; with any other argument the run is a check, never a version answer |
 | `--setting <address>` | `--json`, `--model`, `--addresses` | The setting Card whose `术语表` gives R6's term table |
 | `--level concept\|formal` | `--json`, `--model`, `--addresses` | Overrides the level; any other value is an error; lower-cased |
 | `--require-explain` | `--json`, `--model`, `--addresses` | R15 to R17 also on Derivation parts with neither 思路 nor 解读 (older parts) |
@@ -447,6 +451,7 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 
 ## Change history
 
+- `2026-10-19` — #102 (S25): `zt-check --version` prints `zt-check <crate version>` (from `zt_check::VERSION`) and exits 0 before any option parsing or archive read, so a calibration review records the checker that produced its lines rather than a path or a file date. Pinned by `the_checker_states_its_version`. No rule changes.
 - `2026-10-19` — S03 re-verification: the candidate index folds case, so an exact copy that differs only in case is found by the index instead of a per-Card scan of the whole context (the scan is gone; the same pairs are reported, and a 5,000-entry `--json` run over the live 10,895 titles fell from 43 s to 9 s with byte-identical output). A supplied context with an entry that names no `workspace` marks I6 unknown and compares nothing, so no pair crosses a Workspace boundary. `anchor-title` gained the topic hub's second anchor (`<n>/0`), matching the compiler precheck. Pinned by `an_exact_title_copy_is_found_without_scanning_the_context`, `an_entry_without_a_workspace_marks_i6_unknown`, and `a_topic_hub_that_copies_its_topic_title_is_named`.
 - `2026-10-19` — A supplied Workspace title context that is not complete marks I6 unknown instead of silently comparing the known rows (`complete` was parsed but unread). `TitleContext` gains `supplied`; `similar_titles` reports one `(advisory)` line per checked Idea Card before its pair lines, naming the known titles compared, and still reports the pairs it can decide. A bundle with no context keeps the documented run-scoped comparison. Pinned by `an_incomplete_title_context_marks_i6_unknown` and by the layer-advice assertions of `scripts/book-digest/tests/standalone-and-source.tests.ps1`.
 - `2026-10-19` — #101 (S10): `zt-digest register -Step plan` reads every agent book term table through the same public `check::term_table` (#97), so the register's proposed rows and R6 never disagree about a row either. No rule changes.
