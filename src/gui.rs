@@ -3306,6 +3306,24 @@ mod tests {
         assert!(APP_JS.contains(
             "keep = ZtAsk.askWithout(preview, changed.missing.map((card) => card.at));"
         ));
+        // The changed-set dialog belongs to the keyboard too: Esc is the way back, never Keep, and
+        // the dialog consumes it so the page's own Esc does not also fire.
+        assert!(APP_JS.contains("// Esc is the way back, as in every other dialog: it never keeps anything."));
+        assert!(APP_JS.contains("if (event.key !== 'Escape') return;"));
+        assert!(
+            APP_JS.contains("if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); resolve(null); }"),
+            "the Ask dialog consumes its own Escape"
+        );
+        assert_eq!(
+            APP_JS.matches("finish(true)").count(),
+            1,
+            "only the Keep button keeps from the changed-set dialog"
+        );
+        assert_eq!(
+            APP_JS.matches("finish(false)").count(),
+            2,
+            "Esc and Back both go back, never Keep"
+        );
         assert!(APP_JS.contains("await spreads.adopt(kept);"));
         assert!(APP_JS.contains("function cancelAskSpread()"));
         assert!(
@@ -3339,7 +3357,8 @@ mod tests {
             keys.find("if (isTyping(event.target) || event.ctrlKey") < keys.find("case 'y':"),
             "the ask keys never fire inside an input"
         );
-        // The page loads the module, and the bar is an element of the page, not a dialog.
+        // The page loads the module, and the bar is an element of the stage row, not a dialog over
+        // the Cards: while it shows, the title and the Table's tools stand down.
         assert!(INDEX_HTML.contains("<script src=\"/ask.js\" defer></script>"));
         for id in ["ask-bar", "ask-q", "ask-terms", "ask-note", "ask-keep", "ask-cancel", "ask-open"] {
             assert!(
@@ -3348,6 +3367,23 @@ mod tests {
             );
         }
         assert!(INDEX_HTML.contains("Ask the box"));
+        let stage_bar = INDEX_HTML.find("class=\"stage-bar\"").expect("stage bar");
+        let bar = INDEX_HTML.find("id=\"ask-bar\"").expect("ask bar");
+        let viewport = INDEX_HTML.find("id=\"viewport\"").expect("viewport");
+        assert!(
+            stage_bar < bar && bar < viewport,
+            "the ask bar sits in the stage row, not over the Cards"
+        );
+        for line in [
+            "const previewing = spreads.previewing();",
+            "$('#stage-title').hidden = onTableMode && previewing;",
+            "$('#table-tools').hidden = !onTableMode || previewing;",
+        ] {
+            assert!(
+                APP_JS.contains(line),
+                "the title and the Table's tools stand down for the bar: {line}"
+            );
+        }
         // Light and dark: the bar and the reasons take their ink from the page's theme variables,
         // so both themes get the same bar; Keep and Cancel are ordinary buttons, which draw the
         // page's own focus ring.
@@ -3366,6 +3402,12 @@ mod tests {
         assert!(
             APP_CSS.contains(".tcard.proposed .put-back { display: none; }"),
             "a proposed Card cannot be put back before Keep or Cancel"
+        );
+        let why = APP_CSS.find(".tcard .why {").expect("the reason band");
+        let why = &APP_CSS[why..why + APP_CSS[why..].find("\n}").expect("rule end")];
+        assert!(
+            why.contains("position: absolute") && why.contains("background:") && why.contains("var(--paper)"),
+            "the reason is its own legible band over the ruled paper: {why}"
         );
     }
 }

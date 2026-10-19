@@ -1162,7 +1162,11 @@
     $('#desk').hidden = !(state.mode === 'map' && !state.card);
     $('#plane').hidden = !inTree;
     $('#table-plane').hidden = !onTableMode;
-    $('#table-tools').hidden = !onTableMode;
+    // While a question's proposal lies on the Table, the ask bar takes the stage row: the title and
+    // the Table's tools stand down so nothing overlaps the tabs or the zoom.
+    const previewing = spreads.previewing();
+    $('#stage-title').hidden = onTableMode && previewing;
+    $('#table-tools').hidden = !onTableMode || previewing;
     $('#viewport').classList.toggle('table-mode', onTableMode);
     $('#app').classList.toggle('at-table', onTableMode);
     if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; $('#ask-bar').hidden = true; }
@@ -1736,7 +1740,7 @@
       };
       input.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') { event.preventDefault(); submit(); }
-        if (event.key === 'Escape') { event.preventDefault(); close(); resolve(null); }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); resolve(null); }
       });
       ask.addEventListener('click', submit);
       cancel.addEventListener('click', () => { close(); resolve(null); });
@@ -1759,12 +1763,14 @@
     $('#ask-q').textContent = preview.question;
     $('#ask-q').title = preview.question;
     $('#ask-terms').textContent = terms + ambiguous;
+    $('#ask-terms').title = terms + ambiguous;
     const notes = [];
     if (preview.fallback) notes.push('low confidence: these share character bigrams with the question');
     if (preview.sparse) notes.push('sparse: fewer than five cards are justified');
     if (preview.truncated) notes.push('bounded: the walk stopped at its limit, so this is not the whole box');
     if (!preview.cards.length) notes.push('nothing to keep; ask differently');
     $('#ask-note').textContent = notes.join(' · ');
+    $('#ask-note').title = notes.join('\n');
     $('#ask-note').hidden = !notes.length;
     $('#ask-keep').disabled = !preview.cards.length;
     $('#ask-keep').title = preview.cards.length
@@ -1824,8 +1830,22 @@
           h('ul', { class: 'ask-changed' }, rows)),
         h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), back, keep),
       ));
-      keep.addEventListener('click', () => { close(); resolve(true); });
-      back.addEventListener('click', () => { close(); resolve(false); });
+      // Esc is the way back, as in every other dialog: it never keeps anything. It stops here, so
+      // the page's own Esc (closing a pull-out or the cabinet) does not also fire as the dialog goes.
+      const onKey = (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      };
+      const finish = (value) => {
+        document.removeEventListener('keydown', onKey, true);
+        close();
+        resolve(value);
+      };
+      document.addEventListener('keydown', onKey, true);
+      keep.addEventListener('click', () => finish(true));
+      back.addEventListener('click', () => finish(false));
       back.focus();
     });
   }
