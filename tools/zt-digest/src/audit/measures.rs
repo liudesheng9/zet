@@ -451,7 +451,10 @@ fn in_topic_tree(f: &Facts, card: &Value) -> bool {
 }
 
 fn navigation(f: &Facts, card: &Value) -> bool {
-    matches!(category(f, card).as_str(), "hub" | "terms" | "structure" | "root" | "anchor")
+    matches!(
+        category(f, card).as_str(),
+        "hub" | "terms" | "structure" | "root" | "anchor" | "restatement-entry"
+    )
 }
 
 /// The source sets of every Card in scope, with the places where they differ from the existing

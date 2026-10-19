@@ -766,6 +766,10 @@ impl App {
             "body": parsed.body,
             // The authored identity a Reply captures and re-checks before it saves (S18, #99).
             "authored_fingerprint": crate::card::authored_fingerprint(card)?,
+            // The derived navigation role of an accepted restatement entry and the exact statement
+            // fingerprint (§4.5, D086-D087): both computed from the authored text, stored nowhere.
+            "restatement": crate::entry::is_restatement_entry(&parsed.body),
+            "statement_fingerprint": crate::card::statement_fingerprint(&parsed.body),
             "html": render_markdown(&parsed.body, &snapshot, &self.charts),
             "bibtex": card.bibtex,
             "citation_key": card.citation_key,

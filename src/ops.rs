@@ -704,6 +704,7 @@ impl Snapshot {
             "edge": edge(card),
             "parent": parent,
             "excerpt": excerpt(&self.parsed[&card.address].body),
+            "restatement": crate::entry::is_restatement_entry(&self.parsed[&card.address].body),
             "links": links,
             "kinds": kinds,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),

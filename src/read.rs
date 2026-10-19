@@ -38,7 +38,12 @@ pub(crate) fn text_value(card: &Card) -> Result<Value> {
         "emphasis":card.emphasis.map(crate::model::Emphasis::id),
         "level":card.level_id(),"form":card.form.map(crate::math::MathForm::id),
         "title":parsed.title,"body":parsed.body,"text":card.text,
-        "bibtex":card.bibtex,"citation_key":card.citation_key
+        "bibtex":card.bibtex,"citation_key":card.citation_key,
+        // The derived navigation role of a restatement entry (D086) and the exact statement
+        // fingerprint folding compares (§4.5, D087). Both are computed from the authored text on
+        // every read and stored nowhere.
+        "restatement":crate::entry::is_restatement_entry(&parsed.body),
+        "statement_fingerprint":crate::card::statement_fingerprint(&parsed.body)
     }))
 }
 
@@ -537,7 +542,7 @@ pub(crate) fn titles(
     for row in rows {
         let (at, text, workspace, card_type, facet) = row?;
         let parsed = crate::parse_card_text(&text).with_context(|| format!("Card `{at}`"))?;
-        titles.push(json!({"address":at,"tree":crate::tree_id(&at),"workspace":workspace,"type":card_type,"facet":facet,"title":parsed.title}));
+        titles.push(json!({"address":at,"tree":crate::tree_id(&at),"workspace":workspace,"type":card_type,"facet":facet,"title":parsed.title,"restatement":crate::entry::is_restatement_entry(&parsed.body)}));
     }
     drop(statement);
     titles.sort_by(|a, b| {

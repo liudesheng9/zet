@@ -110,6 +110,32 @@ struct Compiler {
     known: Option<HashSet<String>>,
 }
 
+/// The restatement resolution of this run, when the same Card cycle also reviewed restatements
+/// (#107, design §5.4 D115). Its counts come from `<Staging>\restate-resolution.json`, which
+/// `zt-digest restate -Step apply` publishes; a run that reviewed none reports `null` rather than a
+/// clean measurement it never made. A recorded `merge` verdict is not an applied merge: it is
+/// counted among `pending_existing_card_change` until a rewrite covers it.
+fn restate_summary(state: &Value) -> Value {
+    let staging = field(state, "staging");
+    if staging.is_empty() {
+        return Value::Null;
+    }
+    let path = join_path(&staging, "restate-resolution.json");
+    if !Path::new(&path).is_file() {
+        return Value::Null;
+    }
+    let Ok(resolution) = read_json_file(&path) else {
+        return json!({"path": path, "read": false});
+    };
+    json!({
+        "path": path,
+        "counts": resolution["counts"],
+        "complete": resolution["complete"],
+        "evidence_id": resolution["evidence_id"],
+        "judged_id": resolution["judged_id"],
+    })
+}
+
 fn read_json_file(path: &str) -> Result<Value> {
     let raw = util::read_text(path)?;
     ps::parse_json(&raw).with_context(|| format!("{path} is not JSON"))
@@ -1807,6 +1833,7 @@ impl Compiler {
             .collect();
         let faults_after: i64 = after.iter().map(|x| x.1).sum();
         let review_records = self.review_records(&audit);
+        let restate = restate_summary(&self.state);
         let report = json!({
             "book": self.state["book"], "groups": self.state["groups"], "rules": rules,
             "cards": before_keys.len(), "picked": ps_items(&self.state["picked"]).len(),
@@ -1824,6 +1851,7 @@ impl Compiler {
             "audit": {"before": join_path(&self.p.work, "before"), "after": join_path(&self.p.work, "after"), "revision": audit.archive_revision, "rules": rules},
             "sample": self.state["sampled"],
             "reviews": review_records,
+            "restate": restate,
             "quality_complete": faults_after == 0,
         });
         util::write_text(join_path(&self.p.work, "report.json"), &ps::json_pretty(&report))?;
@@ -2153,6 +2181,35 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_cycle_report_names_the_restatement_resolution_it_has() {
+        let dir = std::env::temp_dir().join(format!("zt-restate-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let staging = dir.to_string_lossy().into_owned();
+        // No restatement review: null, never a clean measurement the cycle did not make.
+        assert_eq!(restate_summary(&json!({"staging": staging})), Value::Null);
+        assert_eq!(restate_summary(&json!({"staging": ""})), Value::Null);
+        // A published resolution: its counts and completeness are reported.
+        let resolution = json!({
+            "evidence_id": "e-x", "judged_id": "j-x", "complete": true,
+            "counts": {"recommended": 0, "resolved_by_rewrite": 2, "pending_existing_card_change": 1, "unverified": 0, "different": 3, "unresolved": 0},
+        });
+        std::fs::write(
+            dir.join("restate-resolution.json"),
+            serde_json::to_string(&resolution).unwrap(),
+        )
+        .unwrap();
+        let summary = restate_summary(&json!({"staging": staging}));
+        assert_eq!(summary["counts"]["resolved_by_rewrite"], json!(2));
+        assert_eq!(summary["counts"]["pending_existing_card_change"], json!(1));
+        assert_eq!(summary["complete"], json!(true));
+        assert_eq!(summary["evidence_id"], json!("e-x"));
+        // A resolution that cannot be read is reported as unread, not as zero.
+        std::fs::write(dir.join("restate-resolution.json"), "{not json").unwrap();
+        assert_eq!(restate_summary(&json!({"staging": staging}))["read"], json!(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_card_in_a_job_file() {

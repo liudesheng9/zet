@@ -130,7 +130,7 @@ All items are `pub(crate)`. ZT is one binary crate, with no library API.
 | `fingerprint()` | 24 hex characters, from the SHA-256 of each Card's address, text, BibTeX, Workspace, type, facet, emphasis, level id, and form. Open GUI windows poll it to notice changes |
 | `title(addr)`, `workspace(addr)`, `reference(addr)` | title, Workspace, and `{address, title, workspace}` |
 | `outbound(addr)` | each distinct Link target as `{address, title, workspace, broken}` |
-| `summary(card)` | `{address, tree, workspace, title, kind, type, facet, emphasis, level, form, head, edge ("root"/"side"/"direct"), parent, excerpt, links (not broken), kinds (target -> Relation kind, plain refers left out), inbound (count)}` |
+| `summary(card)` | `{address, tree, workspace, title, kind, type, facet, emphasis, level, form, head, edge ("root"/"side"/"direct"), parent, excerpt, restatement (the derived navigation role of a `## 同述入口` entry), links (not broken), kinds (target -> Relation kind, plain refers left out), inbound (count)}` |
 | `trees()` | one row per Tree root: `{tree, root, workspace, kind (Zone), title, excerpt, count, events, findings, models}`. `events`, `findings`, and `models` count only Cards without a facet |
 | `model_head(card)` | the first Model Card a Model part belongs to (`model::heads`). `None` for a Card without a facet |
 | `model(addr)` | `model::structure(...)`: the model view that `get_card`/`get_model` use |
@@ -455,7 +455,7 @@ Pitfalls:
 
 - `2026-10-17` — Share edge classification with lean text projections for scoped digest clients.
 
-- `2026-10-17` — Extract `Snapshot::from_cards` so targeted MCP readers and the full archive oracle share the same model, math, summary and Link calculations.
+- `2026-10-19` — #107 S08: `Snapshot::summary` adds `restatement`, the derived navigation role of a `## 同述入口` restatement entry (§4.5, D086), so `export_titles` and `get_tree` summaries classify an entry as navigation without a body read. It is computed from the parsed authored body on every read and stored nowhere.\n- `2026-10-17` — Extract `Snapshot::from_cards` so targeted MCP readers and the full archive oracle share the same model, math, summary and Link calculations.
 
 - `2026-10-17` — Make MCP/GUI edits atomic across text and metadata and maintain the derived Link index/revision. Public integration tests verify scoped ordinary updates and one revision per edit.
 

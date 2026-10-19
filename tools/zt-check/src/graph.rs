@@ -23,7 +23,33 @@ pub const EXCLUDED: &[&str] = &[
     "notation",
     "hub",
     "register-part",
+    "restatement-entry",
 ];
+
+/// Whether a Card body holds the `## 同述入口` section: the derived navigation role of an accepted
+/// restatement entry (§4.5, D086). The role is derived from the written text on every read, never
+/// stored as Card metadata; a heading inside a code fence is not a section.
+pub fn is_restatement_entry(body: &str) -> bool {
+    let mut fenced = false;
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+            && heading.trim() == "同述入口"
+        {
+            return true;
+        }
+    }
+    false
+}
 
 fn field<'a>(card: &'a Value, name: &str) -> &'a str {
     card[name].as_str().unwrap_or_default()
@@ -84,6 +110,16 @@ pub fn category_with_parts(
         .unwrap_or_else(|| field(card, "body"));
     if in_book && STRUCTURE.is_match(prose) {
         return "structure".into();
+    }
+    // An accepted restatement entry names the substantive statement at another address: it is
+    // navigation, not a claim of its own (§4.5, D086). The role comes from the authored section
+    // (or the flag the archive derives from it), never from a stored Card field.
+    if card["restatement"] == true
+        || card["body"]
+            .as_str()
+            .is_some_and(|body| is_restatement_entry(body))
+    {
+        return "restatement-entry".into();
     }
     let parent = card["parent"]
         .as_str()

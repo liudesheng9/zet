@@ -40,6 +40,7 @@ mod prepare;
 mod ps;
 mod register;
 mod report;
+mod restate;
 mod skeleton;
 mod snapshot;
 mod terms;
@@ -153,6 +154,7 @@ fn main() {
         "finalize" => finalize::cli(&rest),
         "gate" => gate::cli(&rest),
         "concepts" => concepts::cli(&rest),
+        "restate" => restate::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
         "link-finish" => ledger::link_finish_cli(&rest),

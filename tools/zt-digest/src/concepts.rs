@@ -99,11 +99,11 @@ impl std::fmt::Display for ChangingView {
 
 impl std::error::Error for ChangingView {}
 
-fn changing_view() -> anyhow::Error {
+pub(crate) fn changing_view() -> anyhow::Error {
     anyhow::Error::new(ChangingView)
 }
 
-fn is_changing_view(error: &anyhow::Error) -> bool {
+pub(crate) fn is_changing_view(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ChangingView>().is_some()
 }
 
@@ -167,7 +167,7 @@ fn f(value: &Value, key: &str) -> String {
 }
 
 /// One line: white-space runs made one space, cut to `max` UTF-16 units with `…`.
-fn line(text: &str, max: usize) -> String {
+pub(crate) fn line(text: &str, max: usize) -> String {
     let collapsed = SPACES.replace_all(text, " ");
     let trimmed = collapsed.trim();
     if ps::len16(trimmed) <= max {
@@ -182,7 +182,7 @@ fn cut16(text: &str, max: usize) -> String {
 
 /// The character bigrams of a text without formulas and Links: the cheap candidate comparison of
 /// §7.1. It decides what to read; it is never a semantic verdict (D081).
-fn bigrams(text: &str) -> HashSet<String> {
+pub(crate) fn bigrams(text: &str) -> HashSet<String> {
     let without_formulas = FORMULA.replace_all(text, " ");
     let plain = LINK.replace_all(&without_formulas, " ");
     let stripped: String = plain.chars().filter(|c| c.is_alphanumeric()).collect();
@@ -192,7 +192,7 @@ fn bigrams(text: &str) -> HashSet<String> {
 
 /// Dice's coefficient of two bigram sets: 0 when either is empty, so a candidate with no shared
 /// evidence is never selected.
-fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+pub(crate) fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
@@ -202,7 +202,7 @@ fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
 
 /// The claim a Card makes: its first paragraph that is not a heading, figure, table, quote, code
 /// fence, or label line. A label and the source line are evidence beside the claim, not the claim.
-fn statement(body: &str) -> String {
+pub(crate) fn statement(body: &str) -> String {
     for paragraph in body.split("\n\n") {
         let t = paragraph.trim();
         if t.is_empty() || NOT_A_STATEMENT.is_match(t) || SOURCE_LINE.is_match(t) || ASSUMPTION_LINE.is_match(t) {
@@ -217,7 +217,7 @@ fn statement(body: &str) -> String {
 }
 
 /// The assumption labels of one text (`假设：…`, `前提: …`), each once, in document order.
-fn assumptions(text: &str) -> Vec<String> {
+pub(crate) fn assumptions(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for l in text.split('\n') {
         let Some(m) = ASSUMPTION_LINE.find(l) else { continue };
@@ -230,7 +230,7 @@ fn assumptions(text: &str) -> Vec<String> {
 }
 
 /// The formulas of one text, as they were written (the dollars kept), each once, ordinal order.
-fn formulas(text: &str) -> Vec<String> {
+pub(crate) fn formulas(text: &str) -> Vec<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     for m in FORMULA.find_iter(text) {
         let formula = m.as_str().trim().to_string();
@@ -242,7 +242,7 @@ fn formulas(text: &str) -> Vec<String> {
 }
 
 /// The source evidence of one Card: every `[[…]]` on its `来源：` lines (§4.3).
-fn sources(body: &str) -> Vec<String> {
+pub(crate) fn sources(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for l in body.split('\n') {
         if !SOURCE_LINE.is_match(l) {
@@ -265,7 +265,7 @@ fn in_tree(target: &str, tree: &str) -> bool {
 
 /// The retained evidence file of one endpoint: its full body, so the report and a later decision
 /// name bytes that are still on disk.
-fn retain_endpoint(work: &str, card: &Value) -> Result<(String, String)> {
+pub(crate) fn retain_endpoint(work: &str, card: &Value) -> Result<(String, String)> {
     let address = f(card, "address");
     let name = canon::sha256_hex(address.as_bytes());
     let path = ps::join(&ps::join(work, "endpoints"), &format!("{}.md", &name[..16]));
@@ -422,7 +422,7 @@ impl Endpoints {
 
 /// One bounded read of the frozen set. A missing address is an unread endpoint, never a silent
 /// absence; the revision of every reply must be the one revision of the set (D300).
-fn read_cards(zt: &mut Zt, addresses: &[String], revision: u64, unread: &mut Vec<(String, String)>) -> Result<Vec<Value>> {
+pub(crate) fn read_cards(zt: &mut Zt, addresses: &[String], revision: u64, unread: &mut Vec<(String, String)>, what: &str) -> Result<Vec<Value>> {
     let mut cards: Vec<Value> = Vec::new();
     let mut offset = 0usize;
     let mut width = 200usize;
@@ -435,21 +435,21 @@ fn read_cards(zt: &mut Zt, addresses: &[String], revision: u64, unread: &mut Vec
                 width = (chunk.len() / 2).max(1);
                 continue;
             }
-            bail!("incomplete concept evidence: {message}");
+            bail!("incomplete {what} evidence: {message}");
         }
         let value: Value = serde_json::from_str(&zt_check::mcp::reply_text(&reply))
-            .context("incomplete concept evidence: the Card answer is not JSON")?;
+            .with_context(|| format!("incomplete {what} evidence: the Card answer is not JSON"))?;
         let rows: Vec<Value> = ps::ps_items(&value["cards"]);
         let current = value["archive_revision"]
             .as_u64()
-            .context("incomplete concept evidence: missing archive revision")?;
+            .with_context(|| format!("incomplete {what} evidence: missing archive revision"))?;
         if current != revision {
             return Err(changing_view());
         }
         for row in &rows {
             let at = f(row, "address");
             if !chunk.contains(&at) {
-                bail!("incomplete concept evidence: the answer names `{at}`, which was not asked for");
+                bail!("incomplete {what} evidence: the answer names `{at}`, which was not asked for");
             }
             cards.push(row.clone());
         }
@@ -659,7 +659,7 @@ fn observe(zt: &mut Zt, p: &Params, key: &str, book_title: &str, proposals: &[Va
         wanted.push(f(topic, "address"));
     }
     dedup_sorted(&mut wanted);
-    for card in read_cards(zt, &wanted, revision, &mut unread)? {
+    for card in read_cards(zt, &wanted, revision, &mut unread, "concept")? {
         endpoints.cards.insert(f(&card, "address"), card);
     }
     let topics: Vec<Value> = catalogue
@@ -747,7 +747,7 @@ fn observe(zt: &mut Zt, p: &Params, key: &str, book_title: &str, proposals: &[Va
     let mut rest: Vec<String> = topic_reads.clone();
     rest.extend(idea_reads.clone());
     dedup_sorted(&mut rest);
-    for card in read_cards(zt, &rest, revision, &mut unread)? {
+    for card in read_cards(zt, &rest, revision, &mut unread, "concept")? {
         endpoints.cards.insert(f(&card, "address"), card);
     }
     endpoints.unread = unread;
@@ -1028,7 +1028,7 @@ fn topic_candidates(proposal: &Value, topics: &[Value], max: usize) -> (Vec<Valu
 /// another JSON reader's parse of a float can land on the neighbouring value, and then the
 /// recomputed evidence id would differ from the one prepare wrote. The order the shortlist was
 /// made in is materialized as `rank`, so this number is only a readable comparison.
-fn similarity_text(score: f64) -> String {
+pub(crate) fn similarity_text(score: f64) -> String {
     format!("{score:.4}")
 }
 

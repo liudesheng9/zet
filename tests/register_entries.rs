@@ -1037,6 +1037,7 @@ fn a_confirmed_restatement_is_projected_and_a_malformed_one_is_a_fault() {
         json!([{
             "entry": entry,
             "substantive": substantive,
+            "terminal": substantive,
             "title": "斯卢茨基分解",
         }]),
         "the confirmed restatement is part of the view"

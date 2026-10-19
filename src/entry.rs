@@ -566,49 +566,73 @@ impl View {
     }
 
     /// The confirmed restatement entries: a `## 同述入口` section that names exactly one existing
-    /// substantive Card of the same Workspace, not itself (§4.5). Cycles and chains are a later
-    /// slice's finding; this view records the direct reference and reports a malformed section.
+    /// substantive Card of the same Workspace, not itself (§4.5, D084-D086). An entry names its
+    /// terminal substantive Card: a section that names another entry is a `chain` fault that names
+    /// the terminal to write, and a loop of such sections is a `cycle` fault. The view records no
+    /// confirmed row for either, so a faulty entry can never become folding evidence.
     fn read_restatements(
         &mut self,
         snapshot: &Snapshot,
         sections: &BTreeMap<String, Vec<String>>,
     ) {
+        if sections.is_empty() {
+            return;
+        }
+        let parts: BTreeSet<&str> = self
+            .parts
+            .iter()
+            .filter_map(|part| part["address"].as_str())
+            .collect();
+        let entries: BTreeSet<&str> = sections.keys().map(String::as_str).collect();
+        // The one Link of each entry that may be followed: a section with a different shape is
+        // reported where it is read and never becomes a step of a chain.
+        let mut step: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut direct: BTreeMap<&str, &str> = BTreeMap::new();
         let mut confirmed = Vec::new();
+        let mut reported: BTreeSet<&str> = BTreeSet::new();
         for (card, links) in sections {
+            let card = card.as_str();
             let Some(own) = snapshot.by_address.get(card) else {
                 continue;
             };
             if links.len() != 1 {
                 self.faults.push(json!({
                     "fault": "restatement",
+                    "kind": "malformed",
                     "detail": format!(
                         "the 同述入口 section of [[{card}]] names {} Cards; it names exactly one",
                         links.len()
                     ),
                     "card": card,
                 }));
+                reported.insert(card);
                 continue;
             }
-            let target = &links[0];
+            let target = links[0].as_str();
             if target == card {
                 self.faults.push(json!({
                     "fault": "restatement",
+                    "kind": "self",
                     "detail": format!("the 同述入口 section of [[{card}]] points at itself"),
                     "card": card,
                 }));
+                reported.insert(card);
                 continue;
             }
             let Some(substantive) = snapshot.by_address.get(target) else {
                 self.faults.push(json!({
                     "fault": "restatement",
+                    "kind": "missing",
                     "detail": format!("the 同述入口 section of [[{card}]] names [[{target}]], which does not exist"),
                     "card": card,
                 }));
+                reported.insert(card);
                 continue;
             };
             if substantive.workspace != own.workspace {
                 self.faults.push(json!({
                     "fault": "restatement",
+                    "kind": "workspace",
                     "detail": format!(
                         "the 同述入口 section of [[{card}]] names [[{target}]] in the {} Workspace; it must stay in the {} Workspace",
                         substantive.workspace.id(),
@@ -616,14 +640,130 @@ impl View {
                     ),
                     "card": card,
                 }));
+                reported.insert(card);
+                continue;
+            }
+            // A root, a Hub Card and a declared register part are navigation, not a statement: the
+            // section names a substantive Card or it names nothing this view can confirm.
+            if crate::is_tree_root(substantive) || substantive.card_type == CardType::Hub || parts.contains(target) {
+                self.faults.push(json!({
+                    "fault": "restatement",
+                    "kind": "not-substantive",
+                    "detail": format!(
+                        "the 同述入口 section of [[{card}]] names [[{target}]], which is navigation, not a substantive Card"
+                    ),
+                    "card": card,
+                }));
+                reported.insert(card);
+                continue;
+            }
+            if entries.contains(target) {
+                // A chain: the direct target is itself an entry. It is reported, and the entry
+                // names the terminal instead (D085).
+                step.insert(card, target);
                 continue;
             }
             confirmed.push(json!({
                 "entry": card,
                 "substantive": target,
+                "terminal": target,
                 "title": snapshot.title(target),
             }));
+            direct.insert(card, target);
         }
+        // Resolve every chain to its terminal, and report each loop once per entry on it. The
+        // compiler writes a direct terminal reference, so a chain is never accepted as written.
+        let starts: Vec<&str> = step
+            .keys()
+            .copied()
+            .filter(|card| !reported.contains(card))
+            .collect();
+        for start in starts {
+            if reported.contains(start) {
+                continue;
+            }
+            let mut path: Vec<&str> = vec![start];
+            let mut loop_nodes: Vec<&str> = Vec::new();
+            let terminal: Option<&str> = loop {
+                let at = *path.last().expect("a chain has a start");
+                if let Some(terminal) = direct.get(at) {
+                    break Some(*terminal);
+                }
+                let Some(next) = step.get(at) else {
+                    break None;
+                };
+                if let Some(seen) = path.iter().position(|known| *known == *next) {
+                    loop_nodes = path[seen..].to_vec();
+                    break None;
+                }
+                path.push(next);
+            };
+            let shown = path
+                .iter()
+                .map(|card| format!("[[{card}]]"))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            match terminal {
+                Some(terminal) => {
+                    reported.insert(start);
+                    self.faults.push(json!({
+                        "fault": "restatement",
+                        "kind": "chain",
+                        "detail": format!(
+                            "the 同述入口 section of [[{start}]] names another entry ({shown}); name the terminal substantive Card [[{terminal}]] directly"
+                        ),
+                        "card": start,
+                        "terminal": terminal,
+                        "chain": path,
+                        "cycle": Value::Null,
+                    }));
+                }
+                None => {
+                    let cycle_shown = loop_nodes
+                        .iter()
+                        .map(|card| format!("[[{card}]]"))
+                        .collect::<Vec<_>>()
+                        .join(" → ");
+                    for card in &loop_nodes {
+                        if reported.insert(card) {
+                            self.faults.push(json!({
+                                "fault": "restatement",
+                                "kind": "cycle",
+                                "detail": format!(
+                                    "the 同述入口 sections of {cycle_shown} form a cycle; the statement must be held by a substantive Card"
+                                ),
+                                "card": card,
+                                "terminal": Value::Null,
+                                "chain": loop_nodes,
+                                "cycle": loop_nodes,
+                            }));
+                        }
+                    }
+                    // A chain that leads into a loop names no terminal either: it is reported as a
+                    // chain whose `cycle` names the loop it cannot reach past.
+                    if !loop_nodes.contains(&start) && reported.insert(start) {
+                        self.faults.push(json!({
+                            "fault": "restatement",
+                            "kind": "chain",
+                            "detail": format!(
+                                "the 同述入口 section of [[{start}]] reaches the cycle {cycle_shown}; no substantive Card holds that statement"
+                            ),
+                            "card": start,
+                            "terminal": Value::Null,
+                            "chain": path,
+                            "cycle": loop_nodes,
+                        }));
+                    }
+                }
+            }
+        }
+        // Only the entries that name a substantive Card are confirmed, so a chain or a cycle is
+        // never served as a valid restatement and never supports folding (§9.2, D087).
+        confirmed.retain(|row| {
+            row["entry"]
+                .as_str()
+                .is_some_and(|entry| !reported.contains(entry))
+        });
         confirmed.sort_by(|a, b| {
             a["entry"]
                 .as_str()
@@ -1562,6 +1702,31 @@ impl TermIndex {
     }
 }
 
+/// Whether one authored body holds a `## 同述入口` section (D086): the derived navigation role of a
+/// restatement entry. It is derived from the written text on every read, never stored as Card
+/// metadata; a heading inside a code fence or a chart is not a section.
+pub(crate) fn is_restatement_entry(body: &str) -> bool {
+    let mut fenced = false;
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+            && heading.trim() == RESTATEMENT_GROUP
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// The Links of a Card's `## 同述入口` section, in body order. A Card without that section has
 /// no restatement entry, so nothing is recorded for it.
 pub(crate) fn restatement_links(body: &str) -> Vec<String> {
@@ -1645,6 +1810,15 @@ mod tests {
         assert_eq!(restatement_links(body), vec!["88/2|a"]);
         assert!(restatement_links("没有入口的卡 [[88/2]]").is_empty());
         assert_eq!(restatement_links("## 同述入口\n- [[88/2]] 一处\n- [[88/3]] 两处\n").len(), 2);
+    }
+
+    #[test]
+    fn the_entry_role_is_the_section_and_not_the_word() {
+        assert!(is_restatement_entry("陈述。\n\n## 同述入口\n\n- [[88/2]] 一处。\n"));
+        assert!(is_restatement_entry("## 同述入口\n- [[88/2]] 一处。\n"));
+        assert!(!is_restatement_entry("陈述。\n\n这张卡是 [[88/2]] 的同述入口。\n"));
+        assert!(!is_restatement_entry("陈述。\n\n```\n## 同述入口\n- [[88/2]]\n```\n"));
+        assert!(!is_restatement_entry("## 同述入口之外\n\n- [[88/2]]\n"));
     }
 
     fn target(address: &str) -> Target {

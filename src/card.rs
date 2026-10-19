@@ -116,6 +116,61 @@ pub(crate) fn authored_fingerprint(card: &crate::Card) -> Result<String> {
         .collect())
 }
 
+/// The exact statement fingerprint of one authored body (§4.5, D087): two Cards whose statements
+/// are the same claim get one fingerprint, and no other normalisation happens. Only three things
+/// are ignored, exactly as the design says: line endings (CRLF and CR read as LF), the outer
+/// whitespace of the statement, and a separately labelled source line (`来源：…`, `出处：…`,
+/// `Source: …`), which is evidence beside the claim and not the claim. Formulas, numerical values,
+/// signs, variable names, negation, assumptions and scope stay in the text, so a changed sign,
+/// value, variable or assumption always gives a different fingerprint, and no formula is renamed
+/// or shortened.
+pub(crate) fn statement_fingerprint(body: &str) -> String {
+    let text = statement_text(body);
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The statement text one fingerprint covers: the body with its line endings normalised, its
+/// separately labelled source lines dropped outside fenced code, and its outer whitespace trimmed.
+pub(crate) fn statement_text(body: &str) -> String {
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut fenced = false;
+    for line in normalized.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            kept.push(line);
+            continue;
+        }
+        if !fenced && is_source_line(trimmed) {
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n").trim().to_string()
+}
+
+/// A separately labelled source line: `来源：…`, `出处: …`, or `Source: …`, in either case.
+fn is_source_line(trimmed: &str) -> bool {
+    let lowered = trimmed.to_lowercase();
+    for label in ["来源", "出处", "source"] {
+        let Some(rest) = lowered.strip_prefix(label) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.starts_with('：') || rest.starts_with(':') {
+            return true;
+        }
+    }
+    false
+}
+
 /// The title of an ATX level-one heading line, such as `# Title` or `# Title #`.
 fn title_from_heading(line: &str) -> Option<String> {
     let rest = line
@@ -354,6 +409,32 @@ mod tests {
             reverse_section([("0/0", "Earlier"), ("0/2", "")]),
             "## Reverse links\n\n- [[0/0]] Earlier\n- [[0/2]]\n"
         );
+    }
+
+    #[test]
+    fn the_statement_fingerprint_ignores_only_line_endings_outer_whitespace_and_source_lines() {
+        let body = "当策略互补时，同一经济有两个均衡：$x_i=\\arg\\max_x u_i(x,x_{-i})$。\n\n假设：策略互补、参与者对称。\n\n来源：[[K]] §2.1";
+        let fingerprint = statement_fingerprint(body);
+        // The same statement written with CRLF, outer blank lines, another source line and its
+        // place: the same claim, so one fingerprint.
+        let crlf = "\n\n当策略互补时，同一经济有两个均衡：$x_i=\\arg\\max_x u_i(x,x_{-i})$。\r\n\r\n假设：策略互补、参与者对称。\r\n\r\nSource: [[K]] §9\r\n  ";
+        assert_eq!(statement_fingerprint(crlf), fingerprint);
+        assert_eq!(statement_fingerprint(body.trim()), fingerprint);
+        // Formulas, values, signs, variables, negation, assumptions and scope stay in the text.
+        for changed in [
+            "当策略互补时，同一经济有两个均衡：$x_i=-\\arg\\max_x u_i(x,x_{-i})$。\n\n假设：策略互补、参与者对称。\n\n来源：[[K]] §2.1",
+            "当策略互补时，同一经济有两个均衡：$x_j=\\arg\\max_x u_i(x,x_{-i})$。\n\n假设：策略互补、参与者对称。\n\n来源：[[K]] §2.1",
+            "当策略互补时，同一经济有两个均衡：$x_i=\\arg\\max_x u_i(x,x_{-i})$。\n\n假设：策略互补。\n\n来源：[[K]] §2.1",
+            "当策略互补时，同一经济没有两个均衡。\n\n假设：策略互补、参与者对称。\n\n来源：[[K]] §2.1",
+            "当策略互补时，同一经济有三个均衡。\n\n假设：策略互补、参与者对称。\n\n来源：[[K]] §2.1",
+        ] {
+            assert_ne!(statement_fingerprint(changed), fingerprint, "{changed}");
+        }
+        // A source line inside a code fence is code, not a separately labelled source line.
+        let fenced = "陈述。\n\n```\n来源：[[K]]\n```\n";
+        assert!(statement_fingerprint(fenced) != statement_fingerprint("陈述。\n\n```\n```\n"));
+        // An entry that states no body has one stable fingerprint.
+        assert_eq!(statement_fingerprint(""), statement_fingerprint("\n\n  \r\n"));
     }
 
     #[test]

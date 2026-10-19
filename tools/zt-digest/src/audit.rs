@@ -319,7 +319,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let title_context = json!({
         "complete": true,
         "titles": all_trees.iter().flat_map(|tree| ps_items(&tree["cards"]))
-            .map(|card| json!({"address": field(&card,"address"), "title": field(&card,"title"), "workspace": field(&card,"workspace")}))
+            .map(|card| json!({"address": field(&card,"address"), "title": field(&card,"title"), "workspace": field(&card,"workspace"), "restatement": card["restatement"] == true}))
             .collect::<Vec<_>>()
     });
     let mut fault_lines: Vec<String> = Vec::new();

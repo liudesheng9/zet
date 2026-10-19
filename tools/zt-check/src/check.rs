@@ -867,6 +867,9 @@ pub(crate) struct TitleRow {
     pub(crate) address: String,
     pub(crate) title: String,
     pub(crate) workspace: String,
+    /// A restatement entry is navigation: its title is not a substantive claim, so it is neither
+    /// checked nor offered as a duplicate-title candidate (§4.5, D086).
+    pub(crate) restatement: bool,
 }
 
 /// The Workspace title context I6 compares with (D135): rows of one bulk title
@@ -894,6 +897,7 @@ impl TitleContext {
                 address,
                 title: text(prop(row, "title")),
                 workspace: text(prop(row, "workspace")),
+                restatement: text(prop(row, "restatement")).eq_ignore_ascii_case("true"),
             });
         }
         Self { titles: rows, complete: true, supplied: true }
@@ -1003,7 +1007,7 @@ impl Check {
         // (D126's Literature prose excludes a locator, and an index line is a locator).
         let navigation = ps_in(
             &text(prop(card, "category")),
-            &["anchor", "root", "hub", "register-part"],
+            &["anchor", "root", "hub", "register-part", "restatement-entry"],
         );
         let shared = ps_in(address, &self.shared);
         let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);
@@ -1282,6 +1286,7 @@ impl Check {
                 address,
                 title: text(prop(card, "title")),
                 workspace: text(prop(card, "workspace")),
+                restatement: false,
             };
             if checked.iter().any(|known| key(&known.address) == key(&row.address)) {
                 continue;
@@ -1356,6 +1361,9 @@ impl Check {
             }
             for other_at in candidates {
                 let other = &rows[other_at];
+                if other.restatement {
+                    continue;
+                }
                 if key(&other.address) == key(&row.address) {
                     continue;
                 }
@@ -1391,7 +1399,7 @@ impl Check {
             let address = text(prop(card, "address"));
             let category = text(prop(card, "category"));
             let is = |names: &[&str]| ps_in(&category, names);
-            if !is(&["idea", "anchor", "event", "finding"]) {
+            if !is(&["idea", "anchor", "event", "finding", "restatement-entry"]) {
                 continue;
             }
             let title = text(prop(card, "title"));
@@ -1435,7 +1443,9 @@ impl Check {
                     );
                 }
             }
-            if is(&["idea", "event"])
+            // A restatement entry keeps the source check too (§4.5: the appropriate source Link),
+            // while the claim-title and Idea-size rules stay with a substantive Idea (D086).
+            if is(&["idea", "event", "restatement-entry"])
                 && has("book")
                 && prop(card, "book").is_some_and(truthy)
                 && has("links")
@@ -1496,11 +1506,21 @@ impl Check {
             if is(&["finding"]) {
                 finding_rules(card, &address, &body, faults);
             }
+            // A restatement entry's `## 同述入口` section is navigation: its one Link names the Card
+            // that holds the statement, so it is no semantic Link and needs no Relation kind (§4.5,
+            // D086). L1 and L2 skip it; L3, I3 and the Link target checks still apply.
+            let entry = if is(&["restatement-entry"]) {
+                entry_section(&body)
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
             if has("links") {
                 let mut refers: Vec<String> = Vec::new();
                 for link in &links {
                     if !ps_in(link, &kinds)
                         && !book_place(link)
+                        && !(entry.0.iter().any(|target| ps_eq(target, link))
+                            && !entry.2.iter().any(|target| ps_eq(target, link)))
                         && !leads_to(&body, link)
                         && !refers.iter().any(|seen| culture(seen) == culture(link))
                     {
@@ -1544,6 +1564,9 @@ impl Check {
                 }
             }
             for line in prose_lines(&body) {
+                if entry.1.iter().any(|known| ps_eq(known, line.text.trim())) {
+                    continue;
+                }
                 for sentence in split_sentences(&line.text) {
                     if !sentence.contains("[[") || SOURCE_LINE.is_match(&sentence) {
                         continue;
@@ -1614,6 +1637,45 @@ impl Check {
     }
 }
 
+/// The Links and the list lines of a Card's `## 同述入口` section (§4.5, D084): the navigation
+/// references an accepted restatement entry writes. A heading inside a code fence opens nothing.
+fn entry_section(body: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut inside = false;
+    let mut fenced = false;
+    let mut entry_links: Vec<String> = Vec::new();
+    let mut outside_links: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+        {
+            inside = heading.trim() == "同述入口";
+            continue;
+        }
+        for caps in LINK_TARGET.captures_iter(trimmed) {
+            let target = caps[1].trim().to_string();
+            let known = if inside { &mut entry_links } else { &mut outside_links };
+            if !target.is_empty() && !known.iter().any(|seen| ps_eq(seen, &target)) {
+                known.push(target);
+            }
+        }
+        if inside && LIST_LINE.is_match(trimmed) {
+            lines.push(LIST_LINE.replace(trimmed, "").into_owned());
+        }
+    }
+    (entry_links, lines, outside_links)
+}
+
+static LIST_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[-*+]|\d+[.)])\s+").unwrap());
 /// A source line or a place in the book: a Literature Card (`hart1995firms`)
 /// or an anchor (`hart1995firms/4`). Topic trees are numbered, so `12/3` is no anchor.
 fn book_place(target: &str) -> bool {
@@ -2207,7 +2269,7 @@ pub(crate) fn check_cards(
         item.insert("title".into(), json!(title));
         item.insert("body".into(), json!(body));
         item.insert("facet".into(), Value::Null);
-        if matches!(category, "idea" | "anchor" | "event" | "finding") {
+        if matches!(category, "idea" | "anchor" | "event" | "finding" | "restatement-entry") {
             let parent = ps_string(card.get("parent_address"));
             let links = card["links"]
                 .as_array()
@@ -2804,6 +2866,151 @@ mod tests {
             .map(String::as_str)
             .filter(|line| line.split(' ').nth(1) == Some(rule))
             .collect()
+    }
+
+    /// A restatement entry is navigation with its own checks (§4.5, D086): it takes no claim-title
+    /// (I1) or Idea-size (I2) rule, and its title is no duplicate-title candidate (I6), while the
+    /// source line (I3) and the Link reason (L2) are checked as for any other Card.
+    #[test]
+    fn a_restatement_entry_is_navigation_with_its_own_source_and_link_checks() {
+        let entry = json!({
+            "address": "12/1|a", "category": "restatement-entry", "workspace": "agent", "tree": "12",
+            "parent": "12/0", "book": "book",
+            "title": "斯卢茨基分解的入口",
+            "body": "## 同述入口\n\n- [[12/2]] 定义。\n\n来源：[[book]] §2.1",
+            "links": ["12/2", "book"],
+        });
+        let idea = json!({
+            "address": "12/3", "category": "idea", "workspace": "agent", "tree": "12",
+            "parent": "12/0", "book": "book",
+            "title": "斯卢茨基分解把两种效应分开", "body": "斯卢茨基分解把替代效应与收入效应分开，二者相加等于总效应。\n\n来源：[[book]] §2.1",
+            "links": ["book"],
+        });
+        let bundle = json!({
+            "cards": [entry, idea],
+            "context": { "complete": true, "titles": [
+                // An entry title is no duplicate-title candidate for a substantive Idea.
+                { "address": "13/1|a", "title": "斯卢茨基分解把两种效应分开", "workspace": "agent", "restatement": true },
+                { "address": "13/1|b", "title": "斯卢茨基分解把两种效应分开", "workspace": "agent" }
+            ] }
+        });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        for rule in ["I1", "I2", "I4"] {
+            assert!(
+                !of_rule(&lines, rule)
+                    .iter()
+                    .any(|line| line.starts_with("12/1|a ")),
+                "an entry takes no {rule}: {lines:#?}"
+            );
+        }
+        // The navigation Link of the entry section is no semantic Link: no L1 and no L2 for it,
+        // while I3 and L3 still apply to the entry.
+        assert!(
+            !of_rule(&lines, "L1")
+                .iter()
+                .any(|line| line.starts_with("12/1|a "))
+                && !of_rule(&lines, "L2")
+                    .iter()
+                    .any(|line| line.starts_with("12/1|a ")),
+            "the entry section's Link takes no L1/L2: {lines:#?}"
+        );
+        assert!(
+            !of_rule(&lines, "I3")
+                .iter()
+                .any(|line| line.starts_with("12/1|a ")),
+            "the entry's source line names its book: {lines:#?}"
+        );
+        // I6 names the substantive title row, never the entry's title row.
+        let i6 = of_rule(&lines, "I6");
+        assert!(
+            i6.iter().any(|line| line.contains("[[13/1|b]]")),
+            "the substantive title is still a candidate: {lines:#?}"
+        );
+        assert!(
+            !i6.iter().any(|line| line.contains("[[13/1|a]]")),
+            "an entry title is no duplicate-title candidate: {lines:#?}"
+        );
+        // A source line that names no Link of the book is still I3, and a Link with no reason is L2.
+        let missing = json!({
+            "address": "12/1|b", "category": "restatement-entry", "workspace": "agent", "tree": "12",
+            "parent": "12/0", "book": "book", "title": "另一个入口",
+            "body": "## 同述入口\n\n- [[12/2]] 见上。\n", "links": ["12/2"],
+        });
+        let lines = run_json(&json!([missing]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I3"),
+            ["12/1|b I3 no source line: no Link to [[book]] or one of its anchors"],
+            "{lines:#?}"
+        );
+        assert!(
+            of_rule(&lines, "L2").is_empty(),
+            "the section's own Link takes no L2: {lines:#?}"
+        );
+        // The entry section's own Link is navigation: it needs no Relation kind, while a Link
+        // outside the section is still checked (L1 and L2).
+        let navigation = json!({
+            "address": "12/1|d", "category": "restatement-entry", "workspace": "agent", "tree": "12",
+            "parent": "12/0", "book": "book", "title": "入口卡",
+            "body": "本卡给出 [[12/2]] 的一个推论：价格不变时两项效应都为零。\n\n## 同述入口\n\n- [[12/2]] 见上。\n\n来源：[[book]] §2.1",
+            "links": ["12/2", "book"], "kinds": {},
+        });
+        let lines = run_json(&json!([navigation]), "", Limits::default(), false, "");
+        assert!(
+            of_rule(&lines, "L1").iter().any(|line| line.starts_with("12/1|d L1 ")),
+            "a Link outside the entry section keeps L1: {lines:#?}"
+        );
+        assert!(
+            !of_rule(&lines, "L2")
+                .iter()
+                .any(|line| line.contains("见上")),
+            "the entry section's own Link takes no L2: {lines:#?}"
+        );        // The role is derived, never stored: the same body under an `idea` category is a claim.
+        let claim = json!({
+            "address": "12/1|c", "category": "idea", "workspace": "agent", "tree": "12",
+            "parent": "12/0", "book": "book", "title": "入口",
+            "body": "## 同述入口\n\n- [[12/2]] 定义。\n", "links": ["12/2", "book"],
+        });
+        let lines = run_json(&json!([claim]), "", Limits::default(), false, "");
+        assert!(
+            of_rule(&lines, "I1").iter().any(|line| line.starts_with("12/1|c I1 ")),
+            "a claim with a short title keeps I1: {lines:#?}"
+        );
+    }
+
+    /// The graph classifier derives the same navigation role from the authored section, from the
+    /// flag the archive derives from it, and from nothing else.
+    #[test]
+    fn the_entry_role_is_derived_from_the_section_or_the_archive_flag() {
+        let literature = HashSet::new();
+        let anchors = HashMap::new();
+        let by_body = json!({
+            "address": "1/1", "type": "idea", "title": "入口",
+            "body": "陈述。\n\n## 同述入口\n\n- [[1/2]] 定义。\n",
+        });
+        assert_eq!(
+            crate::graph::category(&by_body, &literature, &anchors),
+            "restatement-entry"
+        );
+        let by_flag = json!({
+            "address": "1/1", "type": "idea", "title": "入口", "restatement": true,
+        });
+        assert_eq!(
+            crate::graph::category(&by_flag, &literature, &anchors),
+            "restatement-entry"
+        );
+        let prose = json!({
+            "address": "1/1", "type": "idea", "title": "入口",
+            "body": "这张卡是 [[1/2]] 的同述入口。\n",
+        });
+        assert_eq!(crate::graph::category(&prose, &literature, &anchors), "idea");
+        assert!(crate::graph::EXCLUDED.contains(&"restatement-entry"));
+        assert!(!crate::graph::SUBSTANTIVE.contains(&"restatement-entry"));
+        assert!(crate::graph::is_restatement_entry(
+            "## 同述入口\n\n- [[1/2]] 定义。\n"
+        ));
+        assert!(!crate::graph::is_restatement_entry(
+            "```\n## 同述入口\n- [[1/2]]\n```\n"
+        ));
     }
 
     /// D063: the digest reads the whole term row through the checker's own parse, while R6
