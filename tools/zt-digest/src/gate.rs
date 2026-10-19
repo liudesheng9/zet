@@ -5,7 +5,7 @@
 //! register terms and the book's term rows, shortlists at most ten plausible Topics, and reads
 //! representative Cards for that shortlist. An empty shortlist with complete required inputs clears
 //! creation deterministically. A non-empty shortlist needs a judge decision (`same`, `different`,
-//! `uncertain`); creation then revalidates that decision under the archive-shared Topic gate lock
+//! `uncertain`); creation then revalidates that decision under the run's own Topic gate file
 //! and writes through the receipt-owned identified path.
 //!
 //! The lock is never held while judging: `prepare` and `decide` run without it, and only `create`
@@ -48,6 +48,14 @@ const DEFAULT_LOCK: &str = "topic-gate.lock";
 
 fn gate_dir(staging: &str) -> PathBuf {
     Path::new(staging).join("gate")
+}
+
+/// The run's own Topic gate file: `prepare` writes it into every group's write command
+/// (`-TopicGate <staging>\topic-gate.lock`) and `ledger` group-apply guards with it, so the managed
+/// gate and the run's managed writers wait on one file (D148, D154). It is not a second lock beside
+/// the run's own: two files would let a managed writer and this gate create the same Topic twice.
+fn run_gate(staging: &str) -> PathBuf {
+    Path::new(staging).join(DEFAULT_LOCK)
 }
 
 pub(crate) fn evidence_path(staging: &str) -> PathBuf {
@@ -526,7 +534,7 @@ fn prepare(zt: &mut Zt, staging: &str, title: &str, question: &str) -> Result<Va
         "outcome": outcome,
         "shortlist": candidates,
         "endpoints": endpoints.values().cloned().collect::<Vec<_>>(),
-        "lock": gate_dir(staging).join(DEFAULT_LOCK).to_string_lossy(),
+        "lock": run_gate(staging).to_string_lossy(),
     });
     evidence["id"] = json!(canon::content_hash(&evidence, &["id"]));
     std::fs::create_dir_all(gate_dir(staging))?;
@@ -739,7 +747,8 @@ fn verify_decision(decision: &Value) -> Result<()> {
     Ok(())
 }
 
-/// The lock a managed creation takes: the archive-shared Topic gate file the decision recorded.
+/// The lock a managed creation takes: the run's Topic gate file the decision recorded (the same file
+/// the run's group write commands name and `ledger` group-apply guards with).
 pub(crate) struct Held {
     #[allow(dead_code)]
     lock: Gate,
@@ -841,6 +850,17 @@ fn committed(zt: &mut Zt, prefix: &str, call: &Value) -> Result<Option<Value>> {
         return Ok(Some(result));
     }
     Ok(None)
+}
+
+/// The agent Topics that copy the created Topic's normalised title: a raw client's competing
+/// creation, reported after the receipt (D154). The created Topic itself is never competing.
+fn competing(topics: &[Value], address: &str, title: &str) -> Vec<Value> {
+    let key = calls::title_key(title);
+    topics
+        .iter()
+        .filter(|topic| s(&topic["address"]) != address && calls::title_key(&s(&topic["title"])) == key)
+        .map(|topic| json!({"address":s(&topic["address"]),"title":s(&topic["title"])}))
+        .collect()
 }
 
 /// `create`: the locked revalidation and the receipt-owned write.
@@ -947,13 +967,8 @@ fn create(zt: &mut Zt, staging: &str, decision_file: &str, prefix: &str) -> Resu
     if s(&card["workspace"]) != "agent" || s(&card["address"]) != address || card["kind"] != json!("topic") {
         bail!("the created Topic was not persisted at `{address}`");
     }
-    let key = calls::title_key(&title);
     let topics = read_inputs(zt, staging)?.topics;
-    let competing: Vec<Value> = topics
-        .iter()
-        .filter(|topic| s(&topic["address"]) != address && calls::title_key(&s(&topic["title"])) == key)
-        .map(|topic| json!({"address":s(&topic["address"]),"title":s(&topic["title"])}))
-        .collect();
+    let competing: Vec<Value> = competing(&topics, &address, &title);
     let answer = json!({
         "created": true,
         "address": address,
@@ -1051,6 +1066,13 @@ fn render(value: &Value) -> String {
     text.push_str("# Topic gate\n\n");
     text.push_str(&format!("- outcome: {}\n", s(&value["outcome"])));
     text.push_str(&format!("- shortlist: {}\n", value["shortlist"]));
+    // AC08: a missing or ambiguous concept input reaches the report, never silently substituted.
+    if let Some(missing) = value["missing"].as_array().filter(|list| !list.is_empty()) {
+        text.push_str("- optional inputs missing:\n");
+        for item in missing {
+            text.push_str(&format!("  - {}: {}\n", s(&item["input"]), s(&item["status"])));
+        }
+    }
     text.push_str(&format!("- verdict: {}\n", s(&value["verdict"])));
     if !value["reason"].is_null() {
         text.push_str(&format!("- reason: {}\n", s(&value["reason"])));
@@ -1097,7 +1119,7 @@ mod tests {
             "complete": true,
             "shortlist": shortlist,
             "endpoints": endpoints.iter().map(|address| json!({"address":address,"title":"t"})).collect::<Vec<_>>(),
-            "lock": "C:/out/gate/topic-gate.lock",
+            "lock": "C:/out/topic-gate.lock",
             "id": "e",
         })
     }
@@ -1254,6 +1276,20 @@ mod tests {
         assert!(addresses.contains(&"2/0".to_string()), "{addresses:?}");
         assert!(!addresses.contains(&"3/0".to_string()), "an unrelated Topic is not a candidate: {addresses:?}");
         assert!(candidates.len() <= SHORTLIST);
+    }
+
+    #[test]
+    fn a_competing_raw_creation_is_reported_by_title_key_and_never_the_created_topic() {
+        let topics = vec![
+            json!({"address":"1/0","title":"均衡 多重性"}),
+            json!({"address":"2/0","title":"均衡多重性"}),
+            json!({"address":"3/0","title":"学习"}),
+        ];
+        let reported = competing(&topics, "2/0", "均衡多重性");
+        assert_eq!(reported.len(), 1, "a raw Topic with the same normalised title is reported");
+        assert_eq!(reported[0]["address"], json!("1/0"));
+        assert!(competing(&topics, "2/0", "利率平价").is_empty(), "no competitor is invented");
+        assert!(competing(&topics, "3/0", "学习").is_empty(), "the created Topic never competes with itself");
     }
 
     #[test]
