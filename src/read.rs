@@ -447,14 +447,8 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
             text_facts(&tx, &crate::load_card(&tx, at)?)?
         });
     }
-    let archive_id: String = tx.query_row(
-        "SELECT value FROM metadata WHERE key='archive_id'", [], |row| row.get(0))
-        .context("missing archive identity; archive migration must complete before ledger binding")?;
-    if archive_id.len() != 32 || !archive_id.bytes().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid archive identity; refusing an unbound read");
-    }
-    let archive_path = std::fs::canonicalize(root).context("resolve archive identity path")?;
-    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":{"id":archive_id,"path":archive_path.to_string_lossy()}});
+    let identity = archive_identity(&tx, root)?;
+    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":identity});
     if let Some(snapshot) = &snapshot {
         log_large_context(
             root,
@@ -648,23 +642,39 @@ pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result
     Ok(json!({"broken":broken}))
 }
 
-/// Hub policy is global: stream metadata/title lines and the index once, and
-/// parse full authored bodies only for Hub Cards. Domain policy stays in Graph.
-pub(crate) fn hubs(
-    root: &Path,
-    at: Option<&str>,
-    workspace: Option<crate::Workspace>,
-    limits: &crate::hub::Limits,
-) -> Result<Value> {
-    let mut conn = crate::open_db(root)?;
-    let tx = conn.transaction()?;
-    let mut query=tx.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form FROM cards ORDER BY COALESCE(location,citation_key)")?;
+/// The persisted random archive identity and its resolved path: the evidence every bulk read and
+/// every entry view names, so a client can bind to one archive rather than a path alone.
+fn archive_identity(conn: &Connection, root: &Path) -> Result<Value> {
+    let archive_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='archive_id'",
+            [],
+            |row| row.get(0),
+        )
+        .context("missing archive identity; archive migration must complete before ledger binding")?;
+    if archive_id.len() != 32 || !archive_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        bail!("invalid archive identity; refusing an unbound read");
+    }
+    let archive_path = std::fs::canonicalize(root).context("resolve archive identity path")?;
+    Ok(json!({"id":archive_id,"path":archive_path.to_string_lossy()}))
+}
+
+/// One coherent hub read: every Card's metadata and heading line, the complete body of every Hub
+/// Card, and the source→target index, inside one transaction.
+struct HubRead {
+    snapshot: Snapshot,
+    links: BTreeMap<String, Vec<String>>,
+    revision: u64,
+}
+
+fn hub_read(conn: &Connection) -> Result<HubRead> {
+    let mut query=conn.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form FROM cards ORDER BY COALESCE(location,citation_key)")?;
     let cards = query
         .query_map([], crate::card_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
     let snapshot = Snapshot::from_cards(cards)?;
-    let mut query = tx.prepare(
+    let mut query = conn.prepare(
         "SELECT source,target FROM links GROUP BY source,target ORDER BY source,MIN(ord)",
     )?;
     let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
@@ -674,12 +684,183 @@ pub(crate) fn hubs(
         links.entry(source).or_default().push(target);
     }
     drop(query);
-    let graph = crate::hub::Graph::with_links(&snapshot, &links);
+    Ok(HubRead {
+        snapshot,
+        links,
+        revision: crate::link_index::revision(conn)?,
+    })
+}
+
+/// Hub policy is global: stream metadata/title lines and the index once, and
+/// parse full authored bodies only for Hub Cards. Domain policy stays in Graph.
+///
+/// `entries` pages the flattened entry projection of a register (§8.5, D276); it applies only to
+/// `get_hub` on a register, and the existing hub report is not truncated by it.
+pub(crate) fn hubs(
+    root: &Path,
+    at: Option<&str>,
+    workspace: Option<crate::Workspace>,
+    limits: &crate::hub::Limits,
+    entries: &crate::entry::EntryArgs,
+) -> Result<Value> {
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let read = hub_read(&tx)?;
+    let graph = crate::hub::Graph::with_links(&read.snapshot, &read.links);
     let value = if let Some(at) = at {
-        graph.report(at, limits)?
+        let mut value = graph.report(at, limits)?;
+        if value["level"] == json!("register") {
+            let identity = archive_identity(&tx, root)?;
+            let projection = register_view(&tx, &read, at, entries, identity)?;
+            if let Some(fields) = projection.as_object() {
+                for (key, field) in fields {
+                    value[key] = field.clone();
+                }
+            }
+        }
+        value
     } else {
         graph.list(workspace, limits)
     };
     tx.commit()?;
     Ok(value)
 }
+
+/// The register of one Workspace as a flattened entry view (§4.1, §8.5, D276, D296). An absent
+/// register is an honest empty answer with `register_missing`; two registers are reported, never
+/// chosen between.
+pub(crate) fn register(
+    root: &Path,
+    workspace: crate::Workspace,
+    entries: &crate::entry::EntryArgs,
+) -> Result<Value> {
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let read = hub_read(&tx)?;
+    let identity = archive_identity(&tx, root)?;
+    let registers = read
+        .snapshot
+        .cards
+        .iter()
+        .filter(|card| {
+            card.card_type == crate::CardType::Hub
+                && card.hub_level == Some(crate::hub::HubLevel::Register)
+                && card.workspace == workspace
+        })
+        .map(|card| card.address.clone())
+        .collect::<Vec<_>>();
+    let mut value = json!({
+        "workspace": workspace.id(),
+        "register": Value::Null,
+        "title": Value::Null,
+        "register_missing": false,
+        "duplicate_registers": [],
+        "entries": [],
+        "entry_offset": entries.offset,
+        "entry_limit": entries.limit,
+        "entry_total": 0,
+        "entry_next_offset": Value::Null,
+        "parts": [],
+        "faults": [],
+        "complete": false,
+        "terms_by_card": {},
+        "restatements": [],
+        "bounds": crate::entry::bounds(),
+        "archive_revision": read.revision,
+        "archive_identity": identity,
+    });
+    match registers.as_slice() {
+        [] => {
+            value["register_missing"] = json!(true);
+            value["faults"] = json!([{
+                "fault": "register_missing",
+                "detail": format!(
+                    "the {} Workspace has no Hub Card of level register; there are no accepted entries to read",
+                    workspace.id()
+                ),
+            }]);
+        }
+        [at] => {
+            value["register"] = json!(at);
+            value["title"] = json!(read.snapshot.title(at));
+            let projection = register_view(&tx, &read, at, entries, value["archive_identity"].clone())?;
+            if let Some(fields) = projection.as_object() {
+                for (key, field) in fields {
+                    value[key] = field.clone();
+                }
+            }
+            value["workspace"] = json!(workspace.id());
+        }
+        many => {
+            value["duplicate_registers"] = json!(many);
+            value["faults"] = json!([{
+                "fault": "duplicate",
+                "detail": format!(
+                    "the {} Workspace has {} registers ({}); a Workspace has one",
+                    workspace.id(),
+                    many.len(),
+                    many.join(", ")
+                ),
+            }]);
+        }
+    }
+    tx.commit()?;
+    Ok(value)
+}
+
+/// The flattened projection of one register: its rows and its declared parts with the bounded
+/// authored bodies of their targets. Read in the same transaction as the hub graph (§8.5, D049).
+fn register_view(
+    conn: &Connection,
+    read: &HubRead,
+    at: &str,
+    entries: &crate::entry::EntryArgs,
+    identity: Value,
+) -> Result<Value> {
+    let body = read
+        .snapshot
+        .parsed
+        .get(at)
+        .map(|parsed| parsed.body.clone())
+        .unwrap_or_default();
+    let mut wanted = BTreeSet::new();
+    for row in crate::hub::register_rows(&body) {
+        wanted.extend(row.targets);
+    }
+    for part in crate::hub::register_part_targets(&body) {
+        wanted.insert(part);
+    }
+    let mut bodies = BTreeMap::new();
+    for address in &wanted {
+        if !read.snapshot.by_address.contains_key(address) {
+            continue;
+        }
+        let card = crate::load_card(conn, address)?;
+        bodies.insert(address.clone(), crate::parse_card_text(&card.text)?.body);
+    }
+    // The confirmed restatement references (§4.5): Cards of the register's Workspace whose body
+    // has a 同述入口 section. The section is rare, so one scan is cheaper than reading every body.
+    let workspace = read
+        .snapshot
+        .by_address
+        .get(at)
+        .map_or("agent", |card| card.workspace.id());
+    let mut restatement_sections = BTreeMap::new();
+    let mut query = conn.prepare(
+        "SELECT COALESCE(location,citation_key) FROM cards WHERE workspace=?1 AND text LIKE '%同述入口%' ORDER BY COALESCE(location,citation_key)",
+    )?;
+    let candidates = query
+        .query_map([workspace], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(query);
+    for address in candidates {
+        let card = crate::load_card(conn, &address)?;
+        let links = crate::entry::restatement_links(&crate::parse_card_text(&card.text)?.body);
+        if !links.is_empty() {
+            restatement_sections.insert(address, links);
+        }
+    }
+    let view = crate::entry::View::read(&read.snapshot, at, &bodies, &restatement_sections);
+    Ok(view.json(*entries, read.revision, &identity))
+}
+

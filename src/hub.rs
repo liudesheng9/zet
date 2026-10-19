@@ -252,6 +252,182 @@ fn list_item(line: &str) -> Option<&str> {
     None
 }
 
+/// The group headings a register's term rows live under. `词条` is the grammar of
+/// `docs/luhmann-comparison-implementation-design.md` §8.4; `关键词` is the heading the earlier
+/// hub compiler wrote, so an existing register stays readable. A row written before any heading is
+/// read too: an existing register may have none.
+pub(crate) const REGISTER_TERM_GROUPS: [&str; 2] = ["词条", "关键词"];
+
+/// The group heading that declares a register's parts.
+pub(crate) const REGISTER_PART_GROUP: &str = "词条分册";
+
+/// One term row of a register: one term before a colon and one to three Links to the Cards that
+/// carry the term's substance (§8.4). `line` is the 1-based line in the body, so a fault can name
+/// the exact row (D297).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RegisterRow {
+    pub(crate) line: usize,
+    pub(crate) term: String,
+    /// Every Link target of the row, in order, repeats kept (the checks name duplicates).
+    pub(crate) targets: Vec<String>,
+    /// A description of how the row breaks the term grammar; `None` when it follows it.
+    pub(crate) shape: Option<String>,
+}
+
+/// The term rows of a register body. The parser is deliberately tolerant: a row that breaks the
+/// grammar stays a row, so a check can name it instead of letting it vanish.
+pub(crate) fn register_rows(body: &str) -> Vec<RegisterRow> {
+    let mut rows = Vec::new();
+    let mut group: Option<String> = None;
+    let mut fenced = false;
+    for (index, raw) in body.lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+        {
+            group = Some(heading.trim().to_string());
+            continue;
+        }
+        let in_terms = match group.as_deref() {
+            None => true,
+            Some(name) => REGISTER_TERM_GROUPS.contains(&name),
+        };
+        if !in_terms {
+            continue;
+        }
+        let Some(item) = list_item(trimmed) else {
+            continue;
+        };
+        let links = LinkBody::for_rendering(item);
+        let occurrences = links.occurrences();
+        let targets = occurrences
+            .iter()
+            .map(|occurrence| occurrence.target.to_string())
+            .collect::<Vec<_>>();
+        let first_link = occurrences.first().map_or(item.len(), |o| o.macro_range.start);
+        let mut term = clean_reason(&item[..first_link]);
+        let mut shape = None;
+        match item[..first_link].find(['：', ':']) {
+            Some(colon) => {
+                term = item[..colon].trim().to_string();
+                if term.is_empty() {
+                    shape = Some("a term row is one term before `：`; this row has no term".into());
+                }
+            }
+            None => {
+                shape = Some(format!(
+                    "a term row is one term before `：`; `{term}` has no `：`"
+                ));
+            }
+        }
+        if let Some(last) = occurrences.last() {
+            let after = clean_reason(&item[last.macro_range.end..]);
+            if !after.is_empty() && shape.is_none() {
+                shape = Some(format!(
+                    "the words after a term's Links (`{after}`) belong in the target Cards; the row is a term and its Links"
+                ));
+            }
+        }
+        rows.push(RegisterRow {
+            line: index + 1,
+            term,
+            targets,
+            shape,
+        });
+    }
+    rows
+}
+
+/// The targets of a register's `词条分册` declaration, in declaration order (§8.4). A part's
+/// identity is these Links plus its place as an immediate Side successor of the register.
+pub(crate) fn register_part_targets(body: &str) -> Vec<String> {
+    let mut group: Option<String> = None;
+    let mut fenced = false;
+    let mut targets = Vec::new();
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+        {
+            group = Some(heading.trim().to_string());
+            continue;
+        }
+        if group.as_deref() != Some(REGISTER_PART_GROUP) {
+            continue;
+        }
+        let Some(item) = list_item(trimmed) else {
+            continue;
+        };
+        for occurrence in LinkBody::for_rendering(item).occurrences() {
+            if !targets.iter().any(|known| known == occurrence.target) {
+                targets.push(occurrence.target.to_string());
+            }
+        }
+    }
+    targets
+}
+
+/// The policy faults of one register row (D289, D297, D051): its shape, one to three targets,
+/// no repeated target, and every named Card existing. A row that names four Cards or no Card is
+/// reported here and is not an entry.
+pub(crate) fn register_row_faults(row: &RegisterRow, exists: &dyn Fn(&str) -> bool) -> Vec<Value> {
+    let mut faults = Vec::new();
+    if let Some(detail) = &row.shape {
+        faults.push(json!({"fault": "shape", "detail": detail, "line": row.line, "term": row.term}));
+    }
+    if row.targets.is_empty() {
+        faults.push(json!({
+            "fault": "empty",
+            "detail": format!("the term `{}` names no Card; name one to three", row.term),
+            "line": row.line,
+            "term": row.term,
+        }));
+    }
+    if row.targets.len() > 3 {
+        faults.push(json!({
+            "fault": "oversize",
+            "detail": format!("the term `{}` names {} Cards; name at most 3", row.term, row.targets.len()),
+            "line": row.line,
+            "term": row.term,
+        }));
+    }
+    let mut seen = BTreeSet::new();
+    for target in &row.targets {
+        if !seen.insert(target) {
+            faults.push(json!({
+                "fault": "duplicate-target",
+                "detail": format!("the term `{}` names [[{target}]] twice; name each Card once", row.term),
+                "line": row.line,
+                "term": row.term,
+            }));
+        } else if !exists(target) {
+            faults.push(json!({
+                "fault": "broken",
+                "detail": format!("[[{target}]] of the term `{}` does not exist", row.term),
+                "line": row.line,
+                "term": row.term,
+            }));
+        }
+    }
+    faults
+}
+
 /// The words of a reason: Link macros, the `（枢纽）` mark, and leading
 /// punctuation removed.
 fn clean_reason(text: &str) -> String {
@@ -282,35 +458,60 @@ fn reason_chars(reason: &str) -> usize {
         .count()
 }
 
-/// The hubs that list a Card directly, highest level last. Only hubs whose
-/// body holds a Link to the Card are parsed.
+/// The hubs that list a Card directly, highest level last. Only hubs whose body holds a Link to
+/// the Card are parsed. A register lists all one to three targets of a term, so a Card named as a
+/// term's second or third target is a member too (D051); that item also carries `term` and the
+/// 0-based `target_index`.
 pub(crate) fn hubs_of(snapshot: &Snapshot, address: &str) -> Vec<Value> {
     let link = format!("[[{address}]]");
     let mut hubs = snapshot
         .cards
         .iter()
         .filter(|card| card.card_type == CardType::Hub && card.address != address)
-        .filter(|card| {
-            snapshot.parsed.get(&card.address).is_some_and(|parsed| {
-                parsed.body.contains(&link)
-                    && parse_body(&parsed.body)
-                        .lines
-                        .iter()
-                        .any(|line| line.target == address)
-            })
+        .filter_map(|card| {
+            let parsed = snapshot.parsed.get(&card.address)?;
+            if !parsed.body.contains(&link) {
+                return None;
+            }
+            let mut listed = Vec::new();
+            if card.hub_level == Some(HubLevel::Register) {
+                for row in register_rows(&parsed.body) {
+                    for (index, target) in row.targets.iter().enumerate() {
+                        if target == address {
+                            listed.push((row.term.clone(), index));
+                        }
+                    }
+                }
+            } else if parse_body(&parsed.body)
+                .lines
+                .iter()
+                .any(|line| line.target == address)
+            {
+                listed.push((String::new(), 0));
+            }
+            if listed.is_empty() {
+                return None;
+            }
+            Some((card.hub_level.map_or(0, HubLevel::number), card, listed))
         })
-        .map(|card| (card.hub_level.map_or(0, HubLevel::number), card))
         .collect::<Vec<_>>();
     hubs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.address.cmp(&b.1.address)));
-    hubs.into_iter()
-        .map(|(_, hub)| {
-            json!({
+    let mut values = Vec::new();
+    for (_, hub, listed) in hubs {
+        for (term, index) in listed {
+            let mut value = json!({
                 "address": hub.address,
                 "title": snapshot.title(&hub.address),
                 "level": hub.hub_level.map(HubLevel::id),
-            })
-        })
-        .collect()
+            });
+            if hub.hub_level == Some(HubLevel::Register) {
+                value["term"] = json!(term);
+                value["target_index"] = json!(index);
+            }
+            values.push(value);
+        }
+    }
+    values
 }
 
 /// Every hub of the archive with its parsed body, read once per request.
@@ -583,17 +784,18 @@ impl<'a> Graph<'a> {
                 );
             }
         }
-        // H5: size. The register's size is its number of terms; each term names 1 to 3 ways in.
-        if level == Some(HubLevel::Register) {            for line in body.lines.iter().filter(|line| line.targets.len() > 3) {
-                fault(
-                    &mut faults,
-                    "oversize",
-                    format!(
-                        "the term `{}` names {} ways in; name at most 3",
-                        line.reason,
-                        line.targets.len()
-                    ),
-                );
+        // H5: size. The register's size is its number of terms; each term names 1 to 3 ways in,
+        // and its rows are checked by their own grammar (D050, D289, D297).
+        if level == Some(HubLevel::Register) {
+            let raw = self
+                .snapshot
+                .parsed
+                .get(address)
+                .map(|parsed| parsed.body.clone())
+                .unwrap_or_default();
+            for row in register_rows(&raw) {
+                let exists = |at: &str| self.snapshot.by_address.contains_key(at);
+                faults.extend(register_row_faults(&row, &exists));
             }
         } else {
             // The 邻近 group points out of the subject; it is not part of the hub's size.
@@ -655,13 +857,17 @@ impl<'a> Graph<'a> {
                 );
             }
         }
-        for line in &body.lines {
-            if !self.snapshot.by_address.contains_key(&line.target) {
-                fault(
-                    &mut faults,
-                    "broken",
-                    format!("[[{}]] does not exist", line.target),
-                );
+        // A register row's own target checks run above; every other line's member is its first
+        // Link (a register names one to three members, D051).
+        if level != Some(HubLevel::Register) {
+            for line in &body.lines {
+                if !self.snapshot.by_address.contains_key(&line.target) {
+                    fault(
+                        &mut faults,
+                        "broken",
+                        format!("[[{}]] does not exist", line.target),
+                    );
+                }
             }
         }
         // H6: a hub lists only hubs of a lower level, and no cycle. A line hub may also list the

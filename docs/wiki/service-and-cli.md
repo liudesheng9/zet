@@ -687,6 +687,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-19` — #93 S10 (#101): the crate declares one more module, `src/entry.rs` (the concept register's shared entry projection); no command, flag, schema column, or migration changes.
 - `2026-10-19` — A consumer that closes zt's stdout early (`head`, `Select-Object -Last 1`) no longer makes the command panic with a broken-pipe write: `main`'s panic hook exits 0 for that one case and keeps the default hook for every other panic (`tests/closed_stdout.rs`).
 - `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65): a migration that repairs a stored Reverse section now advances `archive_revision` once, so a reader's held revision never covers changed text. Public tests add the T01 migration oracle (repeated, Broken and cross-Workspace Links, human Cards, BibTeX, authored bytes preserved, second migration a no-op), the T02 aborted-migration state (no marker, no index, no changed Card, one consistent backup, retry after repair) and the T10 live-holder refusal. GUI and Session writes now verify `status --check-links` at their own boundaries, a Spread follows a Side-successor compaction, and the pre-Markdown conversion checks that its converted archive has a matching Link index.
 

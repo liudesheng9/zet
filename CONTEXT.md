@@ -293,8 +293,12 @@ The Cards a hub is responsible for: the subtree of a line hub's anchor, the tree
 _Avoid_: Hub scope, hub folder
 
 **Register**:
-The one hub of level `register` in a Workspace, the first Card of the Topic `索引`. Each of its list items is one key term with Links to one to three field or topic hubs; it also lists every field hub, which is filed under it, and every topic hub in no field.
-_Avoid_: Index, keyword list, home note
+The one hub of level `register` in a Workspace, the first Card of the Topic `索引`. Its `词条` section holds one key term per item with Links to one to three Cards that carry the term's substance (a definition or statement, a whole Model Card, or a standalone Topic claim); scope stays in the term label and the explanation in those Cards. Two accepted spellings of one term are two items with the same Links. It also lists every field hub, which is filed under it, and every topic hub in no field, and may declare term parts under `词条分册`. There is no other store of concepts or aliases.
+_Avoid_: Index, keyword list, concept database, home note
+
+**Register entry**:
+The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on. The entry view also names the archive revision it was read at and the terms each target Card carries. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
+_Avoid_: Concept record, keyword, term row (that is the written item)
 
 **Insert**:
 Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.

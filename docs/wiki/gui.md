@@ -180,6 +180,7 @@ All answers are JSON. A missing or wrong token gives `403 {"error":"missing or i
 | `GET /api/tree?id=<tree>` | tree id (Topic number or Citation key) | `{tree, root, workspace, kind:"topic"\|"literature", title, cards:[summary]}` | error `tree … does not exist` |
 | `GET /api/card?at=<address>` | Location or Citation key | `{address, tree, workspace, kind, type, facet, emphasis, level, form, model, hubs, context:"tree-root"\|"regular", title, text, body, html, bibtex, citation_key, parent, direct, sides, inbound, outbound}` | renders the body (may add charts to the store) |
 | `GET /api/graph` | — | `{nodes:[summary]}` for every Card | — |
+| `GET /api/register?ws=&entry_offset=&entry_limit=` | `ws` required (`human` or `agent`); `entry_offset`/`entry_limit` page the flattened entries (default 200, at most 1,000) | `read::register`: `{workspace, register, title, register_missing, duplicate_registers, entries:[{term, line, origin, targets:[{address, exists, title, type, facet, workspace, tree, body, body_chars, body_lines, body_truncated}], complete, faults}], entry_offset, entry_limit, entry_total, entry_next_offset, parts, faults, complete, terms_by_card, restatements, bounds, archive_revision, archive_identity}` | reads the archive in its own transaction (`src/read.rs`), never the cached Snapshot; no writes |
 | `GET /api/search?q=&ws=&type=` | `q` required; `ws` `human`\|`agent`\|`all`; `type` a Card type or `all` | `Snapshot::find` with limit 80: `{results:[{address,title,kind,type,facet,emphasis,level,form,workspace,tree,tree_title,field,score,snippet}], total, workspaces:{id:n}, types:{type:n}}` | — |
 | `GET /api/broken` | — | `{broken:[{source,title,workspace,target,line}]}` | — |
 | `POST /api/render` | `{text, literature?:bool}` | `{title, html, error}`; `error` is the parse or Link error, the HTML is still given (raw text rendered when the Card text does not parse) | may add charts |
@@ -519,11 +520,12 @@ cargo test --test card_types gui_creates_and_edits_typed_cards_and_reports_types
 cargo test --test workspaces_mcp gui_creates_trees_in_either_workspace_and_reports_workspaces
 cargo test --test self_sufficient_models the_gui_inserts_a_card_and_moves_one_between_two_cards
 cargo test --test scholar_bridge a_card_shows_a_figure_only_after_zet_keeps_it_from_the_archive
+cargo test --test register_entries a_register_projects_one_two_and_three_targets_with_bounded_bodies
 ```
 
-They cover: the GUI runs with the service and stops with it, `zt gui` only reports, the token guard and a new token after restart, `/api/quit` is gone (400), a dead daemon leaves no `zt.gui`, the API's create/edit/delete with plans and confirmations, rendering of Links and code, KaTeX assets and fonts, chart pages and their CSP, typed Cards, both Workspaces, insert and move, and artifacts.
+They cover: the GUI runs with the service and stops with it, `zt gui` only reports, the token guard and a new token after restart, `/api/quit` is gone (400), a dead daemon leaves no `zt.gui`, the API's create/edit/delete with plans and confirmations, rendering of Links and code, KaTeX assets and fonts, chart pages and their CSP, typed Cards, both Workspaces, insert and move, artifacts, and `/api/register` answering the same entry view as MCP `get_register` (addresses, order, total, revision, identity).
 
-Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `layout.js` exports for CommonJS) have no automated tests, and the views are checked by hand in a browser. `/scholar/file` and `/scholar/figure` are tested only through `document.rs` unit tests, not over HTTP. Spreads following moves and deletes is tested in `src/spread.rs` and `src/ops.rs` unit tests, not through the GUI.
+Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `layout.js` exports for CommonJS) have no automated tests, and the views are checked by hand in a browser. `/scholar/file` and `/scholar/figure` are tested only through `document.rs` unit tests, not over HTTP. Spreads following moves and deletes is tested in `src/spread.rs` and `src/ops.rs` unit tests, not through the GUI. `/api/register` has no page that renders the register yet; the route is the read seam that entry-first ranking (S13) and the register reader use.
 
 ## Decisions and pitfalls
 
@@ -547,6 +549,7 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 - **The `Host` check covers static files too.** A client that sends another `Host` (a proxy, a hostname alias) gets 421 even for `/`.
 - **`/api/create` with a level or form is two transactions**: the Card is created, then `ops::edit` sets the level or form; if the second fails, the Card stays without it and the client sees an error.
 - **`/api/literature/check` and `/api/spreads` open their own connections** instead of using the Snapshot.
+- **`/api/register` deliberately bypasses the cached Snapshot.** It calls `read::register`, which opens its own read transaction, because the entry view must name the same archive revision and identity the MCP `get_register` tool reports. It is a read-only route and changes no Card; a register page can memoize it on the fingerprint later.
 - **The chart store is FIFO, not LRU.** Re-rendering a Card does not refresh its chart's place; with more than 512 distinct charts rendered, a chart still on screen can expire and its frame shows 404 until the Card is opened again.
 - **The search tray and the Map share words.** The Map draws far cards as `.node.slip` and folds as `.badge.fold`; the tray uses `.fslip`/`.ffold`/`.in-hand` (`d7168d2` fixed a collision). Grep for a class name before adding one.
 - **`kindOf` falls back to `rests-on`.** A kind missing from `KINDS` is drawn on the model board as a `rests-on` thread and placed by it, and the Table labels it "refers to". The unit test `the_front_end_names_every_relation_kind` fails when `RelationKind` gains a kind that `KINDS` lacks.
@@ -560,6 +563,7 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 
 ## Change history
 
+- `2026-10-19` — #93 S10 (#101): `GET /api/register?ws=` serves the concept register's accepted entry view from `read::register` / `src/entry.rs`, the same contract as MCP `get_register` (every target of every term with its bounded body, origins, faults, `entry_offset`/`entry_limit` paging, archive revision/identity; an absent register answers `register_missing`). No page renders it yet.
 - `2026-10-16` — `KINDS` gains `specializes` (`.thread.kind-specializes`), so a `特例` Link is no longer drawn as `rests-on`; the table hand's animation is `hand-rise`, so dialogs, menus, and toasts get their `rise` again; unit tests for both.
 - `2026-10-16` `753bd7b` — Finding Cards: the `finding` type in the type picker, stamps, search chips, and desk tallies (zt 0.20.0).
 - `2026-10-15` `2597c6c` — Study a whole theory on the desk (`theoryRun`), and a cited lemma inside its step.

@@ -101,8 +101,11 @@ item per member, `- [[address]]：what this Card adds`, and states no claim of i
 says how wide the subject is: `line` (one line of thought, filed as a Side successor of the Card \
 where the line starts), `topic` (one Topic tree, a Side successor of `<n>/1`, linked from the Topic \
 body), `field` (several Topic trees, filed under the register), or `register` (the Workspace: one \
-key term per item with 1 to 3 Links). A hub lists only hubs of a lower level and reaches into other \
-trees in a `邻近` group. get_hub reports a hub's lines, upper and lower hubs, and faults; list_hubs \
+key term per item under `## 词条` with 1 to 3 Links to the Cards that carry its substance). A hub \
+lists only hubs of a lower level and reaches into other \
+trees in a `邻近` group. get_hub reports a hub's lines, upper and lower hubs, and faults, and on a \
+register its flattened entries too; get_register reads those entries for one Workspace (an absent \
+register answers `register_missing`, not an error); list_hubs \
 shows the hub graph and the hubs the policy requires but the Workspace lacks; move_card also takes `before` \
 (another Card's place) and `alone` (only the Card; its chain closes the gap). Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
@@ -379,11 +382,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         "get_hub" => {
             let at = string_arg(args, "at")?;
             let limits = crate::hub::Limits::from_args(args)?;
-            crate::read::hubs(&root, Some(&at), None, &limits)
+            let entries = crate::entry::EntryArgs::from_args(args)?;
+            crate::read::hubs(&root, Some(&at), None, &limits, &entries)
         }
         "list_hubs" => {
             let limits = crate::hub::Limits::from_args(args)?;
-            crate::read::hubs(&root, None, optional_workspace(args)?, &limits)
+            crate::read::hubs(
+                &root,
+                None,
+                optional_workspace(args)?,
+                &limits,
+                &crate::entry::EntryArgs::default(),
+            )
+        }
+        "get_register" => {
+            let workspace = crate::Workspace::parse(&string_arg(args, "workspace")?)?;
+            let entries = crate::entry::EntryArgs::from_args(args)?;
+            crate::read::register(&root, workspace, &entries)
         }
         "search_cards" => {
             let snapshot = Snapshot::read(&root)?;
@@ -911,6 +926,17 @@ fn tool_definitions() -> Vec<Value> {
     };
     let limit =
         |description: &str| json!({ "type": "integer", "minimum": 1, "description": description });
+    let entry_offset = json!({
+        "type": "integer",
+        "minimum": 0,
+        "description": "Skip this many flattened register entries (default 0).",
+    });
+    let entry_limit = json!({
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Most flattened register entries to return (default 200, maximum 1000).",
+    });
     let hub_limits = json!({
         "max_groups": limit("Most groups a hub may hold (default 7)."),
         "max_lines": limit("Most member lines a hub may hold (default 25)."),
@@ -989,10 +1015,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_hub",
             "Get hub",
-            "Read one Hub Card as a hub: its `level` (line, topic, field, register), `anchor` (the Card it is filed under), `groups`, and `lines` (each member with its group, title, type, tree, Relation kind, and reason); its `lower` and `upper` hubs; how many Cards its range holds; its `faults` (level, oversize, flat, bare, broken, upward, cycle, unanchored, duplicate, unlisted, isolated); and the advice: `mirror` (it only repeats its own tree in address order), `candidates` (Cards of its range that link two or more members but are in no line), and `unreached` (Cards of its range that no hub reaches, directly or through a Card above them). The limits may be set per call.",
+            "Read one Hub Card as a hub: its `level` (line, topic, field, register), `anchor` (the Card it is filed under), `groups`, and `lines` (each member with its group, title, type, tree, Relation kind, and reason); its `lower` and `upper` hubs; how many Cards its range holds; its `faults` (level, oversize, flat, bare, broken, shape, empty, duplicate-target, upward, cycle, unanchored, duplicate, unlisted, isolated); and the advice: `mirror` (it only repeats its own tree in address order), `candidates` (Cards of its range that link two or more members but are in no line), and `unreached` (Cards of its range that no hub reaches, directly or through a Card above them). On a register its `词条` rows are checked by their own grammar (`shape`, `empty`, `oversize` above three Links, `duplicate-target`, and one `broken` per missing target) and it adds the flattened `entries` projection of `get_register` (every target of every term, bounded target bodies, `parts`, `entry_total`, `entry_next_offset`, `complete`, `archive_revision`, `archive_identity`); `entry_offset` and `entry_limit` page that projection only and never truncate the hub report. The limits may be set per call.",
             {
                 let mut properties = hub_limits.clone();
                 properties["at"] = at.clone();
+                properties["entry_offset"] = entry_offset.clone();
+                properties["entry_limit"] = entry_limit.clone();
                 properties
             },
             &["at"],
@@ -1009,6 +1037,28 @@ fn tool_definitions() -> Vec<Value> {
                 properties
             },
             &[],
+            true,
+            false,
+        ),
+        tool(
+            "get_register",
+            "Get register",
+            "Read the concept register of one Workspace: the Hub Card of level `register` and its accepted `entries`, one per term row of the `词条` section (or the older `关键词` section). Each entry names its `term`, its origin (`card`, `line`, and the declared `part` when it lives in one), every one of its one to three `targets` (address, title, type, Workspace, `exists`, and the bounded authored `body` with `body_chars`, `body_lines`, `body_truncated`), whether it is `complete`, and its `faults`. The view also carries the declared `parts`, the register's own `faults`, `complete`, `terms_by_card` (which terms name each target), the confirmed `restatements` (`## 同述入口` entries), the `bounds` of the body projection, and the `archive_revision`/`archive_identity` it was read at. `entry_offset` and `entry_limit` page the entries (default 200, maximum 1000); `entry_next_offset` is null on the last page. A Workspace with no register answers `register_missing: true` with no entries, not an error; two registers are reported, never chosen between.",
+            {
+                let mut properties = serde_json::Map::new();
+                properties.insert(
+                    "workspace".to_string(),
+                    json!({
+                        "type": "string",
+                        "enum": ["human", "agent"],
+                        "description": "The Workspace whose register to read.",
+                    }),
+                );
+                properties.insert("entry_offset".to_string(), entry_offset.clone());
+                properties.insert("entry_limit".to_string(), entry_limit.clone());
+                Value::Object(properties)
+            },
+            &["workspace"],
             true,
             false,
         ),

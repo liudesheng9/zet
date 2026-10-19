@@ -17,6 +17,7 @@ mod batch;
 mod card;
 mod card_type;
 mod dump;
+mod entry;
 mod gui;
 mod hub;
 mod link;

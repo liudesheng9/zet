@@ -55,7 +55,7 @@ Each block doc's **Testing** section names its own suites.
 | [Card operations](card-operations.md) | The create, edit, retype, delete, move, and insert operations shared by the GUI and the MCP server, gated by Workspace access and two-step for destructive changes | `src/ops.rs`, `src/place.rs` |
 | [Terminal Session](session.md) | The interactive terminal Session: Pointer, views, commands, the editor, mouse selection and clipboard | `src/session.rs`, `src/session/` |
 | [Model structure and math units](models-and-math.md) | Model Cards and Model parts, levels, build order, model faults, mathematical units and Theory Cards | `src/model.rs`, `src/math.rs` |
-| [Hub Cards](hub-cards.md) | Hub Cards: levels, groups and members, and the hub checks | `src/hub.rs` |
+| [Hub Cards](hub-cards.md) | Hub Cards: levels, groups and members, the hub checks, and the concept register's shared entry projection | `src/hub.rs`, `src/entry.rs` |
 | [MCP server](mcp-server.md) | `zt mcp`: the JSON-RPC stdio server and its tools, with writes only to the agent Workspace | `src/mcp.rs` |
 | [GUI](gui.md) | The loopback HTTP server inside the daemon and the browser front end: cabinet, map, Table and Spreads, Constellation, writing desk, charts, source documents | `src/gui.rs`, `src/gui/`, `src/spread.rs` |
 | [Scholar Archive bridge and artifacts](scholar-bridge.md) | The signed, read-only connection to the Scholar Archive and the content-addressed artifact store for Card images | `src/scholar.rs`, `src/artifact.rs` |

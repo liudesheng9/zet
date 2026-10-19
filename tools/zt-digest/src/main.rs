@@ -8,6 +8,7 @@
 //!   zt-digest model-context / list-models ...                 (model-context.ps1, list-models.ps1)
 //!   zt-digest finalize -Step plan|scope|refresh|final -Out <out> ...   (the finite finalization, #86)
 //!   zt-digest concepts -Step prepare|judge|report|decision -Staging <folder> ...   (the concept review, #97)
+//!   zt-digest register -Step plan|apply|check -Work <folder> [-Review <report>] ...   (the concept register, #101)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -35,6 +36,7 @@ mod model;
 mod organize;
 mod prepare;
 mod ps;
+mod register;
 mod report;
 mod skeleton;
 mod snapshot;
@@ -133,6 +135,7 @@ fn main() {
         "model-context" => model::context_cli(&rest),
         "list-models" => model::list_cli(&rest),
         "hub" => hub::cli(&rest),
+        "register" => register::cli(&rest),
         "bridge" => bridge::cli(&rest),
         "math" => math::cli(&rest),
         "event" => event::cli(&rest),
@@ -165,7 +168,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, bridge, math, event, finding,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, bridge, math, event, finding,
        terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }

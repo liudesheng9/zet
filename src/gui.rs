@@ -591,6 +591,7 @@ impl App {
             (Method::Get, "/api/tree") => self.tree(&param("id")?),
             (Method::Get, "/api/card") => self.card(&param("at")?),
             (Method::Get, "/api/graph") => self.graph(),
+            (Method::Get, "/api/register") => self.register(query),
             (Method::Get, "/api/search") => self.search(
                 &param("q")?,
                 query.get("ws").map(String::as_str),
@@ -686,6 +687,32 @@ impl App {
             .map(|card| snapshot.summary(card))
             .collect::<Vec<_>>();
         Ok(json!({ "nodes": nodes }))
+    }
+
+    /// The concept register's flattened entry view (`src/entry.rs`): the same reading the MCP
+    /// `get_register` tool returns, from one coherent read, so both clients show one contract.
+    fn register(&self, query: &BTreeMap<String, String>) -> ApiResult {
+        let workspace = query
+            .get("ws")
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(|value| crate::Workspace::parse(value))
+            .transpose()?
+            .ok_or_else(|| ApiError("missing `ws` parameter (human or agent)".into()))?;
+        let number = |name: &str| -> Result<Option<u64>, ApiError> {
+            match query.get(name) {
+                None => Ok(None),
+                Some(value) => value
+                    .parse::<u64>()
+                    .map(Some)
+                    .map_err(|_| ApiError(format!("`{name}` must be a whole number"))),
+            }
+        };
+        let args = json!({
+            "entry_offset": number("entry_offset")?,
+            "entry_limit": number("entry_limit")?,
+        });
+        let entries = crate::entry::EntryArgs::from_args(&args).map_err(ApiError::from)?;
+        Ok(crate::read::register(&self.root, workspace, &entries)?)
     }
 
     fn card(&self, target: &str) -> ApiResult {
