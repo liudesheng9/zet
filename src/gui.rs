@@ -604,6 +604,9 @@ impl App {
             (Method::Get, "/api/card") => self.card(&param("at")?),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
+            (Method::Get, "/api/distant") => {
+                self.distant(&param("at")?, query.get("table").map(String::as_str))
+            }
             (Method::Get, "/api/search") => self.search(
                 &param("q")?,
                 query.get("ws").map(String::as_str),
@@ -734,6 +737,27 @@ impl App {
             &entries,
             terms_for.map(String::as_str),
         )?)
+    }
+
+    /// The one distant Card of the Card the reader has open or holds (§10.2, D249-D256; `/api/distant`
+    /// in D280): at most one candidate, the Cards already on the Table as exclusions, and one line of
+    /// evidence. A selected Bridge report's validated target is the first candidate source; the
+    /// projection that reads a report belongs to the Bridge compiler (S20, #112), so this route
+    /// supplies none. Read-only: it writes no Card, Link, or viewing record.
+    fn distant(&self, at: &str, table: Option<&str>) -> ApiResult {
+        let table = table
+            .map(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|at| !at.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let snapshot = self.snapshot()?;
+        let mut args = crate::entry::DistantArgs::new(at);
+        args.table = table;
+        Ok(crate::entry::distant(&snapshot, &args)?)
     }
 
     fn card(&self, target: &str) -> ApiResult {
@@ -1942,6 +1966,34 @@ mod tests {
         )
     }
 
+    /// The shipped page scripts parse: a broken statement in `app.js` or `layout.js` ships as a
+    /// page that never boots, and no other test reads the whole file as a program. Node is the
+    /// project's own checker (the wiki and the draft tests use it); without Node the check says so.
+    #[test]
+    fn the_page_scripts_parse_as_javascript() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (name, source) in [("app.js", APP_JS), ("layout.js", LAYOUT_JS), ("draft.js", DRAFT_JS)] {
+            let file = dir.path().join(name);
+            fs::write(&file, source).expect("write the script");
+            let output = match std::process::Command::new("node")
+                .arg("--check")
+                .arg(&file)
+                .output()
+            {
+                Ok(output) => output,
+                Err(_) => {
+                    eprintln!("node is not installed; the page scripts were not parsed");
+                    return;
+                }
+            };
+            assert!(
+                output.status.success(),
+                "{name} does not parse: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     /// S18 (#99, D241): the desk opens with an empty claim title, then the supplied relation prefix
     /// in the body, then the generated-section marker. The title is the first line, so the selector
     /// can find the prefix where the desk put it.
@@ -2056,7 +2108,10 @@ mod tests {
         for word in ["印证", "反驳", "放宽", "对应"] {
             assert!(reply.contains(word), "the reply selector offers {word}: {reply}");
         }
-        assert!(APP_JS.contains("async function replyTo()"), "the page has one reply path");
+        assert!(
+            APP_JS.contains("async function replyTo(card = state.card)"),
+            "the page has one reply path, which names its Card: {APP_JS}"
+        );
         assert!(
             APP_JS.contains("case 'r': return card && card.workspace === 'agent' ? run(replyTo) : undefined;"),
             "r opens Reply only for an agent Card, and only outside an input"
@@ -2097,7 +2152,9 @@ mod tests {
         }
         // Cancelling the desk performs no write: the one reply POST is inside the desk's save, and
         // a desk that resolves without an address stores nothing and opens nothing.
-        let reply_to = &APP_JS[APP_JS.find("async function replyTo()").expect("replyTo")..];
+        let reply_to = &APP_JS[APP_JS
+            .find("async function replyTo(card = state.card)")
+            .expect("replyTo")..];
         let save = reply_to.find("save: async (text) =>").expect("the reply save");
         assert!(reply_to[save..].contains("api('reply'"), "the save posts the reply");
         assert!(!reply_to[..save].contains("api('reply'"), "opening or cancelling the desk posts nothing");
@@ -2108,6 +2165,65 @@ mod tests {
         // No MCP tool writes a human Card, and Reply adds no route of its own beyond /api/reply.
         assert_eq!(APP_JS.matches("api('reply'").count(), 1);
         assert!(!include_str!("mcp.rs").contains("\"reply\""), "Reply is not an MCP tool");
+    }
+
+    /// S19 (#108, AC04, AC05, AC06): the reader and the Table carry one low-salience slot, it asks
+    /// the one read-only route once per read, it never posts, and its actions are the ordinary
+    /// open, lay, and Reply.
+    #[test]
+    fn the_front_end_offers_one_distant_card_beside_the_neighbours() {
+        let section = &APP_JS[APP_JS
+            .find("const distant = { key: null, value: null, pending: null };")
+            .expect("the distant cache")..];
+        let section = &section[..section
+            .find("// ----------------------------------------------------------------- reader")
+            .expect("end of the distant section")];
+        assert_eq!(
+            section.matches("api('distant?").count(),
+            1,
+            "the slot has one read: {section}"
+        );
+        assert!(
+            section.contains("if (distant.key === key || distant.pending === key) return;"),
+            "a repaint or hover reuses the read instead of asking again"
+        );
+        assert!(
+            !section.contains("Math.random") && !section.contains("'telemetry'"),
+            "the slot never rotates or records a view: {section}"
+        );
+        assert!(
+            section.contains("distantKey(at)"),
+            "the answer is keyed by the Card, the read, and the Table"
+        );
+        for where_ in ["distantSlot('reader')", "distantSlot('table')"] {
+            assert!(APP_JS.contains(where_), "the page has no slot: {where_}");
+        }
+        // The Table's box appears for a distant Card alone, and only a repaint of the slips comes
+        // with a late answer, so the Card held keeps its place and motion.
+        assert!(APP_JS.contains("const away = focus ? !!distantValue(focus) : false;"));
+        assert!(APP_JS.contains("if (!list.length && !away)"));
+        assert!(APP_JS.contains("refreshReach() { if (state.mode === 'table') renderReach(); }"));
+        // Opening, laying, and replying are the ordinary actions; Reply only for an agent Card.
+        assert!(section.contains("onclick: () => go(candidate.address)"));
+        assert!(section.contains("toggleTable(candidate.address)"));
+        assert!(section.contains("const agent = candidate.workspace === 'agent';"));
+        assert!(section.contains("onclick: () => replyTo(candidate).catch(fail)"));
+        assert!(
+            !section.contains("api('edit'") && !section.contains("api('create'") && !section.contains("api('reply'"),
+            "the slot itself writes nothing: {section}"
+        );
+        // The slot is faint until the reader points at it or tabs into it, and it lifts nothing.
+        let css = &APP_CSS[APP_CSS.find(".distant {").expect("the distant style")..];
+        let css = &css[..css.find(".distant-open {").expect("the slot's title button")];
+        assert!(css.contains("opacity: .58"), "the slot is faint at rest: {css}");
+        assert!(css.contains(".distant:hover, .distant:focus-within"), "focus and hover ink it");
+        assert!(!css.contains("box-shadow"), "the slot takes no lift from the held Card: {css}");
+        assert!(!css.contains("animation"), "the slot never animates: {css}");
+        // The suggestion is a GUI read, not an MCP tool.
+        assert!(
+            !include_str!("mcp.rs").contains("\"distant\""),
+            "a distant suggestion is no MCP tool"
+        );
     }
 
     #[test]

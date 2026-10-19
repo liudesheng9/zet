@@ -1450,6 +1450,15 @@ fn lexical_candidates(
 /// A Workspace with two registers answers none, so the evidence never chooses between them
 /// (D299). `hub` reads it for the accepted terms that justify `one-book` advice (§8.2, D166).
 pub(crate) fn register_of(snapshot: &Snapshot, workspace: Workspace) -> Option<View> {
+    match register_addresses(snapshot, workspace).as_slice() {
+        [at] => Some(read_view(snapshot, at)),
+        _ => None,
+    }
+}
+
+/// The addresses of one Workspace's registers, in natural address order: none, one, or several (a
+/// Workspace has one, and several are reported rather than chosen between).
+fn register_addresses(snapshot: &Snapshot, workspace: Workspace) -> Vec<String> {
     let mut found = snapshot
         .cards
         .iter()
@@ -1461,9 +1470,549 @@ pub(crate) fn register_of(snapshot: &Snapshot, workspace: Workspace) -> Option<V
         .map(|card| card.address.clone())
         .collect::<Vec<_>>();
     found.sort_by(|left, right| crate::model::address_order(left, right));
-    match found.as_slice() {
+    found
+}
+
+/// The most Cards of a Table context one distant selection reads: a Spread holds at most 400.
+pub(crate) const DISTANT_TABLE_MAX: usize = 400;
+/// The most model heads one distant selection reads, in natural address order.
+pub(crate) const DISTANT_MODEL_MAX: usize = 2000;
+
+/// One distant selection request (§10.2, design D249-D256; `/api/distant`, D280): the Card the
+/// reader has open or holds, the Cards already on the Table, and — when the reader has selected
+/// one — a still-current target of an immutable Bridge report.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DistantArgs {
+    pub(crate) at: String,
+    pub(crate) table: Vec<String>,
+    /// The validated output of the Bridge report projection (S20, #112). This pure function takes
+    /// that input and opens no report itself; `None` is the ordinary term and model-name evidence.
+    pub(crate) report: Option<ReportTarget>,
+}
+
+impl DistantArgs {
+    pub(crate) fn new(at: &str) -> Self {
+        Self {
+            at: at.to_string(),
+            table: Vec::new(),
+            report: None,
+        }
+    }
+}
+
+/// One still-current target of a user-selected immutable Bridge report (§10.3, D251): its report,
+/// its exact proposal id, the Card it names, and the Relation kind the proposal states. The Bridge
+/// compiler validates the report and its endpoint fingerprints; this selection only orders the
+/// target first and never re-judges it (#112 fills this input).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReportTarget {
+    pub(crate) report: String,
+    pub(crate) proposal: String,
+    pub(crate) target: String,
+    pub(crate) relation: Option<String>,
+}
+
+impl ReportTarget {
+    fn json(&self) -> Value {
+        json!({
+            "report": self.report,
+            "proposal": self.proposal,
+            "target": self.target,
+            "relation": self.relation,
+        })
+    }
+}
+
+/// The candidate sources, in the order the design sets (§10.2, D250): a selected report's target,
+/// then a shared accepted register term, then a shared model name.
+const RANK_REPORT: u8 = 1;
+const RANK_TERM: u8 = 2;
+const RANK_MODEL: u8 = 3;
+
+/// One candidate before the cross-source check orders it. `seq` is the stable order inside a rank:
+/// the register row's place and the row's Link order, or the model head's place in address order.
+struct Offer {
+    rank: u8,
+    seq: usize,
+    address: String,
+    term: Option<String>,
+    origin: Option<Value>,
+    report: Option<ReportTarget>,
+    /// The Card's own source evidence (design §4.3, D068-D072).
+    sources: Vec<String>,
+    /// Whether the offer needs supported different-source evidence. A report target carries the
+    /// report's own judged evidence; a shared term or model name must show a source the focus lacks.
+    cross_source: bool,
+}
+
+impl Offer {
+    fn source(&self) -> &'static str {
+        match self.rank {
+            RANK_REPORT => "bridge_report",
+            RANK_TERM => "register_term",
+            _ => "model_name",
+        }
+    }
+}
+
+/// Why a Card the terms or model names offered never reached the slot, and the Cards the exclusions
+/// removed before the offers were built (AC03, D255).
+#[derive(Default)]
+struct Exclusions {
+    why: BTreeMap<String, &'static str>,
+    counts: BTreeMap<&'static str, usize>,
+}
+
+impl Exclusions {
+    fn add(&mut self, address: Option<String>, why: &'static str) {
+        let Some(address) = address.filter(|address| !address.is_empty()) else {
+            return;
+        };
+        if self.why.contains_key(&address) {
+            return;
+        }
+        self.why.insert(address, why);
+        self.skip(why);
+    }
+
+    fn skip(&mut self, why: &'static str) {
+        *self.counts.entry(why).or_insert(0) += 1;
+    }
+
+    fn has(&self, address: &str) -> bool {
+        self.why.contains_key(address)
+    }
+
+    fn json(&self) -> Value {
+        Value::Object(
+            self.counts
+                .iter()
+                .map(|(why, count)| ((*why).to_string(), json!(count)))
+                .collect(),
+        )
+    }
+}
+
+/// The one distant Card of §10.2: zero or one Card of another book that the open or held Card
+/// shares an accepted register term or a model name with, explained by one line of evidence. It is
+/// a read projection over the supplied Snapshot: no model runs, no Link is walked, nothing is
+/// written — opening, laying, or replying writes no Link, and no viewing telemetry is recorded
+/// (S19-AC04, S19-AC06). The same read always gives the same Card; nothing rotates.
+pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> {
+    let focus = snapshot
+        .by_address
+        .get(args.at.trim())
+        .with_context(|| format!("card `{}` does not exist", args.at.trim()))?;
+    let address = focus.address.clone();
+    let body = snapshot
+        .parsed
+        .get(&address)
+        .map(|parsed| parsed.body.clone())
+        .unwrap_or_default();
+    let workspace = focus.workspace;
+    let registers = register_addresses(snapshot, workspace);
+    // One Workspace, one register: two are reported and neither is evidence (D299).
+    let view = match registers.as_slice() {
         [at] => Some(read_view(snapshot, at)),
         _ => None,
+    };
+    let mut excluded = Exclusions::default();
+    // A bare ambiguous term is no evidence for a confident cross-book suggestion (§12.3, D299):
+    // two rows write one label with different destinations, so the label names no agreed sense.
+    let ambiguous = view
+        .as_ref()
+        .map(ambiguous_terms)
+        .unwrap_or_default();
+    let terms = match &view {
+        Some(view) => view.terms_at(snapshot, &address, &body),
+        None => Vec::new(),
+    }
+    .into_iter()
+    .filter(|term| {
+        if ambiguous.contains(term) {
+            excluded.skip("ambiguous_term");
+            false
+        } else {
+            true
+        }
+    })
+    .collect::<Vec<_>>();
+    let focus_sources = crate::hub::source_evidence(snapshot, &address).0;
+
+    // The exclusion set of D255: the focus; the Cards already on the Table; its immediate filing
+    // neighbours; its existing direct semantic neighbours (either direction); Broken links; the
+    // register and its parts; and the Card that holds the same confirmed statement.
+    excluded.add(Some(address.clone()), "focus");
+    let mut table_truncated = false;
+    let mut table = Vec::new();
+    for at in &args.table {
+        let at = at.trim();
+        if at.is_empty() || at.chars().count() > 512 {
+            continue;
+        }
+        if table.len() >= DISTANT_TABLE_MAX {
+            table_truncated = true;
+            break;
+        }
+        if !table.iter().any(|seen| seen == at) {
+            table.push(at.to_string());
+            excluded.add(Some(at.to_string()), "table");
+        }
+    }
+    excluded.add(crate::parent_location(&address), "neighbour");
+    excluded.add(
+        crate::direct_successor(&address)
+            .ok()
+            .filter(|at| snapshot.by_address.contains_key(at)),
+        "neighbour",
+    );
+    for side in snapshot.sides(focus) {
+        excluded.add(side["address"].as_str().map(str::to_string), "neighbour");
+    }
+    for link in snapshot.outbound(&address) {
+        let why = if link["broken"] == json!(true) {
+            "broken"
+        } else {
+            "linked"
+        };
+        excluded.add(link["address"].as_str().map(str::to_string), why);
+    }
+    for source in snapshot.inbound.get(&address).into_iter().flatten() {
+        excluded.add(Some(source.clone()), "linked");
+    }
+    if let Some(view) = &view {
+        for at in view.navigation(snapshot) {
+            excluded.add(Some(at), "navigation");
+        }
+    }
+    let statement = statement_noun(snapshot, &address);
+    if statement != address {
+        excluded.add(Some(statement.clone()), "restatement");
+    }
+
+    let mut offers = Vec::new();
+    // The selected Bridge report's target comes first (§10.2, D251): "still valid" here means the
+    // Card exists and passes the same exclusions. The report itself was validated by the Bridge
+    // compiler (#112), which is why a report target needs no source check of this read.
+    if let Some(report) = &args.report {
+        let target = report.target.trim().to_string();
+        if !snapshot.by_address.contains_key(&target) {
+            excluded.skip("stale_report");
+        } else if excluded.has(&target) || statement_noun(snapshot, &target) == statement {
+            excluded.skip("report_excluded");
+        } else {
+            offers.push(Offer {
+                rank: RANK_REPORT,
+                seq: 0,
+                sources: crate::hub::source_evidence(snapshot, &target).0,
+                address: target,
+                term: None,
+                origin: None,
+                report: Some(report.clone()),
+                cross_source: false,
+            });
+        }
+    }
+    let mut entries = 0usize;
+    if let Some(view) = &view {
+        let mut seq = 0usize;
+        for entry in &view.entries {
+            entries += 1;
+            if !entry.complete() || !terms.iter().any(|term| term == &entry.term) {
+                continue;
+            }
+            for target in &entry.targets {
+                seq += 1;
+                if !target.exists {
+                    excluded.add(Some(target.address.clone()), "missing");
+                    continue;
+                }
+                if excluded.has(&target.address) {
+                    continue;
+                }
+                if statement_noun(snapshot, &target.address) == statement {
+                    excluded.skip("restatement");
+                    continue;
+                }
+                offers.push(Offer {
+                    rank: RANK_TERM,
+                    seq,
+                    address: target.address.clone(),
+                    term: Some(entry.term.clone()),
+                    origin: Some(json!({
+                        "card": entry.card,
+                        "line": entry.line,
+                        "part": entry.part,
+                    })),
+                    report: None,
+                    sources: crate::hub::source_evidence(snapshot, &target.address).0,
+                    cross_source: true,
+                });
+            }
+        }
+    }
+    // Another book's model head with the same scoped model name (§10.2, D253): an accepted label
+    // the focus carries, matched whole against the head's own name.
+    let mut models = 0usize;
+    if !terms.is_empty() {
+        let labels = terms.iter().map(String::as_str).collect::<Vec<_>>();
+        let index = TermIndex::new(&labels);
+        // The register row that declared each accepted label: the slot names it as the term's
+        // origin, exactly as a term offer does.
+        let origins = match &view {
+            Some(view) => view
+                .entries
+                .iter()
+                .filter(|entry| entry.complete())
+                .fold(BTreeMap::new(), |mut origins, entry| {
+                    origins.entry(entry.term.clone()).or_insert_with(|| {
+                        json!({"card": entry.card, "line": entry.line, "part": entry.part})
+                    });
+                    origins
+                }),
+            None => BTreeMap::new(),
+        };
+        let mut heads = snapshot
+            .cards
+            .iter()
+            .filter(|card| card.card_type == CardType::Model && card.facet.is_none())
+            .collect::<Vec<_>>();
+        heads.sort_by(|left, right| crate::model::address_order(&left.address, &right.address));
+        for head in heads {
+            if models >= DISTANT_MODEL_MAX {
+                break;
+            }
+            models += 1;
+            if excluded.has(&head.address) {
+                continue;
+            }
+            let found = index.occurrences(&snapshot.title(&head.address), "");
+            let Some(position) = found.first() else {
+                continue;
+            };
+            if statement_noun(snapshot, &head.address) == statement {
+                excluded.skip("restatement");
+                continue;
+            }
+            let term = &terms[*position];
+            offers.push(Offer {
+                rank: RANK_MODEL,
+                seq: models,
+                sources: crate::hub::source_evidence(snapshot, &head.address).0,
+                address: head.address.clone(),
+                term: Some(term.clone()),
+                origin: origins.get(term).cloned(),
+                report: None,
+                cross_source: true,
+            });
+        }
+    }
+    let scanned_offers = offers.len();
+
+    let chosen = choose(offers, &focus_sources, &mut excluded);
+    let candidate = match &chosen {
+        Some(offer) => Some(candidate_json(snapshot, offer, &focus_sources)?),
+        None => None,
+    };
+    let register = match (&view, registers.as_slice()) {
+        (Some(view), [at]) => json!({
+            "workspace": workspace.id(),
+            "card": at,
+            "title": snapshot.title(at),
+            "missing": false,
+            "duplicate": 0,
+            "complete": view.faults.is_empty(),
+            "entry_total": view.entries.len(),
+        }),
+        (_, []) => json!({
+            "workspace": workspace.id(),
+            "card": Value::Null,
+            "title": Value::Null,
+            "missing": true,
+            "duplicate": 0,
+            "complete": false,
+            "entry_total": 0,
+        }),
+        (_, many) => json!({
+            "workspace": workspace.id(),
+            "card": Value::Null,
+            "title": Value::Null,
+            "missing": false,
+            "duplicate": many.len(),
+            "complete": false,
+            "entry_total": 0,
+        }),
+    };
+    Ok(json!({
+        "at": address,
+        "title": snapshot.title(&address),
+        "workspace": workspace.id(),
+        "focus": {"terms": terms, "sources": focus_sources},
+        "register": register,
+        "candidate": candidate,
+        "source": chosen.as_ref().map(Offer::source),
+        "excluded": excluded.json(),
+        "bounds": {"table_max": DISTANT_TABLE_MAX, "models_max": DISTANT_MODEL_MAX},
+        "scanned": {
+            "table": table.len(),
+            "table_truncated": table_truncated,
+            "terms": terms.len(),
+            "entries": entries,
+            "offers": scanned_offers,
+            "models": models,
+        },
+        "archive_fingerprint": snapshot.fingerprint(),
+    }))
+}
+
+/// The first offer that passes, in the design's source order and then by its stable order. A term
+/// or model-name offer needs supported different-source evidence: an unknown attribution on either
+/// side is never a confident cross-book suggestion, and a candidate of the focus's own book is
+/// skipped in favour of the next offer (D255, S19-AC02).
+fn choose(
+    mut offers: Vec<Offer>,
+    focus_sources: &[String],
+    excluded: &mut Exclusions,
+) -> Option<Offer> {
+    offers.sort_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then(left.seq.cmp(&right.seq))
+            .then_with(|| crate::model::address_order(&left.address, &right.address))
+    });
+    for offer in offers {
+        if !offer.cross_source {
+            return Some(offer);
+        }
+        if focus_sources.is_empty() || offer.sources.is_empty() {
+            excluded.skip("unknown_source");
+            continue;
+        }
+        if !added_sources(&offer.sources, focus_sources).is_empty() {
+            return Some(offer);
+        }
+        excluded.skip("same_source");
+    }
+    None
+}
+
+/// The sources one Card's evidence adds to another's, in the candidate's order.
+fn added_sources(candidate: &[String], focus: &[String]) -> Vec<String> {
+    candidate
+        .iter()
+        .filter(|source| !focus.iter().any(|own| own.eq_ignore_ascii_case(source)))
+        .cloned()
+        .collect()
+}
+
+/// The term labels the register wrote twice with different destinations: one `ambiguous` fault per
+/// label, so a distant selection skips the label instead of choosing a sense (D299).
+fn ambiguous_terms(view: &View) -> BTreeSet<String> {
+    view.faults
+        .iter()
+        .filter(|fault| fault["fault"] == json!("ambiguous"))
+        .filter_map(|fault| fault["term"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The substantive Card that holds a Card's statement: its confirmed `## 同述入口` target, else the
+/// Card itself (§4.5, D084-D086). One section deep: the register's view resolves a chain, and a
+/// distant selection never follows one to justify a suggestion.
+fn statement_noun(snapshot: &Snapshot, address: &str) -> String {
+    let Some(card) = snapshot.by_address.get(address) else {
+        return address.to_string();
+    };
+    let body = snapshot
+        .parsed
+        .get(address)
+        .map_or("", |parsed| parsed.body.as_str());
+    let links = restatement_links(body);
+    if links.len() != 1 {
+        return address.to_string();
+    }
+    let target = links[0].as_str();
+    let Some(named) = snapshot.by_address.get(target) else {
+        return address.to_string();
+    };
+    if named.workspace != card.workspace
+        || crate::is_tree_root(named)
+        || named.card_type == CardType::Hub
+    {
+        return address.to_string();
+    }
+    target.to_string()
+}
+
+/// One candidate as the slot shows it: the Card, the evidence, and one line of explanation. It
+/// never claims a relation: a shared term is a way in, not a proven Link (D254, S19-AC01).
+fn candidate_json(snapshot: &Snapshot, offer: &Offer, focus_sources: &[String]) -> Result<Value> {
+    let card = snapshot
+        .by_address
+        .get(&offer.address)
+        .with_context(|| format!("card `{}` is gone", offer.address))?;
+    let tree = crate::tree_id(&offer.address);
+    Ok(json!({
+        "address": card.address,
+        "title": snapshot.title(&card.address),
+        "workspace": card.workspace.id(),
+        "tree": tree,
+        "tree_title": snapshot.title(&crate::tree_root_address(tree)),
+        "kind": crate::ops::kind(card),
+        "type": card.card_type.id(),
+        "level": card.level_id(),
+        "form": card.form.map(crate::math::MathForm::id),
+        "authored_fingerprint": crate::card::authored_fingerprint(card)?,
+        "source": offer.source(),
+        "term": offer.term,
+        "origin": offer.origin,
+        "report": offer.report.as_ref().map(ReportTarget::json),
+        "reason": explanation(offer, focus_sources),
+        "evidence": {
+            "sources": offer.sources,
+            "added": added_sources(&offer.sources, focus_sources),
+            "focus_sources": focus_sources,
+            "mixed": offer.sources.len() > 1 || focus_sources.len() > 1,
+        },
+    }))
+}
+
+/// The one line of evidence the slot shows (D254): the report and proposal of a judged Bridge
+/// proposal, or the shared term or model name with the source it adds to the focus. Where either
+/// side's evidence is mixed, the line says so: the claim is the added source, not a relation.
+fn explanation(offer: &Offer, focus_sources: &[String]) -> String {
+    if let Some(report) = &offer.report {
+        return match report.relation.as_deref().filter(|relation| !relation.is_empty()) {
+            Some(relation) => format!(
+                "Bridge report {}, proposal {}: {relation}",
+                report.report, report.proposal
+            ),
+            None => format!("Bridge report {}, proposal {}", report.report, report.proposal),
+        };
+    }
+    let lead = if offer.rank == RANK_TERM {
+        "Shares register term"
+    } else {
+        "Shares the model name"
+    };
+    let term = offer.term.as_deref().unwrap_or_default();
+    let added = added_sources(&offer.sources, focus_sources);
+    let first = added.first().cloned().unwrap_or_default();
+    let own = if focus_sources.is_empty() {
+        "none".to_string()
+    } else {
+        focus_sources.join(", ")
+    };
+    if offer.sources.len() > 1 {
+        format!(
+            "{lead} {term}; its evidence is mixed ({}), and source {first} is absent from this Card's sources ({own})",
+            offer.sources.join(", ")
+        )
+    } else if focus_sources.len() > 1 {
+        format!(
+            "{lead} {term}; source {first} is absent from this Card's mixed sources ({own})"
+        )
+    } else {
+        format!("{lead} {term}; source {first} is not in this Card's sources ({own})")
     }
 }
 
@@ -1472,17 +2021,7 @@ fn registers(snapshot: &Snapshot) -> Registers {
     let mut summary = Vec::new();
     let mut faults = Vec::new();
     for workspace in Workspace::ALL {
-        let mut found = snapshot
-            .cards
-            .iter()
-            .filter(|card| {
-                card.card_type == CardType::Hub
-                    && card.hub_level == Some(crate::hub::HubLevel::Register)
-                    && card.workspace == workspace
-            })
-            .map(|card| card.address.clone())
-            .collect::<Vec<_>>();
-        found.sort_by(|left, right| crate::model::address_order(left, right));
+        let found = register_addresses(snapshot, workspace);
         match found.as_slice() {
             [] => summary.push(json!({
                 "workspace": workspace.id(),
@@ -1983,5 +2522,697 @@ mod tests {
             vec![2],
             "case is folded for a Latin label"
         );
+    }
+
+    // ---- the distant selection (S19, #108, design §10.2) ----
+
+    /// A scratch archive for the distant selection: `topics` first, then one Literature tree per
+    /// `(citation key, first Card text)`, then every `(parent, kind, type, text)` Card, then one
+    /// register whose authored body is `body`. `{register}` in a text or row is replaced by the
+    /// register's own address (its tree's first Direct successor). Returns the temp dir and that
+    /// address.
+    fn archive(
+        topics: &[&str],
+        books: &[(&str, &str)],
+        more: &[(&str, crate::ops::Successor, CardType, &str)],
+        body: &str,
+    ) -> (tempfile::TempDir, String) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        for text in topics {
+            crate::ops::create_topic(root, crate::Access::Owner, Workspace::Agent, text)
+                .expect("topic");
+        }
+        for (key, card) in books {
+            crate::ops::create_literature(
+                root,
+                crate::Access::Owner,
+                Workspace::Agent,
+                &format!("@book{{{key}, title={{{key} work}}}}"),
+                "",
+            )
+            .expect("literature card");
+            crate::ops::create_successor(
+                root,
+                crate::Access::Owner,
+                crate::ops::Successor::Direct,
+                key,
+                CardType::Idea,
+                None,
+                card,
+            )
+            .expect("a card of the book");
+        }
+        for (parent, kind, card_type, text) in more {
+            crate::ops::create_successor(
+                root,
+                crate::Access::Owner,
+                *kind,
+                parent,
+                *card_type,
+                None,
+                text,
+            )
+            .expect("a card");
+        }
+        let topic =
+            crate::ops::create_topic(root, crate::Access::Owner, Workspace::Agent, "# 索引\n")
+                .expect("index topic");
+        let register = format!("{}/1", crate::tree_id(&topic));
+        let register = {
+            let made = crate::ops::create_successor(
+                root,
+                crate::Access::Owner,
+                crate::ops::Successor::Direct,
+                &topic,
+                CardType::Hub,
+                None,
+                &format!(
+                    "# 索引：代理工作区的入口\n\n{}",
+                    body.replace("{register}", &register)
+                ),
+            )
+            .expect("register");
+            assert_eq!(made, register, "the register sits at its tree's first place");
+            made
+        };
+        crate::ops::edit(
+            root,
+            crate::Access::Owner,
+            &register,
+            None,
+            crate::ops::TypeChange {
+                hub_level: Some(Some(crate::hub::HubLevel::Register)),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("register level");
+        (temp, register)
+    }
+
+    /// Replace one Card's authored text, keeping its generated Reverse section.
+    fn edit(root: &std::path::Path, at: &str, text: &str) {
+        crate::ops::edit(
+            root,
+            crate::Access::Owner,
+            at,
+            Some(text),
+            crate::ops::TypeChange::default(),
+            None,
+        )
+        .expect("edit");
+    }
+
+    /// Delete one Card, taking the confirmation word the plan returned.
+    fn delete(root: &std::path::Path, at: &str) {
+        let confirm = match crate::ops::delete(root, crate::Access::Owner, at, None, None)
+            .expect("delete plan")
+        {
+            crate::ops::Outcome::Confirm { confirm, .. } => confirm,
+            crate::ops::Outcome::Done(_) => panic!("the delete needed no confirmation"),
+        };
+        crate::ops::delete(
+            root,
+            crate::Access::Owner,
+            at,
+            None,
+            Some(confirm.as_str()),
+        )
+        .expect("delete");
+    }
+
+    fn distant_at(snapshot: &Snapshot, at: &str) -> Value {
+        distant(snapshot, &DistantArgs::new(at)).expect("a distant read")
+    }
+
+    #[test]
+    fn distant_offers_a_card_of_another_book_through_a_shared_register_term() {
+        let (temp, register) = archive(
+            &[],
+            &[
+                ("bookA", "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n"),
+                ("bookB", "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n"),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        let candidate = &value["candidate"];
+        assert_eq!(candidate["address"], json!("bookB/1"), "{value}");
+        assert_eq!(candidate["title"], json!("多重均衡的另一种说法"));
+        assert_eq!(candidate["workspace"], json!("agent"));
+        assert_eq!(candidate["tree"], json!("bookB"));
+        assert_eq!(candidate["tree_title"], json!("bookB work"));
+        assert_eq!(candidate["source"], json!("register_term"));
+        assert_eq!(candidate["term"], json!("多重均衡"));
+        assert_eq!(candidate["origin"]["card"], json!(register));
+        assert_eq!(
+            candidate["origin"]["line"],
+            json!(2),
+            "the term row is body line 2: {value}"
+        );
+        assert!(candidate["authored_fingerprint"].is_string());
+        assert_eq!(candidate["evidence"]["sources"], json!(["bookB"]));
+        assert_eq!(candidate["evidence"]["added"], json!(["bookB"]));
+        assert_eq!(candidate["evidence"]["mixed"], json!(false));
+        assert_eq!(value["focus"]["terms"], json!(["多重均衡"]));
+        assert_eq!(value["focus"]["sources"], json!(["bookA"]));
+        let reason = candidate["reason"].as_str().expect("a one-line explanation");
+        assert!(
+            reason.starts_with("Shares register term 多重均衡; source bookB"),
+            "{reason}"
+        );
+        assert!(
+            !reason.contains("proves"),
+            "a shared term is not a proven relation: {reason}"
+        );
+        assert_eq!(value["register"]["card"], json!(register));
+        assert_eq!(value["register"]["missing"], json!(false));
+        assert_eq!(value["archive_fingerprint"], json!(snapshot.fingerprint()));
+        // The suggestion is a read: it wrote no Card, Link, or metadata row.
+        assert_eq!(
+            Snapshot::read(temp.path()).expect("again").fingerprint(),
+            snapshot.fingerprint(),
+            "the distant selection changed the archive"
+        );
+    }
+
+    /// S19-AC03, D255: the focus, the Cards already on the Table, and its immediate filing
+    /// neighbours are never the distant Card, and the next valid offer is chosen instead.
+    #[test]
+    fn distant_excludes_the_table_and_the_immediate_filing_neighbours() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                ("bookA", "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n"),
+                ("bookB", "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n"),
+            ],
+            &[(
+                "bookA/1",
+                crate::ops::Successor::Side,
+                CardType::Idea,
+                "# 多重均衡：局部说明\n\n同一机制的局部说明。\n\n来源：[[bookB]]\n",
+            )],
+            "## 词条\n- 多重均衡：[[bookA/1|a]] [[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        // The filing neighbour is offered first, but it is the focus's own Side successor.
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1"), "{value}");
+        assert_eq!(value["excluded"]["focus"], json!(1));
+        assert_eq!(
+            value["excluded"]["neighbour"],
+            json!(2),
+            "the parent Literature Card and the Side successor: {value}"
+        );
+        assert_eq!(value["excluded"]["navigation"], json!(1), "{value}");
+        // A Card already on the Table is no distant Card either.
+        let args = DistantArgs {
+            at: "bookA/1".to_string(),
+            table: vec!["bookB/1".to_string(), " bookB/1 ".to_string()],
+            report: None,
+        };
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(value["excluded"]["table"], json!(1), "one Card, listed twice");
+        assert_eq!(value["scanned"]["table"], json!(1));
+        assert_eq!(value["source"], Value::Null);
+    }
+
+    /// S19-AC03, D255: existing direct semantic neighbours (either direction) and Broken links are
+    /// no distant Card, while a later offer of the same term still is.
+    #[test]
+    fn distant_excludes_the_cards_a_link_already_reaches() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                ("bookC", "# 无关的书\n\n与均衡无关。\n"),
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+                ),
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            &[
+                (
+                    "bookB/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 多重均衡：反面的说法\n\n也从策略互补说起。\n",
+                ),
+                (
+                    "bookB/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 逆向选择\n\n[[bookA/1]] 讨论了多重均衡。\n",
+                ),
+            ],
+            "## 词条\n- 多重均衡：[[bookB/1]] [[bookB/1|a]] [[bookB/2]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n\n[[bookB/2]] 是同一机制的另一面，[[bookC/1]] 也已引用。\n",
+        );
+        delete(temp.path(), "bookC/1");
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1"), "{value}");
+        assert_eq!(
+            value["excluded"]["linked"],
+            json!(2),
+            "the Card the focus links and the Card that links the focus: {value}"
+        );
+        assert_eq!(
+            value["excluded"]["broken"],
+            json!(1),
+            "the Broken link of the focus: {value}"
+        );
+        let args = DistantArgs {
+            at: "bookA/1".to_string(),
+            table: vec!["bookB/1".to_string()],
+            report: None,
+        };
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+    }
+
+    /// S19-AC03, D255: two Cards that name the same confirmed statement are the same statement,
+    /// even when neither Links the other.
+    #[test]
+    fn distant_excludes_a_second_entry_of_the_same_confirmed_statement() {
+        let (temp, register) = archive(
+            &[],
+            &[
+                (
+                    "bookB",
+                    "# 多重均衡的完整陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookB]]\n",
+                ),
+                (
+                    "bookA",
+                    "# 多重均衡：本书的入口\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n\n## 同述入口\n\n- [[bookB/1]] 完整陈述。\n",
+                ),
+                (
+                    "bookC",
+                    "# 多重均衡：另一本书的入口\n\n多重均衡来自策略互补。\n\n来源：[[bookC]]\n\n## 同述入口\n\n- [[bookB/1]] 完整陈述。\n",
+                ),
+            ],
+            &[(
+                "bookC/1",
+                crate::ops::Successor::Direct,
+                CardType::Idea,
+                "# 策略互补的收益\n\n多重均衡来自策略互补。\n\n来源：[[bookC]]\n",
+            )],
+            "## 词条\n- 多重均衡：[[bookC/1]] [[bookC/2]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(
+            value["candidate"]["address"],
+            json!("bookC/2"),
+            "the second book's entry names the same statement: {value}"
+        );
+        assert_eq!(value["candidate"]["origin"]["card"], json!(register));
+        assert_eq!(
+            value["excluded"]["restatement"],
+            json!(1),
+            "bookC/1 is the same statement as the focus: {value}"
+        );
+        let args = DistantArgs {
+            at: "bookA/1".to_string(),
+            table: vec!["bookC/2".to_string()],
+            report: None,
+        };
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(
+            value["candidate"], Value::Null,
+            "only the same statement is left: {value}"
+        );
+    }
+
+    /// S19-AC03, D255: the register and its parts are navigation, never a distant Card.
+    #[test]
+    fn distant_excludes_the_register_and_its_parts() {
+        let (temp, register) = archive(
+            &[],
+            &[
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+                ),
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        // A declared register part holds rows of its own; the register declares it afterwards,
+        // because a Link to a Card needs that Card to exist.
+        let part = crate::ops::create_successor(
+            temp.path(),
+            crate::Access::Owner,
+            crate::ops::Successor::Side,
+            &register,
+            CardType::Idea,
+            None,
+            "# 词条 A–F\n\n## 词条\n- 学习：[[bookB/1]]\n",
+        )
+        .expect("register part");
+        assert_eq!(part, format!("{register}|a"));
+        edit(
+            temp.path(),
+            &register,
+            &format!(
+                "# 索引：代理工作区的入口\n\n## 词条\n- 多重均衡：[[{part}]]\n\n## 词条分册\n- [[{part}]] A–F\n"
+            ),
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(
+            value["excluded"]["navigation"],
+            json!(2),
+            "the register and its declared part: {value}"
+        );
+        assert_eq!(value["register"]["complete"], json!(true));
+        assert_eq!(value["register"]["entry_total"], json!(2));
+    }
+
+    /// S19-AC02, D255: a shared term needs supported different-source evidence. Unknown
+    /// attribution is never a cross-book suggestion, a candidate of the focus's own book is no
+    /// suggestion, and mixed evidence names the source it adds.
+    #[test]
+    fn distant_requires_supported_different_source_evidence() {
+        // The candidate's evidence is mixed and adds `bookB`, which the focus does not name.
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n\n来源：[[bookA]] [[bookB]]\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1"), "{value}");
+        assert_eq!(
+            value["candidate"]["evidence"]["sources"],
+            json!(["bookA", "bookB"])
+        );
+        assert_eq!(value["candidate"]["evidence"]["added"], json!(["bookB"]));
+        assert_eq!(value["candidate"]["evidence"]["mixed"], json!(true));
+        let reason = value["candidate"]["reason"].as_str().expect("a reason");
+        assert!(
+            reason.contains("its evidence is mixed (bookA, bookB)"),
+            "{reason}"
+        );
+        assert!(reason.contains("source bookB is absent"), "{reason}");
+
+        // A focus whose own evidence is unknown is never a confident cross-book suggestion.
+        let (temp, _) = archive(
+            &["# 杂项\n"],
+            &[(
+                "bookB",
+                "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+            )],
+            &[(
+                "0/0",
+                crate::ops::Successor::Direct,
+                CardType::Idea,
+                "# 多重均衡的假设\n\n多重均衡来自策略互补。\n",
+            )],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "0/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(value["focus"]["terms"], json!(["多重均衡"]));
+        assert_eq!(value["focus"]["sources"], json!([]));
+        assert_eq!(value["excluded"]["unknown_source"], json!(1), "{value}");
+
+        // A candidate of the focus's own book is no suggestion either.
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                ("bookB", "# 另一件事\n\n与均衡无关。\n"),
+            ],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 多重均衡：同书另一支\n\n同一本书里的另一支。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/1|a",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 多重均衡：同书另一处\n\n同一本书里的另一处。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            "## 词条\n- 多重均衡：[[bookA/1|a|1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(value["excluded"]["same_source"], json!(1), "{value}");
+    }
+
+    /// S19-AC01, D250-D253: the selected report's target comes first, then a shared accepted
+    /// register term, then a model head with the same scoped model name.
+    #[test]
+    fn distant_prefers_the_report_then_the_term_then_the_model_name() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        // A still-current target of the report the reader selected is the first source.
+        let mut args = DistantArgs::new("bookA/1");
+        args.report = Some(ReportTarget {
+            report: "bridge-2026-10-19".to_string(),
+            proposal: "b003".to_string(),
+            target: "bookB/1".to_string(),
+            relation: Some("contrasts".to_string()),
+        });
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"]["source"], json!("bridge_report"), "{value}");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1"));
+        assert_eq!(value["candidate"]["report"]["proposal"], json!("b003"));
+        assert_eq!(
+            value["candidate"]["reason"],
+            json!("Bridge report bridge-2026-10-19, proposal b003: contrasts")
+        );
+        // A stale target falls back to the term evidence and says why it was dropped.
+        let mut args = DistantArgs::new("bookA/1");
+        args.report = Some(ReportTarget {
+            report: "bridge-2026-10-19".to_string(),
+            proposal: "b004".to_string(),
+            target: "bookB/9".to_string(),
+            relation: Some("contrasts".to_string()),
+        });
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"]["source"], json!("register_term"), "{value}");
+        assert_eq!(value["excluded"]["stale_report"], json!(1), "{value}");
+        // A report target already on the Table or already reached by a Link is no suggestion.
+        let mut args = DistantArgs::new("bookA/1");
+        args.table = vec!["bookB/1".to_string()];
+        args.report = Some(ReportTarget {
+            report: "bridge-2026-10-19".to_string(),
+            proposal: "b005".to_string(),
+            target: "bookB/1".to_string(),
+            relation: None,
+        });
+        let value = distant(&snapshot, &args).expect("a distant read");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+
+        // A model head of another book with the same scoped model name is the third source.
+        let (temp, register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 学习（个体行为）的陈述\n\n学习（个体行为）提高技能。\n\n来源：[[bookA]]\n",
+                ),
+                ("bookB", "# 另一件事\n\n与学习无关。\n"),
+            ],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 学习（个体行为）：同书的另一处\n\n学习（个体行为）提高技能。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB/1",
+                    crate::ops::Successor::Side,
+                    CardType::Model,
+                    "# 学习（个体行为）模型\n\n技能存量决定产量。\n\n来源：[[bookB]]\n",
+                ),
+            ],
+            "## 词条\n- 学习（个体行为）：[[bookA/1|a]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1|a"), "{value}");
+        assert_eq!(value["candidate"]["source"], json!("model_name"));
+        assert_eq!(value["candidate"]["term"], json!("学习（个体行为）"));
+        let reason = value["candidate"]["reason"].as_str().expect("a reason");
+        assert!(
+            reason.starts_with("Shares the model name 学习（个体行为）; source bookB"),
+            "{reason}"
+        );
+        assert_eq!(value["candidate"]["origin"]["card"], json!(register));
+    }
+
+    /// S19-AC04, S19-AC07: zero or one, the same answer twice, and nothing when the evidence is
+    /// gone — a missing Card is an error, an unshared term an empty slot.
+    #[test]
+    fn distant_returns_one_stable_card_or_none() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的陈述\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+                ),
+                ("bookC", "# 无关的书\n\n与均衡无关。\n"),
+            ],
+            &[(
+                "bookB/1",
+                crate::ops::Successor::Direct,
+                CardType::Idea,
+                "# 学习的另一面\n\n技能存量。\n\n来源：[[bookB]]\n",
+            )],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n- 学习：[[bookB/2]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        assert_eq!(
+            distant_at(&snapshot, "bookA/1"),
+            distant_at(&snapshot, "bookA/1"),
+            "the same read gives the same Card: it never rotates"
+        );
+        // The focus states only 多重均衡, so the 学习 entry is no evidence.
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["scanned"]["offers"], json!(1), "{value}");
+        // A Card with no accepted term it states has no distant Card at all.
+        let value = distant_at(&snapshot, "bookC/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(value["focus"]["terms"], json!([]));
+        // Evidence that disappears leaves the slot empty, never a substitute.
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 无关的陈述\n\n这一张卡不谈那个术语。\n\n来源：[[bookA]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("a fresh read");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(value["focus"]["terms"], json!([]));
+        // A Card that does not exist is an error, not an empty slot.
+        let error = distant(&snapshot, &DistantArgs::new("bookZ/9")).expect_err("no such Card");
+        assert_eq!(error.to_string(), "card `bookZ/9` does not exist");
+    }
+
+    /// S19-AC01, D196: a term a Card only cites on a source line or lists in a member group is not
+    /// the Card's own statement, so it is no evidence for a distant Card.
+    #[test]
+    fn distant_reads_a_term_from_substance_not_from_a_source_line_or_a_member_list() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookB",
+                    "# 多重均衡的另一种说法\n\n这里也从策略互补说起。\n",
+                ),
+                (
+                    "bookA",
+                    "# 一张提到别处的卡\n\n本卡讨论自己的问题。\n\n来源：《多重均衡手册》[[bookB]]\n\n## 邻近\n\n- [[bookB/1]] 讨论多重均衡。\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 多重均衡：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["candidate"], Value::Null, "{value}");
+        assert_eq!(
+            value["focus"]["terms"],
+            json!([]),
+            "a source line and a member group are no statement: {value}"
+        );
+        assert_eq!(value["scanned"]["offers"], json!(0));
+        // A substantive sentence of the same Card is evidence again.
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 一张提到别处的卡\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("a fresh read");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(value["focus"]["terms"], json!(["多重均衡"]), "{value}");
+        assert_eq!(value["candidate"]["address"], json!("bookB/1"), "{value}");
+    }
+
+    /// S19-AC01, S19-AC02, D299: one label written with two different destinations is ambiguous,
+    /// so it never becomes a confident cross-book suggestion.
+    #[test]
+    fn distant_refuses_a_bare_ambiguous_term() {
+        let (temp, _) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 学习的陈述\n\n学习提高生产率。\n\n来源：[[bookA]]\n",
+                ),
+                ("bookB", "# 学习的另一面\n\n学习提高技能。\n"),
+                ("bookC", "# 学习的第三面\n\n学习改变习惯。\n"),
+            ],
+            &[],
+            "## 词条\n- 学习：[[bookB/1]]\n- 学习：[[bookC/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let value = distant_at(&snapshot, "bookA/1");
+        assert_eq!(
+            value["candidate"], Value::Null,
+            "the label names two senses: {value}"
+        );
+        assert_eq!(value["focus"]["terms"], json!([]), "{value}");
+        assert_eq!(value["excluded"]["ambiguous_term"], json!(1), "{value}");
+        assert_eq!(value["register"]["complete"], json!(false));
     }
 }

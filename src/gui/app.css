@@ -688,6 +688,45 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .chip .addr { color: var(--ink-faint); }
 .chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip.broken { border-color: var(--broken-soft); color: var(--broken); }
+/* The distant Card: one slot beside the neighbours, a pencil note rather than a card. It stays
+   faint until the reader points at it or tabs into it, and it never takes ink or motion from the
+   Card held: no shadow, no lift, no animation. */
+.distant-slot { margin-top: 20px; }
+.distant-slot[hidden] { display: none; }
+.reach .distant-slot { margin-top: 4px; }
+.distant {
+  border: 1px dashed var(--line-soft); border-radius: 3px; padding: 8px 10px 9px;
+  background: color-mix(in srgb, var(--paper) 55%, transparent);
+  color: var(--ink-faint); opacity: .58;
+  transition: opacity .18s ease, color .18s ease, border-color .18s ease, background .18s ease;
+}
+.distant:hover, .distant:focus-within {
+  opacity: 1; color: var(--ink-soft); border-color: var(--hairline);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+}
+.distant-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font: 600 9.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint);
+}
+.distant-head .kind { letter-spacing: .06em; text-transform: none; font-weight: 500; }
+.distant-open {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; margin-top: 5px;
+  border: 0; background: none; padding: 0; text-align: left; cursor: pointer; color: inherit;
+}
+.distant-open .t {
+  font: 500 13px/1.35 var(--serif); color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.distant-open:hover .t { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+.distant-open .addr { font: 10px var(--mono); color: var(--ink-faint); }
+.distant-why { margin: 5px 0 0; font: 11px/1.45 var(--sans); color: inherit; }
+.distant-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.distant-actions button {
+  border: 1px solid var(--hairline); background: none; border-radius: 7px; padding: 3px 8px;
+  font: 11px var(--sans); color: var(--ink-soft); cursor: pointer; transition: border-color .15s, color .15s;
+}
+.distant-actions button:hover { border-color: var(--line); color: var(--ink); }
+.distant-actions button:focus-visible, .distant-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hairline);

@@ -1554,6 +1554,9 @@
         clearTimeout(timer);
         timer = setTimeout(() => self.flush(), 450);
         renderTableCount();
+        // The Cards on the Table are the distant slot's exclusions: a new set is a new read.
+        tableView.refreshReach();
+        requestDistant();
       },
       flush() {
         clearTimeout(timer);
@@ -1919,10 +1922,10 @@
      * Where the slips within reach lie: in the nearest gap beside the card held, right before
      * left, so they never cover a card on the Table; if no gap is near, against its right edge.
      */
-    function reachOrigin(count) {
+    function reachOrigin(count, extra = 0) {
       const card = current.cards.find((item) => item.at === current.focus);
       if (!card) return null;
-      const box = { w: 250, h: 24 + Math.min(count, 6) * 41 + (count > 6 ? 24 : 0), gap: 14 };
+      const box = { w: 250, h: 24 + Math.min(count, 6) * 41 + (count > 6 ? 24 : 0) + extra, gap: 14 };
       const rects = current.cards.map((item) => ({ ...rectOf(item), w: size.w * (item.at === current.focus ? 1.07 : 1) }));
       const right = { x: card.x + size.w * 1.04 + 14, y: card.y + 6 };
       const spot = ZtLayout.freeSpot(rects, right, box);
@@ -1934,8 +1937,10 @@
       const box = $('#reach');
       const focus = current.focus;
       const list = focus ? candidates(focus) : [];
-      if (!list.length) { box.hidden = true; box.replaceChildren(); return; }
-      const origin = reachOrigin(reachOpen ? list.length : Math.min(list.length, 7));
+      // The distant Card shares the box: it is another way out of the same held Card, not a tray.
+      const away = focus ? !!distantValue(focus) : false;
+      if (!list.length && !away) { box.hidden = true; box.replaceChildren(); return; }
+      const origin = reachOrigin(reachOpen ? list.length : Math.min(list.length, 7), away ? 104 : 0);
       box.hidden = false;
       box.style.transform = `translate(${origin.x}px, ${origin.y}px)`;
       const limit = reachOpen ? list.length : 6;
@@ -1954,7 +1959,7 @@
       );
       box.replaceChildren(
         h('div', { class: 'reach-head' },
-          h('span', { text: `Within reach · ${list.length}` }),
+          h('span', { text: list.length ? `Within reach · ${list.length}` : 'Within reach' }),
           list.length > 1 ? h('button', {
             class: 'reach-all', title: 'Lay every card within reach on the Table',
             onclick: () => {
@@ -1965,6 +1970,9 @@
         ...list.slice(0, limit).map(slip),
         ...(list.length > limit ? [h('button', { class: 'reach-more', onclick: () => { reachOpen = true; renderReach(); } }, `+${list.length - limit} more`)] : []),
       );
+      // The slot sits under the slips, faint until the reader points at it or tabs into it.
+      box.append(distantSlot('table'));
+      paintDistant();
     }
 
     /** The Card being read but not on the Table is in the reader's hand, ready to lay down. */
@@ -2213,6 +2221,10 @@
       arrange,
       arriveFrom(address, from) { arrivals.set(address, from); },
       reset() { shown = null; reachOpen = false; },
+      /** The Card the Table holds (the Pointer while it lies there), for the distant slot. */
+      focus() { return current.focus; },
+      /** Re-draw only the slips within reach, so a distant answer arriving adds no motion. */
+      refreshReach() { if (state.mode === 'table') renderReach(); },
     };
   })();
 
@@ -2481,6 +2493,108 @@
     return self;
   })();
 
+  // ----------------------------------------------------------- distant card
+  // One low-salience slot beside the reader's Links and the Table's neighbours (S19, #108, design
+  // §10.2). Its subject is the Card the reader has open or holds: the service names at most one
+  // Card of another book that shares an accepted register term or a model name, with one line of
+  // evidence. It stays faint until the reader points at it or tabs into it, and it never competes
+  // with the held Card's ink, place, or motion. Opening, laying, or replying writes no Link: Reply
+  // opens the ordinary human draft for an agent Card, and laying a Card is the Table's own action.
+  // The answer is cached per read (Card, archive fingerprint, Table) so a repaint asks nothing.
+  const distant = { key: null, value: null, pending: null };
+
+  /** The Table's Cards and the archive read an answer belongs to. */
+  function distantKey(at) {
+    const lying = (spreads.now()?.cards || []).map((card) => card.at).sort().join(',');
+    return [at, state.fingerprint || '', lying].join('|');
+  }
+
+  /** Ask for the open Card's one distant Card; an answer for the same read is reused. */
+  function requestDistant() {
+    const card = state.card;
+    if (!card) {
+      distant.key = null;
+      distant.value = null;
+      distant.pending = null;
+      return;
+    }
+    // A tree root is navigation: it has neither the slot nor evidence to ask about.
+    if (card.context !== 'regular') return;
+    const key = distantKey(card.address);
+    if (distant.key === key || distant.pending === key) return;
+    distant.pending = key;
+    const lying = spreads.cards().map((item) => item.at);
+    api('distant?at=' + enc(card.address) + (lying.length ? '&table=' + lying.map(enc).join(',') : '')).then((value) => {
+      if (distant.pending !== key) return;
+      distant.pending = null;
+      distant.key = key;
+      distant.value = value && value.at === card.address ? value : null;
+      paintDistant();
+    }, () => {
+      // An unreadable suggestion leaves the reader as it is: no slot and no message (AC07).
+      if (distant.pending !== key) return;
+      distant.pending = null;
+      distant.key = key;
+      distant.value = null;
+      paintDistant();
+    });
+  }
+
+  /** The distant Card of one Card, when the answer belongs to this read of it. */
+  function distantValue(at) {
+    const value = distant.value;
+    return value && value.at === at && value.candidate ? value.candidate : null;
+  }
+
+  /** The one Card of the slot: its address and title, one line of evidence, and its actions. */
+  function distantBody(at) {
+    const candidate = distantValue(at);
+    if (!candidate) return null;
+    const source = candidate.source === 'bridge_report' ? 'bridge report'
+      : candidate.source === 'model_name' ? 'model name' : 'register term';
+    const agent = candidate.workspace === 'agent';
+    return h('div', {
+      class: 'distant', role: 'note', 'aria-label': `Distant card ${candidate.address}`,
+    },
+      h('div', { class: 'distant-head' },
+        h('span', { class: 'lbl', text: 'Distant' }),
+        h('span', { class: 'kind', text: source })),
+      h('button', {
+        class: 'distant-open', title: `${candidate.title} · ${candidate.address} — open it`,
+        onclick: () => go(candidate.address),
+      },
+        h('span', { class: 't' }, titleNodes(candidate.title || '(untitled)')),
+        h('span', { class: 'addr', text: candidate.address })),
+      h('p', { class: 'distant-why', text: candidate.reason }),
+      h('div', { class: 'distant-actions' },
+        h('button', {
+          class: 'distant-lay', text: 'Lay on the Table',
+          title: 'Lay it beside this Card; it writes no Link',
+          onclick: () => { toggleTable(candidate.address); },
+        }),
+        agent ? h('button', {
+          class: 'distant-reply', text: 'Reply',
+          title: 'Answer this agent Card with a human Card; the draft opens empty',
+          onclick: () => replyTo(candidate).catch(fail),
+        }) : null),
+    );
+  }
+
+  /** The slot that holds one distant Card; the two views create it, paintDistant fills it. */
+  function distantSlot(where) {
+    return h('div', { class: 'distant-slot', 'data-distant': where, hidden: true });
+  }
+
+  /** Fill every distant slot from the cached answer, and hide a slot that has none. */
+  function paintDistant() {
+    for (const slot of document.querySelectorAll('[data-distant]')) {
+      const at = slot.dataset.distant === 'reader' ? state.card?.address : tableView.focus();
+      const body = at ? distantBody(at) : null;
+      slot.replaceChildren(...(body ? [body] : []));
+      slot.hidden = !body;
+    }
+  }
+
   // ----------------------------------------------------------------- reader
   function chip(link, extraClass) {
     const cross = !link.broken && link.workspace && state.card && link.workspace !== state.card.workspace;
@@ -2573,6 +2687,8 @@
         h('pre', { text: card.bibtex })) : null,
       card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
+      // One distant Card beside the neighbours, faint until focus or hover (S19, #108).
+      card.context === 'regular' ? distantSlot('reader') : null,
       h('div', { class: 'actions' },
         actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p', () => toggleTable(card.address), {
           title: spreads.has(card.address) ? 'Put it back in the box' : 'Lay it on the Table beside the cards you are gathering (P: with every card it relates to)',
@@ -2596,6 +2712,11 @@
       h('details', { class: 'raw-toggle' }, h('summary', { text: 'Stored Markdown' }), h('pre', { text: card.text })),
     ));
     reader.scrollTop = 0;
+    // Paint the distant slot from the answer already read for this Card, and ask for one when the
+    // read has none yet: the request resolves on its own and repaints only the slot. A tree root
+    // is navigation and has no slot, so requestDistant asks nothing for it.
+    paintDistant();
+    requestDistant();
   }
 
   /**
@@ -4379,9 +4500,11 @@
     return list;
   }
 
-  /** Reply to the open agent Card: one human Card, written in the writing desk. */
-  async function replyTo() {
-    const card = state.card;
+  /**
+   * Reply to one agent Card: the Card the reader has open, or the distant Card the slot names.
+   * The human Card is written in the writing desk and filed in a human Topic.
+   */
+  async function replyTo(card = state.card) {
     if (!card) throw new Error('r needs a Card; use go <target> first');
     if (card.workspace !== 'agent') {
       throw new Error('Reply answers an agent Card; open one of the agent workspace first (w switches workspace)');

@@ -644,6 +644,70 @@ pub(crate) fn hubs_of(snapshot: &Snapshot, address: &str) -> Vec<Value> {
     values
 }
 
+/// The source evidence of one Card (design §4.3, D068-D072): the Citation keys its `来源` lines
+/// name, else the Literature tree it is filed in. A Model part falls back to the evidence of its
+/// model's head when it has none of its own, and the second element names that head. An empty set
+/// is unknown; a set of several is mixed, never forced to one book.
+///
+/// This is the one derivation: `Graph` reads it through the bodies one hub report loaded, and the
+/// distant selection (`src/entry.rs`) reads it through the Snapshot (S19, #108).
+pub(crate) fn source_evidence(snapshot: &Snapshot, address: &str) -> (Vec<String>, Option<String>) {
+    let body = |at: &str| snapshot.parsed.get(at).map(|parsed| parsed.body.clone());
+    source_evidence_with(snapshot, address, &body)
+}
+
+/// [`source_evidence`] over a supplied body reader: the indexed hub read holds only the bodies its
+/// report needs, so it does not read every ordinary body from the Snapshot again.
+fn source_evidence_with(
+    snapshot: &Snapshot,
+    address: &str,
+    body: &dyn Fn(&str) -> Option<String>,
+) -> (Vec<String>, Option<String>) {
+    let mut sources: Vec<String> = Vec::new();
+    let push = |sources: &mut Vec<String>, source: String| {
+        if !source.is_empty() && !sources.iter().any(|seen| seen.eq_ignore_ascii_case(&source)) {
+            sources.push(source);
+        }
+    };
+    if let Some(body) = body(address) {
+        for line in body.lines() {
+            let line = line.trim();
+            if !is_source_line(line) {
+                continue;
+            }
+            for occurrence in LinkBody::for_rendering(line).occurrences() {
+                if let Some(source) = literature_tree_of(snapshot, occurrence.target) {
+                    push(&mut sources, source);
+                }
+            }
+        }
+    }
+    if sources.is_empty()
+        && let Some(source) = literature_tree_of(snapshot, address)
+    {
+        push(&mut sources, source);
+    }
+    if sources.is_empty()
+        && let Some(card) = snapshot.by_address.get(address)
+        && card.facet.is_some()
+        && let Some(head) = snapshot.model_head(card)
+        && head != address
+    {
+        let (derived, _) = source_evidence_with(snapshot, &head, body);
+        return (derived, Some(head));
+    }
+    (sources, None)
+}
+
+/// The Literature tree a Link target names: its Citation key, when the target is a Literature Card
+/// or a Card of one.
+fn literature_tree_of(snapshot: &Snapshot, target: &str) -> Option<String> {
+    let tree = crate::tree_id(target);
+    let root = crate::tree_root_address(tree);
+    let root_card = snapshot.by_address.get(&root)?;
+    root_card.is_lit.then(|| tree.to_string())
+}
+
 /// Every hub of the archive with its parsed body, read once per request.
 pub(crate) struct Graph<'a> {
     snapshot: &'a Snapshot,
@@ -1359,54 +1423,11 @@ impl<'a> Graph<'a> {
         })
     }
 
-    /// The source evidence of one Card (design §4.3, D068-D072): the Citation keys its `来源`
-    /// lines name, else the Literature tree it is filed in. A Model part falls back to the
-    /// evidence of its model's head when it has none of its own, and the second element names
-    /// that head. An empty set is unknown; a set of several is mixed, never forced to one book.
+    /// The source evidence of one Card, from the bodies this read holds (see the free
+    /// [`source_evidence`]: the indexed hub read loads only the bodies its report needs).
     fn source_evidence(&self, address: &str) -> (Vec<String>, Option<String>) {
-        let mut sources: Vec<String> = Vec::new();
-        let push = |sources: &mut Vec<String>, source: String| {
-            if !source.is_empty() && !sources.iter().any(|seen| seen.eq_ignore_ascii_case(&source)) {
-                sources.push(source);
-            }
-        };
-        if let Some(body) = self.authored(address) {
-            for line in body.lines() {
-                let line = line.trim();
-                if !is_source_line(line) {
-                    continue;
-                }
-                for occurrence in LinkBody::for_rendering(line).occurrences() {
-                    if let Some(source) = self.literature_tree_of(occurrence.target) {
-                        push(&mut sources, source);
-                    }
-                }
-            }
-        }
-        if sources.is_empty()
-            && let Some(source) = self.literature_tree_of(address)
-        {
-            push(&mut sources, source);
-        }
-        if sources.is_empty()
-            && let Some(card) = self.snapshot.by_address.get(address)
-            && card.facet.is_some()
-            && let Some(head) = self.snapshot.model_head(card)
-            && head != address
-        {
-            let (derived, _) = self.source_evidence(&head);
-            return (derived, Some(head));
-        }
-        (sources, None)
-    }
-
-    /// The Literature tree a Link target names: its Citation key, when the target is a
-    /// Literature Card or a Card of one.
-    fn literature_tree_of(&self, target: &str) -> Option<String> {
-        let tree = crate::tree_id(target);
-        let root = crate::tree_root_address(tree);
-        let root_card = self.snapshot.by_address.get(&root)?;
-        root_card.is_lit.then(|| tree.to_string())
+        let body = |at: &str| self.authored(at).map(str::to_string);
+        source_evidence_with(self.snapshot, address, &body)
     }
 
     /// Every Topic body's `## 入口` section (§8.2, D167, D168): the one documented exception to
