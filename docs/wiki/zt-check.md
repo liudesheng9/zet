@@ -47,7 +47,7 @@ updated: 2026-10-18
 - `Category` — what a Card is for the layer rules: `idea`, `anchor`, `event`, `finding` get layer rules; `root`, `hub`, `part`, `model`, `terms`, `structure` get the R rules only. `--cards` mode computes it as `digest-audit.ps1` (`Get-Category`) does (`check_cards`).
 - `Model part` / `Model Card` — read from `get_model`; a Card with a `facet` is a part. A part whose facet starts with `推导` (or `derivation`, any case) is a `Derivation part`, which gets the step and explanation rules R14 to R17 (`Check::language`).
 - `Elaboration level` — `concept` or `formal`. A concept model skips R13 to R17; a model with no level gets the formal rules (`Check::language`).
-- `Term table` — the table under the line holding `术语表` in the setting Card's body (a model's setting, or the Book term table): `| term | words not to use |`. R6 reads it (`read_terms`, `Check::with_terms`).
+- `Term table` — the table under the line holding `术语表` in the setting Card's body (a model's setting, or the Book term table): `| term | words not to use | 意思 | 首次定义 |`. R6 reads the first two columns (`read_terms`, `Check::with_terms`); `term_table` is the public parser the digest uses for all four (`zt_check::check::term_table`, `TermRow`; #97, D063). Both share one row parse, so R6 and the digest never disagree about a row: `不用` splits on `、,，/`, allows the `—`/`无` of "none", and a later row naming the same term (case ignored) replaces the earlier one. R6 still skips a row with no rejected word, exactly as before, and the four-column reader reports such a row with an empty `avoid`.
 - `Shared part` — a part whose `build.order` item (or `--json` entry) has `line: shared`. It follows its home model's term table, so R6 skips it; `--skip-shared` drops it from a `--model` run (`check_model`, `Check::with_shared`).
 - `Limits` — the size numbers of R13, R14, R17, I2, L2 (`Limits` struct; defaults in "Configuration").
 - `UTF-16 form` — text in which each character outside the Basic Multilingual Plane is two private-use stand-ins (U+E000.., U+E400..), so lengths, regex classes, and clips match .NET (`utf16_form`, `from_utf16_form`).
@@ -317,15 +317,15 @@ entries or from the mode's own bulk reader:
 | `inbound` | Addresses that link here | I5 |
 | `inbound_kinded` | How many Idea Cards link here with a kind word | E4, F4 |
 
-The term table in a setting body:
+The term table in a setting body (R6 needs the first two columns; the digest's concept review reads all four):
 
 ```markdown
 术语表
 
-| 术语 | 不用 |
-|---|---|
-| 清算 | 卖资产、变卖资产 |
-| 可承诺的还款 | 还款额 |
+| 术语 | 不用 | 意思 | 首次定义 |
+|---|---|---|---|
+| 清算 | 卖资产、变卖资产 | 把资产换成现金 | §3.1 |
+| 可承诺的还款 | 还款额 | 契约能保证的偿还金额 | §4.2 |
 ```
 
 The first column is the term; the second lists the words not to use, split on `、`, `,`, `，`, `/`; `无`, `-`, `—` mean none. The table ends at the first non-table line after a row.
@@ -433,6 +433,8 @@ Gaps: no test of `mcp.rs`; no unit test of `--model`, `--addresses`, or `--cards
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+
+- `2026-10-19` — #97 (design D063): expose the term-table parse as a small public library function for the digest. `check::term_table(body) -> Vec<TermRow>` returns all four columns (`术语`, `不用`, `意思`, `首次定义`), while `read_terms` keeps R6's own view of the same parse: the first two columns, a row with no rejected word skipped before it can replace an earlier row, and the ordered-hashtable replacement of a term that differs only in case. R6's faults are unchanged, which the unit test `the_term_table_exposes_all_four_columns_without_changing_r6` pins.
 
 - `2026-10-19` — #93 S03: I6 compares a checked Idea title with every title of its own Workspace through a read-only title context (an inverted bigram index, the same Dice function, one line per unordered pair, only pairs touching the checked Cards). `--cards` builds the context from its complete `export_titles` read; `--json` accepts a `{"cards": …, "context": …}` bundle. The entry contract gains `workspace`.
 - `2026-10-19` — The standalone pilot rules of #93 S02: R20 (an unexplained local reference, with its content constant), R21 (a deictic with no named Link in its sentence), and I7 (a Topic Idea Card resting on its own source's Literature tree, with unknown source evidence reported as unknown). `relations` (the kind word of every kinded Link), `sources`, and `tree` join the entry contract; `check_cards` supplies `tree` and `relations` from the bulk readers, `digest-audit` writes `relations`, and both default rule lists carry R20, R21, and I7. The audit splits advice from blocking style faults (`style.advisory`, `style.advice_by_rule`).

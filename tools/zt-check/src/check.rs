@@ -751,6 +751,81 @@ fn passive(plain: &str) -> bool {
 
 type Terms = Vec<(String, Vec<String>)>;
 
+/// The cells of one term-table row: `(术语, 不用, 意思, 首次定义)`. `None` for the header, the
+/// rule, or a line that is not a row. `不用` keeps R6's split (`、,，/`), its trim of the marks
+/// the table allows, and its drop of the words that mean "none" (`—`, `无`).
+fn term_cells(t: &str) -> Option<(String, Vec<String>, String, String)> {
+    let cells = t
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if cells.len() < 2 || TABLE_RULE.is_match(cells[0]) || ps_eq(cells[0], "术语") {
+        return None;
+    }
+    let avoid = AVOID_SPLIT
+        .split(cells[1])
+        .map(|word| word.trim_matches(&[' ', '`', '“', '”'][..]))
+        .filter(|word| !word.is_empty() && !AVOID_NONE.is_match(word))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    Some((
+        cells[0].to_string(),
+        avoid,
+        cells.get(2).map(|cell| cell.to_string()).unwrap_or_default(),
+        cells.get(3).map(|cell| cell.to_string()).unwrap_or_default(),
+    ))
+}
+
+/// One row of a book's term table: the four columns `术语 | 不用 | 意思 | 首次定义`
+/// (docs/luhmann-comparison-implementation-design.md D063). The digest reads the meanings
+/// and definition locations beside the term and its rejected words; R6 still reads only the
+/// first two columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TermRow {
+    /// `术语`: the preferred word of the book.
+    pub term: String,
+    /// `不用`: the words the book rejects for this term (its own naming evidence).
+    pub avoid: Vec<String>,
+    /// `意思`: the meaning the book gives the term.
+    pub meaning: String,
+    /// `首次定义`: where the book first defines it (`§2.1`).
+    pub defined: String,
+}
+
+/// The term table of one book Card, with all four columns (D063). The digest uses this to
+/// read a book's naming evidence; it applies the same row parse R6 applies, so the two never
+/// disagree about what a row says. The table ends at the first line that is not a row once a
+/// row has been read; a later row that names the same term (case ignored) replaces the earlier
+/// one, as R6's ordered hashtable does.
+pub fn term_table(body: &str) -> Vec<TermRow> {
+    let mut rows: Vec<TermRow> = Vec::new();
+    let mut in_table = false;
+    for line in body.split('\n') {
+        if line.contains("术语表") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        let t = line.trim();
+        if t.is_empty() || !culture_starts_with(t, "|") {
+            if rows.is_empty() {
+                continue;
+            }
+            break;
+        }
+        let Some((term, avoid, meaning, defined)) = term_cells(t) else { continue };
+        let row = TermRow { term, avoid, meaning, defined };
+        match rows.iter_mut().find(|known| key(&known.term) == key(&row.term)) {
+            Some(entry) => *entry = row,
+            None => rows.push(row),
+        }
+    }
+    rows
+}
+
 /// The term table under a line that holds `术语表`: the term, and the words not to use.
 fn read_terms(body: &str) -> Terms {
     let mut terms: Terms = Vec::new();
@@ -770,25 +845,11 @@ fn read_terms(body: &str) -> Terms {
             }
             break;
         }
-        let cells = t
-            .trim_matches('|')
-            .split('|')
-            .map(str::trim)
-            .collect::<Vec<_>>();
-        if cells.len() < 2 || TABLE_RULE.is_match(cells[0]) || ps_eq(cells[0], "术语") {
-            continue;
-        }
-        let avoid = AVOID_SPLIT
-            .split(cells[1])
-            .map(|word| word.trim_matches(&[' ', '`', '“', '”'][..]))
-            .filter(|word| !word.is_empty() && !AVOID_NONE.is_match(word))
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        let Some((term, avoid, _, _)) = term_cells(t) else { continue };
         if avoid.is_empty() {
             continue;
         }
         // An ordered hashtable: a term that differs only in case replaces the earlier one.
-        let term = cells[0].to_string();
         match terms.iter_mut().find(|(known, _)| key(known) == key(&term)) {
             Some(entry) => *entry = (term, avoid),
             None => terms.push((term, avoid)),
@@ -2645,6 +2706,45 @@ mod tests {
             .map(String::as_str)
             .filter(|line| line.split(' ').nth(1) == Some(rule))
             .collect()
+    }
+
+    /// D063: the digest reads the whole term row through the checker's own parse, while R6
+    /// keeps reading only `术语` and `不用`. Adding the two columns changes no R6 fault, and a
+    /// row without a rejected word is still not part of R6's table.
+    #[test]
+    fn the_term_table_exposes_all_four_columns_without_changing_r6() {
+        let body = "本卡是《书》的术语表。本书的卡片用左列的术语。\n\n术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡的多重性 | 多重均衡、多重均衡性 | 同一经济有多个均衡的可能性 | §2.1 |\n| 学习（个体行为） | 学习 | 个体重复练习带来的技能变化 | §3.1 |\n| 学习（产业生产率） | 学习 | 产业生产率随累计产量提高 | §4.2 |\n| 剩余控制权 | — | 契约没写明时决定资产用法的权利 | §1 |\n\n来源：[[书]]";
+        let rows = term_table(body);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0], TermRow {
+            term: "均衡的多重性".into(),
+            avoid: vec!["多重均衡".into(), "多重均衡性".into()],
+            meaning: "同一经济有多个均衡的可能性".into(),
+            defined: "§2.1".into(),
+        });
+        assert_eq!(rows[2].avoid, vec!["学习".to_string()]);
+        assert_eq!(rows[2].meaning, "产业生产率随累计产量提高");
+        assert_eq!(rows[3].defined, "§1");
+        assert!(rows[3].avoid.is_empty());
+        // R6 keeps only the rows with a rejected word, and the same two occurrences of 学习.
+        assert_eq!(
+            read_terms(body),
+            vec![
+                ("均衡的多重性".to_string(), vec!["多重均衡".to_string(), "多重均衡性".to_string()]),
+                ("学习（个体行为）".to_string(), vec!["学习".to_string()]),
+                ("学习（产业生产率）".to_string(), vec!["学习".to_string()]),
+            ]
+        );
+        // A row that repeats a term (case ignored) replaces the earlier one in both readers.
+        let repeated = "术语表\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| GDP | 国民生产总值 | 产出 | §1 |\n| gdp | 国内生产总值 | 产出 | §2 |\n";
+        assert_eq!(term_table(repeated).len(), 1);
+        assert_eq!(term_table(repeated)[0].meaning, "产出");
+        assert_eq!(read_terms(repeated)[0].0, "gdp");
+        // A table with no rejected words anywhere is empty for R6 and whole for the digest.
+        let plain = "术语表\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 敲竹杠 | — | 机会主义 | §1 |\n";
+        assert!(read_terms(plain).is_empty());
+        assert_eq!(term_table(plain).len(), 1);
+        assert!(term_table("没有术语表的卡").is_empty());
     }
 
     /// R20 and R21: a local label that stands in for its content, and a deictic

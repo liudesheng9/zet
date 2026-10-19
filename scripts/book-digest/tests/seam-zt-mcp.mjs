@@ -17,6 +17,9 @@
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
+//   ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
+//       archive revision than the one before it, so a caller that needs one view must retry once
+//       and then report its changing-view fault. `once` drifts on the first read only.
 //   ZT_SCHOLAR_FIXTURE   a JSON file that answers the read-only Scholar Archive bridge, so
 //       `zt-digest prepare -Book` runs without a live archive. It holds `works` (a Work id to the
 //       `get_work` result), `search` (a normalised title to Work ids), `files` (a Work id to
@@ -56,6 +59,17 @@ const scholar = () => {
   try { return JSON.parse(fs.readFileSync(env.ZT_SCHOLAR_FIXTURE, 'utf8')) } catch { return null }
 }
 const digest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+// ZT_DRIFT_REVISION: a read whose archive revision is not the archive's own current one.
+let drifted = 0
+const drift = reply => {
+  if (!env.ZT_DRIFT_REVISION || failed(reply)) return
+  const value = reply.result.structuredContent
+  if (!value || typeof value.archive_revision !== 'number') return
+  drifted += 1
+  if (env.ZT_DRIFT_REVISION === 'once' && drifted > 1) return
+  value.archive_revision = Number(value.archive_revision) + drifted
+  reply.result.content = [{ type: 'text', text: JSON.stringify(value) }]
+}
 const numbered = (list, id) => (list || []).map(Number).includes(Number(id))
 // One `scholar_archive_read` answer: `{result}` or `{error}`.
 const scholarRead = (fixture, inner, args) => {
@@ -157,6 +171,7 @@ async function handle(line) {
     fs.writeFileSync(env.ZT_RESERVE_BATCH_FLAG, JSON.stringify(reserved.result.structuredContent))
   }
   const reply = await ask(message)
+  if (!at.preview && (tool === 'get_cards' || tool === 'export_titles')) drift(reply)
   if (tool === 'apply_batch' && !at.preview && env.ZT_HANG_BATCH_REPLY_FLAG && !flag(env.ZT_HANG_BATCH_REPLY_FLAG) && !failed(reply)) await hangBatch(env.ZT_HANG_BATCH_REPLY_FLAG)
   if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent
