@@ -300,6 +300,10 @@ _Avoid_: Index, keyword list, concept database, home note
 The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on. The entry view also names the archive revision it was read at and the terms each target Card carries. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
 _Avoid_: Concept record, keyword, term row (that is the written item)
 
+**Entry-first search**:
+The read-only ranking of one query over one Card read (MCP `search_cards mode: entry`, GUI `/api/search mode=entry`). The order is lexicographic: an exact address, a matching register term and its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching Card title, then a matching authored body. Inside a tier, exact matches precede prefixes and partial matches, the current lexical score orders the rest, and natural address order breaks the final tie. Each row names its role (`entry`, `member`, or `hit`), its rank tier, the term or line evidence, an explanation, and the navigation Card it came from; a term is never a Card, so a target appears once at its highest tier. It starts no model, writes nothing, and walks no Link. A missing register is reported, not substituted, and an omitted mode keeps the existing plain search.
+_Avoid_: Semantic search, relevance score, concept result, alias lookup
+
 **Insert**:
 Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.
 _Avoid_: Splice, shift

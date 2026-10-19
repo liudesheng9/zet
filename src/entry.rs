@@ -11,23 +11,31 @@
 //! - [`View::json`] returns the flattened, paged entry view: `entries`, `entry_total`,
 //!   `entry_next_offset`, `parts`, `faults`, `terms_by_card`, `restatements`, `complete`, `bounds`,
 //!   and the archive identity/revision the view was read at.
+//! - [`search`] is the one entry-first search: an exact address, a matching register term and its
+//!   entry Cards, a matching hub member line and the Card it opens, a matching model head, a
+//!   matching Card title, then a matching authored body (§9.2, D199-D206). The MCP server's
+//!   `search_cards` `mode: entry` and the GUI's `/api/search` `mode=entry` both return its rows,
+//!   counts, and evidence unchanged; neither adds a second ranking (D194, D198, D278).
 //!
 //! The view is derived and disposable: it stores nothing, and its addresses are ordinary Card
 //! addresses, never concept ids. Normal Link rewriting keeps a moved entry current. The
 //! module opens no file, starts no model, and saves no Card; the storage read lives in
-//! `src/read.rs::register` and `src/read.rs::hubs`.
+//! `src/read.rs::register` and `src/read.rs::hubs`. The ranking is a read projection over the
+//! supplied [`Snapshot`]: one coherent read, no model run, no Link walk, and bounded work
+//! (`SEARCH_*` constants, reported in `bounds` and `scanned`).
 //!
-//! Later slices build on this view and must keep using it: entry-first ranking (S13) ranks
-//! [`View::entries`] and skips an entry whose `complete` is false, and the bounded gather and the
-//! one distant Card (S19, design §9.1 `gather`/`distant`) select from the same entries. They add
-//! pure functions over a supplied `View`; they do not parse the register again.
+//! Later slices build on this view and must keep using it: restatement folding (S14) groups the
+//! rows [`search`] returns, and the bounded gather and the one distant Card (S19, design §9.1
+//! `gather`/`distant`) select from the same entries. They add pure functions over a supplied
+//! `View`; they do not parse the register again.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::hub::{RegisterRow, register_part_targets, register_row_faults, register_rows};
 use crate::ops::Snapshot;
+use crate::{CardType, Workspace};
 
 /// The default page of flattened entries (D276, §8.5).
 pub(crate) const ENTRY_LIMIT_DEFAULT: usize = 200;
@@ -88,6 +96,64 @@ pub(crate) fn bounds() -> Value {
         "entry_limit_default": ENTRY_LIMIT_DEFAULT,
         "entry_limit_max": ENTRY_LIMIT_MAX,
     })
+}
+
+/// The two search orders (D198, D275): the existing plain lexical order and the entry-first order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Mode {
+    Plain,
+    Entry,
+}
+
+impl Mode {
+    /// One `mode` value: `plain` or `entry`.
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plain" => Ok(Self::Plain),
+            "entry" => Ok(Self::Entry),
+            other => bail!("unknown search mode `{other}`; expected plain or entry"),
+        }
+    }
+
+    /// The mode a tool call asks for; an omitted mode is `plain`, the existing MCP behaviour, so
+    /// an existing caller keeps its order and shape (D198, US024).
+    pub(crate) fn from_args(args: &Value) -> Result<Self> {
+        match args.get("mode") {
+            None | Some(Value::Null) => Ok(Self::Plain),
+            Some(Value::String(value)) => Self::parse(value),
+            Some(_) => bail!("argument `mode` must be a string"),
+        }
+    }
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Entry => "entry",
+        }
+    }
+}
+
+/// The most rows one entry search returns: the same clamp the MCP `search_cards` already applies
+/// (§12.2, D275).
+pub(crate) const SEARCH_LIMIT_MAX: usize = 200;
+/// The most Hub Cards one entry search reads for member lines, in natural address order.
+pub(crate) const SEARCH_HUB_MAX: usize = 2000;
+/// The most register term rows one entry search ranks, across the archive's registers.
+pub(crate) const SEARCH_TERM_MAX: usize = 1000;
+/// The most register faults one entry search reports, so one broken register cannot flood a reply.
+pub(crate) const SEARCH_FAULT_MAX: usize = 100;
+/// The most characters of a matched hub member line the evidence quotes.
+pub(crate) const SEARCH_LINE_MAX_CHARS: usize = 200;
+
+/// One entry-first search request: the query, the filters that apply to target Cards, and the page
+/// size. The MCP server and the GUI both build it and call [`search`] (D194, D198, D278).
+#[derive(Clone, Debug)]
+pub(crate) struct SearchArgs {
+    pub(crate) query: String,
+    pub(crate) workspace: Option<Workspace>,
+    pub(crate) card_type: Option<CardType>,
+    pub(crate) form: Option<crate::math::MathForm>,
+    pub(crate) limit: usize,
 }
 
 /// One target of a term: its address, whether the Card exists, and its bounded authored body.
@@ -419,6 +485,675 @@ impl View {
     }
 }
 
+/// The rank tiers of the entry-first order (§9.2, D199-D206), reported as `rank_tier`.
+const TIER_ADDRESS: u8 = 1;
+const TIER_TERM: u8 = 2;
+const TIER_MEMBER: u8 = 3;
+const TIER_MODEL: u8 = 4;
+const TIER_TITLE: u8 = 5;
+const TIER_BODY: u8 = 6;
+
+/// What one query means to a label: every word must occur, and an exact label beats a prefix,
+/// which beats a partial hit (§9.2). Exact-first orders the declarations.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Quality {
+    Exact,
+    Prefix,
+    Partial,
+}
+
+impl Quality {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Exact => "exactly",
+            Self::Prefix => "as a prefix",
+            Self::Partial => "partly",
+        }
+    }
+}
+
+/// The folded words of a query: the whole needle, the same without whitespace for exact and prefix
+/// comparisons, and the words a label or title must hold. Plain and entry search both fold case.
+struct Query {
+    needle: String,
+    compact: String,
+    terms: Vec<String>,
+}
+
+impl Query {
+    fn new(query: &str) -> Self {
+        let needle = fold(query);
+        let compact = compact(&needle);
+        let terms = needle.split_whitespace().map(str::to_string).collect();
+        Self {
+            needle,
+            compact,
+            terms,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// The quality of a label match, or `None` when a query word is absent. Matching ignores
+    /// spacing (and case), so `学习 曲线` still names the label `学习曲线` and `学 习` the label
+    /// `学习`; an exact label beats a prefix, which beats a partial hit.
+    fn quality(&self, label: &str) -> Option<Quality> {
+        if self.is_empty() {
+            return None;
+        }
+        let label = compact(&fold(label));
+        if !self
+            .terms
+            .iter()
+            .all(|term| label.contains(term.as_str()))
+        {
+            return None;
+        }
+        if label == self.compact {
+            Some(Quality::Exact)
+        } else if label.starts_with(&self.compact) {
+            Some(Quality::Prefix)
+        } else {
+            Some(Quality::Partial)
+        }
+    }
+
+    /// The first query word a text holds, for the snippet's centre.
+    fn snippet_term(&self, text: &str) -> Option<String> {
+        let folded = text.to_lowercase();
+        self.terms
+            .iter()
+            .find(|term| folded.contains(term.as_str()))
+            .cloned()
+    }
+}
+
+fn fold(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn compact(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+/// One row before ranking: its tier, match quality, the current lexical score, and the evidence
+/// that explains it. A Card named by more than one tier keeps its highest tier: a term is not a
+/// second Card, and a register target that is also a title or body hit appears once (D201-D206).
+struct Candidate {
+    tier: u8,
+    quality: Quality,
+    score: i64,
+    address: String,
+    role: &'static str,
+    field: &'static str,
+    matched_term: Option<String>,
+    matched_line: Option<String>,
+    reason: String,
+    origin: Option<Value>,
+    /// Every existing target of the entry's term, in register order. The row reports those that
+    /// survive the filters, so a term's one to three destinations stay visible (D207).
+    entry_targets: Vec<String>,
+    body_term: Option<String>,
+}
+
+/// How much of a bounded scan one search used, so the reply can report work and truncation.
+#[derive(Default)]
+struct Scan {
+    count: usize,
+    truncated: bool,
+}
+
+/// The archive's registers, one per Workspace at most, and the faults that keep a register out of
+/// retrieval (D296, D297, D299). An absent register is reported, never substituted.
+struct Registers {
+    views: Vec<View>,
+    /// One row per Workspace, in `Workspace::ALL` order: its register or `missing`.
+    summary: Vec<Value>,
+    faults: Vec<Value>,
+}
+
+/// The one entry-first search projection: rows, order, counts, and evidence are the same for the
+/// MCP server and the GUI (D193, D194, D198, D278). It is a read-only projection over one Card
+/// read: no model run, no Card write, no Link walk, and bounded work reported in `bounds` and
+/// `scanned`. An empty query has no ranking; callers keep the plain listing path for it.
+pub(crate) fn search(snapshot: &Snapshot, args: &SearchArgs) -> Value {
+    let query = Query::new(&args.query);
+    let limit = args.limit.clamp(1, SEARCH_LIMIT_MAX);
+    let registers = registers(snapshot);
+    let lexical = snapshot.lexical(&args.query);
+    let mut lexical_at = BTreeMap::new();
+    for (index, found) in lexical.iter().enumerate() {
+        lexical_at.insert(snapshot.cards[found.order].address.as_str(), index);
+    }
+    let score = |address: &str| {
+        lexical_at
+            .get(address)
+            .map_or(0, |index| lexical[*index].score)
+    };
+    let mut candidates = Vec::new();
+    let mut terms = Scan::default();
+    let mut hubs = Scan::default();
+    if !query.is_empty() {
+        address_candidate(snapshot, &query, &score, &mut candidates);
+        terms = term_candidates(&registers, &query, &score, &mut candidates);
+        hubs = member_candidates(snapshot, &query, &score, &mut candidates);
+        model_candidates(snapshot, &query, &score, &mut candidates);
+        lexical_candidates(&lexical, snapshot, &query, &mut candidates);
+    }
+    ranked(
+        snapshot,
+        args,
+        &query,
+        registers,
+        candidates,
+        terms,
+        hubs,
+        limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ranked(
+    snapshot: &Snapshot,
+    args: &SearchArgs,
+    query: &Query,
+    registers: Registers,
+    mut candidates: Vec<Candidate>,
+    terms: Scan,
+    hubs: Scan,
+    limit: usize,
+) -> Value {
+    // The lexicographic tier order, then exact/prefix/partial, then the current lexical score,
+    // then natural address order as the final tie-break (§9.2, D206).
+    candidates.sort_by(|left, right| {
+        left.tier
+            .cmp(&right.tier)
+            .then(left.quality.cmp(&right.quality))
+            .then(right.score.cmp(&left.score))
+            .then_with(|| crate::model::address_order(&left.address, &right.address))
+    });
+    let mut seen = BTreeSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.address.clone()));
+
+    // Counts filter one dimension at a time, as the plain search's chips do: by Workspace under
+    // the type and form filters, by type under the Workspace and form filters. A count counts
+    // matching Cards, never displayed rows (D208).
+    let mut workspaces = serde_json::Map::new();
+    let mut types = serde_json::Map::new();
+    let mut total = 0usize;
+    for candidate in &candidates {
+        let Some(card) = snapshot.by_address.get(&candidate.address) else {
+            continue;
+        };
+        if args
+            .card_type
+            .is_none_or(|card_type| card.card_type == card_type)
+            && args.form.is_none_or(|form| card.form == Some(form))
+        {
+            let count = workspaces.entry(card.workspace.id()).or_insert(json!(0));
+            *count = json!(count.as_u64().unwrap_or(0) + 1);
+        }
+        if args
+            .workspace
+            .is_none_or(|workspace| card.workspace == workspace)
+            && args.form.is_none_or(|form| card.form == Some(form))
+        {
+            let count = types.entry(card.card_type.id()).or_insert(json!(0));
+            *count = json!(count.as_u64().unwrap_or(0) + 1);
+        }
+        if keeps(snapshot, args, &candidate.address) {
+            total += 1;
+        }
+    }
+    let results = candidates
+        .iter()
+        .filter(|candidate| keeps(snapshot, args, &candidate.address))
+        .take(limit)
+        .filter_map(|candidate| row(snapshot, args, query, candidate))
+        .collect::<Vec<_>>();
+    let shown = results.len();
+    let register_missing = registers
+        .summary
+        .iter()
+        .all(|register| register["missing"] == json!(true));
+    json!({
+        "mode": Mode::Entry.id(),
+        "query": args.query.trim(),
+        "results": results,
+        "shown": shown,
+        "total": total,
+        "row_total": total,
+        "workspaces": workspaces,
+        "types": types,
+        "registers": registers.summary,
+        "register_missing": register_missing,
+        "register_faults": registers.faults.iter().take(SEARCH_FAULT_MAX).collect::<Vec<_>>(),
+        "register_faults_truncated": registers.faults.len() > SEARCH_FAULT_MAX,
+        "bounds": {
+            "results_limit_max": SEARCH_LIMIT_MAX,
+            "hub_scan_max": SEARCH_HUB_MAX,
+            "term_max": SEARCH_TERM_MAX,
+            "register_faults_max": SEARCH_FAULT_MAX,
+            "matched_line_max_chars": SEARCH_LINE_MAX_CHARS,
+        },
+        "scanned": {
+            "registers": registers.views.len(),
+            "terms": terms.count,
+            "terms_truncated": terms.truncated,
+            "hubs": hubs.count,
+            "hubs_truncated": hubs.truncated,
+        },
+        "archive_fingerprint": snapshot.fingerprint(),
+    })
+}
+
+/// One row of the entry-first order: the existing Card summary fields, plus the role, the rank
+/// tier, the term or line evidence, the explanation, and the navigation Card it came from.
+fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, candidate: &Candidate) -> Option<Value> {
+    let card = snapshot.by_address.get(&candidate.address)?;
+    let tree = crate::tree_id(&candidate.address);
+    let body = snapshot
+        .parsed
+        .get(&candidate.address)
+        .map_or("", |parsed| parsed.body.as_str());
+    let body_term = candidate
+        .body_term
+        .clone()
+        .or_else(|| query.snippet_term(body));
+    let entry_targets = if candidate.role == "entry" {
+        candidate
+            .entry_targets
+            .iter()
+            .filter(|address| keeps(snapshot, args, address))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    Some(json!({
+        "address": card.address,
+        "title": snapshot.title(&card.address),
+        "kind": crate::ops::kind(card),
+        "type": card.card_type.id(),
+        "facet": card.facet.as_ref().map(crate::model::Facet::id),
+        "emphasis": card.emphasis.map(crate::model::Emphasis::id),
+        "level": card.level_id(),
+        "form": card.form.map(crate::math::MathForm::id),
+        "workspace": card.workspace.id(),
+        "tree": tree,
+        "tree_title": snapshot.title(&crate::tree_root_address(tree)),
+        "field": candidate.field,
+        "score": candidate.score,
+        "snippet": snapshot.snippet(&candidate.address, body_term.as_deref()),
+        "role": candidate.role,
+        "rank_tier": candidate.tier,
+        "matched_term": candidate.matched_term,
+        "matched_line": candidate.matched_line,
+        "reason": candidate.reason,
+        "origin": candidate.origin,
+        "entry_targets": entry_targets,
+    }))
+}
+
+/// Whether a target Card survives the Workspace, type, and form filters. Filters apply to the
+/// Cards a row opens, before rows and counts are built (D208).
+fn keeps(snapshot: &Snapshot, args: &SearchArgs, address: &str) -> bool {
+    let Some(card) = snapshot.by_address.get(address) else {
+        return false;
+    };
+    args.workspace
+        .is_none_or(|workspace| card.workspace == workspace)
+        && args
+            .card_type
+            .is_none_or(|card_type| card.card_type == card_type)
+        && args.form.is_none_or(|form| card.form == Some(form))
+}
+
+/// Tier 1 (D200): an exact address query opens that Card first, before any term match.
+fn address_candidate(
+    snapshot: &Snapshot,
+    query: &Query,
+    score: &dyn Fn(&str) -> i64,
+    candidates: &mut Vec<Candidate>,
+) {
+    let Some(card) = snapshot
+        .cards
+        .iter()
+        .filter(|card| card.address.to_lowercase() == query.needle)
+        .min_by(|left, right| crate::model::address_order(&left.address, &right.address))
+    else {
+        return;
+    };
+    candidates.push(Candidate {
+        tier: TIER_ADDRESS,
+        quality: Quality::Exact,
+        score: score(&card.address),
+        address: card.address.clone(),
+        role: "hit",
+        field: "address",
+        matched_term: None,
+        matched_line: None,
+        reason: "the query is this Card's address".to_string(),
+        origin: None,
+        entry_targets: Vec::new(),
+        body_term: None,
+    });
+}
+
+/// Tier 2 (D201): a matching register term and its entry Cards. A row with a fault is ignored for
+/// retrieval and stays reported by the register faults (D297); a term whose targets all fail the
+/// filters contributes no row (D208).
+fn term_candidates(
+    registers: &Registers,
+    query: &Query,
+    score: &dyn Fn(&str) -> i64,
+    candidates: &mut Vec<Candidate>,
+) -> Scan {
+    let mut scan = Scan::default();
+    'views: for view in &registers.views {
+        for entry in &view.entries {
+            if scan.count >= SEARCH_TERM_MAX {
+                scan.truncated = true;
+                break 'views;
+            }
+            scan.count += 1;
+            if !entry.complete() {
+                continue;
+            }
+            let Some(quality) = query.quality(&entry.term) else {
+                continue;
+            };
+            let targets = entry
+                .targets
+                .iter()
+                .filter(|target| target.exists)
+                .collect::<Vec<_>>();
+            if targets.is_empty() {
+                continue;
+            }
+            let addresses = targets
+                .iter()
+                .map(|target| target.address.clone())
+                .collect::<Vec<_>>();
+            for target in targets {
+                candidates.push(Candidate {
+                    tier: TIER_TERM,
+                    quality,
+                    score: score(&target.address),
+                    address: target.address.clone(),
+                    role: "entry",
+                    field: "term",
+                    matched_term: Some(entry.term.clone()),
+                    matched_line: None,
+                    reason: format!(
+                        "the accepted register term `{}` names this Card ({} line {})",
+                        entry.term, entry.card, entry.line
+                    ),
+                    origin: Some(json!({
+                        "card": entry.card,
+                        "line": entry.line,
+                        "part": entry.part,
+                    })),
+                    entry_targets: addresses.clone(),
+                    body_term: None,
+                });
+            }
+        }
+    }
+    scan
+}
+
+/// Tier 3 (D202): a matching hub member line and the Card it opens. The line's authored words and
+/// the title of the Card it opens both name it, as the rendered line does.
+fn member_candidates(
+    snapshot: &Snapshot,
+    query: &Query,
+    score: &dyn Fn(&str) -> i64,
+    candidates: &mut Vec<Candidate>,
+) -> Scan {
+    let mut hubs = snapshot
+        .cards
+        .iter()
+        .filter(|card| card.card_type == CardType::Hub)
+        .collect::<Vec<_>>();
+    hubs.sort_by(|left, right| crate::model::address_order(&left.address, &right.address));
+    let mut scan = Scan::default();
+    for hub in hubs {
+        if scan.count >= SEARCH_HUB_MAX {
+            scan.truncated = true;
+            break;
+        }
+        scan.count += 1;
+        let Some(parsed) = snapshot.parsed.get(&hub.address) else {
+            continue;
+        };
+        let register = hub.hub_level == Some(crate::hub::HubLevel::Register);
+        for line in crate::hub::parse_body(&parsed.body).lines {
+            // A register's term rows are tier 2. Only its other groups are ordinary hub lines.
+            if register && register_navigation(line.group.as_deref()) {
+                continue;
+            }
+            if !snapshot.by_address.contains_key(&line.target) {
+                continue;
+            }
+            let label = format!("{} {}", line.text, snapshot.title(&line.target));
+            let Some(quality) = query.quality(&label) else {
+                continue;
+            };
+            candidates.push(Candidate {
+                tier: TIER_MEMBER,
+                quality,
+                score: score(&line.target),
+                address: line.target.clone(),
+                role: "member",
+                field: "member",
+                matched_term: None,
+                matched_line: Some(crate::ops::clip(&line.text, SEARCH_LINE_MAX_CHARS)),
+                reason: format!(
+                    "the hub line at {} line {} opens this Card",
+                    hub.address, line.line
+                ),
+                origin: Some(json!({
+                    "card": hub.address,
+                    "line": line.line,
+                    "part": Value::Null,
+                })),
+                entry_targets: Vec::new(),
+                body_term: None,
+            });
+        }
+    }
+    scan
+}
+
+/// The register groups that hold term rows or part declarations, not ordinary navigation.
+fn register_navigation(group: Option<&str>) -> bool {
+    match group {
+        None => true,
+        Some(name) => {
+            crate::hub::REGISTER_TERM_GROUPS.contains(&name)
+                || name == crate::hub::REGISTER_PART_GROUP
+        }
+    }
+}
+
+/// Tier 4 (D203): a matching model head. A Model Card without a facet is the entry point of one
+/// whole model, so its own name is a way in ahead of ordinary title hits.
+fn model_candidates(
+    snapshot: &Snapshot,
+    query: &Query,
+    score: &dyn Fn(&str) -> i64,
+    candidates: &mut Vec<Candidate>,
+) {
+    for card in &snapshot.cards {
+        if card.card_type != CardType::Model || card.facet.is_some() {
+            continue;
+        }
+        let Some(quality) = query.quality(&snapshot.title(&card.address)) else {
+            continue;
+        };
+        candidates.push(Candidate {
+            tier: TIER_MODEL,
+            quality,
+            score: score(&card.address),
+            address: card.address.clone(),
+            role: "hit",
+            field: "model",
+            matched_term: None,
+            matched_line: None,
+            reason: format!(
+                "this Model Card's name matches the query {}",
+                quality.word()
+            ),
+            origin: None,
+            entry_targets: Vec::new(),
+            body_term: None,
+        });
+    }
+}
+
+/// Tiers 5 and 6 (D204, D205): matching Card titles and matching authored bodies, from the plain
+/// lexical match set and its current score. A title that holds every query word is a title hit;
+/// anything else the plain search found is an ordinary hit on its address or body.
+fn lexical_candidates(
+    lexical: &[crate::ops::Lexical],
+    snapshot: &Snapshot,
+    query: &Query,
+    candidates: &mut Vec<Candidate>,
+) {
+    for found in lexical {
+        let card = &snapshot.cards[found.order];
+        let (tier, quality) = match query.quality(&snapshot.title(&card.address)) {
+            Some(quality) => (TIER_TITLE, quality),
+            None => (TIER_BODY, Quality::Partial),
+        };
+        let reason = match (tier, found.field) {
+            (TIER_TITLE, _) => format!("the Card title matches the query {}", quality.word()),
+            (_, "address") => "the Card address matches the query".to_string(),
+            (_, "title") => "the Card title holds one query word; the rest match its text".to_string(),
+            _ => "the Card text matches the query".to_string(),
+        };
+        candidates.push(Candidate {
+            tier,
+            quality,
+            score: found.score,
+            address: card.address.clone(),
+            role: "hit",
+            field: found.field,
+            matched_term: None,
+            matched_line: None,
+            reason,
+            origin: None,
+            entry_targets: Vec::new(),
+            body_term: found.body_term.clone(),
+        });
+    }
+}
+
+/// The archive's registers, in `Workspace::ALL` order, each built from the one Card read. Two
+/// registers in one Workspace are reported and neither is used, so search never chooses between
+/// them (D296, D299).
+fn registers(snapshot: &Snapshot) -> Registers {
+    let mut views = Vec::new();
+    let mut summary = Vec::new();
+    let mut faults = Vec::new();
+    for workspace in Workspace::ALL {
+        let mut found = snapshot
+            .cards
+            .iter()
+            .filter(|card| {
+                card.card_type == CardType::Hub
+                    && card.hub_level == Some(crate::hub::HubLevel::Register)
+                    && card.workspace == workspace
+            })
+            .map(|card| card.address.clone())
+            .collect::<Vec<_>>();
+        found.sort_by(|left, right| crate::model::address_order(left, right));
+        match found.as_slice() {
+            [] => summary.push(json!({
+                "workspace": workspace.id(),
+                "card": Value::Null,
+                "title": Value::Null,
+                "missing": true,
+                "complete": false,
+                "entry_total": 0,
+                "faults": 0,
+            })),
+            [at] => {
+                let view = read_view(snapshot, at);
+                summary.push(json!({
+                    "workspace": workspace.id(),
+                    "card": at,
+                    "title": snapshot.title(at),
+                    "missing": false,
+                    "complete": view.faults.is_empty(),
+                    "entry_total": view.entries.len(),
+                    "faults": view.faults.len(),
+                }));
+                faults.extend(view.faults.iter().cloned());
+                views.push(view);
+            }
+            many => {
+                summary.push(json!({
+                    "workspace": workspace.id(),
+                    "card": Value::Null,
+                    "title": Value::Null,
+                    "missing": false,
+                    "complete": false,
+                    "entry_total": 0,
+                    "faults": 1,
+                    "duplicate_registers": many,
+                }));
+                faults.push(json!({
+                    "fault": "duplicate",
+                    "detail": format!(
+                        "the {} Workspace has {} registers ({}); a Workspace has one, so none of them is used for search",
+                        workspace.id(),
+                        many.len(),
+                        many.join(", ")
+                    ),
+                    "workspace": workspace.id(),
+                }));
+            }
+        }
+    }
+    Registers {
+        views,
+        summary,
+        faults,
+    }
+}
+
+/// One register's view from the supplied Snapshot: its term rows, the declared parts, and the
+/// authored bodies the projection carries. Restatements are folded by a later slice (S14), so
+/// search does not scan every body for them.
+fn read_view(snapshot: &Snapshot, register: &str) -> View {
+    let body = snapshot
+        .parsed
+        .get(register)
+        .map(|parsed| parsed.body.clone())
+        .unwrap_or_default();
+    let mut wanted = BTreeSet::new();
+    for row in register_rows(&body) {
+        wanted.extend(row.targets);
+    }
+    for part in register_part_targets(&body) {
+        wanted.insert(part);
+    }
+    let mut bodies = BTreeMap::new();
+    for address in wanted {
+        if let Some(parsed) = snapshot.parsed.get(&address) {
+            bodies.insert(address.clone(), parsed.body.clone());
+        }
+    }
+    View::read(snapshot, register, &bodies, &BTreeMap::new())
+}
+
 fn target(snapshot: &Snapshot, address: &str, bodies: &BTreeMap<String, String>) -> Target {
     let tree = crate::tree_id(address).to_string();
     let Some(card) = snapshot.by_address.get(address) else {
@@ -576,5 +1311,33 @@ mod tests {
         );
         assert!(EntryArgs::from_args(&json!({"entry_offset": "0"})).is_err());
         assert!(EntryArgs::from_args(&json!({"entry_limit": -1})).is_err());
+    }
+
+    #[test]
+    fn a_search_mode_defaults_to_plain_and_parses_entry() {
+        assert_eq!(Mode::from_args(&json!({})).unwrap(), Mode::Plain);
+        assert_eq!(Mode::from_args(&json!({"mode": "entry"})).unwrap(), Mode::Entry);
+        assert_eq!(Mode::from_args(&json!({"mode": " PLAIN "})).unwrap(), Mode::Plain);
+        assert!(Mode::from_args(&json!({"mode": "fuzzy"})).is_err());
+        assert!(Mode::from_args(&json!({"mode": 1})).is_err());
+    }
+
+    #[test]
+    fn a_label_match_prefers_exact_then_prefix_then_partial() {
+        let query = Query::new("学习");
+        assert_eq!(query.quality("学习"), Some(Quality::Exact));
+        assert_eq!(query.quality("学习曲线"), Some(Quality::Prefix));
+        assert_eq!(query.quality("干中学与学习"), Some(Quality::Partial));
+        assert_eq!(query.quality("干中学"), None);
+        assert_eq!(
+            query.quality("学 习"),
+            Some(Quality::Exact),
+            "spacing does not change a label"
+        );
+        let words = Query::new("学习 曲线");
+        assert_eq!(words.quality("学习曲线"), Some(Quality::Exact));
+        assert_eq!(words.quality("曲线的学习"), Some(Quality::Partial));
+        assert_eq!(words.quality("学习"), None);
+        assert_eq!(Query::new("").quality("学习"), None);
     }
 }

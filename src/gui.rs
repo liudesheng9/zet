@@ -66,6 +66,8 @@ const KATEX_FONTS: &[(&str, &[u8])] = katex_fonts![
 
 /// How many rendered charts the server keeps for `/chart/<id>`.
 const CHART_CAPACITY: usize = 512;
+/// How many hits the search tray asks for, in either mode.
+const SEARCH_LIMIT: usize = 80;
 const DEFAULT_PORT: u16 = 4717;
 /// Overrides the port the service's GUI listens on; `0` lets the system choose one.
 const PORT_ENV: &str = "ZT_GUI_PORT";
@@ -596,6 +598,7 @@ impl App {
                 &param("q")?,
                 query.get("ws").map(String::as_str),
                 query.get("type").map(String::as_str),
+                query.get("mode").map(String::as_str),
             ),
             (Method::Get, "/api/broken") => self.broken(),
             (Method::Post, "/api/render") => self.render(body),
@@ -754,8 +757,17 @@ impl App {
         }))
     }
 
-    /// Ranked hits for the search tray, optionally in one Workspace and of one Card type.
-    fn search(&self, query: &str, workspace: Option<&str>, card_type: Option<&str>) -> ApiResult {
+    /// Search hits for the tray: the existing plain lexical order (`All matches`), or the entry-first
+    /// ranking shared with the MCP server's `search_cards mode: entry` (D198, D278). Either way the
+    /// answer names the effective `mode`. An empty query stays the existing listing: it is plain,
+    /// whatever mode was asked for.
+    fn search(
+        &self,
+        query: &str,
+        workspace: Option<&str>,
+        card_type: Option<&str>,
+        mode: Option<&str>,
+    ) -> ApiResult {
         let workspace = workspace
             .filter(|value| !value.is_empty() && *value != "all")
             .map(crate::Workspace::parse)
@@ -764,8 +776,26 @@ impl App {
             .filter(|value| !value.is_empty() && *value != "all")
             .map(crate::CardType::parse)
             .transpose()?;
+        let mode = match mode.filter(|value| !value.is_empty()) {
+            None => crate::entry::Mode::Plain,
+            Some(value) => crate::entry::Mode::parse(value)?,
+        };
         let snapshot = self.snapshot()?;
-        Ok(snapshot.find(query, workspace, card_type, 80))
+        if mode == crate::entry::Mode::Entry && !query.trim().is_empty() {
+            return Ok(crate::entry::search(
+                &snapshot,
+                &crate::entry::SearchArgs {
+                    query: query.to_string(),
+                    workspace,
+                    card_type,
+                    form: None,
+                    limit: SEARCH_LIMIT,
+                },
+            ));
+        }
+        let mut value = snapshot.find(query, workspace, card_type, SEARCH_LIMIT);
+        value["mode"] = json!(crate::entry::Mode::Plain.id());
+        Ok(value)
     }
 
     /// Where a kept artifact came from.

@@ -167,6 +167,10 @@ pub(crate) struct Line {
     pub(crate) kind: &'static str,
     /// Every Link target of the item, in order.
     pub(crate) targets: Vec<String>,
+    /// The 1-based body line the item sits on, so a report can name it.
+    pub(crate) line: usize,
+    /// The authored item without its list mark: the words a member match quotes (D202).
+    pub(crate) text: String,
 }
 
 /// A hub body read as groups (`##` or `###` headings) and member lines (list
@@ -182,7 +186,7 @@ pub(crate) fn parse_body(body: &str) -> Body {
     let mut parsed = Body::default();
     let mut group: Option<String> = None;
     let mut fenced = false;
-    for raw in body.lines() {
+    for (index, raw) in body.lines().enumerate() {
         let trimmed = raw.trim();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fenced = !fenced;
@@ -225,6 +229,8 @@ pub(crate) fn parse_body(body: &str) -> Body {
             reason: clean_reason(after),
             kind,
             targets,
+            line: index + 1,
+            text: item.trim().to_string(),
         });
         // The register's reason is its term, written before the first Link.
         if let Some(line) = parsed.lines.last_mut()

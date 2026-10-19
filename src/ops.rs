@@ -522,12 +522,27 @@ pub(crate) struct Snapshot {
     /// Each Card's address, title, and body in lower case, in `cards` order, made on the
     /// first search; a Snapshot kept across requests then folds case only once.
     folded: OnceLock<Vec<Folded>>,
+    /// The content fingerprint, made on the first ask: the GUI's heartbeat and the entry
+    /// search's revision key both read it, and a Snapshot kept across requests hashes once.
+    fingerprint: OnceLock<String>,
 }
 
 struct Folded {
     address: String,
     title: String,
     body: String,
+}
+
+/// One Card the plain lexical search matches: its position in [`Snapshot::cards`], its score,
+/// and where it matched. [`Snapshot::find`] renders these rows; the entry-first search in
+/// `src/entry.rs` reuses the same match set and score, so one lexical computation feeds both
+/// the GUI's plain presentation and the ranked entry results (D015, D048, D206).
+#[derive(Clone, Debug)]
+pub(crate) struct Lexical {
+    pub(crate) order: usize,
+    pub(crate) score: i64,
+    pub(crate) field: &'static str,
+    pub(crate) body_term: Option<String>,
 }
 
 impl Snapshot {
@@ -572,40 +587,45 @@ impl Snapshot {
             lifecycle,
             inbound,
             folded: OnceLock::new(),
+            fingerprint: OnceLock::new(),
         })
     }
 
     /// Changes whenever any Card changes, so open windows can follow edits
-    /// made from the shell or a Session.
+    /// made from the shell or a Session. Made once per Snapshot and kept.
     pub(crate) fn fingerprint(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        for card in &self.cards {
-            hasher.update(card.address.as_bytes());
-            hasher.update([0]);
-            hasher.update(card.text.as_bytes());
-            hasher.update([0]);
-            hasher.update(card.bibtex.as_deref().unwrap_or_default().as_bytes());
-            hasher.update([0]);
-            hasher.update(card.workspace.id().as_bytes());
-            hasher.update([0]);
-            hasher.update(card.card_type.id().as_bytes());
-            hasher.update([0]);
-            hasher.update(card.facet.as_ref().map_or("", Facet::id).as_bytes());
-            hasher.update([0]);
-            hasher.update(card.emphasis.map_or("", Emphasis::id).as_bytes());
-            hasher.update([0]);
-            hasher.update(card.level_id().unwrap_or_default().as_bytes());
-            hasher.update([0]);
-            hasher.update(card.form.map_or("", crate::math::MathForm::id).as_bytes());
-            hasher.update([0]);
-        }
-        hasher
-            .finalize()
-            .iter()
-            .take(12)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        self.fingerprint
+            .get_or_init(|| {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                for card in &self.cards {
+                    hasher.update(card.address.as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.text.as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.bibtex.as_deref().unwrap_or_default().as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.workspace.id().as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.card_type.id().as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.facet.as_ref().map_or("", Facet::id).as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.emphasis.map_or("", Emphasis::id).as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.level_id().unwrap_or_default().as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.form.map_or("", crate::math::MathForm::id).as_bytes());
+                    hasher.update([0]);
+                }
+                hasher
+                    .finalize()
+                    .iter()
+                    .take(12)
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            })
+            .clone()
     }
 
     pub(crate) fn title(&self, address: &str) -> String {
@@ -790,14 +810,98 @@ impl Snapshot {
         })
     }
 
-    /// The GUI's ranked search. Every word of the query must occur in the
-    /// address, title, or body; a hit in the title or address outranks a hit
-    /// in the body, and tree roots and Hub Cards (ways in) rank a little
-    /// higher. Each hit names its tree and where it matched, and its snippet
-    /// shows the body around the first word the body holds. Besides the hits,
-    /// it counts the matches by Workspace (under the type filter) and by
-    /// Card type (under the Workspace filter), so a filter shows what it
-    /// would give before it is chosen.
+    /// Every Card whose address, title, or body holds every word of the query, ranked by the
+    /// current lexical score and then by Card order. [`Snapshot::find`] renders these rows, and
+    /// the entry-first search reuses them, so the GUI's plain order and the entry-first ranking
+    /// keep one lexical computation (D048, D206). An empty query matches nothing.
+    pub(crate) fn lexical(&self, query: &str) -> Vec<Lexical> {
+        let needle = query.trim().to_lowercase();
+        let terms = needle.split_whitespace().collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        if terms.is_empty() {
+            return matches;
+        }
+        for (order, (card, folded)) in self.cards.iter().zip(self.folded()).enumerate() {
+            let parsed = &self.parsed[&card.address];
+            let Folded {
+                address,
+                title,
+                body,
+            } = folded;
+            let mut score = 0_i64;
+            let mut field = "body";
+            let mut body_term = None;
+            let mut all = true;
+            for term in &terms {
+                let in_title = title.contains(term);
+                let in_address = address.contains(term);
+                let in_body = body.matches(term).take(5).count() as i64;
+                if !in_title && !in_address && in_body == 0 {
+                    all = false;
+                    break;
+                }
+                if in_title {
+                    score += if title.starts_with(term) { 300 } else { 200 };
+                    field = "title";
+                }
+                if in_address {
+                    score += if address == *term {
+                        800
+                    } else if address.starts_with(term) {
+                        120
+                    } else {
+                        40
+                    };
+                    if field == "body" {
+                        field = "address";
+                    }
+                }
+                if in_body > 0 {
+                    score += 20 + 2 * in_body;
+                    body_term.get_or_insert((*term).to_string());
+                }
+            }
+            if !all {
+                continue;
+            }
+            // The whole title, written with or without the spaces between the words.
+            if *title == needle || title.split_whitespace().collect::<String>() == terms.concat() {
+                score += 1000;
+            }
+            if crate::is_tree_root(card) || card.card_type == CardType::Hub {
+                score += 40;
+            }
+            // A short title that holds the words says more about them than a long one.
+            score -= parsed.title.chars().count() as i64 / 8;
+            matches.push(Lexical {
+                order,
+                score,
+                field,
+                body_term,
+            });
+        }
+        matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.order.cmp(&b.order)));
+        matches
+    }
+
+    /// The search snippet of one Card: the body line around the term the body holds, else the
+    /// Card's opening prose. Both are bounded (`context_snippet`, `excerpt`).
+    pub(crate) fn snippet(&self, address: &str, body_term: Option<&str>) -> String {
+        let body = self
+            .parsed
+            .get(address)
+            .map_or("", |parsed| parsed.body.as_str());
+        body_term
+            .and_then(|term| context_snippet(body, term))
+            .unwrap_or_else(|| excerpt(body))
+    }
+
+    /// The GUI's plain search. Every word of the query must occur in the address, title, or
+    /// body; a hit in the title or address outranks a hit in the body, and tree roots and Hub
+    /// Cards (ways in) rank a little higher. Each hit names its tree and where it matched, and
+    /// its snippet shows the body around the first word the body holds. Besides the hits, it
+    /// counts the matches by Workspace (under the type filter) and by Card type (under the
+    /// Workspace filter), so a filter shows what it would give before it is chosen.
     pub(crate) fn find(
         &self,
         query: &str,
@@ -805,71 +909,11 @@ impl Snapshot {
         card_type: Option<CardType>,
         limit: usize,
     ) -> Value {
-        let needle = query.trim().to_lowercase();
-        let terms = needle.split_whitespace().collect::<Vec<_>>();
-        let mut matches = Vec::new();
-        if !terms.is_empty() {
-            for (order, (card, folded)) in self.cards.iter().zip(self.folded()).enumerate() {
-                let parsed = &self.parsed[&card.address];
-                let Folded {
-                    address,
-                    title,
-                    body,
-                } = folded;
-                let mut score = 0_i64;
-                let mut field = "body";
-                let mut body_term = None;
-                let mut all = true;
-                for term in &terms {
-                    let in_title = title.contains(term);
-                    let in_address = address.contains(term);
-                    let in_body = body.matches(term).take(5).count() as i64;
-                    if !in_title && !in_address && in_body == 0 {
-                        all = false;
-                        break;
-                    }
-                    if in_title {
-                        score += if title.starts_with(term) { 300 } else { 200 };
-                        field = "title";
-                    }
-                    if in_address {
-                        score += if address == *term {
-                            800
-                        } else if address.starts_with(term) {
-                            120
-                        } else {
-                            40
-                        };
-                        if field == "body" {
-                            field = "address";
-                        }
-                    }
-                    if in_body > 0 {
-                        score += 20 + 2 * in_body;
-                        body_term.get_or_insert(*term);
-                    }
-                }
-                if !all {
-                    continue;
-                }
-                // The whole title, written with or without the spaces between the words.
-                if *title == needle
-                    || title.split_whitespace().collect::<String>() == terms.concat()
-                {
-                    score += 1000;
-                }
-                if crate::is_tree_root(card) || card.card_type == CardType::Hub {
-                    score += 40;
-                }
-                // A short title that holds the words says more about them than a long one.
-                score -= parsed.title.chars().count() as i64 / 8;
-                matches.push((score, order, card, field, body_term));
-            }
-        }
-        matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let matches = self.lexical(query);
         let mut workspaces = serde_json::Map::new();
         let mut types = serde_json::Map::new();
-        for (_, _, card, _, _) in &matches {
+        for found in &matches {
+            let card = &self.cards[found.order];
             if card_type.is_none_or(|card_type| card.card_type == card_type) {
                 let count = workspaces.entry(card.workspace.id()).or_insert(json!(0));
                 *count = json!(count.as_u64().unwrap_or(0) + 1);
@@ -881,7 +925,8 @@ impl Snapshot {
         }
         let kept = matches
             .into_iter()
-            .filter(|(_, _, card, _, _)| {
+            .filter(|found| {
+                let card = &self.cards[found.order];
                 workspace.is_none_or(|workspace| card.workspace == workspace)
                     && card_type.is_none_or(|card_type| card.card_type == card_type)
             })
@@ -890,8 +935,8 @@ impl Snapshot {
         let results = kept
             .into_iter()
             .take(limit)
-            .map(|(score, _, card, field, body_term)| {
-                let body = &self.parsed[&card.address].body;
+            .map(|found| {
+                let card = &self.cards[found.order];
                 let tree = crate::tree_id(&card.address);
                 json!({
                     "address": card.address,
@@ -905,11 +950,9 @@ impl Snapshot {
                     "workspace": card.workspace.id(),
                     "tree": tree,
                     "tree_title": self.title(&crate::tree_root_address(tree)),
-                    "field": field,
-                    "score": score,
-                    "snippet": body_term
-                        .and_then(|term| context_snippet(body, term))
-                        .unwrap_or_else(|| excerpt(body)),
+                    "field": found.field,
+                    "score": found.score,
+                    "snippet": self.snippet(&card.address, found.body_term.as_deref()),
                 })
             })
             .collect::<Vec<_>>();

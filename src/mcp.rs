@@ -70,7 +70,11 @@ named by its BibTeX Citation key, such as `Smith2024`). Card addresses are uniqu
 Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by writing \
 `[[address]]` in Markdown bodies; Links may cross Workspaces, but Cards and trees never move \
 between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
-use get_cards for ordered full/text bulk reads (at most 200 addresses). Check missing, complete and \
+use get_cards for ordered full/text bulk reads (at most 200 addresses). search_cards `mode: entry` \
+ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and \
+its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching \
+title, then a matching body; an omitted mode keeps the plain lexical order. A search starts no model. \
+Check missing, complete and \
 archive_revision. get_tree with bodies=true includes full text, and export_titles reads selected \
 titles in one pass. These bulk replies have an 8 MiB encoded tool-result limit; a read_limit error \
 requires a smaller chunk. If related reads have different revisions, retry once or label a changing view. \
@@ -401,6 +405,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             crate::read::register(&root, workspace, &entries)
         }
         "search_cards" => {
+            let mode = crate::entry::Mode::from_args(args)?;
             let snapshot = Snapshot::read(&root)?;
             let card_type = optional_card_type(args)?;
             let form = optional_form(args)?.flatten();
@@ -413,7 +418,20 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 .get("limit")
                 .and_then(Value::as_u64)
                 .unwrap_or(30)
-                .clamp(1, 200) as usize;
+                .clamp(1, crate::entry::SEARCH_LIMIT_MAX as u64) as usize;
+            // An empty query stays the existing type/form listing, in every mode (D198, US024).
+            if mode == crate::entry::Mode::Entry && !query.trim().is_empty() {
+                return Ok(crate::entry::search(
+                    &snapshot,
+                    &crate::entry::SearchArgs {
+                        query,
+                        workspace: optional_workspace(args)?,
+                        card_type,
+                        form,
+                        limit,
+                    },
+                ));
+            }
             Ok(json!({
                 "results": snapshot.search_in(&query, optional_workspace(args)?, card_type, form, limit),
             }))
@@ -1065,9 +1083,10 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "search_cards",
             "Search cards",
-            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it.",
+            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it (the existing listing, in every mode). `mode: entry` ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching Card title, then a matching authored body. Inside a tier, exact matches precede prefixes and partial hits, the current lexical score orders the rest, and natural address order breaks the final tie. Each row keeps the summary fields and adds `role` (`entry`, `member`, or `hit`), `rank_tier` (1 to 6), `matched_term` or `matched_line`, `reason`, the navigation `origin`, and the term's surviving `entry_targets`; `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, and `archive_fingerprint` state the evidence and the bounded work. A search starts no model. An omitted `mode` is `plain`, the existing lexical order and result shape.",
             json!({
                 "query": { "type": "string", "description": "Text to find; required unless `type` or `form` is given." },
+                "mode": { "type": "string", "enum": ["plain", "entry"], "description": "`plain` (default) keeps the existing lexical order; `entry` ranks register terms and hub ways in before ordinary title and body hits." },
                 "type": card_type("Only Cards of this type: idea, event (Event Cards), finding (Finding Cards), model (Model Cards), or hub (Hub Cards)."),
                 "form": form("Only Model Cards of this Math form: theory (Theory Cards) or a unit (definition, axiom, theorem, proposition, lemma, corollary)."),
                 "workspace": workspace_filter,

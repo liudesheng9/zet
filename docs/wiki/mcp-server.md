@@ -166,7 +166,7 @@ A tool that runs and fails is **not** a JSON-RPC error. `tool_result` returns `{
 `INSTRUCTIONS` in `src/mcp.rs` is sent in the `initialize` result; clients show it to the model. In order, it states:
 
 1. The two Workspaces (`human` read-only, `agent` read-write), their two Zones, address forms, and that Links cross Workspaces but Cards and trees never move between them.
-2. Where to start (`list_workspaces`, `list_trees`, `get_card`, `search_cards`, `create_topic`, `create_literature`, `create_successor`).
+2. Where to start (`list_workspaces`, `list_trees`, `get_card`, `search_cards`, `create_topic`, `create_literature`, `create_successor`), and that `search_cards mode: entry` ranks ways in first exactly as the GUI does while an omitted mode keeps the plain order.
 3. Card types: Idea, Event, Finding, Model Cards, set with `type`.
 4. Models: the Model Card, Model parts with `facet` and `emphasis`, Math forms (the unit forms with their fixed facet set, and `theory`), cited premises versus reach-ins, `特例`, the `math` report, and the elaboration `level` (`concept`, `formal`).
 5. That a part belongs to the Model Card it is filed under and to every Model Card that links it.
@@ -195,7 +195,7 @@ Every tool's `inputSchema` is an object with `additionalProperties: false`. `too
 | `get_hub` | RO | **`at`**, `max_groups`, `max_lines`, `min_reason`, `topic_min`, `line_min`, `neighbour_links`, `entry_offset`, `entry_limit` | `hub::Graph::report(at, limits)`; on a register, plus the flattened entry projection of `get_register` (the two page arguments apply to that projection only) | from `hub::Limits::from_args`, `entry::EntryArgs::from_args`, and `report` |
 | `list_hubs` | RO | `workspace` and the same six limits | `hub::Graph::list(workspace, limits)` | as above |
 | `get_register` | RO | **`workspace`** (`human` or `agent`), `entry_offset`, `entry_limit` (default 200, clamped to 1–1000) | `read::register`: the register's entry view — `register`, `title`, `entries` (every target of every term with its bounded authored body), `parts`, `faults`, `complete`, `terms_by_card`, `restatements`, `bounds`, `archive_revision`, `archive_identity`; a register-less Workspace answers `register_missing: true` with no entries | unknown workspace; from `entry::EntryArgs::from_args` |
-| `search_cards` | RO | `query` (required unless `type` or `form` is given), `type`, `form`, `workspace`, `limit` (default 30, clamped to 1–200) | `{ results: Snapshot::search_in(...) }` | "missing string argument `query`" |
+| `search_cards` | RO | `query` (required unless `type` or `form` is given), `mode` (`plain` default, `entry`), `type`, `form`, `workspace`, `limit` (default 30, clamped to 1–200) | omitted or `mode: plain`: `{ results: Snapshot::search_in(...) }`, the existing order and shape. `mode: entry`: `entry::search` (`results` with `role`/`rank_tier`/evidence, `total`, `row_total`, `workspaces`, `types`, `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, `archive_fingerprint`) — the same value the GUI's `/api/search mode=entry` returns. An empty query keeps the existing type/form listing in either mode. | "missing string argument `query`"; ``unknown search mode `x`; expected plain or entry`` |
 | `list_links` | RO | `workspace` (a Link is kept when either end is in it), `cross_workspace_only` | `{ links: [{ source, source_workspace, target, target_workspace, broken }] }` | service down |
 | `list_broken_links` | RO | `workspace` | `{ broken: Snapshot::broken(workspace) }` (each with `target`, `workspace`, …) | service down |
 
@@ -271,6 +271,17 @@ So a crashed service comes back on the next MCP call, but a service stopped with
 - `create_successor`, `insert_card`, `edit_card`, `edit_literature_metadata`, `delete_card`, and `move_card` pass `ACCESS` to `ops`, which refuses a human Card. `edit_card` also checks `ACCESS.ensure_writable(card.workspace)` itself before it composes the text.
 - Agent changes whose rename mapping would rewrite a Link in a human Card's body are refused: moving or renumbering an agent Card a human Card links to, renaming a linked Citation key, a delete whose Side successor compaction renumbers a linked Card, and `into` re-pointing. Deleting a linked agent Card is allowed: it leaves a Broken link in the human Card, whose body is unchanged (`mcp_refuses_agent_changes_that_would_rewrite_links_in_human_cards`).
 - Regenerated Reverse links on a human Card are not a change to it, so an agent Link into a human Card is allowed.
+
+### Search modes (`search_cards`)
+
+`search_cards` has two contracts (D198, D275, D278):
+
+- **Omitted or `mode: plain`** — the existing behaviour: `Snapshot::search_in` over address, title, and body, an empty query listing every Card of `type`/`form`, and the reply `{ results: [...] }` with no new keys. An existing caller keeps its order and shape (US024). Clamp: `limit` 1–200, default 30.
+- **`mode: entry` with a non-empty query** — `entry::search(snapshot, &SearchArgs { query, workspace, card_type, form, limit })`, the same function the GUI calls. It returns the ranked rows (exact address, register term and its entry Cards, hub member line and the Card it opens, model head, title, body), their roles and evidence, the per-Workspace register summary and faults, the named bounds, the actual scan counts, and `archive_fingerprint`. See [Hub Cards](hub-cards.md#entry-first-search) for the row and reply shapes.
+- **`mode: entry` with an empty query** — the existing type/form listing, unchanged. A form/type listing is not a query to rank (D209).
+- An unknown mode is a tool error: ``unknown search mode `fuzzy`; expected plain or entry``.
+
+The handler reads the Snapshot itself (one `SELECT`, so one coherent read), and only the entry path calls the ranking. It starts no model, writes nothing, and adds no cache: the ranking is a projection over that read.
 
 ### edit_card text rules
 
@@ -419,7 +430,7 @@ cargo test --bin zt mcp::tests
 cargo test --test workspaces_mcp
 ```
 
-Related MCP coverage lives in `tests/card_types.rs`, `tests/hub_cards.rs`, `tests/register_entries.rs`, `tests/math_units.rs`, `tests/model_levels.rs`, `tests/model_structure.rs`, `tests/self_sufficient_models.rs` (Card tools) and `tests/scholar_bridge.rs` (`zt_mcp_offers_the_bridge_as_read_only_tools`, `a_card_shows_a_figure_only_after_zet_keeps_it_from_the_archive`, with a fake archive and `ZT_SCHOLAR_NO_START=1`). Run them all with `cargo test`. The `tests/workspaces_mcp.rs` editor helper uses `powershell`, so those tests expect Windows PowerShell on `PATH`.
+Related MCP coverage lives in `tests/card_types.rs`, `tests/hub_cards.rs`, `tests/register_entries.rs`, `tests/search_rank.rs`, `tests/math_units.rs`, `tests/model_levels.rs`, `tests/model_structure.rs`, `tests/self_sufficient_models.rs` (Card tools) and `tests/scholar_bridge.rs` (`zt_mcp_offers_the_bridge_as_read_only_tools`, `a_card_shows_a_figure_only_after_zet_keeps_it_from_the_archive`, with a fake archive and `ZT_SCHOLAR_NO_START=1`). `tests/search_rank.rs` drives `search_cards mode: entry` against the GUI route and checks the same rows, order, counts, and evidence; its `plain_search_and_empty_query_listings_keep_their_contract` test pins the omitted-mode shape. Run them all with `cargo test`. The `tests/workspaces_mcp.rs` editor helper uses `powershell`, so those tests expect Windows PowerShell on `PATH`.
 
 Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts/list`, for `tools/call` with non-object `arguments`, for `scholar_archive_sql`, `scholar_archive_export`, or `scholar_archive_status` through MCP, for `create_successor` with `level`/`form` failing after the Card exists, or for the automatic restart of a dead service from an MCP call (that is covered for the CLI in `tests/cli_service.rs`).
 
@@ -433,13 +444,15 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **Each call checks the service and holds nothing.** An idle agent never blocks `zt down`, and one server process survives service restarts.
 - **Bridge tools are read-only and separate from the service.** They reach only the Scholar Archive's read actions and work without the ZT service; only `scholar_archive_artifact` writes, into ZET's own `artifacts/` (`docs/scholar-archive-bridge-design.md`).
 - **Artifacts must be held before a Card shows them.** `require_present` runs on every text the server writes, so a Card never shows an image ZET lacks (`docs/scholar-archive-bridge-design.md`, "Artifacts").
+- **Search has one ranking, shared with the GUI.** The MCP `mode: entry` path is a thin adapter over `entry::search`; the handler does not sort, filter, or count rows, so the two transports cannot drift (D194, D198). The plain path is the deliberate exception: it stays `Snapshot::search_in` in Card order, and the GUI's `All matches` stays `Snapshot::find`, the way each already worked.
 
 ### Pitfalls
 
 - **A running `zt mcp` keeps the old binary.** Agent clients start the server once per conversation; after a rebuild, open conversations keep the old tools and old logic, and on Windows they lock `zt.exe`, so `cargo install` fails until it is renamed aside or the processes end.
 - **`tools/list` is static per process** (`listChanged: false`); a new tool appears only in a new client conversation.
 - **The service is a gate, not a dependency to start.** A service stopped with `zt down` makes every Card tool fail; only a crashed daemon is restarted by the call. Scholar tools other than `scholar_archive_artifact` work anyway.
-- **Search remains global.** `search_cards` uses a full Snapshot, because it searches all authored bodies. Targeted Card/tree/model reads use `src/read.rs`; hub policy still enumerates global metadata and index relationships because its policy is global.
+- **Search remains global.** `search_cards` uses a full Snapshot, because it searches all authored bodies; entry mode also reads the archive's registers from that Snapshot. Targeted Card/tree/model reads use `src/read.rs`; hub policy still enumerates global metadata and index relationships because its policy is global.
+- **The entry reply is not the plain reply.** A plain row has `address`, `title`, `kind`, `type`, `facet`, `emphasis`, `level`, `form`, `workspace`, and `snippet`; an entry row keeps those fields (with `tree`, `tree_title`, `field`, `score`) and adds `role`, `rank_tier`, `matched_term`, `matched_line`, `reason`, `origin`, and `entry_targets`. A client that parses the plain reply must ask for `mode: entry` explicitly.
 - **`edit_card` composes title and body from text read outside the edit lock.** Without `base`, a concurrent edit between that read and `ops::edit` can be overwritten. Pass `base` when edits may race.
 - **`create_successor` with `level`, a hub level, or `form` is two operations.** If the second (`ops::edit`) fails, the Card exists without them. The handler checks most combinations before creating, which makes this rare.
 - **`insert_card` takes no `level` or `form`.** Its schema and handler take `title`, `body`, `type`, `facet`, and `emphasis`; the description says so and sends a Model Card's level or Math form to `edit_card` after the insert. The unit test `insert_card_names_the_create_successor_fields_it_does_not_take` fails when `create_successor` gains a field that `insert_card` neither takes nor names.
@@ -451,6 +464,7 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 
 ## Change history
 
+- `2026-10-19` — #93 S13 (#106): `search_cards` gains `mode: plain|entry` (`plain` default, so the existing order and the single-`results` shape are untouched). The entry path calls `entry::search`, the same ranking the GUI's `/api/search mode=entry` serves: exact address, register term and its entry Cards, hub member line and the Card it opens, model head, title, body; rows carry `role`, `rank_tier`, `matched_term`/`matched_line`, `reason`, `origin`, and surviving `entry_targets`, and the reply carries `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, and `archive_fingerprint`. An empty query keeps the existing type/form listing in every mode; an unknown mode is an error. `INSTRUCTIONS` states the mode. Covered by `tests/search_rank.rs`.
 - `2026-10-19` — #93 S10 (#101): `get_register` reads the concept register's accepted entries for one Workspace (term, every one of its one to three targets with the bounded authored body, origin, faults, declared parts, `terms_by_card`, confirmed restatements, archive identity/revision, and `entry_offset`/`entry_limit` paging). A register-less Workspace answers `register_missing` with no entries instead of an error. `get_hub` on a register adds the same projection; `get_hub`'s two page arguments never truncate its hub report. `get_card` `hubs` now names a register term's second and third targets with `term` and `target_index`.
 - `2026-10-18` — Reverify [issue #68](https://github.com/liudesheng9/zet/issues/68) at the MCP/helper/compiler boundary: assert the durable receipt (operation key, canonical request hash, exact result, UTC commit time) and that a rolled-back batch leaves no receipt, so its corrected retry applies once. Remove the stale "compiler/crash qualification pending" note; the helper and the `terms` compiler now drive this path.
 

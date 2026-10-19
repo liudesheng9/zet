@@ -4,7 +4,7 @@ title: Agent skills and integrations
 paths:
   - "skills/**"
   - "scripts/install-agent-integrations.ps1"
-synced: 0006bdbb6684
+synced: 14c893f
 updated: 2026-10-19
 ---
 
@@ -436,6 +436,8 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 
 ## Change history
 
+
+- `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.
 - `2026-10-17` — Teach `get_cards`, `get_tree` bodies, `export_titles`, explicit read limits, missing-address checks and revision consistency in the ZT skill.
 
 - `2026-10-16` — `skills/zt-digest-protocol` is rebuilt as the protocol of the digest base only: the base stages, slots, modes, and args, the profile contract, the base tools and their SELF-CHECK lines. The variants' layers (models, events, findings, math) and the legacy notes are gone; `references/scripts.md` lists only the base's tools, prompts, and tests.

@@ -293,7 +293,7 @@ Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（�
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
 | `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part、模型外的邻居，以及 `build` 报告（构建顺序与自足性问题） |
-| `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
+| `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`；`mode: entry` 先给出登记簿词条及其入口卡、hub 成员行和模型入口，再给普通标题与正文命中）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
 | `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`，Model Card 可带 `level`），或 Model part（`facet`、`emphasis`） |
 | `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis、层级或 BibTeX |

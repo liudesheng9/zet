@@ -5,8 +5,8 @@ paths:
   - "src/ops.rs"
   - "src/batch.rs"
   - "src/place.rs"
-synced: 909f04aa4052
-updated: 2026-10-18
+synced: 14c893f
+updated: 2026-10-19
 ---
 
 # Card operations
@@ -449,6 +449,8 @@ Pitfalls:
 
 ## Change history
 
+
+- `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.
 - `2026-10-18` — Reverify [issue #68](https://github.com/liudesheng9/zet/issues/68): the receipt boundary is driven by `zt-digest call -OperationPrefix` in deterministic chunks and by the retained `terms` accepted plan, with public process-failure recovery; a rolled-back batch keeps no receipt.
 
 - `2026-10-17` — Share edge classification with lean text projections for scoped digest clients.

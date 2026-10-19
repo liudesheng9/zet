@@ -592,7 +592,7 @@
   const finder = (() => {
     const PER_TREE = 3;
     const TREES = 6;
-    const filters = { ws: 'all', type: 'all' };
+    const filters = { ws: 'all', type: 'all', mode: 'entry' };
     const previews = new Map();
     let built = false;
     let isOpen = false;
@@ -688,7 +688,7 @@
         const words = input.value.trim();
         if (!words) { data = null; render(); return; }
         try {
-          const answer = await api(`search?q=${enc(words)}&ws=${filters.ws}&type=${filters.type}`);
+          const answer = await api(`search?q=${enc(words)}&ws=${filters.ws}&type=${filters.type}&mode=${filters.mode}`);
           if (mine !== ticket || !isOpen) return;
           data = answer;
           selected = 0;
@@ -717,6 +717,9 @@
       const types = data.types || {};
       const sum = (counts) => Object.values(counts).reduce((total, n) => total + n, 0);
       chips.replaceChildren(
+        h('div', { class: 'fgroup', role: 'group', 'aria-label': 'Search order' },
+          chip('mode', 'entry', 'Entry points'),
+          chip('mode', 'plain', 'All matches')),
         h('div', { class: 'fgroup', role: 'group', 'aria-label': 'Workspace' },
           chip('ws', 'all', 'All', sum(ws)),
           chip('ws', 'human', wsLabel('human'), ws.human || 0),
@@ -727,21 +730,35 @@
       );
     }
 
+    /** The role a ranked row names: a register entry point, a hub way in, or an ordinary hit. */
+    function roleLabel(hit) {
+      if (hit.role === 'entry') return hit.matched_term ? `entry · ${hit.matched_term}` : 'entry';
+      if (hit.role === 'member') return 'hub line';
+      if (hit.role !== 'hit') return '';
+      if (hit.rank_tier === 1) return 'address';
+      if (hit.rank_tier === 4) return 'model';
+      if (hit.rank_tier === 5) return 'title';
+      return '';
+    }
+
     /** A slip: the top of one index card, standing in the drawer. */
     function slip(hit, words) {
       const onTable = spreads.has(hit.address);
       const title = hit.title || '(untitled)';
+      const role = hit.role ? roleLabel(hit) : '';
       return h('div', {
-        class: 'fslip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : ''),
+        class: 'fslip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : '') + (hit.role ? ' ' + hit.role : ''),
         role: 'option', dataset: { address: hit.address },
         onclick: () => choose(hit.address),
         onmousemove: (event) => pointAt(event.currentTarget),
       },
         h('span', { class: 'fslip-head' },
+          role ? h('span', { class: 'fslip-role ' + hit.role, text: role }) : null,
           h('span', { class: 'fslip-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
           typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level, hit.form),
           h('span', { class: 'addr', text: hit.address })),
         hit.snippet ? h('span', { class: 'fslip-text' }, marked(hit.snippet, words)) : null,
+        hit.reason && (hit.role === 'entry' || hit.role === 'member') ? h('span', { class: 'fslip-why', text: hit.reason }) : null,
         h('button', {
           class: 'fslip-pull' + (onTable ? ' on' : ''), tabindex: '-1',
           title: onTable ? 'On the Table: click to put it back (⇧↵)' : 'Lay it on the Table (⇧↵)',
@@ -779,9 +796,24 @@
         }
       } else if (!data.results.length) {
         count.textContent = 'no cards';
+        if (data.mode === 'entry' && data.register_missing) {
+          nodes.push(h('p', { class: 'finder-note', text: 'No concept register in this archive: there are no entry points to rank.' }));
+        }
         nodes.push(h('div', { class: 'finder-empty' },
           h('p', { class: 'big' }, 'No card holds ', h('q', { text: input.value.trim() }), '.'),
           h('p', { text: words.length > 1 ? 'Every word must appear; try fewer words.' : (filters.ws !== 'all' || filters.type !== 'all' ? 'A filter is on; try All.' : 'Try another spelling or a shorter word.') })));
+      } else if (data.mode === 'entry') {
+        // Ways in first: one ranked list with roles, never regrouped by tree (D210).
+        const shown = data.results.length;
+        count.textContent = data.total > shown ? `best ${shown} of ${data.total} cards` : `${data.total} card${data.total === 1 ? '' : 's'}`;
+        if (data.register_missing) {
+          nodes.push(h('p', { class: 'finder-note', text: 'No concept register in this archive: these are the ordinary matches, by Card title and text.' }));
+        } else if ((data.register_faults || []).length) {
+          const faults = data.register_faults.length;
+          nodes.push(h('p', { class: 'finder-note', text: `The register has ${faults} fault${faults === 1 ? '' : 's'}; the rows they mark are left out of the entry points.` }));
+        }
+        nodes.push(h('section', { class: 'drawer-run ranked' }, data.results.map((hit) => slip(hit, words))));
+        if (data.total > shown) nodes.push(h('p', { class: 'finder-more', text: `${data.total - shown} weaker matches are not shown; add a word to narrow the search.` }));
       } else {
         const shown = data.results.length;
         count.textContent = data.total > shown ? `best ${shown} of ${data.total} cards` : `${data.total} card${data.total === 1 ? '' : 's'}`;
