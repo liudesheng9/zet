@@ -4,7 +4,7 @@ title: zt-digest
 paths:
   - "tools/zt-digest/**"
   - "scripts/install-zt-digest.ps1"
-synced: 2ccb2c16e45d
+synced: 780ff4f160fa
 updated: 2026-10-19
 ---
 
@@ -715,7 +715,7 @@ The existing-Topic pair review and the report-bound application of one approved 
 | `plan` | `archive_view`, one `export_titles`, bounded `get_cards` text batches, and one `move_card` preview per enumerated entry chain | `topic-join-review.json`, `topic-join-review.md`, `endpoints\<hash>.md` (one retained body per read Card) | `{ok, step, report_id, status, archive_id, archive_revision, agent_topics, pairs_matched, pairs_selected, pairs_unselected, moves_offered, unread, attempts, written, paths[]}` |
 | `apply -File f` | the reviewed report, the selection, `archive_view`, the affected `get_cards` text rows, `get_tree` of the two trees, the fresh `move_card` preview and confirmation, `list_broken_links`, `get_model` | `join-result.json`, `join-result.md` | `{ok, step, replayed, report_id, result_id, status, complete, counts, broken_links, paths[]}` |
 
-`plan` compares every agent Topic pair with the same cheap comparison the concept review uses (character-bigram Dice over the title and the question, and one title inside the other; `-Similar 0.5`), keeps the ten strongest pairs (`-MaxPairs`), and reads both Topics' questions and at most three entries each (`-Entries` bound is the concept review's three). For each pair it lists the full meanings and questions, the source mix (the books its entries' `来源` lines name), the proposed keeper, the best joining Card and the concrete alternatives of D155–D158. The keeper comes from evidence: more distinct source books first, then more entries that state a source; a tie is `keeper_reason: unresolved`, the crossing is recommended and no move is offered. The Card count is never the reason (D159). The joining Card is the keeper entry closest in words to the other Topic's question and entries; with no match, the keeper's first entry anchors the join.
+`plan` compares every agent Topic pair with the same cheap comparison the concept review uses (character-bigram Dice over the title and the question, and one title inside the other; `-Similar 0.5`), keeps the ten strongest pairs (`-MaxPairs`), and reads both Topics' questions and at most three entries each — the same three-entry bound the concept review reads. For each pair it lists the full meanings and questions, the source mix (the books its entries' `来源` lines name), the proposed keeper, the best joining Card and the concrete alternatives of D155–D158. The keeper comes from evidence: more distinct source books first, then more entries that state a source; a tie is `keeper_reason: unresolved`, the crossing is recommended and no move is offered. The Card count is never the reason (D159). The joining Card is the keeper entry closest in words to the other Topic's question and entries; with no match, the keeper's first entry anchors the join.
 
 The alternatives are `keep_distinct` (D156), `keep_both_with_crossing` (D157) and `move_subtree` (D158). The crossing uses an existing Hub level and invents no type (§8.1): the keeper tree's topic hub under `邻近` when it has one, otherwise the keeper Topic Card's `## 入口` section, otherwise a field hub under the register; the hub stage owns that write, this review writes no Card.
 
