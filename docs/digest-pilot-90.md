@@ -173,6 +173,8 @@ Workflow({
 
 These exact args were simulated through the workflow kernel in the stand-in runtime (`assemble.mjs simulate scripts/book-digest/workflow/zt-econ-digest.blueprint.json --sim … --mode full --args '<the object above>'`): `ok: true`, `halted: null`, every stage reached in order, `hubs-first` and `figures` skipped by the switches, 34 stand-in agent calls, peak 4. The same object with one undeclared key is refused (`ok: false`, exit 1). The stand-in runtime executes no shell command and starts no model, so this proves the handover command is legal for the frozen 4.4.0 script before the real run spends anything.
 
+**Re-run with 4.5.0.** The #92 fix ([`digest-link-scope-92.md`](digest-link-scope-92.md)) changed the Link pass scope and the claim lease, so the authorized re-run uses the same args against the installed `zt-econ-digest` **4.5.0** and a **fresh** `out` folder. Expected of the injected failure now: the group stays `failed`, no Link job runs for it (its `allow-gNN.txt` is empty and `link_blocked` names it), and every group job completes under its own claim.
+
 Do not add `until: "digest"` to this run. The checkpoint is a legitimate stop for a cheap inspection pass, but a resume after it spends the run's single resume budget (`ledger resume` reports `resumed` whenever unresolved units remain), which the injected failure needs.
 
 ### 7.2 The injected recoverable failure
