@@ -7,7 +7,7 @@ paths:
   - "!src/gui/vendor/**"
   - "src/spread.rs"
   - "src/reply.rs"
-synced: 006c5c67e5a8
+synced: 38d5cd4930a7
 updated: 2026-10-19
 ---
 
