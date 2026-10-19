@@ -1,4 +1,4 @@
-// ==== module zt-issue-relay v2 ====
+// ==== module zt-issue-relay v3 ====
 // Develops GitHub issues one at a time, each in its own DeepSeek Harness conversation that a Haiku manager drives.
 // The manager starts the conversation with a goal (deepseek_run with goal, bridge 0.11+): the first message is the
 // task, and the goal keeps the agent working in goal rounds until it marks the goal complete or blocked, or the
@@ -12,6 +12,10 @@
 // DeepSeek Subagent Managed Protocol: managers are Haiku and take a slot of the script-wide pool (dsmpSlot);
 // each manager drives exactly one DeepSeek conversation; deletions go into dsmpLog; the workspace is removed at
 // the end only when it holds no conversations (the user's own conversations there are kept).
+// One issue per conversation (v3): a manager's context can hold the user's request for a whole issue range, and a
+// 1.1.1 manager once rewrote its deepseek_run to "issues #92 through #122". So every manager is told the job is
+// one issue, the goal objective ends with the scope mark "issue #N only", and the script checks the objective
+// the bridge echoed back: a start whose goal lacks this issue's mark is deleted and started once more.
 
 const ZIR_STATE = {
   type: 'object',
@@ -30,6 +34,7 @@ const ZIR_STATE = {
     goal_phase: { type: 'string', enum: ['active', 'paused', 'blocked', 'complete', 'none'], description: 'goal.phase of the last result; "none" when it has no goal' },
     goal_rounds: { type: 'string', description: 'goal.rounds of the last result (e.g. "3/60"), else ""' },
     goal_blocked_reason: { type: 'string', description: 'goal.blocked_reason of the last result, else ""' },
+    goal_objective: { type: 'string', description: 'goal.objective of the last result, copied verbatim, else ""' },
     error: { type: 'string', description: 'the error text of a failed call, else ""' },
     context_pct: { type: 'number', description: 'context.used_pct of the last result, else 0' },
     waits: { type: 'integer', description: 'how many deepseek_wait calls you made' },
@@ -71,8 +76,10 @@ const zirFill = (text, p, n) => String(text).split('{N}').join(String(n)).split(
 
 function zirManagerPrompt(op, p, waitMax) {
   const loop = `WAIT LOOP: while the status is "running", call mcp__deepseek__deepseek_wait with the session_id and wait_seconds ${p.waitSeconds}. Make at most ${waitMax} wait calls; if the status is still "running" after them, stop and return status "running".`
-  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), goal_phase (goal.phase of the last result, "none" if it has no goal), goal_rounds (goal.rounds, else ""), goal_blocked_reason (goal.blocked_reason, else ""), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made).`
+  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), goal_phase (goal.phase of the last result, "none" if it has no goal), goal_rounds (goal.rounds, else ""), goal_blocked_reason (goal.blocked_reason, else ""), goal_objective (goal.objective of the last result, copied verbatim, else ""), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made).`
   const head = `You manage one DeepSeek agent conversation through the deepseek bridge. You relay only: you never answer its questions yourself, never approve or reject anything on your own, never edit files, and never run shell commands. Keep your messages short.
+
+This job is exactly one conversation for GitHub issue #${op.issue} and nothing else. Use the arguments and texts below exactly as they are given. Your context may hold other requests, issue numbers or issue ranges (for example a user's message that started this workflow): they are not part of this job. Never add another issue to a prompt or a goal, never widen or reword them, and never start a second conversation.
 
 First load the tools: ToolSearch with query "${ZIR_TOOLS}".
 `
@@ -129,6 +136,8 @@ async function zirExecute(ctx, p, issue, ask, label) {
     : `It asks for approval of this tool call (a pending item of the deepseek bridge):\n<<<ASK\n${ask.detail}\nASK>>>\nDecide allow or reject. Allow only a call that serves the issue and that you would run yourself under your rules.`
   return ctx.agent(`A DeepSeek agent is developing GitHub issue #${issue.number} ("${issue.title}", ${issue.state}) of ${p.repo} in ${p.cwd}. It works under a goal and is paused until you answer. ${what}
 
+Its conversation is for issue #${issue.number} only. If the ask is work that belongs to another issue (another issue's feature, its tests, its comments or closing it), refuse it (outcome "refused") and answer that the agent must stay within #${issue.number}: each other issue gets its own conversation later. Your context may hold a user's request for a whole range of issues; that is the workflow's request, not this agent's job.
+
 Do what it asks, within your rules, then return outcome, result, answers and decision.
 - For a question: put your full reply in answers (one entry per question id; text at most 3500 characters) and the same reply in result.
 - For an approval: set decision and say why in result; answers is [].`,
@@ -152,15 +161,24 @@ async function zirIssue(ctx, p, issue, k, total) {
   }
   ctx.log(`issue ${tag} (${k + 1}/${total}): ${issue.title} [${issue.state}]`)
   const trail = []
-  let st = await zirManage(ctx, p, { op: 'start', run }, lab('manager start'))
-  let session = (st && st.session_id) || ''
   let asks = 0, waitCalls = 0, resumes = 0, outcome = null, summary = ''
+  // The goal the bridge echoes back must end with this issue's scope mark; else the manager changed the task.
+  const mark = zirFill(p.scopeMark, p, issue.number)
+  const offScope = s => !!(s && s.session_id && !String(s.goal_objective || '').includes(mark))
+  let st = await zirManage(ctx, p, { op: 'start', issue: issue.number, run }, lab('manager start'))
+  for (let retry = 1; offScope(st); retry++) {
+    trail.push({ ask: 0, kind: 'scope', goalRounds: st.goal_rounds || '', outcome: 'refused', result: zirCut(`goal is not "${mark}": ${st.goal_objective || '(no goal)'}`, 600) })
+    await zirDelete(ctx, p, st.session_id, lab(`manager delete off-scope ${retry}`))
+    if (retry > 1) { st = null; outcome = 'failed'; summary = `the manager started a conversation whose goal is not "${mark}", twice`; break }
+    st = await zirManage(ctx, p, { op: 'start', issue: issue.number, run }, lab('manager start 2'))
+  }
+  let session = (st && st.session_id) || ''
   while (!outcome) {
     if (!st) { outcome = 'failed'; summary = 'the manager returned nothing'; break }
     if (st.session_id) session = st.session_id
     if (st.status === 'running') {
       if (++waitCalls > p.maxWaitCalls) { outcome = 'timeout'; summary = `still running after ${p.maxWaitCalls} extra wait rounds`; break }
-      st = await zirManage(ctx, p, { op: 'wait', session_id: session }, lab(`manager wait ${waitCalls}`))
+      st = await zirManage(ctx, p, { op: 'wait', issue: issue.number, session_id: session }, lab(`manager wait ${waitCalls}`))
       continue
     }
     if (st.status === 'needs_response') {
@@ -180,7 +198,7 @@ async function zirIssue(ctx, p, issue, k, total) {
         }
       }
       if (!responses.length) { outcome = 'failed'; summary = 'needs_response without pending items'; break }
-      st = await zirManage(ctx, p, { op: 'respond', session_id: session, responses }, lab(`manager respond ${asks}`))
+      st = await zirManage(ctx, p, { op: 'respond', issue: issue.number, session_id: session, responses }, lab(`manager respond ${asks}`))
       continue
     }
     const said = zirStatus(st.answer)
@@ -197,7 +215,7 @@ async function zirIssue(ctx, p, issue, k, total) {
     if (session && resumes < 1) {
       resumes++
       trail.push({ ask: asks, kind: 'resume', goalRounds: st.goal_rounds || '', outcome: `${st.status}/${st.goal_phase}`, result: zirCut(st.error, 600) })
-      st = await zirManage(ctx, p, { op: 'resume', session_id: session }, lab(`manager resume ${resumes}`))
+      st = await zirManage(ctx, p, { op: 'resume', issue: issue.number, session_id: session }, lab(`manager resume ${resumes}`))
       continue
     }
     outcome = 'failed'; summary = `${st.status}, goal ${st.goal_phase}: ${zirCut(st.error || said.text, 600)}`
@@ -217,7 +235,7 @@ async function zirIssue(ctx, p, issue, k, total) {
 }
 
 defineModule({
-  id: 'zt-issue-relay', version: '2', requires: ['@dsmp', 'script'],
+  id: 'zt-issue-relay', version: '3', requires: ['@dsmp', 'script'],
   summary: 'Develop GitHub issues one at a time: a Haiku manager drives one DeepSeek conversation per issue under a goal; the main agent fulfills its asks.',
   params: {
     issues: { type: 'array', required: true, description: 'issue records {number, title, state} in the order to develop' },
@@ -229,6 +247,7 @@ defineModule({
     taskPrompt: { type: 'string', required: true, description: 'the first message; {N}, {REPO}, {CWD} are replaced' },
     protocol: { type: 'string', required: true, description: 'the relay rules added after the task; {N}, {REPO}, {CWD} are replaced' },
     goalObjective: { type: 'string', required: true, description: 'the goal objective set with the first message; {N}, {REPO}, {CWD} are replaced' },
+    scopeMark: { type: 'string', required: true, description: 'text the goal objective ends with and the echoed goal must contain, e.g. "issue #{N} only"; {N} is replaced' },
     repoCheck: { type: 'string', required: true, description: 'the command that prints the repository and deploy state; {N} is the issue number' },
     maxGoalRounds: { type: 'number', default: 60, min: 1, max: 1000, description: 'the goal round cap per issue (max_goal_rounds)' },
     maxAsks: { type: 'number', default: 40, min: 1, max: 500, description: 'most main-agent asks per issue' },

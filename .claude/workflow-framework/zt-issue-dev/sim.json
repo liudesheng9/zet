@@ -71,7 +71,8 @@
         "goal_blocked_reason": "",
         "error": "",
         "context_pct": 3,
-        "waits": 1
+        "waits": 1,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
       }
     },
     {
@@ -100,7 +101,8 @@
         "goal_blocked_reason": "",
         "error": "",
         "context_pct": 8,
-        "waits": 2
+        "waits": 2,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
       }
     },
     {
@@ -115,7 +117,8 @@
         "goal_blocked_reason": "",
         "error": "",
         "context_pct": 2,
-        "waits": 3
+        "waits": 3,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #66 only)"
       }
     },
     {

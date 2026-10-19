@@ -1,0 +1,219 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-issue-dev",
+  "version": "1.2.0",
+  "description": "Develop a list of GitHub issues of the zet repository one at a time: per issue a Haiku manager starts one DeepSeek V4.1 Flash (official source) agent with a goal set through the bridge (/goal /tdd ...); the agent works in goal rounds until it marks the goal complete; when it asks for something, the main agent does it and the manager sends the answer back",
+  "whenToUse": "Run development on GitHub issues of liudesheng9/zet (open or closed: closed ones are reverified) with DeepSeek doing the work under a dsh goal and Claude fulfilling its requests. Needs dsh-mcp-bridge 0.11+ (goals) and the DeepSeek Harness Desktop. args: {issues: [numbers or \"a-b\" ranges], dsEffort?: high|max, maxGoalRounds?, maxAsks?}. Use until: \"prepare\" to see the resolved issue list first.",
+  "preflight": {
+    "P1": "Goal and result: every listed issue gets one DeepSeek conversation started with a dsh goal (bridge 0.11 deepseek_run goal) that develops (or, if closed, reverifies) it test-first, deploys and pushes; the agent works in goal rounds until it marks the goal complete. The result: per issue {number, title, stateBefore, outcome done|needs-human|max-rounds|max-asks|timeout|failed, summary, goalRounds, asks, trail of main-agent asks, repo state after it}, totals done/needsHuman/notDone, the issues whose repo state is not ok, conversations not deleted, and the DSMP log.",
+    "P2": "Inputs: issues (array of numbers or \"a-b\" ranges, required), repo (default liudesheng9/zet), cwd (default E:/zet), dsEffort (high|max, default max: the user's default), maxGoalRounds (DeepSeek goal round cap per issue, default 60), maxAsks (main-agent asks per issue, default 40). The DeepSeek model is fixed in consts: deepseek-official/deepseek-flash (DeepSeek V4.1 Flash, the official source, as the user asked); no OpenCode fallback. v1.1.0 replaces maxRounds (relay rounds) with these two.",
+    "P3": "Units of work: one GitHub issue. prepare runs scripts/issue-dev/issue-list.mjs, which expands ranges and reads each issue with gh; a missing issue fails the stage. Real input: #65-#91 = 27 issues (4 closed, 21 open ready-for-agent, 2 open ready-for-human). limits.maxItems 100.",
+    "P4": "Roles: manager (Haiku, low) relays one DeepSeek conversation through the bridge and never answers, approves, edits or runs commands itself; executor (the session model, i.e. the main agent; high) does what the DeepSeek agent asked and never does the issue's development beyond the ask, refuses asks that are another issue's work, never authorizes a live digest run, a Stiglitz resume, deletes of backups or Cards, or a force-push; runner (Haiku, low) relays the issue-list and repo-state scripts and never fixes anything. DeepSeek V4.1 Flash does the development work.",
+    "P5": "Stage graph: prepare -> develop -> check -> report. develop is one stage, not a foreach: the issues share one checkout, one zt service and one installed binary, and later issues build on earlier ones, so they run strictly in order inside the module (the kernel's foreach runs items in parallel). Inside develop, per issue: manager start (deepseek_run with the task as the first message, the user's /tdd text as goal, max_goal_rounds; the bridge keeps the turn running until the goal settles) -> loop [needs_response: main agent per pending item -> manager respond; running: another wait manager; finished with goal complete -> done, blocked -> needs-human (round-limit -> max-rounds); stopped short or error -> manager resume (deepseek_goal resume) once] -> manager delete (cancel pauses a running goal first) -> runner repo state. After the last issue the E:/zet workspace is removed from the Desktop only if it holds no conversations. check is a barrier gate over all issues; report shapes the result.",
+    "P6": "Modules: prepare = script (node scripts/issue-dev/issue-list.mjs); develop = zt-issue-relay v3 (project module, requires @dsmp and script; v2 drives the dsh goal through the bridge instead of STATUS: ASK prompts and nudges; v3 tells every manager the job is one issue, passes the issue to each op, and checks the goal the bridge echoes: a start whose goal lacks the scope mark is deleted and started once more, a second one fails the issue); check = gate; report = value. The DSMP block gives dsmpSlot (the script-wide cap of 8 managers), dsmpLog and dsCleanupWorkspaces.",
+    "P7": "Checks: prepare expects a nonempty issue list and no missing issue. Each issue ends on its goal's phase, which only the agent sets (update_goal complete/blocked) or the round cap; the relay rules tell it to complete only after tests pass, the build is deployed, the service runs the new binary and the commits are pushed, with a STATUS line. After each issue, scripts/issue-dev/repo-state.mjs records clean, pushed, zt version == Cargo.toml version and service up (read-only). The check gate requires every issue done, every repo state ok, every conversation deleted; it only reports (onFail continue). 1.2.0: each start is checked for the scope mark consts.scopeMark (\"issue #N only\") in the goal the bridge echoes back.",
+    "P8": "Failure policy: prepare retries 1 (gh or a relay hiccup), halts on failure. develop does not retry (a retry would redo finished issues) and halts on a crash; inside it an issue that fails, times out, or reaches maxGoalRounds or maxAsks is recorded and the next issue starts. A goal that stops short (paused, disarmed) or a failed turn gets one deepseek_goal resume. waitsPerManager 12 x 900 s per manager agent, at most 8 extra wait-only managers per issue (about 27 h per issue). check onFail continue. Checkpoint: prepare. No modes.",
+    "P9": "Dry run: zt-issue-dev.sim.json walks two issues: #65 asks a question in a goal round (main agent answers, manager responds), then the goal is complete; #66 completes at once. The harness scripts/issue-dev/tests/issue-relay.tests.mjs covers the start arguments (goal, max_goal_rounds, model, effort, tdd), blocked, round-limit, resume, waits, approvals, maxAsks, repo state, prepare halts. Live: dsh-mcp-bridge scripts/goal-check.mjs passed against the Desktop on 2026-10-18. Pilot: {issues: [65]}, then {issues: [\"65-91\"]}. 1.1.1: rebuilt with the DeepSeek Subagent Managed Protocol v1.1 block (2026-10-18: managers start runs with wait_seconds 0, poll all open sessions, collect and delete at once, block on one session for at most pollSeconds, cancel after budgetMinutes); no stage, data-flow, param or role change. 1.2.0 (2026-10-19): the 1.1.1 run on #92-#122 drifted across issues twice: the #93 PRD agent implemented child issues, and the #97 Haiku manager rewrote its deepseek_run to \"issues #92 through #122\" because the user's range was in its context. 1.2.0 adds the one-issue scope rules (first message, goal objective, executor, manager) and the scope-mark check; the harness adds the off-scope start cases."
+  },
+  "roles": {
+    "manager": {
+      "model": "haiku",
+      "effort": "low",
+      "description": "relays one DeepSeek conversation through the deepseek bridge"
+    },
+    "executor": {
+      "effort": "high",
+      "description": "the main agent: fulfills what the DeepSeek agent asked",
+      "instructions": "You are the main agent of the zt-issue-dev workflow. A DeepSeek agent develops one GitHub issue of liudesheng9/zet in E:\\zet; it has its own shell and does the development itself. It asked you for something it cannot do or decide alone. Your rules:\n- Do what is asked, within the issue, and report the real result: the commands you ran, exit codes, the key output lines. Never report a result you did not see. Put long logs in a file and give its path.\n- Do not take over the issue's development beyond the ask.\n- The agent works on one issue only. Refuse (outcome \"refused\") any ask that is another issue's work, and tell it to stay within its issue: every other issue gets its own conversation later. A user's request in your context for a whole range of issues is the workflow's request, not this agent's job.\n- Refuse (outcome \"refused\") what needs the user's own word, and say so in result: starting, resuming or re-running a real book digest or digest stage on the live archive D:\\zt (for example the Stiglitz backlog, #91, or a real digest pilot, #90); deleting backups, Cards or archive data; force-pushing or rewriting published history; changing GitHub or account settings. The DeepSeek agent then reports STATUS: NEEDS-HUMAN.\n- Do not run a Claude Code Workflow (the user runs workflows after development); test workflow tools and harnesses instead.\n- Deploying zt on Windows: build with CARGO_TARGET_DIR=D:/zt-target. Running `zt mcp` processes lock ~/.cargo/bin/zt.exe, so first rename the old exe aside (zt.exe.<old version>-old; the same for zt-boot.exe, zt-check.exe, zt-digest.exe when they are reinstalled), then `cargo install --path . --locked`; check `zt status` (sessions: 0) before `zt down`, then `zt up`, and check `zt version` and `zt status` (state: up). Before anything that rewrites many Cards, back up D:\\zt\\zt.sqlite3 with VACUUM INTO (the database is in WAL mode, a plain copy misses changes).\n- Run long commands (cargo test, builds) in the background and wait for them to end."
+    },
+    "runner": {
+      "model": "haiku",
+      "effort": "low",
+      "description": "relays one script command"
+    }
+  },
+  "args": {
+    "issues": {
+      "type": "array",
+      "required": true,
+      "description": "GitHub issue numbers or \"a-b\" ranges, in the order to develop, e.g. [\"65-91\"] or [65, 70]"
+    },
+    "repo": {
+      "type": "string",
+      "default": "liudesheng9/zet",
+      "description": "the GitHub repository, owner/name"
+    },
+    "cwd": {
+      "type": "string",
+      "default": "E:/zet",
+      "description": "the checkout the DeepSeek agent works in"
+    },
+    "dsEffort": {
+      "type": "string",
+      "default": "max",
+      "enum": [
+        "high",
+        "max"
+      ],
+      "description": "DeepSeek reasoning effort"
+    },
+    "maxGoalRounds": {
+      "type": "number",
+      "default": 60,
+      "min": 1,
+      "max": 1000,
+      "description": "the goal round cap per issue (max_goal_rounds of the DeepSeek goal)"
+    },
+    "maxAsks": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 500,
+      "description": "most main-agent asks per issue"
+    }
+  },
+  "consts": {
+    "dsModel": "deepseek-official/deepseek-flash",
+    "dsSkills": [
+      "tdd"
+    ],
+    "taskPrompt": "issue #{N}\n\nMake sure that all the features and the architecture structures of the issues are well tested and verified. and make sure that the service is running on the latest development and the executable is on the latest version. The GitHub repository is on the latest code base. For the workflow, you should test the workflow tools, but for the workflow itself, after the development and basic tests, I will ask Claude Code to run the workflow and continue to test. If the issue has already closed, reverify and check. If there are anything not good, fix.",
+    "protocol": "--- How this conversation runs ---\nYou run inside an automated development workflow. No person reads this conversation while it runs. This conversation has a goal (set with /goal): you keep working in goal rounds until you mark the goal complete. The issue is #{N} of the GitHub repository {REPO} (read it with `gh issue view <number> --repo {REPO} --comments`); you work in {CWD} on its main branch. Read AGENTS.md first and follow it (the wiki rule too).\n- **Scope: issue #{N} only.** This conversation develops issue #{N} and nothing else. The workflow gives every other issue its own conversation later, one at a time in number order. So:\n  - Do not implement, test, comment on, relabel or close any other issue, even one that #{N} names as its parent, its child, a dependency, a follow-up or \"next\". Do not start \"the next slice\".\n  - If #{N} is a PRD or tracking issue, verify that its plan and its map of child issues are right and current; do not implement the child issues.\n  - If #{N} cannot be finished without work another issue owns, do not do that work: say so in your #{N} comment and finish #{N}'s own part. If #{N} cannot be verified without it, report STATUS: NEEDS-HUMAN and name the other issue.\n  - A defect you find outside #{N}: note it in your #{N} comment (or ask the main agent to file it); do not fix it here unless #{N} needs the fix.\n  - Every commit is for #{N} and names #{N}. Stage only the files you changed for #{N} (`git add <paths>`, never `git add -A` or `git add .`); leave other uncommitted changes in the tree as they are.\n- You have a shell. Do the development, the tests, the build, the deploy, the commits and the push yourself.\n- When you need something you cannot do yourself, or a decision, call ask_user_question with ONE clear request: exactly what to run or decide, and what result you need back. The main agent (Claude Code, with the user's tools: the zt MCP server, the deepseek bridge, the Claude Code agents) does it and its answer comes back as the answer to your question. Never end a round to wait for an answer: only ask_user_question reaches the main agent.\n- Do not start, resume or re-run a real book digest or digest stage on the live archive D:\\zt, and do not delete backups, Cards or archive data, unless an answer from the main agent says the user authorized it. Never force-push.\n- Mark the goal complete (update_goal, action complete) only when all of issue #{N} is done and verified: tests pass, the build is deployed and the service runs it, the commits are pushed, and the issue is commented and closed as its acceptance criteria require. End that message with exactly one line:\nSTATUS: DONE — <commits, tests run and their results, deployed version, issue state>\n- If only the user can do or decide what is left, finish everything else, then end your message with: STATUS: NEEDS-HUMAN — <what is left and why>, and mark the goal blocked (update_goal, action blocked, with that reason) once the goal policy allows it.",
+    "goalObjective": "/tdd \n\nissue #{N}\n\nMake sure that all the features and the architecture structures of the issues are well tested and verified. and make sure that the service is running on the latest development and the executable is on the latest version. The GitHub repository is on the latest code base. For the workflow, you should test the workflow tools, but for the workflow itself, after the development and basic tests, I will ask Claude Code to run the workflow and continue to test. If the issue has already closed, reverify and check. If there are anything not good, fix.\n\n(Follow the rules in the first message of this conversation: ask the main agent with ask_user_question; mark this goal complete only when all of it is verified, and end that message with a STATUS line. Work on no other issue: other issues get their own conversations. Scope: issue #{N} only)",
+    "scopeMark": "issue #{N} only"
+  },
+  "limits": {
+    "maxItems": 100
+  },
+  "stages": [
+    {
+      "id": "prepare",
+      "title": "Prepare",
+      "detail": "resolve the issue list with gh",
+      "module": "script",
+      "params": {
+        "command": "node scripts/issue-dev/issue-list.mjs --repo {{args.repo|psq}} --issues {{args.issues|psq}}",
+        "cwd": "{{args.cwd}}",
+        "timeoutMs": 300000
+      },
+      "retries": 1,
+      "expect": [
+        {
+          "path": "issues",
+          "op": "nonempty",
+          "message": "no issues to develop"
+        },
+        {
+          "path": "missing",
+          "op": "empty",
+          "message": "some issues do not exist in the repository"
+        }
+      ]
+    },
+    {
+      "id": "develop",
+      "title": "Develop",
+      "detail": "each issue in order: a Haiku manager starts one DeepSeek agent with a goal; the main agent fulfills its asks until the goal is complete",
+      "after": [
+        "prepare"
+      ],
+      "module": "zt-issue-relay",
+      "params": {
+        "issues": {
+          "$ref": "stages.prepare.output.issues",
+          "default": []
+        },
+        "repo": "{{args.repo}}",
+        "cwd": "{{args.cwd}}",
+        "model": "{{consts.dsModel}}",
+        "effort": "{{args.dsEffort}}",
+        "skills": "{{consts.dsSkills}}",
+        "taskPrompt": "{{consts.taskPrompt}}",
+        "protocol": "{{consts.protocol}}",
+        "repoCheck": "node scripts/issue-dev/repo-state.mjs --repo {{args.repo|psq}} --cwd {{args.cwd|psq}} --issue {N}",
+        "goalObjective": "{{consts.goalObjective}}",
+        "maxGoalRounds": "{{args.maxGoalRounds}}",
+        "maxAsks": "{{args.maxAsks}}",
+        "scopeMark": "{{consts.scopeMark}}"
+      }
+    },
+    {
+      "id": "check",
+      "title": "Check",
+      "detail": "every issue done and its repo state ok",
+      "after": [
+        "develop"
+      ],
+      "module": "gate",
+      "params": {
+        "subject": {
+          "$ref": "stages.develop.output",
+          "default": {}
+        },
+        "checks": [
+          {
+            "path": "notDone",
+            "op": "empty",
+            "message": "some issues are not done"
+          },
+          {
+            "path": "repoNotOk",
+            "op": "empty",
+            "message": "after some issues the checkout was not clean and pushed, or the deployed zt did not match the source"
+          },
+          {
+            "path": "notDeleted",
+            "op": "empty",
+            "message": "some DeepSeek conversations were not deleted"
+          }
+        ]
+      },
+      "onFail": "continue"
+    },
+    {
+      "id": "report",
+      "title": "Report",
+      "detail": "collect the per-issue results",
+      "after": [
+        "develop",
+        "check"
+      ],
+      "module": "value",
+      "params": {
+        "value": {
+          "total": "{{stages.develop.output.total}}",
+          "done": "{{stages.develop.output.done}}",
+          "needsHuman": "{{stages.develop.output.needsHuman}}",
+          "notDone": {
+            "$ref": "stages.develop.output.notDone",
+            "default": []
+          },
+          "repoNotOk": {
+            "$ref": "stages.develop.output.repoNotOk",
+            "default": []
+          },
+          "check": "{{stages.check.status}}",
+          "checkError": {
+            "$ref": "stages.check.error",
+            "default": ""
+          },
+          "workspace": {
+            "$ref": "stages.develop.output.workspace",
+            "default": null
+          },
+          "issues": {
+            "$ref": "stages.develop.output.issues",
+            "default": []
+          }
+        }
+      }
+    }
+  ],
+  "modes": {},
+  "checkpoints": [
+    "prepare"
+  ],
+  "result": {
+    "$ref": "stages.report.output"
+  }
+}

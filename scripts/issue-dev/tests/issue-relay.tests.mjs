@@ -26,11 +26,20 @@ const st = (o) => ({ session_id: 's', status: 'finished', answer: '', pending: [
 const done = (o = {}) => st({ goal_phase: 'complete', answer: 'STATUS: DONE — ok', ...o })
 const repoOk = { ok: true, clean: true, pushed: true, zt: { match: true, service: 'up' } }
 
+// The goal the bridge echoes for a correct start: it ends with the issue's scope mark.
+const scoped = n => `… Work on no other issue: other issues get their own conversations. Scope: issue #${n} only)`
+// Give every manager answer that lacks one the correctly scoped echo of its issue (from the label, else the only issue).
+const withScope = (answers, issues) => answers.map(a => {
+  if (!a.answer || a.answer.session_id === undefined || a.answer.goal_objective !== undefined) return a
+  const n = ((a.label || '').match(/#(\d+)/) || [])[1] || issues[0].number
+  return { ...a, answer: { ...a.answer, goal_objective: scoped(n) } }
+})
+
 async function run(name, issues, answers, { args = {}, repo = repoOk, src = script } = {}) {
   globalThis.__zirOps = []
   const sim = {
     script: { 'issue-list\\.mjs': { ok: true, issues, missing: [] }, 'repo-state\\.mjs': repo },
-    answers: [...answers, { label: 'manager delete$', answer: { deleted: true, cancelled: false, note: '' } }],
+    answers: [...withScope(answers, issues), { label: 'manager delete', answer: { deleted: true, cancelled: false, note: '' } }],
   }
   const r = await simulate(src, { sim, args: { issues: issues.map(i => i.number), ...args } })
   if (r.error) throw new Error(`${name}: ${r.error.stack || r.error}`)
@@ -203,6 +212,91 @@ await test('until prepare stops before any DeepSeek work', async () => {
   const r = await simulate(script, { sim, args: { issues: [65], until: 'prepare' } })
   assert.equal(r.result.stoppedAt, 'prepare')
   assert.ok(!r.calls.some(c => /manager/.test(c.label)))
+})
+
+await test('one issue per conversation: the scope rules reach the agent, the goal, the managers and the main agent', async () => {
+  const s = spy.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  ;(globalThis.__zirPrompts ||= []).push(zirManagerPrompt(op, p, p.waitsPerManager))')
+  globalThis.__zirPrompts = []
+  const r = await run('scope', [issue(97)], [
+    { label: 'manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'q', kind: 'question', detail: '{"questions":[{"id":"a"}]}' }] }) },
+    { label: 'main agent 1$', answer: { outcome: 'done', result: 'ok', answers: [{ id: 'a', text: 'ok' }], decision: 'none' } },
+    { label: 'manager respond 1$', answer: done() },
+  ], { src: s })
+  const run0 = globalThis.__zirOps.find(o => o.op === 'start').run
+  assert.match(run0.prompt, /\*\*Scope: issue #97 only\.\*\*/)
+  assert.match(run0.prompt, /Do not implement, test, comment on, relabel or close any other issue/)
+  assert.match(run0.prompt, /If #97 is a PRD or tracking issue, verify that its plan and its map of child issues are right and current; do not implement the child issues/)
+  assert.match(run0.prompt, /never `git add -A` or `git add \.`/)
+  assert.match(run0.goal, /Scope: issue #97 only\)$/)
+  for (const text of globalThis.__zirPrompts) {
+    assert.match(text, /This job is exactly one conversation for GitHub issue #97 and nothing else/)
+    assert.match(text, /Never add another issue to a prompt or a goal/)
+  }
+  assert.ok(globalThis.__zirOps.every(o => o.issue === 97), 'every manager op carries the issue')
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+})
+
+await test('the main agent is told the conversation is one issue and to refuse other issues\' work', async () => {
+  const s = script.replace('async function zirExecute(ctx, p, issue, ask, label) {', 'async function zirExecute(ctx, p, issue, ask, label) {\n  const __a = ctx.agent; ctx = { ...ctx, agent: (prompt, o) => { (globalThis.__zirExec ||= []).push(prompt); return __a(prompt, o) } }')
+  globalThis.__zirExec = []
+  await run('exec scope', [issue(98)], [
+    { label: 'manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'q', kind: 'question', detail: '{"questions":[{"id":"a"}]}' }] }) },
+    { label: 'main agent 1$', answer: { outcome: 'refused', result: 'stay within #98', answers: [{ id: 'a', text: 'stay within #98' }], decision: 'none' } },
+    { label: 'manager respond 1$', answer: done() },
+  ], { src: s })
+  assert.match(globalThis.__zirExec[0], /Its conversation is for issue #98 only\. If the ask is work that belongs to another issue/)
+  // The kernel puts the role's instructions in front of every executor prompt.
+  assert.match(bp.roles.executor.instructions, /Refuse \(outcome "refused"\) any ask that is another issue's work/)
+})
+
+await test('a start whose echoed goal is not this issue is deleted and started once more', async () => {
+  const r = await run('off scope once', [issue(97)], [
+    { label: 'manager start$', answer: st({ session_id: 'bad', goal_objective: '… issues #92 through #122 (one at a time, in number order) …' }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'good' }) },
+  ])
+  const i = r.result.result.issues[0]
+  assert.equal(i.outcome, 'done')
+  assert.equal(i.session, 'good')
+  assert.equal(i.trail[0].kind, 'scope')
+  assert.match(i.trail[0].result, /goal is not "issue #97 only": … issues #92 through #122/)
+  const labels = r.calls.map(c => c.label.replace(/^develop: /, ''))
+  assert.deepEqual(labels.filter(l => /#97 manager/.test(l)), ['#97 manager start', '#97 manager delete off-scope 1', '#97 manager start 2', '#97 manager delete'])
+})
+
+await test('a start without any goal echo counts as off scope too', async () => {
+  const r = await run('no goal', [issue(97)], [
+    { label: 'manager start$', answer: st({ session_id: 'nogoal', goal_objective: '' }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'good' }) },
+  ])
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.ok(r.calls.some(c => /#97 manager delete off-scope 1$/.test(c.label)))
+})
+
+await test('two off-scope starts fail the issue, delete both, and the next issue still runs', async () => {
+  const wrong = st({ goal_objective: '… Scope: issue #96 only)' })
+  const r = await run('off scope twice', [issue(97), issue(98)], [
+    { label: '#97 manager start$', answer: { ...wrong, session_id: 'b1' } },
+    { label: '#97 manager start 2$', answer: { ...wrong, session_id: 'b2' } },
+    { label: '#98 manager start$', answer: done() },
+  ])
+  const [a, b] = r.result.result.issues
+  assert.equal(a.outcome, 'failed')
+  assert.match(a.summary, /goal is not "issue #97 only", twice/)
+  assert.equal(a.session, '')
+  assert.equal(a.trail.filter(t => t.kind === 'scope').length, 2)
+  assert.equal(r.calls.filter(c => /#97 manager delete off-scope/.test(c.label)).length, 2)
+  assert.ok(!r.calls.some(c => /#97 (main agent|manager wait|manager respond|manager resume)/.test(c.label)), 'no relay for an off-scope conversation')
+  assert.equal(b.outcome, 'done')
+  assert.equal(r.result.deepseek.deleted, 3)
+})
+
+await test('a mark for another issue whose number starts the same does not pass (#9 vs #97)', async () => {
+  const r = await run('prefix', [issue(9)], [
+    { label: 'manager start$', answer: st({ session_id: 'x', goal_objective: '… Scope: issue #97 only)' }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'y', goal_objective: '… Scope: issue #9 only)' }) },
+  ])
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.equal(r.result.result.issues[0].session, 'y')
 })
 
 await test('the old maxRounds arg is refused', async () => {

@@ -1,20 +1,133 @@
 {
-  "args": { "issues": [65, 66] },
+  "args": {
+    "issues": [
+      65,
+      66
+    ]
+  },
   "script": {
     "issue-list\\.mjs": {
-      "ok": true, "repo": "liudesheng9/zet", "count": 2, "missing": [],
+      "ok": true,
+      "repo": "liudesheng9/zet",
+      "count": 2,
+      "missing": [],
       "issues": [
-        { "number": 65, "title": "Digest: Maintain indexed Links", "state": "CLOSED", "labels": ["enhancement"], "url": "u65" },
-        { "number": 66, "title": "Digest: Serve complete Card views", "state": "OPEN", "labels": ["enhancement"], "url": "u66" }
+        {
+          "number": 65,
+          "title": "Digest: Maintain indexed Links",
+          "state": "CLOSED",
+          "labels": [
+            "enhancement"
+          ],
+          "url": "u65"
+        },
+        {
+          "number": 66,
+          "title": "Digest: Serve complete Card views",
+          "state": "OPEN",
+          "labels": [
+            "enhancement"
+          ],
+          "url": "u66"
+        }
       ]
     },
-    "repo-state\\.mjs": { "ok": true, "clean": true, "pushed": true, "branch": "main", "head": "abc", "upstream": "abc", "dirty": [], "issue": { "number": 0, "state": "CLOSED" }, "zt": { "source": "0.20.0", "installed": "0.20.0", "match": true, "service": "up" } }
+    "repo-state\\.mjs": {
+      "ok": true,
+      "clean": true,
+      "pushed": true,
+      "branch": "main",
+      "head": "abc",
+      "upstream": "abc",
+      "dirty": [],
+      "issue": {
+        "number": 0,
+        "state": "CLOSED"
+      },
+      "zt": {
+        "source": "0.20.0",
+        "installed": "0.20.0",
+        "match": true,
+        "service": "up"
+      }
+    }
   },
   "answers": [
-    { "label": "#65 manager start$", "answer": { "session_id": "s65", "status": "needs_response", "answer": "", "pending": [ { "request_id": "question-1", "kind": "question", "detail": "{\"request_id\":\"question-1\",\"kind\":\"question\",\"questions\":[{\"id\":\"q1\",\"question\":\"Deploy zt please\"}]}" } ], "goal_phase": "active", "goal_rounds": "2/60", "goal_blocked_reason": "", "error": "", "context_pct": 3, "waits": 1 } },
-    { "label": "#65 main agent 1$", "answer": { "outcome": "done", "result": "deployed 0.20.1; zt status up", "answers": [ { "id": "q1", "text": "deployed 0.20.1; zt status up" } ], "decision": "none" } },
-    { "label": "#65 manager respond 1$", "answer": { "session_id": "s65", "status": "finished", "answer": "All verified.\nSTATUS: DONE — commit abc, cargo test ok, 0.20.1 deployed, #65 closed", "pending": [], "goal_phase": "complete", "goal_rounds": "4/60", "goal_blocked_reason": "", "error": "", "context_pct": 8, "waits": 2 } },
-    { "label": "#66 manager start$", "answer": { "session_id": "s66", "status": "finished", "answer": "Reverified.\nSTATUS: DONE — cargo test ok, #66 stays closed", "pending": [], "goal_phase": "complete", "goal_rounds": "1/60", "goal_blocked_reason": "", "error": "", "context_pct": 2, "waits": 3 } },
-    { "label": "manager delete$", "answer": { "deleted": true, "cancelled": false, "note": "" } }
+    {
+      "label": "#65 manager start$",
+      "answer": {
+        "session_id": "s65",
+        "status": "needs_response",
+        "answer": "",
+        "pending": [
+          {
+            "request_id": "question-1",
+            "kind": "question",
+            "detail": "{\"request_id\":\"question-1\",\"kind\":\"question\",\"questions\":[{\"id\":\"q1\",\"question\":\"Deploy zt please\"}]}"
+          }
+        ],
+        "goal_phase": "active",
+        "goal_rounds": "2/60",
+        "goal_blocked_reason": "",
+        "error": "",
+        "context_pct": 3,
+        "waits": 1,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
+      }
+    },
+    {
+      "label": "#65 main agent 1$",
+      "answer": {
+        "outcome": "done",
+        "result": "deployed 0.20.1; zt status up",
+        "answers": [
+          {
+            "id": "q1",
+            "text": "deployed 0.20.1; zt status up"
+          }
+        ],
+        "decision": "none"
+      }
+    },
+    {
+      "label": "#65 manager respond 1$",
+      "answer": {
+        "session_id": "s65",
+        "status": "finished",
+        "answer": "All verified.\nSTATUS: DONE — commit abc, cargo test ok, 0.20.1 deployed, #65 closed",
+        "pending": [],
+        "goal_phase": "complete",
+        "goal_rounds": "4/60",
+        "goal_blocked_reason": "",
+        "error": "",
+        "context_pct": 8,
+        "waits": 2,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
+      }
+    },
+    {
+      "label": "#66 manager start$",
+      "answer": {
+        "session_id": "s66",
+        "status": "finished",
+        "answer": "Reverified.\nSTATUS: DONE — cargo test ok, #66 stays closed",
+        "pending": [],
+        "goal_phase": "complete",
+        "goal_rounds": "1/60",
+        "goal_blocked_reason": "",
+        "error": "",
+        "context_pct": 2,
+        "waits": 3,
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #66 only)"
+      }
+    },
+    {
+      "label": "manager delete$",
+      "answer": {
+        "deleted": true,
+        "cancelled": false,
+        "note": ""
+      }
+    }
   ]
 }

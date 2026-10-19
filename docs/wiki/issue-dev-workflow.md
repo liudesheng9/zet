@@ -99,7 +99,7 @@ The manager calls `deepseek_run` with:
 
 ### One issue
 
-1. `zirIssue` builds the start arguments, and the manager starts the conversation (`op: start`). The bridge sends the message, sets the goal once the agent is working on it, and keeps the turn running through the goal rounds. The manager calls `deepseek_wait` with 900 s waits, at most 12 per manager agent.
+1. `zirIssue` builds the start arguments, and the manager starts the conversation (`op: start`). Every manager op carries the issue number, and every manager prompt says the job is that one issue only. The goal objective ends with the scope mark `consts.scopeMark` (`issue #N only`). If the goal the bridge echoes back lacks it, the conversation is deleted and started once more. A second wrong start gives the outcome `failed`. The bridge sends the message, sets the goal once the agent is working on it, and keeps the turn running through the goal rounds. The manager calls `deepseek_wait` with 900 s waits, at most 12 per manager agent.
 2. `running` starts another wait manager, at most `maxWaitCalls` (8) per issue. After that the outcome is `timeout`.
 3. `needs_response`: the main agent is called once per pending item. Questions go back as `answers [{id, custom}]` and approvals as `decision`. Then a `respond` manager continues. After `maxAsks` asks the outcome is `max-asks`.
 4. `finished` ends the issue by the goal's phase: `complete` gives `done`; `blocked` gives `needs-human`, or `max-rounds` for a `round-limit` block. The summary is the STATUS text, else the tail of the answer.
@@ -108,6 +108,13 @@ The manager calls `deepseek_run` with:
 
 ### Rules
 
+- **One issue per conversation.** The first message carries the scope rules:
+  - no work, comment, relabel or close on another issue;
+  - a PRD only verifies its plan and its map of child issues;
+  - a dependency on another issue is named, not done;
+  - commits are for #N and stage only #N's files (never `git add -A`).
+
+  The main agent refuses an ask that is another issue's work.
 - Issues run strictly in order: they share one checkout, one service and one installed `zt`. This is why `develop` is one stage and not a kernel `foreach`, which runs items in parallel.
 - A failed issue does not stop the run: the next issue starts. `develop` itself has no retries, so a retry cannot redo finished issues.
 - The `check` gate requires every issue `done`, every repo state `ok`, and every conversation deleted. It only reports (`onFail: continue`).
@@ -121,7 +128,7 @@ None: the workflow keeps no files of its own. The registry `.claude/workflow-fra
 
 These are fixed at install; a change is a new version:
 - the DeepSeek model and skills (`consts.dsModel`, `consts.dsSkills`);
-- the texts (`consts.taskPrompt`, `consts.protocol`, `consts.goalObjective`);
+- the texts (`consts.taskPrompt`, `consts.protocol`, `consts.goalObjective`, `consts.scopeMark`);
 - the roles;
 - the module defaults (`ZIR_DEFAULTS`): `waitSeconds` 900, `waitsPerManager` 12, `maxWaitCalls` 8.
 
@@ -149,7 +156,7 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 
 ## Testing
 
-`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (16 tests):
+`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (22 tests):
 - `expandIssues`;
 - the start arguments: `goal` objective, `max_goal_rounds`, model, effort, `tdd`, no placeholders left;
 - the manager prompt passing `goal` and loading `deepseek_goal`;
@@ -165,7 +172,12 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 - a repo state that is not ok;
 - a missing issue halting at `prepare`;
 - `until: prepare`;
-- the removed `maxRounds` arg refused.
+- the removed `maxRounds` arg refused;
+- the scope rules reaching the first message, the goal, every manager prompt and the main agent;
+- an off-scope start (the 1.1.1 range rewrite) deleted and restarted;
+- a start with no goal echo treated as off scope;
+- two off-scope starts failing the issue while the next issue still runs;
+- `#9` not matching `#97`'s mark.
 
 The goal path itself is checked live in the bridge repository with `scripts/goal-check.mjs`; it passed against the Desktop on 2026-10-18. The first real run of the workflow is the pilot `{issues: [65]}`.
 
@@ -176,10 +188,17 @@ The goal path itself is checked live in the bridge repository with `scripts/goal
 - The DeepSeek agent runs with full shell access (verified 2026-10-18: `pwsh` ran with no approval, even outside its workspace). So "asks" are mostly `ask_user_question` calls, and the approval path is a fallback.
 - Haiku managers copy text verbatim. Answers are cut to the last 6000 characters (the bridge reports the last 12,000 characters of a goal turn), and main-agent results to 3800 characters. Long logs go to files.
 - `E:/zet` is usually also the user's own DeepSeek workspace. The cleanup removes it only when it is empty (`ownWorkspaces: false`).
+- 1.1.1 drifted across issues on the #92–#122 run. The #93 PRD agent implemented child issues, and the #97 Haiku manager rewrote its `deepseek_run` to "issues #92 through #122". It did so because workflow subagents see the user's message, here a request for the whole range. Prompt rules alone do not bind a manager, so 1.2.0 also checks the echoed goal.
 - Commit `scripts/issue-dev/` before a run: the DeepSeek agent commits and pushes on `main`, and it would otherwise include stray working-tree files.
 
 ## Change history
 
+- `2026-10-19` — zt-issue-dev 1.2.0 (relay module v3): one issue per conversation.
+  - Scope rules in the first message and the goal.
+  - A one-issue rule in every manager prompt and for the main agent.
+  - Commits stage only the issue's files.
+  - The goal the bridge echoes must hold `issue #N only`; an off-scope start is deleted and retried once, a second one fails the issue.
+  - The harness has 22 scenarios.
 - `2026-10-18` — zt-issue-dev 1.1.1 inlines **DeepSeek Subagent Managed Protocol v1.1**: a manager starts every conversation with `wait_seconds 0` (the bridge runs `deepseek_run` calls one after another, so a blocking start delayed each later one), then polls every open session with `wait_seconds 0`, collects and deletes the finished ones at once, blocks on one running session for at most 90 seconds, and cancels a session that outlives its 240-minute budget as a recorded timeout. The relay module's own manager waits (900 s, at most 12 per manager) are unchanged, and `issue-relay.tests.mjs` still passes its 16 scenarios.
 - `2026-10-18` — zt-issue-dev 1.1.0 (relay module v2): each conversation starts with a real dsh goal set through the bridge (`deepseek_run` `goal`, bridge 0.11). Issues end on the goal's phase. Questions from every goal round reach the main agent. New args `maxGoalRounds` and `maxAsks` replace `maxRounds`. The `STATUS: ASK`, nudge and prompt-resume paths are removed.
 - `2026-10-18` — Wiki doc created with zt-issue-dev 1.0.0: issue list, sequential Haiku-relayed DeepSeek conversations, main-agent asks, repo-state check, harness.
