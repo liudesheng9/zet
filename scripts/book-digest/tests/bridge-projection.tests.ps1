@@ -155,6 +155,13 @@ try {
     $result = Compile @('-Step', 'project', '-Report', $reportFile, '-At', $source)
     Assert ($result.status -ceq 'done' -and $result.candidates[0].target -ceq $target) 'a restored endpoint is current again on the next projection'
 
+    # An endpoint the archive no longer holds is a missing endpoint, not a failed projection: the
+    # report remains readable and the other endpoint alone explains why nothing is current.
+    Write-Cards @(@{ tool = 'delete_card'; arguments = @{ at = $target; confirm = 'delete' } }) | Out-Null
+    $result = Compile @('-Step', 'project', '-Report', $reportFile, '-At', $source)
+    Assert ($CompilerExit -eq 0 -and $result.status -ceq 'stale' -and @($result.candidates).Count -eq 0) 'a deleted endpoint leaves no current candidate'
+    Assert ($result.stale[0].why -match "missing endpoint $([regex]::Escape($target))") "the stale entry names the missing endpoint ($($result.stale | ConvertTo-Json -Compress))"
+
     # The report's own id and schema are authoritative: an edited or missing report writes
     # nothing and is a named input refusal.
     $tampered = Get-Content -LiteralPath $reportFile -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String

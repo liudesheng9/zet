@@ -861,6 +861,57 @@ impl Bridge {
         Ok(0)
     }
 
+    /// `Project-Context`: the endpoint Cards of one projection and the book index it compares
+    /// them against — the tree list (which trees are agent Literature trees) and each endpoint's
+    /// own Card. It deliberately does not read a whole tree's summaries the way an apply does: a
+    /// big book tree can exceed the MCP reply bound, and a projection needs only each endpoint's
+    /// own attributed book and its own fields.
+    fn projection_context(&mut self, addresses: &[String]) -> Result<(HashMap<String, Value>, BookIndex)> {
+        let trees = match self.tree_index.clone() {
+            Some(trees) => trees,
+            None => {
+                let read = self.read_zt(&[json!({ "tool": "list_trees", "arguments": {} })])?;
+                let trees = ps_array(&read.first().cloned().unwrap_or(Value::Null)["trees"]);
+                self.tree_index = Some(trees.clone());
+                trees
+            }
+        };
+        let calls: Vec<Value> = addresses.iter().map(|at| json!({ "tool": "get_card", "arguments": { "at": at } })).collect();
+        let mut cards: HashMap<String, Value> = HashMap::new();
+        match self.read_zt(&calls) {
+            Ok(reads) if reads.len() == calls.len() => {
+                for (at, card) in addresses.iter().zip(reads) {
+                    cards.insert(at.clone(), card);
+                }
+            }
+            _ => {
+                // One endpoint may be gone: read each Card alone, so a missing one stays a missing
+                // endpoint instead of failing the whole projection.
+                for call in &calls {
+                    if let Ok(mut read) = self.read_zt(std::slice::from_ref(call))
+                        && let Some(card) = read.pop()
+                    {
+                        cards.insert(field_of(&card, "address"), card);
+                    }
+                }
+            }
+        }
+        let mut summaries: Vec<Value> = Vec::new();
+        for (at, card) in &cards {
+            let links: Vec<Value> = ps_array(get(card, "outbound")).iter().filter(|out| !truthy(get(out, "broken"))).map(|out| get(out, "address").clone()).collect();
+            summaries.push(json!({
+                "address": at,
+                "tree": get(card, "tree"),
+                "workspace": get(card, "workspace"),
+                "kind": get(card, "kind"),
+                "type": get(card, "type"),
+                "links": links,
+            }));
+        }
+        let index = book_of::book_index(&trees, &summaries);
+        Ok((cards, index))
+    }
+
     /// `Project-Report`: the read-only nearby-candidate projection of one selected immutable
     /// report (§10.3, D258; the GUI's optional distant source, S20-AC02/AC04/AC05). It re-reads
     /// the report's own endpoints through `zt mcp`, reuses the report-id schema check and the
@@ -904,15 +955,15 @@ impl Bridge {
                     addresses.push(other.clone());
                 }
             }
-            let ctx = self.current_context(&addresses)?;
+            let (cards, index) = self.projection_context(&addresses)?;
             for (other, proposal) in &named {
                 let mut why = None;
                 for address in [&at, other] {
-                    let Some(card) = ctx.cards.get(address) else {
+                    let Some(card) = cards.get(address) else {
                         why = Some(format!("missing endpoint {address}"));
                         break;
                     };
-                    if let Some(reason) = changed_endpoint(card, snapshots.get(address), &ctx.index) {
+                    if let Some(reason) = changed_endpoint(card, snapshots.get(address), &index) {
                         why = Some(reason);
                         break;
                     }
