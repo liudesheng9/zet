@@ -75,6 +75,12 @@ try {
     Assert ($book.style.advisory -ge 2 -and $book.style.advice_by_rule.R21 -ge 1 -and $book.style.advice_by_rule.R20 -ge 1) 'the audit counts the standalone advice apart by rule'
     Assert ($book.style.faults -eq 0) "the standalone advice is no blocking style fault: $($book.style | ConvertTo-Json -Compress)"
     Assert ($book.layer.by_rule.I7 -ge 1 -and $faults -match ' I7 `rests-on` \[\[') 'the audit reports the own-source premise as a layer fault and in the readable fault list'
+    # I7's unknown-source line is advice (D138): the layer fault count holds only blocking
+    # lines, and the advisory count holds every published "(advisory)" line.
+    $layerLines = @($faults -split "\r?\n" | Where-Object { $_ -match '^\S+ [RIELF]\d+ ' -and $_ -notmatch '^\S+ R\d+ ' })
+    $layerAdvice = @($layerLines | Where-Object { $_ -match ' \(advisory\) ' })
+    Assert ($book.layer.advisory -eq $layerAdvice.Count -and $book.layer.faults -eq ($layerLines.Count - $layerAdvice.Count)) "the layer report separates advice from blocking faults: $($book.layer | ConvertTo-Json -Compress)"
+    Assert (@($layerAdvice | Where-Object { $_ -match ' I7 \(advisory\) source evidence unknown' }).Count -eq 1) 'I7 unknown-source advice is counted as advice, never as a blocking layer fault'
     $md = Get-Content -LiteralPath (Join-Path $out 'audit.md') -Raw -Encoding utf8
     Assert ($md -match 'Standalone advice \(R20, R21\): \d+ by rule:.*R2[01]') 'audit.md names the standalone advice apart from the blocking language faults'
     # Read-only: the archive and every Card are exactly as they were.

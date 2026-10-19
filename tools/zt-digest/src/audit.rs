@@ -676,7 +676,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         let level_names: Vec<String> = model_rows.iter().map(|r| if truthy(&r["level"]) { s(&r["level"]) } else { "none".into() }).collect();
         let sum = |k: &str| model_rows.iter().map(|r| r[k].as_i64().unwrap_or(0)).sum::<i64>();
         let known = named.iter().filter(|n| n["known"] == true).count();
-        let layer_hard: Vec<&&Fault> = my_layer.iter().filter(|f| !is_in(&f.rule, &advisory)).collect();
+        // A published "(advisory)" line is advice in every layer rule, not only the
+        // rules whose every line is advice: I7's unknown-source line is one (D138).
+        let layer_hard: Vec<&&Fault> = my_layer
+            .iter()
+            .filter(|f| !is_in(&f.rule, &advisory) && !f.line.contains("(advisory)"))
+            .collect();
         book_reports.push(json!({
             "key": key,
             "title": field(tree_info.get(&ci(key)).unwrap_or(&Value::Null), "title"),

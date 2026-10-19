@@ -871,10 +871,13 @@ pub(crate) struct TitleRow {
 /// The Workspace title context I6 compares with (D135): rows of one bulk title
 /// projection, never an edit target. `complete` is false when the reader could not
 /// supply the whole Workspace, so no run claims a Workspace-wide check from one tree.
+/// `supplied` is false only when no context was passed at all; that documented mode
+/// compares the entries the run holds and makes no Workspace-wide claim.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TitleContext {
     pub(crate) titles: Vec<TitleRow>,
     pub(crate) complete: bool,
+    pub(crate) supplied: bool,
 }
 
 impl TitleContext {
@@ -892,7 +895,7 @@ impl TitleContext {
                 workspace: text(prop(row, "workspace")),
             });
         }
-        Self { titles: rows, complete: true }
+        Self { titles: rows, complete: true, supplied: true }
     }
 
     /// The context of a `--json` bundle's `context` object.
@@ -1311,6 +1314,19 @@ impl Check {
             titles.push(grams);
         }
         for (at, row) in checked.iter().enumerate() {
+            // A context the reader could not complete makes this Card's I6 unknown; the
+            // known rows are still compared, and the line says so (D136).
+            if self.context.supplied && !self.context.complete {
+                let known = self.context.titles.len();
+                faults.add(
+                    &row.address,
+                    "I6",
+                    &format!(
+                        "(advisory) Workspace title context incomplete: {known} known {} compared, others unknown",
+                        if known == 1 { "title" } else { "titles" }
+                    ),
+                );
+            }
             let own = &titles[row_at[&key(&row.address)]];
             let mut candidates: BTreeSet<usize> = BTreeSet::new();
             for gram in own {
@@ -2787,6 +2803,11 @@ mod tests {
             { "address": "T/1|f", "title": "均衡的存在性", "body": "该卡 [[T/1|a]] 说明了均衡。\n\n先看 [[T/1|a]] 的方法。该卡给出了结果。" },
             { "address": "T/1|g", "title": "平均分成三份", "body": "第 6 章给出了结论。\n\n本章。" },
             { "address": "T/1|h", "category": "anchor", "title": "第 3 组", "body": "§3.1 稀缺与配置\n\n§3.2 市场均衡" },
+            // A book-local model number in the title, and formulas whose labels are no prose.
+            { "address": "T/1|i", "title": "模型 1 的设定", "body": "模型 1 的设定说明企业如何选择产量。" },
+            { "address": "T/1|j", "title": "加成项来自需求弹性", "body": "由 $式 (12)$ 可得。\n\n$$\n式 (12) 有该项\n$$" },
+            // A Literature root's body is bibliographic/navigational, so a chapter label in it is no fault.
+            { "address": "book", "category": "root", "title": "企业家理论", "body": "第 6 章" },
         ]);
         let lines = run_json(&cards, "", Limits::default(), false, "");
         assert_eq!(
@@ -2795,6 +2816,7 @@ mod tests {
                 "T/1|a R20 (advisory) local reference `式 (12)` names no content: 式 (12) 有该项",
                 "T/1|c R20 (advisory) local reference `§11.D` names no content: §11.D 有该项。",
                 "T/1|g R20 (advisory) local reference `本章` names no content: 本章。",
+                "T/1|i R20 (advisory) local reference `模型 1` names no content: 模型 1 的设定",
             ]
         );
         assert_eq!(
@@ -2809,6 +2831,10 @@ mod tests {
         let (kept, faults) = filter_rules(&lines, DEFAULT_RULES);
         assert!(kept.iter().any(|line| line.contains(" R20 (advisory) ")));
         assert_eq!(faults, 0);
+        // D138's mode difference: --json counts every line it printed, advisory included.
+        let printed = lines.len() - 1;
+        assert_eq!(lines[printed], format!("faults: {printed}"));
+        assert!(of_rule(&lines, "R20").len() >= 1 && of_rule(&lines, "R21").len() >= 1);
     }
 
     /// I7: a Topic Idea Card whose `rests-on` Link enters its own source's
@@ -2834,7 +2860,17 @@ mod tests {
         let unknown = idea("12/3/1|d", "12/3", "依赖 [[book/6]] 的结论：事后分配由地位决定。", "book/6", "rests-on");
         let mut from_body = idea("12/3/1|e", "12/3", "依赖 [[book/7]] 的设定。\n\n来源：[[book]] §3.2", "book/7", "rests-on");
         from_body["links"] = json!(["book/7", "book"]);
-        let cards = json!([own, illustrates, other, in_book, unknown, from_body]);
+        // D106: several named sources are each checked, and the matched premise is named.
+        let mut explicit_two = idea("12/3/1|f", "12/3", "依赖 [[other/2]] 的前提：投资不可转用。", "other/2", "rests-on");
+        explicit_two["sources"] = json!(["book", "other"]);
+        let mut body_two = idea("12/3/1|g", "12/3", "依赖 [[book/8]] 的设定。\n\n来源：[[book]] §3.2\n来源：[[other]] §2.1", "book/8", "rests-on");
+        body_two["links"] = json!(["book/8", "book", "other"]);
+        // D105: `corresponds` and `contrasts` express a real relation, not a premise.
+        let mut corresponds = idea("12/3/1|h", "12/3", "对应 [[book/9]] 的均衡。", "book/9", "corresponds");
+        corresponds["sources"] = json!(["book"]);
+        let mut contrasts = idea("12/3/1|i", "12/3", "对照 [[book/10]] 的设定。", "book/10", "contrasts");
+        contrasts["sources"] = json!(["book"]);
+        let cards = json!([own, illustrates, other, in_book, unknown, from_body, explicit_two, body_two, corresponds, contrasts]);
         let lines = run_json(&cards, "", Limits::default(), false, "");
         assert_eq!(
             of_rule(&lines, "I7"),
@@ -2842,6 +2878,8 @@ mod tests {
                 "12/3/1|a I7 `rests-on` [[book/4]] enters its own source `book`",
                 "12/3/1|d I7 (advisory) source evidence unknown, so [[book/6]] may be an own-source premise",
                 "12/3/1|e I7 `rests-on` [[book/7]] enters its own source `book`",
+                "12/3/1|f I7 `rests-on` [[other/2]] enters its own source `other`",
+                "12/3/1|g I7 `rests-on` [[book/8]] enters its own source `book`",
             ]
         );
     }
@@ -2878,6 +2916,35 @@ mod tests {
         ] });
         let lines = run_json(&pair, "", Limits::default(), false, "");
         assert_eq!(of_rule(&lines, "I6"), ["12/1|d I6 (advisory) a title very similar to [[12/1|a]]"]);
+    }
+
+    /// D136: a reader that supplies an incomplete Workspace title context makes
+    /// I6 unknown. A tree-only read never claims a Workspace-wide check, and a
+    /// bundle with no context keeps the documented run-scoped comparison.
+    #[test]
+    fn an_incomplete_title_context_marks_i6_unknown() {
+        let card = json!({ "address": "12/1|a", "category": "idea", "workspace": "agent", "tree": "12",
+            "title": "剩余控制权决定契约空白处", "body": "所有者能拒绝合作，所以契约的空白处由所有者决定。" });
+        let row = json!({ "address": "41/1|b", "title": "剩余控制权决定契约的空白处", "workspace": "agent", "tree": "41" });
+        let incomplete = json!({ "cards": [card.clone()],
+            "context": { "complete": false, "titles": [row.clone()] } });
+        let lines = run_json(&incomplete, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I6"),
+            [
+                "12/1|a I6 (advisory) Workspace title context incomplete: 1 known title compared, others unknown",
+                "12/1|a I6 (advisory) a title very similar to [[41/1|b]]",
+            ]
+        );
+        // The same rows with the completeness the reader asserts: no unknown line.
+        let complete = json!({ "cards": [card.clone()],
+            "context": { "complete": true, "titles": [row] } });
+        let lines = run_json(&complete, "", Limits::default(), false, "");
+        assert_eq!(of_rule(&lines, "I6"), ["12/1|a I6 (advisory) a title very similar to [[41/1|b]]"]);
+        // No context at all: the documented comparison of the entries the run holds.
+        let bundle = json!({ "cards": [card] });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert!(of_rule(&lines, "I6").is_empty());
     }
 
     #[test]
