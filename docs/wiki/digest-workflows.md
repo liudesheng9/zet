@@ -9,7 +9,7 @@ paths:
   - "!.claude/workflow-framework/*/history/**"
   - "!.claude/workflows/zt-issue-dev.js"
   - "!.claude/workflow-framework/zt-issue-dev/**"
-synced: 6ddcf025d695
+synced: 08792ab9d55d
 updated: 2026-10-19
 ---
 
