@@ -138,6 +138,9 @@ try {
     Assert (@($anchorCopy -match ('^topic:' + [regex]::Escape($a) + ' anchor-title ')).Count) "precheck: a topic hub that copies its anchor's title is refused ($($anchorCopy -join ' | '))"
     $lineCopy = Precheck-Variant 'line-anchor-title.json' { param($p) $p.lines[0].title = '多重均衡' }
     Assert (@($lineCopy -match ('^line:' + [regex]::Escape($made[4]) + ' anchor-title ')).Count) "precheck: a line hub that copies its anchor's title is refused ($($lineCopy -join ' | '))"
+    # The topic hub is filed under <n>/1, so that Card's title is refused as well as the Topic Card's.
+    $parentCopy = Precheck-Variant 'parent-title.json' { param($p) $p.topic.title = '私人信息让高质量卖者退出' }
+    Assert (@(@($parentCopy) -match ('^topic:' + [regex]::Escape($a) + ' anchor-title ')).Count) "precheck: a topic hub that copies the title of the Card it hangs under is refused ($($parentCopy -join ' | '))"
     $navTitle = Precheck-Variant 'nav-title.json' { param($p) $p.topic.title = '逆向选择市场的分解入口' }
     $navCopy = @(@($navTitle) | Where-Object { $_ -match ' anchor-title ' })
     Assert ($navCopy.Count -eq 0) "precheck: a title that names the navigation role is accepted ($($navTitle -join ' | '))"

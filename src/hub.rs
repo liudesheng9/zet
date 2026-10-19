@@ -774,18 +774,32 @@ impl<'a> Graph<'a> {
         }
         // `anchor-title` (D130, D169): a line or topic hub whose title copies the title of
         // the Card it hangs under tells the reader nothing about its navigation role. Case
-        // and whitespace are normalized; broad semantic similarity is not a refusal.
-        if matches!(level, Some(HubLevel::Line) | Some(HubLevel::Topic))
-            && let Some(anchor) = crate::parent_location(address)
-        {
+        // and whitespace are normalized; broad semantic similarity is not a refusal. A topic
+        // hub also names the tree's Topic Card: that is the Card the compiler's precheck
+        // anchors a new draft to, so a draft it refuses is a fault this report names.
+        if matches!(level, Some(HubLevel::Line) | Some(HubLevel::Topic)) {
+            // The anchors in report order: the Card it hangs under, then the Topic Card.
+            let mut anchors: Vec<String> = crate::parent_location(address).into_iter().collect();
+            if level == Some(HubLevel::Topic) {
+                let topic = crate::tree_root_address(crate::tree_id(address));
+                if !anchors.contains(&topic) {
+                    anchors.push(topic);
+                }
+            }
             let own = normalized_title(&self.snapshot.title(address));
-            let upper = normalized_title(&self.snapshot.title(&anchor));
-            if !own.is_empty() && own == upper {
+            let copied = if own.is_empty() {
+                None
+            } else {
+                anchors
+                    .into_iter()
+                    .find(|anchor| normalized_title(&self.snapshot.title(anchor)) == own)
+            };
+            if let Some(anchor) = copied {
                 fault(
                     &mut faults,
                     "anchor-title",
                     format!(
-                        "the title repeats the anchor `{anchor}` title; name what the hub navigates, for example 消费需求的分解入口"
+                        "the title repeats the title of `{anchor}`; name what the hub navigates, for example 消费需求的分解入口"
                     ),
                 );
             }

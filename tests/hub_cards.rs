@@ -340,6 +340,35 @@ fn a_hub_that_copies_its_anchor_title_is_named() {
 }
 
 #[test]
+fn a_topic_hub_that_copies_its_topic_title_is_named() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 4);
+    let line = format!("- [[{a}/2]]：第二张卡说明机制。");
+    // A topic hub is filed under <n>/1; a title that repeats its tree's Topic Card says
+    // nothing about the way in, and the hub compiler's precheck refuses the same draft.
+    let hub = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/1"), "kind": "side", "type": "hub", "level": "topic",
+                "title": "逆向选择", "body": format!("## 主线\n{line}") }),
+    ));
+    let report = mcp.ok("get_hub", json!({ "at": hub }));
+    assert!(faults(&report).contains(&"anchor-title".to_string()), "{:?}", faults(&report));
+    // The report's anchor stays the Card it hangs under.
+    assert_eq!(report["anchor"], format!("{a}/1"));
+    // A title that names the navigation role is no fault.
+    mcp.ok("edit_card", json!({ "at": hub, "title": "逆向选择市场的分解入口" }));
+    let found = faults(&mcp.ok("get_hub", json!({ "at": hub })));
+    assert!(!found.contains(&"anchor-title".to_string()), "{found:?}");
+    // Copying the title of the Card it hangs under is still reported.
+    mcp.ok("edit_card", json!({ "at": hub, "title": "逆向选择 第 1 张卡" }));
+    let found = faults(&mcp.ok("get_hub", json!({ "at": hub })));
+    assert!(found.contains(&"anchor-title".to_string()), "{found:?}");
+    // The report is read-only: the Topic Card itself is unchanged.
+    assert_eq!(mcp.ok("get_card", json!({ "at": format!("{a}/0") }))["title"], "逆向选择");
+}
+
+#[test]
 fn a_line_hub_lists_the_line_hub_of_its_sub_branch_and_neighbours_do_not_count_toward_size() {
     let home = TestHome::new();
     let mut mcp = home.mcp();

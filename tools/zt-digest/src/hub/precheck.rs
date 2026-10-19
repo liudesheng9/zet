@@ -42,6 +42,30 @@ fn hub_rank(level: &str) -> i64 {
     }
 }
 
+/// The Card a hub address hangs under, as zt's `parent_location` reads it: `3/1|a` → `3/1`,
+/// `3/2` → `3/1`, `3/1` → `3/0`. None for a Topic root or a string that is no address.
+fn address_parent(location: &str) -> Option<String> {
+    let (prefix, last) = location.rsplit_once(['/', '|'])?;
+    let side = location.as_bytes().get(prefix.len()) == Some(&b'|');
+    if last.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Some(prefix.to_string());
+    }
+    let number: u64 = last.parse().ok()?;
+    if number > 1 {
+        return Some(format!("{prefix}{}{}", if side { '|' } else { '/' }, number - 1));
+    }
+    Some(if side { prefix.to_string() } else { format!("{prefix}/0") })
+}
+
+/// The address apply rewrites or creates for a tree's topic hub: the state's or survey's hub,
+/// else the tree's legacy hub it rewrites, else `<tree>/1` where it creates one.
+fn topic_hub_address(known: Option<&str>, legacy: Option<&str>, tree: &str) -> String {
+    match known.filter(|address| !address.is_empty()).or_else(|| legacy.filter(|address| !address.is_empty())) {
+        Some(address) => address.to_string(),
+        None => format!("{tree}/1"),
+    }
+}
+
 /// `$a -ge $b` on two JSON values: null is below every number and equal to null.
 fn ge_value(a: &Value, b: &Value) -> bool {
     match (a.as_f64(), b.as_f64()) {
@@ -245,32 +269,51 @@ impl Hub {
         Ok(address)
     }
 
-    /// `anchor-title` (D130, D169): a new line or topic hub may not repeat the title of
-    /// the Card it hangs under — the reader learns nothing about the way in. Whitespace
-    /// and case are normalized; a differently worded title is no fault.
+    /// The title of the Card `anchor`, normalized; a Card outside the imported trees falls
+    /// back to the survey's title of `tree` (a Topic Card's own tree).
+    fn anchor_title(&self, survey: &Value, anchor: &str, tree: &str) -> String {
+        match self.card(anchor) {
+            Some(card) => normalize_title(&st(&card["title"])),
+            None => normalize_title(
+                &survey["trees"].as_object().and_then(|m| m.get(tree)).map(|s| st(&s["title"])).unwrap_or_default(),
+            ),
+        }
+    }
+
+    /// `anchor-title` (D130, D169): a new line or topic hub may not repeat the title of the
+    /// Card it hangs under — the reader learns nothing about the way in. A topic hub also
+    /// names the tree's Topic Card: that is the anchor `get_hub` reports the fault against.
+    /// Whitespace and case are normalized; a differently worded title is no fault.
     fn test_anchor_title(&mut self, ctx: &Ctx, survey: &Value, hub: &Value) {
         let title = normalize_title(&st(&hub["title"]));
         if title.is_empty() {
             return;
         }
-        let (anchor, tree) = if ps::eq(&ctx.level, "line") {
-            (ctx.anchor.clone(), String::new())
+        let (anchors, tree) = if ps::eq(&ctx.level, "line") {
+            (vec![ctx.anchor.clone()], String::new())
         } else if ps::eq(&ctx.level, "topic") {
             let tree = ctx.at.trim_start_matches("topic:").to_string();
-            let anchor = format!("{tree}/0");
-            (anchor, tree)
+            // A topic hub is a Side successor: apply rewrites the tree's hub (or legacy hub)
+            // and creates a new one under `<tree>/1`, so that Card is the one it hangs under.
+            let tree_entry = survey["trees"].as_object().and_then(|m| m.get(&tree));
+            let legacy = ps::each(&tree_entry.map(|s| s["legacy"].clone()).unwrap_or(Value::Null))
+                .first()
+                .map(|at| st(at))
+                .unwrap_or_default();
+            let known = self.topic_hubs(survey).get(&tree).cloned().unwrap_or_default();
+            let parent = address_parent(&topic_hub_address(Some(&known), Some(&legacy), &tree))
+                .unwrap_or_else(|| format!("{tree}/1"));
+            let topic = format!("{tree}/0");
+            let anchors = if parent == topic { vec![topic] } else { vec![topic, parent] };
+            (anchors, tree)
         } else {
             return;
         };
-        let upper = match self.card(&anchor) {
-            Some(card) => normalize_title(&st(&card["title"])),
-            None => normalize_title(
-                &survey["trees"].as_object().and_then(|m| m.get(&tree)).map(|s| st(&s["title"])).unwrap_or_default(),
-            ),
-        };
-        if upper.is_empty() || title != upper {
-            return;
-        }
+        let copied = anchors.into_iter().find(|anchor| {
+            let upper = self.anchor_title(survey, anchor, &tree);
+            !upper.is_empty() && title == upper
+        });
+        let Some(anchor) = copied else { return };
         self.add_pre(
             &ctx.at,
             "anchor-title",
@@ -705,6 +748,25 @@ mod tests {
         let mut refs = Vec::new();
         draft_refs(&plan, &mut refs);
         assert_eq!(refs, ["3", "3/1", "line:3/2", "3/2", "4/1", "tree:5", "field:x"]);
+    }
+
+    #[test]
+    fn an_address_parent_is_the_card_it_hangs_under() {
+        assert_eq!(address_parent("3/1|a").as_deref(), Some("3/1"));
+        assert_eq!(address_parent("3/1|a|2").as_deref(), Some("3/1|a|1"));
+        assert_eq!(address_parent("3/2").as_deref(), Some("3/1"));
+        assert_eq!(address_parent("3/1").as_deref(), Some("3/0"));
+        assert_eq!(address_parent("3"), None);
+        assert_eq!(address_parent(""), None);
+    }
+
+    #[test]
+    fn a_topic_hub_address_follows_what_apply_writes() {
+        // Apply rewrites the tree's known hub, else its legacy hub, else creates `<tree>/1`.
+        assert_eq!(topic_hub_address(Some("3/1|a"), Some("3/2|b"), "3"), "3/1|a");
+        assert_eq!(topic_hub_address(None, Some("3/2|b"), "3"), "3/2|b");
+        assert_eq!(topic_hub_address(Some(""), Some(""), "3"), "3/1");
+        assert_eq!(address_parent("3/2|b").as_deref(), Some("3/2"));
     }
 
     #[test]

@@ -1308,12 +1308,25 @@ impl Check {
             if grams.is_empty() {
                 single.push(at);
             }
+            // The index folds case only, so the inverted index alone finds an exact copy
+            // that differs in case — the Dice function keeps case in a bigram (D137).
             for gram in &grams {
-                index.entry(gram.clone()).or_default().push(at);
+                index.entry(gram.to_lowercase()).or_default().push(at);
             }
             titles.push(grams);
         }
         for (at, row) in checked.iter().enumerate() {
+            // The context is one Workspace's title projection (D135): an entry that names
+            // no Workspace cannot be compared without crossing that boundary, so I6 is
+            // unknown for it rather than silently reporting a pair from the other half.
+            if self.context.supplied && row.workspace.is_empty() {
+                faults.add(
+                    &row.address,
+                    "I6",
+                    "(advisory) Workspace scope unknown: the entry names no Workspace, so nothing is compared",
+                );
+                continue;
+            }
             // A context the reader could not complete makes this Card's I6 unknown; the
             // known rows are still compared, and the line says so (D136).
             if self.context.supplied && !self.context.complete {
@@ -1330,15 +1343,12 @@ impl Check {
             let own = &titles[row_at[&key(&row.address)]];
             let mut candidates: BTreeSet<usize> = BTreeSet::new();
             for gram in own {
-                for other in index.get(gram).into_iter().flatten() {
+                for other in index.get(&gram.to_lowercase()).into_iter().flatten() {
                     candidates.insert(*other);
                 }
             }
             if own.is_empty() {
                 candidates.extend(single.iter().copied());
-            }
-            for other_at in rows.iter().enumerate().filter(|(_, other)| key(&other.title) == key(&row.title)).map(|(at, _)| at) {
-                candidates.insert(other_at);
             }
             for other_at in candidates {
                 let other = &rows[other_at];
@@ -2916,6 +2926,57 @@ mod tests {
         ] });
         let lines = run_json(&pair, "", Limits::default(), false, "");
         assert_eq!(of_rule(&lines, "I6"), ["12/1|d I6 (advisory) a title very similar to [[12/1|a]]"]);
+    }
+
+    /// An exact copy is a pair even when the two spellings differ only in case or in
+    /// punctuation the Dice function already ignores: the candidate index folds case, so
+    /// no full scan of the context is needed to find one (D137).
+    #[test]
+    fn an_exact_title_copy_is_found_without_scanning_the_context() {
+        let bundle = json!({
+            "cards": [
+                { "address": "30/1|a", "category": "idea", "workspace": "agent",
+                  "title": "Default Risk Drives Out Good Sellers" },
+                { "address": "30/1|b", "category": "idea", "workspace": "agent", "title": "公开" }
+            ],
+            "context": { "complete": true, "titles": [
+                { "address": "30/1|c", "title": "default risk drives out good sellers", "workspace": "agent" },
+                { "address": "30/1|d", "title": "Default Risk Drives Out Good Sellers!", "workspace": "agent" },
+                { "address": "30/1|e", "title": "公开", "workspace": "agent" },
+                { "address": "h/1", "title": "default risk drives out good sellers", "workspace": "human" }
+            ] }
+        });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I6"),
+            [
+                // The case-only copy: the same title, and the other Workspace stays out.
+                "30/1|a I6 (advisory) a title very similar to [[30/1|c]]",
+                // One punctuation mark apart: one pair, reported once, on the checked Card.
+                "30/1|a I6 (advisory) a title very similar to [[30/1|d]]",
+                // A title of one character has no bigram; an exact copy is still a pair.
+                "30/1|b I6 (advisory) a title very similar to [[30/1|e]]",
+            ]
+        );
+    }
+
+    /// D135: the context is one Workspace's title projection. An entry that names no
+    /// Workspace cannot keep the two apart, so the run marks I6 unknown instead of
+    /// silently comparing across a Workspace boundary.
+    #[test]
+    fn an_entry_without_a_workspace_marks_i6_unknown() {
+        let bundle = json!({
+            "cards": [{ "address": "12/1|a", "category": "idea", "title": "剩余控制权决定契约空白处" }],
+            "context": { "complete": true, "titles": [
+                { "address": "12/1|b", "title": "剩余控制权决定契约空白处", "workspace": "agent" },
+                { "address": "h/1", "title": "剩余控制权决定契约空白处", "workspace": "human" }
+            ] }
+        });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I6"),
+            ["12/1|a I6 (advisory) Workspace scope unknown: the entry names no Workspace, so nothing is compared"]
+        );
     }
 
     /// D136: a reader that supplies an incomplete Workspace title context makes

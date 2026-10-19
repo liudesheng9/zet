@@ -45,6 +45,11 @@ try {
     $unrelated = Write-Cards @(@{tool='create_successor';arguments=@{at=$other[0];title='专用性投资提高合作的剩余';body='投资转用以后价值下降，双方因此愿意合作。'}})
     $none = @(Invoke-ZtCheck -Cards $unrelated[0] -Rules 'I6')
     Assert (@($none | Where-Object { $_ -match ' I6 ' }).Count -eq 0) "an unrelated title raises no I6 ($($none -join ' | '))"
+    # A derived navigation role is no substantive duplicate-title subject: a Hub Card whose title
+    # copies an Idea Card's is checked by the hub rules, never by I6 (#93 S03-AC06).
+    $hub = Write-Cards @(@{tool='create_successor';arguments=@{at=$one;kind='side';type='hub';level='line';title='剩余控制权决定契约空白处';body="## 主线`n- [[$one]]：所有者决定契约的空白处。"}})
+    $hubCheck = @(Invoke-ZtCheck -Cards $hub[0] -Rules 'I6')
+    Assert (@($hubCheck | Where-Object { $_ -match ' I6 ' }).Count -eq 0) "a Hub Card is no I6 subject ($($hubCheck -join ' | '))"
     # Read-only: the checker changed no Card and left one revision.
     $revision = @(zt status | Where-Object { $_ -match '^revision: ' })
     Assert ($revision.Count -eq 1) 'the checker leaves the archive service record intact'
