@@ -9,6 +9,7 @@
 //!   zt-digest finalize -Step plan|scope|refresh|final -Out <out> ...   (the finite finalization, #86)
 //!   zt-digest concepts -Step prepare|judge|report|decision -Staging <folder> ...   (the concept review, #97)
 //!   zt-digest register -Step plan|apply|check -Work <folder> [-Review <report>] ...   (the concept register, #101)
+//!   zt-digest join  -Step plan|apply -Work <folder> [-File <selection>] ...   (existing Topic pairs and one approved join, #109)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -44,6 +45,7 @@ mod restate;
 mod skeleton;
 mod snapshot;
 mod terms;
+mod topic_join;
 mod util;
 mod zt;
 
@@ -154,6 +156,7 @@ fn main() {
         "finalize" => finalize::cli(&rest),
         "gate" => gate::cli(&rest),
         "concepts" => concepts::cli(&rest),
+        "join" => topic_join::cli(&rest),
         "restate" => restate::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
@@ -173,7 +176,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, bridge, math, event, finding, gate,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, join, bridge, math, event, finding, gate,
        terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }
