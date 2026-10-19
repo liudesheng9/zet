@@ -284,6 +284,13 @@ fn context(conn: &Connection, addresses: &[String], models: bool) -> Result<Snap
         if let Some(parent) = crate::parent_location(at) {
             scope.add(&parent)?;
         }
+        // A register part holds a term row for this Card, and the register that declares the part
+        // is the hub the Card is a member of (D187, §8.4): load it so `hubs_of` can report it.
+        for source in scope.inbound.get(at).cloned().unwrap_or_default() {
+            if let Some(parent) = crate::parent_location(&source) {
+                scope.add(&parent)?;
+            }
+        }
         if models {
             if let Some(head) = scope.heads(at)?.first().cloned() {
                 report_heads.insert(head.clone());
@@ -842,6 +849,12 @@ fn register_view(
     }
     for part in crate::hub::register_part_targets(&body) {
         wanted.insert(part);
+    }
+    // A Side successor of the register holding 词条 rows that the register no longer declares is
+    // reported, not accepted and not dropped: its body is read to tell it from an ordinary Card
+    // (D182, §8.4).
+    for successor in crate::hub::register_side_successors(&read.snapshot, at) {
+        wanted.insert(successor);
     }
     let mut bodies = BTreeMap::new();
     for address in &wanted {

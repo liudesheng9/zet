@@ -351,7 +351,20 @@ pub(crate) fn invoke_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false, None)?.0)
+    Ok(execute_identified(zt, calls, prefix, allow, false, None, true)?.0)
+}
+
+/// Apply an identified call list whose outputs are staged for a later publication step: the
+/// register's parts, and the root shell they are filed under, are rewritten by the root call that
+/// follows them (D189). Only the receipts are returned; the caller's own fresh read of the staged
+/// Cards is the completion evidence. A final output still uses [`invoke_identified`].
+pub(crate) fn invoke_identified_staged(
+    zt: &mut Zt,
+    calls: &[Value],
+    prefix: &str,
+    allow: Option<&HashSet<String>>,
+) -> Result<Vec<Value>> {
+    Ok(execute_identified(zt, calls, prefix, allow, false, None, false)?.0)
 }
 
 /// Apply an immutable accepted call list whose Topic creation was cleared by a concept decision
@@ -365,7 +378,7 @@ pub(crate) fn invoke_identified_gated(
     allow: Option<&HashSet<String>>,
     concept: &Value,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false, Some(concept))?.0)
+    Ok(execute_identified(zt, calls, prefix, allow, false, Some(concept), true)?.0)
 }
 
 /// Validate a complete accepted sequence against real archive validators. The
@@ -376,7 +389,7 @@ pub(crate) fn preview_identified(
     prefix: &str,
     allow: Option<&HashSet<String>>,
 ) -> Result<Value> {
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None, false)?;
     let draft = draft.context("incomplete identified preview: no draft")?;
     if draft["preview"] != true
         || draft["applied"] != false
@@ -422,6 +435,7 @@ fn execute_identified(
     allow: Option<&HashSet<String>>,
     preview: bool,
     concept: Option<&Value>,
+    verify: bool,
 ) -> Result<(Vec<Value>, Option<Value>)> {
     let segments: Vec<_> = prefix.split('/').collect();
     if segments.len() != 4
@@ -654,7 +668,7 @@ fn execute_identified(
             draft = Some(reply);
         }
     }
-    if !preview {
+    if !preview && verify {
         verify_identified(zt, &done)?;
     }
     Ok((done, draft))
@@ -692,7 +706,7 @@ fn precheck_identified(
             "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
         );
     }
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None, false)?;
     let draft = draft.context("incomplete Link draft: no preview")?;
     if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {
         bail!("incomplete Link draft: explicit complete, unapplied preview required");

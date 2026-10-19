@@ -33,7 +33,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::hub::{RegisterRow, register_part_targets, register_row_faults, register_rows};
+use crate::hub::{
+    RegisterRow, register_part_rows, register_part_targets, register_row_faults, register_rows,
+};
 use crate::ops::Snapshot;
 use crate::{CardType, Workspace};
 
@@ -96,6 +98,22 @@ pub(crate) fn bounds() -> Value {
         "entry_limit_default": ENTRY_LIMIT_DEFAULT,
         "entry_limit_max": ENTRY_LIMIT_MAX,
     })
+}
+
+/// Whether two rows name the same Cards: the one row an interrupted publication wrote twice
+/// (§8.5, D189). The order of a term's destinations is display order, so the same Cards in another
+/// order are the same entry, exactly as `mark_ambiguous_terms` reads a label.
+fn same_targets(a: &Entry, b: &Entry) -> bool {
+    let addresses = |entry: &Entry| {
+        let mut addresses = entry
+            .targets
+            .iter()
+            .map(|target| target.address.clone())
+            .collect::<Vec<_>>();
+        addresses.sort();
+        addresses
+    };
+    addresses(a) == addresses(b)
 }
 
 /// The two search orders (D198, D275): the existing plain lexical order and the entry-first order.
@@ -232,6 +250,9 @@ pub(crate) struct View {
     pub(crate) terms_by_card: BTreeMap<String, Vec<String>>,
     /// Confirmed restatement entries (`## 同述入口`): entry Card → the substantive Card.
     pub(crate) restatements: Vec<Value>,
+    /// Rows an earlier equivalent row already serves: the register or part they were written on,
+    /// so a reader can see that an interrupted publication left a row behind (D189, AC08).
+    pub(crate) duplicates: Vec<Value>,
 }
 
 impl View {
@@ -256,12 +277,41 @@ impl View {
             parts: Vec::new(),
             terms_by_card: BTreeMap::new(),
             restatements: Vec::new(),
+            duplicates: Vec::new(),
         };
         view.add_rows(snapshot, register, None, &body, bodies);
         view.read_parts(snapshot, register, &body, bodies);
+        view.read_unlisted_parts(snapshot, register, &body, bodies);
         view.read_restatements(snapshot, restatement_sections);
+        view.deduplicate();
         view.mark_ambiguous_terms();
         view
+    }
+
+    /// An interrupted publication may leave the same row on the root and in a part (D189). A row
+    /// the view already serves under the same term with the same Cards is served once and named in
+    /// `duplicates`, so nothing is counted twice; the same term with other Cards stays two entries
+    /// and is one `ambiguous` fault, so a contradictory target is never silently dropped (AC08).
+    fn deduplicate(&mut self) {
+        let mut served: Vec<Entry> = Vec::new();
+        for entry in std::mem::take(&mut self.entries) {
+            match served
+                .iter()
+                .find(|seen| seen.term == entry.term)
+                .filter(|seen| same_targets(seen, &entry))
+            {
+                Some(seen) => self.duplicates.push(json!({
+                    "term": entry.term,
+                    "card": entry.card,
+                    "part": entry.part,
+                    "line": entry.line,
+                    "served_by": seen.card,
+                    "served_line": seen.line,
+                })),
+                None => served.push(entry),
+            }
+        }
+        self.entries = served;
     }
 
     /// Identical term labels with conflicting destinations are one ambiguous term (§12.3, D299):
@@ -376,9 +426,56 @@ impl View {
         }
     }
 
+    /// A Side successor of the register that holds `词条` rows but is no longer declared under
+    /// `词条分册` is reported, never silently accepted as another register and never dropped: its
+    /// rows are missing from the register, so the view says so (D182, AC05).
+    fn read_unlisted_parts(
+        &mut self,
+        snapshot: &Snapshot,
+        register: &str,
+        body: &str,
+        bodies: &BTreeMap<String, String>,
+    ) {
+        let declared = register_part_rows(body)
+            .into_iter()
+            .filter_map(|row| row.address)
+            .collect::<BTreeSet<_>>();
+        for address in crate::hub::register_side_successors(snapshot, register) {
+            if declared.contains(&address) {
+                continue;
+            }
+            let part_body = bodies
+                .get(&address)
+                .cloned()
+                .or_else(|| snapshot.parsed.get(&address).map(|parsed| parsed.body.clone()))
+                .unwrap_or_default();
+            if crate::hub::register_rows(&part_body).is_empty() {
+                continue;
+            }
+            self.faults.push(json!({
+                "fault": "part-unlisted",
+                "detail": format!(
+                    "[[{address}]] is a Side successor of [[{register}]] and holds 词条 rows, but the register does not declare it under 词条分册; declare it or move its rows"
+                ),
+                "card": register,
+                "part": address,
+            }));
+            self.parts.push(json!({
+                "label": "",
+                "address": address,
+                "title": snapshot.title(&address),
+                "exists": true,
+                "place": "unlisted",
+                "entries": 0,
+            }));
+        }
+    }
+
     /// The declared `词条分册` parts: their identity is the root's Links plus their place as
     /// immediate Side successors of the register (§8.4). A missing, misplaced, nested, or Hub
-    /// part is reported and its rows are not accepted.
+    /// part is reported and its rows are not accepted. The accepted label a part was planned with
+    /// travels with it; a declaration without one is reported, because the accepted grouping is
+    /// then no longer visible in the register (D177, D184).
     fn read_parts(
         &mut self,
         snapshot: &Snapshot,
@@ -387,7 +484,30 @@ impl View {
         bodies: &BTreeMap<String, String>,
     ) {
         let mut declared = BTreeSet::new();
-        for address in register_part_targets(body) {
+        for row in register_part_rows(body) {
+            let Some(address) = row.address else {
+                self.faults.push(json!({
+                    "fault": "part-label",
+                    "detail": format!(
+                        "the 词条分册 row on line {} names no Card; a part is declared as `- [[address]] A–F`",
+                        row.line
+                    ),
+                    "card": register,
+                    "line": row.line,
+                }));
+                continue;
+            };
+            if row.label.is_empty() {
+                self.faults.push(json!({
+                    "fault": "part-label",
+                    "detail": format!(
+                        "[[{address}]] is declared under 词条分册 without its accepted initial range; write the range the part groups, for example `- [[{address}]] A–F`"
+                    ),
+                    "card": register,
+                    "line": row.line,
+                    "part": address,
+                }));
+            }
             if !declared.insert(address.clone()) {
                 self.faults.push(json!({
                     "fault": "part-duplicate",
@@ -402,7 +522,7 @@ impl View {
                     "detail": format!("[[{address}]] is declared under 词条分册 but does not exist"),
                     "card": register,
                 }));
-                self.parts.push(json!({"address": address, "title": null, "exists": false, "place": "missing", "entries": 0}));
+                self.parts.push(json!({"label": row.label, "address": address, "title": null, "exists": false, "place": "missing", "entries": 0}));
                 continue;
             };
             if card.card_type == crate::CardType::Hub {
@@ -411,7 +531,7 @@ impl View {
                     "detail": format!("[[{address}]] is a Hub Card; a register part is an ordinary Idea Card"),
                     "card": register,
                 }));
-                self.parts.push(json!({"address": address, "title": snapshot.title(&address), "exists": true, "place": "hub", "entries": 0}));
+                self.parts.push(json!({"label": row.label, "address": address, "title": snapshot.title(&address), "exists": true, "place": "hub", "entries": 0}));
                 continue;
             }
             if crate::parent_location(&address).as_deref() != Some(register) {
@@ -420,7 +540,7 @@ impl View {
                     "detail": format!("[[{address}]] is declared under 词条分册 but is not an immediate Side successor of [[{register}]]"),
                     "card": register,
                 }));
-                self.parts.push(json!({"address": address, "title": snapshot.title(&address), "exists": true, "place": "moved", "entries": 0}));
+                self.parts.push(json!({"label": row.label, "address": address, "title": snapshot.title(&address), "exists": true, "place": "moved", "entries": 0}));
                 continue;
             }
             let part_body = bodies.get(&address).cloned().unwrap_or_default();
@@ -434,6 +554,7 @@ impl View {
             let before = self.entries.len();
             self.add_rows(snapshot, &address, Some(&address), &part_body, bodies);
             self.parts.push(json!({
+                "label": row.label,
                 "address": address,
                 "title": snapshot.title(&address),
                 "exists": true,
@@ -531,6 +652,7 @@ impl View {
             "complete": self.faults.is_empty(),
             "terms_by_card": self.terms_by_card,
             "restatements": self.restatements,
+            "duplicates": self.duplicates,
             "bounds": bounds(),
             "archive_revision": revision,
             "archive_identity": identity,
@@ -1346,6 +1468,82 @@ mod tests {
         assert_eq!(restatement_links(body), vec!["88/2|a"]);
         assert!(restatement_links("没有入口的卡 [[88/2]]").is_empty());
         assert_eq!(restatement_links("## 同述入口\n- [[88/2]] 一处\n- [[88/3]] 两处\n").len(), 2);
+    }
+
+    fn target(address: &str) -> Target {
+        Target {
+            address: address.to_string(),
+            exists: true,
+            title: None,
+            card_type: None,
+            facet: None,
+            workspace: Some("agent"),
+            tree: "5".to_string(),
+            body: None,
+            body_chars: 0,
+            body_lines: 0,
+            truncated: false,
+        }
+    }
+
+    fn entry(term: &str, card: &str, part: Option<&str>, line: usize, targets: &[&str]) -> Entry {
+        Entry {
+            term: term.to_string(),
+            line,
+            card: card.to_string(),
+            part: part.map(str::to_string),
+            targets: targets.iter().map(|at| target(at)).collect(),
+            faults: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_equivalent_row_is_served_once_and_a_contradiction_stays_two_entries() {
+        let mut view = View {
+            register: "2/1".to_string(),
+            entries: vec![
+                entry("均衡", "2/1", None, 3, &["5/1", "5/2"]),
+                // The same row left in a part: served once, named as a duplicate.
+                entry("均衡", "3/1", Some("3/1"), 2, &["5/1", "5/2"]),
+                // The same term with other Cards: two entries, and mark_ambiguous_terms names it.
+                entry("学习", "2/1", None, 4, &["6/1"]),
+                entry("学习", "3/1", Some("3/1"), 3, &["7/1"]),
+                // The same Cards in another order are the same entry: served once, not a fault.
+                entry("投资", "2/1", None, 5, &["8/1", "8/2"]),
+                entry("投资", "3/1", Some("3/1"), 4, &["8/2", "8/1"]),
+            ],
+            faults: Vec::new(),
+            parts: Vec::new(),
+            terms_by_card: BTreeMap::new(),
+            restatements: Vec::new(),
+            duplicates: Vec::new(),
+        };
+        view.deduplicate();
+        view.mark_ambiguous_terms();
+        assert_eq!(view.entries.len(), 4, "the two leftover rows are served once");
+        assert_eq!(view.duplicates.len(), 2);
+        assert_eq!(view.duplicates[0]["term"], json!("均衡"));
+        assert_eq!(view.duplicates[0]["card"], json!("3/1"));
+        assert_eq!(view.duplicates[0]["served_by"], json!("2/1"));
+        assert_eq!(view.duplicates[0]["served_line"], json!(3));
+        assert_eq!(
+            view.duplicates[1]["term"],
+            json!("投资"),
+            "the same Cards in another order are one entry: {:?}",
+            view.duplicates
+        );
+        let conflicting = view
+            .faults
+            .iter()
+            .filter(|fault| fault["fault"] == json!("ambiguous"))
+            .map(|fault| fault["term"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            conflicting,
+            vec![json!("学习")],
+            "the contradictory label is reported and the equivalent one is not: {:?}",
+            view.faults
+        );
     }
 
     #[test]

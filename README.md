@@ -360,6 +360,16 @@ to. The book digest's hub stage writes them: a Haiku hub manager chooses the lim
 DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1` builds
 and checks the Cards. See [docs/hub-cards-design.md](docs/hub-cards-design.md).
 
+The **register** is the one hub of level `register` in a Workspace, the first Card of the Topic
+`索引`. Its `## 词条` section holds one key term per item, `- 学习：[[5/1]] [[5/2]]`: the term
+before the colon and one to three Links to the Cards that carry its substance, with scope in the
+term label and the explanation in those Cards. A register with more than 120 term rows moves them
+into ordinary Idea Cards declared under `## 词条分册`, one per accepted pinyin-initial range
+(`- [[2/1|a]] A–F`, `其他` for a term whose reading is missing or uncertain); each part has its own
+`## 词条` section, is an immediate Side successor of the register, and never holds parts of its own.
+`get_register` reads those rows as one paged catalog, and
+`scripts/book-digest/register-compiler.ps1` plans, publishes and re-checks it.
+
 ## The MCP server
 
 `zt mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so

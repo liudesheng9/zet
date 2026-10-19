@@ -279,6 +279,8 @@ Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（�
 
 **枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。书的消化流程的枢纽阶段写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [docs/hub-cards-design.md](docs/hub-cards-design.md)。
 
+**索引卡**（层级 `register`）是工作区里唯一的索引枢纽，是主题 `索引` 的第一张卡。它的 `## 词条` 组每行一个词条，写成 `- 学习：[[5/1]] [[5/2]]`：冒号前是词条，后指一到三张承载这个词条的卡；范围写在词条里，解释写在目标卡里。词条超过 120 行时，这些行搬进 `## 词条分册` 声明的普通 Idea Card，每张对应一个公认的拼音首字母区间（`- [[2/1|a]] A–F`；读音缺失或不确定的词条进 `其他`）。每张分册有自己的 `## 词条` 组，是索引卡的直接侧后继，自己不能再有分册。`get_register` 把这些行当作一个可分页的整体来读，`scripts/book-digest/register-compiler.ps1` 规划、发布并复查它。
+
 ## MCP 服务器
 
 `zt mcp` 通过 stdio 运行一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，

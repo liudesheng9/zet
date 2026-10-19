@@ -15,18 +15,42 @@ static STRUCTURE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^本卡是《.*》的结构卡").unwrap());
 
 pub const SUBSTANTIVE: &[&str] = &["idea", "event", "finding", "model", "part"];
-pub const EXCLUDED: &[&str] = &["root", "anchor", "structure", "terms", "notation", "hub"];
+pub const EXCLUDED: &[&str] = &[
+    "root",
+    "anchor",
+    "structure",
+    "terms",
+    "notation",
+    "hub",
+    "register-part",
+];
 
 fn field<'a>(card: &'a Value, name: &str) -> &'a str {
     card[name].as_str().unwrap_or_default()
 }
 
-/// Classify the same metadata for audit, compiler and standalone checks.
+/// Classify the same metadata for audit, compiler and standalone checks. A scope that does not
+/// read the register's declaration classifies no Card as a register part; the register read does.
 pub fn category(
     card: &Value,
     literature: &HashSet<String>,
     anchors: &HashMap<String, usize>,
 ) -> String {
+    category_with_parts(card, literature, anchors, &HashSet::new())
+}
+
+/// The same classification, with the addresses a register's root declares under `词条分册` (§8.5,
+/// D188): a register part is a navigation Card holding term rows, not a substantive Idea, so it
+/// triggers no claim-title or Idea-size rule and needs no topic hub of its own.
+pub fn category_with_parts(
+    card: &Value,
+    literature: &HashSet<String>,
+    anchors: &HashMap<String, usize>,
+    register_parts: &HashSet<String>,
+) -> String {
+    if register_parts.contains(field(card, "address")) {
+        return "register-part".into();
+    }
     if matches!(field(card, "kind"), "topic" | "literature") {
         return "root".into();
     }

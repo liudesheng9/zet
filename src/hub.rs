@@ -352,8 +352,107 @@ pub(crate) fn register_rows(body: &str) -> Vec<RegisterRow> {
     rows
 }
 
-/// The targets of a register's `词条分册` declaration, in declaration order (§8.4). A part's
-/// identity is these Links plus its place as an immediate Side successor of the register.
+/// One declaration of a register's `词条分册` section: the accepted label of the part's initial
+/// range and the Link of the part Card (§8.4, D177, D181). A part's identity is that Link plus its
+/// place as an immediate Side successor of the register (D182); the label carries the accepted
+/// pinyin grouping the compiler planned and is never recomputed at read time (D184).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RegisterPartRow {
+    /// The 1-based line in the register body.
+    pub(crate) line: usize,
+    /// The words of the row that are not its Link: `A–F`, `S–Z、其他`, `其他`, `S–Z(2)`.
+    pub(crate) label: String,
+    /// The part Card the row names; `None` when the row names no Card at all.
+    pub(crate) address: Option<String>,
+}
+
+/// The declared parts of a register, in declaration order (§8.4). The same row is read whether the
+/// label comes before the Link (`- A–F：[[3/1]]`) or after it (`- [[3/1]] A–F`), so a hand-written
+/// declaration and the compiler's own rows read the same.
+pub(crate) fn register_part_rows(body: &str) -> Vec<RegisterPartRow> {
+    let mut rows = Vec::new();
+    let mut group: Option<String> = None;
+    let mut fenced = false;
+    for (index, raw) in body.lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+        {
+            group = Some(heading.trim().to_string());
+            continue;
+        }
+        if group.as_deref() != Some(REGISTER_PART_GROUP) {
+            continue;
+        }
+        let Some(item) = list_item(trimmed) else {
+            continue;
+        };
+        let links = LinkBody::for_rendering(item);
+        let occurrences = links.occurrences();
+        rows.push(RegisterPartRow {
+            line: index + 1,
+            label: part_label(item),
+            address: occurrences.first().map(|first| first.target.to_string()),
+        });
+    }
+    rows
+}
+
+/// The label words of one part declaration: the row without its Links, trimmed of the separators a
+/// row may put around them. The accepted range labels keep their own en dash and their `、`.
+fn part_label(item: &str) -> String {
+    let mut words = String::new();
+    let mut rest = item;
+    while let Some(start) = rest.find("[[") {
+        words.push_str(&rest[..start]);
+        match rest[start..].find("]]") {
+            Some(end) => rest = &rest[start + end + 2..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    words.push_str(rest);
+    words
+        .trim_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch, ':' | '：' | '-' | '—' | '·' | '，' | ',' | '、')
+        })
+        .to_string()
+}
+
+/// The Cards that can be a register's part by place alone: its immediate Side successors in the
+/// same Workspace, in address order (D182). A part is one of these that the root also declares and
+/// that holds `词条` rows; the read adapter loads their bodies so the projection can name an
+/// undeclared one instead of treating it as a new register.
+pub(crate) fn register_side_successors(snapshot: &Snapshot, register: &str) -> Vec<String> {
+    let Some(own) = snapshot.by_address.get(register) else {
+        return Vec::new();
+    };
+    let mut found = snapshot
+        .cards
+        .iter()
+        .filter(|card| card.workspace == own.workspace)
+        .filter(|card| {
+            crate::immediate_side_label(&card.address, register)
+                .is_some_and(|label| card.address == format!("{register}|{label}"))
+        })
+        .map(|card| card.address.clone())
+        .collect::<Vec<_>>();
+    found.sort();
+    found
+}
+
+/// The targets of a register's `词条分册` declaration, in declaration order (§8.4): every Link of
+/// every row, once. A part's identity is these Links plus its place as an immediate Side successor
+/// of the register.
 pub(crate) fn register_part_targets(body: &str) -> Vec<String> {
     let mut group: Option<String> = None;
     let mut fenced = false;
@@ -476,22 +575,36 @@ pub(crate) fn hubs_of(snapshot: &Snapshot, address: &str) -> Vec<Value> {
         .filter(|card| card.card_type == CardType::Hub && card.address != address)
         .filter_map(|card| {
             let parsed = snapshot.parsed.get(&card.address)?;
-            if !parsed.body.contains(&link) {
-                return None;
-            }
             let mut listed = Vec::new();
             if card.hub_level == Some(HubLevel::Register) {
                 for row in register_rows(&parsed.body) {
                     for (index, target) in row.targets.iter().enumerate() {
-                        if target == address {
+                        if target == address && !listed.contains(&(row.term.clone(), index)) {
                             listed.push((row.term.clone(), index));
                         }
                     }
                 }
-            } else if parse_body(&parsed.body)
-                .lines
-                .iter()
-                .any(|line| line.target == address)
+                // A term written in a declared part names the part's Cards, so its targets are
+                // members of the register too (D187, §8.4). A part's body is read when the
+                // caller's read includes it; a truncated read reports only what it holds.
+                for part in register_part_rows(&parsed.body) {
+                    let Some(part) = part.address else { continue };
+                    let Some(part) = snapshot.parsed.get(&part) else {
+                        continue;
+                    };
+                    for row in register_rows(&part.body) {
+                        for (index, target) in row.targets.iter().enumerate() {
+                            if target == address && !listed.contains(&(row.term.clone(), index)) {
+                                listed.push((row.term.clone(), index));
+                            }
+                        }
+                    }
+                }
+            } else if parsed.body.contains(&link)
+                && parse_body(&parsed.body)
+                    .lines
+                    .iter()
+                    .any(|line| line.target == address)
             {
                 listed.push((String::new(), 0));
             }
@@ -1360,5 +1473,33 @@ mod tests {
     fn reasons_count_words_not_marks() {
         assert_eq!(reason_chars("：多重均衡。"), 4);
         assert_eq!(reason_chars(" - ok"), 2);
+    }
+
+    #[test]
+    fn declared_parts_are_read_with_their_accepted_labels_in_both_row_forms() {
+        let body = "范围：代理工作区的入口。\n\n## 词条\n- 学习：[[5/1]]\n\n## 词条分册\n- [[196/1|a]] A–F\n- [[196/1|b]] G–L\n- S–Z、其他：[[196/1|c]]\n\n## 领域\n- 信息经济学：[[196/1|d]]\n";
+        let rows = register_part_rows(body);
+        assert_eq!(rows.len(), 3, "only the 词条分册 rows declare parts: {rows:?}");
+        assert_eq!(rows[0].label, "A–F");
+        assert_eq!(rows[0].address.as_deref(), Some("196/1|a"));
+        assert_eq!(rows[0].line, 7, "the row names the line it was written on");
+        assert_eq!(rows[1].address.as_deref(), Some("196/1|b"));
+        assert_eq!(
+            rows[2].label, "S–Z、其他",
+            "a label before the Link keeps its own words and its accepted range"
+        );
+        assert_eq!(rows[2].address.as_deref(), Some("196/1|c"));
+        // The same declarations read as the target list the read adapter loads bodies by.
+        assert_eq!(
+            register_part_targets(body),
+            vec!["196/1|a", "196/1|b", "196/1|c"]
+        );
+        // A row with no label is still a declaration: the label is reported empty, not invented.
+        let bare = register_part_rows("## 词条分册\n- [[196/1|a]]\n");
+        assert_eq!(bare[0].label, "");
+        assert_eq!(bare[0].address.as_deref(), Some("196/1|a"));
+        // A fenced row is not a declaration.
+        let fenced = register_part_rows("## 词条分册\n```\n- [[196/1|a]] A–F\n```\n");
+        assert!(fenced.is_empty(), "{fenced:?}");
     }
 }

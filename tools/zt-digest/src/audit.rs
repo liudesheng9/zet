@@ -256,7 +256,17 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let cards: Vec<Value> = graph_cards.iter().filter(|c| field(c, "workspace") == "agent").cloned().collect();
     host(&format!("read {} Cards in {} trees ({} s)", cards.len(), trees.len(), secs(&sw)));
 
-    let index = book_of::book_index(&all_trees, &graph_cards);
+    // #94 S01: the accepted register entries (P8), every page of them. It is read here because its
+    // `词条分册` declaration is what makes a part a navigation Card rather than an Idea (§8.5,
+    // D188, S11/#104).
+    let register = read_register(zt)?;
+    let register_parts: HashSet<String> = ps_items(&register["parts"])
+        .iter()
+        .filter(|part| field(part, "place") == "ok")
+        .map(|part| field(part, "address"))
+        .filter(|address| !address.is_empty())
+        .collect();
+    let index = book_of::book_index_with_parts(&all_trees, &graph_cards, &register_parts);
     let category = |c: &Value| index.category.get(&field(c, "address")).cloned().unwrap_or_default();
     let book_of = |c: &Value| index.book_of.get(&field(c, "address")).cloned();
     let bridge_counts = |key: &str| bridge_counts(&graph_cards, &index, graph_complete, key);
@@ -509,8 +519,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             }
         })
         .collect::<Result<_>>()?;
-    // #94 S01: the accepted register entries (P8), every page of them.
-    let register = read_register(zt)?;
+    // #94 S01: the accepted register entries (P8) were read before the category index; every page
+    // of them is in `register`.
     let broken_from: Vec<String> = broken
         .iter()
         .map(|b| {

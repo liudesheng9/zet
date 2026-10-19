@@ -37,7 +37,13 @@ pub struct BookIndex {
 }
 
 /// `Get-BookIndex`.
+/// The index without a register read: no Card is a register part.
 pub fn book_index(trees: &[Value], cards: &[Value]) -> BookIndex {
+    book_index_with_parts(trees, cards, &HashSet::new())
+}
+
+/// The same index, with the addresses a register root declares under 词条分册 (§8.5, D188).
+pub fn book_index_with_parts(trees: &[Value], cards: &[Value], register_parts: &HashSet<String>) -> BookIndex {
     let mut books = HashSet::new();
     let mut literature = HashSet::new();
     for tree in trees {
@@ -58,7 +64,7 @@ pub fn book_index(trees: &[Value], cards: &[Value]) -> BookIndex {
     let mut book_of = HashMap::new();
     for card in cards {
         let address = field(card, "address");
-        category_of.insert(address.clone(), zt_check::graph::category(card, &literature, &anchors));
+        category_of.insert(address.clone(), zt_check::graph::category_with_parts(card, &literature, &anchors, register_parts));
         if field(card, "workspace") != "agent" {
             continue;
         }
@@ -141,6 +147,7 @@ mod tests {
         assert!(!index.books.contains(&"Human".to_string()));
         assert_eq!(index.book_of["Case/1"], "Beta");
         assert_eq!(index.book_of["case/1"], "Alpha");
+        let index = book_index(&trees, &cards);
         let mut rt = trees.clone();
         rt.reverse();
         let mut rc = cards.clone();
@@ -148,5 +155,12 @@ mod tests {
         let reordered = book_index(&rt, &rc);
         assert_eq!(index.category, reordered.category);
         assert_eq!(index.book_of, reordered.book_of);
+        // A Card the register root declares under 词条分册 is a navigation Card, not an Idea
+        // (§8.5, D188): the audit reads that category from the root declaration.
+        let declared = HashSet::from(["4/5".to_string()]);
+        let with_part = book_index_with_parts(&trees, &cards, &declared);
+        assert_eq!(with_part.category["4/5"], "register-part");
+        assert!(!zt_check::graph::SUBSTANTIVE.contains(&"register-part"));
+        assert!(zt_check::graph::EXCLUDED.contains(&"register-part"));
     }
 }

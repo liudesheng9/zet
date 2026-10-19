@@ -1,9 +1,9 @@
 #Requires -Version 7.5
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\register-paging.tests.ps1 [-Zt <zt.exe>] [-Digest <zt-digest.exe>]
-# S10 / issue #101: a register larger than one `get_register` page is one catalog. `-Step apply`
-# publishes it and verifies every page at one revision; `-Step check` diffs every page; a second
-# apply writes nothing. A register that declares 词条分册 parts is refused before any write,
-# because publishing parts is S11 (#104). A real scratch archive; the live archive is not touched.
+# S10 / issue #101, S11 / issue #104: a register larger than one `get_register` page is one
+# catalog. Its rows live in 词条分册 parts, published and verified before the root; `-Step apply`
+# verifies every page at one revision, `-Step check` diffs every page, and a second apply writes
+# nothing. A real scratch archive; the live archive is not touched.
 param([string]$Zt = '', [string]$Digest = '')
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -47,17 +47,12 @@ function Run([string]$step, [string[]]$more = @()) {
     if ($LASTEXITCODE -ne 0) { throw "$step failed: $($lines -join "`n")" }
     $lines
 }
-function Fails([string]$step) {
-    $lines = @(pwsh -NoProfile -File $wrapper -Step $step -Work $work 2>&1)
-    [pscustomobject]@{ code = $LASTEXITCODE; text = ($lines -join "`n") }
-}
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable -DateKind String }
 function Titles { @(Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{ workspace = 'agent' } }))[0].titles }
-function Card([string]$at) { @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $at } }))[0] }
 function Terms($rows) {
     $map = [ordered]@{}
     foreach ($row in @($rows)) {
-        $map[$row.term] = @($row.targets | ForEach-Object { if ($_ -is [string]) { $_ } elseif ($_.exists) { $_.address } })
+        $map[$row.term] = @($row.targets | ForEach-Object { if ($_ -is 'string') { $_ } elseif ($_.exists) { $_.address } })
     }
     $map
 }
@@ -68,82 +63,81 @@ try {
     # One agent Card serves every term: a register may name the same Card under more terms.
     $null = Invoke-Zt @(
         @{ tool = 'create_topic'; arguments = @{ title = '分页的登记簿'; body = '一页装不下的登记簿怎样读全？' } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '分页的登记簿要有全部条目'; body = '一次读全所有页，才谈得上完整。' } }
+        @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '分页的登记簿要有全部词条'; body = '一次读全所有页，才谈得上完整。' } }
     )
-    $target = (Titles | Where-Object { $_.title -eq '分页的登记簿要有全部条目' } | Select-Object -First 1).address
-    # The staged plan is the accepted scope: its terms, its body, and its own plan id.
+    $target = (Titles | Where-Object { $_.title -eq '分页的登记簿要有全部词条' } | Select-Object -First 1).address
+    # The accepted plan is the accepted scope: 1,005 rows in nine declared parts, its own plan id.
     $facts = @(Invoke-Zt @(@{ tool = 'get_cards'; arguments = @{ addresses = @(); view = 'text' } }))[0]
     $count = 1005
-    $terms = [System.Collections.Generic.List[object]]::new()
-    $rows = [System.Collections.Generic.List[string]]::new()
-    for ($i = 1; $i -le $count; $i++) {
-        $term = ('术语{0:D4}' -f $i)
-        $terms.Add([ordered]@{ term = $term; targets = @($target); sources = @(); ambiguous = $false; overflow = 0; reviewed = @(); read_only_targets = @() })
-        $rows.Add("- $term：[[$target]]")
+    $terms = [Collections.Generic.List[object]]::new()
+    $parts = [Collections.Generic.List[object]]::new()
+    $calls = [Collections.Generic.List[object]]::new()
+    $shell = '范围：一页装不下的登记簿。'
+    $calls.Add([ordered]@{ tool = 'create_topic'; arguments = [ordered]@{ title = '索引'; body = '本主题收放代理工作区的入口：索引卡与领域枢纽。' } })
+    $calls.Add([ordered]@{ tool = 'create_successor'; arguments = [ordered]@{ at = '@@0'; type = 'hub'; level = 'register'; title = '索引：代理工作区的入口'; body = $shell } })
+    $declarations = [Collections.Generic.List[string]]::new()
+    $part = 0
+    for ($start = 1; $start -le $count; $start += 120) {
+        $end = [Math]::Min($start + 119, $count)
+        $names = @($start..$end | ForEach-Object { '术语{0:D4}' -f $_ })
+        $body = "## 词条`n" + (($names | ForEach-Object { "- $_：[[$target]]" }) -join "`n")
+        $label = if ($part -eq 0) { 'A–F' } else { 'A–F({0})' -f ($part + 1) }
+        $calls.Add([ordered]@{ tool = 'create_successor'; arguments = [ordered]@{ at = '@@1'; kind = 'side'; title = "词条 $label"; body = $body } })
+        $parts.Add([ordered]@{ label = $label; bucket = 'latin'; title = "词条 $label"; address = $null; body = $body; terms = $names; call = ($calls.Count - 1); reused = $false })
+        $declarations.Add("- [[{{part:$part}}]] $label")
+        foreach ($name in $names) {
+            $terms.Add([ordered]@{ term = $name; targets = @($target); sources = @(); ambiguous = $false; overflow = 0; reviewed = @(); read_only_targets = @() })
+        }
+        $part++
     }
-    $body = "范围：一页装不下的登记簿。`n`n## 词条`n" + ($rows -join "`n")
+    $rootBody = $shell + "`n`n## 词条分册`n`n" + ($declarations -join "`n")
     $plan = [ordered]@{
         schema_version = 1
         archive        = [ordered]@{ identity = $facts.archive_identity; revision = $facts.archive_revision }
-        register       = [ordered]@{ address = $null; missing = $true; entries = 0; complete = $false }
+        register       = [ordered]@{ address = $null; missing = $true; entries = 0; complete = $false; parts = 0 }
         terms          = $terms
         unresolved     = @()
         faults         = @()
         excluded       = @()
         review         = $null
-        body           = $body
+        readings       = [ordered]@{ accepted = @(); unresolved = @(); count = 0 }
+        parts          = $parts
+        obsolete_parts = @()
+        terms_on_root  = $false
+        root_before    = $shell
+        body           = $rootBody
+        calls          = $calls
+        root_call      = [ordered]@{ tool = 'edit_card'; arguments = [ordered]@{ at = $null; body = $rootBody } }
         plan_id        = 'rp-paging-test'
         created_at     = '2026-10-19T00:00:00.0000000Z'
     }
     $planned = Join-Path $work 'out\register-plan.json'
-    [IO.File]::WriteAllText($planned, ($plan | ConvertTo-Json -Depth 10), $utf8)
+    [IO.File]::WriteAllText($planned, ($plan | ConvertTo-Json -Depth 12), $utf8)
 
     # apply: the published register is verified through every page, not only the first.
     $applied = Last (Run 'apply')
-    Assert ($applied.register -and $applied.created -eq 2) 'apply: creates the Topic 索引 and its register Hub Card'
+    Assert ($applied.register -and $applied.created -eq 2 -and $applied.publication -eq 'complete') 'apply: creates the Topic 索引 and its register Hub Card'
     Assert ($applied.verified -eq $true -and $applied.complete -eq $true) 'apply: verifies the exact register through every page'
     Assert ($applied.entries -eq $count) "apply: reports all $count published terms ($($applied.entries))"
+    Assert (@($applied.parts).Count -eq 9) "apply: reports the nine published parts ($(@($applied.parts).Count))"
     $first = @(Invoke-Zt @(@{ tool = 'get_register'; arguments = @{ workspace = 'agent' } }))[0]
     Assert ($first.entry_total -eq $count -and @($first.entries).Count -eq 200 -and $first.entry_next_offset -eq 200) 'get_register: the first page holds 200 rows and names the next page'
     $second = @(Invoke-Zt @(@{ tool = 'get_register'; arguments = @{ workspace = 'agent'; entry_offset = 1000 } }))[0]
     Assert (@($second.entries).Count -eq 5 -and $null -eq $second.entry_next_offset) 'get_register: the last page holds the remaining rows and ends the catalog'
     Assert ($second.archive_revision -eq $first.archive_revision -and $second.entry_total -eq $first.entry_total) 'get_register: every page declares one revision and one total'
     Assert ($first.entries[0].term -eq '术语0001' -and $second.entries[0].term -eq '术语1001') 'get_register: the pages continue one catalog in order'
+    Assert (@($first.parts).Count -eq 9 -and $first.parts[8].label -eq 'A–F(9)') 'get_register: the nine parts are declared with their accepted ranges'
 
     # check: every published term of every page matches the staged plan.
     $check = Last (Run 'check')
     Assert (@($check.missing).Count -eq 0 -and @($check.diverged).Count -eq 0 -and @($check.extra).Count -eq 0) 'check: no term of any page is missing, diverged, or extra'
     Assert ($check.entries -eq $count -and $check.complete -eq $true) "check: reads all $count published terms ($($check.entries))"
+    Assert (@($check.parts).Count -eq 9 -and @($check.plan_parts).Count -eq 0) 'check: the nine declared parts are the accepted layout'
 
     # a second apply writes nothing and keeps the plan id.
     $again = Last (Run 'apply')
-    Assert ($again.created -eq 0 -and $again.changed -eq $false -and $again.entries -eq $count) 'apply again: no new Card, no changed body, every term still verified'
+    Assert ($again.wrote -eq 0 -and $again.changed -eq $false -and $again.entries -eq $count) 'apply again: no new Card, no changed body, every term still verified'
     Assert ($again.plan_id -eq $applied.plan_id) 'apply again: the same plan id'
-
-    # A register that declares 词条分册 parts is S11's (#104): refused before any write, not
-    # published and then reported as a failure.
-    $register = $applied.register
-    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{
-                at    = $register
-                kind  = 'side'
-                title = '词条分册：分页'
-                body  = "- 分册词：[[$target]]`n"
-            } })
-    $part = (Titles | Where-Object { $_.title -eq '词条分册：分页' } | Select-Object -First 1).address
-    $card = Card $register
-    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{
-                at   = $register
-                body = "$($card.body)`n`n## 词条分册`n- [[$part]] 分页`n"
-            } })
-    $before = @(Invoke-Zt @(@{ tool = 'get_cards'; arguments = @{ addresses = @($register); view = 'text' } }))[0]
-    $refusedPlan = Fails 'plan'
-    Assert ($refusedPlan.code -ne 0 -and $refusedPlan.text -match 'S11') 'plan: a register with declared parts is refused, and the refusal names S11 (#104)'
-    $kept = Get-Content -Raw -LiteralPath $planned | ConvertFrom-Json -AsHashtable -DateKind String
-    Assert ($kept.plan_id -eq 'rp-paging-test') 'plan: a refused plan does not overwrite the accepted plan file'
-    $refusedApply = Fails 'apply'
-    Assert ($refusedApply.code -ne 0 -and $refusedApply.text -match 'S11') 'apply: the same register is refused before the write'
-    $after = @(Invoke-Zt @(@{ tool = 'get_cards'; arguments = @{ addresses = @($register); view = 'text' } }))[0]
-    Assert ($after.cards[0].text -eq $before.cards[0].text) 'apply: the refused publication left the register body byte-identical'
 }
 finally {
     zt down 2>&1 | Out-Null

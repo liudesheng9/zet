@@ -297,11 +297,15 @@ The Cards a hub is responsible for: the subtree of a line hub's anchor, the tree
 _Avoid_: Hub scope, hub folder
 
 **Register**:
-The one hub of level `register` in a Workspace, the first Card of the Topic `索引`. Its `词条` section holds one key term per item with Links to one to three Cards that carry the term's substance (a definition or statement, a whole Model Card, or a standalone Topic claim); scope stays in the term label and the explanation in those Cards. Two accepted spellings of one term are two items with the same Links. It also lists every field hub, which is filed under it, and every topic hub in no field, and may declare term parts under `词条分册`. There is no other store of concepts or aliases.
+The one hub of level `register` in a Workspace, the first Card of the Topic `索引`. Its `词条` section holds one key term per item with Links to one to three Cards that carry the term's substance (a definition or statement, a whole Model Card, or a standalone Topic claim); scope stays in the term label and the explanation in those Cards. Two accepted spellings of one term are two items with the same Links. It also lists every field hub, which is filed under it, and every topic hub in no field. A register with at most 120 term items keeps its rows itself; a larger one moves them into **Register parts** that it declares under `词条分册`. There is no other store of concepts or aliases.
 _Avoid_: Index, keyword list, concept database, home note
 
+**Register part**:
+An ordinary Idea Card that holds the register's term rows, filed as an immediate Side successor of the register and declared by the root's `词条分册` section as one item, `- [[<address>]] A–F`: the address and the accepted pinyin-initial range it groups. Its body has its own `## 词条` section with the same row grammar, so it is a navigation Card, never another register and never a part of a part. Its identity is that declaration plus its place, so no field or marker marks it. A part left behind when the rows stay on the root, and a Card that is not an immediate Side successor, are reported rather than accepted. A rebuild keeps a part's address (reused by its label, then by its position), updates its rows and label in place, allocates a new Side successor only for a genuinely new part, and leaves a part it no longer needs declared and empty until a separate deletion plan.
+_Avoid_: Sub-register, index page, keyword sheet, hub part
+
 **Register entry**:
-The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on. The entry view also names the archive revision it was read at and the terms each target Card carries. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
+The derived reading of one register term: the term, its one to three target Cards with their bounded explanatory prose, and the register Card and line it was written on, with the declared part when it lives in one. A row an earlier equivalent row already serves is counted once and named as a duplicate; the same label with other destinations stays two entries and is an ambiguity fault. The entry view also names the archive revision it was read at and the terms each target Card carries. It is disposable derived data, never a stored concept id; a moved target keeps working through the ordinary Link rewrite.
 _Avoid_: Concept record, keyword, term row (that is the written item)
 
 **Entry-first search**:

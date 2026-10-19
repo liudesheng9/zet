@@ -563,7 +563,125 @@ fn a_declared_part_is_projected_with_its_own_origin() {
     assert_eq!(view["entries"][1]["origin"]["card"], json!(part));
     assert_eq!(view["parts"][0]["address"], json!(part));
     assert_eq!(view["parts"][0]["place"], json!("ok"));
+    assert_eq!(
+        view["parts"][0]["label"],
+        json!("A–F"),
+        "a declared part carries the accepted initial range the root planned: {view}"
+    );
     assert_eq!(view["entry_total"], json!(2));
+    // A part declared without its accepted range loses the grouping the register was planned with:
+    // the rows still read, and the missing label is a fault.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": reg, "body": format!("## 词条\n- 学习：[[{one}]]\n\n## 词条分册\n- [[{part}]]\n") }),
+    );
+    let unlabelled = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(unlabelled["complete"], json!(false));
+    assert!(
+        unlabelled["faults"].as_array().is_some_and(|faults| faults.iter().any(|fault| {
+            fault["fault"] == json!("part-label")
+                && fault["detail"].as_str().is_some_and(|detail| detail.contains(&part))
+        })),
+        "the label-less declaration is named: {}",
+        unlabelled["faults"]
+    );
+    assert_eq!(
+        terms(&unlabelled),
+        terms(&view),
+        "the rows of a label-less part still read: the Link is the part's identity"
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": reg, "body": format!("## 词条\n- 学习：[[{one}]]\n\n## 词条分册\n- [[{part}]] A–F\n") }),
+    );
+    // An interrupted publication can leave the same row on the root and in a part. The equivalent
+    // row is served once and named, so a reader never sees one term twice (D189, AC08).
+    mcp.ok(
+        "edit_card",
+        json!({ "at": part, "body": format!("## 词条\n- 干中学：[[{two}]]\n- 学习：[[{one}]]\n") }),
+    );
+    let duplicated = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        duplicated["complete"],
+        json!(true),
+        "an equivalent row is not a fault: {}",
+        duplicated["faults"]
+    );
+    assert_eq!(
+        terms(&duplicated),
+        vec![
+            ("学习".to_string(), vec![one.clone()]),
+            ("干中学".to_string(), vec![two.clone()]),
+        ],
+        "the equivalent row is served once, from its first origin: {duplicated}"
+    );
+    assert_eq!(duplicated["entry_total"], json!(2));
+    assert_eq!(
+        duplicated["duplicates"],
+        json!([{
+            "term": "学习",
+            "card": part,
+            "part": part,
+            "line": 3,
+            "served_by": reg,
+            "served_line": 2,
+        }]),
+        "the leftover row is named, not silently dropped: {duplicated}"
+    );
+    // A row that names the same term with other Cards contradicts the served one: both stay
+    // entries and the conflict is reported (never resolved arbitrarily).
+    mcp.ok(
+        "edit_card",
+        json!({ "at": part, "body": format!("## 词条\n- 干中学：[[{two}]]\n- 学习：[[{two}]]\n") }),
+    );
+    let conflicting = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(conflicting["complete"], json!(false));
+    assert_eq!(conflicting["entry_total"], json!(3));
+    assert!(
+        conflicting["faults"].as_array().is_some_and(|faults| faults.iter().any(|fault| {
+            fault["fault"] == json!("ambiguous")
+                && fault["term"] == json!("学习")
+                && fault["rows"].as_array().is_some_and(|rows| rows.len() == 2)
+        })),
+        "the contradictory targets are reported: {}",
+        conflicting["faults"]
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": part, "body": format!("## 词条\n- 干中学：[[{two}]]\n") }),
+    );
+    // A term written in a part names its target: the target reports the register as its hub, with
+    // the term and the target index, exactly as a root row does (D187, §8.4).
+    let member = mcp.ok("get_card", json!({ "at": two }));
+    assert!(
+        member["hubs"].as_array().is_some_and(|hubs| hubs.iter().any(|hub| {
+            hub["address"] == json!(reg) && hub["term"] == json!("干中学") && hub["target_index"] == json!(0)
+        })),
+        "a part's term names its target as a member of the register: {}",
+        member["hubs"]
+    );
+    // A Side successor of the register with 词条 rows that the root does not declare is reported,
+    // and its rows are not accepted as part of the register (D182, AC05).
+    let stray = address(mcp.ok(
+        "create_successor",
+        json!({ "at": reg, "kind": "side", "title": "词条分册：漏报", "body": format!("## 词条\n- 漏报：[[{one}]]\n") }),
+    ));
+    let unlisted = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(unlisted["complete"], json!(false));
+    assert!(
+        unlisted["faults"].as_array().is_some_and(|faults| faults.iter().any(|fault| {
+            fault["fault"] == json!("part-unlisted")
+                && fault["part"] == json!(stray)
+                && fault["detail"].as_str().is_some_and(|detail| detail.contains(&stray))
+        })),
+        "the undeclared part is named: {}",
+        unlisted["faults"]
+    );
+    assert!(
+        terms(&unlisted).iter().all(|(term, _)| term != "漏报"),
+        "an undeclared part's rows are not accepted: {unlisted}"
+    );
+    assert_eq!(unlisted["entry_total"], json!(2));
     // A part that is not an immediate Side successor of the register is reported, not accepted.
     let moved = address(mcp.ok(
         "create_successor",

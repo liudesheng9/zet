@@ -998,10 +998,13 @@ impl Check {
         let title = text(prop(card, "title"));
         corruption(&text(prop(card,"body")),&title,address,faults);
         let facet = text(prop(card, "facet"));
-        // A root, an anchor's section index, and a hub's navigation list are not claims; the
-        // standalone rules read the authored prose that states one (D126's Literature prose
-        // excludes a locator, and an index line is a locator).
-        let navigation = ps_in(&text(prop(card, "category")), &["anchor", "root", "hub"]);
+        // A root, an anchor's section index, a hub's navigation list, and a register part's term
+        // rows are not claims; the standalone rules read the authored prose that states one
+        // (D126's Literature prose excludes a locator, and an index line is a locator).
+        let navigation = ps_in(
+            &text(prop(card, "category")),
+            &["anchor", "root", "hub", "register-part"],
+        );
         let shared = ps_in(address, &self.shared);
         let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);
         if !title.is_empty() {
@@ -2068,6 +2071,33 @@ pub(crate) fn check_model(
     Ok(check.run(&cards))
 }
 
+/// The Cards a Workspace's register declares under `词条分册`, in both Workspaces (§8.5, D188). A
+/// Card whose address one root declares is a register part: a navigation Card that carries term
+/// rows. A scope that reads no register (`get_register` refuses an unknown Workspace) reports none.
+pub(crate) fn declared_register_parts(zt: &mut Zt) -> Result<HashSet<String>> {
+    let mut parts = HashSet::new();
+    for workspace in ["agent", "human"] {
+        let view = zt.call(
+            "get_register",
+            json!({ "workspace": workspace, "entry_offset": 0, "entry_limit": 1 }),
+        )?;
+        if view["register_missing"] == true {
+            continue;
+        }
+        for part in view["parts"].as_array().into_iter().flatten() {
+            if part["place"] != "ok" {
+                continue;
+            }
+            if let Some(address) = part["address"].as_str()
+                && !address.is_empty()
+            {
+                parts.insert(address.to_string());
+            }
+        }
+    }
+    Ok(parts)
+}
+
 /// `--cards`: self-check.ps1. Each Card as digest-audit.ps1 sees it: a Model
 /// part or Model Card with its model (setting, level, and every Derivation
 /// part with an explanation); an Idea Card, an anchor, an Event Card, or a
@@ -2116,6 +2146,9 @@ pub(crate) fn check_cards(
         }
     }
     let mut cards = batch.cards;
+    // The parts a register declares under 词条分册 are navigation Cards, not substantive Ideas
+    // (§8.5, D188): the root declaration is the one source of that category.
+    let register_parts = declared_register_parts(zt)?;
     let mut owners: HashMap<String, Option<String>> = HashMap::new();
     let mut models: HashMap<String, Value> = HashMap::new();
     for card in &mut cards {
@@ -2152,7 +2185,7 @@ pub(crate) fn check_cards(
         let body = ps_string(card.get("body"));
         // Valid Topic tree ids are numeric; Literature Citation keys start with a letter.
         let in_book = card["workspace"] == "agent" && BOOK_CARD.is_match(&tree);
-        let category = crate::graph::category(card, &literature, &anchors);
+        let category = crate::graph::category_with_parts(card, &literature, &anchors, &register_parts);
         let category = category.as_str();
         let head = card["model"]["head"]["address"]
             .as_str()

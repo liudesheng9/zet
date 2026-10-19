@@ -13,7 +13,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "register-compiler-test-$PID"
 $archive = Join-Path $scratch 'archive'
 $work = Join-Path $scratch 'work'
-New-Item -ItemType Directory -Force $archive, $work | Out-Null
+New-Item -ItemType Directory -Force $archive, $work, (Join-Path $work 'out') | Out-Null
 # The slice that this test needs: a `get_register` tool in zt and the `register` step in zt-digest.
 function Newest($stamp, [string[]]$candidates) {
     foreach ($candidate in $candidates) {
@@ -130,6 +130,20 @@ try {
         )
     }
     [IO.File]::WriteAllText($reviewPath, ($review | ConvertTo-Json -Depth 10), $utf8)
+    # The accepted pinyin readings the drafting job supplies (#104, D183): one polyphonic term read
+    # as the accepted sense, one uncertain reading, one malformed initial, and terms the file never
+    # mentions. This step checks their shape only; it never transliterates (D184).
+    $readingsPath = Join-Path $work 'out\register-readings.json'
+    $readings = [ordered]@{
+        schema_version = 1
+        readings       = [ordered]@{
+            '学习'     = [ordered]@{ reading = 'xué xí'; initial = 'x' }
+            '多重均衡' = [ordered]@{ reading = 'duō chóng jūn héng'; initial = 'D' }
+            '习得'     = [ordered]@{ reading = 'xí dé'; initial = $null; uncertain = $true }
+            '工资报价' = [ordered]@{ reading = 'gōng zī bào jià'; initial = 'gz' }
+        }
+    }
+    [IO.File]::WriteAllText($readingsPath, ($readings | ConvertTo-Json -Depth 6), $utf8)
 
     # plan: term tables plus model heads, reviewed meanings, unresolved rows.
     $plan = Last (Run 'plan' @('-Review', $reviewPath))
@@ -139,6 +153,13 @@ try {
     Assert (@($staged.unresolved).Count -eq 1 -and $staged.unresolved[0].term -eq '无着落') 'plan: a term with no defensible target is unresolved with its source row'
     Assert (@($staged.unresolved[0].spellings).Count -eq 2) 'plan: one unresolved finding names both accepted spellings of its row'
     Assert ($staged.unresolved[0].sources[0].term_table -eq $table) 'plan: the unresolved row names its term table'
+    # The accepted readings are recorded, and what the file does not settle stays unresolved.
+    Assert (@($staged.readings.accepted).Count -eq 2) "plan: the accepted readings are recorded ($(@($staged.readings.accepted | ForEach-Object { $_.term }) -join ', '))"
+    Assert (@($staged.readings.accepted | Where-Object { $_.term -eq '多重均衡' -and $_.initial -eq 'd' }).Count -eq 1) 'plan: a polyphonic reading is accepted as supplied, with its lower-cased initial'
+    Assert (@($staged.readings.unresolved | Where-Object { $_.term -eq '习得' -and $_.reason -eq 'uncertain' }).Count -eq 1) 'plan: an uncertain reading is unresolved, not classified'
+    Assert (@($staged.faults | Where-Object { $_.fault -eq 'reading_initial' -and $_.term -eq '工资报价' }).Count -eq 1) 'plan: a malformed initial is a reading fault'
+    Assert (@($staged.readings.unresolved | Where-Object { $_.term -eq '学习模型' -and $_.reason -eq 'missing' }).Count -eq 1) 'plan: a term the readings file never mentions is missing its reading'
+    Assert ($staged.terms_on_root -eq $true -and @($staged.parts).Count -eq 0) 'plan: a register of seven rows stays on the root'
     $terms = Terms $staged.terms
     Assert ($terms.Keys.Count -eq 7) "plan: three book terms with their accepted spellings and three model heads ($($terms.Keys -join ', '))"
     Assert (@($terms['多重均衡']).Count -eq 3 -and @($terms['多重均衡'])[0] -eq $statement) 'plan: three targets, the reviewed statement first'

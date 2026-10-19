@@ -1,5 +1,5 @@
-//! `zt-digest register`: draft and publish a Workspace's concept register (#101, design §4.1,
-//! §8.3-8.5, D058-D062, D170-D175, D276, D289, D296, D297, D299).
+//! `zt-digest register`: draft and publish a Workspace's concept register (#101, #104, design §4.1,
+//! §8.3-8.5, D058-D062, D170-D179, D183-D191, D276, D289-D291, D296-D299).
 //!
 //! The register is one ordinary Hub Card of level `register` (the first Card of the Topic
 //! `索引`). Its `## 词条` section holds one term before a colon and one to three Links to the Cards
@@ -9,24 +9,29 @@
 //!
 //!     plan   reads the agent book term tables (through zt-check's term-table parser), the
 //!            model-head names, and both Workspaces' titles, reads an optional reviewed concept
-//!            report as read-only evidence, and stages `<Work>\out\register-plan.json`: one entry
-//!            per accepted spelling with up to three substantive targets, the accepted spellings
-//!            of one term, the read-only targets the review selected in the human Workspace, the
-//!            unresolved source rows, the exact register body, and the id of the report it was
-//!            read from. A reviewed entry no Card holds is an excluded stale review.
-//!     apply  publishes the staged body (creating the Topic 索引 and the register Hub Card when
-//!            the Workspace has none, otherwise editing the one register), then reads every page
-//!            of the register back through `get_register` at one revision and verifies every term
-//!            and target. A second run over the same plan writes nothing: no new Card, no changed
-//!            body, the same plan id.
-//!     check  reads every page and compares the staged plan with the published entries.
+//!            report as read-only evidence and the accepted pinyin readings, and stages
+//!            `<Work>\out\register-plan.json`. A register over 120 term rows is planned as parts:
+//!            one ordinary Idea Card per accepted pinyin-initial band, each holding at most 120
+//!            rows, declared by the root under `词条分册`. The plan holds the exact part bodies,
+//!            the root body with one `{{part:N}}` reference per new part, the identified calls of
+//!            the parts batch, the root call, and the readings it accepted and could not classify.
+//!            Part addresses are reused by label and by position, so a rebuild keeps them and a
+//!            part that is no longer needed stays declared and is emptied, never renumbered.
+//!     apply  publishes the staged parts first through their own identified batch and verifies
+//!            their exact bodies, then publishes the root last with the addresses the receipts
+//!            returned. Retrying the same acceptance reuses the receipts instead of creating a
+//!            second part. It then reads every page of the register back through `get_register` at
+//!            one revision and marks the publication complete only after the exact root, parts,
+//!            targets, and revision agree with the plan.
+//!     check  reads every page and compares the staged plan with the published entries, parts,
+//!            labels, and readings.
 //!
 //! What the step does not do: it does not judge meanings (the concept review does, S04), it does
-//! not publish register parts or pinyin grouping (S11, #104: a register that declares `词条分册`
-//! parts is refused before any write), and it does not correct an existing Card other than the one
-//! register body it publishes. A human Card is only ever a read-only target the review selects
-//! explicitly (D174); the step never writes the human Workspace. Discovery writes only the staging
-//! file, and a plan staged for another archive or another revision is refused rather than applied.
+//! not transliterate (the accepted readings are an input; `ps::culture_cmp` is not pinyin, D184),
+//! and it does not correct an existing Card other than the one register and the parts it declares.
+//! A human Card is only ever a read-only target the review selects explicitly (D174); the step
+//! never writes the human Workspace. Discovery writes only the staging file, and a plan staged for
+//! another archive is refused rather than applied.
 
 use crate::args::Args;
 use crate::canon;
@@ -52,21 +57,38 @@ const TERM_GROUPS: [&str; 2] = ["词条", "关键词"];
 const DEFAULT_TITLE: &str = "索引：代理工作区的入口";
 const INDEX_TITLE: &str = "索引";
 const INDEX_BODY: &str = "本主题收放代理工作区的入口：索引卡与领域枢纽。";
+/// The most term rows one register Card carries before its rows move into parts (D179, D290).
+const PART_SPLIT: usize = 120;
+/// The group a large register declares its parts under (§8.4); the root body rewrites it whole.
+const PART_GROUP: &str = "词条分册";
+/// The bucket of a term whose reading is missing or uncertain (D183).
+const OTHER_LABEL: &str = "其他";
+/// The bucket of a term whose accepted initial is a digit (D183).
+const DIGIT_LABEL: &str = "0–9";
+/// The accepted pinyin-initial bands a register plans (D177): six-letter ranges, `S–Z` last.
+const BANDS: [(char, char, &str); 4] = [
+    ('a', 'f', "A–F"),
+    ('g', 'l', "G–L"),
+    ('m', 'r', "M–R"),
+    ('s', 'z', "S–Z"),
+];
 
 struct Params {
     step: String,
     work: String,
     review: String,
+    readings: String,
 }
 
 /// `zt-digest register`.
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["Step", "Work", "Review"];
+    let params = ["Step", "Work", "Review", "Readings"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
     let p = Params {
         step: a.choice("Step", &["plan", "apply", "check"])?,
         work: a.required("Work")?,
         review: a.str("Review"),
+        readings: a.str("Readings"),
     };
     if p.work.is_empty() {
         bail!("Cannot bind argument to parameter 'Work' because it is an empty string.");
@@ -74,9 +96,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let work = full_path(&p.work)?;
     let out = crate::ps::join(&work, "out");
     std::fs::create_dir_all(&out).with_context(|| format!("failed to make {out}"))?;
+    // The accepted pinyin readings of the plan: `-Readings` names the file the drafting job wrote.
+    let readings_file = if p.readings.trim().is_empty() {
+        crate::ps::join(&out, "register-readings.json")
+    } else {
+        full_path(&p.readings)?
+    };
     let mut register = Register {
         out,
         review: p.review,
+        readings_file,
         zt: None,
     };
     match p.step.as_str() {
@@ -90,6 +119,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 struct Register {
     out: String,
     review: String,
+    /// The accepted pinyin readings of the plan; an absent file leaves every term unclassified.
+    readings_file: String,
     zt: Option<Zt>,
 }
 
@@ -307,11 +338,35 @@ impl Register {
         let Some((identity, revision, draft)) = draft else {
             bail!("the archive changed during every register read; run -Step plan again");
         };
-        let current = self.current_register()?;
-        refuse_parts(&current)?;
-        let current_body = current["body"].as_str().unwrap_or_default().to_string();
-        let body = register_body(&current_body, &draft.terms);
-        let plan = plan_value(&identity, revision, &current, &draft, &body);
+        let current = self.current_register(false)?;
+        let (readings, unresolved_readings, reading_faults) =
+            read_readings(&self.readings_file, &draft.terms)?;
+        let mut faults = draft.faults.clone();
+        faults.extend(reading_faults);
+        // A register over 120 term rows, or one already split, keeps its rows in declared parts
+        // (D179, D185): never renumber a split register back onto its root.
+        let declared = crate::ps::pipe(&current["parts"]).len();
+        let parts = if draft.terms.len() > PART_SPLIT || declared > 0 {
+            bucket_parts(&draft.terms, &readings)
+        } else {
+            Vec::new()
+        };
+        let staged = stage_register(&current, &draft.terms, &parts, &readings)?;
+        let mut payload_draft = draft;
+        payload_draft.faults = faults;
+        let readings_payload = json!({
+            "accepted": staged.accepted_readings,
+            "unresolved": unresolved_readings,
+            "count": readings.len(),
+        });
+        let plan = plan_value(
+            &identity,
+            revision,
+            &current,
+            &payload_draft,
+            &staged,
+            &readings_payload,
+        );
         canon::save_json(&self.plan_file(), &plan)?;
         util::print_last(&json!({
             "ok": true,
@@ -319,14 +374,21 @@ impl Register {
             "plan_id": plan["plan_id"],
             "archive": plan["archive"],
             "register": plan["register"],
-            "terms": draft.terms.len(),
-            "entries": draft.terms.iter().filter(|term| !term.targets.is_empty()).count(),
-            "unresolved": draft.unresolved.len(),
-            "faults": draft.faults.len(),
-            "excluded": draft.excluded.len(),
-            "read_only": draft.terms.iter().map(|term| term.read_only.len()).sum::<usize>(),
+            "terms": payload_draft.terms.len(),
+            "entries": payload_draft.terms.iter().filter(|term| !term.targets.is_empty()).count(),
+            "unresolved": payload_draft.unresolved.len(),
+            "faults": payload_draft.faults.len(),
+            "excluded": payload_draft.excluded.len(),
+            "read_only": payload_draft.terms.iter().map(|term| term.read_only.len()).sum::<usize>(),
             "review": plan["review"],
-            "body_lines": body.lines().count(),
+            "parts": staged.parts.len(),
+            "obsolete_parts": staged.obsolete.len(),
+            "terms_on_root": staged.terms_on_root,
+            "readings": {
+                "accepted": readings.len(),
+                "unresolved": unresolved_readings.len(),
+            },
+            "calls": staged.calls.len(),
             "path": self.plan_file(),
         }))
     }
@@ -459,13 +521,21 @@ impl Register {
         Ok(Some(review))
     }
 
-    /// The one register of the agent Workspace, as `get_register` reads it. Two registers are
-    /// reported, never chosen between; no register is an empty answer. `parts` is the declared
-    /// `词条分册` list: publishing parts is S11's (#104), so the caller refuses them.
-    fn current_register(&mut self) -> Result<Value> {
+    /// The one register of the agent Workspace, as `get_register` reads it, with the exact bodies
+    /// of the parts it declares. Two registers are reported, never chosen between; no register is
+    /// an empty answer. A part the register cannot own in its place (moved, missing, a Hub, listed
+    /// twice, nested, or a Side successor it never declares) is refused before any write: the
+    /// compiler rewrites the whole `词条分册` layout, so it must read a coherent one (D182, D185).
+    fn current_register(&mut self, tolerate_unlisted: bool) -> Result<Value> {
         let view = self.call("get_register", json!({"workspace": "agent"}))?;
         if view["register_missing"] == json!(true) {
-            return Ok(json!({"address": Value::Null, "body": "", "missing": true, "parts": []}));
+            return Ok(json!({
+                "address": Value::Null,
+                "body": "",
+                "missing": true,
+                "parts": [],
+                "faults": [],
+            }));
         }
         if view["register"].is_null() {
             bail!(
@@ -474,14 +544,45 @@ impl Register {
             );
         }
         let address = crate::ps::s(&view["register"]);
+        obstructed_parts(&view, tolerate_unlisted)?;
         let card = self.call("get_card", json!({"at": address}))?;
+        let declared = crate::ps::pipe(&view["parts"])
+            .into_iter()
+            .filter(|part| part["place"] == json!("ok"))
+            .map(|part| (crate::ps::s(&part["label"]), crate::ps::s(&part["address"])))
+            .collect::<Vec<_>>();
+        let mut parts = Vec::new();
+        if !declared.is_empty() {
+            let addresses = declared.iter().map(|(_, at)| json!(at)).collect::<Vec<_>>();
+            let read = self.call("get_cards", json!({"addresses": addresses, "view": "text"}))?;
+            if read["complete"] != json!(true) {
+                bail!(
+                    "a declared register part is missing from the read: {}",
+                    crate::ps::json_compact(&read["missing"])
+                );
+            }
+            for (label, at) in declared {
+                let card = crate::ps::pipe(&read["cards"])
+                    .into_iter()
+                    .find(|card| crate::ps::s(&card["address"]) == at)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                parts.push(json!({
+                    "label": label,
+                    "address": at,
+                    "body": crate::ps::s(&card["body"]),
+                    "card": card,
+                }));
+            }
+        }
         Ok(json!({
             "address": view["register"],
             "body": card["body"],
             "missing": false,
             "entries": view["entry_total"],
             "complete": view["complete"],
-            "parts": view["parts"],
+            "parts": parts,
+            "faults": view["faults"],
         }))
     }
 
@@ -570,9 +671,10 @@ fn parse_titles(titles: &Value) -> Vec<Title> {
         .collect()
 }
 
-/// The plan's own content id: the accepted body, terms, unresolved rows, and review, bound to the
-/// archive identity but not to its revision. Re-planning the same acceptance gives the same id,
-/// and a publication in between does not change it.
+/// The plan's own content id: the accepted body, terms, unresolved rows, parts, readings, and
+/// review, bound to the archive identity but not to its revision. Re-planning the same acceptance
+/// gives the same id, and a publication in between does not change it. A changed reading is an
+/// explicit new plan input, so it changes the id (D184).
 fn plan_id(payload: &Value) -> String {
     let content = json!({
         "schema_version": payload["schema_version"],
@@ -583,6 +685,9 @@ fn plan_id(payload: &Value) -> String {
         "excluded": payload["excluded"],
         "review": payload["review"],
         "body": payload["body"],
+        "parts": payload["parts"],
+        "obsolete_parts": payload["obsolete_parts"],
+        "readings": payload["readings"],
     });
     format!("rp-{}", canon::content_hash(&content, &[]))
 }
@@ -592,7 +697,8 @@ fn plan_value(
     revision: u64,
     current: &Value,
     draft: &Draft,
-    body: &str,
+    staged: &Stage,
+    readings: &Value,
 ) -> Value {
     let mut payload = json!({
         "schema_version": SCHEMA_VERSION,
@@ -602,13 +708,21 @@ fn plan_value(
             "missing": current["missing"],
             "entries": current["entries"],
             "complete": current["complete"],
+            "parts": current["parts"].as_array().map_or(0, Vec::len),
         },
         "terms": draft.terms.iter().map(TermDraft::json).collect::<Vec<_>>(),
         "unresolved": draft.unresolved,
         "faults": draft.faults,
         "excluded": draft.excluded,
         "review": draft.review.as_ref().map(Review::summary),
-        "body": body,
+        "readings": readings,
+        "parts": staged.parts.iter().map(StagedPart::json).collect::<Vec<_>>(),
+        "obsolete_parts": staged.obsolete.iter().map(StagedObsolete::json).collect::<Vec<_>>(),
+        "terms_on_root": staged.terms_on_root,
+        "root_before": staged.root_before,
+        "body": staged.root_body,
+        "calls": staged.calls,
+        "root_call": staged.root_call,
     });
     let id = plan_id(&payload);
     payload["plan_id"] = json!(id);
@@ -939,7 +1053,8 @@ fn select_targets(candidates: &[(u8, String)], vetoes: &BTreeSet<String>) -> (Ve
 }
 
 /// The exact register body: the preamble and every group the register already holds, then one
-/// `## 词条` row per accepted term. Text after a term's Links never enters a row.
+/// `## 词条` row per accepted term. Text after a term's Links never enters a row. The `词条分册`
+/// declaration is the compiler's own group and is rewritten by [`root_body_text`].
 fn register_body(current: &str, terms: &[TermDraft]) -> String {
     let mut preamble = Vec::new();
     let mut sections: Vec<(String, Vec<String>)> = Vec::new();
@@ -961,7 +1076,7 @@ fn register_body(current: &str, terms: &[TermDraft]) -> String {
     out.push_str(if scope.is_empty() { DEFAULT_SCOPE } else { &scope });
     out.push_str("\n\n");
     for (heading, lines) in sections {
-        if TERM_GROUPS.contains(&heading.as_str()) {
+        if TERM_GROUPS.contains(&heading.as_str()) || heading == PART_GROUP {
             continue;
         }
         out.push_str(&format!("## {heading}\n"));
@@ -985,6 +1100,558 @@ fn register_body(current: &str, terms: &[TermDraft]) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+// --- readings and parts (S11, #104, design §8.4) ---------------------------------------------------
+
+/// One accepted pinyin reading of a term: the Latin reading the drafting job supplied and the
+/// initial it groups under. This compiler validates their shape, sorts the accepted readings and
+/// groups their initials; it never transliterates (D183, D184).
+#[derive(Clone, Debug)]
+struct Reading {
+    reading: String,
+    initial: Option<char>,
+}
+
+/// One planned register part: an ordinary Idea Card holding a contiguous bucket of term rows. Its
+/// identity is the root's declaration plus its place as an immediate Side successor of the
+/// register (D181, D182).
+#[derive(Clone, Debug)]
+struct Part {
+    label: String,
+    bucket: &'static str,
+    /// Indices into the planned term list, in the part's own order.
+    terms: Vec<usize>,
+}
+
+/// One part as the plan stages it: the body it publishes, the address it reuses or the call that
+/// creates it, and the terms it is planned to hold.
+#[derive(Clone, Debug)]
+struct StagedPart {
+    label: String,
+    bucket: &'static str,
+    title: String,
+    address: Option<String>,
+    body: String,
+    terms: Vec<String>,
+    call: Option<usize>,
+    reused: bool,
+}
+
+impl StagedPart {
+    fn json(&self) -> Value {
+        json!({
+            "label": self.label,
+            "bucket": self.bucket,
+            "title": self.title,
+            "address": self.address,
+            "body": self.body,
+            "terms": self.terms,
+            "call": self.call,
+            "reused": self.reused,
+        })
+    }
+}
+
+/// A part the register declares that the plan no longer needs: it keeps its address and stays
+/// declared as an empty navigation entry, pending a separate deletion plan (D185, AC04).
+#[derive(Clone, Debug)]
+struct StagedObsolete {
+    label: String,
+    address: String,
+    body: String,
+}
+
+impl StagedObsolete {
+    fn json(&self) -> Value {
+        json!({"label": self.label, "address": self.address, "body": self.body})
+    }
+}
+
+/// The staged publication: the parts, the root body with one `{{part:N}}` reference per part, and
+/// the identified calls that publish it (§8.5, D189, D190).
+#[derive(Clone, Debug, Default)]
+struct Stage {
+    parts: Vec<StagedPart>,
+    obsolete: Vec<StagedObsolete>,
+    calls: Vec<Value>,
+    root_call: Value,
+    root_body: String,
+    root_before: String,
+    terms_on_root: bool,
+    /// The accepted readings of the staged plan, term by term, in term order.
+    accepted_readings: Vec<Value>,
+}
+
+/// Whether a character may occur in an accepted Latin reading: the tone-marked vowels, digits (a
+/// term such as `3G` reads `3g`), the apostrophe, and spaces. A reading is never a second
+/// transliteration input (D183, D184).
+fn is_reading_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            'ā' | 'á'
+                | 'ǎ'
+                | 'à'
+                | 'ē'
+                | 'é'
+                | 'ě'
+                | 'è'
+                | 'ī'
+                | 'í'
+                | 'ǐ'
+                | 'ì'
+                | 'ō'
+                | 'ó'
+                | 'ǒ'
+                | 'ò'
+                | 'ū'
+                | 'ú'
+                | 'ǔ'
+                | 'ù'
+                | 'ǖ'
+                | 'ǘ'
+                | 'ǚ'
+                | 'ǜ'
+                | 'ü'
+                | 'Ü'
+                | 'ń'
+                | 'ň'
+                | 'ǹ'
+                | 'ḿ'
+        )
+        || ch == '\''
+        || ch == ' '
+}
+
+/// The sort key of one accepted reading: its base letters, so a tone mark does not reorder a part
+/// (a byte order would put `xué` before `xìn`). Deterministic and platform independent (D184).
+fn reading_key(reading: &str) -> String {
+    reading
+        .chars()
+        .map(|ch| match ch {
+            'ā' | 'á' | 'ǎ' | 'à' => 'a',
+            'ē' | 'é' | 'ě' | 'è' => 'e',
+            'ī' | 'í' | 'ǐ' | 'ì' => 'i',
+            'ō' | 'ó' | 'ǒ' | 'ò' => 'o',
+            'ū' | 'ú' | 'ǔ' | 'ù' => 'u',
+            'ǖ' | 'ǘ' | 'ǚ' | 'ǜ' => 'ü',
+            other => other,
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// `-Readings <file>`: `{"schema_version":1,"readings":{"学习":{"reading":"xué xí","initial":"x"}}}`.
+/// The drafting job supplies a reading and its initial; this step checks their shape only (D183).
+/// A term with no reading, a `null` initial, or `"uncertain": true` is unclassified: it stays in
+/// the `其他` bucket and in the unresolved-reading report until it is corrected (AC03). Returns
+/// the accepted readings, the unresolved rows, and the shape faults.
+fn read_readings(
+    path: &str,
+    terms: &[TermDraft],
+) -> Result<(BTreeMap<String, Reading>, Vec<Value>, Vec<Value>)> {
+    let mut accepted = BTreeMap::new();
+    let mut unresolved = Vec::new();
+    let mut faults = Vec::new();
+    if path.trim().is_empty() || !crate::ps::exists(path) {
+        for term in terms {
+            unresolved.push(json!({"term": term.term, "reading": "", "reason": "missing"}));
+        }
+        return Ok((accepted, unresolved, faults));
+    }
+    let document = canon::read_json(path)?;
+    if document["schema_version"] != json!(1) {
+        bail!("the readings file is not schema version 1");
+    }
+    let readings = document["readings"]
+        .as_object()
+        .context("the readings file has no `readings` object")?;
+    for (term, value) in readings {
+        let reading = value["reading"].as_str().unwrap_or_default().trim().to_string();
+        let uncertain = value["uncertain"] == json!(true);
+        let initial = match value.get("initial").map(|initial| initial.as_str()) {
+            Some(Some(text)) => {
+                let mut chars = text.trim().chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if ch.is_ascii_alphanumeric() => Some(ch.to_ascii_lowercase()),
+                    _ => {
+                        faults.push(json!({
+                            "fault": "reading_initial",
+                            "term": term,
+                            "detail": format!("the initial `{text}` is not one Latin letter or digit; the term stays in 其他"),
+                        }));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let shape_ok = !reading.is_empty() && reading.chars().all(is_reading_char);
+        if !shape_ok && !uncertain {
+            faults.push(json!({
+                "fault": "reading_shape",
+                "term": term,
+                "detail": "a reading is Latin letters, tone marks, spaces and apostrophes; a missing or uncertain reading stays in 其他",
+            }));
+        }
+        if uncertain || initial.is_none() || !shape_ok {
+            unresolved.push(json!({
+                "term": term,
+                "reading": reading,
+                "reason": if uncertain { "uncertain" } else { "missing" },
+            }));
+            continue;
+        }
+        accepted.insert(term.clone(), Reading { reading, initial });
+    }
+    for term in terms {
+        if !accepted.contains_key(&term.term)
+            && !unresolved
+                .iter()
+                .any(|row| crate::ps::s(&row["term"]) == term.term)
+        {
+            unresolved.push(json!({"term": term.term, "reading": "", "reason": "missing"}));
+        }
+    }
+    unresolved.sort_by(|a, b| canon::ordinal_cmp(&crate::ps::s(&a["term"]), &crate::ps::s(&b["term"])));
+    Ok((accepted, unresolved, faults))
+}
+
+/// Group accepted terms into the accepted pinyin-initial bands, at most [`PART_SPLIT`] rows each
+/// (D177, D183, D290). The Latin bands come first, then the digit bucket, then `其他`; inside a band
+/// the terms are ordered by their accepted reading, so a rebuild from the same plan is
+/// deterministic on every platform, with no other dependency or service (D184).
+fn bucket_parts(terms: &[TermDraft], readings: &BTreeMap<String, Reading>) -> Vec<Part> {
+    let mut latin: Vec<(char, String, String, usize)> = Vec::new();
+    let mut digit: Vec<(char, String, String, usize)> = Vec::new();
+    let mut other: Vec<(String, usize)> = Vec::new();
+    for (index, term) in terms.iter().enumerate() {
+        match readings.get(&term.term) {
+            Some(reading) => match reading.initial {
+                Some(initial) if initial.is_ascii_lowercase() => latin.push((
+                    initial,
+                    reading_key(&reading.reading),
+                    term.term.clone(),
+                    index,
+                )),
+                Some(initial) if initial.is_ascii_digit() => digit.push((
+                    initial,
+                    reading_key(&reading.reading),
+                    term.term.clone(),
+                    index,
+                )),
+                _ => other.push((term.term.clone(), index)),
+            },
+            None => other.push((term.term.clone(), index)),
+        }
+    }
+    latin.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)).then_with(|| canon::ordinal_cmp(&a.2, &b.2)));
+    digit.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)).then_with(|| canon::ordinal_cmp(&a.2, &b.2)));
+    other.sort_by(|a, b| canon::ordinal_cmp(&a.0, &b.0));
+    let mut parts = Vec::new();
+    for (low, high, label) in BANDS {
+        let rows = latin
+            .iter()
+            .filter(|(initial, ..)| *initial >= low && *initial <= high)
+            .map(|(_, _, _, index)| *index)
+            .collect::<Vec<_>>();
+        for (label, terms) in contiguous_parts(&rows, label) {
+            parts.push(Part {
+                label,
+                bucket: "latin",
+                terms,
+            });
+        }
+    }
+    let digit_rows = digit
+        .iter()
+        .map(|(_, _, _, index)| *index)
+        .collect::<Vec<_>>();
+    for (label, terms) in contiguous_parts(&digit_rows, DIGIT_LABEL) {
+        parts.push(Part {
+            label,
+            bucket: "digit",
+            terms,
+        });
+    }
+    let other_rows = other.iter().map(|(_, index)| *index).collect::<Vec<_>>();
+    for (label, terms) in contiguous_parts(&other_rows, OTHER_LABEL) {
+        parts.push(Part {
+            label,
+            bucket: "other",
+            terms,
+        });
+    }
+    parts
+}
+
+/// Cut one bucket's ordered rows into contiguous parts of at most [`PART_SPLIT`] rows (D290). A
+/// split keeps the bucket's label and adds the part number, so every label stays an accepted
+/// initial range and the declaration order stays deterministic.
+fn contiguous_parts(rows: &[usize], band: &str) -> Vec<(String, Vec<usize>)> {
+    let mut parts: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut index = 0;
+    while index < rows.len() {
+        let end = (index + PART_SPLIT).min(rows.len());
+        let label = if parts.is_empty() {
+            band.to_string()
+        } else {
+            format!("{band}({})", parts.len() + 1)
+        };
+        parts.push((label, rows[index..end].to_vec()));
+        index = end;
+    }
+    parts
+}
+
+/// The title of one part Card: the accepted range it navigates (D181).
+fn part_title(label: &str) -> String {
+    format!("词条 {label}")
+}
+
+/// One part's body: the register's own term-row grammar, so a part is a navigation Card and not a
+/// second register (D178, D181).
+fn part_body(terms: &[TermDraft], part: &Part) -> String {
+    let rows = part
+        .terms
+        .iter()
+        .map(|index| {
+            let term = &terms[*index];
+            let links = term
+                .targets
+                .iter()
+                .map(|address| format!("[[{address}]]"))
+                .collect::<Vec<_>>()
+                .join("、");
+            format!("- {}：{links}", term.term)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if rows.is_empty() {
+        format!("## 词条")
+    } else {
+        format!("## 词条\n{rows}")
+    }
+}
+
+/// The register root's final body: its own groups and, when the rows moved into parts, the
+/// `词条分册` declaration that names them, each part by `{{part:N}}` until apply knows its address
+/// (D176, D177, D179, D189). Without parts the rows stay on the root and there is no declaration.
+fn root_body_text(
+    current: &str,
+    terms: &[TermDraft],
+    declarations: &[(String, String)],
+) -> String {
+    if declarations.is_empty() {
+        return register_body(current, terms);
+    }
+    let mut body = register_body(current, &[]);
+    body.push_str("\n\n## 词条分册\n");
+    for (label, link) in declarations {
+        body.push_str(&format!("\n- [[{link}]] {label}"));
+    }
+    body.trim_end().to_string()
+}
+
+/// Stage the exact identified call list that publishes the register and its parts (§8.5, D189,
+/// D190, D191): the root shell when the Workspace has no register, the new parts as Side successors
+/// of the root, the changed existing parts in place, the emptied obsolete parts, and the root last.
+/// A part address is reused by its accepted label, then by its position, so a rebuild keeps it and
+/// allocates a new Side successor only for a genuinely new part (D185, AC04).
+fn stage_register(
+    current: &Value,
+    terms: &[TermDraft],
+    parts: &[Part],
+    readings: &BTreeMap<String, Reading>,
+) -> Result<Stage> {
+    let missing = current["missing"] == json!(true);
+    let current_body = crate::ps::s(&current["body"]);
+    let declared = crate::ps::pipe(&current["parts"]);
+    let mut stage = Stage {
+        root_before: String::new(),
+        ..Stage::default()
+    };
+    let mut calls: Vec<Value> = Vec::new();
+    if missing {
+        calls.push(json!({"tool": "create_topic", "arguments": {"title": INDEX_TITLE, "body": INDEX_BODY}}));
+    }
+    let root_ref = if missing { "@@0".to_string() } else { crate::ps::s(&current["address"]) };
+    // A new register is created as a shell first so its parts have a parent to be filed under; the
+    // root's own rows and declaration are published last, in their own identified call (D189).
+    let parts_expected = !parts.is_empty();
+    if missing && parts_expected {
+        let shell = register_body(&current_body, &[]);
+        stage.root_before = shell.clone();
+        calls.push(json!({"tool": "create_successor", "arguments": {
+            "at": root_ref, "type": "hub", "level": "register", "title": DEFAULT_TITLE, "body": shell,
+        }}));
+    }
+    let root_ref = if missing && parts_expected {
+        "@@1".to_string()
+    } else if missing {
+        "@@0".to_string()
+    } else {
+        root_ref
+    };
+    if missing && !parts_expected {
+        // A small register is created complete in one Card, as before.
+        let body = register_body(&current_body, terms);
+        stage.root_before = String::new();
+        calls.push(json!({"tool": "create_successor", "arguments": {
+            "at": "@@0", "type": "hub", "level": "register", "title": DEFAULT_TITLE, "body": body,
+        }}));
+        stage.calls = calls;
+        stage.root_body = body;
+        stage.terms_on_root = true;
+        stage.accepted_readings = accepted_reading_rows(terms, readings);
+        return Ok(stage);
+    }
+    // Reuse a declared part by its accepted label, then by its position (D185).
+    let mut reused: Vec<Option<usize>> = vec![None; parts.len()];
+    let mut used: Vec<bool> = vec![false; declared.len()];
+    for (index, part) in parts.iter().enumerate() {
+        if let Some(found) = declared
+            .iter()
+            .enumerate()
+            .position(|(at, row)| !used[at] && crate::ps::s(&row["label"]) == part.label)
+        {
+            reused[index] = Some(found);
+            used[found] = true;
+        }
+    }
+    for (index, part) in parts.iter().enumerate() {
+        let _ = part;
+        if reused[index].is_none() && index < declared.len() && !used[index] {
+            reused[index] = Some(index);
+            used[index] = true;
+        }
+    }
+    let mut links: Vec<(String, String)> = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let body = part_body(terms, part);
+        let title = part_title(&part.label);
+        let names = part
+            .terms
+            .iter()
+            .map(|term| terms[*term].term.clone())
+            .collect::<Vec<_>>();
+        match reused[index] {
+            Some(existing) => {
+                let row = &declared[existing];
+                let address = crate::ps::s(&row["address"]);
+                let before = crate::ps::s(&row["body"]);
+                let card = row["card"].clone();
+                let before_title = crate::ps::s(&card["title"]);
+                if before != body || before_title != title {
+                    let mut arguments = json!({
+                        "at": address,
+                        "body": body,
+                        "base_fingerprint": crate::calls::authored_fingerprint(&card),
+                    });
+                    if before_title != title {
+                        arguments["title"] = json!(title);
+                    }
+                    calls.push(json!({"tool": "edit_card", "arguments": arguments}));
+                }
+                links.push((part.label.clone(), address.clone()));
+                stage.parts.push(StagedPart {
+                    label: part.label.clone(),
+                    bucket: part.bucket,
+                    title,
+                    address: Some(address),
+                    body,
+                    terms: names,
+                    call: None,
+                    reused: true,
+                });
+            }
+            None => {
+                calls.push(json!({"tool": "create_successor", "arguments": {
+                    "at": root_ref, "kind": "side", "title": title, "body": body,
+                }}));
+                let call = calls.len() - 1;
+                links.push((part.label.clone(), format!("{{{{part:{index}}}}}")));
+                stage.parts.push(StagedPart {
+                    label: part.label.clone(),
+                    bucket: part.bucket,
+                    title,
+                    address: None,
+                    body,
+                    terms: names,
+                    call: Some(call),
+                    reused: false,
+                });
+            }
+        }
+    }
+    // A declared part the plan no longer needs keeps its address and stays declared, emptied of
+    // its rows, pending a separate deletion plan (D185, AC04).
+    for (index, row) in declared.iter().enumerate() {
+        if used[index] {
+            continue;
+        }
+        let address = crate::ps::s(&row["address"]);
+        let label = crate::ps::s(&row["label"]);
+        let body = "## 词条".to_string();
+        if crate::ps::s(&row["body"]) != body {
+            let card = row["card"].clone();
+            calls.push(json!({"tool": "edit_card", "arguments": {
+                "at": address,
+                "body": body,
+                "base_fingerprint": crate::calls::authored_fingerprint(&card),
+            }}));
+        }
+        links.push((label.clone(), address.clone()));
+        stage.obsolete.push(StagedObsolete {
+            label,
+            address,
+            body,
+        });
+    }
+    let root_body = root_body_text(&current_body, terms, &links);
+    let root_call = if missing || root_body != current_body {
+        json!({"tool": "edit_card", "arguments": {"at": Value::Null, "body": root_body}})
+    } else {
+        Value::Null
+    };
+    stage.calls = calls;
+    stage.root_call = root_call;
+    stage.root_body = root_body;
+    stage.terms_on_root = false;
+    stage.accepted_readings = accepted_reading_rows(terms, readings);
+    Ok(stage)
+}
+
+/// The accepted readings of the staged terms, in term order, for the plan's review evidence.
+fn accepted_reading_rows(terms: &[TermDraft], readings: &BTreeMap<String, Reading>) -> Vec<Value> {
+    let mut rows = terms
+        .iter()
+        .filter_map(|term| {
+            readings.get(&term.term).map(|reading| {
+                json!({
+                    "term": term.term,
+                    "reading": reading.reading,
+                    "initial": reading.initial.map(|initial| initial.to_string()),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| canon::ordinal_cmp(&crate::ps::s(&a["term"]), &crate::ps::s(&b["term"])));
+    rows
+}
+
+/// Publish a body that still holds `{{part:N}}` references by filling the addresses of the N-th
+/// planned part. An unresolved reference is refused, never written (D189).
+fn fill_parts(body: &str, addresses: &[String]) -> Result<String> {
+    let mut text = body.to_string();
+    for (index, address) in addresses.iter().enumerate() {
+        text = text.replace(&format!("{{{{part:{index}}}}}"), address);
+    }
+    if text.contains("{{part:") {
+        bail!("the staged register body holds a part reference with no address");
+    }
+    Ok(text)
 }
 
 // --- apply ----------------------------------------------------------------------------------------
@@ -1011,6 +1678,22 @@ impl Register {
         if body.trim().is_empty() {
             bail!("the staged register plan has no body");
         }
+        // A plan staged by an older build predates the staged publication calls: publishing half of
+        // it is worse than refusing it.
+        if plan.get("terms_on_root").is_none() {
+            bail!("the staged register plan predates the identified parts publication; run -Step plan again");
+        }
+        // More than 120 term rows stay on the root only in a legacy register; a staged publication
+        // puts them into parts, so a plan that keeps a large root is refused instead of published
+        // (D179, AC01).
+        if plan["terms_on_root"] == json!(true)
+            && crate::ps::pipe(&plan["terms"]).len() > PART_SPLIT
+        {
+            bail!(
+                "the staged plan keeps {} term rows on the register root; a register over {PART_SPLIT} rows is staged as 词条分册 parts",
+                crate::ps::pipe(&plan["terms"]).len()
+            );
+        }
         let planned = planned_terms(&plan)?;
         // Every planned target must still exist: a moved or deleted Card makes the staged
         // addresses stale, and the write path would otherwise refuse a new broken Link. A
@@ -1028,39 +1711,147 @@ impl Register {
                 gone.join(", ")
             );
         }
-        let current = self.current_register()?;
-        refuse_parts(&current)?;
+        let current = self.current_register(true)?;
         let read_only = planned
             .iter()
             .flat_map(|(_, targets)| targets.iter())
             .filter(|address| human.contains(*address))
             .count();
-        let mut created = 0;
-        let mut changed = false;
-        let address = if current["missing"] == json!(true) {
-            let topic = self.call(
-                "create_topic",
-                json!({"title": INDEX_TITLE, "body": INDEX_BODY}),
-            )?;
-            let root = crate::ps::s(&topic["address"]);
-            let made = self.call(
-                "create_successor",
-                json!({"at": root, "type": "hub", "level": "register", "title": DEFAULT_TITLE, "body": body}),
-            )?;
-            created = 2;
-            crate::ps::s(&made["address"])
+        // The plan's operation prefix: the same accepted plan reuses its receipts, so retrying an
+        // interrupted publication replays each committed call instead of creating a second Card
+        // (§8.5, D189). The plan id is the acceptance, not the attempt.
+        let short = crate::ps::s(&plan["plan_id"])
+            .trim_start_matches("rp-")
+            .chars()
+            .take(16)
+            .collect::<String>();
+        let prefix = if short.is_empty() {
+            "register/plan".to_string()
         } else {
-            let address = crate::ps::s(&current["address"]);
-            if current["body"].as_str().unwrap_or_default() == body.as_str() {
-                address
-            } else {
-                self.call("edit_card", json!({"at": address, "body": body}))?;
-                changed = true;
-                address
-            }
+            format!("register/{short}")
         };
-        // A fresh read must confirm the exact register, terms, and targets (§8.5): every page at
-        // one revision, not only the first.
+        let calls = plan["calls"].as_array().cloned().unwrap_or_default();
+        let mut wrote = 0;
+        let mut replayed = 0;
+        let mut receipts: Vec<String> = Vec::new();
+        if !calls.is_empty() {
+            for receipt in crate::calls::invoke_identified_staged(
+                self.zt()?,
+                &calls,
+                &format!("{prefix}/1/parts"),
+                None,
+            )? {
+                if receipt["replayed"] == json!(true) {
+                    replayed += 1;
+                } else {
+                    wrote += 1;
+                }
+                receipts.push(crate::ps::s(&receipt["result"]["address"]));
+            }
+            if receipts.len() != calls.len() {
+                bail!(
+                    "the parts publication answered {} receipts for {} calls",
+                    receipts.len(),
+                    calls.len()
+                );
+            }
+        }
+        let missing = current["missing"] == json!(true);
+        let root_address = if missing {
+            // The register was created in the parts batch: the Topic, then the register shell.
+            receipts.get(1).cloned().unwrap_or_default()
+        } else {
+            crate::ps::s(&current["address"])
+        };
+        if root_address.is_empty() {
+            bail!("the staged plan published no register root");
+        }
+        // The root names each part: a reused part by its staged address, a created one by the
+        // address its receipt returned (D189).
+        let planned_parts = crate::ps::pipe(&plan["parts"]);
+        let mut part_addresses: Vec<String> = Vec::new();
+        for part in &planned_parts {
+            let reused = crate::ps::s(&part["address"]);
+            let address = if !reused.is_empty() {
+                reused
+            } else {
+                let call = part["call"].as_u64().unwrap_or(u64::MAX) as usize;
+                receipts.get(call).cloned().unwrap_or_default()
+            };
+            if address.is_empty() {
+                bail!(
+                    "the staged plan resolved no address for the part `{}`",
+                    crate::ps::s(&part["label"])
+                );
+            }
+            part_addresses.push(address);
+        }
+        let final_body = fill_parts(&body, &part_addresses)?;
+        // The parts, and the root, are verified before the root is rewritten (D190): the root is
+        // published only after its parts are exact. A retry over a publication that already
+        // finished finds the root at its final body and has nothing left to publish.
+        let mut root_final = false;
+        if !planned_parts.is_empty() {
+            let mut wanted: Vec<String> = part_addresses.clone();
+            wanted.push(root_address.clone());
+            let read = self.call(
+                "get_cards",
+                json!({"addresses": wanted.iter().map(|at| json!(at)).collect::<Vec<_>>(), "view": "text"}),
+            )?;
+            if read["complete"] != json!(true) {
+                bail!(
+                    "a published part could not be read back: missing={}",
+                    crate::ps::json_compact(&read["missing"])
+                );
+            }
+            let body_at = |at: &str| {
+                crate::ps::pipe(&read["cards"])
+                    .into_iter()
+                    .find(|card| crate::ps::s(&card["address"]) == at)
+                    .map(|card| crate::ps::s(&card["body"]))
+                    .unwrap_or_default()
+            };
+            let root_before = crate::ps::s(&plan["root_before"]);
+            let root_now = body_at(&root_address);
+            root_final = root_now == final_body;
+            if root_now != root_before && !root_final {
+                bail!(
+                    "the register changed while its parts were published: expected `{root_before}` or the staged body, read `{root_now}`"
+                );
+            }
+            for (index, part) in planned_parts.iter().enumerate() {
+                let staged = crate::ps::s(&part["body"]);
+                if body_at(&part_addresses[index]) != staged {
+                    bail!(
+                        "the published part `{}` does not carry its staged body",
+                        crate::ps::s(&part["label"])
+                    );
+                }
+            }
+        }
+        // The root is published last, in its own identified call, with the addresses its parts
+        // received.
+        if !plan["root_call"].is_null() && !root_final {
+            let mut call = plan["root_call"].clone();
+            let card = self.call("get_card", json!({"at": root_address}))?;
+            call["arguments"]["at"] = json!(root_address);
+            call["arguments"]["body"] = json!(final_body);
+            call["arguments"]["base_fingerprint"] = json!(crate::calls::authored_fingerprint(&card));
+            for receipt in crate::calls::invoke_identified(
+                self.zt()?,
+                &[call],
+                &format!("{prefix}/1/root"),
+                None,
+            )? {
+                if receipt["replayed"] == json!(true) {
+                    replayed += 1;
+                } else {
+                    wrote += 1;
+                }
+            }
+        }
+        // A fresh read must confirm the exact root, parts, targets, and revision (§8.5, D190): the
+        // publication unit is complete only after every page, both bodies, and the layout agree.
         let (view, published) = self.published()?;
         let mut divergence = Vec::new();
         for (term, targets) in &planned {
@@ -1079,25 +1870,84 @@ impl Register {
             .collect::<Vec<_>>();
         if !divergence.is_empty() || !extra.is_empty() || view["complete"] != json!(true) {
             bail!(
-                "the register was published at `{address}` but does not verify: diverged={} extra={} complete={} faults={}",
+                "the register was published at `{root_address}` but does not verify: diverged={} extra={} complete={} faults={}",
                 crate::ps::json_compact(&Value::Array(divergence)),
                 crate::ps::json_compact(&Value::Array(extra)),
                 view["complete"],
                 crate::ps::json_compact(&view["faults"])
             );
         }
+        if !view["duplicates"].as_array().is_none_or(Vec::is_empty) {
+            bail!(
+                "the published register still serves a row twice: {}",
+                crate::ps::json_compact(&view["duplicates"])
+            );
+        }
+        // One more fresh read for the exact bodies: the root, every planned part, and every
+        // obsolete part must carry exactly the staged text (D190, AC08).
+        let mut wanted: Vec<String> = vec![root_address.clone()];
+        wanted.extend(part_addresses.iter().cloned());
+        for part in crate::ps::pipe(&plan["obsolete_parts"]) {
+            wanted.push(crate::ps::s(&part["address"]));
+        }
+        let read = self.call(
+            "get_cards",
+            json!({"addresses": wanted.iter().map(|at| json!(at)).collect::<Vec<_>>(), "view": "text"}),
+        )?;
+        if read["complete"] != json!(true) {
+            bail!(
+                "the published register or a part could not be read back: missing={}",
+                crate::ps::json_compact(&read["missing"])
+            );
+        }
+        let mut bodies = BTreeMap::new();
+        for card in crate::ps::pipe(&read["cards"]) {
+            bodies.insert(crate::ps::s(&card["address"]), crate::ps::s(&card["body"]));
+        }
+        if bodies.get(&root_address).map(String::as_str) != Some(final_body.as_str()) {
+            bail!(
+                "the published register body differs from the staged body:\nstaged:\n{final_body}\nread:\n{}",
+                bodies.get(&root_address).cloned().unwrap_or_default()
+            );
+        }
+        for (index, part) in planned_parts.iter().enumerate() {
+            let staged = crate::ps::s(&part["body"]);
+            if bodies.get(&part_addresses[index]).map(String::as_str) != Some(staged.as_str()) {
+                bail!(
+                    "the published part `{}` does not carry its staged body",
+                    crate::ps::s(&part["label"])
+                );
+            }
+        }
+        for part in crate::ps::pipe(&plan["obsolete_parts"]) {
+            let address = crate::ps::s(&part["address"]);
+            if bodies.get(&address).map(String::as_str) != Some(crate::ps::s(&part["body"]).as_str()) {
+                bail!("the obsolete part `{address}` is not the empty navigation entry the plan staged");
+            }
+        }
+        let verified_parts = verify_published_layout(&plan, &view, &part_addresses)?;
         util::print_last(&json!({
             "ok": true,
             "step": "apply",
             "plan_id": plan["plan_id"],
-            "register": address,
-            "created": created,
-            "changed": changed,
+            "register": root_address,
+            "created": if missing { 2 } else { 0 },
+            "changed": wrote > 0,
+            "wrote": wrote,
+            "replayed": replayed,
+            "parts": verified_parts,
+            "obsolete_parts": plan["obsolete_parts"],
+            "terms_on_root": plan["terms_on_root"],
             "entries": published.len(),
             "read_only": read_only,
             "unresolved": plan["unresolved"].as_array().map_or(0, Vec::len),
+            "readings": {
+                "accepted": plan["readings"]["accepted"].as_array().map_or(0, Vec::len),
+                "unresolved": plan["readings"]["unresolved"].as_array().map_or(0, Vec::len),
+            },
             "review": plan["review"],
             "complete": view["complete"],
+            "publication": "complete",
             "archive_revision": view["archive_revision"],
             "verified": true,
         }))
@@ -1111,10 +1961,15 @@ impl Register {
         let mut plan_id = Value::Null;
         let mut unresolved = 0;
         let mut read_only = 0;
+        let mut plan_parts = Vec::new();
+        let mut obsolete_parts = Value::Null;
+        let mut readings = Value::Null;
         if crate::ps::exists(&self.plan_file()) {
             let plan = canon::read_json(&self.plan_file())?;
             plan_id = plan["plan_id"].clone();
             unresolved = plan["unresolved"].as_array().map_or(0, Vec::len);
+            readings = plan["readings"].clone();
+            obsolete_parts = plan["obsolete_parts"].clone();
             read_only = crate::ps::pipe(&plan["terms"])
                 .into_iter()
                 .map(|row| crate::ps::pipe(&row["read_only_targets"]).len())
@@ -1134,6 +1989,27 @@ impl Register {
                 .filter(|(term, _)| !planned.iter().any(|(name, _)| name == term))
                 .map(|(term, targets)| json!({"term": term, "targets": targets}))
                 .collect();
+            // The layout is part of the acceptance: a published part whose label or address moved,
+            // or an obsolete part that is declared empty, is reported here too (AC04, AC08).
+            let published_parts = crate::ps::pipe(&view["parts"]);
+            for part in crate::ps::pipe(&plan["parts"]) {
+                let label = crate::ps::s(&part["label"]);
+                let address = crate::ps::s(&part["address"]);
+                match published_parts
+                    .iter()
+                    .find(|declared| declared["place"] == json!("ok") && crate::ps::s(&declared["label"]) == label)
+                {
+                    None => plan_parts.push(json!({"label": label, "address": address, "published": Value::Null})),
+                    Some(declared) if !address.is_empty() && crate::ps::s(&declared["address"]) != address => {
+                        plan_parts.push(json!({
+                            "label": label,
+                            "address": address,
+                            "published": declared["address"],
+                        }))
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         util::print_last(&json!({
             "ok": true,
@@ -1144,6 +2020,11 @@ impl Register {
             "entries": published.len(),
             "read_only": read_only,
             "unresolved": unresolved,
+            "readings": readings,
+            "parts": published_parts_json(&view),
+            "plan_parts": plan_parts,
+            "obsolete_parts": obsolete_parts,
+            "duplicates": view["duplicates"],
             "complete": view["complete"],
             "faults": view["faults"],
             "missing": missing,
@@ -1152,6 +2033,107 @@ impl Register {
             "archive_revision": view["archive_revision"],
         }))
     }
+}
+
+/// The published parts of a register view: label, address, place, and row count, in declaration
+/// order.
+fn published_parts_json(view: &Value) -> Vec<Value> {
+    crate::ps::pipe(&view["parts"])
+        .into_iter()
+        .map(|part| {
+            json!({
+                "label": part["label"],
+                "address": part["address"],
+                "place": part["place"],
+                "entries": part["entries"],
+            })
+        })
+        .collect()
+}
+
+/// Confirm the published layout is the accepted one: the declared parts are exactly the planned
+/// parts in order, each at the address its receipt returned with as many rows as it was staged
+/// with, and an obsolete part keeps its declaration and is empty (D185, D190, AC04, AC08).
+fn verify_published_layout(
+    plan: &Value,
+    view: &Value,
+    part_addresses: &[String],
+) -> Result<Vec<Value>> {
+    let declared = crate::ps::pipe(&view["parts"]);
+    let planned = crate::ps::pipe(&plan["parts"]);
+    let obsolete = crate::ps::pipe(&plan["obsolete_parts"]);
+    if planned.is_empty() {
+        if !declared.is_empty() {
+            bail!(
+                "the published register declares parts the plan did not stage: {}",
+                crate::ps::json_compact(&view["parts"])
+            );
+        }
+        return Ok(Vec::new());
+    }
+    if declared.len() != planned.len() + obsolete.len() {
+        bail!(
+            "the published register declares {} parts; the plan staged {} and kept {} obsolete",
+            declared.len(),
+            planned.len(),
+            obsolete.len()
+        );
+    }
+    let mut verified = Vec::new();
+    for (index, part) in planned.iter().enumerate() {
+        let Some(found) = declared.get(index) else {
+            bail!(
+                "the published register does not declare the part `{}`",
+                crate::ps::s(&part["label"])
+            );
+        };
+        let label = crate::ps::s(&part["label"]);
+        if crate::ps::s(&found["label"]) != label {
+            bail!(
+                "the published part on line {} carries the label `{}`, not `{label}`",
+                index + 1,
+                crate::ps::s(&found["label"])
+            );
+        }
+        if crate::ps::s(&found["address"]) != part_addresses[index] {
+            bail!(
+                "the published part `{label}` is at `{}`, not `{}`",
+                crate::ps::s(&found["address"]),
+                part_addresses[index]
+            );
+        }
+        let rows = part["terms"].as_array().map_or(0, Vec::len);
+        if found["place"] != json!("ok") || found["entries"].as_u64() != Some(rows as u64) {
+            bail!(
+                "the published part `{label}` is not a placed part with {rows} rows: {}",
+                crate::ps::json_compact(found)
+            );
+        }
+        verified.push(json!({
+            "label": label,
+            "address": part_addresses[index],
+            "entries": found["entries"],
+            "reused": part["reused"],
+        }));
+    }
+    for (offset, part) in obsolete.iter().enumerate() {
+        let Some(found) = declared.get(planned.len() + offset) else {
+            bail!(
+                "the obsolete part `{}` is no longer declared",
+                crate::ps::s(&part["address"])
+            );
+        };
+        if crate::ps::s(&found["address"]) != crate::ps::s(&part["address"])
+            || found["entries"].as_u64() != Some(0)
+        {
+            bail!(
+                "the obsolete part `{}` is not an empty navigation entry: {}",
+                crate::ps::s(&part["address"]),
+                crate::ps::json_compact(found)
+            );
+        }
+    }
+    Ok(verified)
 }
 
 fn planned_terms(plan: &Value) -> Result<Vec<(String, Vec<String>)>> {
@@ -1177,17 +2159,37 @@ enum Merge {
     Fault(String),
 }
 
-/// Publishing `词条分册` parts is S11's (#104): this step publishes a register without parts. A
-/// register that already declares parts is refused before any write, so a correct root
-/// publication is never reported as a failure over rows this step does not own.
-fn refuse_parts(current: &Value) -> Result<()> {
-    let parts = current["parts"].as_array().map_or(0, Vec::len);
-    if parts > 0 {
-        bail!(
-            "the agent register declares {parts} 词条分册 parts; publishing register parts is S11 (#104), and this step publishes a register without parts"
-        );
+/// The part faults that make the declared layout incoherent: a part the register names but cannot
+/// own where it says (moved, missing, a Hub, listed twice, or nested). The compiler rewrites the
+/// whole `词条分册` layout, so it refuses to plan over one of these and names the exact finding
+/// instead of treating an arbitrary Card as a part (D182, AC05). An *unlisted* part (a Side
+/// successor holding `词条` rows the root no longer declares) blocks a new plan too, because a fresh
+/// acceptance would compound a half-published tree; `apply` alone tolerates it, since finishing an
+/// interrupted publication is exactly what redeclares those Cards (D189, D306).
+const PART_FAULTS: [&str; 5] = [
+    "part-place",
+    "part-missing",
+    "part-hub",
+    "part-duplicate",
+    "part-nested",
+];
+
+fn obstructed_parts(view: &Value, tolerate_unlisted: bool) -> Result<()> {
+    let obstructed = crate::ps::pipe(&view["faults"])
+        .into_iter()
+        .filter(|fault| {
+            let id = crate::ps::s(&fault["fault"]);
+            PART_FAULTS.contains(&id.as_str()) || (!tolerate_unlisted && id == "part-unlisted")
+        })
+        .map(|fault| format!("{}: {}", crate::ps::s(&fault["fault"]), crate::ps::s(&fault["detail"])))
+        .collect::<Vec<_>>();
+    if obstructed.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    bail!(
+        "the agent register's 词条分册 layout is obstructed and this step will not rewrite it: {}; repair the parts, then run -Step plan again",
+        obstructed.join("; ")
+    )
 }
 
 /// The pages as one catalog: every page at the same revision and of the same register, the pages
@@ -1402,6 +2404,423 @@ mod tests {
         assert!(!is_report_id("r-1"));
         assert!(!is_report_id(&format!("e-{}", "a".repeat(64))));
         assert!(!is_report_id(&format!("r-{}", "A".repeat(64))));
+    }
+
+    // --- readings and parts (S11, #104) ---
+
+    fn draft(term: &str) -> TermDraft {
+        TermDraft {
+            term: term.to_string(),
+            targets: vec!["5/1".to_string()],
+            sources: Vec::new(),
+            ambiguous: false,
+            overflow: 0,
+            reviewed: Vec::new(),
+            read_only: Vec::new(),
+        }
+    }
+
+    fn reading(reading: &str, initial: Option<char>) -> Reading {
+        Reading {
+            reading: reading.to_string(),
+            initial,
+        }
+    }
+
+    fn readings_file(content: &str) -> String {
+        let directory = std::env::temp_dir().join(format!(
+            "zt-register-readings-{}-{}",
+            std::process::id(),
+            crate::canon::sha256_hex(content.as_bytes())
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("register-readings.json");
+        std::fs::write(&file, content).unwrap();
+        file.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn readings_are_validated_and_an_uncertain_or_malformed_one_stays_in_other() {
+        let terms = vec![draft("信用"), draft("学习"), draft("投资"), draft("重"), draft("长")];
+        // A polyphonic term is accepted with the reading the drafting job chose; a second one is
+        // uncertain, a digit initial goes to the digit bucket, and a Chinese "reading" is a shape
+        // fault: this step never transliterates (D183, D184, AC02-A03).
+        let file = readings_file(
+            "{\"schema_version\":1,\"readings\":{\
+             \"信用\":{\"reading\":\"xìn yòng\",\"initial\":\"X\"},\
+             \"学习\":{\"reading\":\"xué xí\",\"initial\":null,\"uncertain\":true},\
+             \"投资\":{\"reading\":\"tóu zī\",\"initial\":\"tt\"},\
+             \"重\":{\"reading\":\"教学\",\"initial\":\"z\"},\
+             \"长\":{\"reading\":\"cháng\",\"initial\":\"7\"}}}",
+        );
+        let (accepted, unresolved, faults) = read_readings(&file, &terms).unwrap();
+        assert_eq!(accepted.len(), 2, "{accepted:?} unresolved={unresolved:?} faults={faults:?}");
+        assert_eq!(accepted["信用"].initial, Some('x'), "the initial is lower-cased");
+        assert_eq!(accepted["长"].initial, Some('7'), "a digit initial is its own bucket");
+        assert_eq!(accepted["信用"].reading, "xìn yòng", "the accepted reading is kept");
+        let reasons = unresolved
+            .iter()
+            .map(|row| (crate::ps::s(&row["term"]), crate::ps::s(&row["reason"])))
+            .collect::<Vec<_>>();
+        assert!(
+            reasons.contains(&("学习".to_string(), "uncertain".to_string())),
+            "an uncertain reading stays unresolved: {reasons:?}"
+        );
+        assert!(
+            reasons.contains(&("投资".to_string(), "missing".to_string())),
+            "a malformed initial stays unresolved: {reasons:?}"
+        );
+        assert!(
+            reasons.contains(&("重".to_string(), "missing".to_string())),
+            "a reading that is not Latin is unresolved: {reasons:?}"
+        );
+        let kinds = faults
+            .iter()
+            .map(|fault| (crate::ps::s(&fault["fault"]), crate::ps::s(&fault["term"])))
+            .collect::<Vec<_>>();
+        assert!(
+            kinds.contains(&("reading_initial".to_string(), "投资".to_string())),
+            "{kinds:?}"
+        );
+        assert!(
+            kinds.contains(&("reading_shape".to_string(), "重".to_string())),
+            "{kinds:?}"
+        );
+        // A term the file never mentions is missing its reading, not silently classified.
+        let (accepted, unresolved, faults) =
+            read_readings(&crate::ps::join(&file, "absent.json"), &[draft("信用")]).unwrap();
+        assert!(accepted.is_empty() && faults.is_empty());
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0]["reason"], json!("missing"));
+    }
+
+    #[test]
+    fn buckets_group_the_accepted_initials_and_a_long_bucket_splits_in_order() {
+        let terms = vec![
+            draft("信用"),
+            draft("学习"),
+            draft("投资"),
+            draft("储蓄"),
+            draft("需求"),
+            draft("数字"),
+        ];
+        let mut readings = BTreeMap::new();
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        readings.insert("学习".to_string(), reading("xué xí", Some('x')));
+        readings.insert("投资".to_string(), reading("tóu zī", Some('t')));
+        readings.insert("储蓄".to_string(), reading("chǔ xù", Some('c')));
+        readings.insert("需求".to_string(), reading("xū qiú", Some('x')));
+        readings.insert("数字".to_string(), reading("9", Some('9')));
+        let parts = bucket_parts(&terms, &readings);
+        let labels = parts.iter().map(|part| part.label.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec!["A–F", "S–Z", "0–9"],
+            "the accepted bands come first, then the digit bucket"
+        );
+        // Inside a band the accepted reading orders the terms, so a tone mark never reorders them.
+        let s = parts.iter().find(|part| part.label == "S–Z").unwrap();
+        let names = s.terms.iter().map(|at| terms[*at].term.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["投资", "信用", "需求", "学习"],
+            "tou, xin, xu, xue: the base letters order the band"
+        );
+        assert_eq!(parts[1].bucket, "latin");
+        assert_eq!(parts[2].bucket, "digit");
+        // A bucket over the row limit splits into contiguous parts that keep the accepted range.
+        let long: Vec<TermDraft> = (0..PART_SPLIT + 5)
+            .map(|index| draft(&format!("词{index:03}")))
+            .collect();
+        let mut readings = BTreeMap::new();
+        for (index, term) in long.iter().enumerate() {
+            readings.insert(
+                term.term.clone(),
+                reading(&format!("sheng{index}"), Some(if index < PART_SPLIT { 's' } else { 'w' })),
+            );
+        }
+        let parts = bucket_parts(&long, &readings);
+        let s_parts = parts.iter().filter(|part| part.bucket == "latin").collect::<Vec<_>>();
+        assert_eq!(s_parts.len(), 2, "S–Z and W–Z? no: the second band is S–Z(2)");
+        assert_eq!(s_parts[0].label, "S–Z");
+        assert_eq!(s_parts[0].terms.len(), PART_SPLIT);
+        assert_eq!(s_parts[1].label, "S–Z(2)");
+        assert_eq!(s_parts[1].terms.len(), 5);
+        // A term with no accepted reading is in 其他, which comes last.
+        let mut readings = BTreeMap::new();
+        readings.insert("学习".to_string(), reading("xué xí", Some('x')));
+        let parts = bucket_parts(&[draft("学习"), draft("无读")], &readings);
+        assert_eq!(parts.last().unwrap().label, OTHER_LABEL);
+        assert_eq!(parts.last().unwrap().bucket, "other");
+    }
+
+    #[test]
+    fn a_part_body_uses_the_register_row_grammar_and_a_part_title_names_the_range() {
+        let terms = vec![draft("信用"), draft("学习")];
+        let part = Part {
+            label: "X".to_string(),
+            bucket: "latin",
+            terms: vec![0, 1],
+        };
+        assert_eq!(
+            part_body(&terms, &part),
+            "## 词条\n- 信用：[[5/1]]\n- 学习：[[5/1]]"
+        );
+        assert_eq!(part_title("A–F"), "词条 A–F");
+        let empty = Part {
+            label: OTHER_LABEL.to_string(),
+            bucket: "other",
+            terms: Vec::new(),
+        };
+        assert_eq!(part_body(&terms, &empty), "## 词条", "an empty part is still a navigation entry");
+        // The reading order is stable across platforms: base letters, then the term.
+        assert_eq!(reading_key("Xué Xí"), reading_key("xue xi"));
+        assert_eq!(reading_key("xìn"), "xin");
+    }
+
+    #[test]
+    fn the_root_declares_its_parts_and_keeps_its_other_groups() {
+        let terms = vec![draft("信用")];
+        let root = root_body_text(
+            "范围：代理工作区的入口。\n\n## 领域\n- 市场：[[9/0]]",
+            &terms,
+            &[("A–F".to_string(), "{{part:0}}".to_string())],
+        );
+        assert!(root.contains("## 领域"), "{root}");
+        assert!(root.contains("## 词条分册"), "{root}");
+        assert!(root.contains("- [[{{part:0}}]] A–F"), "{root}");
+        assert!(!root.contains("## 词条\n"), "the rows moved into the parts: {root}");
+        assert_eq!(
+            fill_parts(&root, &["3/1".to_string()]).unwrap(),
+            "范围：代理工作区的入口。\n\n## 领域\n- 市场：[[9/0]]\n\n## 词条分册\n\n- [[3/1]] A–F"
+        );
+        // Without parts the rows stay on the root and there is no declaration section.
+        let small = root_body_text("范围：x", &terms, &[]);
+        assert!(small.contains("## 词条"), "{small}");
+        assert!(!small.contains("## 词条分册"), "{small}");
+        // A reference with no address is refused, never written.
+        assert!(fill_parts("- [[{{part:1}}]] B", &["3/1".to_string()]).is_err());
+    }
+
+    fn declared_part(label: &str, address: &str, body: &str) -> Value {
+        json!({
+            "label": label,
+            "address": address,
+            "body": body,
+            "card": {
+                "address": address,
+                "title": part_title(label),
+                "body": body,
+                "type": "idea",
+            },
+        })
+    }
+
+    fn current_register(address: Value, body: &str, parts: Vec<Value>) -> Value {
+        json!({
+            "address": address,
+            "body": body,
+            "missing": false,
+            "parts": parts,
+        })
+    }
+
+    #[test]
+    fn a_new_split_register_is_created_as_a_shell_and_its_parts_filed_under_it() {
+        let terms = vec![draft("信用"), draft("学习")];
+        let mut readings = BTreeMap::new();
+        readings.insert("学习".to_string(), reading("xué xí", Some('x')));
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        let parts = bucket_parts(&terms, &readings);
+        let current = json!({"address": Value::Null, "body": "", "missing": true, "parts": []});
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert_eq!(staged.calls.len(), 3, "the Topic, the root shell, and the one part: {:?}", staged.calls);
+        assert_eq!(staged.calls[0]["tool"], json!("create_topic"));
+        assert_eq!(staged.calls[1]["tool"], json!("create_successor"));
+        assert_eq!(staged.calls[1]["arguments"]["type"], json!("hub"));
+        assert_eq!(staged.calls[1]["arguments"]["body"], json!(DEFAULT_SCOPE));
+        assert_eq!(staged.calls[2]["tool"], json!("create_successor"));
+        assert_eq!(staged.calls[2]["arguments"]["at"], json!("@@1"), "a part is filed under the new root");
+        assert_eq!(staged.calls[2]["arguments"]["kind"], json!("side"));
+        assert_eq!(staged.parts.len(), 1);
+        assert_eq!(staged.parts[0].label, "S–Z");
+        assert!(staged.parts[0].address.is_none() && !staged.parts[0].reused);
+        assert!(staged.root_body.contains("{{part:0}}"), "{}", staged.root_body);
+        assert!(staged.root_call.is_object(), "the root is published last");
+        assert!(!staged.terms_on_root);
+    }
+
+    #[test]
+    fn a_rebuild_reuses_part_addresses_and_keeps_an_obsolete_part_declared_and_empty() {
+        let terms = vec![draft("信用"), draft("学习")];
+        let mut readings = BTreeMap::new();
+        readings.insert("学习".to_string(), reading("xué xí", Some('x')));
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        let parts = bucket_parts(&terms, &readings);
+        let root = "范围：代理工作区的入口。\n\n## 词条分册\n\n- [[3/1]] S–Z\n- [[3/2]] 其他\n";
+        let current = current_register(
+            json!("2/1"),
+            root,
+            vec![
+                declared_part("S–Z", "3/1", "## 词条\n- 学习：[[5/1]]"),
+                declared_part("其他", "3/2", "## 词条\n- 旧词：[[5/1]]"),
+            ],
+        );
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert_eq!(staged.parts.len(), 1);
+        assert_eq!(staged.parts[0].address.as_deref(), Some("3/1"), "the label keeps its address");
+        assert!(staged.parts[0].reused);
+        // The row moved into the part: the reused part's body is edited in place.
+        assert_eq!(staged.calls.len(), 2, "{:?}", staged.calls);
+        assert_eq!(staged.calls[0]["tool"], json!("edit_card"));
+        assert_eq!(staged.calls[0]["arguments"]["at"], json!("3/1"));
+        assert_eq!(
+            staged.calls[0]["arguments"]["body"],
+            json!("## 词条\n- 信用：[[5/1]]\n- 学习：[[5/1]]")
+        );
+        // The part no longer needed keeps its declaration and is emptied, never renumbered.
+        assert_eq!(staged.obsolete.len(), 1);
+        assert_eq!(staged.obsolete[0].address, "3/2");
+        assert_eq!(staged.obsolete[0].body, "## 词条");
+        assert_eq!(staged.calls[1]["arguments"]["at"], json!("3/2"));
+        assert!(staged.root_body.contains("- [[3/1]] S–Z"), "{}", staged.root_body);
+        assert!(staged.root_body.contains("- [[3/2]] 其他"), "{}", staged.root_body);
+        // A part whose label changed keeps its address by position.
+        let root = "范围：代理工作区的入口。\n\n## 词条分册\n\n- [[3/1]] G–L\n";
+        let current = current_register(
+            json!("2/1"),
+            root,
+            vec![declared_part("G–L", "3/1", "## 词条\n- 信用：[[5/1]]\n- 学习：[[5/1]]")],
+        );
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert_eq!(staged.parts[0].address.as_deref(), Some("3/1"));
+        let call = staged
+            .calls
+            .iter()
+            .find(|call| call["tool"] == json!("edit_card"))
+            .expect("the reused part is relabelled in place");
+        assert_eq!(call["arguments"]["title"], json!("词条 S–Z"), "the title follows the label");
+    }
+
+    #[test]
+    fn an_unchanged_split_register_stages_no_write_at_all() {
+        let terms = vec![draft("信用")];
+        let mut readings = BTreeMap::new();
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        let parts = bucket_parts(&terms, &readings);
+        let root = "范围：代理工作区的入口。\n\n## 词条分册\n\n- [[3/1]] S–Z";
+        let body = "## 词条\n- 信用：[[5/1]]";
+        let current = current_register(json!("2/1"), root, vec![declared_part("S–Z", "3/1", body)]);
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert!(staged.calls.is_empty(), "{:?}", staged.calls);
+        assert!(staged.root_call.is_null(), "the root body is unchanged");
+        assert_eq!(staged.root_body, root);
+        // A new part beyond the declared ones is a genuinely new Side successor.
+        let terms = vec![draft("信用"), draft("储蓄")];
+        let mut readings = BTreeMap::new();
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        readings.insert("储蓄".to_string(), reading("chǔ xù", Some('c')));
+        let parts = bucket_parts(&terms, &readings);
+        let current = current_register(json!("2/1"), root, vec![declared_part("S–Z", "3/1", body)]);
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert_eq!(staged.parts.len(), 2);
+        assert_eq!(
+            staged.parts[0].label, "A–F",
+            "the band the register never declared is genuinely new"
+        );
+        assert!(staged.parts[0].address.is_none() && !staged.parts[0].reused);
+        assert_eq!(
+            staged.parts[1].address.as_deref(),
+            Some("3/1"),
+            "the declared S–Z part keeps its address by label"
+        );
+        assert!(staged.parts[1].reused);
+        let created = staged
+            .calls
+            .iter()
+            .find(|call| call["tool"] == json!("create_successor"))
+            .expect("a genuinely new part is created");
+        assert_eq!(created["arguments"]["at"], json!("2/1"));
+        assert_eq!(staged.root_call["arguments"]["body"], json!(staged.root_body));
+    }
+
+    #[test]
+    fn a_part_fault_obstructs_the_layout_the_step_would_rewrite() {
+        let view = json!({"faults": [
+            {"fault": "part-place", "detail": "[[3/1]] is declared under 词条分册 but is not an immediate Side successor"},
+        ]});
+        let refusal = obstructed_parts(&view, false).unwrap_err().to_string();
+        assert!(refusal.contains("part-place") && refusal.contains("3/1"), "{refusal}");
+        // A row fault that a rebuild repairs does not obstruct the layout.
+        let view = json!({"faults": [{"fault": "broken", "detail": "[[9/9]] does not exist"}]});
+        assert!(obstructed_parts(&view, false).is_ok());
+    }
+
+    #[test]
+    fn the_published_layout_must_be_the_accepted_one() {
+        let plan = json!({
+            "parts": [
+                {"label": "A–F", "address": null, "terms": ["甲", "乙"], "reused": false},
+                {"label": "其他", "address": "3/2", "terms": ["丙"], "reused": true},
+            ],
+            "obsolete_parts": [{"label": "S–Z", "address": "3/3", "body": "## 词条"}],
+        });
+        let view = json!({"parts": [
+            {"label": "A–F", "address": "3/1", "place": "ok", "entries": 2},
+            {"label": "其他", "address": "3/2", "place": "ok", "entries": 1},
+            {"label": "S–Z", "address": "3/3", "place": "ok", "entries": 0},
+        ]});
+        let verified =
+            verify_published_layout(&plan, &view, &["3/1".to_string(), "3/2".to_string()]).unwrap();
+        assert_eq!(verified.len(), 2);
+        assert_eq!(verified[0]["reused"], json!(false));
+        assert_eq!(verified[1]["reused"], json!(true));
+        // A part whose address moved under the label is not the accepted layout.
+        let moved = json!({"parts": [
+            {"label": "A–F", "address": "3/9", "place": "ok", "entries": 2},
+            {"label": "其他", "address": "3/2", "place": "ok", "entries": 1},
+            {"label": "S–Z", "address": "3/3", "place": "ok", "entries": 0},
+        ]});
+        let refusal = verify_published_layout(&plan, &moved, &["3/1".to_string(), "3/2".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("3/9"), "{refusal}");
+        // An obsolete part that still holds rows is not the empty navigation entry the plan kept.
+        let full = json!({"parts": [
+            {"label": "A–F", "address": "3/1", "place": "ok", "entries": 2},
+            {"label": "其他", "address": "3/2", "place": "ok", "entries": 1},
+            {"label": "S–Z", "address": "3/3", "place": "ok", "entries": 4},
+        ]});
+        assert!(
+            verify_published_layout(&plan, &full, &["3/1".to_string(), "3/2".to_string()]).is_err()
+        );
+        // A plan without parts accepts a register without a declaration and nothing else.
+        let small = json!({"parts": [], "obsolete_parts": []});
+        assert!(verify_published_layout(&small, &json!({"parts": []}), &[]).unwrap().is_empty());
+        assert!(verify_published_layout(&small, &view, &[]).is_err());
+    }
+
+    #[test]
+    fn a_changed_reading_is_a_new_plan_input() {
+        let terms = vec![draft("信用")];
+        let mut payload = json!({
+            "schema_version": SCHEMA_VERSION,
+            "archive": {"identity": {"id": "a"}},
+            "terms": terms.iter().map(TermDraft::json).collect::<Vec<_>>(),
+            "unresolved": [],
+            "faults": [],
+            "excluded": [],
+            "review": Value::Null,
+            "body": "范围：x",
+            "parts": [],
+            "obsolete_parts": [],
+            "readings": {"accepted": [{"term": "信用", "reading": "xìn yòng", "initial": "x"}]},
+        });
+        let first = plan_id(&payload);
+        assert!(first.starts_with("rp-"));
+        assert_eq!(plan_id(&payload), first, "the same acceptance has the same id");
+        payload["readings"]["accepted"][0]["reading"] = json!("xìn róng");
+        assert_ne!(plan_id(&payload), first, "a changed reading is a new plan");
     }
 
     fn term_row(term: &str, avoid: &[&str], meaning: &str) -> zt_check::check::TermRow {
