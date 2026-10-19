@@ -598,6 +598,48 @@ fn a_register_written_before_the_term_heading_is_still_read() {
 }
 
 #[test]
+fn an_accepted_move_keeps_the_register_entry_current() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "学习", 2);
+    // The entry is a Side successor, so the move has a free location to go to.
+    let target = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{tree}/1"), "kind": "side", "title": "学习曲线", "body": "累计产量提高时成本下降。" }),
+    ));
+    let reg = register(&mut mcp, &format!("## 词条\n- 学习曲线：[[{target}]]\n"));
+    // A normal move rewrites the Link in the register body: no concept id has to change.
+    let done = mcp.ok(
+        "move_card",
+        json!({ "at": target, "to": format!("{tree}/2|a"), "confirm": "move" }),
+    );
+    let moved = done["moved"]
+        .as_object()
+        .expect("the move names its mapping")
+        .get(&target)
+        .and_then(Value::as_str)
+        .expect("the target moved")
+        .to_string();
+    assert_ne!(moved, target);
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        terms(&view),
+        vec![("学习曲线".to_string(), vec![moved.clone()])],
+        "the entry follows the moved Card"
+    );
+    assert_eq!(view["entries"][0]["targets"][0]["title"], json!("学习曲线"));
+    assert!(
+        view["terms_by_card"].get(&target).is_none(),
+        "the old address no longer names the Card"
+    );
+    let body = mcp.ok("get_card", json!({ "at": reg }))["body"]
+        .as_str()
+        .expect("the register body")
+        .to_string();
+    assert!(body.contains(&format!("[[{moved}]]")), "{body}");
+}
+
+#[test]
 fn an_archive_without_a_register_answers_an_honest_empty() {
     let home = TestHome::new();
     let mut mcp = home.mcp();
