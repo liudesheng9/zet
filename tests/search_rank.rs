@@ -1433,6 +1433,49 @@ fn the_canonical_statement_answers_a_query_that_matched_only_its_entry() {
     assert_eq!(members[0]["statement"], json!("substantive"));
 }
 
+/// Only an Idea Card states the claim a fold may hide: two Model parts, Findings or Events with
+/// equal text are not a demonstrated restatement, because their meaning is also their facet, their
+/// labelled lines and source, or what happened (§4.5, S14-AC01, S14-AC06).
+#[test]
+fn two_identical_model_parts_or_findings_never_fold() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "结构化卡", 4);
+    let setting = format!("{tree}/1");
+    let assumption = format!("{tree}/2");
+    let finding = format!("{tree}/3");
+    let finding_two = format!("{tree}/4");
+    // Two Model parts of one book's model: the same unfinished text, two different facets.
+    for (at, facet) in [(&setting, "设定"), (&assumption, "假设")] {
+        mcp.ok(
+            "edit_card",
+            json!({ "at": at, "type": "model", "facet": facet, "title": format!("{facet}：市场结构"),
+                "body": "市场上有两家厂商。" }),
+        );
+    }
+    // Two Finding Cards whose result line is the same but whose measured data differ, joined by the
+    // same wording; the source line is dropped by the fingerprint, so only the type keeps them apart.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": finding, "type": "finding", "title": "发现一",
+            "body": format!("测量：厂商数量。\n数据：两家厂商。\n方法：回归。\n结果：厂商数量下降。\n局限：样本小。\n来源：[[{setting}]]") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": finding_two, "type": "finding", "title": "发现二",
+            "body": format!("测量：厂商数量。\n数据：两家厂商。\n方法：回归。\n结果：厂商数量下降。\n局限：样本小。\n来源：[[{assumption}]]") }),
+    );
+    let found = mcp.ok("search_cards", json!({ "query": "厂商", "mode": "entry" }));
+    assert_eq!(found["total"], json!(4), "{found}");
+    assert_eq!(found["row_total"], json!(4), "no row folds: {found}");
+    assert_eq!(found["folded_total"], json!(0));
+    for at in [&setting, &assumption, &finding, &finding_two] {
+        let row = &found["results"][position(&found, at)];
+        assert_eq!(row["folded"], json!(0), "{at} is its own row: {row}");
+        assert_eq!(row["members"], json!(null), "{at} has no confirmed group: {row}");
+    }
+}
+
 #[test]
 fn an_exact_term_precedes_a_prefix_term_whatever_the_score() {
     let home = TestHome::new();

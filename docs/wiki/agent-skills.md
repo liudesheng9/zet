@@ -437,7 +437,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 ## Change history
 
 
-- `2026-10-19` - #111 S14 (restatement folding): `skills/zt/SKILL.md` tells an agent that a `search_cards mode: entry` row with `folded` above zero stands for several Cards stating one confirmed statement, to read `representative` and `members` instead of comparing the row's title with a statement it does not hold, and to count `total` (Cards) apart from `row_total` (rows).
+- `2026-10-19` - #111 S14 (restatement folding): `skills/zt/SKILL.md` tells an agent that a `search_cards mode: entry` row with `folded` above zero stands for several Cards stating one confirmed statement (an accepted `## 同述入口` entry, or two Idea Cards with an exact duplicate statement), to read `representative` and `members` instead of comparing the row's title with a statement it does not hold, and to count `total` (Cards) apart from `row_total` (rows).
 - `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.
 - `2026-10-17` — Teach `get_cards`, `get_tree` bodies, `export_titles`, explicit read limits, missing-address checks and revision consistency in the ZT skill.
 

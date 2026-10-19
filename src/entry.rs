@@ -1200,11 +1200,24 @@ fn fold_groups(
             sets.union(entry, terminal);
         }
     }
-    // (b) The exact statement fingerprint of a substantive Card. Only equality joins two Cards, so
-    // no changed formula, value, sign, variable, negation, assumption or scope is ever folded.
+    // (b) The exact statement fingerprint of an Idea Card. Only equality joins two Cards, so no
+    // changed formula, value, sign, variable, negation, assumption or scope is ever folded.
+    //
+    // Only an Idea Card states one claim in its own words, which is the claim a fold may hide. A
+    // Model part's meaning is also its model and facet, a Finding Card's is also its labelled lines
+    // and source, and an Event Card's is also what happened, in what place; the fingerprint ignores
+    // a separately labelled source line on purpose, so two such Cards with equal text are not a
+    // demonstrated restatement. The live archive holds 143 Model parts whose body is a placeholder,
+    // and folding them would hide 142 distinct facet titles from a search.
     let mut same: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for at in &nodes {
         if !substantive(snapshot, at, &part_refs) {
+            continue;
+        }
+        let Some(card) = snapshot.by_address.get(at) else {
+            continue;
+        };
+        if card.card_type != CardType::Idea {
             continue;
         }
         let Some(parsed) = snapshot.parsed.get(at) else {
