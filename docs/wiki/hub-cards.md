@@ -9,7 +9,7 @@ paths:
   - "tests/restatement_entries.rs"
   - "tests/search_rank.rs"
   - "tests/distant_card.rs"
-synced: 9d48616198e8
+synced: 044a5e2c91b6
 updated: 2026-10-19
 ---
 
