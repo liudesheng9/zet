@@ -17,7 +17,7 @@ updated: 2026-10-19
 
 The GUI is the local browser interface to the slip-box. The service daemon runs it for its whole life: a loopback HTTP server inside the daemon process serves one single-page app and a JSON API. The human uses it to read Cards (Markdown with TeX, HTML charts, artifacts and Document links), to walk trees on the Folgezettel map, to lay Cards from anywhere side by side on the Table, to see the whole archive as a Constellation, to study models and mathematical units, and to write Cards on the writing desk. Every change it makes goes through the same Card operations as the shell commands and the Session, with Owner Access (both Workspaces). An open GUI window is not a Session: it goes down with the service.
 
-**Owns:** the HTTP server in the daemon (bind, port, the per-service token, the `zt.gui` record), every `/api/` route and static asset route, the cached Snapshot the API reads, the Card-body Markdown-to-HTML renderer (Link chips, math spans, HTML charts, artifact figures, Document links), the sandboxed chart pages, the Scholar Archive reading page, the front-end views (`src/gui/*.js`, `*.css`, `index.html`), the pure layout algorithms (`layout.js`), and Spreads (`src/spread.rs`, the `gui_spreads` metadata row).
+**Owns:** the HTTP server in the daemon (bind, port, the per-service token, the `zt.gui` record), every `/api/` route and static asset route, the cached Snapshot the API reads, the Card-body Markdown-to-HTML renderer (Link chips, math spans, HTML charts, artifact figures, Document links), the sandboxed chart pages, the Scholar Archive reading page, the front-end views (`src/gui/*.js`, `*.css`, `index.html`), the pure layout algorithms (`layout.js`) and writing-desk text rules (`draft.js`), and Spreads (`src/spread.rs`, the `gui_spreads` metadata row).
 
 **Does not own:**
 - Starting and stopping the daemon, the service record, `zt up` / `zt down` / `zt status`: [Service, CLI and storage](service-and-cli.md).
@@ -39,6 +39,7 @@ The GUI is the local browser interface to the slip-box. The service daemon runs 
 | | `src/gui/index.html` — the page shell; the token is substituted for `__ZT_TOKEN__` |
 | | `src/gui/app.js` — the whole front end (state, routing, history, search tray, cabinet, desk, Map, Table, Constellation, reader, model board, theory board, study desk, dialogs, writing desk, command bar, keys, heartbeat) |
 | | `src/gui/layout.js` — pure, DOM-free geometry (`ZtLayout`): outline, focus lens, Constellation rings, Table placements, threads, theory rows, study stations |
+| | `src/gui/draft.js` — pure, DOM-free writing-desk text rules (`ZtDraft`): the Reply draft skeleton, the relation-prefix swap, the destination Topic choice |
 | | `src/gui/chart-frame.js` — the script inlined into every chart page: palette tokens, `[[address]]` links, TeX, height reports |
 | | `src/gui/doc.js` — the reading page's script: lazy KaTeX and centring a `#fig-…` target |
 | | `src/gui/app.css` — the whole look (index-card paper, light and dark themes) |
@@ -74,7 +75,7 @@ The GUI is the local browser interface to the slip-box. The service daemon runs 
 
 ## Architecture
 
-Three layers: the server in the daemon (`src/gui.rs` with `src/gui/document.rs` and `src/spread.rs`), the page (`index.html`, `app.js`, `layout.js`, `app.css`, KaTeX), and two kinds of isolated pages the server builds (chart pages with `chart-frame.js` inlined, and the Scholar Archive reading page with `doc.js`).
+Three layers: the server in the daemon (`src/gui.rs` with `src/gui/document.rs` and `src/spread.rs`), the page (`index.html`, `app.js`, `layout.js`, `draft.js`, `app.css`, KaTeX), and two kinds of isolated pages the server builds (chart pages with `chart-frame.js` inlined, and the Scholar Archive reading page with `doc.js`).
 
 ```mermaid
 flowchart LR
@@ -97,7 +98,7 @@ flowchart LR
   ops --> db
   spread --> db
   subgraph Browser
-    page["app.js + layout.js\n(state, views)"]
+    page["app.js + layout.js + draft.js\n(state, views, desk rules)"]
     frame["chart iframe\n(opaque origin)"]
     reading["reading page\n(doc.js)"]
   end
@@ -116,7 +117,7 @@ How data and control move:
 3. Read routes take the cached Snapshot (`Snapshots::get`), so most reads do no SQL beyond `PRAGMA data_version`. Write routes call `ops::*` with `ACCESS`, which open their own connections and transactions; the commit moves `data_version`, so the next read rebuilds the Snapshot.
 4. Card bodies leave the server as HTML from `render_markdown`; charts inside them become iframes whose pages the server keeps in `Charts`.
 5. `/scholar/file/*` and `/scholar/figure/*` are handed to `document::serve`, which answers on a thread of its own, because the bridge may take seconds.
-6. On the page, `app.js` holds one `state` object; `route()` follows the URL hash; `renderAll()` redraws the topbar, rail, stage (desk, Map, Table, or Constellation), and reader. Geometry comes from `ZtLayout` (`layout.js`), which is pure and can also be loaded as a CommonJS module.
+6. On the page, `app.js` holds one `state` object; `route()` follows the URL hash; `renderAll()` redraws the topbar, rail, stage (desk, Map, Table, or Constellation), and reader. Geometry comes from `ZtLayout` (`layout.js`), and the writing desk's Reply text rules come from `ZtDraft` (`draft.js`); both are pure and can also be loaded as CommonJS modules.
 7. The page polls `/api/overview` every 4 s (and on window focus) for the fingerprint and `/api/ping` every 2 s for the heartbeat; a changed fingerprint triggers `refresh()`.
 
 ## Interfaces
@@ -157,7 +158,7 @@ Every request first passes `host_allowed`: the `Host` header must be exactly `12
 | Method and path | Answer | Headers |
 |---|---|---|
 | `GET /`, `GET /index.html` | `index.html` with `__ZT_TOKEN__` replaced by the token | `respond_text` policy (below) |
-| `GET /app.css`, `/app.js`, `/layout.js`, `/doc.js` | the embedded file | `respond_text` policy |
+| `GET /app.css`, `/app.js`, `/layout.js`, `/draft.js`, `/doc.js` | the embedded file | `respond_text` policy |
 | `GET /vendor/katex/katex.min.js`, `/vendor/katex/katex.min.css` | embedded KaTeX | `Cache-Control: max-age=86400` |
 | `GET /vendor/katex/fonts/<name>` | one of the 20 embedded WOFF2 fonts (`font/woff2`), else 404 | `max-age=86400` |
 | `GET /artifact/<sha256>` | the artifact bytes from `artifact::read`, with its media type; 404 `artifact not in this archive` | `max-age=31536000, immutable`; CSP `sandbox; default-src 'none'; style-src 'unsafe-inline'` |
@@ -244,6 +245,16 @@ Exported as `window.ZtLayout` or `module.exports`. All functions are pure.
 | `theoryRun(math, head, mode, unitStations)` | stations of a whole theory |
 | `LOD`, `GUTTER`, `TABLE` | sizes: focus 304×136, near 236×76, slip 236×30, gutter 56; Table card 236×150, gap 30 |
 
+### `ZtDraft` (`src/gui/draft.js`)
+
+Exported as `window.ZtDraft` or `module.exports`; the page loads it before `app.js`. All functions are pure, so the Reply desk's text rules run under Node without a browser.
+
+| Function | Inputs → output |
+|---|---|
+| `replyDraft(word, target)` | the desk's opening text: `# ` title line, blank line, `<word> [[<target>]]：`, blank line, the `<!-- zt:reverse-links -->` marker |
+| `replySwapPrefix(value, before, after)` | the draft with `before` replaced by `after` wherever it stands; when `before` is gone, `after` is inserted at the start of the body — after the title heading, never above it |
+| `replyDestination(topics, recent, defaultTitle)` | the human Topic entry for `recent` while it exists, else the entry titled `defaultTitle`, else `null` (the desk then offers to create the default) |
+
 ### Keys and command bar
 
 The command bar (`installCommandBar`, `runCommand`) speaks the Session vocabulary listed in `COMMANDS` in `app.js`: `go [<target>]`, `root`, `ws [<workspace>]`, `up`, `back`, `fwd`, `ls`, `t <title>`, `l`, `n`, `b`, `e`, `reply`, `del`, `ins`, `mv [alone] <new-location>`, `mv [alone] before <location>`, `ty <idea|event|finding|model|hub> [<facet>]`, `lv <level|none>`, `mf <form|none>`, `stats`, `status`, `lsbk`, `help`, `q`, each with an availability (`always`, `card`, `regular`, `agent-card`). Text that is no command offers `search "…"`.
@@ -323,10 +334,10 @@ Every change the page makes goes through `api()` to a write route, which calls t
 
 ### Reply (`src/reply.rs`)
 
-1. Reply is an Owner action of the reader, offered on an agent Card: the reader button, `r`, and the command `reply`. It captures the target's address, title and `authored_fingerprint`, and opens the writing desk with an empty claim title and the body `印证 [[target]]：`.
-2. The dialog's reply row offers the four relation words (印证 → `illustrates`, 反驳 → `objects`, 放宽 → `relaxes`, 对应 → `corresponds`) and the destination Topic. Changing the relation replaces only the supplied prefix — or inserts the new one when the reader removed it — and leaves every composed sentence as it was.
+1. Reply is an Owner action of the reader, offered on an agent Card: the reader button, `r`, and the command `reply`. It captures the target's address, title and `authored_fingerprint`, and opens the writing desk with an empty claim title and the body `印证 [[target]]：` (`ZtDraft.replyDraft`).
+2. The dialog's reply row offers the four relation words (印证 → `illustrates`, 反驳 → `objects`, 放宽 → `relaxes`, 对应 → `corresponds`) and the destination Topic. Changing the relation calls `ZtDraft.replySwapPrefix`: it replaces the supplied prefix wherever it stands in the draft — or puts it back at the start of the body, after the title, when the reader removed it — and leaves the title and every composed sentence as it was.
 3. `POST /api/reply` re-reads the target in one write transaction: the Card must still be an agent Card with the same authored fingerprint, the reply body must carry a kinded Link to it, and it must hold at least eight letters or digits of the reader's own thought beyond that Link and its relation word (`MIN_SUBSTANCE`). A refusal answers 200 with `saved:false` and the reason, so the page keeps the draft; on `target_changed` it also shows the fresh title and takes the new fingerprint, so the reader's renewed Save is checked against the Card they now see.
-4. The destination is the human Topic the reader last replied in while it still exists; otherwise a human Topic titled `回应`; otherwise that Topic, created in the same transaction. The reply is filed at save time: a Side successor of the Topic's last Regular Card in Folgezettel order, or the first Direct successor of an empty Topic. A stale address falls back rather than following whatever now occupies it.
+4. The desk starts on the human Topic the reader last replied in while it still exists — even when a Topic titled `回应` exists — else on that default Topic, else on creating it (`ZtDraft.replyDestination`). The route resolves the destination again at save time; when there is none, a human Topic titled `回应` is created in the reply's own transaction. The reply is filed as a Side successor of the Topic's last Regular Card in Folgezettel order, or the first Direct successor of an empty Topic. A stale address falls back rather than following whatever now occupies it; a Save that fails after the Topic was created rolls that Topic back with it.
 5. After the write, the page stores `zt-reply-topic` — only on success — toasts, refreshes and opens the new human Card. The agent Card keeps its authored text and gains the reply in its generated Reverse section; nothing is appended to it.
 6. The operation is a GUI route with Owner access and the ordinary GUI token: there is no MCP tool that writes a human Card, and the agent tools' human-Workspace and human-Link refusals are unchanged.
 
@@ -521,7 +532,7 @@ cargo test --bin zt gui::
 cargo test --bin zt spread::
 ```
 
-`cargo test --bin zt gui::` runs `src/gui.rs` `tests` (query decoding, the recorded URL, every `RelationKind` id as a `KINDS` key in `app.js`, no `@keyframes` name defined twice in `app.css`) and `render_tests` (Snapshot cache invalidation by another connection, TeX spans and LaTeX delimiters, chart fences and raw HTML charts into frames, plain inline tags and comments, artifact figures and forged digests, Document links, KaTeX inlining with fonts, chart store capacity) and `src/gui/document.rs` `tests` (image path resolution, reading page and its script policy).
+`cargo test --bin zt gui::` runs `src/gui.rs` `tests` (query decoding, the recorded URL, the writing desk's draft rules — `src/gui/draft.js` run under Node when it is installed: the desk skeleton, the prefix swap, the destination choice — every `RelationKind` id as a `KINDS` key in `app.js`, no `@keyframes` name defined twice in `app.css`) and `render_tests` (Snapshot cache invalidation by another connection, TeX spans and LaTeX delimiters, chart fences and raw HTML charts into frames, plain inline tags and comments, artifact figures and forged digests, Document links, KaTeX inlining with fonts, chart store capacity) and `src/gui/document.rs` `tests` (image path resolution, reading page and its script policy).
 
 Integration tests (each starts a test service with `ZT_GUI_PORT=0` and talks raw HTTP):
 
@@ -538,9 +549,9 @@ cargo test --test search_rank
 
 They cover: the GUI runs with the service and stops with it, `zt gui` only reports, the token guard and a new token after restart, `/api/quit` is gone (400), a dead daemon leaves no `zt.gui`, the API's create/edit/delete with plans and confirmations, rendering of Links and code, KaTeX assets and fonts, chart pages and their CSP, typed Cards, both Workspaces, insert and move, artifacts, `/api/register` answering the same entry view as MCP `get_register` (addresses, order, total, revision, identity), and `/api/search` `mode=entry` answering exactly the MCP `search_cards mode: entry` value (`tests/search_rank.rs`), including the register-missing fallback and the unknown-mode refusal.
 
-`tests/cli_service.rs::gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply` (S18, #99) drives Reply through the real HTTP API on a scratch archive: an agent Card's captured `authored_fingerprint`, the bare-prefix, unkinded-Link and missing-Link refusals, a Card edited between the read and the Save (`target_changed` with the fresh title and fingerprint, and the renewed Save succeeding), the empty human archive creating the default Topic `回应` with the reply as its first Direct successor, the remembered Topic taking the next reply as a Side successor of its last Regular Card, a vanished destination falling back to the default, a human Card refused as a target (`target_not_agent`), the missing token answering 403, a missing Card answering 400, the generated Reverse link on the agent Card, the agent Card's authored body unchanged, and `zt status --check-links` reporting no fault. The unit test `the_front_end_replies_to_an_agent_card_from_the_human_workspace` checks the shipped page: the four relation words, the single `replyTo` path, the `r` key restricted to an agent Card, the reader's Reply action, the one `api('reply'` call, the browser-local destination preference read and written, the default-Topic option, the fresh-fingerprint line, the `agent-card` availability, and that `zt mcp` has no reply tool. The human-Workspace write refusals the agent tools keep are covered by `tests/workspaces_mcp.rs`.
+`tests/cli_service.rs::gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply` (S18, #99) drives Reply through the real HTTP API on a scratch archive: the served `/draft.js` module, an agent Card's captured `authored_fingerprint`, the bare-prefix, unkinded-Link and missing-Link refusals (and that no refusal wrote a human Card), a Save that passes the reply checks but fails Card storage (its default Topic is rolled back with it), a Card edited between the read and the Save (`target_changed` with the fresh title and fingerprint, and the renewed Save succeeding), the empty human archive creating the default Topic `回应` with the reply as its first Direct successor although the request carries `workspace: agent` (the route writes only the human Workspace), the remembered Topic taking the next reply as a Side successor of its last Regular Card, all four relation words (印证 → `illustrates`, 反驳 → `objects`, 放宽 → `relaxes`, 对应 → `corresponds`), a vanished destination falling back to the default, a human Card refused as a target (`target_not_agent`), the missing token answering 403, a missing Card answering 400, the generated Reverse link on the agent Card, the agent Card's authored body unchanged, and `zt status --check-links` reporting no fault. The unit tests `the_reply_desk_starts_with_the_title_then_the_supplied_prefix`, `the_relation_selector_replaces_only_the_supplied_prefix`, `a_removed_prefix_comes_back_after_the_title` and `the_reply_destination_is_the_last_topic_then_the_default` run the shipped `draft.js` under Node, so the page's text rules are tested rather than described. `the_front_end_replies_to_an_agent_card_from_the_human_workspace` checks the shipped page: the four relation words, the single `replyTo` path, the `r` key restricted to an agent Card and to reader navigation (the desk, finder and input guards checked before it), the reader's Reply action, the one `api('reply'` call inside the desk's save, the browser-local destination preference read and written only after success, the default-Topic option, the fresh-fingerprint line, the `agent-card` availability, the draft module the desk uses, and that `zt mcp` has no reply tool. The human-Workspace write refusals the agent tools keep are covered by `tests/workspaces_mcp.rs`.
 
-Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `layout.js` exports for CommonJS) have no automated tests, and the views are checked by hand in a browser. `/scholar/file` and `/scholar/figure` are tested only through `document.rs` unit tests, not over HTTP. Spreads following moves and deletes is tested in `src/spread.rs` and `src/ops.rs` unit tests, not through the GUI. `/api/register` has no page that renders the register yet; the route is the read seam the entry view uses.
+Gaps: the page has no browsed test harness. Its one DOM-free module with rules to get wrong, `draft.js`, is run under Node by the unit tests above (they say so and skip when Node is missing); `layout.js` exports for CommonJS but has no automated tests, and the views of `app.js` are checked by hand in a browser. `/scholar/file` and `/scholar/figure` are tested only through `document.rs` unit tests, not over HTTP. Spreads following moves and deletes is tested in `src/spread.rs` and `src/ops.rs` unit tests, not through the GUI. `/api/register` has no page that renders the register yet; the route is the read seam the entry view uses.
 
 ## Decisions and pitfalls
 
@@ -559,7 +570,7 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 
 ### Pitfalls
 
-- **Assets are compiled in.** Every change to `index.html`, `app.js`, `layout.js`, `app.css`, `chart-frame.js`, `doc.js`, or KaTeX needs a rebuild and a service restart.
+- **Assets are compiled in.** Every change to `index.html`, `app.js`, `layout.js`, `draft.js`, `app.css`, `chart-frame.js`, `doc.js`, or KaTeX needs a rebuild and a service restart.
 - **One request thread.** A slow API handler (for example a Scholar bridge call in `/api/scholar/*`) blocks every other API call; only `/scholar/file` and `/scholar/figure` run on their own threads. Those threads are unbounded.
 - **Per-request work over all Cards must be memoized per Snapshot**, as the overview is (the page polls it every 4 s). `Snapshot::find` folds case once per Snapshot for the same reason.
 - **The `Host` check covers static files too.** A client that sends another `Host` (a proxy, a hostname alias) gets 421 even for `/`.
@@ -580,6 +591,7 @@ Gaps: there is no JavaScript test harness; `app.js` and `layout.js` (although `l
 
 ## Change history
 
+- `2026-10-19` — Re-verify #99 S18 (Reply) on the tree that carries #100–#106: two page defects fixed, and the desk's text rules made testable. The relation selector matched the supplied prefix against the whole draft, but the desk puts the title heading first, so it never matched; the row inserted the new prefix above the title and left the old one, giving the reply an empty title and two prefixes. It now replaces the prefix where it stands, or restores it after the title when the reader removed it. The destination preference picked a Topic titled `回应` ahead of the Topic used last, so AC03's last-used Topic was not honoured; `ZtDraft.replyDestination` now chooses the last used Topic, then `回应`, then creating it. Both rules live in the new DOM-free `src/gui/draft.js` (served at `/draft.js`, loaded before `app.js`), which the Node-run unit tests execute, and `tests/cli_service.rs` now also covers all four relation words, the ignored `workspace` field, and a failed Save that leaves no empty Topic.
 - `2026-10-19` — Add Reply, the Owner's human answer to an agent Card (#99, S18; design §10.1; D238–D248, D281, D308, D344). The reader gains a `Reply` action, `r`, and the command `reply` (availability `agent-card`), all guarded so no key fires inside an input, the desk, or a modal. Reply captures the target's address, title and new `authored_fingerprint` (from `/api/card`), opens the writing desk with an empty claim title and `印证 [[target]]：`, offers the four relation words through their existing Relation kinds, and names the destination Topic. The new GUI-only `POST /api/reply` (`src/reply.rs`) re-reads the target in one write transaction and refuses a changed target, a non-agent target, an unkinded or missing Link, and a bare Link with no reader thought (`MIN_SUBSTANCE` 8); every refusal is a 200 `{saved:false,reason,detail,target}` that keeps the draft, and a `target_changed` refusal hands back the fresh fingerprint the renewed Save uses. The reply is filed in the last used human Topic (else the default `回应`, created in the same transaction), as a Side successor of the Topic's last Regular Card or the first Direct successor of an empty Topic; the browser remembers `zt-reply-topic` only after a successful save. The agent Card keeps its authored text and gains the generated Reverse link. No MCP tool writes a human Card. Public coverage: `cargo test --test cli_service gui_reply` and the front-end unit test.
 
 - `2026-10-19` — #93 S13 (#106): the search tray ranks entry points first. `GET /api/search` takes `mode` (`entry` or `plain`, default `plain`, plus `mode` in both replies); `mode=entry` returns `entry::search`, the same value MCP `search_cards mode: entry` returns, and the page asks it by default. The tray gains an `Entry points` / `All matches` switch: entry mode is one flat ranked list with role badges (`entry · term`, `hub line`, `address`, `model`, `title`), the explanation under entry and member rows, and a note for a missing or faulted register; `All matches` keeps the existing lexical order, tree guide cards, and `+N` folds. Enter and Shift+Enter work on both. The API's omitted mode stays plain, so an older caller keeps its order and fields.

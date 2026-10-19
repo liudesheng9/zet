@@ -4078,6 +4078,15 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     assert_eq!(fingerprint.len(), 64);
     let authored_before = card["text"].as_str().expect("text").to_string();
 
+    // The page's draft rules are served as their own DOM-free module, so the title stays first and
+    // the relation selector changes only the supplied prefix (S18, #99; tested under Node).
+    let (draft_status, draft_js) = http_request(port, "GET", "/draft.js", &auth, None);
+    assert_eq!(draft_status, 200);
+    assert!(
+        draft_js.contains("replySwapPrefix") && draft_js.contains("replyDestination"),
+        "the served draft module carries the Reply rules: {draft_js}"
+    );
+
     // A bare supplied prefix is not a reply, and neither is an unkinded or absent Link.
     let (status, bare) = post("/api/reply", serde_json::json!({
         "at": agent, "base": fingerprint, "text": format!("# 回应剩余控制权\n\n印证 [[{agent}]]：\n"),
@@ -4094,6 +4103,26 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     }));
     assert_eq!(unlinked["reason"], "target_link_missing");
 
+    // No refusal and no cancelled desk wrote anything: the human archive still holds no Card.
+    let human_cards = || {
+        get("/api/graph").1["nodes"].as_array().expect("nodes").iter()
+            .filter(|node| node["workspace"] == "human").count()
+    };
+    assert_eq!(human_cards(), 0, "the refusals created no human Card");
+
+    // A Save that passes the reply checks but fails Card storage writes nothing: the default Topic
+    // is created inside the reply's own transaction, so a failed reply leaves no empty Topic (D246).
+    let (failed_status, failed) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fingerprint,
+        "text": format!("# 融资约束\n\n融资约束\n\n印证 [[{agent}]]：融资约束放大了这一效应。\n"),
+    }));
+    assert_eq!(failed_status, 400, "{failed}");
+    assert!(
+        failed["error"].as_str().expect("error").contains("duplicate leading title"),
+        "the failed Save answers its own reason: {failed}"
+    );
+    assert_eq!(human_cards(), 0, "a failed Save left no empty Topic");
+
     // A Card that changed since the page read it is a renewed-Save refusal, with fresh context.
     let (_, edited) = post("/api/edit", serde_json::json!({
         "at": agent, "text": "# 剩余控制权决定谈判地位\n\n剩余控制权决定谈判地位，并影响融资。\n", "base": authored_before,
@@ -4109,12 +4138,16 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     assert_eq!(stale["target"]["title"], "剩余控制权决定谈判地位");
 
     // A valid reply: an empty human archive creates the default Topic and its first Direct successor.
+    // The request also carries `workspace: agent`, like a cabinet standing on the agent Workspace:
+    // the route writes only the human Workspace whatever the page shows (D240).
     let (_, saved) = post("/api/reply", serde_json::json!({
-        "at": agent, "base": fresh, "text": format!("# 融资约束放大剩余控制权的效应\n\n印证 [[{agent}]]：外部融资越贵，剩余控制权越值钱。\n"),
+        "at": agent, "base": fresh, "workspace": "agent",
+        "text": format!("# 融资约束放大剩余控制权的效应\n\n印证 [[{agent}]]：外部融资越贵，剩余控制权越值钱。\n"),
     }));
     assert_eq!(saved["saved"], true, "{saved}");
     let reply = saved["address"].as_str().expect("reply address").to_string();
     assert_eq!(saved["kind"], "illustrates");
+    assert_eq!(saved["target"]["workspace"], "agent");
     assert_eq!(saved["destination"]["title"], "回应");
     assert_eq!(saved["destination"]["created_topic"], true);
     assert_eq!(saved["destination"]["edge"], "direct");
@@ -4155,6 +4188,18 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     assert_eq!(fallen["destination"]["topic"], reply_topic);
     assert_eq!(fallen["destination"]["created_topic"], false);
 
+    // The fourth offered kind word: 对应 (corresponds), filed after the last reply as a Side
+    // successor, so all four words of the reply row reach their existing Relation kinds.
+    let (_, corresponded) = post("/api/reply", serde_json::json!({
+        "at": agent, "base": fresh, "topic": reply_topic,
+        "text": format!("# 合伙制的控制安排同理\n\n对应 [[{agent}]]：同一机制解释了合伙制里的控制权分配。\n"),
+    }));
+    assert_eq!(corresponded["saved"], true, "{corresponded}");
+    assert_eq!(corresponded["kind"], "corresponds");
+    assert_eq!(corresponded["destination"]["topic"], reply_topic);
+    assert_eq!(corresponded["destination"]["edge"], "side");
+    assert_eq!(corresponded["destination"]["parent"], fallen["address"]);
+
     // A human Card is not a target, and the route is Owner-only.
     let (_, human_topic) = post("/api/create", serde_json::json!({
         "kind": "topic", "text": "# 人类的主题\n\n人类工作区的一个主题。\n", "workspace": "human",
@@ -4175,7 +4220,8 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     let (_, graph) = get("/api/graph");
     let addresses: Vec<&str> = graph["nodes"].as_array().expect("nodes").iter()
         .filter_map(|node| node["address"].as_str()).collect();
-    for address in [&reply, again["address"].as_str().unwrap(), fallen["address"].as_str().unwrap()] {
+    for address in [&reply, again["address"].as_str().unwrap(), fallen["address"].as_str().unwrap(),
+                    corresponded["address"].as_str().unwrap()] {
         assert!(addresses.contains(&address), "{address} exists in the graph");
     }
     let output = home.cmd().args(["status", "--check-links"]).assert().success()

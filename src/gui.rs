@@ -30,6 +30,7 @@ const ACCESS: Access = Access::Owner;
 const INDEX_HTML: &str = include_str!("gui/index.html");
 const APP_CSS: &str = include_str!("gui/app.css");
 const APP_JS: &str = include_str!("gui/app.js");
+const DRAFT_JS: &str = include_str!("gui/draft.js");
 const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
@@ -438,6 +439,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     LAYOUT_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, "/draft.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    DRAFT_JS.to_string(),
                 );
                 return;
             }
@@ -1885,6 +1895,146 @@ mod tests {
         assert_eq!(recorded_url(temp.path()), None);
     }
 
+    /// Run the page's DOM-free draft module (`src/gui/draft.js`) under Node and answer the JSON its
+    /// expression prints. The project already needs Node for its wiki check and its workflow tools;
+    /// when Node is missing this answers `None` and the test says so, so `cargo test` itself needs no
+    /// extra program.
+    fn draft_js(expression: &str) -> Option<Value> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let module = dir.path().join("draft.js");
+        fs::write(&module, DRAFT_JS).expect("draft module");
+        let driver = dir.path().join("driver.mjs");
+        let script = format!(
+            "import {{ createRequire }} from 'node:module';\n\
+             const require = createRequire(import.meta.url);\n\
+             const draft = require(process.argv[2]);\n\
+             process.stdout.write(JSON.stringify(({expression})));\n"
+        );
+        fs::write(&driver, script).expect("driver");
+        let output = match std::process::Command::new("node")
+            .arg(&driver)
+            .arg(&module)
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return None,
+        };
+        assert!(
+            output.status.success(),
+            "node failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).expect("UTF-8 output");
+        Some(
+            serde_json::from_str(&text)
+                .unwrap_or_else(|error| panic!("driver printed {text:?}: {error}")),
+        )
+    }
+
+    /// S18 (#99, D241): the desk opens with an empty claim title, then the supplied relation prefix
+    /// in the body, then the generated-section marker. The title is the first line, so the selector
+    /// can find the prefix where the desk put it.
+    #[test]
+    fn the_reply_desk_starts_with_the_title_then_the_supplied_prefix() {
+        let Some(out) = draft_js("{ fresh: draft.replyDraft('印证', '5/1|a') }") else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(
+            out["fresh"],
+            json!("# \n\n印证 [[5/1|a]]：\n\n<!-- zt:reverse-links -->\n")
+        );
+    }
+
+    /// S18 (#99, AC02/D244): the relation selector replaces the supplied prefix where the desk put
+    /// it and leaves every sentence the reader composed byte for byte.
+    #[test]
+    fn the_relation_selector_replaces_only_the_supplied_prefix() {
+        let Some(out) = draft_js(
+            "{\
+               swapped: draft.replySwapPrefix(draft.replyDraft('印证', '5/1|a'), '印证 [[5/1|a]]：', '反驳 [[5/1|a]]：'),\
+               composed: draft.replySwapPrefix('# 融资约束\\n\\n印证 [[5/1|a]]：外部融资越贵，剩余控制权越值钱。\\n', '印证 [[5/1|a]]：', '放宽 [[5/1|a]]：'),\
+               twice: draft.replySwapPrefix(draft.replySwapPrefix(draft.replyDraft('印证', '5/1|a'), '印证 [[5/1|a]]：', '反驳 [[5/1|a]]：'), '反驳 [[5/1|a]]：', '对应 [[5/1|a]]：')\
+             }",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(
+            out["swapped"],
+            json!("# \n\n反驳 [[5/1|a]]：\n\n<!-- zt:reverse-links -->\n"),
+            "the supplied prefix is replaced, and the title stays first"
+        );
+        assert_eq!(
+            out["composed"],
+            json!("# 融资约束\n\n放宽 [[5/1|a]]：外部融资越贵，剩余控制权越值钱。\n"),
+            "the reader's own sentence is untouched"
+        );
+        assert_eq!(
+            out["twice"],
+            json!("# \n\n对应 [[5/1|a]]：\n\n<!-- zt:reverse-links -->\n"),
+            "a second change leaves one prefix, not two"
+        );
+    }
+
+    /// S18 (#99, AC02): a prefix the reader removed comes back at the start of the body, after the
+    /// title heading, never above it — the desk cannot put the title out of its first line.
+    #[test]
+    fn a_removed_prefix_comes_back_after_the_title() {
+        let Some(out) = draft_js(
+            "{\
+               removed: draft.replySwapPrefix('# 融资约束\\n\\n外部融资越贵。\\n', '印证 [[5/1|a]]：', '对应 [[5/1|a]]：'),\
+               tight: draft.replySwapPrefix('# 融资约束\\n外部融资越贵。', '印证 [[5/1|a]]：', '对应 [[5/1|a]]：'),\
+               title_only: draft.replySwapPrefix('# 融资约束', '印证 [[5/1|a]]：', '对应 [[5/1|a]]：')\
+             }",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(
+            out["removed"],
+            json!("# 融资约束\n\n对应 [[5/1|a]]：\n\n外部融资越贵。\n"),
+            "the title stays first and the reader's sentence follows the prefix"
+        );
+        assert_eq!(
+            out["tight"],
+            json!("# 融资约束\n\n对应 [[5/1|a]]：\n\n外部融资越贵。"),
+            "a body line without a blank line after the title still gets the prefix after it"
+        );
+        assert_eq!(
+            out["title_only"],
+            json!("# 融资约束\n\n对应 [[5/1|a]]：\n\n"),
+            "a title-only draft gets the prefix in its empty body"
+        );
+    }
+
+    /// S18 (#99, AC03/AC04/D243/D246): the desk starts on the human Topic the reader replied in
+    /// last — even when a Topic titled `回应` exists — and offers the default `回应` only when there
+    /// is no usable recent Topic. A preference whose Topic is gone is never followed by address.
+    #[test]
+    fn the_reply_destination_is_the_last_topic_then_the_default() {
+        let Some(out) = draft_js(
+            "{\
+               recent: draft.replyDestination([{address:'3/0',title:'项目'},{address:'5/0',title:'回应'}], '3/0', '回应'),\
+               fallback: draft.replyDestination([{address:'3/0',title:'项目'},{address:'5/0',title:'回应'}], null, '回应'),\
+               none: draft.replyDestination([{address:'3/0',title:'项目'}], null, '回应'),\
+               gone: draft.replyDestination([{address:'3/0',title:'项目'}], '9/0', '回应'),\
+               empty: draft.replyDestination([], null, '回应'),\
+               spaced: draft.replyDestination([{address:'5/0',title:' 回应 '}], null, '回应')\
+             }",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        let address = |name: &str| out[name].get("address").cloned().unwrap_or(Value::Null);
+        assert_eq!(address("recent"), json!("3/0"), "the Topic used last wins over 回应");
+        assert_eq!(address("fallback"), json!("5/0"), "the default Topic when nothing was used");
+        assert_eq!(address("none"), Value::Null, "no Topic yet: the desk offers to create 回应");
+        assert_eq!(address("gone"), Value::Null, "a vanished preference is not followed");
+        assert_eq!(address("empty"), Value::Null);
+        assert_eq!(address("spaced"), json!("5/0"), "a padded 回应 title is the default Topic");
+    }
+
     /// S18 (#99): the reader's Reply action, its `r` key, the four offered relation words, the
     /// destination selector, the browser-local preference and the refusal path all exist in the
     /// shipped page, and the page never posts a human write through any other route.
@@ -1907,6 +2057,43 @@ mod tests {
         assert!(APP_JS.contains("new Topic ${reply.fallback}"), "an empty archive offers the default Topic");
         assert!(APP_JS.contains("target.fingerprint = result.target.authored_fingerprint;"), "a changed target refreshes the captured fingerprint");
         assert!(APP_JS.contains("'agent-card'"), "the command bar offers reply only for an agent Card");
+        // The desk's draft rules live in the DOM-free module the page loads, so the title stays
+        // first and the relation selector changes only the supplied prefix.
+        assert!(INDEX_HTML.contains("<script src=\"/draft.js\" defer></script>"), "the page loads the draft module");
+        for used in [
+            "ZtDraft.replyDraft(",
+            "ZtDraft.replySwapPrefix(",
+            "ZtDraft.replyDestination(",
+        ] {
+            assert!(APP_JS.contains(used), "the reply desk uses {used}");
+        }
+        assert!(
+            !APP_JS.contains("text.value.startsWith(before)"),
+            "the supplied prefix is found inside the draft, not matched against the whole text"
+        );
+        // `r` acts only in reader navigation: the desk, the finder and an input keep their keys.
+        let keys = &APP_JS[APP_JS.find("function installKeys()").expect("installKeys")..];
+        let r = keys.find("case 'r':").expect("the r key");
+        for guard in [
+            "if (state.editing || finder.isOpen) return;",
+            "if (study.isOpen()) { study.key(event); return; }",
+            "if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;",
+        ] {
+            let at = keys
+                .find(guard)
+                .unwrap_or_else(|| panic!("the key handler keeps its guard: {guard}"));
+            assert!(at < r, "`{guard}` is checked before the r key");
+        }
+        // Cancelling the desk performs no write: the one reply POST is inside the desk's save, and
+        // a desk that resolves without an address stores nothing and opens nothing.
+        let reply_to = &APP_JS[APP_JS.find("async function replyTo()").expect("replyTo")..];
+        let save = reply_to.find("save: async (text) =>").expect("the reply save");
+        assert!(reply_to[save..].contains("api('reply'"), "the save posts the reply");
+        assert!(!reply_to[..save].contains("api('reply'"), "opening or cancelling the desk posts nothing");
+        assert!(reply_to.contains("if (!address) return;"), "a cancelled desk saves nothing");
+        let saved = reply_to.find("if (result.saved)").expect("the saved branch");
+        let remembered = reply_to.find("store.set('zt-reply-topic'").expect("the preference");
+        assert!(saved < remembered, "the destination is remembered only after a successful save");
         // No MCP tool writes a human Card, and Reply adds no route of its own beyond /api/reply.
         assert_eq!(APP_JS.matches("api('reply'").count(), 1);
         assert!(!include_str!("mcp.rs").contains("\"reply\""), "Reply is not an MCP tool");

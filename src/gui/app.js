@@ -4127,10 +4127,9 @@
           title: 'The relation word supplied before the Link; your own sentences stay as you wrote them',
           onchange: (event) => {
             const index = Number(event.target.value);
-            const before = prefixOf(draft.relation);
-            const after = prefixOf(index);
-            if (text.value.startsWith(before)) text.setRangeText(after, 0, before.length, 'end');
-            else text.setRangeText(after + '\n\n', 0, 0, 'end');
+            // The draft module owns the placement rule: replace the supplied prefix in place, or put
+            // it back after the title when the reader removed it.
+            text.value = ZtDraft.replySwapPrefix(text.value, prefixOf(draft.relation), prefixOf(index));
             draft.relation = index;
             dirty = true;
             update();
@@ -4390,7 +4389,9 @@
     if (!card.authored_fingerprint) throw new Error('this Card view carries no authored fingerprint; reload the page and try again');
     const target = { address: card.address, title: card.title || '', fingerprint: card.authored_fingerprint };
     const destinations = replyDestinations();
-    const chosen = destinations.find((topic) => (topic.title || '').trim() === REPLY_DEFAULT_TOPIC) || destinations[0] || null;
+    // The last Topic used wins; with none, the desk offers the default Topic or creating it on Save.
+    const recent = replyRecentTopic();
+    const chosen = ZtDraft.replyDestination(destinations, recent ? recent.address : null, REPLY_DEFAULT_TOPIC);
     const draft = {
       destination: chosen,
       destinationIndex: chosen ? destinations.indexOf(chosen) : -1,
@@ -4399,7 +4400,7 @@
     };
     const address = await openEditor({
       heading: 'Reply · human workspace',
-      initial: `# \n\n${REPLY_KINDS[draft.relation][0]} [[${target.address}]]：\n\n<!-- zt:reverse-links -->\n`,
+      initial: ZtDraft.replyDraft(REPLY_KINDS[draft.relation][0], target.address),
       cardType: null,
       reply: { target, destinations, draft, kinds: REPLY_KINDS, fallback: REPLY_DEFAULT_TOPIC },
       save: async (text) => {
