@@ -6,7 +6,7 @@ paths:
   - "src/read.rs"
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
-synced: afeccf94d718
+synced: 4319cbbe78
 updated: 2026-10-19
 ---
 
@@ -464,6 +464,7 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 
 ## Change history
 
+- `2026-10-19` - The patience fixture now holds the stale lock until the refusal is observed (a 60 s cap, not a fixed sleep), so a loaded host cannot turn the declared-patience refusal into a successful write; `tests/workspaces_mcp.rs`.
 - `2026-10-19` — #93 S13 (#106): `search_cards` gains `mode: plain|entry` (`plain` default, so the existing order and the single-`results` shape are untouched). The entry path calls `entry::search`, the same ranking the GUI's `/api/search mode=entry` serves: exact address, register term and its entry Cards, hub member line and the Card it opens, model head, title, body; rows carry `role`, `rank_tier`, `matched_term`/`matched_line`, `reason`, `origin`, and surviving `entry_targets`, and the reply carries `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, and `archive_fingerprint`. An empty query keeps the existing type/form listing in every mode; an unknown mode is an error. `INSTRUCTIONS` states the mode. Covered by `tests/search_rank.rs`.
 - `2026-10-19` — #93 S10 (#101): `get_register` reads the concept register's accepted entries for one Workspace (term, every one of its one to three targets with the bounded authored body, origin, faults, declared parts, `terms_by_card`, confirmed restatements, archive identity/revision, and `entry_offset`/`entry_limit` paging). A register-less Workspace answers `register_missing` with no entries instead of an error. `get_hub` on a register adds the same projection; `get_hub`'s two page arguments never truncate its hub report. `get_card` `hubs` now names a register term's second and third targets with `term` and `target_index`.
 - `2026-10-18` — Reverify [issue #68](https://github.com/liudesheng9/zet/issues/68) at the MCP/helper/compiler boundary: assert the durable receipt (operation key, canonical request hash, exact result, UTC commit time) and that a rolled-back batch leaves no receipt, so its corrected retry applies once. Remove the stale "compiler/crash qualification pending" note; the helper and the `terms` compiler now drive this path.
