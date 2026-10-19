@@ -695,7 +695,9 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
 /// parse full authored bodies only for Hub Cards. Domain policy stays in Graph.
 ///
 /// `entries` pages the flattened entry projection of a register (§8.5, D276); it applies only to
-/// `get_hub` on a register, and the existing hub report is not truncated by it.
+/// `get_hub` on a register, and the existing hub report is not truncated by it. The report's own
+/// `faults` (H5's register rows and H8's line reasons) stay in the list beside the entry view's
+/// row, part, restatement and ambiguous-label faults; a row fault both check is one item.
 pub(crate) fn hubs(
     root: &Path,
     at: Option<&str>,
@@ -711,12 +713,23 @@ pub(crate) fn hubs(
         let mut value = graph.report(at, limits)?;
         if value["level"] == json!("register") {
             let identity = archive_identity(&tx, root)?;
+            let hub_faults = value["faults"].as_array().cloned().unwrap_or_default();
             let projection = register_view(&tx, &read, at, entries, identity)?;
             if let Some(fields) = projection.as_object() {
                 for (key, field) in fields {
                     value[key] = field.clone();
                 }
             }
+            let mut faults = value["faults"].as_array().cloned().unwrap_or_default();
+            for fault in hub_faults {
+                let reported = faults.iter().any(|known| {
+                    known["fault"] == fault["fault"] && known["detail"] == fault["detail"]
+                });
+                if !reported {
+                    faults.push(fault);
+                }
+            }
+            value["faults"] = json!(faults);
         }
         value
     } else {

@@ -1017,3 +1017,30 @@ fn an_archive_without_a_register_answers_an_honest_empty() {
     let refusal = mcp.err("get_register", json!({ "workspace": "all" }));
     assert!(refusal.contains("workspace"), "{refusal}");
 }
+
+#[test]
+fn a_register_hub_report_keeps_its_own_checks_beside_the_entry_faults() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "枢纽检查", 1);
+    let one = format!("{tree}/1");
+    // The 领域 navigation line has no reason: the hub policy's own `bare` fault. The term rows
+    // are valid, so the entry view has no fault; the legacy report check must not disappear.
+    let reg = register(
+        &mut mcp,
+        &format!("## 词条\n- 术语：[[{one}]]\n\n## 领域\n- [[{one}]]\n"),
+    );
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(view["faults"], json!([]), "the term rows are valid: {view}");
+    let hub = mcp.ok("get_hub", json!({ "at": reg }));
+    let names = hub["faults"]
+        .as_array()
+        .expect("hub faults")
+        .iter()
+        .map(|fault| fault["fault"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"bare".to_string()),
+        "the register's own hub line check stays visible beside the entry faults: {names:?} {hub}"
+    );
+}
