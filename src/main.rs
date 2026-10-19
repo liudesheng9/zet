@@ -2675,17 +2675,35 @@ fn acquire_edit_lock_within(
     let start = Instant::now();
     let mut pause = Duration::from_millis(20);
     let mut logged = false;
+    let mut last_holder = String::new();
     loop {
         match try_acquire_edit_lock(root, operation) {
             Ok(mut lock) => {
-                lock.queue_wait = start.elapsed();
+                let waited = start.elapsed();
+                lock.queue_wait = waited;
                 lock.acquired = Instant::now();
+                // The last poll of a wait can succeed more than five seconds after the previous
+                // refusal, so the crossing is also reported when the lock arrives: one wait
+                // event, never one per poll, and never a wait that waited silently.
+                if !logged && waited > EDIT_WAIT_LOG_AFTER {
+                    let held_by = if last_holder.is_empty() { "unknown" } else { last_holder.as_str() };
+                    let _ = log_event(
+                        root,
+                        &format!(
+                            "edit wait: op={operation} waiter_pid={} elapsed_ms={} patience_s={} holder={held_by}",
+                            std::process::id(),
+                            waited.as_millis(),
+                            patience.as_secs()
+                        ),
+                    );
+                }
                 return Ok(lock);
             }
             Err(EditLockError::Fault(error)) => return Err(error),
             Err(EditLockError::Busy(conflict, _)) => {
                 let waited = start.elapsed();
                 let holder = conflict.holder();
+                last_holder = holder.clone();
                 if waited >= patience {
                     // One timeout line, with the wait and the patience it overran.
                     let _ = log_event(
