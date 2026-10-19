@@ -13,7 +13,7 @@ paths:
   - "tests/closed_stdout.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: afeccf94d718
+synced: 2553f94a7a64
 updated: 2026-10-19
 ---
 
