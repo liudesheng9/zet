@@ -15,6 +15,10 @@
 //   ZT_FAIL_TREE                                 get_tree of this tree fails.
 //   ZT_FAIL_AFTER_EDIT, ZT_FAIL_CARD, ZT_FAIL_FLAG   after an edit_card of ZT_FAIL_AFTER_EDIT succeeds,
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
+//   ZT_RACE_AFTER_CREATE, with ZT_RACE_TARGET/ZT_RACE_LINE/ZT_RACE_FLAG   once, AFTER a non-preview
+//       apply_batch that creates a Card succeeds and before its reply is sent: another writer commits
+//       its change to ZT_RACE_TARGET while the caller still holds this unit's creation receipt, so a
+//       two-step transfer meets a changed old Card between its writes.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
 // ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
@@ -180,6 +184,13 @@ async function handle(line) {
   }
   const reply = await ask(message)
   if (!at.preview && (tool === 'get_cards' || tool === 'export_titles')) drift(reply)
+  if (tool === 'apply_batch' && !at.preview && env.ZT_RACE_AFTER_CREATE && env.ZT_RACE_TARGET && env.ZT_RACE_FLAG && !flag(env.ZT_RACE_FLAG) && !failed(reply)
+      && (at.items || []).some(item => item.tool === 'create_successor')) {
+    fs.writeFileSync(env.ZT_RACE_FLAG, '')
+    const read = await call('get_card', { at: env.ZT_RACE_TARGET })
+    const card = JSON.parse(read.result.content.map(c => c.text).join('\n'))
+    await call('edit_card', { at: env.ZT_RACE_TARGET, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
+  }
   if (tool === 'apply_batch' && !at.preview && env.ZT_HANG_BATCH_REPLY_FLAG && !flag(env.ZT_HANG_BATCH_REPLY_FLAG) && !failed(reply)) await hangBatch(env.ZT_HANG_BATCH_REPLY_FLAG)
   if (tool === 'get_cards' && !at.addresses.length && env.ZT_IDENTITY_FAULT && !failed(reply)) {
     const value = reply.result.structuredContent

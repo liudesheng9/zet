@@ -46,6 +46,7 @@ mod restate;
 mod skeleton;
 mod snapshot;
 mod terms;
+mod topic_home;
 mod topic_join;
 mod util;
 mod zt;
@@ -158,6 +159,7 @@ fn main() {
         "gate" => gate::cli(&rest),
         "concepts" => concepts::cli(&rest),
         "join" => topic_join::cli(&rest),
+        "topic-home" => topic_home::cli(&rest),
         "restate" => restate::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
@@ -178,7 +180,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, join, bridge, math, event, finding, gate,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
        terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }

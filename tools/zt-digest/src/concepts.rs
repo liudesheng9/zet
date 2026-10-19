@@ -72,12 +72,14 @@ const SCHEMA_VERSION: i64 = 1;
 const VERDICTS: [&str; 3] = ["same", "different", "uncertain"];
 const KINDS: [&str; 2] = ["topic-concept", "restatement"];
 
-/// A line that states where a claim comes from (§4.3).
-static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(来源|出处|source)\s*[：:]").unwrap());
+/// A line that states where a claim comes from (§4.3). Shared with the Topic-home transfer, which
+/// moves a statement without its source lines and keeps them beside the claim.
+pub(crate) static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(来源|出处|source)\s*[：:]").unwrap());
 /// A label line that states an assumption; its text is part of the evidence (D078).
 static ASSUMPTION_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(假设|假定|前提|条件|设定)\s*[：:]").unwrap());
-static FORMULA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\$[^$]*\$\$|\$[^$\n]+\$").unwrap());
+/// A formula span. Shared with the Topic-home transfer, whose preservation check counts them.
+pub(crate) static FORMULA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\$[^$]*\$\$|\$[^$\n]+\$").unwrap());
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 static TERM_TABLE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
