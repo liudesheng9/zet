@@ -2,7 +2,7 @@
 //!
 //! A Reply is a GUI action, not an MCP tool: the page sends the target it read, the target's authored
 //! fingerprint and the reply text, and this module writes exactly one human Card inside one
-//! transaction — creating the default Topic `回應` when the reader has no human Topic to reply in.
+//! transaction — creating the default Topic `回应` when the reader has no human Topic to reply in.
 //! Nothing is appended to the agent Card: the reply Links back to it, and the ordinary Reverse link
 //! regeneration makes it visible there.
 
@@ -159,7 +159,7 @@ fn substance_of(body: &str, target: &str) -> usize {
 }
 
 /// The human Topic a reply goes into: the one the reader used, when it still exists; else a human
-/// Topic named `回應`; else that Topic, created now. A vanished address falls back rather than
+/// Topic named `回应`; else that Topic, created now. A vanished address falls back rather than
 /// following a stale numeric occupant (D247).
 struct Destination {
     address: String,

@@ -4200,6 +4200,38 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     assert_eq!(corresponded["destination"]["edge"], "side");
     assert_eq!(corresponded["destination"]["parent"], fallen["address"]);
 
+    // S18-AC01: the desk's usual target is a Side successor, whose address carries a pipe, so the
+    // skeleton is `印证 [[0/1|a]]：`. The route must read that whole address as the Link's target;
+    // if the Link scanner split it at the pipe, every such reply would answer `target_link_missing`.
+    let (_, branchy) = post("/api/create", serde_json::json!({
+        "kind": "side", "at": agent, "text": "# 剩余控制权的旁支\n\n剩余控制权的旁支。\n",
+    }));
+    let piped = branchy["address"].as_str().expect("side successor").to_string();
+    assert!(piped.contains('|'), "a Side successor's address carries a pipe: {piped}");
+    let piped_card = card_of(&piped);
+    let piped_fingerprint = piped_card["authored_fingerprint"]
+        .as_str()
+        .expect("piped fingerprint")
+        .to_string();
+    let piped_body = piped_card["body"].as_str().expect("piped body").to_string();
+    let (_, piped_saved) = post("/api/reply", serde_json::json!({
+        "at": piped, "base": piped_fingerprint, "topic": reply_topic,
+        "text": format!("# 旁支也要看融资约束\n\n对应 [[{piped}]]：旁支的结论同样受融资约束影响。\n"),
+    }));
+    assert_eq!(piped_saved["saved"], true, "{piped_saved}");
+    assert_eq!(piped_saved["kind"], "corresponds");
+    assert_eq!(piped_saved["target"]["address"], piped.as_str());
+    assert_eq!(piped_saved["destination"]["topic"], reply_topic);
+    assert_eq!(piped_saved["destination"]["edge"], "side");
+    assert_eq!(piped_saved["destination"]["parent"], corresponded["address"]);
+    let piped_after = card_of(&piped);
+    assert_eq!(piped_after["body"].as_str().unwrap(), piped_body, "the piped agent Card keeps its authored text");
+    assert!(
+        piped_after["inbound"].as_array().expect("inbound").iter()
+            .any(|link| link["address"] == piped_saved["address"]),
+        "the generated Reverse link reaches the piped agent Card"
+    );
+
     // A human Card is not a target, and the route is Owner-only.
     let (_, human_topic) = post("/api/create", serde_json::json!({
         "kind": "topic", "text": "# 人类的主题\n\n人类工作区的一个主题。\n", "workspace": "human",
@@ -4221,7 +4253,7 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     let addresses: Vec<&str> = graph["nodes"].as_array().expect("nodes").iter()
         .filter_map(|node| node["address"].as_str()).collect();
     for address in [&reply, again["address"].as_str().unwrap(), fallen["address"].as_str().unwrap(),
-                    corresponded["address"].as_str().unwrap()] {
+                    corresponded["address"].as_str().unwrap(), piped_saved["address"].as_str().unwrap()] {
         assert!(addresses.contains(&address), "{address} exists in the graph");
     }
     let output = home.cmd().args(["status", "--check-links"]).assert().success()
