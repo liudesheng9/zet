@@ -389,7 +389,7 @@ Reverse links to the human Card.
 | `get_tree` with `bodies: true` | complete tree bodies, stored text and BibTeX in one read view |
 | `export_titles` | one title/metadata pass, filtered by Workspace and Zone, with count and revision |
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |
-| `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`; `mode: entry` ranks a register term and its entry Cards, a hub member line, and a model head before ordinary title and body hits), the Link graph (optionally only cross-Workspace Links), Broken links |
+| `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`; `mode: entry` ranks a register term and its entry Cards, a hub member line, and a model head before ordinary title and body hits, and folds a confirmed restatement entry or an exact duplicate statement into one row that names its canonical Card and every member), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
 | `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`, a Model Card's `level`) or a Model part (`facet`, `emphasis`) |
 | `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, level, or BibTeX |

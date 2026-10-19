@@ -1644,6 +1644,34 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 }
 .fslip-role.member { color: var(--ink-faint); }
 .fslip-why { display: block; margin-top: 3px; font: 11.5px/1.45 var(--sans); color: var(--ink-faint); overflow-wrap: anywhere; }
+
+/* A row that folds confirmed restatements: the statement it stands for, and every Card that states
+   it. The fold is a row of the tray, never a Card: a member opens like any other slip. */
+.fslip.folded { border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.fslip-canon {
+  display: flex; align-items: baseline; gap: 6px; margin-top: 4px; padding: 0;
+  border: 0; background: none; text-align: left; cursor: pointer;
+  font: 11.5px var(--sans); color: var(--ink-faint);
+}
+.fslip-canon:hover { color: var(--accent); }
+.fslip-canon .addr { font: 11px var(--mono); color: var(--ink-faint); }
+.fslip-fold { margin-top: 2px; }
+.fslip-fold-toggle { width: auto; margin: 0; padding: 4px 8px 3px; font-size: 11px; }
+.fslip-fold-toggle::before { left: 2px; right: 2px; }
+.fslip-members {
+  margin-top: 3px; padding: 3px 0 2px 10px;
+  border-left: 1px dashed var(--stock-edge);
+}
+.fslip-member {
+  display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 3px;
+  cursor: pointer;
+}
+.fslip-member:hover { background: color-mix(in srgb, var(--stock) 55%, transparent); }
+.fslip-member .addr { flex: none; font: 10.5px var(--mono); color: var(--ink-faint); }
+.fslip-member-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px/1.4 var(--serif); }
+.fslip-member.canonical .fslip-member-title { font-weight: 600; }
+.fslip-member-tags { flex: none; font: 10px var(--sans); color: var(--ink-faint); letter-spacing: .02em; }
+.fslip-member.here { opacity: .72; }
 .finder-note {
   margin: 0 0 12px; padding: 8px 12px; border-left: 2px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);

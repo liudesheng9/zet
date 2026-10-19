@@ -129,7 +129,7 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 
 **`zt`** (`skills/zt/SKILL.md`):
 
-1. Read before writing: `list_workspaces`, `list_trees` (filter `workspace`, `zone`), `get_tree` or `get_card`, `search_cards` before creating, `list_links` with `cross_workspace_only`.
+1. Read before writing: `list_workspaces`, `list_trees` (filter `workspace`, `zone`), `get_tree` or `get_card`, `search_cards` before creating, `list_links` with `cross_workspace_only`. `search_cards mode: "entry"` ranks ways in first, and a row whose `folded` is above zero stands for several Cards that state one confirmed statement: its `representative` is the canonical Card and its `members` name every Card behind the row, so an agent reads those instead of treating the row's title as a new claim.
 2. Writing tools and their arguments: `create_topic`, `create_literature` (one BibTeX entry with a `title`), `create_successor` (`at`, `title`, `body`, `kind` `direct` or `side`), `edit_card`, `edit_literature_metadata`, `insert_card` (`before`), `move_card` (`to` or `before`, `alone`), `delete_card` (`into`).
 3. Card types (`type`), Model parts (`facet` up to 32 characters, `emphasis` `core` or `aside`), Relation kinds by the word before the Link, the elaboration `level` (`concept`/`formal`, also `1`/`2`), the Math `form`, and the `get_model` report: `models`, `relations`, `loose`, `neighbours`, `issues`, `build` (`setting`, `order` with `line` `main`/`side`/`off`/`shared`, `chains`, `closure`, `forward`, `unanchored`, `tolerated`, `beyond_level`, `self_sufficient`), and `math` for units and Theory Cards.
 4. Bodies: `![caption](artifact:<sha256>)` figures, TeX, ```` ```chart ```` fences with `--zt-*` palette variables and `data-zt` clicks; never write a Reverse links section.
@@ -437,6 +437,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 ## Change history
 
 
+- `2026-10-19` - #111 S14 (restatement folding): `skills/zt/SKILL.md` tells an agent that a `search_cards mode: entry` row with `folded` above zero stands for several Cards stating one confirmed statement, to read `representative` and `members` instead of comparing the row's title with a statement it does not hold, and to count `total` (Cards) apart from `row_total` (rows).
 - `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.
 - `2026-10-17` — Teach `get_cards`, `get_tree` bodies, `export_titles`, explicit read limits, missing-address checks and revision consistency in the ZT skill.
 

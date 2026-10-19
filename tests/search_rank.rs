@@ -191,6 +191,20 @@ fn http_page(port: u16) -> String {
     page
 }
 
+/// The body of one served file, so a test can see the page the running service actually serves.
+fn http_file(port: u16, path: &str) -> String {
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to gui");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("request file");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read file");
+    response
+}
+
 /// A query value for `/api/search`, percent-encoded byte by byte.
 fn enc(text: &str) -> String {
     text.bytes()
@@ -660,8 +674,14 @@ fn the_entry_order_is_deterministic_and_bounded() {
     let home = TestHome::new();
     let mut mcp = home.mcp();
     let tree = topic(&mut mcp, "排序", 2);
-    for at in [format!("{tree}/1"), format!("{tree}/2")] {
-        mcp.ok("edit_card", json!({ "at": at, "title": "并列的结果", "body": "正文相同。" }));
+    // The two bodies differ, so the two Cards are two rows: one statement is not folded into the
+    // other (S14, `a_restatement_entry_and_its_statement_fold_into_one_row` covers the fold).
+    for (index, at) in [format!("{tree}/1"), format!("{tree}/2")].into_iter().enumerate() {
+        mcp.ok(
+            "edit_card",
+            json!({ "at": at, "title": "并列的结果",
+                "body": format!("并列的正文，第 {} 张。", index + 1) }),
+        );
     }
     let first = mcp.ok("search_cards", json!({ "query": "并列", "mode": "entry" }));
     let second = mcp.ok("search_cards", json!({ "query": "并列", "mode": "entry" }));
@@ -918,6 +938,499 @@ fn the_cached_gui_read_follows_a_part_and_a_hub_member_line() {
     assert_eq!(row["rank_tier"], json!(2));
     assert_eq!(row["origin"]["card"], json!(part));
     assert_eq!(row["origin"]["part"], json!(part));
+}
+
+/// A restatement entry and the substantive Card it names are one statement: the query returns one
+/// row, the substantive Card is the representative, and every member is exposed (§9.2, D209,
+/// S14-AC01, S14-AC03). The register is not needed for the entry to be confirmed: §4.5 is a Card
+/// convention, so an archive whose Workspace holds no register still folds.
+#[test]
+fn a_restatement_entry_and_its_statement_fold_into_one_row() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "分解与就业", 3);
+    let terminal = format!("{tree}/1");
+    let entry = format!("{tree}/2");
+    let other = format!("{tree}/3");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": terminal, "title": "斯卢茨基分解的陈述",
+            "body": "补偿需求项与收入效应项合计决定就业。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "分解的陈述入口",
+            "body": format!("这里只留入口。\n\n## 同述入口\n\n- [[{terminal}]] 给出补偿需求项的完整陈述。") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": other, "title": "无关的另一张卡", "body": "这里讨论别的事情。" }),
+    );
+
+    let found = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(found["register_missing"], json!(true), "no register is needed: {found}");
+    let folded = rows(&found)
+        .into_iter()
+        .filter(|row| row["address"] == json!(terminal) || row["address"] == json!(entry))
+        .collect::<Vec<_>>();
+    assert_eq!(folded.len(), 1, "one row for one statement: {found}");
+    let row = &folded[0];
+    assert_eq!(
+        row["address"],
+        json!(terminal),
+        "the substantive statement is the representative: {row}"
+    );
+    assert_eq!(row["representative"], json!(terminal));
+    assert_eq!(row["folded"], json!(1));
+    assert_eq!(row["members_truncated"], json!(false));
+    assert_eq!(row["member_total"], json!(2));
+    let members = row["members"].as_array().expect("members").clone();
+    assert_eq!(members.len(), 2, "every member is exposed: {row}");
+    assert_eq!(members[0]["address"], json!(terminal));
+    assert_eq!(members[0]["canonical"], json!(true));
+    assert_eq!(members[0]["matched"], json!(true));
+    assert_eq!(members[0]["role"], json!("hit"));
+    assert_eq!(members[1]["address"], json!(entry));
+    assert_eq!(members[1]["canonical"], json!(false));
+    assert_eq!(members[1]["matched"], json!(true));
+    assert_eq!(members[1]["role"], json!("hit"));
+    // The row is where its best-ranked member was, and keeps that member's evidence.
+    assert_eq!(row["role"], json!("hit"));
+    assert_eq!(row["rank_tier"], json!(6));
+    // Counts name Cards apart from rows: two matching Cards are one row.
+    assert_eq!(found["total"], json!(2));
+    assert_eq!(found["row_total"], json!(1));
+    assert_eq!(found["folded_total"], json!(1));
+    assert_eq!(found["shown"], json!(1));
+    assert_eq!(addresses(&found), vec![terminal.clone()]);
+
+    // One contract, two transports.
+    let gui = home.gui();
+    assert_eq!(
+        gui.get(&format!("/api/search?q={}&mode=entry", enc("补偿需求项"))),
+        found
+    );
+    // The running service serves the tray that draws the fold: `+N`, every member, and the
+    // canonical reference a matching member names.
+    let js = http_file(gui.port, "/app.js");
+    for wanted in [
+        "function foldMarker(hit, words)",
+        "function memberLine(member, hit, words)",
+        "more stating the same statement",
+        "fslip-canon",
+    ] {
+        assert!(js.contains(wanted), "the served page has no `{wanted}`");
+    }
+}
+
+/// Exact duplicate statements fold; a changed sign, a changed assumption, a formula with a different
+/// condition, and a Card that states no claim do not (§4.5, D087, S14-AC01, S14-AC06). The narrow
+/// normalization is the archive's own exact fingerprint: line endings, outer whitespace and a
+/// separately labelled source line are ignored, and nothing else is.
+#[test]
+fn an_exact_duplicate_statement_folds_but_a_changed_sign_or_assumption_stays_apart() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "陈述", 9);
+    let positive = format!("{tree}/1");
+    let duplicate = format!("{tree}/2");
+    let negative = format!("{tree}/3");
+    let assumption = format!("{tree}/4");
+    let formula = format!("{tree}/5");
+    let negated_formula = format!("{tree}/6");
+    let source_only = format!("{tree}/7");
+    let source_only_two = format!("{tree}/8");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": positive, "title": "甲",
+            "body": format!("学习提高生产率。\n\n来源：[[{tree}/0]]") }),
+    );
+    // The same statement with another line ending and no source line: one exact fingerprint.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": duplicate, "title": "乙", "body": "学习提高生产率。\r\n" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": negative, "title": "丙", "body": "学习不提高生产率。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": assumption, "title": "丁", "body": "在完全竞争下，学习提高生产率。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": formula, "title": "戊", "body": "$生产率 = a x$" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": negated_formula, "title": "己", "body": "$生产率 = -a x$" }),
+    );
+    // A source line is evidence, not a claim: two Cards whose body is only a source line hold no
+    // statement at all, so they never fold.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": source_only, "title": "庚",
+            "body": format!("来源：[[{tree}/0]] 生产率") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": source_only_two, "title": "辛",
+            "body": format!("出处：[[{tree}/0]] 生产率") }),
+    );
+
+    let found = mcp.ok("search_cards", json!({ "query": "生产率", "mode": "entry", "limit": 50 }));
+    let folded = rows(&found)
+        .into_iter()
+        .filter(|row| row["address"] == json!(positive) || row["address"] == json!(duplicate))
+        .collect::<Vec<_>>();
+    assert_eq!(folded.len(), 1, "one exact statement is one row: {found}");
+    assert_eq!(folded[0]["address"], json!(positive), "{found}");
+    assert_eq!(folded[0]["representative"], json!(positive));
+    assert_eq!(folded[0]["folded"], json!(1));
+    assert_eq!(folded[0]["member_total"], json!(2));
+    assert_eq!(
+        folded[0]["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .map(|member| member["address"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        vec![positive.clone(), duplicate.clone()]
+    );
+
+    // A changed sign, a changed assumption and a formula with a different condition stay as
+    // separate rows: no similarity, shared formula or shared term folds them.
+    for at in [
+        &negative,
+        &assumption,
+        &formula,
+        &negated_formula,
+        &source_only,
+        &source_only_two,
+    ] {
+        let row = &found["results"][position(&found, at)];
+        assert_eq!(row["address"], json!(at), "{found}");
+        assert_eq!(row["folded"], json!(0), "{at} is its own row: {row}");
+        assert_eq!(row["members"], json!(null), "{at} has no confirmed group: {row}");
+        assert_eq!(row["member_total"], json!(1));
+    }
+    // Eight matching Cards are seven rows: one fold, and no source-only Card is a statement.
+    assert_eq!(found["total"], json!(8));
+    assert_eq!(found["row_total"], json!(7));
+    assert_eq!(found["folded_total"], json!(1));
+}
+
+/// A chain (an entry that names another entry) and a cycle (two entries that name each other) are
+/// reported, never confirmed, and never folded: only a direct terminal reference is accepted
+/// evidence, and no transitive union of entries ever groups Cards (§4.5, D085, S14-AC02).
+#[test]
+fn an_entry_chain_or_cycle_never_folds() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "链条", 5);
+    let terminal = format!("{tree}/1");
+    let entry = format!("{tree}/2");
+    let chained = format!("{tree}/3");
+    let cycle_one = format!("{tree}/4");
+    let cycle_two = format!("{tree}/5");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": terminal, "title": "甲的陈述", "body": "补偿需求项决定就业。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "甲的入口",
+            "body": format!("补偿需求项见甲的陈述。\n\n## 同述入口\n\n- [[{terminal}]] 完整陈述。") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": chained, "title": "甲的入口的入口",
+            "body": format!("补偿需求项见甲的入口。\n\n## 同述入口\n\n- [[{entry}]] 指向另一个入口。") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": cycle_one, "title": "循环甲",
+            "body": format!("补偿需求项的循环甲。\n\n## 同述入口\n\n- [[{cycle_two}]] 循环。") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": cycle_two, "title": "循环乙",
+            "body": format!("补偿需求项的循环乙。\n\n## 同述入口\n\n- [[{cycle_one}]] 循环。") }),
+    );
+    // A register reports the entries of its Workspace: the chain and the cycle are named there.
+    register(&mut mcp, &format!("## 词条\n- 斯卢茨基分解：[[{terminal}]]\n"));
+
+    let found = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    let kinds = found["register_faults"]
+        .as_array()
+        .expect("register faults")
+        .iter()
+        .filter_map(|fault| fault["kind"].as_str())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"chain"), "a chain is reported: {found}");
+    assert!(kinds.contains(&"cycle"), "a cycle is reported: {found}");
+
+    // The direct entry still folds with its terminal.
+    let row = &found["results"][position(&found, &terminal)];
+    assert_eq!(row["folded"], json!(1), "{found}");
+    assert_eq!(row["member_total"], json!(2));
+    // The chained entry and both cycle Cards stay their own rows.
+    for at in [&chained, &cycle_one, &cycle_two] {
+        let row = &found["results"][position(&found, at)];
+        assert_eq!(row["folded"], json!(0), "{at} is its own row: {row}");
+        assert_eq!(row["members"], json!(null), "{at} has no confirmed group: {row}");
+    }
+    assert_eq!(found["total"], json!(5));
+    assert_eq!(found["row_total"], json!(4));
+    assert_eq!(found["folded_total"], json!(1));
+}
+
+/// When the canonical Card is filtered out but a member matches, the row shows the matching member
+/// with its canonical reference instead of hiding the group (§9.2, D209, S14-AC05).
+#[test]
+fn the_canonical_filtered_out_shows_the_matching_member_with_its_reference() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "模型与入口", 2);
+    let canonical = format!("{tree}/1");
+    let entry = format!("{tree}/2");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": canonical, "type": "model", "title": "分解的模型",
+            "body": "补偿需求项由模型给出。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "模型的陈述入口",
+            "body": format!("补偿需求项的入口。\n\n## 同述入口\n\n- [[{canonical}]] 完整陈述。") }),
+    );
+
+    // An Idea-only search keeps the entry and drops the Model Card.
+    let ideas = mcp.ok(
+        "search_cards",
+        json!({ "query": "补偿需求项", "mode": "entry", "type": "idea" }),
+    );
+    let row = &ideas["results"][position(&ideas, &entry)];
+    assert_eq!(row["address"], json!(entry), "the matching member is the row: {ideas}");
+    assert_eq!(row["representative"], json!(canonical), "its canonical reference is named");
+    assert_eq!(row["folded"], json!(0));
+    assert_eq!(row["member_total"], json!(2));
+    let members = row["members"].as_array().expect("members").clone();
+    assert_eq!(members[0]["address"], json!(canonical));
+    assert_eq!(members[0]["canonical"], json!(true));
+    assert_eq!(members[0]["matched"], json!(true));
+    assert_eq!(members[0]["kept"], json!(false), "the canonical fails the type filter");
+    assert_eq!(members[1]["address"], json!(entry));
+    assert_eq!(members[1]["canonical"], json!(false));
+    assert_eq!(members[1]["kept"], json!(true));
+    assert!(
+        !addresses(&ideas).contains(&canonical),
+        "a filtered-out canonical is never a row: {ideas}"
+    );
+    assert_eq!(ideas["total"], json!(1));
+    assert_eq!(ideas["row_total"], json!(1));
+
+    // The other direction: with the Model type only the canonical survives, and it is the row.
+    let models = mcp.ok(
+        "search_cards",
+        json!({ "query": "补偿需求项", "mode": "entry", "type": "model" }),
+    );
+    let row = &models["results"][position(&models, &canonical)];
+    assert_eq!(row["address"], json!(canonical));
+    assert_eq!(row["representative"], json!(canonical));
+    assert_eq!(row["folded"], json!(0));
+    assert_eq!(row["member_total"], json!(2));
+    let members = row["members"].as_array().expect("members").clone();
+    assert_eq!(members[1]["address"], json!(entry));
+    assert_eq!(members[1]["kept"], json!(false), "the entry fails the type filter");
+    assert_eq!(models["total"], json!(1));
+}
+
+/// Folding happens after the full scoped match set and before the page limit: the counts name
+/// matching Cards apart from displayed rows, a page boundary never splits a group, and every
+/// matching member is recoverable from the row that folded it (§9.2, D209, S14-AC04).
+#[test]
+fn folding_happens_before_the_page_limit_and_every_member_is_recoverable() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "大组", 9);
+    let terminal = format!("{tree}/1");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": terminal, "title": "甲的陈述", "body": "补偿需求项决定就业。" }),
+    );
+    let mut entries = Vec::new();
+    for index in 2..=7 {
+        let at = format!("{tree}/{index}");
+        mcp.ok(
+            "edit_card",
+            json!({ "at": at, "title": format!("甲的入口 {index}"),
+                "body": format!("补偿需求项见第 {index} 处。\n\n## 同述入口\n\n- [[{terminal}]] 完整陈述。") }),
+        );
+        entries.push(at);
+    }
+    let singles = vec![format!("{tree}/8"), format!("{tree}/9")];
+    for (index, at) in singles.iter().enumerate() {
+        mcp.ok(
+            "edit_card",
+            json!({ "at": at, "title": format!("别的说法 {}", index + 1),
+                "body": format!("补偿需求项的另一陈述 {}", index + 1) }),
+        );
+    }
+
+    // A page of one row: the whole group is one row, and its members are all named.
+    let page = mcp.ok(
+        "search_cards",
+        json!({ "query": "补偿需求项", "mode": "entry", "limit": 1 }),
+    );
+    assert_eq!(page["shown"], json!(1));
+    assert_eq!(page["total"], json!(9), "nine matching Cards");
+    assert_eq!(page["row_total"], json!(3), "one row for the group, two singles");
+    assert_eq!(page["folded_total"], json!(6));
+    let row = &page["results"][0];
+    assert_eq!(row["address"], json!(terminal));
+    assert_eq!(row["folded"], json!(6));
+    assert_eq!(row["member_total"], json!(7));
+    assert_eq!(row["members_truncated"], json!(false));
+    let members = row["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .map(|member| member["address"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    let mut expected = vec![terminal.clone()];
+    expected.extend(entries.iter().cloned());
+    assert_eq!(members, expected, "every member is recoverable: {row}");
+    assert!(
+        row["members"].as_array().expect("members").iter().all(|member| member["matched"] == json!(true)
+            && member["kept"] == json!(true)),
+        "every member of the group matched and survived the filters: {row}"
+    );
+
+    // The whole page: the two singles are their own rows, in address order after the group.
+    let all = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(addresses(&all), {
+        let mut expected = vec![terminal.clone()];
+        expected.extend(singles.iter().cloned());
+        expected
+    });
+    assert_eq!(all["shown"], json!(3));
+    // The same read and query give the same rows, so the fold is deterministic.
+    let again = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(all, again);
+}
+
+/// Grouping is derived from the read, so it follows a revision change: a statement that is no longer
+/// exact stops folding, and the confirmed entry keeps folding through the same edit (§9.2,
+/// S14-AC07). Nothing about a group is stored.
+#[test]
+fn folding_follows_a_revision_change() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "修订", 3);
+    let terminal = format!("{tree}/1");
+    let duplicate = format!("{tree}/2");
+    let entry = format!("{tree}/3");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": terminal, "title": "甲的陈述", "body": "补偿需求项决定就业。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": duplicate, "title": "乙", "body": "补偿需求项决定就业。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "甲的入口",
+            "body": format!("补偿需求项的入口。\n\n## 同述入口\n\n- [[{terminal}]] 完整陈述。") }),
+    );
+    let before = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(before["total"], json!(3));
+    assert_eq!(before["row_total"], json!(1), "one statement, three Cards");
+    assert_eq!(before["folded_total"], json!(2));
+    assert_eq!(before["results"][position(&before, &terminal)]["folded"], json!(2));
+
+    // A changed statement is a different claim: it stops folding, while the entry still does.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": duplicate, "title": "乙", "body": "补偿需求项不决定就业。" }),
+    );
+    let changed = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_ne!(
+        changed["archive_fingerprint"], before["archive_fingerprint"],
+        "the read names its revision"
+    );
+    assert_eq!(changed["total"], json!(3));
+    assert_eq!(changed["row_total"], json!(2), "the group lost its duplicate: {changed}");
+    assert_eq!(changed["folded_total"], json!(1));
+    assert_eq!(changed["results"][position(&changed, &terminal)]["folded"], json!(1));
+    assert_eq!(changed["results"][position(&changed, &duplicate)]["folded"], json!(0));
+
+    // Writing the statement back groups the three Cards again, from the same read.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": duplicate, "title": "乙", "body": "补偿需求项决定就业。" }),
+    );
+    let again = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(again["total"], json!(3));
+    assert_eq!(again["row_total"], json!(1));
+    assert_eq!(again["folded_total"], json!(2));
+
+    // Removing the entry's section is a revision change too: the group is then the two statements.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "甲的入口", "body": "补偿需求项的入口。" }),
+    );
+    let without_entry = mcp.ok("search_cards", json!({ "query": "补偿需求项", "mode": "entry" }));
+    assert_eq!(without_entry["total"], json!(3));
+    assert_eq!(without_entry["row_total"], json!(2));
+    assert_eq!(without_entry["folded_total"], json!(1));
+    let row = &without_entry["results"][position(&without_entry, &terminal)];
+    assert_eq!(row["folded"], json!(1));
+    assert_eq!(row["member_total"], json!(2), "only the duplicate is left: {row}");
+}
+
+/// The canonical substantive Card is the representative even when the query named only the entry
+/// that points at it: an accepted entry is navigation for the statement, so the row shows the
+/// statement and its `reason` names the entry the query matched (§9.2, D209).
+#[test]
+fn the_canonical_statement_answers_a_query_that_matched_only_its_entry() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "入口", 2);
+    let statement = format!("{tree}/1");
+    let entry = format!("{tree}/2");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": statement, "title": "分解的说法", "body": "补偿需求项决定就业。" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": entry, "title": "分解的陈述入口",
+            "body": format!("这里只留入口。\n\n## 同述入口\n\n- [[{statement}]] 完整陈述。") }),
+    );
+    let found = mcp.ok("search_cards", json!({ "query": "陈述入口", "mode": "entry" }));
+    assert_eq!(found["total"], json!(1), "only the entry matched: {found}");
+    assert_eq!(found["row_total"], json!(1));
+    let row = &found["results"][0];
+    assert_eq!(row["address"], json!(statement), "the statement is the row: {row}");
+    assert_eq!(row["representative"], json!(statement));
+    assert_eq!(row["folded"], json!(0));
+    assert_eq!(row["member_total"], json!(2));
+    assert!(
+        row["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(&format!("[[{entry}]]"))),
+        "the reason names the entry the query matched: {row}"
+    );
+    let members = row["members"].as_array().expect("members").clone();
+    assert_eq!(members[1]["address"], json!(entry));
+    assert_eq!(members[1]["statement"], json!("entry"));
+    assert_eq!(members[1]["matched"], json!(true));
+    assert_eq!(members[1]["role"], json!("hit"));
+    assert_eq!(members[0]["matched"], json!(false), "the statement itself holds no query word");
+    assert_eq!(members[0]["statement"], json!("substantive"));
 }
 
 #[test]

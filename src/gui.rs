@@ -2226,6 +2226,77 @@ mod tests {
         );
     }
 
+    /// The search tray draws a folded row: the statement it stands for, its `+N`, and every member
+    /// with what it is and whether it matched (S14-AC03, S14-AC05). The tray counts rows and Cards
+    /// apart, a fold is a display choice of the open tray, and expanding it writes nothing.
+    #[test]
+    fn the_search_tray_renders_a_folded_row_and_every_member() {
+        let slip = &APP_JS[APP_JS.find("function slip(hit, words) {").expect("slip")..];
+        let slip = &slip[..slip.find("function guide(").expect("the end of slip")];
+        assert!(
+            slip.contains("hit.representative && hit.representative !== hit.address"),
+            "a matching member names its canonical Card: {slip}"
+        );
+        assert!(
+            slip.contains("dataset: { address: hit.representative }"),
+            "the canonical reference is a slip the keyboard can open: {slip}"
+        );
+        assert!(
+            slip.contains("choose(hit.representative)"),
+            "the canonical reference opens that Card"
+        );
+        assert!(
+            slip.contains("foldMarker(hit, words)"),
+            "a row with members draws its fold marker"
+        );
+        let marker = &APP_JS[APP_JS.find("function foldMarker(hit, words) {").expect("foldMarker")..];
+        let marker = &marker[..marker.find("function memberLine(").expect("the end of foldMarker")];
+        for wanted in [
+            "hit.members || []",
+            "foldedOpen.has(hit.address)",
+            "`+${behind} more stating the same statement`",
+            "toggleMembers(hit.address)",
+            "members.map((member) => memberLine(member, hit, words))",
+        ] {
+            assert!(marker.contains(wanted), "the fold marker has no `{wanted}`: {marker}");
+        }
+        let member = &APP_JS[APP_JS.find("function memberLine(member, hit, words) {").expect("memberLine")..];
+        let member = &member[..member.find("function toggleMembers(").expect("the end of memberLine")];
+        for wanted in [
+            "dataset: { address: member.address }",
+            "choose(member.address)",
+            "member.canonical ? 'statement'",
+            "member.matched",
+            "filtered out",
+        ] {
+            assert!(member.contains(wanted), "a member line has no `{wanted}`: {member}");
+        }
+        // The toggle re-renders the tray from the answer already in hand: no second request, and no
+        // Card is written by opening a fold.
+        let toggle = &APP_JS[APP_JS.find("function toggleMembers(at) {").expect("toggleMembers")..];
+        let toggle = &toggle[..toggle.find("function render() {").expect("the end of toggleMembers")];
+        assert!(!toggle.contains("api("), "expanding a fold asks the server nothing: {toggle}");
+        assert!(!toggle.contains("api('edit'") && !toggle.contains("api('create'"));
+        // Rows and Cards are counted apart, and the weaker-row note uses the row total.
+        assert!(APP_JS.contains("const rows = data.row_total == null ? data.total : data.row_total;"));
+        assert!(APP_JS.contains("`best ${shown} of ${rows} rows · ${cards} cards`"));
+        assert!(APP_JS.contains("`${rows} rows · ${cards} cards`"));
+        assert!(APP_JS.contains("`${rows - shown} weaker rows are not shown; add a word to narrow the search.`"));
+        // A member is reachable from the keyboard like a slip, and Enter opens it.
+        assert!(APP_JS.contains("'.fslip, .ffold, .fslip-member, .fslip-canon'"));
+        assert!(APP_JS.contains("else if (item.dataset.fold) toggleMembers(item.dataset.fold);"));
+        // The fold's own styles exist, and the tray resets both kinds of fold together.
+        for rule in [".fslip-canon {", ".fslip-fold-toggle {", ".fslip-members {", ".fslip-member {"] {
+            assert!(APP_CSS.contains(rule), "app.css has no `{rule}`");
+        }
+        assert!(APP_JS.contains("const clearFolds = () => { unfolded = new Set(); foldedOpen.clear(); };"));
+        assert_eq!(
+            APP_JS.matches("clearFolds();").count(),
+            4,
+            "a new query, a new filter, a reopened tray and Esc all reset both kinds of fold"
+        );
+    }
+
     #[test]
     fn the_front_end_names_every_relation_kind() {
         use crate::model::RelationKind;

@@ -575,201 +575,13 @@ impl View {
         snapshot: &Snapshot,
         sections: &BTreeMap<String, Vec<String>>,
     ) {
-        if sections.is_empty() {
-            return;
-        }
         let parts: BTreeSet<&str> = self
             .parts
             .iter()
             .filter_map(|part| part["address"].as_str())
             .collect();
-        let entries: BTreeSet<&str> = sections.keys().map(String::as_str).collect();
-        // The one Link of each entry that may be followed: a section with a different shape is
-        // reported where it is read and never becomes a step of a chain.
-        let mut step: BTreeMap<&str, &str> = BTreeMap::new();
-        let mut direct: BTreeMap<&str, &str> = BTreeMap::new();
-        let mut confirmed = Vec::new();
-        let mut reported: BTreeSet<&str> = BTreeSet::new();
-        for (card, links) in sections {
-            let card = card.as_str();
-            let Some(own) = snapshot.by_address.get(card) else {
-                continue;
-            };
-            if links.len() != 1 {
-                self.faults.push(json!({
-                    "fault": "restatement",
-                    "kind": "malformed",
-                    "detail": format!(
-                        "the 同述入口 section of [[{card}]] names {} Cards; it names exactly one",
-                        links.len()
-                    ),
-                    "card": card,
-                }));
-                reported.insert(card);
-                continue;
-            }
-            let target = links[0].as_str();
-            if target == card {
-                self.faults.push(json!({
-                    "fault": "restatement",
-                    "kind": "self",
-                    "detail": format!("the 同述入口 section of [[{card}]] points at itself"),
-                    "card": card,
-                }));
-                reported.insert(card);
-                continue;
-            }
-            let Some(substantive) = snapshot.by_address.get(target) else {
-                self.faults.push(json!({
-                    "fault": "restatement",
-                    "kind": "missing",
-                    "detail": format!("the 同述入口 section of [[{card}]] names [[{target}]], which does not exist"),
-                    "card": card,
-                }));
-                reported.insert(card);
-                continue;
-            };
-            if substantive.workspace != own.workspace {
-                self.faults.push(json!({
-                    "fault": "restatement",
-                    "kind": "workspace",
-                    "detail": format!(
-                        "the 同述入口 section of [[{card}]] names [[{target}]] in the {} Workspace; it must stay in the {} Workspace",
-                        substantive.workspace.id(),
-                        own.workspace.id()
-                    ),
-                    "card": card,
-                }));
-                reported.insert(card);
-                continue;
-            }
-            // A root, a Hub Card and a declared register part are navigation, not a statement: the
-            // section names a substantive Card or it names nothing this view can confirm.
-            if crate::is_tree_root(substantive) || substantive.card_type == CardType::Hub || parts.contains(target) {
-                self.faults.push(json!({
-                    "fault": "restatement",
-                    "kind": "not-substantive",
-                    "detail": format!(
-                        "the 同述入口 section of [[{card}]] names [[{target}]], which is navigation, not a substantive Card"
-                    ),
-                    "card": card,
-                }));
-                reported.insert(card);
-                continue;
-            }
-            if entries.contains(target) {
-                // A chain: the direct target is itself an entry. It is reported, and the entry
-                // names the terminal instead (D085).
-                step.insert(card, target);
-                continue;
-            }
-            confirmed.push(json!({
-                "entry": card,
-                "substantive": target,
-                "terminal": target,
-                "title": snapshot.title(target),
-            }));
-            direct.insert(card, target);
-        }
-        // Resolve every chain to its terminal, and report each loop once per entry on it. The
-        // compiler writes a direct terminal reference, so a chain is never accepted as written.
-        let starts: Vec<&str> = step
-            .keys()
-            .copied()
-            .filter(|card| !reported.contains(card))
-            .collect();
-        for start in starts {
-            if reported.contains(start) {
-                continue;
-            }
-            let mut path: Vec<&str> = vec![start];
-            let mut loop_nodes: Vec<&str> = Vec::new();
-            let terminal: Option<&str> = loop {
-                let at = *path.last().expect("a chain has a start");
-                if let Some(terminal) = direct.get(at) {
-                    break Some(*terminal);
-                }
-                let Some(next) = step.get(at) else {
-                    break None;
-                };
-                if let Some(seen) = path.iter().position(|known| *known == *next) {
-                    loop_nodes = path[seen..].to_vec();
-                    break None;
-                }
-                path.push(next);
-            };
-            let shown = path
-                .iter()
-                .map(|card| format!("[[{card}]]"))
-                .collect::<Vec<_>>()
-                .join(" → ");
-            match terminal {
-                Some(terminal) => {
-                    reported.insert(start);
-                    self.faults.push(json!({
-                        "fault": "restatement",
-                        "kind": "chain",
-                        "detail": format!(
-                            "the 同述入口 section of [[{start}]] names another entry ({shown}); name the terminal substantive Card [[{terminal}]] directly"
-                        ),
-                        "card": start,
-                        "terminal": terminal,
-                        "chain": path,
-                        "cycle": Value::Null,
-                    }));
-                }
-                None => {
-                    let cycle_shown = loop_nodes
-                        .iter()
-                        .map(|card| format!("[[{card}]]"))
-                        .collect::<Vec<_>>()
-                        .join(" → ");
-                    for card in &loop_nodes {
-                        if reported.insert(card) {
-                            self.faults.push(json!({
-                                "fault": "restatement",
-                                "kind": "cycle",
-                                "detail": format!(
-                                    "the 同述入口 sections of {cycle_shown} form a cycle; the statement must be held by a substantive Card"
-                                ),
-                                "card": card,
-                                "terminal": Value::Null,
-                                "chain": loop_nodes,
-                                "cycle": loop_nodes,
-                            }));
-                        }
-                    }
-                    // A chain that leads into a loop names no terminal either: it is reported as a
-                    // chain whose `cycle` names the loop it cannot reach past.
-                    if !loop_nodes.contains(&start) && reported.insert(start) {
-                        self.faults.push(json!({
-                            "fault": "restatement",
-                            "kind": "chain",
-                            "detail": format!(
-                                "the 同述入口 section of [[{start}]] reaches the cycle {cycle_shown}; no substantive Card holds that statement"
-                            ),
-                            "card": start,
-                            "terminal": Value::Null,
-                            "chain": path,
-                            "cycle": loop_nodes,
-                        }));
-                    }
-                }
-            }
-        }
-        // Only the entries that name a substantive Card are confirmed, so a chain or a cycle is
-        // never served as a valid restatement and never supports folding (§9.2, D087).
-        confirmed.retain(|row| {
-            row["entry"]
-                .as_str()
-                .is_some_and(|entry| !reported.contains(entry))
-        });
-        confirmed.sort_by(|a, b| {
-            a["entry"]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(b["entry"].as_str().unwrap_or_default())
-        });
+        let (confirmed, faults) = restatement_rows(snapshot, sections, &parts);
+        self.faults.extend(faults);
         self.restatements = confirmed;
     }
 
@@ -871,6 +683,210 @@ impl View {
             "archive_identity": identity,
         })
     }
+}
+
+/// The confirmed `## 同述入口` entries of the supplied sections, and the faults that keep one
+/// from being confirmed (§4.5, D084-D086). `parts` are the register parts of the read: they are
+/// navigation, so an entry that names one is never confirmed. A register view calls this for its
+/// own Workspace, and the entry search calls it once for the whole archive, so a fold needs no
+/// register.
+fn restatement_rows(
+    snapshot: &Snapshot,
+    sections: &BTreeMap<String, Vec<String>>,
+    parts: &BTreeSet<&str>,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut faults = Vec::new();
+    if sections.is_empty() {
+        return (Vec::new(), faults);
+    }
+    let entries: BTreeSet<&str> = sections.keys().map(String::as_str).collect();
+    // The one Link of each entry that may be followed: a section with a different shape is
+    // reported where it is read and never becomes a step of a chain.
+    let mut step: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut direct: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut confirmed = Vec::new();
+    let mut reported: BTreeSet<&str> = BTreeSet::new();
+    for (card, links) in sections {
+        let card = card.as_str();
+        let Some(own) = snapshot.by_address.get(card) else {
+            continue;
+        };
+        if links.len() != 1 {
+            faults.push(json!({
+                "fault": "restatement",
+                "kind": "malformed",
+                "detail": format!(
+                    "the 同述入口 section of [[{card}]] names {} Cards; it names exactly one",
+                    links.len()
+                ),
+                "card": card,
+            }));
+            reported.insert(card);
+            continue;
+        }
+        let target = links[0].as_str();
+        if target == card {
+            faults.push(json!({
+                "fault": "restatement",
+                "kind": "self",
+                "detail": format!("the 同述入口 section of [[{card}]] points at itself"),
+                "card": card,
+            }));
+            reported.insert(card);
+            continue;
+        }
+        let Some(substantive) = snapshot.by_address.get(target) else {
+            faults.push(json!({
+                "fault": "restatement",
+                "kind": "missing",
+                "detail": format!("the 同述入口 section of [[{card}]] names [[{target}]], which does not exist"),
+                "card": card,
+            }));
+            reported.insert(card);
+            continue;
+        };
+        if substantive.workspace != own.workspace {
+            faults.push(json!({
+                "fault": "restatement",
+                "kind": "workspace",
+                "detail": format!(
+                    "the 同述入口 section of [[{card}]] names [[{target}]] in the {} Workspace; it must stay in the {} Workspace",
+                    substantive.workspace.id(),
+                    own.workspace.id()
+                ),
+                "card": card,
+            }));
+            reported.insert(card);
+            continue;
+        }
+        // A root, a Hub Card and a declared register part are navigation, not a statement: the
+        // section names a substantive Card or it names nothing this view can confirm.
+        if crate::is_tree_root(substantive) || substantive.card_type == CardType::Hub || parts.contains(target) {
+            faults.push(json!({
+                "fault": "restatement",
+                "kind": "not-substantive",
+                "detail": format!(
+                    "the 同述入口 section of [[{card}]] names [[{target}]], which is navigation, not a substantive Card"
+                ),
+                "card": card,
+            }));
+            reported.insert(card);
+            continue;
+        }
+        if entries.contains(target) {
+            // A chain: the direct target is itself an entry. It is reported, and the entry
+            // names the terminal instead (D085).
+            step.insert(card, target);
+            continue;
+        }
+        confirmed.push(json!({
+            "entry": card,
+            "substantive": target,
+            "terminal": target,
+            "title": snapshot.title(target),
+        }));
+        direct.insert(card, target);
+    }
+    // Resolve every chain to its terminal, and report each loop once per entry on it. The
+    // compiler writes a direct terminal reference, so a chain is never accepted as written.
+    let starts: Vec<&str> = step
+        .keys()
+        .copied()
+        .filter(|card| !reported.contains(card))
+        .collect();
+    for start in starts {
+        if reported.contains(start) {
+            continue;
+        }
+        let mut path: Vec<&str> = vec![start];
+        let mut loop_nodes: Vec<&str> = Vec::new();
+        let terminal: Option<&str> = loop {
+            let at = *path.last().expect("a chain has a start");
+            if let Some(terminal) = direct.get(at) {
+                break Some(*terminal);
+            }
+            let Some(next) = step.get(at) else {
+                break None;
+            };
+            if let Some(seen) = path.iter().position(|known| *known == *next) {
+                loop_nodes = path[seen..].to_vec();
+                break None;
+            }
+            path.push(next);
+        };
+        let shown = path
+            .iter()
+            .map(|card| format!("[[{card}]]"))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        match terminal {
+            Some(terminal) => {
+                reported.insert(start);
+                faults.push(json!({
+                    "fault": "restatement",
+                    "kind": "chain",
+                    "detail": format!(
+                        "the 同述入口 section of [[{start}]] names another entry ({shown}); name the terminal substantive Card [[{terminal}]] directly"
+                    ),
+                    "card": start,
+                    "terminal": terminal,
+                    "chain": path,
+                    "cycle": Value::Null,
+                }));
+            }
+            None => {
+                let cycle_shown = loop_nodes
+                    .iter()
+                    .map(|card| format!("[[{card}]]"))
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                for card in &loop_nodes {
+                    if reported.insert(card) {
+                        faults.push(json!({
+                            "fault": "restatement",
+                            "kind": "cycle",
+                            "detail": format!(
+                                "the 同述入口 sections of {cycle_shown} form a cycle; the statement must be held by a substantive Card"
+                            ),
+                            "card": card,
+                            "terminal": Value::Null,
+                            "chain": loop_nodes,
+                            "cycle": loop_nodes,
+                        }));
+                    }
+                }
+                // A chain that leads into a loop names no terminal either: it is reported as a
+                // chain whose `cycle` names the loop it cannot reach past.
+                if !loop_nodes.contains(&start) && reported.insert(start) {
+                    faults.push(json!({
+                        "fault": "restatement",
+                        "kind": "chain",
+                        "detail": format!(
+                            "the 同述入口 section of [[{start}]] reaches the cycle {cycle_shown}; no substantive Card holds that statement"
+                        ),
+                        "card": start,
+                        "terminal": Value::Null,
+                        "chain": path,
+                        "cycle": loop_nodes,
+                    }));
+                }
+            }
+        }
+    }
+    // Only the entries that name a substantive Card are confirmed, so a chain or a cycle is
+    // never served as a valid restatement and never supports folding (§9.2, D087).
+    confirmed.retain(|row| {
+        row["entry"]
+            .as_str()
+            .is_some_and(|entry| !reported.contains(entry))
+    });
+    confirmed.sort_by(|a, b| {
+        a["entry"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["entry"].as_str().unwrap_or_default())
+    });
+    (confirmed, faults)
 }
 
 /// The rank tiers of the entry-first order (§9.2, D199-D206), reported as `rank_tier`.
@@ -1005,6 +1021,353 @@ struct Registers {
     faults: Vec<Value>,
 }
 
+/// The most members one folded row exposes: a bigger confirmed group reports its size and the flag,
+/// so one group cannot make a reply unbounded.
+pub(crate) const SEARCH_MEMBER_MAX: usize = 200;
+
+/// One confirmed restatement group (§4.5): the Cards that state one claim.
+struct Group {
+    /// The canonical substantive Card: the terminal an accepted entry names, else the group's
+    /// substantive member in natural address order.
+    canonical: String,
+    /// Every member: the canonical Card first, then natural address order.
+    members: Vec<String>,
+}
+
+/// What one search read may fold: the confirmed groups, the group of every Card that belongs to
+/// one, and how many Cards' exact statement fingerprints the fold compared.
+struct Folds {
+    groups: Vec<Group>,
+    by_member: BTreeMap<String, usize>,
+    statements: usize,
+}
+
+/// A small disjoint-set over Card addresses, so a restatement group is one component whatever order
+/// its evidence was read in. A union keeps the lower address as the root, so a component's identity
+/// never depends on that order.
+#[derive(Default)]
+struct Disjoint {
+    parent: BTreeMap<String, String>,
+}
+
+impl Disjoint {
+    fn add(&mut self, at: &str) {
+        self.parent
+            .entry(at.to_string())
+            .or_insert_with(|| at.to_string());
+    }
+
+    fn find(&mut self, at: &str) -> String {
+        let mut root = at.to_string();
+        while let Some(next) = self.parent.get(&root) {
+            if *next == root {
+                break;
+            }
+            root = next.clone();
+        }
+        let mut cursor = at.to_string();
+        while let Some(next) = self.parent.get(&cursor).cloned() {
+            if next == root {
+                break;
+            }
+            self.parent.insert(cursor, root.clone());
+            cursor = next;
+        }
+        root
+    }
+
+    fn union(&mut self, left: &str, right: &str) {
+        let (left_root, right_root) = (self.find(left), self.find(right));
+        if left_root == right_root {
+            return;
+        }
+        if crate::model::address_order(&left_root, &right_root) == std::cmp::Ordering::Greater {
+            self.parent.insert(left_root, right_root);
+        } else {
+            self.parent.insert(right_root, left_root);
+        }
+    }
+}
+
+/// Whether a Card states a claim a restatement can hold: a tree root, a Hub Card, a register part
+/// and a restatement entry are all navigation, never a statement (§4.5, D086).
+fn substantive(snapshot: &Snapshot, address: &str, parts: &BTreeSet<&str>) -> bool {
+    let Some(card) = snapshot.by_address.get(address) else {
+        return false;
+    };
+    if crate::is_tree_root(card) || card.card_type == CardType::Hub || parts.contains(address) {
+        return false;
+    }
+    snapshot
+        .parsed
+        .get(address)
+        .is_some_and(|parsed| !is_restatement_entry(&parsed.body))
+}
+
+/// Every declared register part in the archive: a part holds term rows, so it is navigation and
+/// never a statement (§8.4). Read from the registers themselves, so a Workspace with two registers
+/// (a reported fault) still keeps its parts out of a fold.
+fn register_parts(snapshot: &Snapshot) -> BTreeSet<String> {
+    let mut parts = BTreeSet::new();
+    for card in &snapshot.cards {
+        if card.hub_level != Some(crate::hub::HubLevel::Register) {
+            continue;
+        }
+        if let Some(parsed) = snapshot.parsed.get(&card.address) {
+            parts.extend(crate::hub::register_part_targets(&parsed.body));
+        }
+    }
+    parts
+}
+
+/// The `## 同述入口` sections of the whole archive, entry Card → its Links in natural address order,
+/// from one pass over the Cards the caller already read. The section is rare, so the cheap substring
+/// test is the filter, as it is in the storage read.
+pub(crate) fn restatement_sections(snapshot: &Snapshot) -> BTreeMap<String, Vec<String>> {
+    let mut sections = BTreeMap::new();
+    for (address, parsed) in &snapshot.parsed {
+        if !parsed.body.contains(RESTATEMENT_GROUP) {
+            continue;
+        }
+        let links = restatement_links(&parsed.body);
+        if !links.is_empty() {
+            sections.insert(address.clone(), links);
+        }
+    }
+    sections
+}
+
+/// The confirmed restatement groups of one search read (§4.5, §9.2 D209): the connected components
+/// of an accepted `## 同述入口` entry and the substantive Card it names, and of two Cards whose exact
+/// statement fingerprints are equal.
+///
+/// Only the Cards the query matched, the confirmed entry partners of those Cards, and the exact
+/// statements those Cards state take part: the fold needs no whole-archive hash pass, and a Card the
+/// query never matched never takes a matched Card's place. A shared formula, a shared term, a
+/// proposed or uncertain merge, or a changed assumption, sign, value, variable, negation or scope
+/// never groups two Cards, and no similarity is closed transitively: only a confirmed entry Link or
+/// an equal exact fingerprint joins two Cards.
+fn fold_groups(
+    snapshot: &Snapshot,
+    sections: &BTreeMap<String, Vec<String>>,
+    candidates: &[Candidate],
+) -> Folds {
+    let mut folds = Folds {
+        groups: Vec::new(),
+        by_member: BTreeMap::new(),
+        statements: 0,
+    };
+    if sections.is_empty() && candidates.len() < 2 {
+        return folds;
+    }
+    let parts = register_parts(snapshot);
+    let part_refs: BTreeSet<&str> = parts.iter().map(String::as_str).collect();
+    let (confirmed, _) = restatement_rows(snapshot, sections, &part_refs);
+    let mut nodes: BTreeSet<String> = candidates
+        .iter()
+        .map(|candidate| candidate.address.clone())
+        .collect();
+    // A confirmed partner of a matched Card takes part too, so the group exposes every member.
+    loop {
+        let mut added = false;
+        for row in &confirmed {
+            let (Some(entry), Some(terminal)) = (row["entry"].as_str(), row["terminal"].as_str())
+            else {
+                continue;
+            };
+            if nodes.contains(entry) || nodes.contains(terminal) {
+                added |= nodes.insert(entry.to_string());
+                added |= nodes.insert(terminal.to_string());
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    if nodes.len() < 2 {
+        return folds;
+    }
+    let mut sets = Disjoint::default();
+    for at in &nodes {
+        sets.add(at);
+    }
+    // (a) An accepted entry and the substantive Card it names: authored evidence, never a guess.
+    for row in &confirmed {
+        let (Some(entry), Some(terminal)) = (row["entry"].as_str(), row["terminal"].as_str()) else {
+            continue;
+        };
+        if nodes.contains(entry) && nodes.contains(terminal) {
+            sets.union(entry, terminal);
+        }
+    }
+    // (b) The exact statement fingerprint of a substantive Card. Only equality joins two Cards, so
+    // no changed formula, value, sign, variable, negation, assumption or scope is ever folded.
+    let mut same: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for at in &nodes {
+        if !substantive(snapshot, at, &part_refs) {
+            continue;
+        }
+        let Some(parsed) = snapshot.parsed.get(at) else {
+            continue;
+        };
+        if crate::card::statement_text(&parsed.body).is_empty() {
+            continue;
+        }
+        folds.statements += 1;
+        same.entry(crate::card::statement_fingerprint(&parsed.body))
+            .or_default()
+            .push(at.clone());
+    }
+    for addresses in same.values() {
+        for other in &addresses[1..] {
+            sets.union(&addresses[0], other);
+        }
+    }
+    // The terminals: the substantive Cards an accepted entry names. They are the canonical
+    // statements, so a reader sees the statement before an entry that only points at it.
+    let mut terminals: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in &confirmed {
+        let (Some(_), Some(terminal)) = (row["entry"].as_str(), row["terminal"].as_str()) else {
+            continue;
+        };
+        if !nodes.contains(terminal) {
+            continue;
+        }
+        let root = sets.find(terminal);
+        terminals.entry(root).or_default().insert(terminal.to_string());
+    }
+    let mut components: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for at in &nodes {
+        let root = sets.find(at);
+        components.entry(root).or_default().push(at.clone());
+    }
+    for (root, members) in components {
+        if members.len() < 2 {
+            continue;
+        }
+        let canonical = terminals
+            .get(&root)
+            .and_then(|terminals| {
+                terminals
+                    .iter()
+                    .min_by(|left, right| crate::model::address_order(left, right))
+                    .cloned()
+            })
+            .or_else(|| {
+                members
+                    .iter()
+                    .find(|at| substantive(snapshot, at, &part_refs))
+                    .cloned()
+            })
+            .unwrap_or_else(|| members[0].clone());
+        let mut ordered = vec![canonical.clone()];
+        ordered.extend(members.iter().filter(|at| **at != canonical).cloned());
+        let index = folds.groups.len();
+        folds.groups.push(Group {
+            canonical,
+            members: ordered,
+        });
+        let exposed = folds.groups[index].members.clone();
+        for at in exposed {
+            folds.by_member.insert(at, index);
+        }
+    }
+    folds
+}
+
+/// The other matching rows one row replaces, and every member a reader can open (D209, S14-AC03):
+/// the row names the canonical substantive Card when it survived the filters, else the matching
+/// member the query ranked first.
+struct Fold {
+    address: String,
+    canonical: String,
+    folded: usize,
+    members: Vec<Value>,
+    member_total: usize,
+    members_truncated: bool,
+}
+
+/// One row of the ranked page, before its JSON is built: a matching Card, or one confirmed
+/// restatement group of matching Cards.
+struct Planned<'a> {
+    carrier: &'a Candidate,
+    fold: Option<Fold>,
+}
+
+/// One row's view of its confirmed group: the Card it names, the members with their roles, and the
+/// matching rows it replaces.
+fn fold_of(
+    snapshot: &Snapshot,
+    args: &SearchArgs,
+    group: &Group,
+    carrier: &Candidate,
+    roles: &BTreeMap<String, &'static str>,
+    folded: usize,
+) -> Fold {
+    let members = group
+        .members
+        .iter()
+        .take(SEARCH_MEMBER_MAX)
+        .map(|at| {
+            let statement = if snapshot
+                .parsed
+                .get(at)
+                .is_some_and(|parsed| is_restatement_entry(&parsed.body))
+            {
+                "entry"
+            } else {
+                "substantive"
+            };
+            json!({
+                "address": at,
+                "title": snapshot.title(at),
+                "role": roles.get(at),
+                "statement": statement,
+                "matched": roles.contains_key(at),
+                "kept": keeps(snapshot, args, at),
+                "canonical": *at == group.canonical,
+            })
+        })
+        .collect::<Vec<_>>();
+    Fold {
+        address: if keeps(snapshot, args, &group.canonical) {
+            group.canonical.clone()
+        } else {
+            carrier.address.clone()
+        },
+        canonical: group.canonical.clone(),
+        folded,
+        members,
+        member_total: group.members.len(),
+        members_truncated: group.members.len() > SEARCH_MEMBER_MAX,
+    }
+}
+
+/// The explanation of a folded row: the matching member's own reason, or the member the query
+/// matched when the row shows the group's canonical statement in its place.
+fn fold_reason(fold: &Fold, carrier: &Candidate) -> String {
+    let mut reason = if fold.address == carrier.address {
+        carrier.reason.clone()
+    } else {
+        format!(
+            "the query matched [[{}]], which states the same statement as this Card",
+            carrier.address
+        )
+    };
+    if fold.folded > 0 {
+        reason.push_str(&format!(
+            "; {} more matching {} folded here: the same statement",
+            fold.folded,
+            if fold.folded == 1 {
+                "Card is"
+            } else {
+                "Cards are"
+            }
+        ));
+    }
+    reason
+}
+
 /// The one entry-first search projection: rows, order, counts, and evidence are the same for the
 /// MCP server and the GUI (D193, D194, D198, D278). It is a read-only projection over one Card
 /// read: no model run, no Card write, no Link walk, and bounded work reported in `bounds` and
@@ -1012,7 +1375,12 @@ struct Registers {
 pub(crate) fn search(snapshot: &Snapshot, args: &SearchArgs) -> Value {
     let query = Query::new(&args.query);
     let limit = args.limit.clamp(1, SEARCH_LIMIT_MAX);
-    let registers = registers(snapshot);
+    let sections = if query.is_empty() {
+        BTreeMap::new()
+    } else {
+        restatement_sections(snapshot)
+    };
+    let registers = registers(snapshot, &sections);
     let lexical = snapshot.lexical(&args.query);
     let mut lexical_at = BTreeMap::new();
     for (index, found) in lexical.iter().enumerate() {
@@ -1038,6 +1406,7 @@ pub(crate) fn search(snapshot: &Snapshot, args: &SearchArgs) -> Value {
         args,
         &query,
         registers,
+        &sections,
         candidates,
         terms,
         hubs,
@@ -1051,6 +1420,7 @@ fn ranked(
     args: &SearchArgs,
     query: &Query,
     registers: Registers,
+    sections: &BTreeMap<String, Vec<String>>,
     mut candidates: Vec<Candidate>,
     terms: Scan,
     hubs: Scan,
@@ -1073,7 +1443,6 @@ fn ranked(
     // matching Cards, never displayed rows (D208).
     let mut workspaces = serde_json::Map::new();
     let mut types = serde_json::Map::new();
-    let mut total = 0usize;
     for candidate in &candidates {
         let Some(card) = snapshot.by_address.get(&candidate.address) else {
             continue;
@@ -1094,15 +1463,56 @@ fn ranked(
             let count = types.entry(card.card_type.id()).or_insert(json!(0));
             *count = json!(count.as_u64().unwrap_or(0) + 1);
         }
-        if keeps(snapshot, args, &candidate.address) {
-            total += 1;
-        }
     }
-    let results = candidates
+
+    // The full scoped match set: every matching Card the filters keep, in ranked order and before
+    // the page limit. Folding happens here, after the filters and before the limit, so a member a
+    // fold hides is neither lost nor counted twice (D209, S14-AC04).
+    let survivors = candidates
         .iter()
         .filter(|candidate| keeps(snapshot, args, &candidate.address))
+        .collect::<Vec<_>>();
+    let total = survivors.len();
+    let folds = fold_groups(snapshot, sections, &candidates);
+    let roles = candidates
+        .iter()
+        .map(|candidate| (candidate.address.clone(), candidate.role))
+        .collect::<BTreeMap<_, _>>();
+    let mut survivors_in: BTreeMap<&str, usize> = BTreeMap::new();
+    for candidate in &survivors {
+        if let Some(index) = folds.by_member.get(&candidate.address) {
+            *survivors_in
+                .entry(folds.groups[*index].canonical.as_str())
+                .or_insert(0) += 1;
+        }
+    }
+    // One row per surviving Card, except that one confirmed group is one row, placed where its
+    // best-ranked member was and naming the canonical statement when that Card survived.
+    let mut planned: Vec<Planned> = Vec::new();
+    let mut emitted: BTreeSet<&str> = BTreeSet::new();
+    for candidate in &survivors {
+        let Some(index) = folds.by_member.get(&candidate.address) else {
+            planned.push(Planned {
+                carrier: candidate,
+                fold: None,
+            });
+            continue;
+        };
+        let group = &folds.groups[*index];
+        if !emitted.insert(group.canonical.as_str()) {
+            continue;
+        }
+        let folded = survivors_in[group.canonical.as_str()] - 1;
+        planned.push(Planned {
+            carrier: candidate,
+            fold: Some(fold_of(snapshot, args, group, candidate, &roles, folded)),
+        });
+    }
+    let row_total = planned.len();
+    let results = planned
+        .iter()
         .take(limit)
-        .filter_map(|candidate| row(snapshot, args, query, candidate))
+        .filter_map(|plan| row(snapshot, args, query, plan))
         .collect::<Vec<_>>();
     let shown = results.len();
     let register_missing = registers
@@ -1115,7 +1525,8 @@ fn ranked(
         "results": results,
         "shown": shown,
         "total": total,
-        "row_total": total,
+        "row_total": row_total,
+        "folded_total": total.saturating_sub(row_total),
         "workspaces": workspaces,
         "types": types,
         "registers": registers.summary,
@@ -1128,6 +1539,7 @@ fn ranked(
             "term_max": SEARCH_TERM_MAX,
             "register_faults_max": SEARCH_FAULT_MAX,
             "matched_line_max_chars": SEARCH_LINE_MAX_CHARS,
+            "members_max": SEARCH_MEMBER_MAX,
         },
         "scanned": {
             "registers": registers.views.len(),
@@ -1135,24 +1547,35 @@ fn ranked(
             "terms_truncated": terms.truncated,
             "hubs": hubs.count,
             "hubs_truncated": hubs.truncated,
+            "restatements": sections.len(),
+            "statements": folds.statements,
         },
         "archive_fingerprint": snapshot.fingerprint(),
     })
 }
 
 /// One row of the entry-first order: the existing Card summary fields, plus the role, the rank
-/// tier, the term or line evidence, the explanation, and the navigation Card it came from.
-fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, candidate: &Candidate) -> Option<Value> {
-    let card = snapshot.by_address.get(&candidate.address)?;
-    let tree = crate::tree_id(&candidate.address);
+/// tier, the term or line evidence, the explanation, and the navigation Card it came from. A Card in
+/// a confirmed restatement group also reports the members its row folds and the canonical Card that
+/// holds the statement (§9.2, D207, D209).
+fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, plan: &Planned) -> Option<Value> {
+    let candidate = plan.carrier;
+    let address = plan
+        .fold
+        .as_ref()
+        .map_or(candidate.address.as_str(), |fold| fold.address.as_str());
+    let card = snapshot.by_address.get(address)?;
+    let tree = crate::tree_id(address);
     let body = snapshot
         .parsed
-        .get(&candidate.address)
+        .get(address)
         .map_or("", |parsed| parsed.body.as_str());
-    let body_term = candidate
-        .body_term
-        .clone()
-        .or_else(|| query.snippet_term(body));
+    let body_term = if address == candidate.address {
+        candidate.body_term.clone()
+    } else {
+        None
+    }
+    .or_else(|| query.snippet_term(body));
     let entry_targets = if candidate.role == "entry" {
         candidate
             .entry_targets
@@ -1162,6 +1585,10 @@ fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, candidate: &Candid
             .collect::<Vec<_>>()
     } else {
         Vec::new()
+    };
+    let reason = match &plan.fold {
+        Some(fold) => fold_reason(fold, candidate),
+        None => candidate.reason.clone(),
     };
     Some(json!({
         "address": card.address,
@@ -1177,14 +1604,19 @@ fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, candidate: &Candid
         "tree_title": snapshot.title(&crate::tree_root_address(tree)),
         "field": candidate.field,
         "score": candidate.score,
-        "snippet": snapshot.snippet(&candidate.address, body_term.as_deref()),
+        "snippet": snapshot.snippet(address, body_term.as_deref()),
         "role": candidate.role,
         "rank_tier": candidate.tier,
         "matched_term": candidate.matched_term,
         "matched_line": candidate.matched_line,
-        "reason": candidate.reason,
+        "reason": reason,
         "origin": candidate.origin,
         "entry_targets": entry_targets,
+        "folded": plan.fold.as_ref().map_or(0, |fold| fold.folded),
+        "member_total": plan.fold.as_ref().map_or(1, |fold| fold.member_total),
+        "representative": plan.fold.as_ref().map(|fold| fold.canonical.clone()),
+        "members": plan.fold.as_ref().map(|fold| fold.members.clone()),
+        "members_truncated": plan.fold.as_ref().is_some_and(|fold| fold.members_truncated),
     }))
 }
 
@@ -1450,8 +1882,10 @@ fn lexical_candidates(
 /// A Workspace with two registers answers none, so the evidence never chooses between them
 /// (D299). `hub` reads it for the accepted terms that justify `one-book` advice (§8.2, D166).
 pub(crate) fn register_of(snapshot: &Snapshot, workspace: Workspace) -> Option<View> {
+    // Restatement entries are search's own evidence (`fold_groups`), not part of this read.
+    let sections = BTreeMap::new();
     match register_addresses(snapshot, workspace).as_slice() {
-        [at] => Some(read_view(snapshot, at)),
+        [at] => Some(read_view(snapshot, at, &sections)),
         _ => None,
     }
 }
@@ -1611,9 +2045,11 @@ pub(crate) fn distant(snapshot: &Snapshot, args: &DistantArgs) -> Result<Value> 
         .unwrap_or_default();
     let workspace = focus.workspace;
     let registers = register_addresses(snapshot, workspace);
-    // One Workspace, one register: two are reported and neither is evidence (D299).
+    // One Workspace, one register: two are reported and neither is evidence (D299). Restatement
+    // entries are search's own evidence (`fold_groups`), not part of this read.
+    let sections = BTreeMap::new();
     let view = match registers.as_slice() {
-        [at] => Some(read_view(snapshot, at)),
+        [at] => Some(read_view(snapshot, at, &sections)),
         _ => None,
     };
     let mut excluded = Exclusions::default();
@@ -2016,7 +2452,7 @@ fn explanation(offer: &Offer, focus_sources: &[String]) -> String {
     }
 }
 
-fn registers(snapshot: &Snapshot) -> Registers {
+fn registers(snapshot: &Snapshot, sections: &BTreeMap<String, Vec<String>>) -> Registers {
     let mut views = Vec::new();
     let mut summary = Vec::new();
     let mut faults = Vec::new();
@@ -2033,7 +2469,7 @@ fn registers(snapshot: &Snapshot) -> Registers {
                 "faults": 0,
             })),
             [at] => {
-                let view = read_view(snapshot, at);
+                let view = read_view(snapshot, at, sections);
                 summary.push(json!({
                     "workspace": workspace.id(),
                     "card": at,
@@ -2077,10 +2513,10 @@ fn registers(snapshot: &Snapshot) -> Registers {
     }
 }
 
-/// One register's view from the supplied Snapshot: its term rows, the declared parts, and the
-/// authored bodies the projection carries. Restatements are folded by a later slice (S14), so
-/// search does not scan every body for them.
-fn read_view(snapshot: &Snapshot, register: &str) -> View {
+/// One register's view from the supplied Snapshot: its term rows, the declared parts, the authored
+/// bodies the projection carries, and its Workspace's confirmed restatement entries. The sections
+/// are supplied because search already scanned the archive for them (D209).
+fn read_view(snapshot: &Snapshot, register: &str, sections: &BTreeMap<String, Vec<String>>) -> View {
     let body = snapshot
         .parsed
         .get(register)
@@ -2099,7 +2535,15 @@ fn read_view(snapshot: &Snapshot, register: &str) -> View {
             bodies.insert(address.clone(), parsed.body.clone());
         }
     }
-    View::read(snapshot, register, &bodies, &BTreeMap::new())
+    // A register reports the entries of its own Workspace: an entry that names a Card of the other
+    // Workspace is that Workspace's own `workspace` fault, reported where it was written.
+    let workspace = snapshot.workspace(register);
+    let own = sections
+        .iter()
+        .filter(|(card, _)| snapshot.workspace(card) == workspace)
+        .map(|(card, links)| (card.clone(), links.clone()))
+        .collect::<BTreeMap<_, _>>();
+    View::read(snapshot, register, &bodies, &own)
 }
 
 fn target(snapshot: &Snapshot, address: &str, bodies: &BTreeMap<String, String>) -> Target {
@@ -3214,5 +3658,159 @@ mod tests {
         assert_eq!(value["focus"]["terms"], json!([]), "{value}");
         assert_eq!(value["excluded"]["ambiguous_term"], json!(1), "{value}");
         assert_eq!(value["register"]["complete"], json!(false));
+    }
+
+    /// One candidate row for an address, as the ranking hands it to the fold.
+    fn candidate(address: &str) -> Candidate {
+        Candidate {
+            tier: TIER_BODY,
+            quality: Quality::Partial,
+            score: 0,
+            address: address.to_string(),
+            role: "hit",
+            field: "body",
+            matched_term: None,
+            matched_line: None,
+            reason: String::new(),
+            origin: None,
+            entry_targets: Vec::new(),
+            body_term: None,
+        }
+    }
+
+    /// The fold unions in any read order to one component, and an exact statement, a confirmed entry
+    /// and an entry's partner are the only evidence that groups two Cards (§4.5, S14-AC02).
+    #[test]
+    fn a_fold_groups_an_entry_its_terminal_and_an_exact_duplicate_only() {
+        let (temp, _register) = archive(
+            &[
+                "# 甲树\n\n补偿需求项的树。",
+                "# 乙树\n\n补偿需求项的树。",
+            ],
+            &[],
+            &[
+                (
+                    "1/0",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 甲的陈述\n\n补偿需求项决定就业。",
+                ),
+                (
+                    "1/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 乙\n\n补偿需求项决定就业。",
+                ),
+                (
+                    "1/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 甲的入口\n\n补偿需求项见甲。\n\n## 同述入口\n\n- [[1/1]] 完整陈述。",
+                ),
+                (
+                    "1/1",
+                    crate::ops::Successor::Side,
+                    CardType::Idea,
+                    "# 丙\n\n补偿需求项不决定就业。",
+                ),
+                (
+                    "1/1",
+                    crate::ops::Successor::Side,
+                    CardType::Hub,
+                    "# 枢纽一\n\n- [[1/1]]：补偿需求项。",
+                ),
+                (
+                    "1/1",
+                    crate::ops::Successor::Side,
+                    CardType::Hub,
+                    "# 枢纽二\n\n- [[1/1]]：补偿需求项。",
+                ),
+            ],
+            "## 词条\n- 补偿需求项：[[1/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let sections = restatement_sections(&snapshot);
+        let addresses = [
+            "1/1", "1/1|a", "1/1|b", "1/1|c", "1/1|d", "1/1|e", "1/0", "2/0",
+        ];
+        let candidates = addresses.iter().map(|at| candidate(at)).collect::<Vec<_>>();
+        let folds = fold_groups(&snapshot, &sections, &candidates);
+        // The terminal, its exact duplicate and the entry that names it are one statement.
+        let group = folds.by_member.get("1/1").expect("the statement's group");
+        assert_eq!(folds.groups[*group].canonical, "1/1");
+        assert_eq!(
+            folds.groups[*group].members,
+            vec!["1/1", "1/1|a", "1/1|b"]
+        );
+        assert_eq!(folds.by_member.get("1/1|a"), Some(group));
+        assert_eq!(folds.by_member.get("1/1|b"), Some(group));
+        // A different statement, two identical Hub bodies and two identical tree roots never fold.
+        for at in ["1/1|c", "1/1|d", "1/1|e", "1/0", "2/0"] {
+            assert!(
+                !folds.by_member.contains_key(at),
+                "{at} is not a statement: {:?}",
+                folds.by_member.keys().collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            folds.statements, 3,
+            "the statement, its duplicate and the different claim; hubs, roots and the entry hold none"
+        );
+    }
+
+    /// The union order never changes the group, and the lowest address is its root.
+    #[test]
+    fn a_fold_set_unions_in_any_order_to_one_component() {
+        let mut left = Disjoint::default();
+        for at in ["1/2", "1/1", "logical"] {
+            left.add(at);
+        }
+        left.union("1/2", "1/1");
+        left.union("logical", "1/2");
+        let mut right = Disjoint::default();
+        for at in ["logical", "1/1", "1/2"] {
+            right.add(at);
+        }
+        right.union("logical", "1/2");
+        right.union("1/2", "1/1");
+        assert_eq!(left.find("logical"), right.find("logical"));
+        assert_eq!(left.find("1/1"), "1/1", "the lowest address is the root");
+        assert_eq!(left.find("logical"), "1/1");
+    }
+
+    /// A group larger than the member bound reports its size and the flag, so one reply stays
+    /// bounded whatever the archive holds.
+    #[test]
+    fn a_fold_row_exposes_at_most_the_member_bound() {
+        let (temp, _) = archive(&["# 树\n\n问题。"], &[], &[], "");
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let mut members = vec!["1/1".to_string()];
+        for index in 0..SEARCH_MEMBER_MAX + 4 {
+            members.push(format!("9/{index}"));
+        }
+        let group = Group {
+            canonical: "1/1".to_string(),
+            members: members.clone(),
+        };
+        let args = SearchArgs {
+            query: "问题".to_string(),
+            workspace: None,
+            card_type: None,
+            form: None,
+            limit: 10,
+        };
+        let fold = fold_of(
+            &snapshot,
+            &args,
+            &group,
+            &candidate("1/1"),
+            &BTreeMap::new(),
+            members.len() - 1,
+        );
+        assert_eq!(fold.members.len(), SEARCH_MEMBER_MAX);
+        assert_eq!(fold.member_total, members.len());
+        assert!(fold.members_truncated);
+        assert_eq!(fold.folded, members.len() - 1);
+        assert_eq!(fold.address, "1/1");
     }
 }

@@ -601,6 +601,10 @@
     let isOpen = false;
     let data = null;
     let unfolded = new Set();
+    // The rows whose folded statements are shown: a fold is a display choice of this tray, never a
+    // stored view of the archive.
+    const foldedOpen = new Set();
+    const clearFolds = () => { unfolded = new Set(); foldedOpen.clear(); };
     let items = [];
     let selected = 0;
     let ticket = 0;
@@ -654,7 +658,7 @@
             h('span', {}, h('kbd', { text: '↵' }), ' open'),
             h('span', {}, h('kbd', { text: '⇧' }), h('kbd', { text: '↵' }), ' to the Table'),
             h('span', {}, h('kbd', { text: 'Esc' }), ' clear · close'))));
-      input.addEventListener('input', () => { unfolded = new Set(); search(); });
+      input.addEventListener('input', () => { clearFolds(); search(); });
       input.addEventListener('keydown', onKey);
       root.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && event.target !== input) { event.preventDefault(); close(); }
@@ -671,7 +675,7 @@
       root.hidden = false;
       root.classList.remove('closing');
       openRail(false);
-      unfolded = new Set();
+      clearFolds();
       search.now();
       input.focus();
       input.select();
@@ -709,7 +713,7 @@
         class: 'fchip' + (on ? ' on' : '') + (value !== 'all' ? ' ' + value : ''),
         disabled: !on && n === 0,
         'aria-pressed': on ? 'true' : 'false',
-        onclick: () => { filters[group] = value; unfolded = new Set(); search.now(); input.focus(); },
+        onclick: () => { filters[group] = value; clearFolds(); search.now(); input.focus(); },
       }, h('span', { text: label }), n == null ? null : h('b', { text: String(n) }));
     }
 
@@ -750,7 +754,7 @@
       const title = hit.title || '(untitled)';
       const role = hit.role ? roleLabel(hit) : '';
       return h('div', {
-        class: 'fslip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : '') + (hit.role ? ' ' + hit.role : ''),
+        class: 'fslip' + (hit.workspace === 'agent' ? ' agent-ws' : '') + (hit.type && hit.type !== 'idea' ? ' type-' + hit.type : '') + (hit.role ? ' ' + hit.role : '') + (hit.folded ? ' folded' : ''),
         role: 'option', dataset: { address: hit.address },
         onclick: () => choose(hit.address),
         onmousemove: (event) => pointAt(event.currentTarget),
@@ -761,6 +765,18 @@
           typeStamp(hit.type, null, hit.facet, hit.emphasis, hit.level, hit.form),
           h('span', { class: 'addr', text: hit.address })),
         hit.snippet ? h('span', { class: 'fslip-text' }, marked(hit.snippet, words)) : null,
+        // The row shows the statement it stands for: a matching member whose canonical Card the
+        // filters removed still names that Card here (D209, S14-AC05).
+        hit.representative && hit.representative !== hit.address
+          ? h('button', {
+              class: 'fslip-canon', tabindex: '-1', role: 'option',
+              dataset: { address: hit.representative },
+              title: 'Open the Card that holds this statement',
+              onclick: (event) => { event.stopPropagation(); choose(hit.representative); },
+              onmousemove: (event) => pointAt(event.currentTarget),
+            }, h('span', { text: 'canonical ' }), h('span', { class: 'addr', text: hit.representative }))
+          : null,
+        hit.members && hit.members.length > 1 ? foldMarker(hit, words) : null,
         hit.reason && (hit.role === 'entry' || hit.role === 'member') ? h('span', { class: 'fslip-why', text: hit.reason }) : null,
         h('button', {
           class: 'fslip-pull' + (onTable ? ' on' : ''), tabindex: '-1',
@@ -768,6 +784,54 @@
           onclick: (event) => { event.stopPropagation(); pullHit(hit.address); },
         }, onTable ? '✓' : '+'),
       );
+    }
+
+    /**
+     * The `+N` one row folds: every Card that states the same confirmed statement, with what each is
+     * and whether it matched. A fold hides rows, never Cards: opening a member opens that Card.
+     */
+    function foldMarker(hit, words) {
+      const members = hit.members || [];
+      const behind = Math.max(hit.folded || 0, members.length - 1);
+      const open = foldedOpen.has(hit.address);
+      return h('div', { class: 'fslip-fold' },
+        h('button', {
+          class: 'ffold fslip-fold-toggle', tabindex: '-1',
+          'aria-expanded': open ? 'true' : 'false',
+          dataset: { fold: hit.address },
+          title: open ? 'Hide the Cards that state the same statement' : 'Show every Card that states the same statement',
+          onclick: (event) => { event.stopPropagation(); toggleMembers(hit.address); },
+          onmousemove: (event) => pointAt(event.currentTarget),
+        }, open ? '− the same statement' : `+${behind} more stating the same statement`),
+        open ? h('div', { class: 'fslip-members' },
+          members.map((member) => memberLine(member, hit, words))) : null);
+    }
+
+    /** One member of a folded row: its address, its title, and what it is in the statement. */
+    function memberLine(member, hit, words) {
+      const tags = [member.canonical ? 'statement' : (member.statement === 'entry' ? 'entry' : 'same statement')];
+      if (member.matched) tags.push(member.kept ? 'matched' : 'filtered out');
+      if (member.address === hit.address) tags.push('this row');
+      const title = member.title || '(untitled)';
+      return h('div', {
+        class: 'fslip-member' + (member.canonical ? ' canonical' : '') + (member.address === hit.address ? ' here' : ''),
+        role: 'option', dataset: { address: member.address },
+        onclick: (event) => { event.stopPropagation(); choose(member.address); },
+        onmousemove: (event) => pointAt(event.currentTarget),
+      },
+        h('span', { class: 'addr', text: member.address }),
+        h('span', { class: 'fslip-member-title' }, title.includes('$') ? titleNodes(title) : marked(title, words)),
+        h('span', { class: 'fslip-member-tags', text: tags.join(' · ') }));
+    }
+
+    /** Show or hide the Cards behind one folded row, without asking the server again. */
+    function toggleMembers(at) {
+      const keep = selected;
+      if (foldedOpen.has(at)) foldedOpen.delete(at);
+      else foldedOpen.add(at);
+      render();
+      select(Math.min(keep, items.length - 1));
+      input.focus();
     }
 
     /** A guide card: the tree the slips behind it belong to. */
@@ -806,9 +870,15 @@
           h('p', { class: 'big' }, 'No card holds ', h('q', { text: input.value.trim() }), '.'),
           h('p', { text: words.length > 1 ? 'Every word must appear; try fewer words.' : (filters.ws !== 'all' || filters.type !== 'all' ? 'A filter is on; try All.' : 'Try another spelling or a shorter word.') })));
       } else if (data.mode === 'entry') {
-        // Ways in first: one ranked list with roles, never regrouped by tree (D210).
+        // Ways in first: one ranked list with roles, never regrouped by tree (D210). Rows and Cards
+        // are counted apart, because one row can stand for several Cards that state one statement.
         const shown = data.results.length;
-        count.textContent = data.total > shown ? `best ${shown} of ${data.total} cards` : `${data.total} card${data.total === 1 ? '' : 's'}`;
+        const rows = data.row_total == null ? data.total : data.row_total;
+        const cards = data.total;
+        const folded = data.folded_total || 0;
+        count.textContent = rows > shown
+          ? `best ${shown} of ${rows} rows · ${cards} cards`
+          : (folded > 0 ? `${rows} rows · ${cards} cards` : `${cards} card${cards === 1 ? '' : 's'}`);
         if (data.register_missing) {
           nodes.push(h('p', { class: 'finder-note', text: 'No concept register in this archive: these are the ordinary matches, by Card title and text.' }));
         } else if ((data.register_faults || []).length) {
@@ -816,7 +886,10 @@
           nodes.push(h('p', { class: 'finder-note', text: `The register has ${faults} fault${faults === 1 ? '' : 's'}; the rows they mark are left out of the entry points.` }));
         }
         nodes.push(h('section', { class: 'drawer-run ranked' }, data.results.map((hit) => slip(hit, words))));
-        if (data.total > shown) nodes.push(h('p', { class: 'finder-more', text: `${data.total - shown} weaker matches are not shown; add a word to narrow the search.` }));
+        if (folded > 0) {
+          nodes.push(h('p', { class: 'finder-note', text: `${folded} more card${folded === 1 ? '' : 's'} state a statement that a row here already holds; open the row's + to reach ${folded === 1 ? 'it' : 'them'}.` }));
+        }
+        if (rows > shown) nodes.push(h('p', { class: 'finder-more', text: `${rows - shown} weaker rows are not shown; add a word to narrow the search.` }));
       } else {
         const shown = data.results.length;
         count.textContent = data.total > shown ? `best ${shown} of ${data.total} cards` : `${data.total} card${data.total === 1 ? '' : 's'}`;
@@ -848,7 +921,7 @@
         if (data.total > shown) nodes.push(h('p', { class: 'finder-more', text: `${data.total - shown} weaker matches are not shown; add a word to narrow the search.` }));
       }
       hits.replaceChildren(...nodes);
-      items = [...hits.querySelectorAll('.fslip, .ffold')];
+      items = [...hits.querySelectorAll('.fslip, .ffold, .fslip-member, .fslip-canon')];
       select(Math.min(selected, items.length - 1), { scroll: false });
       if (!items.length) preview.replaceChildren();
     }
@@ -969,11 +1042,12 @@
         const item = items[selected];
         if (!item) return;
         if (item.dataset.ffold) unfold(item.dataset.ffold);
+        else if (item.dataset.fold) toggleMembers(item.dataset.fold);
         else if (event.shiftKey) pullHit(item.dataset.address);
         else choose(item.dataset.address);
       } else if (event.key === 'Escape') {
         event.preventDefault();
-        if (input.value) { input.value = ''; unfolded = new Set(); search.now(); } else close();
+        if (input.value) { input.value = ''; clearFolds(); search.now(); } else close();
       }
     }
 
