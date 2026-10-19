@@ -6164,9 +6164,17 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
             &serde_json::to_string_pretty(&pack.json)?,
         )?;
         let text = publish(&directory.join("earlier-context.md"), &pack.markdown)?;
-        (record, text, pack)
+        // S06 (#103): the earlier agent Regular Cards this group may continue as a Side successor.
+        // The file is what the writer passes as `-Beneath`, so a standalone claim can be filed beside
+        // earlier thought without any older Card, tree or carrier becoming writable (D100, D104).
+        let beside: Vec<String> = pack.place_beside();
+        let placed = publish(
+            &directory.join("place-beside.txt"),
+            &format!("{}\n", beside.join("\n")).trim_start_matches('\n').to_string(),
+        )?;
+        (record, text, pack, placed, beside)
     };
-    let inputs = json!({"schema_version":1,"prompt_contract":1,"draft_schema":1,"mode":"draft_only","run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"group":group,"anchor":{"address":anchor["address"],"fingerprint":crate::calls::authored_fingerprint(anchor)},"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"contracts":p.contract["contracts"]});
+    let inputs = json!({"schema_version":1,"prompt_contract":1,"draft_schema":1,"mode":"draft_only","run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"group":group,"anchor":{"address":anchor["address"],"fingerprint":crate::calls::authored_fingerprint(anchor)},"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"place_beside":earlier.3,"contracts":p.contract["contracts"]});
     let input_hash = canon::hash_value(&inputs);
     // R280 (#87): a previous attempt's accepted plan whose every call already committed is the
     // group's checked result. Rebound to this claim's token it starts no DeepSeek job: the group
@@ -6194,7 +6202,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         draft_path.display()
     );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n可续写的早前主题卡：`{}`（把独立主张挂在这些卡下时，用同一个 `-Beneath` 文件调用助手）\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
         snapshot_path.display(),
@@ -6205,6 +6213,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         },
         field(&earlier.1, "path")?,
         earlier.2.candidates,
+        field(&earlier.3, "path")?,
         inputs["anchor"]["fingerprint"].as_str().unwrap(),
         serde_json::to_string_pretty(&draft)?,
         field(anchor, "title")?,
@@ -6217,6 +6226,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         json!(prompt_path.to_string_lossy()),
         json!(snapshot_path.to_string_lossy()),
         earlier.1["path"].clone(),
+        earlier.3["path"].clone(),
     ];
     if !terms.is_null() {
         files.push(terms["path"].clone());
@@ -6228,7 +6238,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         json!([{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
     };
     let expected_jobs = if recovered { json!(0) } else { json!(1) };
-    let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"earlier_context":earlier.2.facts(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"earlier_context_text":earlier.1,"rebound_draft":draft_record},"jobs":jobs});
+    let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"earlier_context":earlier.2.facts(),"place_beside":{"count":earlier.4.len()},"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"earlier_context_text":earlier.1,"place_beside":earlier.3,"rebound_draft":draft_record},"jobs":jobs});
     if recovered {
         job["recovery"] = json!({
             "reason":"receipts_committed",

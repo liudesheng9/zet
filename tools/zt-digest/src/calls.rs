@@ -37,6 +37,9 @@ pub struct Options {
     pub addresses: Vec<String>,
     pub log: String,
     pub allow: Option<HashSet<String>>,
+    /// Earlier agent Regular Cards this run may continue with a Side successor (S06, #103). The
+    /// earlier Card never becomes writable: only a new Card beneath it is created.
+    pub beneath: HashSet<String>,
     pub moves: String,
     pub src_log: String,
     pub topic_gate: String,
@@ -53,6 +56,15 @@ impl Options {
         if !path.is_empty() {
             let text = util::read_text(path)?;
             self.allow = Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect());
+        }
+        Ok(self)
+    }
+
+    /// Loads the place-beside file: one earlier agent Regular Card address per line.
+    pub fn beneath_file(mut self, path: &str) -> Result<Self> {
+        if !path.is_empty() {
+            let text = util::read_text(path)?;
+            self.beneath = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
         }
         Ok(self)
     }
@@ -203,10 +215,22 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
             {
                 fail!(i, format!("{call_tool} is not allowed in this run"));
             }
+            let at = arg_str(&arguments, "at");
+            // S06 (#103, D100/D104): a standalone claim may continue an earlier agent Regular Card
+            // that this run read in full, as one new Side successor. Nothing of the earlier Card
+            // becomes writable, and a Direct successor would extend its chain, so only `side` is
+            // accepted.
+            let beside = call_tool == "create_successor"
+                && options.beneath.contains(&at)
+                && arguments["kind"].as_str() == Some("side");
+            if call_tool == "create_successor" && options.beneath.contains(&at) && !beside {
+                fail!(i, format!("file a new Card beside `{at}` only as a Side successor; its Direct chain belongs to its own line of thought"));
+            }
             if ["edit_card", "append_card", "create_successor"].contains(&call_tool.as_str())
-                && !allowed.contains(&arg_str(&arguments, "at"))
+                && !allowed.contains(&at)
+                && !beside
             {
-                fail!(i, format!("`{}` is not one of your Cards; you may only change your own Cards", arg_str(&arguments, "at")));
+                fail!(i, format!("`{at}` is not one of your Cards; you may only change your own Cards"));
             }
         }
         let mut tool = call_tool.clone();
@@ -836,7 +860,7 @@ pub(crate) fn authored_fingerprint(card: &Value) -> String {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(
         argv,
-        &["File", "From", "Addresses", "Log", "Allow", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix", "ConceptGate"],
+        &["File", "From", "Addresses", "Log", "Allow", "Beneath", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix", "ConceptGate"],
         &["CheckOnly"],
     )?;
     let calls: Vec<Value> = if a.has("Tool") {
@@ -888,7 +912,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if a.has("ConceptGate") {
         bail!("ConceptGate requires OperationPrefix and a receipt-owned Topic creation");
     }
-    let mut options = Options::new().allow_file(&a.str("Allow"))?;
+    let mut options = Options::new().allow_file(&a.str("Allow"))?.beneath_file(&a.str("Beneath"))?;
     options.from = a.int_or("From", 0)?.max(0) as usize;
     options.addresses = a.str("Addresses").split(',').map(|s| s.trim().to_string()).collect();
     options.log = a.str("Log");

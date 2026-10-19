@@ -186,6 +186,34 @@ impl Pack {
             "archive_revision": self.revision,
         })
     }
+
+    /// The earlier agent Regular Cards of a **Topic** tree that this group may file a Side successor
+    /// beneath (S06, #103; design §5.2, D100/D104). Each was read in full for the pack, is writable by
+    /// an agent, and is not a Topic root or a Literature Card: a new agent claim may continue an
+    /// earlier line of thought, and the placement adds one Side successor without changing the
+    /// earlier Card. The group's own book tree is never listed, because those Cards follow the
+    /// anchor's Side branch.
+    pub(crate) fn place_beside(&self) -> Vec<String> {
+        self.json["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|candidate| {
+                s(&candidate["destination"]) == "agent-card"
+                    && s(&candidate["workspace"]) == "agent"
+                    && candidate["type"].as_str().is_some_and(|_| true)
+                    && s(&candidate["tree"])
+                        .chars()
+                        .next()
+                        .is_some_and(|first| first.is_ascii_digit())
+            })
+            .map(|candidate| s(&candidate["address"]))
+            .filter(|address| {
+                // A Topic root (`<n>/0`) is the tree itself, not an earlier claim to continue.
+                !address.ends_with("/0")
+            })
+            .collect()
+    }
 }
 
 /// Build the pack from the group's already-read title catalogue and one bounded body read.
