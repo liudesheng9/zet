@@ -169,7 +169,7 @@ The GUI view where a reader lays Cards from anywhere in the slip-box side by sid
 _Avoid_: Canvas, board, workspace
 
 **Spread**:
-One named set of Cards laid out on the Table: which Cards, where each lies, and which lies on top. The archive keeps every Spread; a Spread follows its Cards through moves and renames, loses a Card that is deleted, and changes no Card. Filing a Spread as a card writes a Card that lists its Cards with Links.
+One named set of Cards laid out on the Table: which Cards, where each lies, and which lies on top. A Spread kept from a question also keeps that whole question, while its display name stays short. The archive keeps every Spread; a Spread follows its Cards through moves and renames, loses a Card that is deleted, and changes no Card. Filing a Spread as a card writes a Card that lists its Cards with Links.
 _Avoid_: Collection, selection, set
 
 **Model board**:

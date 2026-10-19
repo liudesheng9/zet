@@ -295,6 +295,7 @@
     ['b', 'create the next side successor', 'regular'],
     ['e', 'edit the current card', 'card'],
     ['reply', 'answer the open agent Card with a human Card: 印证/反驳/放宽/对应 then [[the agent card]]', 'agent-card'],
+    ['ask [<question>]', 'ask the box: the cards that answer a question lie on a temporary Table until you Keep or Cancel them', 'always'],
     ['del', 'delete the current card and its successors', 'card'],
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
@@ -358,6 +359,7 @@
         return newCard('side');
       case 'e': needCard(); return editCard();
       case 'reply': return replyTo();
+      case 'ask': return askBox(rest.join(' '));
       case 'del': needCard(); return deleteCard();
       case 'ins': needCard(); return insertCard();
       case 'mv': {
@@ -1163,7 +1165,7 @@
     $('#table-tools').hidden = !onTableMode;
     $('#viewport').classList.toggle('table-mode', onTableMode);
     $('#app').classList.toggle('at-table', onTableMode);
-    if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; }
+    if (!onTableMode) { $('#table-empty').hidden = true; $('#table-hand').hidden = true; $('#ask-bar').hidden = true; }
     $('#sky').hidden = state.mode !== 'constellation';
     $('#sky-label').hidden = true;
     $('#legend').hidden = !inTree;
@@ -1180,7 +1182,10 @@
       sky.show();
     } else if (onTableMode) {
       const count = tableView.render();
-      title.textContent = count ? `On the Table · ${count} card${count === 1 ? '' : 's'}` : 'The Table';
+      renderAskBar();
+      title.textContent = spreads.previewing()
+        ? (count ? `Ask · ${count} proposed card${count === 1 ? '' : 's'} on a temporary Table` : 'Ask · nothing justified')
+        : (count ? `On the Table · ${count} card${count === 1 ? '' : 's'}` : 'The Table');
     } else if (!state.card) {
       title.textContent = `The cabinet · ${wsLabel(state.workspace)} workspace`;
       renderDesk();
@@ -1541,7 +1546,7 @@
     const viewport = $('#viewport');
     let drag = null;
     viewport.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.target.closest('.stack, .desk, .tcard, .reach, .table-hand, .table-empty')) return;
+      if (event.button !== 0 || event.target.closest('.stack, .desk, .tcard, .reach, .table-hand, .table-empty, .ask-bar')) return;
       // A press on a Map card opens it, unless the hand moves: then it pans the view too.
       drag = { x: event.clientX, y: event.clientY, moved: false, captured: false, pointer: event.pointerId };
     });
@@ -1593,18 +1598,58 @@
   // ---------------------------------------------------------------- spreads
   // A Spread is a set of Cards laid out together on the Table: which Cards, where each lies,
   // and which lies on top (the last listed). The archive keeps them (src/spread.rs) and moves
-  // them with their Cards; every change here is saved a moment later.
+  // them with their Cards; every change here is saved a moment later. A question's proposal is a
+  // temporary Table instead (`preview`): it decks the proposed Cards without touching the saved
+  // document, so Cancel puts the previous Spread back and Keep is the one action that saves.
   const spreads = (() => {
     let doc = { current: null, spreads: [] };
+    let preview = null;
     let dirty = false;
     let timer = 0;
     let saving = Promise.resolve();
     const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const self = {
       get doc() { return doc; },
-      now: () => doc.spreads.find((spread) => spread.id === doc.current) || null,
+      now: () => preview || doc.spreads.find((spread) => spread.id === doc.current) || null,
+      newId,
+      /** Whether the Table is a question's temporary Table rather than a saved Spread. */
+      previewing: () => !!preview,
+      /** The Card a proposal holds: the temporary Table squares it up and lifts it. */
+      held: () => (preview ? preview.held : null),
+      /** Deck a question's proposal on the temporary Table; nothing is saved. */
+      begin(proposal) {
+        preview = proposal;
+        renderTableCount();
+        tableView.refreshReach();
+      },
+      /** Put the previous Spread back: the saved document was never touched. */
+      end() {
+        if (!preview) return;
+        preview = null;
+        renderTableCount();
+        tableView.refreshReach();
+      },
+      /**
+       * Keep the temporary Table as the ordinary Spread document `kept` says, and save it now. The
+       * answer resolves once the archive has it; a failed save leaves the Spread on the Table to be
+       * saved again with the next Table change (its local document is still the reader's).
+       */
+      adopt(kept) {
+        preview = null;
+        doc = kept && Array.isArray(kept.spreads) ? kept : { current: null, spreads: [] };
+        clearTimeout(timer);
+        dirty = false;
+        const body = JSON.parse(JSON.stringify(doc));
+        const sent = saving.catch(() => {}).then(() => api('spreads', body));
+        saving = sent.then(
+          (saved) => { doc = saved; },
+          () => { dirty = true; },
+        );
+        return sent;
+      },
       /** The Spread on the Table, made when the first Card is laid down. */
       ensure() {
+        if (preview) return preview;
         let spread = self.now();
         if (!spread) {
           spread = { id: newId(), name: `Spread ${doc.spreads.length + 1}`, cards: [] };
@@ -1624,6 +1669,9 @@
       /** The Cards on the Table that still exist, in the order they lie (the last on top). */
       cards: () => (self.now()?.cards || []).filter((card) => state.byAddress.has(card.at)),
       changed() {
+        // A proposal is a temporary Table: its Cards and places live in the preview, never in the
+        // saved document, so nothing is written for them.
+        if (preview) { renderTableCount(); return; }
         dirty = true;
         clearTimeout(timer);
         timer = setTimeout(() => self.flush(), 450);
@@ -1647,6 +1695,182 @@
     };
     return self;
   })();
+
+  // ------------------------------------------------------------------- ask
+  // `Ask the box` (S16, #116; design §9.5): one question becomes one unsaved Spread proposal —
+  // the Cards the box can justify, each with its reason. They lie on a temporary Table: the held
+  // Card is squared up and lifted, the others keep the reasons beside them. Keep saves one ordinary
+  // Spread through the same `/api/spreads` path as every other Spread; Cancel puts the previous
+  // Spread back. A failed question and a cancelled proposal write nothing, and before Keep each
+  // proposed endpoint is re-read so a changed or vanished Card is a visible choice, never a silent
+  // substitution.
+
+  /** Ask for the question, unless the reader typed one after the command. */
+  function askQuestionDialog(initial) {
+    return new Promise((resolve) => {
+      const input = h('input', {
+        value: initial || '', maxlength: '512', autocomplete: 'off', spellcheck: 'false',
+        'aria-label': 'What do you want to ask the box?',
+      });
+      const ask = h('button', { class: 'btn primary', text: 'Ask' });
+      const cancel = h('button', { class: 'btn', text: 'Cancel' });
+      const msg = h('span', { class: 'ask-msg' });
+      const close = openOverlay(h('div', { class: 'sheet-dlg narrow', role: 'dialog', 'aria-label': 'Ask the box' },
+        h('div', { class: 'dlg-head' }, h('h3', { text: 'Ask the box' })),
+        h('div', { class: 'confirm-body field' },
+          h('p', { text: 'Ask what you want to know. The box proposes the cards it can justify, with the reason for each, on a temporary Table — nothing is saved until you Keep.' }),
+          input,
+          msg),
+        h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), cancel, ask),
+      ));
+      const submit = () => {
+        const checked = ZtAsk.askQuestion(input.value);
+        if (!checked.ok) {
+          msg.textContent = checked.error;
+          msg.className = 'ask-msg err';
+          input.focus();
+          return;
+        }
+        close();
+        resolve(checked.question);
+      };
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); submit(); }
+        if (event.key === 'Escape') { event.preventDefault(); close(); resolve(null); }
+      });
+      ask.addEventListener('click', submit);
+      cancel.addEventListener('click', () => { close(); resolve(null); });
+      input.focus();
+      input.select();
+    });
+  }
+
+  /** The question's own Table: the reasons, the sparse/truncated news, and Keep/Cancel. */
+  function renderAskBar() {
+    const bar = $('#ask-bar');
+    const preview = spreads.now();
+    const on = spreads.previewing() && !!preview;
+    bar.hidden = !on;
+    if (!on) return;
+    const terms = preview.matched_terms.length
+      ? `matched ${preview.matched_terms.join(' · ')}`
+      : 'no accepted term matched';
+    const ambiguous = preview.ambiguous_terms.length ? ` · ${preview.ambiguous_terms.join(' / ')} has several senses` : '';
+    $('#ask-q').textContent = preview.question;
+    $('#ask-q').title = preview.question;
+    $('#ask-terms').textContent = terms + ambiguous;
+    const notes = [];
+    if (preview.fallback) notes.push('low confidence: these share character bigrams with the question');
+    if (preview.sparse) notes.push('sparse: fewer than five cards are justified');
+    if (preview.truncated) notes.push('bounded: the walk stopped at its limit, so this is not the whole box');
+    if (!preview.cards.length) notes.push('nothing to keep; ask differently');
+    $('#ask-note').textContent = notes.join(' · ');
+    $('#ask-note').hidden = !notes.length;
+    $('#ask-keep').disabled = !preview.cards.length;
+    $('#ask-keep').title = preview.cards.length
+      ? 'Keep: save these cards as a new Spread (y)'
+      : 'Nothing was justified; there is nothing to keep';
+  }
+
+  /** Ask one question and show its proposal on the temporary Table. A failed question writes nothing. */
+  async function askBox(asked) {
+    let question = asked == null ? '' : String(asked).trim();
+    if (!question) {
+      question = await askQuestionDialog('');
+      if (!question) return;
+    }
+    const checked = ZtAsk.askQuestion(question);
+    if (!checked.ok) throw new Error(checked.error);
+    let proposal;
+    try {
+      proposal = await api('ask', { question: checked.question });
+    } catch (error) {
+      toast(`the question could not be answered: ${error.message || error}`, 'err');
+      return;
+    }
+    spreads.begin(ZtAsk.askPreview(proposal));
+    tableView.reset();
+    setMode('table');
+    setTimeout(() => tableView.fit(true), 80);
+  }
+
+  /** Cancel the proposal: the Spread the reader had is still the saved document. */
+  function cancelAskSpread() {
+    if (!spreads.previewing()) return;
+    spreads.end();
+    tableView.reset();
+    renderStage();
+    toast('the proposal is gone; the previous Spread is back on the Table');
+  }
+
+  /** The changed or vanished Cards of a proposal, as the reader must see them before Keep. */
+  function askChangedDialog(changed) {
+    return new Promise((resolve) => {
+      const rows = [
+        ...changed.changed.map((card) => h('li', {},
+          h('span', { class: 'addr', text: card.at }), ' ',
+          h('span', { class: 'then', text: card.then || '(untitled)' }), ' → ',
+          h('span', { class: 'now', text: card.now || '(untitled)' }))),
+        ...changed.missing.map((card) => h('li', {},
+          h('span', { class: 'addr', text: card.at }), ' ',
+          h('span', { class: 'then', text: card.then || '(untitled)' }), h('span', { class: 'gone', text: ' — gone' }))),
+      ];
+      const keep = h('button', { class: 'btn primary', text: changed.missing.length ? 'Keep the rest' : 'Keep anyway' });
+      const back = h('button', { class: 'btn', text: 'Back to the Table' });
+      const close = openOverlay(h('div', { class: 'sheet-dlg narrow', role: 'dialog', 'aria-label': 'The proposed cards changed' },
+        h('div', { class: 'dlg-head' }, h('h3', { text: 'The cards changed since the question' })),
+        h('div', { class: 'confirm-body' },
+          h('p', { text: 'The question answered with these cards, but they are not what they were. Keep saves them as they are now; a card that is gone leaves the Spread. Nothing is saved until you choose.' }),
+          h('ul', { class: 'ask-changed' }, rows)),
+        h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), back, keep),
+      ));
+      keep.addEventListener('click', () => { close(); resolve(true); });
+      back.addEventListener('click', () => { close(); resolve(false); });
+      back.focus();
+    });
+  }
+
+  /**
+   * Keep the proposal as one ordinary named Spread. Just before the existing save path runs, every
+   * proposed endpoint is read again: an authored fingerprint that moved (or a Card that is gone)
+   * is shown with its fresh context, and only the reader's visible choice keeps it.
+   */
+  async function keepAskSpread() {
+    if (!spreads.previewing()) throw new Error('there is no proposal to keep; use ask first');
+    const preview = spreads.now();
+    if (!preview.cards.length) throw new Error('the question found no card to keep; cancel it and ask differently');
+    const fresh = {};
+    await Promise.all(preview.cards.map(async (card) => {
+      try {
+        fresh[card.at] = await api('card?at=' + enc(card.at));
+      } catch {
+        fresh[card.at] = { error: true };
+      }
+    }));
+    let keep = preview;
+    const changed = ZtAsk.askChanged(preview, fresh);
+    if (changed.changed.length || changed.missing.length) {
+      // Show the fresh context: the changed Cards, and the Table of what still stands.
+      await refresh();
+      if (!(await askChangedDialog(changed))) return;
+      keep = ZtAsk.askWithout(preview, changed.missing.map((card) => card.at));
+      if (!keep.cards.length) throw new Error('every proposed card is gone; ask again');
+    }
+    const kept = ZtAsk.askKeep(spreads.doc, keep, spreads.newId());
+    try {
+      await spreads.adopt(kept);
+    } catch (error) {
+      // The archive did not take the document: the Spread stays on the Table and a later Table
+      // change saves it again, but the reader is not told it was kept.
+      renderStage();
+      toast(`the Spread is on the Table but the archive did not save it yet: ${error.message || error}`, 'err');
+      return;
+    }
+    tableView.reset();
+    renderStage();
+    const keptSpread = spreads.now();
+    toast(`kept “${keptSpread.name || 'Spread'}” · ${spreads.cards().length} card${spreads.cards().length === 1 ? '' : 's'}`);
+  }
 
   function renderTableCount() {
     const count = spreads.cards().length;
@@ -1680,6 +1904,9 @@
    * comes from on the Table plane, so it slides out from there.
    */
   function pull(addresses, { near, from } = {}) {
+    if (spreads.previewing()) {
+      throw new Error('the Table holds a question’s proposal: Keep or Cancel it before laying other cards');
+    }
     const spread = spreads.ensure();
     const lying = new Map(spread.cards.map((card) => [card.at, card]));
     const size = ZtLayout.TABLE;
@@ -1701,6 +1928,9 @@
   }
 
   function putBack(address) {
+    if (spreads.previewing()) {
+      throw new Error('the proposal is a temporary Table: Keep or Cancel it to change the Spread');
+    }
     const spread = spreads.now();
     if (!spread) return;
     const at = spread.cards.findIndex((card) => card.at === address);
@@ -1712,6 +1942,9 @@
   /** `p`: lay a Card on the Table, or put it back in the box. */
   function toggleTable(address) {
     if (!address) throw new Error('p needs a Card; open one first');
+    if (spreads.previewing()) {
+      throw new Error('the Table holds a question’s proposal: Keep or Cancel it before changing the Spread');
+    }
     if (spreads.has(address)) {
       putBack(address);
       toast(`${address} is back in the box`);
@@ -1734,6 +1967,9 @@
 
   /** Write a Card that lists the Cards on the Table in reading order, filed after the Card held. */
   async function fileSpread() {
+    if (spreads.previewing()) {
+      throw new Error('a question’s proposal is not a saved Spread yet: Keep it, then file it as a card');
+    }
     const cards = spreads.cards();
     if (!cards.length) throw new Error('the Table is empty: lay some cards on it first');
     if (!state.card) throw new Error('open the card to file the new card after, then try again');
@@ -1744,6 +1980,7 @@
   }
 
   function showSpreads() {
+    if (spreads.previewing()) { toast('the Table holds a question’s proposal: Keep or Cancel it first', 'err'); return; }
     const doc = spreads.doc;
     const open = (spread, close) => {
       doc.current = spread.id;
@@ -1877,7 +2114,9 @@
       const fresh = !spread || shown !== spread.id;
       shown = spread ? spread.id : null;
       const cards = spreads.cards();
-      const focus = state.pointer && cards.some((card) => card.at === state.pointer) ? state.pointer : null;
+      // A question's proposal holds the answer's entry Card; an ordinary Spread holds the Pointer.
+      const aimed = spreads.previewing() ? spreads.held() : state.pointer;
+      const focus = aimed && cards.some((card) => card.at === aimed) ? aimed : null;
       const near = focus ? relatedTo(focus) : new Set();
       current = { cards, focus, near };
       if (focus !== lastFocus) reachOpen = false;
@@ -1894,6 +2133,16 @@
           holder.append(el);
         }
         content(el, card.at);
+        // A proposed Card says why the box holds it, in the excerpt's place: the explanation is
+        // what the reader is judging on the temporary Table.
+        const proposed = spreads.previewing();
+        el.classList.toggle('proposed', proposed);
+        const why = proposed ? ZtAsk.askReason(spreads.now(), card.at) : '';
+        let note = el.querySelector('.why');
+        if (why) {
+          if (!note) { note = h('span', { class: 'why' }); el.append(note); }
+          if (note.textContent !== why) note.textContent = why;
+        } else if (note) note.remove();
         el.classList.toggle('focus', card.at === focus);
         el.classList.toggle('near', near.has(card.at));
         el.classList.toggle('recede', !!focus && card.at !== focus && !near.has(card.at));
@@ -1932,6 +2181,10 @@
     }
 
     function sendToBox(address) {
+      if (spreads.previewing()) {
+        toast('the proposal is a temporary Table: Keep or Cancel it to change the Spread', 'err');
+        return;
+      }
       $('#table-box').classList.add('open');
       putBack(address);
       renderStage();
@@ -2009,6 +2262,9 @@
 
     function renderReach() {
       const box = $('#reach');
+      // A question's proposal is a closed set: no neighbour slips, no distant slot, nothing that
+      // would offer to lay another Card beside it before the reader has kept or cancelled it.
+      if (spreads.previewing()) { box.hidden = true; box.replaceChildren(); return; }
       const focus = current.focus;
       const list = focus ? candidates(focus) : [];
       // The distant Card shares the box: it is another way out of the same held Card, not a tray.
@@ -2053,7 +2309,7 @@
     function renderHand() {
       const hand = $('#table-hand');
       const card = state.card;
-      if (!card || spreads.has(card.address)) { hand.hidden = true; return; }
+      if (spreads.previewing() || !card || spreads.has(card.address)) { hand.hidden = true; return; }
       hand.hidden = false;
       hand.replaceChildren(
         h('span', { class: 'lbl', text: 'In hand' }),
@@ -2069,6 +2325,15 @@
     }
 
     function renderEmpty(empty) {
+      if (spreads.previewing()) {
+        empty.replaceChildren(
+          h('h2', { text: 'The question found nothing to keep' }),
+          h('p', { text: 'The box could not justify a card from this question. Cancel it, then ask again — naming the term you mean helps.' }),
+          h('dl', {}, [['Cancel', 'put the previous Spread back on the Table']]
+            .flatMap(([key, text]) => [h('dt', { text: key }), h('dd', { text })])),
+        );
+        return;
+      }
       empty.replaceChildren(
         h('h2', { text: spreads.now() ? `${spreads.now().name} is empty` : 'An empty Table' }),
         h('p', { text: 'Pull related cards out of the box and lay them side by side, wherever each is filed.' }),
@@ -4242,7 +4507,7 @@
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(30)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · s study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up) · w workspace · f fit · Esc close' }),
+      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · s study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up) · w workspace · f fit · ask the box, then y keeps the proposed Table and Esc cancels it · Esc close' }),
     ]);
   }
 
@@ -5075,11 +5340,12 @@
           if (!card) return undefined;
           return run(() => (event.shiftKey ? spreadAround(card.address) : toggleTable(card.address)));
         case 'w': return run(() => setWorkspace(state.workspace === 'agent' ? 'human' : 'agent', { toRoot: true }));
+        case 'y': return spreads.previewing() ? run(keepAskSpread) : undefined;
         case 'f': return run(() => fitView());
         case 'x': return state.card && state.mode === 'map' ? run(() => setExpandAll(!state.expandAll)) : undefined;
         case '?': return run(showHelp);
         case 's': return isStudied(card) ? run(() => study.open(card.address)) : undefined;
-        case 'Escape': return run(() => (pullout.node ? dropBack() : openRail(false)));
+        case 'Escape': return run(() => (spreads.previewing() ? cancelAskSpread() : pullout.node ? dropBack() : openRail(false)));
         default: return undefined;
       }
     });
@@ -5164,6 +5430,9 @@
     $('#lens-toggle').addEventListener('click', () => setExpandAll(!state.expandAll));
     $('#spread-pick').addEventListener('click', () => showSpreads());
     $('#file-spread').addEventListener('click', () => fileSpread().catch(fail));
+    $('#ask-open').addEventListener('click', () => askBox('').catch(fail));
+    $('#ask-keep').addEventListener('click', () => keepAskSpread().catch(fail));
+    $('#ask-cancel').addEventListener('click', () => cancelAskSpread());
     for (const button of document.querySelectorAll('[data-arrange]')) {
       button.addEventListener('click', () => tableView.arrange(button.dataset.arrange));
     }

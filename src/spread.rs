@@ -1,11 +1,13 @@
 //! Spreads: named sets of Cards a reader laid out together on the GUI's Table.
 //!
 //! A Spread is not a Link and changes no Card. It records which Cards lie on
-//! the Table, where each lies, and which lies on top (the last listed). The
-//! archive keeps every Spread in its `metadata` table, so a Spread survives a
-//! restart and a new port, and it follows its Cards: a move, a Citation-key
-//! rename, or a side-successor compaction rewrites its addresses in the same
-//! transaction, and a deleted Card leaves every Spread.
+//! the Table, where each lies, and which lies on top (the last listed); a Spread
+//! kept from an answered question also keeps that whole question, while its
+//! display name stays within the schema's own limit. The archive keeps every
+//! Spread in its `metadata` table, so a Spread survives a restart and a new
+//! port, and it follows its Cards: a move, a Citation-key rename, or a
+//! side-successor compaction rewrites its addresses in the same transaction,
+//! and a deleted Card leaves every Spread.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -16,10 +18,12 @@ const KEY: &str = "gui_spreads";
 const MAX_SPREADS: usize = 64;
 const MAX_CARDS: usize = 400;
 const MAX_NAME: usize = 80;
+const MAX_QUESTION: usize = 512;
 const MAX_ID: usize = 40;
 const MAX_COORD: f64 = 1.0e6;
 
-/// Every Spread, as `{ "current": <id>, "spreads": [{ "id", "name", "cards": [{ "at", "x", "y" }] }] }`.
+/// Every Spread, as `{ "current": <id>, "spreads": [{ "id", "name", "question"?, "cards": [{ "at", "x", "y" }] }] }`.
+/// `question` is the whole question an Ask Spread was kept from, when the reader asked one.
 pub(crate) fn load(conn: &Connection) -> Result<Value> {
     let stored: Option<String> = conn
         .query_row("SELECT value FROM metadata WHERE key = ?1", [KEY], |row| {
@@ -101,7 +105,7 @@ fn normalize(value: &Value) -> Result<Value> {
         if id.is_empty() || !ids.insert(id.clone()) {
             bail!("every spread needs its own id");
         }
-        let name = text(spread, "name", MAX_NAME)?;
+        let name = display_name(spread)?;
         let cards = spread
             .get("cards")
             .and_then(Value::as_array)
@@ -129,6 +133,10 @@ fn normalize(value: &Value) -> Result<Value> {
         entry.insert("id".into(), Value::String(id));
         entry.insert("name".into(), Value::String(name));
         entry.insert("cards".into(), Value::Array(placed));
+        // A kept question is durable; a Spread saved before the field existed simply has none.
+        if let Some(question) = question(spread)? {
+            entry.insert("question".into(), Value::String(question));
+        }
         kept.push(Value::Object(entry));
     }
     let current = value
@@ -155,6 +163,38 @@ fn text(value: &Value, field: &str, limit: usize) -> Result<String> {
         bail!("`{field}` is longer than {limit} characters");
     }
     Ok(text)
+}
+
+/// The display name: trimmed and cut to the schema's own 80 characters. A Spread kept from a
+/// question takes the question as its name, and only the tail is cut there; the whole question
+/// stays in `question` (D233).
+fn display_name(value: &Value) -> Result<String> {
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .context("`name` must be text")?
+        .trim();
+    Ok(name.chars().take(MAX_NAME).collect())
+}
+
+/// The whole question a Spread was kept from (D233, D228): optional, trimmed, absent when blank,
+/// and at most the question path's own 512 characters counted as characters.
+fn question(value: &Value) -> Result<Option<String>> {
+    let Some(raw) = value.get("question") else {
+        return Ok(None);
+    };
+    let text = match raw {
+        Value::Null => return Ok(None),
+        Value::String(text) => text.trim(),
+        _ => bail!("`question` must be text"),
+    };
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > MAX_QUESTION {
+        bail!("a spread's question is longer than {MAX_QUESTION} characters");
+    }
+    Ok(Some(text.to_string()))
 }
 
 fn coord(value: &Value, field: &str) -> Result<f64> {
@@ -223,6 +263,102 @@ mod tests {
             { "id": "a", "name": "", "cards": [] },
         ] });
         assert!(save(&conn, &twice).is_err());
+    }
+
+    /// D233, S16-AC02: a question longer than the display-name limit is kept whole in `question`,
+    /// while only the name is cut to the Spread schema's 80 characters — by characters, not bytes.
+    #[test]
+    fn a_kept_question_survives_while_only_the_display_name_is_cut() {
+        let conn = conn();
+        let question = "为什么学习可能造成多重均衡？".repeat(9);
+        assert!(question.chars().count() > MAX_NAME);
+        assert!(question.chars().count() <= MAX_QUESTION);
+        let saved = save(
+            &conn,
+            &json!({ "current": "a", "spreads": [{
+                "id": "a",
+                "name": question,
+                "question": question,
+                "cards": [{ "at": "1/1", "x": 0, "y": 0 }],
+            }] }),
+        )
+        .unwrap();
+        let name = saved["spreads"][0]["name"].as_str().unwrap();
+        assert_eq!(name.chars().count(), MAX_NAME, "{name}");
+        assert!(question.starts_with(name), "only the tail is cut: {name}");
+        assert_eq!(saved["spreads"][0]["question"], json!(question));
+        assert_eq!(load(&conn).unwrap()["spreads"][0]["question"], json!(question));
+    }
+
+    /// D233, S16-AC03: a Spread written before the field existed loads and saves byte for byte,
+    /// and a blank question is absent rather than stored as an empty string.
+    #[test]
+    fn a_legacy_spread_without_a_question_stays_as_it_was() {
+        let conn = conn();
+        let legacy = json!({ "current": "a", "spreads": [{
+            "id": "a",
+            "name": "Work",
+            "cards": [{ "at": "1/1", "x": 0.0, "y": 0.0 }],
+        }] });
+        assert_eq!(save(&conn, &legacy).unwrap(), legacy);
+        assert_eq!(load(&conn).unwrap(), legacy);
+        let blank = save(
+            &conn,
+            &json!({ "current": "a", "spreads": [{
+                "id": "a", "name": "Work", "question": "   ", "cards": [],
+            }] }),
+        )
+        .unwrap();
+        assert!(blank["spreads"][0].get("question").is_none(), "{blank}");
+    }
+
+    /// A question is bounded by the question path's own 512 characters (D228), counted as
+    /// characters, and a value of the wrong type is a malformed document.
+    #[test]
+    fn a_question_is_bounded_and_typed() {
+        let conn = conn();
+        let held = |question: Value| {
+            json!({ "current": "a", "spreads": [{
+                "id": "a", "name": "Q", "question": question, "cards": [],
+            }] })
+        };
+        let longest = "学".repeat(MAX_QUESTION);
+        let saved = save(&conn, &held(json!(longest))).unwrap();
+        assert_eq!(saved["spreads"][0]["question"], json!(longest));
+        assert!(save(&conn, &held(json!("学".repeat(MAX_QUESTION + 1)))).is_err());
+        assert!(save(&conn, &held(json!(7))).is_err());
+        let absent = save(&conn, &held(Value::Null)).unwrap();
+        assert!(absent["spreads"][0].get("question").is_none(), "{absent}");
+    }
+
+    /// D233, S16-AC05: following a move or a delete rewrites addresses in place and keeps the
+    /// kept question, so a Spread never loses why it was gathered.
+    #[test]
+    fn a_spreads_question_survives_a_move_and_a_delete() {
+        let conn = conn();
+        save(
+            &conn,
+            &json!({ "current": "a", "spreads": [{
+                "id": "a",
+                "name": "为什么学习可能造成多重均衡？",
+                "question": "为什么学习可能造成多重均衡？",
+                "cards": [
+                    { "at": "1/1", "x": 0, "y": 0 },
+                    { "at": "Smith2024/1", "x": 10, "y": 10 },
+                ],
+            }] }),
+        )
+        .unwrap();
+        let mapping = BTreeMap::from([("Smith2024/1".to_string(), "Smith2025/1".to_string())]);
+        let deleted = BTreeSet::from(["1/1".to_string()]);
+        follow(&conn, &mapping, &deleted).unwrap();
+        let spread = &load(&conn).unwrap()["spreads"][0];
+        assert_eq!(spread["question"], json!("为什么学习可能造成多重均衡？"));
+        assert_eq!(spread["name"], json!("为什么学习可能造成多重均衡？"));
+        assert_eq!(
+            spread["cards"],
+            json!([{ "at": "Smith2025/1", "x": 10.0, "y": 10.0 }])
+        );
     }
 
     #[test]

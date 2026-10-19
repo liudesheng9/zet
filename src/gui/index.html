@@ -11,6 +11,7 @@
 <script src="/vendor/katex/katex.min.js" defer></script>
 <script src="/layout.js" defer></script>
 <script src="/draft.js" defer></script>
+<script src="/ask.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -94,6 +95,7 @@
           <button data-arrange="tree" title="Stand the cards in one column per tree, in Folgezettel order">By tree</button>
         </div>
         <button class="lens-toggle" id="file-spread" title="Write a card that lists these cards, filed after the card you hold">File as card</button>
+        <button class="lens-toggle" id="ask-open" title="Ask the box a question: the cards it can justify lie on a temporary Table until you Keep or Cancel them (ask)">Ask the box</button>
       </div>
       <div class="zoom">
         <button class="icon-btn" data-zoom="out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
@@ -115,6 +117,16 @@
       <div class="table-empty" id="table-empty" hidden></div>
       <button class="table-hand" id="table-hand" hidden></button>
       <div class="table-box" id="table-box" aria-hidden="true"><span>Back in the box</span></div>
+      <div class="ask-bar" id="ask-bar" hidden>
+        <span class="ask-mark" aria-hidden="true">?</span>
+        <span class="ask-body">
+          <span class="ask-q" id="ask-q"></span>
+          <span class="ask-terms" id="ask-terms"></span>
+        </span>
+        <span class="ask-note" id="ask-note" hidden></span>
+        <button class="btn" id="ask-cancel" title="Cancel: put the previous Spread back on the Table (Esc)">Cancel</button>
+        <button class="btn primary" id="ask-keep" title="Keep: save these cards as a new Spread (y)">Keep</button>
+      </div>
       <canvas class="sky" id="sky" hidden></canvas>
       <div class="sky-label" id="sky-label" hidden></div>
     </div>

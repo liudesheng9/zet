@@ -1435,6 +1435,58 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .table-empty dt { font: 12px var(--mono); color: var(--ink); white-space: nowrap; }
 .table-empty dd { margin: 0; font-size: 12.5px; color: var(--ink-soft); }
 
+/* The question's own Table (S16, #116): one slim bar over the Table while a proposal lies on it.
+   It belongs to the page's ink, not to a dialog: the held Card stays the thing the eye lands on,
+   and the bar only names the question, the matched terms and the one choice (Keep or Cancel). */
+.ask-bar {
+  position: absolute; left: 50%; top: 9px; translate: -50% 0; z-index: 24;
+  display: flex; align-items: center; gap: 10px; max-width: min(940px, calc(100% - 28px));
+  padding: 6px 8px 6px 12px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--stock-edge));
+  border-radius: 999px; background: color-mix(in srgb, var(--paper) 96%, transparent);
+  box-shadow: var(--card-shadow-lift); cursor: default;
+}
+.ask-bar[hidden] { display: none; }
+.ask-bar .ask-mark {
+  flex: none; display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+  font: 700 12px var(--sans);
+}
+.ask-bar .ask-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ask-bar .ask-q {
+  font: 600 12.5px/16px var(--serif); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46ch;
+}
+.ask-bar .ask-terms {
+  font: 10.5px/14px var(--sans); color: var(--ink-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46ch;
+}
+.ask-bar .ask-note {
+  font: 10.5px/14px var(--sans); color: var(--ink-faint); max-width: 30ch;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ask-bar .ask-note[hidden] { display: none; }
+.ask-bar .btn { flex: none; padding: 5px 12px; font-size: 12px; }
+.ask-bar .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; filter: none; }
+
+/* A proposed Card says why the box holds it, where an ordinary Card shows its excerpt. */
+.tcard.proposed { border-color: color-mix(in srgb, var(--accent) 34%, var(--stock-edge)); }
+.tcard.proposed .x { display: none; }
+.tcard.proposed .put-back { display: none; }
+.tcard .why {
+  font: italic 12px/19px var(--serif); color: color-mix(in srgb, var(--accent) 62%, var(--ink-soft));
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tcard.focus .why { -webkit-line-clamp: 4; }
+
+.ask-changed { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; max-height: 220px; overflow: auto; }
+.ask-changed li { font: 12px/1.5 var(--sans); color: var(--ink-soft); }
+.ask-changed .addr { font: 11px var(--mono); color: var(--ink-faint); }
+.ask-changed .now { color: var(--ink); font-weight: 600; }
+.ask-changed .gone { color: var(--accent); }
+.ask-msg { display: block; margin-top: 8px; min-height: 16px; font: 11.5px/1.5 var(--sans); color: var(--ink-faint); }
+.ask-msg.err { color: var(--broken); }
+
+
 .table-tools { display: inline-flex; align-items: center; gap: 8px; }
 .table-tools[hidden] { display: none; }
 .spread-pick {

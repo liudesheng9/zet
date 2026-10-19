@@ -1,11 +1,14 @@
-//! Ask the box: one bounded Spread proposal from a question, two transports, no write.
+//! Ask the box: one bounded Spread proposal from a question, two transports, no write on asking,
+//! and one ordinary Spread on Keep.
 //!
 //! `src/entry.rs::gather` reads one question over the supplied Cards: it matches accepted register
 //! terms, walks at most two authored semantic steps from the entry seeds, and proposes up to nine
 //! explained Cards that hold the best entry Card (§9.3-§9.5, D211-D231). The MCP server's
 //! `ask_box` and the GUI's authenticated `POST /api/ask` return that one proposal for the same
-//! archive and question, and neither writes a Card, a Link, or a Spread. The archive is a scratch
-//! one (`ZT_CONFIG_DIR`, `ZT_GUI_PORT=0`).
+//! archive and question, and neither writes a Card, a Link, or a Spread. S16 (#116) adds the
+//! reader's Keep: the page posts the ordinary `/api/spreads` document, whose new Spread carries the
+//! whole optional question (D233) while its display name stays within 80 characters. The archive is
+//! a scratch one (`ZT_CONFIG_DIR`, `ZT_GUI_PORT=0`).
 
 #![allow(dead_code)]
 
@@ -331,6 +334,33 @@ fn state(gui: &Gui) -> Value {
     })
 }
 
+/// The Spread document the page's Keep posts to `/api/spreads` (`ZtAsk.askKeep`): every Spread the
+/// page holds, then this question's own, as current. The reasons and fingerprints stay in the page.
+fn keep_document(spreads: &Value, proposal: &Value, id: &str) -> Value {
+    let mut doc = spreads.clone();
+    doc["spreads"]
+        .as_array_mut()
+        .expect("spreads list")
+        .push(json!({
+            "id": id,
+            "name": proposal["spread"]["name"],
+            "question": proposal["spread"]["question"],
+            "cards": proposal["spread"]["cards"],
+        }));
+    doc["current"] = json!(id);
+    doc
+}
+
+fn kept_spread(spreads: &Value, id: &str) -> Value {
+    spreads["spreads"]
+        .as_array()
+        .expect("spreads list")
+        .iter()
+        .find(|spread| spread["id"] == json!(id))
+        .cloned()
+        .unwrap_or_else(|| panic!("no Spread {id} in {spreads}"))
+}
+
 #[test]
 fn one_question_proposal_serves_both_transports_without_a_write() {
     // No model or helper may be started: a helper that cannot run makes an accidental call fail.
@@ -454,4 +484,207 @@ fn a_question_refuses_a_blank_or_oversize_input_on_both_transports() {
         Value::Null,
         "the human Workspace holds no matching entry: {value}"
     );
+}
+
+/// S16 (#116, D232, D233; S16-AC01, S16-AC02, S16-AC06): Keep posts the ordinary Spread document
+/// through the one `/api/spreads` path. The kept Spread carries the whole question while only its
+/// display name is cut to 80 characters, survives a restart, and asking again (MCP or GUI) still
+/// writes nothing — a failed question leaves the saved Set exactly as it was.
+#[test]
+fn a_kept_question_survives_a_restart_and_a_failed_question_leaves_it_alone() {
+    let home = TestHome::new();
+    let (gui, _cards) = two_books(&home);
+    let question = "为什么学习可能造成多重均衡？".repeat(9);
+    assert!(question.chars().count() > 80 && question.chars().count() <= 512);
+    assert_eq!(
+        gui.get("/api/spreads"),
+        json!({ "current": Value::Null, "spreads": [] })
+    );
+
+    let proposal = gui.ask(&json!({ "question": question }));
+    assert_eq!(proposal["spread"]["question"], json!(question));
+    assert_eq!(
+        proposal["spread"]["name"].as_str().expect("name").chars().count(),
+        80,
+        "the display name is cut; the question is whole: {proposal}"
+    );
+    let cards: Vec<String> = proposal["spread"]["cards"]
+        .as_array()
+        .expect("cards")
+        .iter()
+        .map(|card| card["at"].as_str().expect("at").to_string())
+        .collect();
+    assert_eq!(cards, ["bookA/1", "bookB/1"]);
+
+    // Keep: the page's own document, through the existing save route.
+    let kept = gui.post("/api/spreads", &keep_document(&gui.get("/api/spreads"), &proposal, "kept-1"));
+    assert_eq!(kept["current"], json!("kept-1"));
+    assert_eq!(kept["spreads"].as_array().expect("spreads").len(), 1);
+    let spread = kept_spread(&kept, "kept-1");
+    assert_eq!(spread["question"], json!(question), "the whole question is kept");
+    assert_eq!(spread["name"].as_str().expect("name").chars().count(), 80);
+    let kept_cards = spread["cards"].as_array().expect("cards");
+    let proposed_cards = proposal["spread"]["cards"].as_array().expect("cards");
+    assert_eq!(kept_cards.len(), proposed_cards.len());
+    for (kept_card, proposed_card) in kept_cards.iter().zip(proposed_cards) {
+        assert_eq!(kept_card["at"], proposed_card["at"], "its Cards are kept");
+        assert_eq!(kept_card["x"].as_f64(), proposed_card["x"].as_f64(), "its places are kept");
+        assert_eq!(kept_card["y"].as_f64(), proposed_card["y"].as_f64());
+    }
+    assert_eq!(gui.get("/api/spreads"), kept);
+
+    // Asking again writes nothing, from either transport, and answers the same proposal.
+    let mut mcp = home.mcp();
+    assert_eq!(mcp.ok("ask_box", json!({ "question": question })), proposal);
+    assert_eq!(gui.get("/api/spreads"), kept);
+
+    // A failed question keeps the saved set: blank, over 512 characters, and a missing token.
+    for body in [
+        json!({ "question": "   " }),
+        json!({ "question": "学".repeat(513) }),
+    ] {
+        let (status, refused) = gui.post_with("/api/ask", &gui.token, &body);
+        assert_eq!(status, 400, "{refused}");
+        assert_eq!(gui.get("/api/spreads"), kept, "a failed question changes no Spread");
+    }
+    let (status, refused) = gui.post_with("/api/ask", "not-the-token", &json!({ "question": "多重均衡" }));
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(gui.get("/api/spreads"), kept);
+
+    // The data the page's Keep check compares (D234): the proposal captured the endpoint's authored
+    // fingerprint, an edit moves it, and a vanished Card no longer loads — never a new occupant
+    // silently standing in for the selected Card.
+    let before = gui.get("/api/card?at=bookB%2F1");
+    assert_eq!(
+        before["authored_fingerprint"], proposal["cards"][1]["authored_fingerprint"],
+        "the proposal captured the endpoint's authored fingerprint"
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": "bookB/1", "body": "策略互补解释多重均衡。另见 [[bookA/1]]。\n\n来源：[[bookB]]" }),
+    );
+    let after = gui.get("/api/card?at=bookB%2F1");
+    assert_ne!(
+        after["authored_fingerprint"], before["authored_fingerprint"],
+        "an edited endpoint's fingerprint moves, so Keep sees the change"
+    );
+    assert_eq!(gui.get("/api/spreads"), kept, "a Card edit changes no Spread");
+
+    // A restart keeps the kept question: it is archived metadata, not page state.
+    home.cmd().arg("down").assert().success();
+    home.cmd().arg("up").assert().success();
+    let gui = home.gui();
+    assert_eq!(gui.get("/api/spreads"), kept, "the kept question survives a restart");
+
+    // A deleted endpoint is gone rather than followed to whoever holds its address.
+    let mut mcp = home.mcp();
+    mcp.ok("delete_card", json!({ "at": "bookA/1", "confirm": "delete" }));
+    let (status, gone) = gui.get_with("/api/card?at=bookA%2F1", &gui.token);
+    assert_eq!(status, 400, "a vanished endpoint: {gone}");
+    let followed = gui.get("/api/spreads");
+    let spread = kept_spread(&followed, "kept-1");
+    assert_eq!(spread["question"], json!(question), "the question stays");
+    assert_eq!(
+        spread["cards"],
+        json!([{ "at": "bookB/1", "x": 266.0, "y": 0.0 }]),
+        "the deleted Card leaves the Spread"
+    );
+}
+
+/// S16 (#116, D233; S16-AC03, S16-AC05): a Spread saved before the field existed loads and saves
+/// unchanged beside a kept question, and the ordinary move and delete paths keep the question while
+/// they rewrite or drop addresses.
+#[test]
+fn legacy_spreads_load_beside_a_kept_question_and_follow_a_move_and_a_delete() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = book(
+        &mut mcp,
+        "bookA",
+        "Book A",
+        "多重均衡的陈述",
+        "多重均衡来自策略互补。\n\n来源：[[bookA]]",
+    );
+    let b = book(
+        &mut mcp,
+        "bookB",
+        "Book B",
+        "策略互补",
+        "策略互补解释多重均衡。\n\n来源：[[bookB]]",
+    );
+    assert_eq!((a.as_str(), b.as_str()), ("bookA/1", "bookB/1"));
+    let gui = home.gui();
+
+    // A Spread from before the field existed: saved as it is, and read back without a question.
+    let legacy = json!({ "current": "old", "spreads": [{
+        "id": "old", "name": "Work",
+        "cards": [{ "at": "bookA/1", "x": 0.0, "y": 0.0 }, { "at": "bookB/1", "x": 236.0, "y": 0.0 }],
+    }] });
+    let saved = gui.post("/api/spreads", &legacy);
+    assert_eq!(saved, legacy, "a legacy document loads and saves unchanged");
+    assert_eq!(gui.get("/api/spreads"), legacy);
+
+    // A kept question beside it.
+    let question = "为什么学习可能造成多重均衡？".repeat(9);
+    let consulted = json!({
+        "current": "consulted",
+        "spreads": [
+            legacy["spreads"][0].clone(),
+            {
+                "id": "consulted",
+                "name": question.chars().take(80).collect::<String>(),
+                "question": question,
+                "cards": [{ "at": "bookA/1", "x": 10.0, "y": 10.0 }, { "at": "bookB/1", "x": 300.0, "y": 10.0 }],
+            },
+        ],
+    });
+    let saved = gui.post("/api/spreads", &consulted);
+    assert_eq!(saved, consulted);
+    assert!(
+        kept_spread(&saved, "old").get("question").is_none(),
+        "a legacy Spread gains no question: {saved}"
+    );
+    assert_eq!(kept_spread(&saved, "consulted")["question"], json!(question));
+
+    // A move rewrites the address in place: a second Card inserted before bookA/1 takes its place,
+    // so the Card the Spread holds becomes bookA/2. The question stays with the Spread.
+    let second = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "bookA/1", "title": "第二个陈述", "body": "另一条陈述。\n\n来源：[[bookA]]" }),
+    ));
+    assert_eq!(second, "bookA/2");
+    let plan = mcp.ok("move_card", json!({ "at": "bookA/2", "before": "bookA/1" }));
+    assert_eq!(plan["confirm"], json!("move"), "{plan}");
+    let moved = mcp.ok(
+        "move_card",
+        json!({ "at": "bookA/2", "before": "bookA/1", "confirm": "move" }),
+    );
+    assert_eq!(moved["moved"]["bookA/1"], json!("bookA/2"), "{moved}");
+    let followed = gui.get("/api/spreads");
+    let consulted_after = kept_spread(&followed, "consulted");
+    assert_eq!(consulted_after["question"], json!(question));
+    assert_eq!(
+        consulted_after["cards"],
+        json!([
+            { "at": "bookA/2", "x": 10.0, "y": 10.0 },
+            { "at": "bookB/1", "x": 300.0, "y": 10.0 },
+        ])
+    );
+    assert_eq!(
+        kept_spread(&followed, "old")["cards"][0]["at"],
+        json!("bookA/2"),
+        "the legacy Spread follows too, and gains no question"
+    );
+
+    // A delete drops the Card from every Spread; the kept question stays.
+    mcp.ok("delete_card", json!({ "at": "bookA/2", "confirm": "delete" }));
+    let followed = gui.get("/api/spreads");
+    let consulted_after = kept_spread(&followed, "consulted");
+    assert_eq!(
+        consulted_after["cards"],
+        json!([{ "at": "bookB/1", "x": 300.0, "y": 10.0 }]),
+        "a deleted Card leaves the Spread"
+    );
+    assert_eq!(consulted_after["question"], json!(question));
+    assert!(kept_spread(&followed, "old").get("question").is_none());
 }

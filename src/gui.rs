@@ -32,6 +32,7 @@ const INDEX_HTML: &str = include_str!("gui/index.html");
 const APP_CSS: &str = include_str!("gui/app.css");
 const APP_JS: &str = include_str!("gui/app.js");
 const DRAFT_JS: &str = include_str!("gui/draft.js");
+const ASK_JS: &str = include_str!("gui/ask.js");
 const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
@@ -791,6 +792,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     DRAFT_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, "/ask.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    ASK_JS.to_string(),
                 );
                 return;
             }
@@ -2298,25 +2308,25 @@ mod tests {
         assert_eq!(recorded_url(temp.path()), None);
     }
 
-    /// Run the page's DOM-free draft module (`src/gui/draft.js`) under Node and answer the JSON its
-    /// expression prints. The project already needs Node for its wiki check and its workflow tools;
-    /// when Node is missing this answers `None` and the test says so, so `cargo test` itself needs no
-    /// extra program.
-    fn draft_js(expression: &str) -> Option<Value> {
+    /// Run one of the page's DOM-free modules (`src/gui/draft.js`, `src/gui/ask.js`) under Node and
+    /// answer the JSON its expression prints, the module bound to `bind`. The project already needs
+    /// Node for its wiki check and its workflow tools; when Node is missing this answers `None` and
+    /// the test says so, so `cargo test` itself needs no extra program.
+    fn page_module_js(module: &str, source: &str, bind: &str, expression: &str) -> Option<Value> {
         let dir = tempfile::tempdir().expect("temp dir");
-        let module = dir.path().join("draft.js");
-        fs::write(&module, DRAFT_JS).expect("draft module");
+        let file = dir.path().join(module);
+        fs::write(&file, source).expect("page module");
         let driver = dir.path().join("driver.mjs");
         let script = format!(
             "import {{ createRequire }} from 'node:module';\n\
              const require = createRequire(import.meta.url);\n\
-             const draft = require(process.argv[2]);\n\
+             const {bind} = require(process.argv[2]);\n\
              process.stdout.write(JSON.stringify(({expression})));\n"
         );
         fs::write(&driver, script).expect("driver");
         let output = match std::process::Command::new("node")
             .arg(&driver)
-            .arg(&module)
+            .arg(&file)
             .output()
         {
             Ok(output) => output,
@@ -2334,13 +2344,28 @@ mod tests {
         )
     }
 
+    fn draft_js(expression: &str) -> Option<Value> {
+        page_module_js("draft.js", DRAFT_JS, "draft", expression)
+    }
+
+    /// S16 (#116): the Ask rules — question bounds, the temporary Table, Keep, and the endpoint
+    /// recheck — are the page's own DOM-free code (`src/gui/ask.js`), run here rather than described.
+    fn ask_js(expression: &str) -> Option<Value> {
+        page_module_js("ask.js", ASK_JS, "ZtAsk", expression)
+    }
+
     /// The shipped page scripts parse: a broken statement in `app.js` or `layout.js` ships as a
     /// page that never boots, and no other test reads the whole file as a program. Node is the
     /// project's own checker (the wiki and the draft tests use it); without Node the check says so.
     #[test]
     fn the_page_scripts_parse_as_javascript() {
         let dir = tempfile::tempdir().expect("temp dir");
-        for (name, source) in [("app.js", APP_JS), ("layout.js", LAYOUT_JS), ("draft.js", DRAFT_JS)] {
+        for (name, source) in [
+            ("app.js", APP_JS),
+            ("layout.js", LAYOUT_JS),
+            ("draft.js", DRAFT_JS),
+            ("ask.js", ASK_JS),
+        ] {
             let file = dir.path().join(name);
             fs::write(&file, source).expect("write the script");
             let output = match std::process::Command::new("node")
@@ -2925,6 +2950,422 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(8),
             "the cancelled helper returns at its deadline"
+        );
+    }
+
+    /// S16 (#116, D232, D233): a question is trimmed and bounded by the question path's own 512
+    /// characters, counted as characters rather than UTF-16 units, and the kept Spread's display
+    /// name is cut to the schema's 80 characters while the whole question stays in `question`.
+    #[test]
+    fn the_ask_question_is_trimmed_and_bounded_and_only_the_name_is_cut() {
+        let Some(out) = ask_js(
+            "{\
+               plain: ZtAsk.askQuestion('  为什么学习  '),\
+               blank: ZtAsk.askQuestion('   '),\
+               missing: ZtAsk.askQuestion(undefined),\
+               longest: ZtAsk.askQuestion('学'.repeat(512)),\
+               too_long: ZtAsk.askQuestion('学'.repeat(513)),\
+               name: ZtAsk.askName('为什么学习可能造成多重均衡？'.repeat(9)),\
+               emoji: Array.from(ZtAsk.askName('😀'.repeat(100))).length,\
+               emoji_units: ZtAsk.askName('😀'.repeat(100)).length\
+             }",
+        ) else {
+            eprintln!("node is not installed; the ask module was not run");
+            return;
+        };
+        assert_eq!(out["plain"]["ok"], json!(true), "{out}");
+        assert_eq!(out["plain"]["question"], json!("为什么学习"));
+        assert_eq!(out["plain"]["name"], json!("为什么学习"));
+        assert_eq!(out["blank"]["ok"], json!(false), "{out}");
+        assert!(
+            out["blank"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("nonblank")),
+            "{out}"
+        );
+        assert_eq!(out["missing"]["ok"], json!(false), "{out}");
+        assert_eq!(out["longest"]["ok"], json!(true), "{out}");
+        let longest = out["longest"]["question"].as_str().expect("question");
+        assert_eq!(longest.chars().count(), 512);
+        assert_eq!(out["too_long"]["ok"], json!(false), "{out}");
+        assert!(
+            out["too_long"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("512")),
+            "{out}"
+        );
+        assert_eq!(out["name"].as_str().expect("name").chars().count(), 80);
+        assert_eq!(out["emoji"], json!(80), "the cut counts characters, not UTF-16 units");
+        assert_eq!(out["emoji_units"], json!(160), "{out}");
+    }
+
+    /// S16 (#116, D232, D234): an answered question becomes a temporary Table — the proposed Cards
+    /// at their suggested places, each with the reason it was chosen and the fingerprint the Keep
+    /// check uses — and a second question decks a different Table. Nothing here is a saved Spread.
+    #[test]
+    fn a_proposal_becomes_a_temporary_table_with_its_reasons() {
+        let question = "为什么学习可能造成多重均衡？".repeat(9);
+        let proposal = json!({
+            "question": question.clone(),
+            "held": "bookA/1",
+            "sparse": false,
+            "truncated": true,
+            "matched_terms": ["多重均衡"],
+            "ambiguous_terms": ["学习"],
+            "spread": {
+                "name": question.chars().take(80).collect::<String>(),
+                "question": question.clone(),
+                "cards": [
+                    { "at": "bookA/1", "x": 0, "y": 0 },
+                    { "at": "bookB/1", "x": 266, "y": 0 },
+                ],
+            },
+            "cards": [
+                {
+                    "at": "bookA/1",
+                    "title": "多重均衡的陈述",
+                    "reason": "States the accepted term 多重均衡.",
+                    "authored_fingerprint": "aa",
+                },
+                {
+                    "at": "bookB/1",
+                    "title": "策略互补",
+                    "reason": "Reached in 1 semantic step(s) from the entry Card for 多重均衡.",
+                    "authored_fingerprint": "bb",
+                },
+            ],
+        });
+        let other = json!({
+            "question": "策略互补说明了什么？",
+            "held": Value::Null,
+            "spread": { "name": "策略互补说明了什么？", "question": "策略互补说明了什么？", "cards": [] },
+            "cards": [],
+        });
+        let Some(out) = ask_js(&format!(
+            "({{ preview: ZtAsk.askPreview({proposal}), other: ZtAsk.askPreview({other}) }})"
+        )) else {
+            eprintln!("node is not installed; the ask module was not run");
+            return;
+        };
+        let preview = &out["preview"];
+        assert_eq!(preview["question"], json!(question));
+        assert_eq!(
+            preview["name"].as_str().expect("name").chars().count(),
+            80,
+            "the display name is cut; the question is not: {preview}"
+        );
+        assert_eq!(preview["held"], json!("bookA/1"));
+        assert_eq!(preview["cards"][0]["at"], json!("bookA/1"));
+        assert_eq!(preview["cards"][0]["x"].as_f64(), Some(0.0));
+        assert_eq!(preview["cards"][1]["x"].as_f64(), Some(266.0));
+        assert_eq!(
+            preview["cards"][1]["reason"],
+            json!("Reached in 1 semantic step(s) from the entry Card for 多重均衡.")
+        );
+        assert_eq!(preview["cards"][1]["fingerprint"], json!("bb"));
+        assert_eq!(preview["cards"][1]["title"], json!("策略互补"));
+        assert_eq!(preview["sparse"], json!(false));
+        assert_eq!(preview["truncated"], json!(true));
+        assert_eq!(preview["matched_terms"], json!(["多重均衡"]));
+        assert_eq!(preview["ambiguous_terms"], json!(["学习"]));
+        assert_eq!(
+            preview["id"], json!(format!("ask:{question}")),
+            "the Table is decked for this question"
+        );
+        assert_ne!(preview["id"], out["other"]["id"], "another question decks another Table");
+        assert_eq!(out["other"]["cards"], json!([]), "zero cards is a valid answer");
+        assert_eq!(out["other"]["held"], Value::Null);
+    }
+
+    /// S16 (#116, D232): the reason of one proposed Card is readable by address, and an address the
+    /// question did not propose has none.
+    #[test]
+    fn the_temporary_table_names_why_each_proposed_card_is_there() {
+        let proposal = json!({
+            "question": "多重均衡",
+            "held": "bookA/1",
+            "spread": { "name": "多重均衡", "question": "多重均衡", "cards": [
+                { "at": "bookA/1", "x": 0, "y": 0 },
+                { "at": "bookB/1", "x": 10, "y": 0 },
+            ] },
+            "cards": [
+                { "at": "bookA/1", "title": "甲", "reason": "States the accepted term 多重均衡.", "authored_fingerprint": "aa" },
+            ],
+        });
+        let Some(out) = ask_js(&format!(
+            "(() => {{ const p = ZtAsk.askPreview({proposal}); \
+               return {{ held: ZtAsk.askReason(p, 'bookA/1'), plain: ZtAsk.askReason(p, 'bookB/1'), \
+                         unknown: ZtAsk.askReason(p, '9/9') }}; }})()"
+        )) else {
+            eprintln!("node is not installed; the ask module was not run");
+            return;
+        };
+        assert_eq!(out["held"], json!("States the accepted term 多重均衡."));
+        assert_eq!(out["plain"], json!(""), "a Card with no explanation is not given one");
+        assert_eq!(out["unknown"], json!(""));
+    }
+
+    /// S16 (#116, D232, D233, D282): Keep writes one ordinary named Spread into the Spread document
+    /// through the existing save shape: the earlier Spreads stay exactly as they were (questions
+    /// included), the new one carries its id, cut name, whole question and positions — and none of
+    /// the transient explanation or fingerprint — and the kept document is a new value, never a
+    /// mutation of the document the page holds.
+    #[test]
+    fn keeping_a_proposal_adds_one_ordinary_spread_and_leaves_the_others_as_they_were() {
+        let doc = json!({
+            "current": "old",
+            "spreads": [
+                { "id": "old", "name": "Work", "cards": [{ "at": "1/1", "x": 0, "y": 0 }] },
+                { "id": "asked", "name": "上一个问题", "question": "上一个问题",
+                  "cards": [{ "at": "2/1", "x": 10, "y": 10 }] },
+            ],
+        });
+        let question = "为什么学习可能造成多重均衡？".repeat(9);
+        let proposal = json!({
+            "question": question.clone(),
+            "held": "bookA/1",
+            "spread": {
+                "name": question.chars().take(80).collect::<String>(),
+                "question": question.clone(),
+                "cards": [
+                    { "at": "bookA/1", "x": 0, "y": 0 },
+                    { "at": "bookB/1", "x": 266.4, "y": -1 },
+                ],
+            },
+            "cards": [
+                { "at": "bookA/1", "title": "甲", "reason": "States the accepted term.", "authored_fingerprint": "aa" },
+                { "at": "bookB/1", "title": "乙", "reason": "One step from it.", "authored_fingerprint": "bb" },
+            ],
+        });
+        let Some(out) = ask_js(&format!(
+            "(() => {{ const doc = {doc}; const p = ZtAsk.askPreview({proposal}); \
+               const kept = ZtAsk.askKeep(doc, p, 'kept-1'); \
+               return {{ kept, doc, plain: ZtAsk.askKeep(doc, {{ name: 'Q', question: '', cards: p.cards }}, 'kept-2') }}; }})()"
+        )) else {
+            eprintln!("node is not installed; the ask module was not run");
+            return;
+        };
+        let kept = &out["kept"];
+        assert_eq!(kept["current"], json!("kept-1"), "{kept}");
+        assert_eq!(kept["spreads"].as_array().expect("spreads").len(), 3);
+        assert_eq!(kept["spreads"][0], doc_spread(&out["doc"], 0), "an earlier Spread is untouched");
+        assert_eq!(kept["spreads"][1], doc_spread(&out["doc"], 1), "a kept question is not lost");
+        let spread = &kept["spreads"][2];
+        assert_eq!(spread["id"], json!("kept-1"));
+        assert_eq!(spread["name"].as_str().expect("name").chars().count(), 80);
+        assert_eq!(spread["question"], json!(question));
+        assert_eq!(
+            spread["cards"],
+            json!([
+                { "at": "bookA/1", "x": 0, "y": 0 },
+                { "at": "bookB/1", "x": 266.4, "y": -1 },
+            ]),
+            "only the Spread schema's own fields are saved"
+        );
+        assert!(spread.get("reason").is_none() && spread["cards"][0].get("fingerprint").is_none());
+        // The document the page held is unchanged: Keep builds a new one.
+        assert_eq!(out["doc"]["current"], json!("old"));
+        assert_eq!(out["doc"]["spreads"].as_array().expect("spreads").len(), 2);
+        assert_eq!(out["doc"]["spreads"][1]["question"], json!("上一个问题"));
+        assert!(
+            out["plain"]["spreads"][2].get("question").is_none(),
+            "a Spread without a question stores no question: {}",
+            out["plain"]
+        );
+    }
+
+    fn doc_spread(doc: &Value, index: usize) -> Value {
+        doc["spreads"][index].clone()
+    }
+
+    /// S16 (#116, D234): before Keep, every proposed endpoint is re-read and its authored
+    /// fingerprint compared with the one the answer captured. An unchanged Card is unchanged, a
+    /// changed one is named with both titles, a vanished one is missing, and a new occupant of an
+    /// old address is a change — never silently the Card the question selected. A proposal that
+    /// captured no fingerprint cannot be trusted either.
+    #[test]
+    fn a_changed_or_missing_endpoint_is_named_before_keep() {
+        let proposal = json!({
+            "question": "多重均衡",
+            "held": "bookA/1",
+            "spread": { "name": "多重均衡", "question": "多重均衡", "cards": [
+                { "at": "bookA/1", "x": 0, "y": 0 },
+                { "at": "bookB/1", "x": 10, "y": 0 },
+            ] },
+            "cards": [
+                { "at": "bookA/1", "title": "多重均衡的陈述", "reason": "States it.", "authored_fingerprint": "aa" },
+                { "at": "bookB/1", "title": "策略互补", "reason": "One step.", "authored_fingerprint": "bb" },
+            ],
+        });
+        let Some(out) = ask_js(&format!(
+            "(() => {{ const p = ZtAsk.askPreview({proposal}); const a = {{ authored_fingerprint: 'aa', title: '多重均衡的陈述' }}; \
+               return {{\
+                 same: ZtAsk.askChanged(p, {{ 'bookA/1': a, 'bookB/1': {{ authored_fingerprint: 'bb', title: '策略互补' }} }}),\
+                 edited: ZtAsk.askChanged(p, {{ 'bookA/1': a, 'bookB/1': {{ authored_fingerprint: 'cc', title: '策略互补（改）' }} }}),\
+                 gone: ZtAsk.askChanged(p, {{ 'bookA/1': a }}),\
+                 occupant: ZtAsk.askChanged(p, {{ 'bookA/1': a, 'bookB/1': {{ authored_fingerprint: 'dd', title: '现在占着这个地址的卡' }} }}),\
+                 untyped: ZtAsk.askChanged({{ cards: [{{ at: 'bookB/1', title: '策略互补', fingerprint: '' }}] }}, {{ 'bookB/1': {{ authored_fingerprint: 'bb', title: '策略互补' }} }}),\
+                 trimmed: ZtAsk.askWithout(p, ['bookB/1'])\
+               }}; }})()"
+        )) else {
+            eprintln!("node is not installed; the ask module was not run");
+            return;
+        };
+        assert_eq!(out["same"]["changed"], json!([]), "{}", out["same"]);
+        assert_eq!(out["same"]["missing"], json!([]), "{}", out["same"]);
+        assert_eq!(out["same"]["unchanged"], json!(["bookA/1", "bookB/1"]));
+        assert_eq!(
+            out["edited"]["changed"],
+            json!([{ "at": "bookB/1", "then": "策略互补", "now": "策略互补（改）" }]),
+            "{}",
+            out["edited"]
+        );
+        assert_eq!(out["edited"]["unchanged"], json!(["bookA/1"]));
+        assert_eq!(
+            out["gone"]["missing"],
+            json!([{ "at": "bookB/1", "then": "策略互补" }]),
+            "{}",
+            out["gone"]
+        );
+        assert_eq!(
+            out["occupant"]["changed"][0]["now"],
+            json!("现在占着这个地址的卡"),
+            "a new occupant is a change, not the previously selected Card: {}",
+            out["occupant"]
+        );
+        assert_eq!(out["occupant"]["unchanged"], json!(["bookA/1"]));
+        assert_eq!(
+            out["untyped"]["changed"][0]["at"],
+            json!("bookB/1"),
+            "a proposal with no fingerprint is never trusted silently: {}",
+            out["untyped"]
+        );
+        // Keep saves only what is left, and the question and held Card stay with the Table.
+        assert_eq!(out["trimmed"]["cards"].as_array().expect("cards").len(), 1);
+        assert_eq!(out["trimmed"]["cards"][0]["at"], json!("bookA/1"));
+        assert_eq!(out["trimmed"]["question"], json!("多重均衡"));
+        assert_eq!(out["trimmed"]["held"], json!("bookA/1"));
+    }
+
+    /// S16 (#116, D232, D234; S16-AC01, S16-AC04, S16-AC06, S16-AC07): the shipped page offers the
+    /// `ask` command, decks the answer on the temporary Table with its reasons, keeps it through the
+    /// one existing Spread save path, cancels back to the previous Table, re-reads every endpoint
+    /// before Keep, and guards the keys and the Table gestures while a proposal lies there. A
+    /// proposal is never written: the temporary Table's changes return before the save.
+    #[test]
+    fn the_front_end_asks_the_box_and_keeps_only_on_the_readers_choice() {
+        assert!(
+            APP_JS.contains("['ask [<question>]'"),
+            "the command bar offers ask: {APP_JS}"
+        );
+        assert!(APP_JS.contains("case 'ask': return askBox(rest.join(' '));"));
+        assert!(APP_JS.contains("api('ask', { question: checked.question })"));
+        assert_eq!(
+            APP_JS.matches("api('spreads', body)").count(),
+            2,
+            "Keep sends the one Spread document to the one existing save route"
+        );
+        assert!(
+            APP_JS.contains("const sent = saving.catch(() => {}).then(() => api('spreads', body));"),
+            "Keep confirms the save instead of the debounced Table save"
+        );
+        assert!(
+            !APP_JS.contains("api('spreads/") && !APP_JS.contains("api('spread'"),
+            "no second write route was added for keeping"
+        );
+        let ask = APP_JS.find("api('ask', { question: checked.question })").expect("ask call");
+        let begin = APP_JS.find("spreads.begin(ZtAsk.askPreview(proposal));").expect("begin");
+        assert!(ask < begin, "a proposal is decked only after the box answered");
+        assert!(
+            APP_JS.contains("the question could not be answered"),
+            "a failed question says so"
+        );
+        assert!(
+            APP_JS.contains("if (preview) { renderTableCount(); return; }"),
+            "a temporary Table's changes are never saved"
+        );
+        assert!(
+            APP_JS.contains("spreads.previewing() ? spreads.held() : state.pointer"),
+            "the answer's held Card is squared up and lifted on the temporary Table"
+        );
+        assert!(APP_JS.contains("el.classList.toggle('proposed', proposed);"));
+        assert!(APP_JS.contains("const why = proposed ? ZtAsk.askReason(spreads.now(), card.at) : '';"));
+        assert!(APP_JS.contains("async function keepAskSpread()"));
+        assert!(
+            APP_JS.contains("fresh[card.at] = await api('card?at=' + enc(card.at));"),
+            "Keep re-reads each proposed endpoint"
+        );
+        let changed = APP_JS
+            .find("const changed = ZtAsk.askChanged(preview, fresh);")
+            .expect("the endpoint check");
+        let kept = APP_JS
+            .find("const kept = ZtAsk.askKeep(spreads.doc, keep, spreads.newId());")
+            .expect("the kept document");
+        assert!(changed < kept, "the recheck runs before Keep writes");
+        assert!(APP_JS.contains("if (!(await askChangedDialog(changed))) return;"));
+        assert!(APP_JS.contains(
+            "keep = ZtAsk.askWithout(preview, changed.missing.map((card) => card.at));"
+        ));
+        assert!(APP_JS.contains("await spreads.adopt(kept);"));
+        assert!(APP_JS.contains("function cancelAskSpread()"));
+        assert!(
+            APP_JS.contains("the proposal is gone; the previous Spread is back on the Table"),
+            "Cancel says the previous Table is back"
+        );
+        // The Table's own gestures do not change a proposal's set, and filing waits for Keep.
+        for guard in [
+            "the proposal is a temporary Table: Keep or Cancel it to change the Spread",
+            "the Table holds a question’s proposal: Keep or Cancel it before changing the Spread",
+            "the Table holds a question’s proposal: Keep or Cancel it before laying other cards",
+            "a question’s proposal is not a saved Spread yet: Keep it, then file it as a card",
+        ] {
+            assert!(APP_JS.contains(guard), "the page guards the preview: {guard}");
+        }
+        // The keys belong to the page until the reader answers: y keeps, Esc cancels, and both are
+        // behind the same input/desk guard as every other page key.
+        assert!(APP_JS.contains(
+            "case 'y': return spreads.previewing() ? run(keepAskSpread) : undefined;"
+        ));
+        assert!(APP_JS.contains(
+            "spreads.previewing() ? cancelAskSpread() : pullout.node ? dropBack() : openRail(false)"
+        ));
+        let keys = &APP_JS[APP_JS.find("function installKeys()").expect("installKeys")..];
+        assert!(
+            keys.find("if (state.editing || finder.isOpen) return;")
+                < keys.find("case 'y':"),
+            "the ask keys never fire while a dialog or the search tray owns the keyboard"
+        );
+        assert!(
+            keys.find("if (isTyping(event.target) || event.ctrlKey") < keys.find("case 'y':"),
+            "the ask keys never fire inside an input"
+        );
+        // The page loads the module, and the bar is an element of the page, not a dialog.
+        assert!(INDEX_HTML.contains("<script src=\"/ask.js\" defer></script>"));
+        for id in ["ask-bar", "ask-q", "ask-terms", "ask-note", "ask-keep", "ask-cancel", "ask-open"] {
+            assert!(
+                INDEX_HTML.contains(&format!("id=\"{id}\"")),
+                "the page carries #{id}"
+            );
+        }
+        assert!(INDEX_HTML.contains("Ask the box"));
+        // Light and dark: the bar and the reasons take their ink from the page's theme variables,
+        // so both themes get the same bar; Keep and Cancel are ordinary buttons, which draw the
+        // page's own focus ring.
+        for rule in [".ask-bar {", ".tcard.proposed {", ".tcard .why {", ".ask-changed {"] {
+            assert!(APP_CSS.contains(rule), "the stylesheet has {rule}");
+        }
+        let start = APP_CSS.find(".ask-bar {").expect("ask-bar rule");
+        let block = &APP_CSS[start..start + APP_CSS[start..].find("\n}").expect("rule end")];
+        assert!(
+            !block.contains('#') && block.contains("var(--"),
+            "the bar is painted from the theme, not a fixed colour: {block}"
+        );
+        assert!(APP_CSS.contains(
+            ":focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent)"
+        ));
+        assert!(
+            APP_CSS.contains(".tcard.proposed .put-back { display: none; }"),
+            "a proposed Card cannot be put back before Keep or Cancel"
         );
     }
 }
