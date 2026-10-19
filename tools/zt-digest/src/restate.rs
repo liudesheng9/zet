@@ -50,6 +50,8 @@ const SCHEMA: i64 = 1;
 const CANDIDATES: i64 = 10;
 /// The most new Cards one review takes.
 const MAX_NEW: usize = 200;
+/// The most excluded Cards one review's population evidence lists by name; the rest are counted.
+const MAX_SKIPPED: usize = 50;
 /// The most Cards one book's Literature tree may hold before the bound refuses the review.
 const MAX_BOOK_CARDS: usize = 4_000;
 /// The most earlier Topic Cards read for one review (the title prefilter's union).
@@ -281,11 +283,24 @@ struct Candidate {
     authored: String,
 }
 
-fn read_cards_file(path: &str) -> Result<Vec<String>> {
-    if path.trim().is_empty() {
-        bail!("a restatement review needs -Cards: the new Topic Idea Cards to compare");
-    }
-    let text = util::read_text(path)?;
+/// The run's new Cards: the file `-Cards` names, or — when it names none — the run's own staged
+/// `owned-gNN.txt` manifests, the same receipts-backed lists the Card cycle enumerates (S23 / #115).
+/// A digest stage therefore needs no separate collector: the run's own ownership evidence is the
+/// only population this review may rewrite. A caller's own list is bounded at `MAX_NEW`; the run's
+/// own population can be larger, so its reviewable claims are selected from the title catalogue and
+/// bounded there, with the omitted count recorded in the evidence (§12.2).
+fn read_cards_file(path: &str, staging: &str) -> Result<Vec<String>> {
+    let mut text = String::new();
+    let source = if path.trim().is_empty() {
+        for name in ps::child_files(staging, "owned-g", ".txt") {
+            text.push_str(&util::read_text(&ps::join(staging, &name))?);
+            text.push('\n');
+        }
+        format!("the staged owned-g*.txt manifests in `{staging}`")
+    } else {
+        text = util::read_text(path)?;
+        format!("`-Cards {path}`")
+    };
     let mut addresses: Vec<String> = Vec::new();
     for raw in text.lines() {
         let at = raw.trim();
@@ -298,9 +313,9 @@ fn read_cards_file(path: &str) -> Result<Vec<String>> {
         }
     }
     if addresses.is_empty() {
-        bail!("`-Cards {path}` names no new Card");
+        bail!("{source} names no new Card");
     }
-    if addresses.len() > MAX_NEW {
+    if !path.trim().is_empty() && addresses.len() > MAX_NEW {
         bail!(
             "a restatement review takes at most {MAX_NEW} new Cards, not {}",
             addresses.len()
@@ -309,13 +324,59 @@ fn read_cards_file(path: &str) -> Result<Vec<String>> {
     Ok(addresses)
 }
 
+/// The run's own population: the listed Cards that are reviewable Topic Idea claims, decided from
+/// the title catalogue so a large owned set costs no body read. Each excluded Card keeps its reason;
+/// the list is capped so the review stays inside its own bounds (its omissions are reported, never
+/// silently dropped). Attached to the evidence as `population`.
+fn population(trees: &[Value], owned: &[String]) -> (Vec<String>, Value) {
+    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
+    for tree in trees {
+        for row in ps::each(&tree["cards"]) {
+            rows.insert(f(row, "address"), row.clone());
+        }
+    }
+    let mut selected: Vec<String> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    let mut skipped_total = 0usize;
+    for at in owned {
+        let why = match rows.get(at) {
+            None => Some("the archive does not hold it".to_string()),
+            Some(row) => new_card_refusal(row),
+        };
+        match why {
+            Some(why) => {
+                skipped_total += 1;
+                if skipped.len() < MAX_SKIPPED {
+                    skipped.push(json!({"address": at, "why": why}));
+                }
+            }
+            None => selected.push(at.clone()),
+        }
+    }
+    selected.sort_by(|a, b| canon::ordinal_cmp(a, b));
+    let reviewable = selected.len();
+    selected.truncate(MAX_NEW);
+    let omitted = reviewable - selected.len();
+    (
+        selected.clone(),
+        json!({
+            "owned": owned.len(),
+            "reviewable": reviewable,
+            "selected": selected.len(),
+            "omitted": omitted,
+            "skipped": skipped,
+            "skipped_total": skipped_total,
+        }),
+    )
+}
+
 fn prepare(p: &Params) -> Result<i32> {
     let manifest = common::manifest(&p.staging)?;
     let key = pstr(&manifest, "citation_key");
     if key.is_empty() {
         bail!("manifest.json names no citation_key; a restatement review needs its book");
     }
-    let cards = read_cards_file(&p.cards)?;
+    let cards = read_cards_file(&p.cards, &p.staging)?;
     std::fs::create_dir_all(ps::join(&p.work, "endpoints"))?;
     let mut zt = crate::zt::start()?;
     let mut attempt = 0;
@@ -350,6 +411,7 @@ fn prepare(p: &Params) -> Result<i32> {
         "cards": cards.len(),
         "reviewable": new_cards.len(),
         "skipped": evidence["skipped"],
+        "population": evidence.get("population").cloned().unwrap_or(Value::Null),
         "candidates": pairs,
         "unread": ps::ps_items(&evidence["unread"]).len(),
         "attempts": attempt,
@@ -376,8 +438,22 @@ fn observe(zt: &mut Zt, p: &Params, key: &str, cards: &[String]) -> Result<(Valu
     {
         return Err(crate::concepts::changing_view());
     }
-    // The run's new Cards: required reads, so a missing one is a refusal and never an absence.
-    let read = zt.cards(cards, "text")?;
+    // The population: a caller's own list is read as given (a missing Card is a refusal, never an
+    // absence); the run's own staged manifests are first narrowed to its reviewable claims and
+    // bounded, so a large digest run still reviews a bounded set and reports its omissions.
+    let population_mode = p.cards.trim().is_empty();
+    let (selected, population) = if population_mode {
+        population(&trees, cards)
+    } else {
+        (cards.to_vec(), Value::Null)
+    };
+    if population_mode && selected.is_empty() {
+        bail!(
+            "no new Card of the run's staged manifests ({}) is a Topic Idea Card this review can compare",
+            cards.len()
+        );
+    }
+    let read = zt.cards(&selected, "text")?;
     if read.archive_revision != revision {
         return Err(crate::concepts::changing_view());
     }
@@ -393,7 +469,7 @@ fn observe(zt: &mut Zt, p: &Params, key: &str, cards: &[String]) -> Result<(Valu
     if new_cards.is_empty() {
         bail!(
             "no new Card of `{}` is a Topic Idea Card this review can compare",
-            p.cards
+            if population_mode { "the run's staged manifests" } else { p.cards.as_str() }
         );
     }
     let new_addresses: BTreeSet<String> = new_cards.iter().map(|card| f(card, "address")).collect();
@@ -629,6 +705,11 @@ fn observe(zt: &mut Zt, p: &Params, key: &str, cards: &[String]) -> Result<(Valu
         "coverage": {"cards": new_cards.len(), "pairs": pairs},
         "evidence_id": Value::Null,
     });
+    // The run's own population is a new, additive evidence field: `-Cards` mode keeps exactly the
+    // payload an earlier run froze, so a resumed caller's evidence id does not change.
+    if !population.is_null() {
+        evidence["population"] = population;
+    }
     let payload = evidence.clone();
     let id = format!(
         "e-{}",
@@ -1726,6 +1807,60 @@ fn read_json(path: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S23 / #115: the run's own population is decided from the title catalogue, bounded, and every
+    /// exclusion keeps its reason. A Card the archive does not hold, a Literature-tree Card, a Model
+    /// part and a restatement entry are never new claims; an over-long population reports its
+    /// omissions instead of silently shrinking.
+    #[test]
+    fn the_run_population_is_narrowed_bounded_and_explained() {
+        let row = |address: &str, tree: &str, workspace: &str, card_type: &str, extra: Value| {
+            let mut value = json!({ "address": address, "tree": tree, "workspace": workspace, "type": card_type, "title": "t" });
+            if let (Some(map), Some(add)) = (value.as_object_mut(), extra.as_object()) {
+                for (key, item) in add {
+                    map.insert(key.clone(), item.clone());
+                }
+            }
+            value
+        };
+        let trees = vec![
+            json!({ "tree": "12", "workspace": "agent", "cards": [
+                row("12/0", "12", "agent", "idea", json!({ "edge": "root" })),
+                row("12/1", "12", "agent", "idea", json!({})),
+                row("12/2", "12", "agent", "idea", json!({ "restatement": true })),
+                row("12/3", "12", "agent", "model", json!({})),
+                row("12/4", "12", "human", "idea", json!({})),
+            ]}),
+            json!({ "tree": "K", "workspace": "agent", "cards": [
+                row("K/1", "K", "agent", "idea", json!({})),
+            ]}),
+        ];
+        let owned = vec![
+            "12/0".to_string(), "12/1".to_string(), "12/2".to_string(), "12/3".to_string(),
+            "12/4".to_string(), "K/1".to_string(), "12/9".to_string(),
+        ];
+        let (selected, facts) = population(&trees, &owned);
+        assert_eq!(selected, vec!["12/1".to_string()]);
+        assert_eq!(facts["owned"], 7);
+        assert_eq!(facts["reviewable"], 1);
+        assert_eq!(facts["omitted"], 0);
+        assert_eq!(facts["skipped_total"], 6);
+        let reasons = facts["skipped"].as_array().unwrap();
+        assert_eq!(reasons.len(), 6);
+        assert!(reasons.iter().any(|row| row["address"] == "12/0" && ps::s(&row["why"]).contains("tree root")));
+        assert!(reasons.iter().any(|row| row["address"] == "K/1" && ps::s(&row["why"]).contains("Literature tree")));
+        assert!(reasons.iter().any(|row| row["address"] == "12/9" && ps::s(&row["why"]).contains("does not hold")));
+        // Omission is reported, never a silent truncation.
+        let many: Vec<String> = (1..=(MAX_NEW + 5)).map(|i| format!("12/{}", i)).collect();
+        let mut wide = vec![json!({ "tree": "12", "workspace": "agent", "cards": [] })];
+        for at in &many {
+            wide[0]["cards"].as_array_mut().unwrap().push(row(at, "12", "agent", "idea", json!({})));
+        }
+        let (selected, facts) = population(&wide, &many);
+        assert_eq!(selected.len(), MAX_NEW);
+        assert_eq!(facts["reviewable"], MAX_NEW + 5);
+        assert_eq!(facts["omitted"], 5);
+    }
 
     fn evidence(card: &str, candidate: &str, terminal: &str) -> Value {
         json!({

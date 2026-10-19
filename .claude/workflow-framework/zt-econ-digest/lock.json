@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "4.6.0",
+  "version": "5.0.0",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "678b7eac3d905efe0c4487b2db8d9ef5f240f469d0078f065bdce7fb385b5e6a",
-  "fingerprint": "b27ea500b8e0c1a7",
-  "blueprintSha256": "afa32dccf4dee296c69085264d73b89de201e35c907a4aedcca31abec22f2239",
+  "sha256": "51572e82e8cf3d60729a2a03d42e63df5b1c8768588507ecb1db0e364ab03446",
+  "fingerprint": "bf0636cd396e21dc",
+  "blueprintSha256": "b5630a2c267b6510cad0d1d63df96b33cc86e1f1688554bfed4d7632318bdac5",
   "modules": {
     "gate": "1",
     "zt-digest-lib": "13",
@@ -16,8 +16,9 @@
     "zt-bridge": "5",
     "zt-cards-book": "3",
     "zt-cards-layer": "1",
+    "zt-concepts": "1",
     "zt-digest-prepare": "7",
-    "zt-digest-report": "11",
+    "zt-digest-report": "12",
     "zt-dsh-cleanup": "3",
     "zt-dsh-source": "1",
     "zt-event-layer": "3",
@@ -27,12 +28,13 @@
     "zt-finalize": "1",
     "zt-finding-layer": "3",
     "zt-group-cycle": "3",
-    "zt-hubs": "2",
+    "zt-hubs": "3",
     "zt-link-check": "1",
     "zt-link-pass": "4",
     "zt-link-prepare": "5",
     "zt-model-layer": "2",
-    "zt-organize": "2"
+    "zt-organize": "2",
+    "zt-review": "1"
   },
   "moduleFiles": {
     "gate": {
@@ -63,13 +65,17 @@
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
       "sha256": "6b60475a64fd0c70c38915df0a56b8b02b87511e9789d8828e7c1044a8d80467"
     },
+    "zt-concepts": {
+      "file": "scripts/book-digest/workflow/modules/zt-concepts.js",
+      "sha256": "e6a3e5fda938a3fcc5daf577ef55d2e069134018c69d88093b62517783649ccb"
+    },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
       "sha256": "cb276db6977e99381d52c16645d6b957c946d7861f8a0e2ac84fff689e4b2af7"
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "2b312c9ce0b7853f7fbf054c4ef8aeba03ec97eabfc68060f3856e88dcac0a17"
+      "sha256": "c55d0d83df61a0420c4f6ed70e937eb9d8959dfe0fee019f493effe066c91419"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -109,7 +115,7 @@
     },
     "zt-hubs": {
       "file": "scripts/book-digest/workflow/modules/zt-hubs.js",
-      "sha256": "0a5a5714efc96c6b9fbaaa37e295da42a925934b352a5ad7e2c21a2438053e6d"
+      "sha256": "bd90bdb39f35defe4e89f209a78c8ef006a58d9d2bc480064959fe2ee31a1ca7"
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
@@ -130,22 +136,26 @@
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
       "sha256": "9dc9f070ec7b3c13304c272b9065e2df6928184893fad146566650b60be06adc"
+    },
+    "zt-review": {
+      "file": "scripts/book-digest/workflow/modules/zt-review.js",
+      "sha256": "34dd8ff26914af5d2acbc05b560a930a445b923a90431da41556e0ca32afecc6"
     }
   },
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "708fb042a0f6cc5dcf1e354cb7330e800b1974b071c15cdcef8211d43aa92c51"
+      "sha256": "9b6c2e5604f2926061d2bc482b6c806bb1ede0b0f2ab88fc96d9c18d97dbd3fc"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "03bf971077db51106e3509742734e74d202a2eac6fec26f010391d1746b8b004"
+      "sha256": "93eb0a7ee8c50b64341f995aaeb37780bc87ba4cb3d08c5ef333766490851f68"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-19T17:29:23.528Z",
+  "installedAt": "2026-10-19T21:05:33.236Z",
   "dryRun": {
-    "agents": 35,
+    "agents": 43,
     "order": [
       "args",
       "source",
@@ -153,12 +163,14 @@
       "terms",
       "events",
       "findings",
+      "concepts",
       "digest",
       "cards",
       "models",
       "explain",
       "hubs-first",
       "cards-book",
+      "review",
       "link-prepare",
       "link",
       "link-check",

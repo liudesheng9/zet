@@ -48,11 +48,14 @@ The workflow drives one step with `drive()` (`zt-digest-lib.js`): one Haiku agen
 ## 3. The base stages (mode `full`)
 
 ```
-args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ digest (blocks in parallel, each with its card cycle) ─▶ [after-digest]
-     ─▶ link-prepare ─▶ link ─▶ link-check ─▶ [after-link] ─▶ cleanup ─▶ organize ─▶ figures ─▶ bridge ─▶ hubs ─▶ audit ─▶ [after-audit] ─▶ report
+args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ concepts ─▶ digest (blocks in parallel, each with its card cycle)
+     ─▶ [after-digest] ─▶ cards-book ─▶ review ─▶ link-prepare ─▶ link ─▶ link-check ─▶ [after-link] ─▶ organize
+     ─▶ figures ─▶ bridge ─▶ hubs (then the register plan) ─▶ audit ─▶ finalize ─▶ [after-audit] ─▶ cleanup ─▶ report
 ```
 
 `[slot]` marks where a variant puts its layers; the base leaves the slots empty. Each stage is one module in `scripts/book-digest/workflow/modules/`; every module builds its commands with `Z.tool('<script>')` (`zdTool`), which gives `zt-digest <tool>`.
+
+The order is the dependency flow of the parent design's §13.1, not a reordered blueprint: the book term table and the **concept review of that table** precede the first group writer, the **restatement review** of the run's own new Cards sits inside the scoped Card cycle, the gap-only Link pass follows it, the **report-first Bridge** precedes the **hub publication and register plan**, and the finite finalization and its read-only audit stay last.
 
 | Stage (module) | Steps | Writes Cards? | On failure |
 | --- | --- | --- | --- |
@@ -60,17 +63,19 @@ args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ dig
 | source (`zt-dsh-source`) | With `dshSource: auto`, a Haiku probe asks the official DeepSeek source, then OpenCode Go, for one short answer; the run stops when neither answers. | no | halt |
 | prepare (`zt-digest-prepare`) | `zt-digest prepare -Apply` with the profile's `-Instructions` (and `-NoEventCandidates`): Chinese-only text, section groups (`groups\gNN.md`, each with its `SELF-CHECK:` line), the shared prefixes, and the Literature tree with one anchor Card per group. | anchors | halt |
 | terms (`zt-book-terms`) | `zt-digest terms` plan → one DeepSeek job → apply: the book term table (术语表) that rule R6 reads. | the 术语表 Card | continue |
+| concepts (`zt-concepts`) | `zt-digest concepts propose` (the run's own term rows are the proposed concepts) → `prepare` (the frozen bounded candidate evidence and its one judge job) → the judge job → `judge -File` → `report`. The report step starts no client; a run without a term row is `skipped` with its reason. | no (report only) | continue |
 | cards-book (`zt-cards-book`) | Mode `cards` only: the card cycle on the whole book, with orphans. | rewrites | halt |
 | digest (`zt-digest-blocks`) | One Haiku manager per block of `perManager` groups (at most 8). Each group: `zt-digest snapshot-topics`, then one DeepSeek run on the digest prefix (built from the profile's instruction files) and the group file; it writes Cards with the helper (`-Log`, `-SrcLog`, `-TopicGate`), then runs its SELF-CHECK. When a block's manager returns, its card cycle starts (`zt-digest card -Groups … -Sample … -NoOrphans`). | yes | halt when no group is done |
 | link-prepare, link (`zt-link-prepare`, `zt-link-pass`) | `zt-digest prepare-link` computes each completed group's receipt-owned semantic gap set (`pending`, `no_gap`); then one chain per group claims `link/gNNN@1`, `zt-digest link-start` freezes the gap scope and writes the job, the group's DeepSeek run fills only those gaps (`dsh-link-instructions.zh.md`), and `zt-digest link-finish` applies and checks it. A group with no gap starts no provider run. | Links | halt |
+| review (`zt-review`) | `zt-digest restate prepare` (the population is the run's own staged `owned-g*.txt` manifests) → its one judge job → `judge -File` → `apply -OperationPrefix "<key>/review/restate" -Merges <out>\cards\decisions.json` → `report`. A merge verdict no rewrite covers stays `pending-existing-card-change`; a changed endpoint is refused, never applied as stale text. | the run's own new claims | continue |
 | link-check (`zt-link-check`) | A card cycle after the link pass (`-Work <out>\cards-link`, with orphan jobs): every hard rule in mode `full`, otherwise `cardRules` or L1 and L2. | rewrites, Links | halt |
 | cleanup (`zt-dsh-cleanup`) | Delete leftover DeepSeek conversations, remove the workspace, delete scratch files, read the usage ledger. | no | halt |
 | organize (`zt-organize`) | `zt-digest organize-survey` → Opus `decisions.json` → `zt-digest organize-apply` → a notes card cycle (`-Notes`) → `zt-digest skeleton` plan → DeepSeek → apply (Literature index, structure Card, Topic bodies). | yes | continue |
 | figures (`zt-figures`) | `zt-digest figures -Apply`: show the book's own figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes | halt |
-| bridge (`zt-bridge`) | `zt-digest bridge` with the profile's `bridgeProfile`: bounded plan → read-only judge jobs → immutable report (section 8). | no in discovery | continue; the stage shows `status: failed` |
-| hubs (`zt-hubs`) | `zt-digest hub` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. | Hub Cards | halt |
+| bridge (`zt-bridge`) | `zt-digest bridge` with the profile's `bridgeProfile`: bounded plan → read-only judge jobs → immutable report (section 8). It runs before the hub and register plan so its endpoints are the final Card text. | no in discovery | continue; the stage shows `status: failed` |
+| hubs (`zt-hubs`) | `zt-digest hub` on the whole agent Workspace: survey → Haiku limits → DeepSeek field and topic hubs (JSON) → apply → check → report. Then `zt-digest register -Step plan` (read-only, always reported) and, only when `args.registerPlan` equals the staged plan id, `-Step apply` and `-Step check`. | Hub Cards; the register only under the accepted plan id | halt (the hub half); the register stays `planned`/`pending` |
 | audit (`zt-audit`) | `zt-digest audit`, read-only, over both Workspaces: faults per rule and category, orphans, figures, hubs, broken Links, Bridge counts in and out per book, islands. | no | halt |
-| report (`zt-digest-report`) | No agent: the run's result for the mode, with each stage's status and the variant's extra reports. | no | halt |
+| report (`zt-digest-report`) | No agent: the run's result for the mode, with each stage's status, the variant's extra reports, and the `concepts`, `review` and `register` facts. | no | halt |
 
 A module that fails softly returns `{ status: 'failed', ... }` and its stage still ends; only a thrown error fails a stage. "halt" stops the run.
 

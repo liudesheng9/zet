@@ -4,7 +4,8 @@
     "citationKey": "Key",
     "source": "S.md",
     "bibtex": "@book{Key}",
-    "bookTitle": "书"
+    "bookTitle": "书",
+    "registerPlan": "rp-sim"
   },
   "answers": [
     {
@@ -378,6 +379,101 @@
       "answer": {
         "ok": true,
         "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"}}"
+      }
+    },
+    {
+      "label": "^concepts: propose$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"propose\",\"book\":\"Key\",\"term_rows\":2,\"proposals\":2,\"omitted\":0,\"path\":\"D:/x/Key/review/concepts/proposals.json\",\"terms\":[\"多重均衡\",\"学习\"]}"
+      }
+    },
+    {
+      "label": "^concept review$",
+      "answer": {
+        "steps": [
+          {
+            "name": "prepare",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"prepare\",\"evidence_id\":\"e-sim\",\"archive_revision\":7,\"proposals\":2,\"topic_candidates\":2,\"term_rows\":2,\"unread\":0,\"evidence\":\"D:/x/Key/review/concepts/evidence.json\",\"jobs\":[{\"id\":\"cj-01\",\"files\":[\"doc.md\",\"cj-01.md\"],\"prompt\":\"judge the proposals\"}]}"
+          },
+          {
+            "name": "judge",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"judge\",\"evidence_id\":\"e-sim\",\"judged_id\":\"j-sim\",\"judged\":2,\"pairs\":2,\"unjudged\":0}"
+          },
+          {
+            "name": "report",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"r-sim\",\"status\":\"done\",\"complete\":true,\"findings\":1,\"judged\":2,\"unjudged\":0,\"unread\":0,\"written\":[\"D:/x/Key/concept-review.json\",\"D:/x/Key/concept-review.md\"]}"
+          }
+        ],
+        "results": [
+          {
+            "id": "cj-01",
+            "step": "prepare",
+            "session_id": "s-sim",
+            "status": "done",
+            "answer": "{\"schema_version\":1,\"evidence_id\":\"e-sim\",\"judgments\":[]}"
+          }
+        ]
+      }
+    },
+    {
+      "label": "^restatement review$",
+      "answer": {
+        "steps": [
+          {
+            "name": "prepare",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"prepare\",\"evidence_id\":\"e-sim\",\"archive_revision\":7,\"cards\":3,\"reviewable\":1,\"candidates\":2,\"unread\":0,\"evidence\":\"D:/x/Key/restate-evidence.json\",\"jobs\":[{\"id\":\"rj-01\",\"files\":[\"doc.md\",\"rj-01.md\"],\"prompt\":\"judge the pairs\"}]}"
+          },
+          {
+            "name": "judge",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"judge\",\"evidence_id\":\"e-sim\",\"judged_id\":\"j-sim\",\"judged\":1,\"unjudged\":0}"
+          },
+          {
+            "name": "apply",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"apply\",\"evidence_id\":\"e-sim\",\"judged_id\":\"j-sim\",\"prefix\":\"Key/review/restate\",\"written\":1,\"complete\":true,\"counts\":{\"rewrites\":1,\"pending_existing_card_change\":1},\"resolution\":{\"findings\":2}}"
+          },
+          {
+            "name": "report",
+            "ok": true,
+            "output": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"rr-sim\",\"status\":\"resolved-with-pending\",\"complete\":true,\"counts\":{\"pairs\":2,\"recommended\":0,\"resolved_by_rewrite\":1,\"pending_existing_card_change\":1,\"unverified\":0,\"different\":0,\"unresolved\":0,\"unjudged\":0},\"written\":[\"D:/x/Key/restate-resolution.json\",\"D:/x/Key/review/restate/restate-report.json\"]}"
+          }
+        ],
+        "results": [
+          {
+            "id": "rj-01",
+            "step": "prepare",
+            "session_id": "s-sim",
+            "status": "done",
+            "answer": "{\"schema_version\":1,\"evidence_id\":\"e-sim\",\"judgments\":[]}"
+          }
+        ]
+      }
+    },
+    {
+      "label": "^register plan$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"plan\",\"plan_id\":\"rp-sim\",\"register\":\"12\",\"terms\":2,\"entries\":3,\"unresolved\":0,\"faults\":0,\"excluded\":0,\"read_only\":0,\"parts\":1,\"review\":{\"report_id\":\"r-sim\",\"status\":\"done\",\"complete\":true},\"path\":\"D:/x/Key/register/out/register-plan.json\"}"
+      }
+    },
+    {
+      "label": "^register apply$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"apply\",\"plan_id\":\"rp-sim\",\"register\":\"12\",\"created\":1,\"changed\":1,\"entries\":3,\"read_only\":0,\"unresolved\":0,\"complete\":true,\"archive_revision\":7,\"verified\":true}"
+      }
+    },
+    {
+      "label": "^register check$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"check\",\"plan_id\":\"rp-sim\",\"register\":\"12\",\"register_missing\":false,\"entries\":3,\"read_only\":0,\"unresolved\":0,\"complete\":true,\"faults\":0,\"missing\":0,\"diverged\":0,\"extra\":0,\"archive_revision\":7}"
       }
     }
   ]

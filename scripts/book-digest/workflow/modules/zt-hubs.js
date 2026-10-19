@@ -1,7 +1,13 @@
-// ==== module zt-hubs v2 ====
+// ==== module zt-hubs v3 ====
 // The hub compiler on the whole agent Workspace: a Haiku hub manager reads the survey and chooses the limits;
 // hub-compiler.ps1 does every structural step; DeepSeek plans the fields and writes each hub as JSON; Haiku
 // drivers relay the DeepSeek jobs; check and at most hubFixRounds fix rounds; report and clean-up.
+// v3 adds the concept register's own publication (#101/#104, S23/#115): after the hub report, and only in the
+// final `hubs` stage (params.register), the stage plans `zt-digest register` from every agent book term table,
+// the reviewed concept report when the run has one, and the accepted pinyin readings. The plan is read-only and
+// is always reported; it is applied only for the exact accepted plan id in args.registerPlan, and then checked
+// by reading every page back. Report-first is the default: a new book's authorization does not maintain an
+// existing register (S23-AC07), and an interrupted publication keeps its plan so a retry replays its receipts.
 const ZH_LIMITS = {
   type: 'object',
   properties: {
@@ -15,13 +21,15 @@ const ZH_LIMITS = {
   required: ['ok', 'limits'],
 }
 defineModule({
-  id: 'zt-hubs', version: '2', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: the Hub Cards of the whole agent Workspace (hub-compiler.ps1 with a Haiku hub manager).',
+  id: 'zt-hubs', version: '3', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: the Hub Cards of the whole agent Workspace (hub-compiler.ps1 with a Haiku hub manager), then the concept-register plan and, only under the accepted plan id, its publication.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     model: { type: 'string', description: 'the DeepSeek model from the source stage' },
+    register: { type: 'boolean', default: false, description: 'true: this stage is the final hub stage, so it also plans the concept register (report-first) and applies only the accepted plan id' },
+    conceptReview: { type: 'any', description: 'the concept review output (stages.concepts.output): its frozen report is read-only evidence for the register plan' },
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
@@ -82,7 +90,50 @@ ${hstep('survey')}
     const reported = zdLastJson(((await hrun('report', hstep('report'), { cleanup: true })) || {}).output)
     log(`Hubs: ${JSON.stringify((reported && reported.counts) || {})}; faults ${JSON.stringify((reported && reported.faults) || {})}; ${reported ? reported.mirror : '?'} mirror hubs; ${reported ? reported.missing_count : '?'} required hubs still missing; ${jobs} DeepSeek jobs.`)
     if (!applied) log('Hubs: an apply step failed; the stage is marked failed.')
-    return { status: reported && applied ? 'done' : 'failed', limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported, ...(applied ? {} : { error: 'apply failed: no output from hub-compiler.ps1 -Step apply' }) }
+    const hubsDone = !!(reported && applied)
+    // The concept register: plan always (read-only), publish only for the accepted plan id.
+    let register = null
+    if (p.register) {
+      const work = `${Z.OUT}\\register`
+      const review = p.conceptReview && p.conceptReview.report_path ? ` -Review "${p.conceptReview.report_path}"` : ''
+      const rstep = (s, more = '') => `${Z.DIGEST} register -Step ${s} -Work "${work}"${more}`
+      const planned = await Z.runScript('register plan', 'Hubs', rstep('plan', review), ' (read-only: it stages the register plan and writes no Card)')
+      const staged = planned.json
+      if (!staged || staged.ok !== true) {
+        log(`Register: the plan failed (${(planned.run && planned.run.output) || 'no output'}); nothing was published.`)
+        register = { status: 'failed', error: (planned.run && planned.run.output) || 'no register plan', accepted: false }
+      } else {
+        const accepted = typeof A.registerPlan === 'string' && A.registerPlan === staged.plan_id
+        log(`Register plan ${staged.plan_id}: ${staged.entries ?? 0} term entries, ${staged.unresolved ?? 0} unresolved, ${staged.faults ?? 0} faults, ${staged.read_only ?? 0} read-only targets, ${staged.parts ?? 0} parts${accepted ? '; the run accepts exactly this plan, so it is published now' : '; report-first: name it as registerPlan to publish it'}.`)
+        register = {
+          status: accepted ? 'applying' : 'planned', plan_id: staged.plan_id, entries: staged.entries ?? 0,
+          unresolved: staged.unresolved ?? 0, faults: staged.faults ?? 0, read_only: staged.read_only ?? 0,
+          parts: staged.parts ?? 0, review: staged.review ?? null, accepted, path: staged.path || `${work}\\out\\register-plan.json`,
+        }
+        if (accepted) {
+          const published = await Z.runScript('register apply', 'Hubs', rstep('apply'), ' (identified writes under the accepted plan; a retry replays the same receipts)')
+          const done = published.json
+          const verified = done && done.ok === true
+            ? await Z.runScript('register check', 'Hubs', rstep('check'), ' (it reads every page and writes nothing)')
+            : null
+          const audit = verified && verified.json
+          register.applied = !!verified
+          register.complete = done ? done.complete === true : false
+          register.verified = audit ? audit.complete === true && (audit.faults ?? 1) === 0 : false
+          register.missing = audit ? audit.missing ?? 0 : null
+          register.diverged = audit ? audit.diverged ?? 0 : null
+          register.extra = audit ? audit.extra ?? 0 : null
+          register.status = !verified ? 'pending' : register.verified ? 'published' : 'partial'
+          if (!verified) log(`Register: the publication was interrupted or refused (${(published.run && published.run.output) || 'no output'}); the accepted plan stays staged, so a retry replays its receipts.`)
+          else log(`Register ${staged.plan_id}: ${register.verified ? 'verified' : 'published with unresolved rows'}; ${register.entries} entries, ${register.missing ?? '?'} missing, ${register.diverged ?? '?'} diverged, ${register.extra ?? '?'} extra.`)
+        }
+      }
+    }
+    const status = hubsDone ? (register && register.status === 'failed' ? 'partial' : 'done') : 'failed'
+    return {
+      status, limits, reasons: manager.reasons, trees: plan.tree_count ?? (plan.trees || []).length, applied, report: reported, register,
+      ...(hubsDone ? {} : { error: 'apply failed: no output from hub-compiler.ps1 -Step apply' }),
+    }
   },
 })
 // ==== end module zt-hubs ====

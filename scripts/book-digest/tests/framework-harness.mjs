@@ -98,6 +98,20 @@ const CANNED = {
   'hub apply': () => ({ ok: true, hubs: 1 }),
   'hub check': () => ({ hubs: 1, faults: 0, jobs: [] }),
   'hub report': () => ({ counts: {}, faults: {}, mirror: 0, missing_count: 0 }),
+  // S23 / #115: the delivered vertical paths the integrated stages drive. The concept review runs on the
+  // run's own term table, the restatement review on the run's own staged owned-Card manifests, and the
+  // register plan follows the hub publication.
+  'concepts propose': () => ({ ok: true, step: 'propose', book: 'Key', term_rows: 3, proposals: 2, omitted: 1, path: 'D:\\x\\Key\\review\\concepts\\proposals.json', terms: ['多重均衡', '学习'] }),
+  'concepts prepare': () => ({ ok: true, step: 'prepare', evidence_id: 'e-c1', archive_revision: 7, proposals: 2, term_rows: 3, topic_candidates: 2, restatement_candidates: 1, unread: 0, evidence: 'D:\\x\\Key\\review\\concepts\\evidence.json', jobs: [{ id: 'cj-01', files: ['a', 'b'], prompt: 'p' }] }),
+  'concepts judge': () => ({ ok: true, step: 'judge', evidence_id: 'e-c1', judged_id: 'j-c1', judged: 2, pairs: 2, unjudged: 0 }),
+  'concepts report': () => ({ ok: true, step: 'report', report_id: 'r-c1', status: 'done', complete: true, findings: 2, judged: 2, unjudged: 0, unread: 0, written: ['D:\\x\\Key\\concept-review.json', 'D:\\x\\Key\\concept-review.md'] }),
+  'restate prepare': () => ({ ok: true, step: 'prepare', evidence_id: 'e-r1', archive_revision: 7, cards: 4, reviewable: 2, candidates: 3, unread: 0, population: { owned: 4, reviewable: 2, selected: 2, omitted: 0, skipped: [], skipped_total: 2 }, evidence: 'D:\\x\\Key\\restate-evidence.json', jobs: [{ id: 'rj-01', files: ['a', 'b'], prompt: 'p' }] }),
+  'restate judge': () => ({ ok: true, step: 'judge', evidence_id: 'e-r1', judged_id: 'j-r1', judged: 2, unjudged: 0 }),
+  'restate apply': () => ({ ok: true, step: 'apply', evidence_id: 'e-r1', judged_id: 'j-r1', prefix: 'Key/review/restate', written: 1, complete: true, counts: { rewrites: 1 }, resolution: { findings: 2 } }),
+  'restate report': () => ({ ok: true, step: 'report', report_id: 'rr-c1', status: 'resolved', complete: true, counts: { pairs: 3, recommended: 0, resolved_by_rewrite: 1, pending_existing_card_change: 0, unverified: 0, different: 1, unresolved: 0, unjudged: 0 }, written: ['D:\\x\\Key\\restate-resolution.json', 'D:\\x\\Key\\review\\restate\\restate-report.json'] }),
+  'register plan': () => ({ ok: true, step: 'plan', plan_id: 'rp-c1', register: '12', terms: 3, entries: 4, unresolved: 0, faults: 0, excluded: 0, read_only: 0, parts: 1, review: { report_id: 'r-c1', status: 'done', complete: true }, path: 'D:\\x\\Key\\register\\out\\register-plan.json' }),
+  'register apply': () => ({ ok: true, step: 'apply', plan_id: 'rp-c1', register: '12', created: 1, changed: 1, entries: 4, read_only: 0, unresolved: 0, complete: true, archive_revision: 7, verified: true, replayed: false }),
+  'register check': () => ({ ok: true, step: 'check', plan_id: 'rp-c1', register: '12', register_missing: false, entries: 4, read_only: 0, unresolved: 0, complete: true, faults: 0, missing: 0, diverged: 0, extra: 0, archive_revision: 7 }),
   'organize-survey': () => ({ survey: 'x', topics: 1, pairs: 0 }),
   'organize-apply': () => ({ merges: 0, moves: 0, refused: 0, renamed: 0 }),
   'skeleton plan': () => ({ groups: 2, jobs: [{ id: 'skeleton', files: ['a'], prompt: 'p' }] }),
@@ -176,6 +190,9 @@ function runtime(kind, opts = {}) {
   const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
+  // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
+  // resume path drains a real closure instead of halting on an empty ledger.
+  if (opts.retained) for (const [layer, id] of opts.retained) led.add(id, layer)
   const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0, resources: new Map() }
   const failedStep = []
 
@@ -346,6 +363,20 @@ function runtime(kind, opts = {}) {
       const key = `${tool[1] === 'card' ? 'card' : tool[1] === 'model' ? 'model' : tool[1] === 'event' ? 'event' : tool[1] === 'finding' ? 'finding' : tool[1] === 'hub' ? 'hub' : tool[1] === 'bridge' ? 'bridge' : tool[1] === 'math' ? 'math' : tool[1] === 'terms' ? 'terms' : tool[1] === 'skeleton' ? 'skeleton' : tool[1]} ${tool[2]}`
       const fn = CANNED[key]
       if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
+      // S23 / #115 scenarios: a review whose frozen decision the archive moved past, a recorded merge
+      // verdict no rewrite covers, and an interrupted register publication whose accepted plan stays
+      // staged. Each is a real refusal of the delivered tool, answered here instead of by a live run.
+      if (key === 'restate apply' && opts.staleDecision) return { ok: false, exit: 1, output: 'endpoint_changed: Key/3|a changed after the review' }
+      if (key === 'restate report' && opts.staleDecision) {
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'report', report_id: 'rr-s2', status: 'partial', complete: false, counts: { pairs: 3, recommended: 1, resolved_by_rewrite: 0, pending_existing_card_change: 0, unverified: 0, different: 0, unresolved: 1, unjudged: 0 }, written: [] }) }
+      }
+      if (key === 'restate report' && opts.pendingMerge) {
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'report', report_id: 'rr-p2', status: 'resolved-with-pending', complete: true, counts: { pairs: 3, recommended: 0, resolved_by_rewrite: 1, pending_existing_card_change: 1, unverified: 0, different: 1, unresolved: 0, unjudged: 0 }, written: ['D:\\x\\Key\\restate-resolution.json'] }) }
+      }
+      if (key === 'register apply' && opts.interruptedRegister) return { ok: false, exit: 1, output: 'transport_closed: the publication was interrupted after the parts batch' }
+      if (key === 'register plan' && opts.staleReview) {
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', plan_id: 'rp-s3', register: '12', terms: 3, entries: 3, unresolved: 0, faults: 0, excluded: 1, read_only: 0, parts: 1, review: { report_id: 'r-c1', status: 'partial', complete: false }, path: 'D:\\x\\Key\\register\\out\\register-plan.json' }) }
+      }
       if (fn) {
         const value = fn()
         if (tool[1] === 'card' && tool[2] === 'apply' && state.applyPending > 0) { value.pending_jobs = state.applyPending - 1 }
@@ -634,20 +665,25 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   const e = builds.econ.bp
   const after = (id) => (stageOf('econ', id).after || []).join(',')
-  check(after('digest') === 'terms', 'schedule: the group cycle is released by prepare and terms')
+  // S23-AC01 (#115): §13.1's dependency flow on the existing stages, not a reordered blueprint.
+  check(after('concepts') === 'terms', 'schedule: the frozen concept review follows the book term table')
+  check(after('digest') === 'concepts', 'schedule: the group writers are released by the concept decisions of the run\'s own term table')
   check(after('cards') === 'digest', 'schedule: the per-group Card checks follow their own group completion (the cadrs stage)')
   check(after('models') === 'cards', 'schedule: the model layer is released when the digest managers settle (after the Cards layer)')
   check(after('explain') === 'models', 'schedule: explanations follow the model layer')
   check(after('cards-book') === 'explain', 'schedule: the whole-book card cycle waits for the model reviews (R248)')
   check(stageOf('econ', 'events').after.join(',') === 'terms' && stageOf('econ', 'findings').after.join(',') === 'terms', 'schedule: Event and Finding continuations run from readiness while the remaining groups digest')
-  check(/cards-book/.test(after('link-prepare')) && /hubs-first/.test(after('link-prepare')), 'schedule: the link pass waits for the content layers and the whole-book cycle')
+  check(after('review') === 'cards-book', 'schedule: the scoped restatement review sits in the Card cycle, after the whole-book cycle')
+  check(/review/.test(after('link-prepare')) && /hubs-first/.test(after('link-prepare')) && /events|findings/.test(after('link-prepare')), 'schedule: the gap-only Link pass waits for the term evidence (after-terms), the scoped review (itself after the whole-book cycle) and the mode-hubs preview')
   check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
-  check(after('figures') === 'organize' && after('hubs') === 'organize', 'schedule: Figures and Hubs are released together by Organize')
-  check(after('bridge') === 'figures', 'schedule: Bridge follows Figures (report-only discovery)')
-  check(after('audit') === 'hubs,bridge', 'schedule: the final audit joins the Hubs branch and the Figures→Bridge branch')
+  check(after('figures') === 'organize', 'schedule: Figures is released by Organize')
+  check(after('bridge') === 'figures', 'schedule: the report-first Bridge follows Figures (its endpoint snapshots are the final Card text)')
+  check(after('hubs') === 'bridge', 'schedule: the hub publication and the register plan follow the Bridge report (§13.1)')
+  check(after('audit') === 'hubs,bridge', 'schedule: the final audit joins the Hubs branch and the Bridge branch')
   check(after('finalize') === 'audit', 'schedule: the finite finalization follows the audit it plans from (#86)')
   check(after('cleanup') === 'finalize' && after('report') === 'cleanup', 'schedule: the settlement waits for the finalization, then cleanup, then report')
   check(stageOf('econ', 'finalize').onFail === 'continue', 'schedule: a residual finalization fault leaves a partial result, never a halted run')
+  check(stageOf('econ', 'concepts').onFail === 'continue' && stageOf('econ', 'review').onFail === 'continue', 'schedule: a review reports its own unresolved findings instead of halting the run (S23-AC03/AC04)')
   check(after('hubs-first') === 'explain', 'schedule: the mode-hubs preview stage sits beside the content layers')
   check(stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').foreach.items.$ref === 'stages.prepare.output.groupList', 'schedule: the digest stage is a per-group chain pipeline over the prepared group enumeration')
   check(stageOf('econ', 'digest').foreach.chain[0].module === 'zt-group-cycle', 'schedule: each group item runs the zt-group-cycle chain')
@@ -880,9 +916,94 @@ for (const kind of ['econ', 'math']) {
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (s) => labels.indexOf(s)
-  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('hub manager: survey and limits') > 0, 'full: Figures then report-only Bridge, with Hubs released beside them')
+  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('hub manager: survey and limits') > at('bridge: plan'), 'full: Figures then the report-only Bridge, and the hub and register plan after it (§13.1)')
   check(!cmds.some((c) => /zt-digest bridge/.test(c) && /-Apply\b/.test(c)), 'full: discovery never applies proposals')
 }
+
+// ================================================================================================================
+// The integrated digest path: the delivered vertical paths in the frozen variants (S23 / #115)
+// ================================================================================================================
+{
+  // The concept review runs on the run's own term table, before the first group writer, and its frozen
+  // report travels in the run's result. It writes no Card: the report step starts no client.
+  const { commands, calls, result, report } = await run('econ', { ...base, figures: false })
+  const cmds = commands
+  const labels = calls.map((c) => c.label)
+  const at = (p) => labels.findIndex((l) => p.test(l))
+  check(cmds.some((c) => /zt-digest concepts -Step propose -Staging "D:\\x\\Key" -Work "D:\\x\\Key\\review\\concepts"/.test(c)), 'concepts: the review proposes from the run\'s own term table (no proposal file is written by an agent)')
+  check(cmds.some((c) => /zt-digest concepts -Step prepare /.test(c)) && cmds.some((c) => /zt-digest concepts -Step judge .* -File "D:\\x\\Key\\review\\concepts\\out\\cj-01.json"/.test(c)) && cmds.some((c) => /zt-digest concepts -Step report/.test(c)), 'concepts: the frozen evidence, the validated judge answer and the report are one bounded chain')
+  check(at(/^terms: /) >= 0 && at(/^concepts: /) > at(/^terms: /) && at(/^concepts: /) < at(/^group 1 attempt/), `concepts: the term table, then the concept decisions, then the first group writer (${at(/^terms: /)} < ${at(/^concepts: /)} < ${at(/^group 1 attempt/)})`)
+  check(result && result.concepts && result.concepts.review && result.concepts.review.report_id === 'r-c1' && result.concepts.review.complete === true, `report: the result carries the frozen concept review and its id (${result && JSON.stringify(result.concepts && result.concepts.review)})`)
+  check(result.schedule && result.schedule.concepts && result.schedule.concepts.complete === true, 'report: the schedule summary names the concept review and its completeness')
+  check(report.stages.concepts && report.stages.concepts.status === 'done', 'concepts: the stage ends done when its review is complete')
+}
+{
+  // The scoped restatement review runs in the Card cycle, on the run's own staged owned-Card manifests,
+  // and hands the Card cycle's recorded merge verdicts to the apply step: a merge no rewrite covers stays
+  // pending, never counted as applied (D115/D116).
+  const { commands, calls, result } = await run('econ', { ...base, figures: false }, { pendingMerge: true })
+  const cmds = commands
+  const labels = calls.map((c) => c.label)
+  const at = (p) => labels.findIndex((l) => p.test(l))
+  check(cmds.some((c) => /zt-digest restate -Step prepare -Staging "D:\\x\\Key" -Work "D:\\x\\Key\\review\\restate"/.test(c)), 'review: the review reads the run\'s own staged owned-Card manifests (no separate collector)')
+  check(cmds.some((c) => /zt-digest restate -Step apply .*-OperationPrefix "Key\/review\/restate"/.test(c)), 'review: accepted rewrites go through the run\'s own identified operation prefix')
+  check(cmds.some((c) => /zt-digest restate -Step apply .*-Merges "D:\\x\\Key\\cards\\decisions.json"/.test(c)), 'review: the Card cycle\'s recorded merge verdicts are handed to the apply step')
+  check(at(/^cards whole book/) >= 0 && at(/^restatement review/) > at(/^cards whole book/) && at(/^restatement review/) < at(/^prepare link pass/), `review: the scoped review runs after the whole-book cycle and before the gap-only Link pass (${at(/^cards whole book/)} < ${at(/^restatement review/)} < ${at(/^prepare link pass/)})`)
+  check(result && result.review && result.review.resolution && result.review.resolution.counts.pending_existing_card_change === 1 && result.review.status === 'partial', `report: a merge verdict no rewrite covers stays pending and keeps the review partial (${result && JSON.stringify(result.review && result.review.resolution)})`)
+  check(result.schedule && result.schedule.review && result.schedule.review.pending === 1, 'report: the schedule summary counts the pending resolution')
+}
+{
+  // The frozen decision the archive moved past is refused, never applied as stale text: the apply step
+  // fails, the report renders what remains unresolved, and nothing claims a rewrite.
+  const { commands, result, logs, report } = await run('econ', { ...base, figures: false }, { staleDecision: true })
+  const cmds = commands
+  check(!cmds.some((c) => /zt-digest restate -Step check-only/.test(c)), 'stale decision: no rewrite is invented beside the refused apply')
+  check(result && result.review && result.review.applied === null && result.review.resolution.status === 'partial' && result.review.resolution.counts.unresolved === 1, `stale decision: the unresolved pair is reported, never counted as resolved (${result && JSON.stringify(result.review && result.review.resolution && result.review.resolution.counts)})`)
+  check(logs.some((l) => /Restatement review: no accepted rewrite was applied/.test(l)), 'stale decision: the stage says the accepted rewrite was not applied')
+  check(report.stages.review && report.stages.review.status === 'done', 'stale decision: the review stage reports its own remaining gap instead of halting the run')
+}
+{
+  // The register is report-first: a plan without an accepted plan id is planned, logged and never written.
+  const planned = await run('econ', { ...base, figures: true, hubs: true })
+  check(planned.commands.some((c) => /zt-digest register -Step plan -Work "D:\\x\\Key\\register" -Review "D:\\x\\Key\\concept-review.json"/.test(c)), 'register: the plan reads the reviewed concept report as read-only evidence')
+  check(!planned.commands.some((c) => /zt-digest register -Step apply/.test(c)), 'register: without an accepted plan id the register is planned and reported, never published')
+  check(planned.result && planned.result.register && planned.result.register.plan_id === 'rp-c1' && planned.result.register.accepted === false && planned.result.register.status === 'planned', `register: the result names the plan it did not publish (${planned.result && JSON.stringify(planned.result.register && planned.result.register.status)})`)
+  check(planned.result.schedule && planned.result.schedule.register && planned.result.schedule.register.plan_id === 'rp-c1', 'report: the schedule summary carries the planned register')
+}
+{
+  // The accepted plan id publishes exactly that plan, and the check reads every page back.
+  const accepted = await run('econ', { ...base, figures: true, hubs: true, registerPlan: 'rp-c1' })
+  const cmds = accepted.commands
+  check(cmds.some((c) => /zt-digest register -Step apply -Work "D:\\x\\Key\\register"/.test(c)) && cmds.some((c) => /zt-digest register -Step check -Work "D:\\x\\Key\\register"/.test(c)), 'register: the accepted plan is published and read back')
+  check(accepted.result && accepted.result.register && accepted.result.register.status === 'published' && accepted.result.register.verified === true && accepted.result.register.complete === true, `register: the publication is verified against the plan (${accepted.result && JSON.stringify(accepted.result.register && accepted.result.register.status)})`)
+}
+{
+  // An interrupted publication keeps its accepted plan: the stage reports it pending, runs no check, and
+  // a retry with the same plan id replays the receipts instead of publishing twice.
+  const interrupted = await run('econ', { ...base, figures: true, hubs: true, registerPlan: 'rp-c1' }, { interruptedRegister: true })
+  check(!interrupted.commands.some((c) => /zt-digest register -Step check/.test(c)), 'interrupted register: no verification is claimed for an interrupted publication')
+  check(interrupted.result && interrupted.result.register && interrupted.result.register.status === 'pending' && interrupted.result.register.plan_id === 'rp-c1' && interrupted.result.register.verified === false, `interrupted register: the accepted plan stays staged as pending (${interrupted.result && JSON.stringify(interrupted.result.register && interrupted.result.register.status)})`)
+  check(interrupted.logs.some((l) => /the publication was interrupted or refused/.test(l)), 'interrupted register: the stage says the publication was interrupted and the plan stays staged')
+  const retried = await run('econ', { ...base, figures: true, hubs: true, registerPlan: 'rp-c1' })
+  check(retried.result && retried.result.register && retried.result.register.status === 'published', 'interrupted register: the same accepted plan publishes on the retry')
+}
+{
+  // A stale reviewed decision is reported as excluded evidence, and the register publication it would
+  // have contributed to is planned without it.
+  const { commands, result } = await run('econ', { ...base, figures: true, hubs: true, registerPlan: 'rp-c1' }, { staleReview: true })
+  check(commands.some((c) => /zt-digest register -Step plan .*-Review /.test(c)), 'stale decision: the register plan still reads the reviewed report as evidence')
+  check(result && result.register && result.register.review && result.register.review.complete === false, `stale decision: the plan reports that the review it read is incomplete (${result && JSON.stringify(result.register && result.register.review)})`)
+}
+{
+  // The resumed prepared run drains the two reviews with the rest of its closure, and repeats no
+  // preparation: the retained run's own work decides what is reviewed.
+  const { calls, commands, result } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  const labels = calls.map((c) => c.label)
+  check(labels.includes('concept review') && labels.includes('restatement review'), `resume: the retained run re-reviews its own term table and new Cards (${labels.filter((l) => /review/.test(l)).join(', ')})`)
+  check(commands.some((c) => /zt-digest ledger resume/.test(c)) && !labels.includes('prepare book'), 'resume: the one supported resume runs and no preparation repeats')
+  check(result && result.mode === 'resume' && result.concepts && result.review, 'resume: the resumed run reports both reviews')
+}
+
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
 

@@ -2,13 +2,20 @@
 //! digest run (docs/luhmann-comparison-implementation-design.md §4.2, §4.4, §7.1, §12.1–§12.3;
 //! GitHub issue #97). Four explicit steps, never a query language:
 //!
-//!   zt-digest concepts -Step prepare|judge|report|decision -Staging <folder>
+//!   zt-digest concepts -Step propose|prepare|judge|report|decision -Staging <folder>
 //!                      [-Work <folder>] [-File <json>] [-MaxTopics 10] [-MaxRestatements 10]
 //!
 //! -Staging is the prepared run's staging folder (`manifest.json`). The caller freezes the proposed
 //! concepts in `<Work>\proposals.json`; every other file the steps read or write lives under
 //! `<Work>` (default `<Staging>\concepts`):
 //!
+//!   propose   derives the frozen proposals from the run's own book term table (`<Staging>\terms.md`,
+//!             parsed by the same zt-check row parser R6 uses) and writes `<Work>\proposals.json`:
+//!             one proposed concept per term row, titled by the book's preferred word, asked as the
+//!             question the book's meaning raises, with the book's accepted and rejected spellings.
+//!             It makes no archive call and changes no Card; a run whose term table was not built
+//!             reports `proposals: 0` with its reason, so the workflow can report the review as
+//!             skipped instead of inventing a proposal (S23 / #115 integration of #97's compiler).
 //!   prepare   reads the book's term table through zt-check's own parser (术语, 不用, 意思,
 //!             首次定义), shorts at most ten Topic candidates per proposed concept (D287) and at
 //!             most ten restatement candidates per proposed statement, deduplicated by unordered
@@ -129,7 +136,7 @@ struct Params {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let names = ["Step", "Staging", "Work", "File", "MaxTopics", "MaxRestatements"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &[])?;
-    let step = a.choice("Step", &["prepare", "judge", "report", "decision"])?;
+    let step = a.choice("Step", &["propose", "prepare", "judge", "report", "decision"])?;
     let staging = common::mandatory(&a, "Staging")?;
     let work = {
         let given = a.str("Work");
@@ -154,6 +161,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         )?,
     };
     match p.step.as_str() {
+        "propose" => propose(&p),
         "prepare" => prepare(&p),
         "judge" => judge(&p),
         "report" => report(&p),
@@ -568,6 +576,107 @@ fn topic_entries(trees: &[Value], root: &str) -> Vec<Value> {
     rows.sort_by(|a, b| canon::ordinal_cmp(&f(a, "address"), &f(b, "address")));
     rows.truncate(ENTRIES_PER_TOPIC);
     rows
+}
+
+// --- propose: the run's own proposed concepts -------------------------------------------------------
+
+/// The proposals a run freezes for its concept review (S23 / #115). The manager owns no semantic
+/// judgment here: the book's own term table already names every concept the book defines, in the
+/// book's preferred spelling, with the words it rejects for it (D063). One term row is therefore one
+/// proposed concept — its title, the question its meaning raises, and both accepted spellings — so
+/// the review compares exactly the concepts the run's own source declares, and two runs of one book
+/// freeze the same set. A run without a term table proposes nothing and says why: it never invents a
+/// concept, and a review over an empty set is never presented as a cleared comparison.
+fn proposals_from_rows(rows: &[zt_check::check::TermRow]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for row in rows {
+        let title = line(&row.term, MAX_LINE);
+        if title.is_empty() || out.iter().any(|known| line(&ps::s(&known["title"]), MAX_LINE) == title) {
+            continue;
+        }
+        let meaning = line(&row.meaning, MAX_LINE);
+        // A Topic's stored question is its body as one line (`gate::question_of`). The book's own
+        // meaning is the same kind of text, so the review compares like with like: what this book
+        // says the term is, not a sentence a manager made up about it.
+        let question = if meaning.is_empty() {
+            format!("本书如何使用「{title}」？")
+        } else {
+            format!("本书的「{title}」：{meaning}")
+        };
+        let mut terms: Vec<String> = vec![title.clone()];
+        for word in &row.avoid {
+            let word = line(word, MAX_LINE);
+            if !word.is_empty() && !terms.contains(&word) {
+                terms.push(word);
+            }
+        }
+        out.push(json!({
+            "title": title,
+            "question": line(&question, MAX_LINE),
+            "terms": terms,
+        }));
+        if out.len() == MAX_PROPOSALS {
+            break;
+        }
+    }
+    out
+}
+
+/// The staging file the term table is written to by the Terms stage.
+fn term_table_path(staging: &str) -> String {
+    ps::join(staging, "terms.md")
+}
+
+fn propose(p: &Params) -> Result<i32> {
+    let manifest = common::manifest(&p.staging)?;
+    let key = pstr(&manifest, "citation_key");
+    if key.is_empty() {
+        bail!("manifest.json names no citation_key; a concept review needs its book");
+    }
+    std::fs::create_dir_all(&p.work)?;
+    let path = term_table_path(&p.staging);
+    let rows = if ps::exists(&path) {
+        zt_check::check::term_table(&util::read_text(&path)?)
+    } else {
+        Vec::new()
+    };
+    let proposals = proposals_from_rows(&rows);
+    if proposals.is_empty() {
+        let reason = if rows.is_empty() && !ps::exists(&path) {
+            format!("the run has no book term table at `{path}`, so it proposes no concept")
+        } else if rows.is_empty() {
+            format!("the book term table at `{path}` holds no row, so the run proposes no concept")
+        } else {
+            format!("the book term table at `{path}` names no usable concept")
+        };
+        util::print_line(&ps::json_compact(&json!({
+            "ok": true,
+            "step": "propose",
+            "book": key,
+            "term_rows": rows.len(),
+            "proposals": 0,
+            "omitted": 0,
+            "path": Value::Null,
+            "reason": reason,
+        })))?;
+        return Ok(0);
+    }
+    let path_out = ps::join(&p.work, "proposals.json");
+    canon::save_json(
+        &path_out,
+        &json!({ "schema_version": SCHEMA_VERSION, "book": key, "proposals": proposals }),
+    )?;
+    util::print_line(&ps::json_compact(&json!({
+        "ok": true,
+        "step": "propose",
+        "book": key,
+        "term_rows": rows.len(),
+        "proposals": proposals.len(),
+        "omitted": rows.len().saturating_sub(proposals.len()),
+        "path": path_out,
+        "terms": proposals.iter().map(|proposal| ps::s(&proposal["title"])).collect::<Vec<String>>(),
+    })))?;
+    Ok(0)
 }
 
 // --- prepare --------------------------------------------------------------------------------------
@@ -2162,6 +2271,70 @@ mod tests {
         assert_eq!(similarity(&a, &b), 1.0);
         assert_eq!(similarity(&a, &bigrams("债务契约")), 0.0);
         assert_eq!(similarity(&bigrams(""), &b), 0.0);
+    }
+
+    /// S23 / #115: the run's proposals are the concepts its own book term table declares. One row
+    /// is one proposed concept, both its accepted and rejected spellings are named, a repeated term
+    /// stays one proposal, and the deterministic question carries the book's own meaning.
+    #[test]
+    fn the_proposals_are_the_books_own_term_rows() {
+        let rows = vec![
+            zt_check::check::TermRow {
+                term: "多重均衡".into(),
+                avoid: vec!["均衡多重性".into(), "多个均衡".into()],
+                meaning: "同一个经济里存在不止一个均衡".into(),
+                defined: "§2.1".into(),
+            },
+            zt_check::check::TermRow {
+                term: "多重均衡".into(),
+                avoid: vec![],
+                meaning: "重复的一行".into(),
+                defined: "§3".into(),
+            },
+            zt_check::check::TermRow {
+                term: "学习".into(),
+                avoid: vec!["学习效应".into()],
+                meaning: "个体通过经历改变行为".into(),
+                defined: "§4".into(),
+            },
+        ];
+        let proposals = proposals_from_rows(&rows);
+        assert_eq!(proposals.len(), 2, "a repeated term stays one proposal");
+        assert_eq!(proposals[0]["title"], "多重均衡");
+        assert_eq!(
+            proposals[0]["question"],
+            "本书的「多重均衡」：同一个经济里存在不止一个均衡"
+        );
+        assert_eq!(
+            proposals[0]["terms"],
+            json!(["多重均衡", "均衡多重性", "多个均衡"])
+        );
+        assert_eq!(proposals[1]["terms"], json!(["学习", "学习效应"]));
+        // The frozen file is one the existing `prepare` step accepts: exactly these fields.
+        for proposal in &proposals {
+            let map = proposal.as_object().unwrap();
+            assert!(map.keys().all(|name| ["title", "question", "terms"].contains(&name.as_str())));
+            assert!(!ps::s(&proposal["title"]).is_empty());
+            assert!(!ps::s(&proposal["question"]).is_empty());
+        }
+    }
+
+    /// A run with no term row proposes nothing rather than inventing a concept, and the bound keeps
+    /// the proposal file inside the schema's 20.
+    #[test]
+    fn no_term_row_proposes_nothing_and_the_set_is_bounded() {
+        assert!(proposals_from_rows(&[]).is_empty());
+        let rows = (0..25)
+            .map(|i| zt_check::check::TermRow {
+                term: format!("术语{i}"),
+                avoid: vec![],
+                meaning: format!("意思{i}"),
+                defined: "§1".into(),
+            })
+            .collect::<Vec<_>>();
+        let proposals = proposals_from_rows(&rows);
+        assert_eq!(proposals.len(), MAX_PROPOSALS);
+        assert_eq!(proposals[0]["title"], "术语0");
     }
 
     #[test]

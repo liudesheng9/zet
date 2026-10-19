@@ -92,11 +92,17 @@ try {
     $staging = $work.staging
 
     # --- prepare: bounded comparison pairs from both populations --------------------------------
+    # S23 / #115: without -Cards the population is the run's own staged owned-Card manifests. A
+    # staging folder with none is refused by name instead of reviewing an empty set.
     $missingCards = Invoke-Restate @('-Step', 'prepare', '-Staging', $staging)
-    Assert ($missingCards.code -ne 0 -and $missingCards.text -match '-Cards') 'prepare refuses a review that names no new Card'
+    Assert ($missingCards.code -ne 0 -and $missingCards.text -match 'owned-g\*\.txt.*names no new Card') 'prepare refuses a run whose staged manifests name no new Card'
     $onlyHub = New-Staging 'staging-hub' @($hub)
-    $noClaim = Invoke-Restate @('-Step', 'prepare', '-Staging', $onlyHub.staging)
+    $noClaim = Invoke-Restate @('-Step', 'prepare', '-Staging', $onlyHub.staging, '-Cards', $onlyHub.cards)
     Assert ($noClaim.code -ne 0 -and $noClaim.text -match 'Topic Idea Card') 'a review of no Topic Idea Card is refused, not reported as a clean comparison'
+    # The same refusal in population mode: the owned manifest lists only the Hub Card.
+    [IO.File]::WriteAllText((Join-Path $onlyHub.staging 'owned-g01.txt'), "$hub`n", $utf8)
+    $noClaimOwned = Invoke-Restate @('-Step', 'prepare', '-Staging', $onlyHub.staging)
+    Assert ($noClaimOwned.code -ne 0 -and $noClaimOwned.text -match 'staged manifests.*Topic Idea Card') 'a population of no Topic Idea Card is refused, not reported as a clean comparison'
     $prepare = Invoke-Restate @('-Step', 'prepare', '-Staging', $staging, '-Cards', $work.cards)
     Assert ($prepare.code -eq 0) "prepare runs: $($prepare.text)"
     $p = $prepare.last
@@ -116,6 +122,19 @@ try {
     $job = Get-Content -LiteralPath (Join-Path $staging 'restate\rj-01.md') -Raw -Encoding utf8
     Assert ($job -match '两种效应' -and $job -match $part -and $job -match 'SELF-CHECK' -and $job -match '同述入口') 'the judge job shows both complete statements, the terminal and the answer rules'
     Assert (Test-Path -LiteralPath (Join-Path $staging 'restate\dsh-restate-instructions.zh.md')) 'the judge instruction file is copied beside the job'
+    # S23 / #115: the run's own population. Two owned manifests (a done group and a second one that
+    # repeats one address) are narrowed to the reviewable claims, deduplicated and bounded; the
+    # evidence carries the population facts and the claim count is the same as the caller-list run.
+    $owned = New-Staging 'staging-owned' @()
+    [IO.File]::WriteAllText((Join-Path $owned.staging 'owned-g01.txt'), (($same, $distinct, $conditioned, $hub -join "`n") + "`n"), $utf8)
+    [IO.File]::WriteAllText((Join-Path $owned.staging 'owned-g02.txt'), (($sign, $pending, $conditioned -join "`n") + "`n"), $utf8)
+    $populationRun = Invoke-Restate @('-Step', 'prepare', '-Staging', $owned.staging)
+    Assert ($populationRun.code -eq 0) "prepare reads the run's own owned-Card manifests: $($populationRun.text)"
+    $pop = $populationRun.last
+    Assert ($pop.population.owned -eq 6 -and $pop.population.reviewable -eq 5 -and $pop.population.selected -eq 5 -and $pop.population.omitted -eq 0 -and $pop.population.skipped_total -eq 1) "the population is narrowed, deduplicated and explained: $($pop.population | ConvertTo-Json -Compress)"
+    Assert ($pop.reviewable -eq 5 -and @($pop.population.skipped | Where-Object { $_.address -eq $hub }).Count -eq 1) 'the run population skips the Hub Card with its reason'
+    $ownedEvidence = Read-Json (Join-Path $owned.staging 'restate\evidence.json')
+    Assert ($ownedEvidence.population.reviewable -eq 5 -and $ownedEvidence.population.owned -eq 6) 'the frozen evidence records the run population'
 
     # --- judge: one verdict per pair, and every accepted rewrite shaped correctly --------------
     function New-Answers($evidence) {

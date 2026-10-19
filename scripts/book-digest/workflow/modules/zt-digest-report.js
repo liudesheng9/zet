@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v11 ====
+// ==== module zt-digest-report v12 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -11,10 +11,12 @@
 // correction cycle, changed-Card manifest, refreshed publications and final audit (#86, R299/R300). 10 adds
 // link_blocked: the groups the Link pass did not work because their digest unit is not done (#92). 11 adds
 // link_gaps: the scheduled, skipped and gap counts and the L1/L2 quality of the gap-only Link pass, with each
-// group's own outcome and actual provider runs (#110).
+// group's own outcome and actual provider runs (#110). 12 adds concepts and review: the frozen concept review
+// of the run's own term table and the scoped restatement resolution, with their report ids, completeness and
+// counts, so the integrated digest path reports what it reviewed and what it left pending (S23/#115).
 defineModule({
-  id: 'zt-digest-report', version: '11', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
+  id: 'zt-digest-report', version: '12', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the concept and restatement reviews, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -25,6 +27,8 @@ defineModule({
     cards: { type: 'any', description: 'the Cards layer output (the per-group offline checks)' },
     models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
+    concepts: { type: 'any', description: 'the concept review stage output (the frozen review of the run\'s own term table)' },
+    review: { type: 'any', description: 'the scoped restatement review output (its resolution and pending merges)' },
     cardsBook: { type: 'any', description: 'the whole-book card cycle (mode cards)' },
     explain: { type: 'any', description: 'the explain stage output (mode explain)' },
     hubsFirst: { type: 'any', description: 'the hub stage output in mode hubs' },
@@ -66,6 +70,9 @@ defineModule({
       events: layerSummary((extra && extra.events) || null),
       findings: layerSummary((extra && extra.findings) || null),
       link: p.link ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, verified: p.link.verified ?? 0, failed: p.link.failed ?? 0, provider_runs: p.link.provider_runs ?? 0 } : null,
+      concepts: p.concepts ? { status: p.concepts.status, proposals: p.concepts.proposals ?? 0, complete: !!(p.concepts.review && p.concepts.review.complete), findings: (p.concepts.review && p.concepts.review.findings) || 0, unjudged: (p.concepts.review && p.concepts.review.unjudged) || 0 } : null,
+      review: p.review ? { status: p.review.status, resolved_by_rewrite: (p.review.resolution && p.review.resolution.counts && p.review.resolution.counts.resolved_by_rewrite) || 0, pending: (p.review.resolution && p.review.resolution.counts && p.review.resolution.counts.pending_existing_card_change) || 0, unresolved: (p.review.resolution && p.review.resolution.counts && p.review.resolution.counts.unresolved) || 0 } : null,
+      register: p.hubs && p.hubs.register ? { status: p.hubs.register.status, plan_id: p.hubs.register.plan_id || null, accepted: !!p.hubs.register.accepted, verified: !!p.hubs.register.verified } : null,
     }
     if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
     if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
@@ -75,7 +82,7 @@ defineModule({
     if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null), run_report: runReport }
     if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null), run_report: runReport }
     if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule, run_report: runReport }
-    if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null), run_report: runReport }
+    if (MODE === 'hubs' && !A.organize) return { mode: MODE, dsh_model: dshModel, hubs: or(p.hubsFirst, null), register: (p.hubs && p.hubs.register) || null, schedule, run_report: runReport }
     if (!['full', 'link', 'models', 'hubs', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
     const modelReports = (p.models && p.models.models) || []
     const linkReports = (p.link && p.link.groups) || []
@@ -92,6 +99,8 @@ defineModule({
       link_gaps: linkGaps,
       link_blocked: (p.linkBlocked || []).map(b => ({ group: b.n, unit: b.unit, state: b.state, reason: b.reason })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
+      concepts: or(p.concepts, null), review: or(p.review, null),
+      register: (p.hubs && p.hubs.register) || null,
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), hubs: or(p.hubs, or(p.hubsFirst, null)), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,
