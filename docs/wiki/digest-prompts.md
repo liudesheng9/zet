@@ -298,7 +298,7 @@ $jobs += [ordered]@{ id = $id; files = @($docCopy, $jobFile); prompt = '按以�
 
 ## Testing
 
-No test checks a prompt's wording. These tests touch the prompt files or their composition. Run them from `E:\zet`. The `.ps1` tests start a scratch zt service (`ZT_CONFIG_DIR`). Give `-Zt <zt.exe>` to test a zt build that is not installed yet. `scripts/book-digest/tests/earlier-context.tests.ps1` (#98) reads the digest writer prompt the real `group-start` publishes and asserts that it names the earlier-context pack it must read.
+No test checks a whole prompt's wording. These tests touch the prompt files or their composition. Run them from `E:\zet`. The `.ps1` tests start a scratch zt service (`ZT_CONFIG_DIR`). Give `-Zt <zt.exe>` to test a zt build that is not installed yet. `scripts/book-digest/tests/earlier-context.tests.ps1` (#98) reads the digest writer prompt the real `group-start` publishes and asserts that it names the earlier-context pack it must read, and pins two phrases of `dsh-instructions.zh.md`: the pack's heading and its read-the-whole-Card rule.
 
 ```powershell
 pwsh -NoProfile -File scripts\book-digest\tests\math-compiler.tests.ps1     # -Step docs: math-prefix.md = shared prefix + 数学书补充说明; fill.zh.md has 填写模型分卡 before 填写数学单元
