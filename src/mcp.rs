@@ -409,6 +409,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let terms_for = (!terms_for.is_empty()).then_some(terms_for);
             crate::read::register(&root, workspace, &entries, terms_for.as_deref())
         }
+        "ask_box" => {
+            let ask = crate::entry::AskArgs::from_args(args)?;
+            crate::read::ask(&root, &ask)
+        }
         "search_cards" => {
             let mode = crate::entry::Mode::from_args(args)?;
             let snapshot = Snapshot::read(&root)?;
@@ -1089,6 +1093,29 @@ fn tool_definitions() -> Vec<Value> {
                 Value::Object(properties)
             },
             &["workspace"],
+            true,
+            false,
+        ),
+        tool(
+            "ask_box",
+            "Ask the box",
+            "Gather an explained, bounded Spread proposal from one question, without saving it. The question is matched against the accepted register terms of the selected Workspaces (a scoped label is matched whole; a bare word that states several accepted scoped senses exposes every sense and names itself in `ambiguous_terms`); when no accepted term matches, a small character-bigram overlap against titles and model names seeds the set and the `fallback` says the match is low confidence. From at most six matched terms and twelve distinct entry Cards it walks at most two authored semantic steps in either direction, at most 200 substantive Cards and 1,000 examined Links, and keeps each Link's own from/to direction and Relation kind, so an inbound rests-on stays the neighbour's claim. Generated Reverse links, `来源`/`出处` locators, `邻近`/`入口`/`词条`/`词条分册`/`同述入口` navigation, Hub and Structure member lists, Broken links and source tree roots are never walked; a Hub Card an entry row names supplies its members as entries. The reply holds the best entry Card and up to `limit` explained Cards, each with the term or exact path that justifies it, the term/origin evidence, its authored fingerprint, and the `threads` between selected Cards (authored Links only; a plain reference stays `refers`). `sparse` is true below five justified Cards and zero Cards is a valid answer; `truncated` is true when a bound was reached, and `counts`/`bounds`/`excluded` report the work and the cut. `registers` and `faults` name a missing or duplicate register and every register row that supplied no evidence. The proposal also carries the `archive_revision` and `archive_identity` it was read at. Read-only: it starts no model, writes no Card and saves no Spread.",
+            json!({
+                "question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "The question, at most 512 characters. It is matched against accepted register terms; no model translates it into hidden synonyms.",
+                },
+                "workspace": workspace_filter,
+                "limit": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 9,
+                    "description": "How many Cards the proposal holds (5 to 9, default 7); a size outside the range is clamped to it.",
+                },
+            }),
+            &["question"],
             true,
             false,
         ),

@@ -976,3 +976,19 @@ fn register_view(
     Ok(value)
 }
 
+/// The unsaved Spread proposal of one question (§9.3-§9.5, D211-D231): one coherent read, the same
+/// retrieval function the GUI and the MCP server share, and no write. Unlike the hub read, the walk
+/// may need any authored body it reaches, so the whole Card set is read once inside the
+/// transaction (as the entry search does); the bounds in `entry::gather` keep the work finite. The
+/// archive identity and revision are read in the same transaction, so a caller can bind the
+/// proposal to the exact archive state it describes.
+pub(crate) fn ask(root: &Path, args: &crate::entry::AskArgs) -> Result<Value> {
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let snapshot = Snapshot::load(&tx)?;
+    let identity = archive_identity(&tx, root)?;
+    let value = crate::entry::gather(&snapshot, args, crate::link_index::revision(&tx)?, &identity);
+    tx.commit()?;
+    Ok(value)
+}
+

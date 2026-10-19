@@ -947,6 +947,7 @@ impl App {
             (Method::Get, "/api/card") => self.card(&param("at")?),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
+            (Method::Post, "/api/ask") => self.ask(body),
             (Method::Get, "/api/distant") => self.distant(
                 &param("at")?,
                 query.get("table").map(String::as_str),
@@ -1082,6 +1083,14 @@ impl App {
             &entries,
             terms_for.map(String::as_str),
         )?)
+    }
+
+    /// The unsaved Spread proposal of one question (§9.5, D226-D231; `/api/ask` in D279): the same
+    /// retrieval function the MCP server's `ask_box` calls, from one coherent read, so both
+    /// transports answer one question identically. Read-only: it writes no Card and no Spread.
+    fn ask(&self, body: &Value) -> ApiResult {
+        let args = crate::entry::AskArgs::from_args(body).map_err(ApiError::from)?;
+        Ok(crate::read::ask(&self.root, &args)?)
     }
 
     /// The one distant Card of the Card the reader has open or holds (§10.2, D249-D256; `/api/distant`

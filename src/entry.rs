@@ -2787,6 +2787,1162 @@ fn is_list_item(line: &str) -> bool {
             .is_some()
 }
 
+// ---- the question path (S15, #114, design §9.3-§9.5) ----
+
+/// The longest question the question path accepts, in Unicode characters (D228).
+pub(crate) const ASK_QUESTION_MAX_CHARS: usize = 512;
+/// The fewest Cards a reader may ask for (D228).
+pub(crate) const ASK_LIMIT_MIN: usize = 5;
+/// The most Cards a reader may ask for (D218, D228).
+pub(crate) const ASK_LIMIT_MAX: usize = 9;
+/// The selection size when the reader names none (D228).
+pub(crate) const ASK_LIMIT_DEFAULT: usize = 7;
+
+/// One question request (§9.5, D226-D228; MCP `ask_box`, GUI `POST /api/ask`): the question, the
+/// Workspace filter (`all`, the default, is both Workspaces), and how many Cards the reader asked
+/// for. The MCP server and the GUI build it from the same JSON, so the two transports accept and
+/// refuse exactly the same requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AskArgs {
+    pub(crate) question: String,
+    pub(crate) workspace: Option<Workspace>,
+    pub(crate) limit: usize,
+}
+
+impl AskArgs {
+    /// `question` (required, nonblank, at most 512 characters), `workspace`
+    /// (`human`/`agent`/`all`, default `all`), and `limit` (5 to 9, default 7; a size outside the
+    /// range is clamped to it, so one reply stays bounded).
+    pub(crate) fn from_args(args: &Value) -> Result<Self> {
+        let question = args
+            .get("question")
+            .and_then(Value::as_str)
+            .context("missing string argument `question`")?
+            .trim()
+            .to_string();
+        if question.is_empty() {
+            bail!("argument `question` must be a nonblank question");
+        }
+        if question.chars().count() > ASK_QUESTION_MAX_CHARS {
+            bail!("argument `question` is longer than {ASK_QUESTION_MAX_CHARS} characters");
+        }
+        let workspace = match args.get("workspace") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value))
+                if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("all") =>
+            {
+                None
+            }
+            Some(Value::String(value)) => Some(Workspace::parse(value)?),
+            Some(_) => bail!("argument `workspace` must be a string"),
+        };
+        let limit = match args.get("limit") {
+            None | Some(Value::Null) => ASK_LIMIT_DEFAULT,
+            Some(value) => {
+                let asked = value
+                    .as_u64()
+                    .context("argument `limit` must be a whole number of 5 to 9")?;
+                (asked as usize).clamp(ASK_LIMIT_MIN, ASK_LIMIT_MAX)
+            }
+        };
+        Ok(Self {
+            question,
+            workspace,
+            limit,
+        })
+    }
+}
+
+/// The most accepted terms one question takes (D213, D291).
+pub(crate) const ASK_TERM_MAX: usize = 6;
+/// The most distinct entry seeds one question takes (D213, D217).
+pub(crate) const ASK_SEED_MAX: usize = 12;
+/// The deepest semantic step count from a seed (D215, D217).
+pub(crate) const ASK_DEPTH_MAX: usize = 2;
+/// The most distinct substantive Cards one question visits (D217, D291).
+pub(crate) const ASK_CARD_MAX: usize = 200;
+/// The most authored semantic Links one question examines (D217, D291).
+pub(crate) const ASK_LINK_MAX: usize = 1000;
+/// The longest display name a proposed Spread carries: the Spread schema's own name limit, so the
+/// full question stays in the response and in `spread.question` (D232).
+const ASK_NAME_MAX: usize = 80;
+
+/// The fixed bounds one question reports, so a reader can tell a bounded proposal from a whole
+/// archive search (D217, D291, S15-AC05).
+pub(crate) fn ask_bounds() -> Value {
+    json!({
+        "terms": ASK_TERM_MAX,
+        "seeds": ASK_SEED_MAX,
+        "depth": ASK_DEPTH_MAX,
+        "cards": ASK_CARD_MAX,
+        "links": ASK_LINK_MAX,
+        "limit_min": ASK_LIMIT_MIN,
+        "limit_max": ASK_LIMIT_MAX,
+        "question_max_chars": ASK_QUESTION_MAX_CHARS,
+        "name_max_chars": ASK_NAME_MAX,
+    })
+}
+
+/// One accepted label the question states, with the register rows that write it.
+struct QuestionTerm {
+    term: String,
+    /// The first occurrence in the normalized question, counted in characters.
+    at: usize,
+    /// The origin of each row that writes the label, in register order.
+    origins: Vec<Value>,
+    /// Every target of those rows, in register order, repeats kept (a seed is taken once).
+    targets: Vec<String>,
+}
+
+/// One entry seed: a target of a matched term, or a fallback Card, with the evidence that reached
+/// it.
+struct Seed {
+    address: String,
+    /// The accepted term that reached the Card; `None` for a bigram fallback seed.
+    term: Option<String>,
+    origin: Value,
+    /// How many character bigrams a fallback seed shares with the question.
+    bigrams: usize,
+    /// The matched term's place in evidence order.
+    term_index: usize,
+    /// The Hub Card whose member line supplied this entry, when one did (D216).
+    via_hub: Option<String>,
+}
+
+/// The normalized text one question is matched in: case folded and whitespace collapsed, exactly
+/// as D212 states, so an accepted label is found as a substring of the question and not only as a
+/// whole word.
+fn folded_question(question: &str) -> String {
+    let mut folded = String::with_capacity(question.len());
+    let mut space = false;
+    for ch in question.chars() {
+        if ch.is_whitespace() {
+            space = true;
+            continue;
+        }
+        if space && !folded.is_empty() {
+            folded.push(' ');
+        }
+        space = false;
+        folded.extend(ch.to_lowercase());
+    }
+    folded
+}
+
+/// One accepted label of the supplied registers and the rows that write it, in register order.
+struct AcceptedLabel {
+    label: String,
+    folded: String,
+    /// The label's place among the supplied rows, so a tie is broken by the register's own order.
+    order: usize,
+    origins: Vec<Value>,
+    targets: Vec<String>,
+}
+
+/// The base of an explicitly scoped label such as `学习（产业生产率）`: the text before its
+/// parenthesis (D212). A bare match of that base names every accepted sense rather than one.
+fn scoped_base(label: &str) -> Option<&str> {
+    let at = label.find(['（', '('])?;
+    let base = label[..at].trim();
+    (!base.is_empty()).then_some(base)
+}
+
+/// The accepted labels of the supplied registers, one per label, in register order: every complete
+/// row's term with the Cards it names. An incomplete row is no evidence (D297).
+fn accepted_labels(views: &[View]) -> Vec<AcceptedLabel> {
+    let mut labels: Vec<AcceptedLabel> = Vec::new();
+    let mut order = 0usize;
+    for view in views {
+        for entry in view.entries.iter().filter(|entry| entry.complete()) {
+            let label = entry.term.trim();
+            if label.is_empty() {
+                continue;
+            }
+            order += 1;
+            let origin = json!({"card": entry.card, "line": entry.line, "part": entry.part});
+            let targets = entry
+                .targets
+                .iter()
+                .filter(|target| target.exists)
+                .map(|target| target.address.clone())
+                .collect::<Vec<_>>();
+            match labels.iter_mut().find(|known| known.label == label) {
+                Some(known) => {
+                    known.origins.push(origin);
+                    for target in targets {
+                        if !known.targets.contains(&target) {
+                            known.targets.push(target);
+                        }
+                    }
+                }
+                None => labels.push(AcceptedLabel {
+                    label: label.to_string(),
+                    folded: label.to_lowercase(),
+                    order,
+                    origins: vec![origin],
+                    targets,
+                }),
+            }
+        }
+    }
+    labels
+}
+
+/// The accepted labels the question states, and the bare words whose senses it does not distinguish
+/// (D212, D213). The rules, in the design's order:
+///
+/// - an accepted label matches when its folded text is a substring of the folded question;
+/// - a matched label contained in another matched label is that longer concept's word, so only the
+///   longer label matches; two labels that overlap without containing each other both match;
+/// - a bare base a scoped label states (`学习` for `学习（个体行为）`) matches every accepted sense
+///   when the question does not state any of those scoped labels in full, and names itself
+///   ambiguous when more than one sense is accepted;
+/// - the labels are ordered by first occurrence, then by the order the register writes them.
+fn question_terms(views: &[View], folded: &str) -> (Vec<QuestionTerm>, Vec<String>) {
+    let labels = accepted_labels(views);
+    let position = |folded_label: &str| {
+        folded
+            .find(folded_label)
+            .map(|byte| folded[..byte].chars().count())
+    };
+    // Direct occurrences, before the sense expansion: a label contained in a longer one the
+    // question also states is not a second concept.
+    let mut direct = labels
+        .iter()
+        .enumerate()
+        .filter_map(|(index, label)| position(&label.folded).map(|at| (index, at)))
+        .collect::<Vec<_>>();
+    let all = direct.clone();
+    direct.retain(|(index, _)| {
+        !all.iter().any(|(other, _)| {
+            other != index
+                && labels[*other].folded != labels[*index].folded
+                && labels[*other].folded.contains(&labels[*index].folded)
+        })
+    });
+    let mut matched = direct.clone();
+    let mut ambiguous = Vec::new();
+    // The senses of every bare base the question states, when it states none of them in full.
+    for label in &labels {
+        let Some(base) = scoped_base(&label.label) else {
+            continue;
+        };
+        let folded_base = base.to_lowercase();
+        let Some(base_at) = position(&folded_base) else {
+            continue;
+        };
+        let senses = labels
+            .iter()
+            .enumerate()
+            .filter(|(_, sense)| scoped_base(&sense.label) == Some(base))
+            .collect::<Vec<_>>();
+        let stated = senses
+            .iter()
+            .any(|(_, sense)| position(&sense.folded).is_some());
+        if stated {
+            continue;
+        }
+        for (index, _) in &senses {
+            if !matched.iter().any(|(known, _)| known == index) {
+                matched.push((*index, base_at));
+            }
+        }
+        if senses.len() > 1 && !ambiguous.iter().any(|term| term == base) {
+            ambiguous.push(base.to_string());
+        }
+    }
+    matched.sort_by_key(|(index, at)| (*at, labels[*index].order));
+    let terms = matched
+        .into_iter()
+        .map(|(index, at)| {
+            let label = &labels[index];
+            QuestionTerm {
+                term: label.label.clone(),
+                at,
+                origins: label.origins.clone(),
+                targets: label.targets.clone(),
+            }
+        })
+        .collect();
+    (terms, ambiguous)
+}
+
+/// The fewest character bigrams a title must share with the question to be a fallback seed: one
+/// shared pair is too little evidence to justify a Card (D212, S15-AC03).
+const FALLBACK_BIGRAM_MIN: usize = 2;
+
+/// The characters a bigram overlap compares: case-folded letters and digits. Whitespace and
+/// punctuation carry no meaning of their own in a question, so they are left out of both sides.
+fn overlap_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The distinct character bigrams of one text, in first-occurrence order.
+fn bigrams(text: &str) -> Vec<(char, char)> {
+    let folded = overlap_text(text);
+    let chars = folded.chars().collect::<Vec<_>>();
+    let mut pairs = Vec::new();
+    for window in chars.windows(2) {
+        let pair = (window[0], window[1]);
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    pairs
+}
+
+/// Whether a Card belongs to the question's Workspace filter (`all` keeps both Workspaces).
+fn workspace_kept(snapshot: &Snapshot, workspace: Option<Workspace>, address: &str) -> bool {
+    workspace.is_none_or(|asked| snapshot.workspace(address) == Some(asked))
+}
+
+/// The deterministic fallback seeds of a question that names no accepted term (§9.3, D212): the
+/// substantive Cards whose title or model name shares at least [`FALLBACK_BIGRAM_MIN`] character
+/// bigrams with the question, best overlap first, then in natural address order. Hubs, tree roots
+/// and the register's own navigation are ways in, never entries, so they never seed a question; the
+/// Workspace filter applies here as it does to an entry row's targets.
+fn fallback_seeds(
+    snapshot: &Snapshot,
+    views: &[View],
+    question: &str,
+    workspace: Option<Workspace>,
+) -> Vec<(String, usize)> {
+    let asked = bigrams(question);
+    if asked.len() < FALLBACK_BIGRAM_MIN {
+        return Vec::new();
+    }
+    let navigation = views
+        .iter()
+        .flat_map(|view| view.navigation(snapshot))
+        .collect::<BTreeSet<String>>();
+    let mut seeds = snapshot
+        .cards
+        .iter()
+        .filter(|card| !crate::is_tree_root(card))
+        .filter(|card| card.card_type != CardType::Hub)
+        .filter(|card| !navigation.contains(&card.address))
+        .filter(|card| workspace_kept(snapshot, workspace, &card.address))
+        .filter_map(|card| {
+            let title = &snapshot.parsed.get(&card.address)?.title;
+            let score = bigrams(title)
+                .into_iter()
+                .filter(|pair| asked.contains(pair))
+                .count();
+            (score >= FALLBACK_BIGRAM_MIN).then(|| (card.address.clone(), score))
+        })
+        .collect::<Vec<_>>();
+    seeds.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| crate::model::address_order(&left.0, &right.0))
+    });
+    seeds
+}
+
+/// The archived display name of a question: the Spread schema's name limit is 80 characters, so
+/// the name is cut (never the question itself).
+fn display_name(question: &str) -> String {
+    let one_line = question.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = one_line.chars().take(ASK_NAME_MAX).collect::<String>();
+    if name.is_empty() {
+        "Ask".to_string()
+    } else {
+        name
+    }
+}
+
+/// What one Card of the archive is for a question (§9.4, D216): substance the answer may use, or
+/// one of the ways in that the walk must not turn into a semantic step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+    Substantive,
+    /// The register, its declared parts, and an undeclared Side successor that holds term rows.
+    Navigation,
+    /// A Hub Card: its member lines are entries, never semantic Links.
+    Hub,
+    /// A Literature tree root: the source root that would join every Card of its book.
+    Root,
+    /// A Structure Card: it orders one book's argument, so its list is not a semantic step.
+    Structure,
+}
+
+impl Role {
+    /// Why this Card was not used, as the exclusion count names it.
+    fn excluded(self) -> &'static str {
+        match self {
+            Role::Navigation => "navigation",
+            Role::Hub => "hub",
+            Role::Root => "source_root",
+            Role::Structure => "structure",
+            Role::Substantive => "substantive",
+        }
+    }
+}
+
+/// Whether an authored body is a Structure Card: the first non-blank line is the book's own marker,
+/// which orders the argument rather than making a claim (`本卡是《…》的结构卡`, §9.4).
+fn is_structure_card(body: &str) -> bool {
+    let Some(first) = body.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return false;
+    };
+    first.starts_with("本卡是《") && first.contains("》的结构卡")
+}
+
+/// One Card's authored Links, split by what they are: the semantic Links a walk may follow, and the
+/// occurrences that are a way in or a locator rather than a claim (§9.4, D216).
+#[derive(Clone, Default)]
+struct LinkScan {
+    links: Vec<crate::model::LinkRead>,
+    /// Links on a `来源`/`出处`/`Source` line: where the Card got its material.
+    source: usize,
+    /// Links in a navigation section (`邻近`, `入口`, `词条`, `词条分册`, `同述入口`).
+    navigation: usize,
+    /// Links in fenced code or a chart: not text the Card claims.
+    fenced: usize,
+}
+
+impl LinkScan {
+    /// The occurrences that are not semantic steps, each named with the count it contributes.
+    fn skipped(&self) -> Vec<(&'static str, usize)> {
+        [
+            ("source_locator", self.source),
+            ("navigation", self.navigation),
+            ("fenced", self.fenced),
+        ]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .collect()
+    }
+}
+
+/// The authored Link occurrences of one line.
+fn occurrences(line: &str) -> usize {
+    crate::link::LinkBody::for_rendering(line).occurrences().len()
+}
+
+/// Read one authored body into its semantic Links and the Link occurrences that are not steps. The
+/// generated Reverse section is not part of an authored body at all, so it is never read here. A
+/// Hub Card, a Structure Card and a Literature source root have no semantic Link: a hub's list is a
+/// way in, a structure Card's list is the book's order, and a source root would join a whole book.
+/// A Topic Card is substance (a standalone Topic claim), so its prose Links are read like any other
+/// Card's.
+fn scan_links(snapshot: &Snapshot, address: &str) -> LinkScan {
+    let mut scan = LinkScan::default();
+    let Some(parsed) = snapshot.parsed.get(address) else {
+        return scan;
+    };
+    if snapshot.by_address.get(address).is_none_or(|card| {
+        card.card_type == CardType::Hub || (crate::is_tree_root(card) && card.is_lit)
+    }) || is_structure_card(&parsed.body)
+    {
+        return scan;
+    }
+    let mut kept = String::with_capacity(parsed.body.len());
+    let mut navigation = false;
+    let mut fenced = false;
+    for line in parsed.body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            scan.fenced += occurrences(line);
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+        {
+            let heading = heading.trim();
+            navigation =
+                heading == RESTATEMENT_GROUP || crate::hub::is_navigation_group(heading);
+            continue;
+        }
+        // A source locator line is a source wherever it stands, inside a section or not.
+        if crate::hub::is_source_line(trimmed) {
+            scan.source += occurrences(line);
+            continue;
+        }
+        if navigation {
+            scan.navigation += occurrences(line);
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    scan.links = crate::model::read_links(&kept, |target| snapshot.title(target));
+    scan
+}
+
+/// The role of one Card in a question's read: the navigation Cards of the registers in scope, the
+/// Hub Cards, the source roots and the Structure Cards are ways in, never steps.
+///
+/// A **Literature** tree root is the source root of D216: it would join every Card of its book, so
+/// the walk never uses it. A **Topic** Card is different: the register may name one as "a
+/// standalone Topic claim" (`CONTEXT.md`, Register), so it is substance that a question may hold
+/// and walk from.
+fn role_of(snapshot: &Snapshot, navigation: &BTreeSet<String>, address: &str) -> Option<Role> {
+    let card = snapshot.by_address.get(address)?;
+    if navigation.contains(address) {
+        return Some(Role::Navigation);
+    }
+    if card.card_type == CardType::Hub {
+        return Some(Role::Hub);
+    }
+    if crate::is_tree_root(card) && card.is_lit {
+        return Some(Role::Root);
+    }
+    let body = snapshot
+        .parsed
+        .get(address)
+        .map_or("", |parsed| parsed.body.as_str());
+    if is_structure_card(body) {
+        return Some(Role::Structure);
+    }
+    Some(Role::Substantive)
+}
+
+/// One authored semantic Link of a Card: its target, Relation kind and sentence. A generated
+/// Reverse link is not in the authored body; a source locator line, a navigation section, a fenced
+/// code block and a Hub or Structure Card's member list are no semantic step (§9.4, D216).
+fn semantic_links(snapshot: &Snapshot, address: &str) -> Vec<crate::model::LinkRead> {
+    scan_links(snapshot, address).links
+}
+
+/// One step of a walk: the authored Link's two ends, the direction the walk took, its Relation kind,
+/// and the sentence its author wrote.
+fn step(from: &str, to: &str, direction: &str, link: &crate::model::LinkRead) -> Value {
+    json!({
+        "from": from,
+        "to": to,
+        "direction": direction,
+        "kind": link.kind.id(),
+        "sentence": link.note,
+    })
+}
+
+/// One Card the walk reached, with the exact path that justifies it.
+#[derive(Clone)]
+struct Reached {
+    address: String,
+    /// The entry seed this Card was reached from (itself, at depth 0).
+    seed: String,
+    term: Option<String>,
+    /// The register row that accepted the term, and the Hub Card whose member line supplied the
+    /// entry when one did.
+    origin: Value,
+    via_hub: Option<String>,
+    /// The matched term's place in evidence order, so a stronger term orders a frontier first.
+    term_index: usize,
+    /// The term evidence of the Card's own title and prose, or a fallback seed's bigram overlap:
+    /// the lexical relevance that orders comparably relevant Cards.
+    lexical: usize,
+    /// How many character bigrams a fallback seed shares with the question.
+    bigrams: usize,
+    depth: usize,
+    path: Vec<Value>,
+}
+
+/// What one bounded walk read, so the reply reports the actual work and where a bound stopped it.
+#[derive(Default)]
+struct Walk {
+    reached: Vec<Reached>,
+    excluded: BTreeMap<&'static str, usize>,
+    links: usize,
+    cards_truncated: bool,
+    links_truncated: bool,
+}
+
+impl Walk {
+    fn skip(&mut self, why: &'static str) {
+        *self.excluded.entry(why).or_insert(0) += 1;
+    }
+
+    fn skip_count(&mut self, why: &'static str, count: usize) {
+        *self.excluded.entry(why).or_insert(0) += count;
+    }
+}
+
+/// How many accepted terms one Card's own title and prose state: the lexical evidence that orders a
+/// frontier, so a Card that states the question's terms is walked before one that a Link merely
+/// arrived at.
+fn term_hits(snapshot: &Snapshot, labels: &[&str], address: &str) -> usize {
+    if labels.is_empty() {
+        return 0;
+    }
+    let Some(card) = snapshot.by_address.get(address) else {
+        return 0;
+    };
+    let body = snapshot
+        .parsed
+        .get(address)
+        .map_or("", |parsed| parsed.body.as_str());
+    let text = format!("{}\n{}", snapshot.title(address), prose(body)).to_lowercase();
+    labels
+        .iter()
+        .filter(|label| text.contains(label.to_lowercase().as_str()))
+        .count()
+        + usize::from(card.card_type == CardType::Model)
+}
+
+/// The bounded semantic walk from the entry seeds (§9.4, D215-D217): two steps in either direction,
+/// at most [`ASK_CARD_MAX`] distinct substantive Cards and [`ASK_LINK_MAX`] examined authored
+/// semantic Links, each frontier in a stable order. A Hub Card reached from a seed supplies its
+/// members as entries; a Hub, tree root, navigation Card or Structure Card reached later is a way
+/// in that the walk never passes through.
+fn walk(
+    snapshot: &Snapshot,
+    views: &[View],
+    seeds: &[Seed],
+    workspace: Option<Workspace>,
+) -> Walk {
+    let navigation = views
+        .iter()
+        .flat_map(|view| view.navigation(snapshot))
+        .collect::<BTreeSet<String>>();
+    let labels = views
+        .iter()
+        .flat_map(|view| view.entries.iter())
+        .filter(|entry| entry.complete())
+        .map(|entry| entry.term.trim())
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>();
+    let mut read: BTreeMap<String, LinkScan> = BTreeMap::new();
+    let mut walk = Walk::default();
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    for seed in seeds {
+        visited.insert(seed.address.clone());
+        walk.reached.push(Reached {
+            address: seed.address.clone(),
+            seed: seed.address.clone(),
+            term: seed.term.clone(),
+            origin: seed.origin.clone(),
+            via_hub: seed.via_hub.clone(),
+            term_index: seed.term_index,
+            lexical: term_hits(snapshot, &labels, &seed.address),
+            bigrams: seed.bigrams,
+            depth: 0,
+            path: Vec::new(),
+        });
+    }
+    let mut frontier = (0..walk.reached.len()).collect::<Vec<usize>>();
+    for depth in 1..=ASK_DEPTH_MAX {
+        let mut ordered = frontier.clone();
+        ordered.sort_by(|left, right| {
+            let (left, right) = (&walk.reached[*left], &walk.reached[*right]);
+            left.term_index
+                .cmp(&right.term_index)
+                .then_with(|| right.lexical.cmp(&left.lexical))
+                .then_with(|| crate::model::address_order(&left.address, &right.address))
+        });
+        let mut next = Vec::new();
+        'frontier: for index in ordered {
+            let node = walk.reached[index].clone();
+            // The Card's own semantic Links, then the Cards that link to it. An inbound Link keeps
+            // its own source as `from`, so its kind is never read as the node's own claim.
+            let scan = scan_cached(snapshot, &node.address, &mut read);
+            // The occurrences this Card's own body files as a way in or a locator: counted, never
+            // followed (D216).
+            for (why, count) in scan.skipped() {
+                walk.skip_count(why, count);
+            }
+            let mut steps = Vec::new();
+            for link in &scan.links {
+                if link.target != node.address {
+                    steps.push((link.target.clone(), "out", link.clone()));
+                }
+            }
+            let sources = snapshot
+                .inbound
+                .get(&node.address)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
+            for source in sources {
+                if let Some(link) = scan_cached(snapshot, &source, &mut read)
+                    .links
+                    .into_iter()
+                    .find(|link| link.target == node.address)
+                {
+                    steps.push((source, "in", link));
+                }
+            }
+            for (neighbour, direction, link) in steps {
+                if walk.links >= ASK_LINK_MAX {
+                    walk.links_truncated = true;
+                    break 'frontier;
+                }
+                walk.links += 1;
+                // The Workspace filter selects which Cards the proposal may hold; a Link that
+                // crosses it is still a way in, never a reason to include the other side.
+                if !workspace_kept(snapshot, workspace, &neighbour) {
+                    walk.skip("workspace");
+                    continue;
+                }
+                let Some(role) = role_of(snapshot, &navigation, &neighbour) else {
+                    walk.skip("broken");
+                    continue;
+                };
+                if role != Role::Substantive {
+                    walk.skip(role.excluded());
+                    continue;
+                }
+                if visited.contains(&neighbour) {
+                    continue;
+                }
+                if walk.reached.len() >= ASK_CARD_MAX {
+                    walk.cards_truncated = true;
+                    break 'frontier;
+                }
+                visited.insert(neighbour.clone());
+                let (from, to) = if direction == "out" {
+                    (node.address.as_str(), neighbour.as_str())
+                } else {
+                    (neighbour.as_str(), node.address.as_str())
+                };
+                let mut path = node.path.clone();
+                path.push(step(from, to, direction, &link));
+                let lexical = term_hits(snapshot, &labels, &neighbour);
+                walk.reached.push(Reached {
+                    address: neighbour,
+                    seed: node.seed.clone(),
+                    term: node.term.clone(),
+                    origin: node.origin.clone(),
+                    via_hub: node.via_hub.clone(),
+                    term_index: node.term_index,
+                    lexical,
+                    bigrams: node.bigrams,
+                    depth,
+                    path,
+                });
+                next.push(walk.reached.len() - 1);
+            }
+        }
+        if walk.links_truncated || walk.cards_truncated || next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    walk
+}
+
+/// One Card's authored Link read, made once per walk.
+fn scan_cached(
+    snapshot: &Snapshot,
+    address: &str,
+    read: &mut BTreeMap<String, LinkScan>,
+) -> LinkScan {
+    read.entry(address.to_string())
+        .or_insert_with(|| scan_links(snapshot, address))
+        .clone()
+}
+
+/// The greedy selection of one question's Table (D218-D224, §9.4): the best entry Card is held,
+/// and each further Card is the best remaining one by the design's ordered preference.
+///
+/// 1. a Card whose statement is not yet on the Table beats one that restates a selected statement
+///    (D220); this is a preference, never a filter, so a duplicate is still chosen when nothing
+///    else is left;
+/// 2. a directly relevant Card beats a weaker step, and a shorter justified path beats a longer
+///    one (D221);
+/// 3. among comparably relevant Cards, one that adds a source, a tree or a Relation kind the Table
+///    does not hold yet wins (D222), because diversity is a tie preference among useful Cards;
+/// 4. the last tie is natural address order (D223).
+fn select(snapshot: &Snapshot, reached: &[Reached], limit: usize) -> Vec<usize> {
+    let mut selected = Vec::new();
+    if reached.is_empty() || limit == 0 {
+        return selected;
+    }
+    let mut sources: BTreeSet<String> = BTreeSet::new();
+    let mut trees: BTreeSet<String> = BTreeSet::new();
+    let mut kinds: BTreeSet<String> = BTreeSet::new();
+    let mut statements: BTreeSet<String> = BTreeSet::new();
+    // The best entry Card is the first seed the evidence order reached.
+    selected.push(0);
+    let absorb = |index: usize,
+                  sources: &mut BTreeSet<String>,
+                  trees: &mut BTreeSet<String>,
+                  kinds: &mut BTreeSet<String>,
+                  statements: &mut BTreeSet<String>| {
+        let card = &reached[index];
+        sources.extend(crate::hub::source_evidence(snapshot, &card.address).0);
+        trees.insert(crate::tree_id(&card.address).to_string());
+        if let Some(kind) = card.path.last().and_then(|step| step["kind"].as_str()) {
+            kinds.insert(kind.to_string());
+        }
+        statements.insert(statement_noun(snapshot, &card.address));
+    };
+    absorb(0, &mut sources, &mut trees, &mut kinds, &mut statements);
+    while selected.len() < limit {
+        // The design's ordered preference is one key: a duplicate statement, then depth, then the
+        // matched term's place, then the Card's own term evidence, then the novelty it adds, then
+        // the address order.
+        type Preference = (bool, usize, usize, std::cmp::Reverse<usize>, std::cmp::Reverse<usize>);
+        let mut best: Option<(Preference, String)> = None;
+        for (index, card) in reached.iter().enumerate() {
+            if selected.contains(&index) {
+                continue;
+            }
+            let statement = statement_noun(snapshot, &card.address);
+            let duplicate = statements.contains(&statement);
+            // What this Card would add to the Table: its sources, its tree, and the Relation kind
+            // of the step that reached it.
+            let mut novelty = 0;
+            if crate::hub::source_evidence(snapshot, &card.address)
+                .0
+                .iter()
+                .any(|source| !sources.contains(source))
+            {
+                novelty += 1;
+            }
+            if !trees.contains(crate::tree_id(&card.address)) {
+                novelty += 1;
+            }
+            if card
+                .path
+                .last()
+                .and_then(|step| step["kind"].as_str())
+                .is_some_and(|kind| !kinds.contains(kind))
+            {
+                novelty += 1;
+            }
+            let key = (
+                duplicate,
+                card.depth,
+                card.term_index,
+                std::cmp::Reverse(card.lexical),
+                std::cmp::Reverse(novelty),
+            );
+            let better = match &best {
+                None => true,
+                Some(known) => {
+                    key.cmp(&known.0).then_with(|| {
+                        crate::model::address_order(&card.address, &known.1)
+                    }) == std::cmp::Ordering::Less
+                }
+            };
+            if better {
+                best = Some((key, card.address.clone()));
+            }
+        }
+        let Some((_, address)) = best else {
+            break;
+        };
+        let index = reached
+            .iter()
+            .position(|card| card.address == address)
+            .expect("the chosen Card was reached");
+        selected.push(index);
+        absorb(index, &mut sources, &mut trees, &mut kinds, &mut statements);
+    }
+    selected
+}
+
+/// The unsaved Spread a question proposes (§9.3-§9.5, D211-D231): the question's accepted terms,
+/// their bounded entry seeds, a semantic Link walk from those seeds, and the greedy selection of up
+/// to `limit` explained Cards that holds the best entry Card. It is one pure function over the
+/// supplied read: it starts no model, writes no Card, and returns a proposal the caller may keep or
+/// discard. `revision` and `identity` are the read's own archive evidence, which the adapter read in
+/// the same transaction as the Snapshot.
+pub(crate) fn gather(snapshot: &Snapshot, args: &AskArgs, revision: u64, identity: &Value) -> Value {
+    let sections = BTreeMap::new();
+    let all = registers(snapshot, &sections);
+    let views = all
+        .views
+        .into_iter()
+        .filter(|view| {
+            args.workspace
+                .is_none_or(|workspace| snapshot.workspace(&view.register) == Some(workspace))
+        })
+        .collect::<Vec<_>>();
+    let folded = folded_question(&args.question);
+    let (terms, ambiguous) = question_terms(&views, &folded);
+    let terms_total = terms.len();
+    let terms = terms.into_iter().take(ASK_TERM_MAX).collect::<Vec<_>>();
+
+    // The entries of every matched term, in evidence order. A term whose row names a Hub Card
+    // supplies that hub's members as entries (D216); a tree root, the register's own navigation and
+    // a Structure Card are ways in, so neither becomes an entry (D216, S15-AC04).
+    let navigation = views
+        .iter()
+        .flat_map(|view| view.navigation(snapshot))
+        .collect::<BTreeSet<String>>();
+    let mut seeds: Vec<Seed> = Vec::new();
+    let mut excluded: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let push = |seeds: &mut Vec<Seed>, address: String, term: Option<String>, origin: Value| {
+        if seeds.iter().any(|seed| seed.address == address) {
+            return;
+        }
+        seeds.push(Seed {
+            address,
+            term,
+            origin,
+            bigrams: 0,
+            term_index: 0,
+            via_hub: None,
+        });
+    };
+    for (term_index, term) in terms.iter().enumerate() {
+        for target in &term.targets {
+            if !workspace_kept(snapshot, args.workspace, target) {
+                *excluded.entry("workspace").or_insert(0) += 1;
+                continue;
+            }
+            let Some(role) = role_of(snapshot, &navigation, target) else {
+                *excluded.entry("missing").or_insert(0) += 1;
+                continue;
+            };
+            match role {
+                Role::Hub => {
+                    let body = snapshot
+                        .parsed
+                        .get(target)
+                        .map_or(String::new(), |parsed| parsed.body.clone());
+                    for line in crate::hub::parse_body(&body).lines {
+                        if role_of(snapshot, &navigation, &line.target) == Some(Role::Substantive) {
+                            let address = line.target.clone();
+                            push(&mut seeds, address, Some(term.term.clone()), term.origins.first().cloned().unwrap_or(Value::Null));
+                            if let Some(seed) = seeds.last_mut() {
+                                seed.via_hub = Some(target.clone());
+                                seed.term_index = term_index;
+                            }
+                        } else {
+                            *excluded.entry("hub_member").or_insert(0) += 1;
+                        }
+                    }
+                }
+                Role::Substantive => {
+                    push(&mut seeds, target.clone(), Some(term.term.clone()), term.origins.first().cloned().unwrap_or(Value::Null));
+                    if let Some(seed) = seeds.last_mut() {
+                        seed.term_index = term_index;
+                    }
+                }
+                other => *excluded.entry(other.excluded()).or_insert(0) += 1,
+            }
+        }
+    }
+    // No accepted label matches the question: a small deterministic bigram overlap against titles
+    // and model names seeds it instead, with a low-confidence explanation (D212, S15-AC03).
+    let mut fallback = Value::Null;
+    if terms.is_empty() {
+        let candidates = fallback_seeds(snapshot, &views, &args.question, args.workspace);
+        fallback = json!({
+            "kind": "bigram",
+            "confidence": "low",
+            "min_bigrams": FALLBACK_BIGRAM_MIN,
+            "explanation": "No accepted register term matches the question. These Cards share character bigrams with its title only, so the match is low confidence; reformulate the question or name the term you mean.",
+            "matched": candidates
+                .iter()
+                .take(ASK_SEED_MAX)
+                .map(|(address, score)| json!({"at": address, "bigrams": score}))
+                .collect::<Vec<_>>(),
+        });
+        for (address, score) in candidates {
+            if seeds.iter().any(|seed| seed.address == address) {
+                continue;
+            }
+            seeds.push(Seed {
+                address,
+                term: None,
+                origin: Value::Null,
+                bigrams: score,
+                term_index: usize::MAX,
+                via_hub: None,
+            });
+        }
+    }
+    let seeds_total = seeds.len();
+    seeds.truncate(ASK_SEED_MAX);
+
+    let mut walk = walk(snapshot, &views, &seeds, args.workspace);
+    for (why, count) in excluded {
+        *walk.excluded.entry(why).or_insert(0) += count;
+    }
+    let held = seeds.first().map(|seed| seed.address.clone());
+    let reached = walk.reached.clone();
+    let chosen = select(snapshot, &reached, args.limit);
+    let mut selected: Vec<Value> = Vec::new();
+    let mut reasons: Vec<Value> = Vec::new();
+    for index in chosen {
+        let reached = &reached[index];
+        let at = &reached.address;
+        let reason = match (&reached.term, reached.depth) {
+            (Some(term), 0) => format!("States the accepted term {term}."),
+            (Some(term), _) => format!(
+                "Reached in {} semantic step(s) from the entry Card for {term}.",
+                reached.depth
+            ),
+            (None, _) => format!(
+                "Shares {} character bigrams with the question's title words; the match is low confidence.",
+                reached.bigrams
+            ),
+        };
+        selected.push(json!({
+            "at": at,
+            "held": held.as_deref() == Some(at.as_str()),
+            "title": snapshot.title(at),
+            "workspace": snapshot.workspace(at).map(Workspace::id),
+            "tree": crate::tree_id(at),
+            "type": snapshot.by_address.get(at).map(|card| card.card_type.id()),
+            "term": reached.term,
+            "origin": reached.origin,
+            "via_hub": reached.via_hub,
+            "depth": reached.depth,
+            "seed": reached.seed,
+            "path": reached.path,
+            "statement": statement_noun(snapshot, at),
+            "reason": reason,
+            "authored_fingerprint": snapshot
+                .by_address
+                .get(at)
+                .map(crate::card::authored_fingerprint)
+                .transpose()
+                .unwrap_or(None),
+        }));
+        reasons.push(json!({"at": at, "term": reached.term, "path": reached.path}));
+    }
+    for (index, card) in selected.iter_mut().enumerate() {
+        let (x, y) = grid_position(index);
+        card["position"] = json!({"x": x, "y": y});
+    }
+    let spread_cards = selected
+        .iter()
+        .map(|card| {
+            json!({
+                "at": card["at"],
+                "x": card["position"]["x"],
+                "y": card["position"]["y"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let threads = threads(snapshot, &selected);
+    let name = display_name(&args.question);
+    let truncated =
+        terms_total > terms.len() || seeds_total > seeds.len() || walk.cards_truncated || walk.links_truncated;
+    // The registers this read used, and every fault that kept an entry out of it: a missing
+    // register, a duplicate register, an incomplete row or part (§9.1, D296-D299, S15-AC09).
+    let in_scope = |workspace: &str| args.workspace.is_none_or(|asked| asked.id() == workspace);
+    let registers = all
+        .summary
+        .iter()
+        .filter(|row| row["workspace"].as_str().is_some_and(in_scope))
+        .cloned()
+        .collect::<Vec<_>>();
+    let faults = all
+        .faults
+        .iter()
+        .filter(|fault| {
+            fault["workspace"]
+                .as_str()
+                .is_none_or(|workspace| in_scope(workspace))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    // A Workspace in scope with no register has no accepted term at all: the reply says so rather
+    // than leaving the reader to infer it from an empty term list (S15-AC09).
+    let mut faults = faults;
+    for row in &registers {
+        if row["missing"] != json!(true) {
+            continue;
+        }
+        let workspace = row["workspace"].as_str().unwrap_or_default();
+        faults.push(json!({
+            "fault": "register_missing",
+            "workspace": workspace,
+            "detail": format!(
+                "the {workspace} Workspace has no Hub Card of level register; there are no accepted terms to match"
+            ),
+        }));
+    }
+    json!({
+        "question": args.question,
+        "workspace": args.workspace.map_or("all", Workspace::id),
+        "limit": args.limit,
+        "matched_terms": terms.iter().map(|term| term.term.clone()).collect::<Vec<_>>(),
+        "terms": terms
+            .iter()
+            .map(|term| json!({
+                "term": term.term,
+                "at": term.at,
+                "origins": term.origins,
+                "targets": term.targets,
+            }))
+            .collect::<Vec<_>>(),
+        "ambiguous_terms": ambiguous,
+        "fallback": fallback,
+        "registers": registers,
+        "faults": faults,
+        "held": held,
+        "spread": {
+            "name": name,
+            "question": args.question,
+            "cards": spread_cards,
+        },
+        "cards": selected,
+        "reasons": reasons,
+        "threads": threads,
+        "excluded": Value::Object(
+            walk.excluded
+                .iter()
+                .map(|(why, count)| ((*why).to_string(), json!(count)))
+                .collect(),
+        ),
+        "sparse": selected.len() < ASK_LIMIT_MIN,
+        "truncated": truncated,
+        "counts": {
+            "terms": terms_total,
+            "terms_dropped": terms_total - terms.len(),
+            "seeds": seeds_total,
+            "seeds_dropped": seeds_total - seeds.len(),
+            "depth": ASK_DEPTH_MAX,
+            "visited": walk.reached.len(),
+            "links": walk.links,
+            "candidates": walk.reached.len(),
+            "selected": selected.len(),
+            "cards_truncated": walk.cards_truncated,
+            "links_truncated": walk.links_truncated,
+        },
+        "bounds": ask_bounds(),
+        "archive_revision": revision,
+        "archive_identity": identity,
+    })
+}
+
+/// The authored Links between two selected Cards: each is one thread, named by its own Relation
+/// kind and drawn from the Card that wrote it, so the Table never shows an inferred relation
+/// (§9.4, D225, S15-AC08). A `refers` Link stays labelled `refers`.
+fn threads(snapshot: &Snapshot, selected: &[Value]) -> Vec<Value> {
+    let chosen = selected
+        .iter()
+        .filter_map(|card| card["at"].as_str())
+        .collect::<BTreeSet<_>>();
+    let mut found = Vec::new();
+    for from in &chosen {
+        for link in semantic_links(snapshot, from) {
+            if link.target == *from || !chosen.contains(link.target.as_str()) {
+                continue;
+            }
+            found.push(step(from, &link.target, "out", &link));
+        }
+    }
+    found
+}
+
+/// The stable suggested place of the `index`th selected Card, in the GUI Table's own Card size and
+/// gap: a grid in selection order, so the same question always lays out the same way.
+fn grid_position(index: usize) -> (i64, i64) {
+    const WIDTH: i64 = 236 + 30;
+    const HEIGHT: i64 = 150 + 30;
+    let per_row = 4i64;
+    ((index as i64 % per_row) * WIDTH, (index as i64 / per_row) * HEIGHT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3857,6 +5013,969 @@ mod tests {
         assert_eq!(left.find("logical"), right.find("logical"));
         assert_eq!(left.find("1/1"), "1/1", "the lowest address is the root");
         assert_eq!(left.find("logical"), "1/1");
+    }
+
+    // ---- the question path (S15, #114, design §9.3-§9.5) ----
+
+    /// S15-AC01, D228: a question is nonblank and at most 512 Unicode characters, the Workspace
+    /// filter defaults to both Workspaces, and a requested selection is five to nine Cards with
+    /// seven when the reader names none.
+    #[test]
+    fn ask_arguments_take_a_nonblank_bounded_question_and_a_five_to_nine_selection() {
+        let plain = AskArgs::from_args(&json!({ "question": "为什么学习可能造成多重均衡？" }))
+            .expect("a nonblank question");
+        assert_eq!(plain.question, "为什么学习可能造成多重均衡？");
+        assert_eq!(plain.workspace, None, "the default filter is both Workspaces");
+        assert_eq!(plain.limit, ASK_LIMIT_DEFAULT);
+        assert_eq!(plain.limit, 7);
+
+        for (asked, kept) in [(5, 5), (9, 9), (1, ASK_LIMIT_MIN), (40, ASK_LIMIT_MAX)] {
+            let args = AskArgs::from_args(&json!({ "question": "问题", "limit": asked }))
+                .expect("a requested size");
+            assert_eq!(args.limit, kept, "limit {asked}");
+        }
+        for (named, expected) in [
+            ("human", Some(Workspace::Human)),
+            ("agent", Some(Workspace::Agent)),
+            ("all", None),
+        ] {
+            let args = AskArgs::from_args(&json!({ "question": "问题", "workspace": named }))
+                .expect("a named Workspace");
+            assert_eq!(args.workspace, expected, "workspace {named}");
+        }
+
+        // The bound counts characters, not bytes, and keeps the whole question.
+        let longest = "学".repeat(ASK_QUESTION_MAX_CHARS);
+        let args = AskArgs::from_args(&json!({ "question": longest })).expect("512 characters");
+        assert_eq!(args.question.chars().count(), ASK_QUESTION_MAX_CHARS);
+        let too_long = "学".repeat(ASK_QUESTION_MAX_CHARS + 1);
+        assert!(AskArgs::from_args(&json!({ "question": too_long })).is_err());
+        // A question of blanks is no question.
+        for blank in ["", "   ", "\n\t"] {
+            assert!(
+                AskArgs::from_args(&json!({ "question": blank })).is_err(),
+                "`{blank}` is blank"
+            );
+        }
+        assert!(AskArgs::from_args(&json!({})).is_err(), "no question");
+        assert!(AskArgs::from_args(&json!({ "question": 3 })).is_err());
+        assert!(AskArgs::from_args(&json!({ "question": "问题", "workspace": "shared" })).is_err());
+        assert!(AskArgs::from_args(&json!({ "question": "问题", "limit": "seven" })).is_err());
+    }
+
+    /// S15-AC01, D227, D228: one question over an accepted term returns an unsaved Spread
+    /// proposal that holds the best entry card, names the whole question, and carries the archive
+    /// identity and revision it was read at.
+    #[test]
+    fn a_question_gathers_a_spread_that_holds_its_best_entry_card() {
+        let (temp, _register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 学习的陈述\n\n学习提高生产率。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 学习的另一种说法\n\n这里也从学习说起。\n\n来源：[[bookB]]\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 学习：[[bookB/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "学习为什么提高生产率？" }))
+            .expect("a question");
+        let identity = json!({ "id": "0123456789abcdef0123456789abcdef", "path": "/tmp/archive" });
+        let value = gather(&snapshot, &args, 7, &identity);
+
+        assert_eq!(value["question"], json!("学习为什么提高生产率？"));
+        assert_eq!(value["workspace"], json!("all"));
+        assert_eq!(value["limit"], json!(ASK_LIMIT_DEFAULT));
+        assert_eq!(value["matched_terms"], json!(["学习"]));
+        assert_eq!(value["ambiguous_terms"], json!([]));
+        assert_eq!(value["held"], json!("bookB/1"), "{value}");
+        assert_eq!(
+            value["spread"]["name"],
+            json!("学习为什么提高生产率？"),
+            "the display name is the question"
+        );
+        assert_eq!(
+            value["spread"]["question"],
+            json!("学习为什么提高生产率？")
+        );
+        assert_eq!(value["spread"]["cards"][0]["at"], json!("bookB/1"));
+        assert_eq!(value["spread"]["cards"][0]["x"], json!(0));
+        assert_eq!(value["spread"]["cards"][0]["y"], json!(0));
+        assert_eq!(value["cards"][0]["at"], json!("bookB/1"));
+        assert_eq!(value["cards"][0]["term"], json!("学习"));
+        assert_eq!(value["cards"][0]["held"], json!(true));
+        assert_eq!(value["reasons"][0]["at"], json!("bookB/1"));
+        assert_eq!(value["reasons"][0]["term"], json!("学习"));
+        assert_eq!(value["archive_revision"], json!(7));
+        assert_eq!(value["archive_identity"], identity);
+        assert_eq!(value["truncated"], json!(false));
+        assert_eq!(
+            value["sparse"], json!(true),
+            "one justified Card is under the five a full Spread needs"
+        );
+    }
+
+    /// S15-AC02, D212, D213: accepted labels are found as substrings of the question, a longer
+    /// label is preferred over the shorter label it contains, two overlapping concepts that contain
+    /// each other neither way both stay, and a bare word that several accepted scoped labels state
+    /// exposes every sense with its own ambiguous entry instead of silently choosing one.
+    #[test]
+    fn a_question_exposes_every_sense_of_a_bare_scoped_word_and_prefers_the_longer_label() {
+        let (temp, _register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 个体学习\n\n个体学习提高技能。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 产业学习\n\n产业学习提高生产率。\n\n来源：[[bookB]]\n",
+                ),
+                (
+                    "bookC",
+                    "# 多重均衡\n\n多重均衡来自策略互补。\n\n来源：[[bookC]]\n",
+                ),
+                (
+                    "bookD",
+                    "# 产业政策\n\n产业政策改变投资。\n\n来源：[[bookD]]\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 学习（个体行为）：[[bookA/1]]\n- 学习（产业生产率）：[[bookB/1]]\n- 多重均衡：[[bookC/1]]\n- 均衡：[[bookC/1]]\n- 产业政策：[[bookD/1]]\n- 政策效应：[[bookD/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let ask = |question: &str| {
+            let args = AskArgs::from_args(&json!({ "question": question })).expect("a question");
+            gather(&snapshot, &args, 1, &json!({}))
+        };
+
+        // A bare word that two accepted scoped labels state: every sense is a matched term and the
+        // bare word itself names the ambiguity. The scoped label `均衡` is contained in `多重均衡`,
+        // which the question also states, so only the longer concept matches.
+        let value = ask("为什么学习可能造成多重均衡？");
+        assert_eq!(
+            value["matched_terms"],
+            json!(["学习（个体行为）", "学习（产业生产率）", "多重均衡"]),
+            "{value}"
+        );
+        assert_eq!(value["ambiguous_terms"], json!(["学习"]), "{value}");
+        assert_eq!(value["held"], json!("bookA/1"), "{value}");
+
+        // The full scoped label is preferred over its bare word, so no sense is exposed.
+        let value = ask("学习（产业生产率）为什么提高生产率？");
+        assert_eq!(
+            value["matched_terms"],
+            json!(["学习（产业生产率）"]),
+            "{value}"
+        );
+        assert_eq!(value["ambiguous_terms"], json!([]), "{value}");
+        assert_eq!(value["held"], json!("bookB/1"), "{value}");
+
+        // Two concepts that overlap without containing each other both match.
+        let value = ask("产业政策效应如何？");
+        assert_eq!(
+            value["matched_terms"],
+            json!(["产业政策", "政策效应"]),
+            "{value}"
+        );
+        assert_eq!(value["held"], json!("bookD/1"), "{value}");
+    }
+
+    /// S15-AC02, D213, D291: at most six matched terms and twelve distinct entry seeds are taken,
+    /// in evidence order, and the reply says how many it left out and which bounds are in force.
+    #[test]
+    fn a_question_takes_six_terms_and_twelve_seeds_and_reports_the_bounds_it_hit() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookQ", "# 陈述一\n\n第一条陈述。\n\n来源：[[bookQ]]\n")],
+            &[
+                ("bookQ/1", crate::ops::Successor::Direct, CardType::Idea, "# 陈述二\n\n第二条陈述。"),
+                ("bookQ/2", crate::ops::Successor::Direct, CardType::Idea, "# 陈述三\n\n第三条陈述。"),
+                ("bookQ/3", crate::ops::Successor::Direct, CardType::Idea, "# 陈述四\n\n第四条陈述。"),
+                ("bookQ/4", crate::ops::Successor::Direct, CardType::Idea, "# 陈述五\n\n第五条陈述。"),
+                ("bookQ/5", crate::ops::Successor::Direct, CardType::Idea, "# 陈述六\n\n第六条陈述。"),
+                ("bookQ/6", crate::ops::Successor::Direct, CardType::Idea, "# 陈述七\n\n第七条陈述。"),
+                ("bookQ/7", crate::ops::Successor::Direct, CardType::Idea, "# 陈述八\n\n第八条陈述。"),
+                ("bookQ/8", crate::ops::Successor::Direct, CardType::Idea, "# 陈述九\n\n第九条陈述。"),
+                ("bookQ/9", crate::ops::Successor::Direct, CardType::Idea, "# 陈述十\n\n第十条陈述。"),
+                ("bookQ/10", crate::ops::Successor::Direct, CardType::Idea, "# 陈述十一\n\n第十一条陈述。"),
+                ("bookQ/11", crate::ops::Successor::Direct, CardType::Idea, "# 陈述十二\n\n第十二条陈述。"),
+                ("bookQ/12", crate::ops::Successor::Direct, CardType::Idea, "# 陈述十三\n\n第十三条陈述。"),
+            ],
+            "## 词条\n- 甲：[[bookQ/1]] [[bookQ/2]]\n- 乙：[[bookQ/3]] [[bookQ/4]]\n- 丙：[[bookQ/5]] [[bookQ/6]]\n- 丁：[[bookQ/7]] [[bookQ/8]]\n- 戊：[[bookQ/9]] [[bookQ/10]]\n- 己：[[bookQ/11]] [[bookQ/12]] [[bookQ/13]]\n- 庚：[[bookQ/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲乙丙丁戊己庚分别是什么？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(
+            value["matched_terms"],
+            json!(["甲", "乙", "丙", "丁", "戊", "己"]),
+            "the seventh term is left out, in evidence order: {value}"
+        );
+        assert_eq!(value["counts"]["terms"], json!(7));
+        assert_eq!(value["counts"]["terms_dropped"], json!(1));
+        assert_eq!(
+            value["counts"]["seeds"], json!(13),
+            "six kept terms offer thirteen distinct Cards"
+        );
+        assert_eq!(value["counts"]["seeds_dropped"], json!(1));
+        assert_eq!(value["counts"]["selected"], json!(ASK_LIMIT_DEFAULT));
+        assert_eq!(value["truncated"], json!(true));
+        assert_eq!(value["bounds"]["terms"], json!(ASK_TERM_MAX));
+        assert_eq!(value["bounds"]["seeds"], json!(ASK_SEED_MAX));
+        assert_eq!(value["bounds"]["depth"], json!(ASK_DEPTH_MAX));
+        assert_eq!(value["bounds"]["cards"], json!(ASK_CARD_MAX));
+        assert_eq!(value["bounds"]["links"], json!(ASK_LINK_MAX));
+        assert_eq!(value["bounds"]["limit_min"], json!(ASK_LIMIT_MIN));
+        assert_eq!(value["bounds"]["limit_max"], json!(ASK_LIMIT_MAX));
+        assert_eq!(
+            value["bounds"]["question_max_chars"],
+            json!(ASK_QUESTION_MAX_CHARS)
+        );
+        // Every selected Card names the term that reached it and the register row that accepted it.
+        for card in value["cards"].as_array().expect("cards") {
+            assert!(card["term"].is_string(), "{card}");
+            assert_eq!(card["origin"]["card"], json!("0/1"), "{card}");
+            assert!(card["origin"]["line"].as_u64().is_some(), "{card}");
+            assert!(card["path"].is_array(), "{card}");
+            assert!(card["reason"].as_str().is_some_and(|reason| !reason.is_empty()));
+        }
+        assert_eq!(value["held"], json!("bookQ/1"));
+    }
+
+    /// S15-AC03, D212: when no accepted label matches, a small pure character-bigram overlap
+    /// against titles and model names seeds the set, and the explanation says it is low confidence.
+    /// The overlap is its own calculation: the digest's TF-IDF stack stays in its own crate.
+    #[test]
+    fn a_question_without_an_accepted_term_falls_back_to_a_low_confidence_title_overlap() {
+        let (temp, _register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 多重均衡的出现\n\n多重均衡来自策略互补。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 策略互补\n\n策略互补解释这个结果。\n\n来源：[[bookB]]\n",
+                ),
+            ],
+            &[],
+            "## 词条\n- 学习（个体行为）：[[bookA/1]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "多重均衡从哪里来？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(value["matched_terms"], json!([]), "{value}");
+        assert_eq!(value["ambiguous_terms"], json!([]), "{value}");
+        assert_eq!(value["fallback"]["kind"], json!("bigram"), "{value}");
+        assert_eq!(value["fallback"]["confidence"], json!("low"), "{value}");
+        assert!(
+            value["fallback"]["explanation"]
+                .as_str()
+                .is_some_and(|text| text.contains("low confidence")),
+            "{value}"
+        );
+        assert_eq!(value["held"], json!("bookA/1"), "{value}");
+        assert_eq!(value["cards"][0]["at"], json!("bookA/1"), "{value}");
+        assert_eq!(value["cards"][0]["term"], Value::Null, "{value}");
+        assert!(
+            value["cards"][0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("bigram")),
+            "{value}"
+        );
+        assert!(value["counts"]["visited"].as_u64().is_some(), "{value}");
+
+        // The calculation is small and pure: no compiler dependency, no TF-IDF stack.
+        let source = include_str!("entry.rs");
+        let forbidden = ["tf".to_owned() + "idf", "zt_".to_owned() + "digest"];
+        for name in forbidden {
+            assert!(
+                !source.contains(&name),
+                "entry.rs must not reach into the {name} stack"
+            );
+        }
+    }
+
+    /// S15-AC04, D215, D216: two semantic steps in either direction from the entry seeds, each
+    /// step keeping the Link's own from/to direction and Relation kind. An inbound `rests-on` Link
+    /// stays the neighbour's `rests-on` Link to the seed, not the seed's relation to it.
+    #[test]
+    fn a_walk_takes_two_semantic_steps_in_both_directions_and_keeps_each_links_direction() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 乙\n\n乙的陈述。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丙\n\n丙的陈述。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/3",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丁\n\n丁的结果。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/4",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 戊\n\n更深一层。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/5",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 己\n\n乙的例子。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        // The semantic Links are edits, because a Link needs its target to exist when it is written.
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 甲的陈述\n\n甲的陈述内容。对应 [[bookA/3]] 的机制。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/2",
+            "# 乙\n\n依赖 [[bookA/1]] 的设定。例示 [[bookA/6]]。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/3",
+            "# 丙\n\n对照 [[bookA/4]] 的结果。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/4",
+            "# 丁\n\n丁的结果。依赖 [[bookA/5]]。\n\n来源：[[bookA]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲讲了什么？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+        let cards = value["cards"].as_array().expect("cards");
+        let at = |address: &str| {
+            cards
+                .iter()
+                .find(|card| card["at"] == json!(address))
+                .unwrap_or_else(|| panic!("{address} was not gathered: {value}"))
+                .clone()
+        };
+
+        assert_eq!(value["held"], json!("bookA/1"));
+        assert_eq!(at("bookA/1")["depth"], json!(0));
+        assert_eq!(at("bookA/1")["path"], json!([]));
+        assert_eq!(at("bookA/2")["depth"], json!(1));
+        assert_eq!(at("bookA/3")["depth"], json!(1));
+        assert_eq!(at("bookA/4")["depth"], json!(2));
+        assert_eq!(at("bookA/6")["depth"], json!(2));
+        assert!(
+            !cards.iter().any(|card| card["at"] == json!("bookA/5")),
+            "a third step is beyond the depth bound: {value}"
+        );
+
+        // An inbound rests-on Link keeps its authored direction and kind.
+        assert_eq!(
+            at("bookA/2")["path"],
+            json!([{
+                "from": "bookA/2",
+                "to": "bookA/1",
+                "direction": "in",
+                "kind": "rests-on",
+                "sentence": "依赖 「甲的陈述」 的设定。",
+            }]),
+            "{value}"
+        );
+        // Two outbound steps keep their own kinds in order.
+        assert_eq!(
+            at("bookA/4")["path"],
+            json!([
+                {"from": "bookA/1", "to": "bookA/3", "direction": "out", "kind": "corresponds", "sentence": "对应 「丙」 的机制。"},
+                {"from": "bookA/3", "to": "bookA/4", "direction": "out", "kind": "contrasts", "sentence": "对照 「丁」 的结果。"},
+            ]),
+            "{value}"
+        );
+
+        // Only authored Links between two selected Cards become threads, with their own kinds.
+        let mut threads = value["threads"]
+            .as_array()
+            .expect("threads")
+            .iter()
+            .map(|thread| {
+                format!(
+                    "{}->{}:{}",
+                    thread["from"].as_str().unwrap_or_default(),
+                    thread["to"].as_str().unwrap_or_default(),
+                    thread["kind"].as_str().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>();
+        threads.sort();
+        assert_eq!(
+            threads,
+            vec![
+                "bookA/1->bookA/3:corresponds",
+                "bookA/2->bookA/1:rests-on",
+                "bookA/2->bookA/6:illustrates",
+                "bookA/3->bookA/4:contrasts",
+            ],
+            "{value}"
+        );
+        assert_eq!(value["counts"]["depth"], json!(2));
+        assert_eq!(value["counts"]["visited"], json!(5));
+        assert_eq!(value["counts"]["links"], json!(6));
+    }
+
+    /// S15-AC04, S15-AC09, D216: a Hub Card an entry row names supplies its member Cards as
+    /// entries, while a source locator, a navigation section, a Hub or Structure Card's member
+    /// list, a Broken link and a source tree root never become a semantic step. Every exclusion is
+    /// counted, so a reader can tell "nothing links here" from "everything that did was a way in".
+    #[test]
+    fn a_question_never_walks_through_sources_navigation_hubs_roots_or_structure_lists() {
+        let (temp, _register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n",
+                ),
+                ("bookB", "# 乙的陈述\n\n乙的内容。\n\n来源：[[bookB]]\n"),
+            ],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Side,
+                    CardType::Hub,
+                    "# 甲的枢纽\n\n枢纽正文。\n",
+                ),
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丙的陈述\n\n丙的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丁的陈述\n\n丁的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/3",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 戊的陈述\n\n戊的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/4",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 己的陈述\n\n己的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/5",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 要删的卡\n\n这张卡会被删掉，留下一个 Broken link。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 结构卡\n\n结构卡的正文。\n",
+                ),
+                (
+                    "bookB/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 另一张\n\n另一张内容。\n\n来源：[[bookB]]\n",
+                ),
+            ],
+            "## 词条\n- 甲：[[bookA/1|a]]\n- 乙：[[bookB/1]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/1|a",
+            "# 甲的枢纽\n\n- [[bookA/3]]：成员一。\n- [[bookA/4]]：成员二。\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/3",
+            "# 丁的陈述\n\n丁的陈述内容。对应 [[bookA/2]] 的机制。参见 [[bookA]] 与 [[bookB/1]]。这里引用了 [[bookA/6]]。\n\n## 邻近\n\n- [[bookA/5]] 相邻。\n\n来源：[[bookB/2]]\n",
+        );
+        // A Broken link is one whose target was deleted after it was written.
+        delete(temp.path(), "bookA/6");
+        edit(
+            temp.path(),
+            "bookB/1",
+            "# 结构卡\n\n本卡是《Book B》的结构卡：按阅读顺序列出全书的论证。\n\n- [[bookB/2]] 第二步。\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲乙讲了什么？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+        let cards = value["cards"].as_array().expect("cards");
+        let addresses = cards
+            .iter()
+            .filter_map(|card| card["at"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            addresses,
+            vec!["bookA/3", "bookA/4", "bookA/2"],
+            "the hub's members are the entries, and only the authored semantic Link is followed: {value}"
+        );
+        assert_eq!(value["held"], json!("bookA/3"));
+        assert_eq!(cards[0]["via_hub"], json!("bookA/1|a"), "{value}");
+        assert_eq!(cards[0]["term"], json!("甲"));
+        assert_eq!(
+            value["excluded"]["source_root"], json!(1),
+            "a source tree root is no step: {value}"
+        );
+        assert_eq!(
+            value["excluded"]["structure"], json!(2),
+            "the Structure Card is no entry and no step: {value}"
+        );
+        assert_eq!(
+            value["excluded"]["broken"], json!(1),
+            "a Broken link is no step: {value}"
+        );
+        assert_eq!(
+            value["excluded"]["navigation"], json!(1),
+            "a `## 邻近` member line is no step: {value}"
+        );
+        assert_eq!(
+            value["excluded"]["source_locator"], json!(3),
+            "every `来源` line is a locator, in a section or not: {value}"
+        );
+        // The Structure Card's own list is never read as entries or as steps.
+        assert!(
+            !addresses.contains(&"bookB/2"),
+            "the structure list member is not a step: {value}"
+        );
+    }
+
+    /// Create `count` Idea Cards as Direct successors in one tree, and return their addresses in
+    /// order. The text is owned, because a bound test needs many Cards.
+    fn chain(root: &std::path::Path, from: &str, count: usize) -> Vec<String> {
+        let mut parent = from.to_string();
+        let mut made = Vec::new();
+        for index in 0..count {
+            let address = crate::ops::create_successor(
+                root,
+                crate::Access::Owner,
+                crate::ops::Successor::Direct,
+                &parent,
+                CardType::Idea,
+                None,
+                &format!("# 卡{index}\n\n第 {index} 张陈述。\n\n来源：[[bookA]]\n"),
+            )
+            .expect("a Card");
+            parent = address.clone();
+            made.push(address);
+        }
+        made
+    }
+
+    /// S15-AC05, D217: a cycle is walked once, and the same question over the same read gives the
+    /// same proposal, so a reader can retry a question without the answer drifting.
+    #[test]
+    fn a_question_walks_a_cycle_once_and_repeats_the_same_answer() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 乙\n\n乙的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丙\n\n丙的内容。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 甲的陈述\n\n甲的陈述内容。依赖 [[bookA/2]]。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/2",
+            "# 乙\n\n依赖 [[bookA/3]]。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/3",
+            "# 丙\n\n依赖 [[bookA/2]]。\n\n来源：[[bookA]]\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲讲了什么？" }))
+            .expect("a question");
+        let first = gather(&snapshot, &args, 1, &json!({}));
+        let second = gather(&snapshot, &args, 1, &json!({}));
+        assert_eq!(first, second, "the same read gives the same proposal");
+        let addresses = first["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .filter_map(|card| card["at"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(addresses, vec!["bookA/1", "bookA/2", "bookA/3"], "{first}");
+        assert_eq!(first["counts"]["visited"], json!(3));
+        assert_eq!(first["truncated"], json!(false));
+    }
+
+    /// S15-AC05, D217, S15-AC06: the walk visits at most 200 substantive Cards, says so, and never
+    /// lists a Card twice.
+    #[test]
+    fn a_question_stops_at_the_card_bound_and_names_it() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        let made = chain(temp.path(), "bookA/1", ASK_CARD_MAX + 10);
+        let links = made
+            .iter()
+            .map(|at| format!("依赖 [[{at}]]。"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        edit(
+            temp.path(),
+            "bookA/1",
+            &format!("# 甲的陈述\n\n甲的陈述内容。\n{links}\n\n来源：[[bookA]]\n"),
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲讲了什么？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(
+            value["counts"]["visited"], json!(ASK_CARD_MAX),
+            "the walk stops exactly at the bound: {value}"
+        );
+        assert_eq!(value["counts"]["cards_truncated"], json!(true), "{value}");
+        assert_eq!(value["truncated"], json!(true), "{value}");
+        assert_eq!(value["bounds"]["cards"], json!(ASK_CARD_MAX));
+        let mut seen = BTreeSet::new();
+        for card in value["cards"].as_array().expect("cards") {
+            let at = card["at"].as_str().expect("address");
+            assert!(seen.insert(at.to_string()), "{at} was listed twice");
+        }
+    }
+
+    /// S15-AC05, D217: the walk examines at most 1,000 authored semantic Links, says so, and keeps
+    /// what it already reached.
+    #[test]
+    fn a_question_stops_at_the_link_bound_and_names_it() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 乙\n\n乙的内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 丙\n\n丙的内容。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 甲的陈述\n\n甲的陈述内容。依赖 [[bookA/2]]。\n\n来源：[[bookA]]\n",
+        );
+        let many = (0..ASK_LINK_MAX)
+            .map(|_| "依赖 [[bookA/3]]。")
+            .collect::<Vec<_>>()
+            .join("\n");
+        edit(
+            temp.path(),
+            "bookA/2",
+            &format!("# 乙\n\n{many}\n\n来源：[[bookA]]\n"),
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲讲了什么？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(
+            value["counts"]["links"], json!(ASK_LINK_MAX),
+            "exactly the bound is examined, never more: {value}"
+        );
+        assert_eq!(value["counts"]["links_truncated"], json!(true), "{value}");
+        assert_eq!(value["truncated"], json!(true), "{value}");
+        assert_eq!(value["bounds"]["links"], json!(ASK_LINK_MAX));
+        assert_eq!(
+            value["counts"]["visited"], json!(3),
+            "the Cards reached before the bound stay: {value}"
+        );
+    }
+
+    /// S15-AC06, D218-D224: the proposal holds the best entry card, prefers a distinct statement
+    /// over another member of one restatement set, prefers a directly relevant Card and a shorter
+    /// path, prefers a new source, tree or Relation kind among comparably relevant Cards, and
+    /// breaks the last tie by address order.
+    #[test]
+    fn a_question_selects_distinct_statements_then_cross_source_Cards_then_address_order() {
+        let (temp, _register) = archive(
+            &[],
+            &[
+                (
+                    "bookA",
+                    "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookB",
+                    "# 乙的陈述\n\n乙的内容。\n\n来源：[[bookB]]\n",
+                ),
+            ],
+            &[
+                (
+                    "bookA/1",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 第二个陈述\n\n第二个内容。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/2",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 入口卡\n\n入口正文。\n\n来源：[[bookA]]\n",
+                ),
+                (
+                    "bookA/3",
+                    crate::ops::Successor::Direct,
+                    CardType::Idea,
+                    "# 第四个陈述\n\n第四个内容。\n\n来源：[[bookA]]\n",
+                ),
+            ],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/1",
+            "# 甲的陈述\n\n甲的陈述内容。对应 [[bookA/2]]。对应 [[bookA/3]]。对应 [[bookB/1]]。\n\n来源：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "bookA/2",
+            "# 第二个陈述\n\n第二个内容。依赖 [[bookA/4]]。\n\n来源：[[bookA]]\n",
+        );
+        // A restatement entry states no claim of its own: it holds the statement of `bookA/2`.
+        edit(
+            temp.path(),
+            "bookA/3",
+            "# 入口卡\n\n详见 [[bookA/2]]。\n\n## 同述入口\n\n- [[bookA/2]] 完整陈述。\n",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "甲讲了什么？", "limit": 5 }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+        let addresses = value["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .filter_map(|card| card["at"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            addresses,
+            vec!["bookA/1", "bookB/1", "bookA/2", "bookA/4", "bookA/3"],
+            "held, then the other book, then the nearer statement, then the new statement before \
+             the restatement entry: {value}"
+        );
+        assert_eq!(value["held"], json!("bookA/1"));
+        assert_eq!(value["cards"][0]["held"], json!(true));
+        assert_eq!(value["cards"][1]["held"], json!(false));
+        assert_eq!(value["sparse"], json!(false), "five Cards is a full set");
+        assert_eq!(value["cards"][4]["at"], json!("bookA/3"));
+        assert_eq!(
+            value["cards"][4]["statement"],
+            json!("bookA/2"),
+            "the entry names the statement it holds: {value}"
+        );
+        // Only authored Links become threads, and a plain reference stays `refers` (§9.4, D225).
+        let threads = value["threads"].as_array().expect("threads");
+        assert!(
+            threads.iter().any(|thread| thread["from"] == json!("bookA/3")
+                && thread["to"] == json!("bookA/2")
+                && thread["kind"] == json!("refers")),
+            "an unkinded Link stays refers: {value}"
+        );
+        assert!(
+            !threads.iter().any(|thread| thread["to"] == json!("bookA/4")
+                && thread["from"] == json!("bookA/1")),
+            "no thread is inferred between two selected Cards: {value}"
+        );
+    }
+
+    /// S15-AC09, S15-AC07: a question whose entry row no longer names a Card is no question, and
+    /// zero Cards is a valid answer: the proposal is empty, sparse, and names the register fault.
+    #[test]
+    fn a_question_with_no_usable_entry_returns_an_empty_sparse_proposal_and_the_fault() {
+        let (temp, _register) = archive(
+            &[],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[],
+            "## 词条\n- 甲：[[bookA/1]]\n",
+        );
+        delete(temp.path(), "bookA/1");
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "学习为什么提高生产率？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(value["matched_terms"], json!([]), "{value}");
+        assert_eq!(value["held"], Value::Null, "{value}");
+        assert_eq!(value["cards"], json!([]), "{value}");
+        assert_eq!(value["spread"]["cards"], json!([]), "{value}");
+        assert_eq!(value["sparse"], json!(true), "{value}");
+        assert_eq!(value["truncated"], json!(false), "{value}");
+        assert_eq!(value["counts"]["visited"], json!(0), "{value}");
+        assert_eq!(value["registers"][0]["complete"], json!(false), "{value}");
+        assert!(
+            value["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("broken")),
+            "the row's missing target is named: {value}"
+        );
+    }
+
+    /// S15-AC09, S15-AC03, D228: an archive without a register reports the missing register and
+    /// answers with the labelled low-confidence fallback; a question changes no Card.
+    #[test]
+    fn a_question_without_a_register_reports_it_and_writes_nothing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let topic = crate::ops::create_topic(
+            temp.path(),
+            crate::Access::Owner,
+            Workspace::Agent,
+            "# 学习树\n\n问题树。",
+        )
+        .expect("topic");
+        crate::ops::create_successor(
+            temp.path(),
+            crate::Access::Owner,
+            crate::ops::Successor::Direct,
+            &topic,
+            CardType::Idea,
+            None,
+            "# 多重均衡的出现\n\n多重均衡来自策略互补。\n",
+        )
+        .expect("a Card");
+        let before = Snapshot::read(temp.path()).expect("snapshot").fingerprint();
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let args = AskArgs::from_args(&json!({ "question": "多重均衡从哪里来？" }))
+            .expect("a question");
+        let value = gather(&snapshot, &args, 1, &json!({}));
+
+        assert_eq!(value["held"], json!("0/1"), "{value}");
+        assert_eq!(value["fallback"]["kind"], json!("bigram"), "{value}");
+        assert_eq!(value["fallback"]["confidence"], json!("low"), "{value}");
+        assert_eq!(
+            value["registers"],
+            json!([
+                {"workspace": "human", "card": Value::Null, "title": Value::Null, "missing": true, "complete": false, "entry_total": 0, "faults": 0},
+                {"workspace": "agent", "card": Value::Null, "title": Value::Null, "missing": true, "complete": false, "entry_total": 0, "faults": 0},
+            ]),
+            "{value}"
+        );
+        assert!(
+            value["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("register_missing")),
+            "the missing register is named: {value}"
+        );
+        assert_eq!(
+            Snapshot::read(temp.path()).expect("snapshot").fingerprint(),
+            before,
+            "gathering a question changes no Card"
+        );
+    }
+
+    /// S15-AC07, D216, `CONTEXT.md` Register: a register row may name a Topic Card as "a standalone
+    /// Topic claim", so a question may hold it and walk from it; a Literature tree root is the
+    /// source root that would join a whole book, so it is never a seed.
+    #[test]
+    fn a_question_holds_a_topic_card_a_row_names_but_never_a_source_root() {
+        let (temp, _register) = archive(
+            &["# 多重均衡的树\n\n多重均衡取决于预期。"],
+            &[("bookA", "# 甲的陈述\n\n甲的陈述内容。\n\n来源：[[bookA]]\n")],
+            &[(
+                "0/0",
+                crate::ops::Successor::Direct,
+                CardType::Idea,
+                "# 预期渠道\n\n预期强化学习。\n",
+            )],
+            "## 词条\n- 多重均衡：[[0/0]]\n- 甲：[[bookA]]\n",
+        );
+        edit(
+            temp.path(),
+            "0/0",
+            "# 多重均衡的树\n\n多重均衡取决于预期。入口：依赖 [[0/1]] 的预期渠道。",
+        );
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let ask = |question: &str| {
+            let args = AskArgs::from_args(&json!({ "question": question })).expect("a question");
+            gather(&snapshot, &args, 1, &json!({}))
+        };
+
+        let value = ask("多重均衡讲了什么？");
+        assert_eq!(value["held"], json!("0/0"), "{value}");
+        assert_eq!(value["cards"][0]["type"], json!("idea"));
+        assert_eq!(value["cards"][1]["at"], json!("0/1"), "{value}");
+        assert_eq!(value["cards"][1]["path"][0]["kind"], json!("rests-on"));
+        assert_eq!(value["cards"][1]["path"][0]["direction"], json!("out"));
+
+        // The other row names a Literature Card: a source root is no entry.
+        let value = ask("甲讲了什么？");
+        assert_eq!(value["held"], Value::Null, "{value}");
+        assert_eq!(value["cards"], json!([]), "{value}");
+        assert_eq!(value["excluded"]["source_root"], json!(1), "{value}");
     }
 
     /// A group larger than the member bound reports its size and the flag, so one reply stays
