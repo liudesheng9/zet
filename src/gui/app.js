@@ -1985,18 +1985,92 @@
     setTimeout(() => tableView.fit(), 160);
   }
 
-  /** Write a Card that lists the Cards on the Table in reading order, filed after the Card held. */
+  /**
+   * File the Table as a Card: a Spread kept from a question becomes one agent Hub Card draft
+   * (S17, #118, design §9.6), and any other Spread becomes the list Card this command always wrote.
+   * Neither writes anything here: the hub draft needs its own Save in the desk, and Cancel leaves
+   * no Card behind.
+   */
   async function fileSpread() {
     if (spreads.previewing()) {
       throw new Error('a question’s proposal is not a saved Spread yet: Keep it, then file it as a card');
     }
     const cards = spreads.cards();
     if (!cards.length) throw new Error('the Table is empty: lay some cards on it first');
+    const spread = spreads.now();
+    if (spread && spread.question) return fileAskSpread(spread, cards);
     if (!state.card) throw new Error('open the card to file the new card after, then try again');
     const order = ZtLayout.readingOrder(cards.map((card) => card.at), (at) => state.byAddress.get(at)?.links || []);
     const body = order.map((at) => `- [[${at}]] ${state.byAddress.get(at)?.title || ''}`.trimEnd()).join('\n');
     const kind = state.card.context === 'regular' ? 'side' : 'direct';
-    await newCard(kind, '', { title: spreads.now()?.name || '', body, onTable: true });
+    await newCard(kind, '', { title: spread?.name || '', body, onTable: true });
+  }
+
+  /**
+   * The reasons one kept question's answer gave its Cards, by address (S17, #118, S17-AC01). The
+   * reasons are transient page state while the answer is on the Table, so a Spread kept in an
+   * earlier session reads its own question again — a read that writes nothing. A failed read
+   * leaves the drafted lines without reasons, which the precheck then reports.
+   */
+  async function askReasons(question, addresses) {
+    const wanted = new Set(addresses);
+    try {
+      const proposal = await api('ask', { question });
+      const reasons = {};
+      for (const card of proposal.cards || []) {
+        if (wanted.has(card.at) && card.reason) reasons[card.at] = card.reason;
+      }
+      return reasons;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * File a Spread kept from a question as an agent Hub Card draft (S17, #118). The plan comes from
+   * `POST /api/hub/draft`, which reads the archive and writes nothing: it names where the draft is
+   * filed and at what level, the Markdown that opens the desk — the question, the Spread's Links,
+   * and the reason the answer gave each — and every legal destination. The desk's own Save writes
+   * the Card; Cancel writes nothing.
+   */
+  async function fileAskSpread(spread, cards) {
+    const addresses = cards.map((card) => card.at);
+    const reasons = await askReasons(spread.question, addresses);
+    let plan;
+    try {
+      plan = await api('hub/draft', { cards: addresses, question: spread.question, title: spread.name, reasons });
+    } catch (error) {
+      toast(`the hub draft could not be made: ${error.message || error}`, 'err');
+      return;
+    }
+    const hub = {
+      level: plan.level,
+      destination: plan.destination,
+      choices: plan.choices || [],
+      missing: plan.missing,
+      note: plan.note,
+      check: (text, level, how, at) => api('hub/check', { text, level, how, at }),
+    };
+    // The hub is filed with the one existing write route: a create as a side successor of the
+    // destination, or an edit of the hub a rewrite started from, guarded by its own text.
+    const address = await openEditor({
+      heading: `Hub draft · ${spread.name || 'Spread'} · agent workspace`,
+      initial: plan.draft.text,
+      cardType: 'hub',
+      hub,
+      save: async (text) => {
+        const placement = hub.chosen;
+        if (!placement || !placement.at) throw new Error('choose where the hub is filed first');
+        if (placement.how === 'edit') {
+          const saved = await api('edit', { at: placement.at, text, base: placement.base });
+          return saved.address;
+        }
+        const saved = await api('create', { kind: 'side', at: placement.at, text, type: 'hub', level: placement.level });
+        return saved.address;
+      },
+    });
+    if (!address) return;
+    await afterChange(address, `filed the hub draft as ${address}`);
   }
 
   function showSpreads() {
@@ -4651,8 +4725,14 @@
   /**
    * The writing desk: raw Markdown on the left, rendered on the right.
    * `save(text)` persists and returns the address to open afterwards.
+   *
+   * `hub` opens the desk as the composer of one agent Hub Card draft (S17, #118, design §9.6): the
+   * type is Hub and the Workspace is the agent's whatever the cabinet shows, the placement
+   * controls choose the Hub level and the Card the draft is filed under, and the hub precheck runs
+   * with every edit, so Save is offered only for a draft that would pass it. `hub.chosen` holds
+   * the placement the reader chose, for the caller's own Save.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, reply }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, reply, hub }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
       // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
@@ -4690,7 +4770,7 @@
         h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick, levelPick,
         h('datalist', { id: 'zt-facets' }, Object.entries(FACETS).map(([id, info]) => h('option', { value: id, label: info.note }))),
       ) : null;
-      const typePick = cardType ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },        h('span', { class: 'lbl', text: 'Type' }),
+      const typePick = cardType && !hub ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },        h('span', { class: 'lbl', text: 'Type' }),
         Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
           class: id + (id === cardType ? ' on' : ''), role: 'radio', 'aria-checked': id === cardType ? 'true' : 'false',
           title: `${info.label} Card — ${info.note}`, text: info.label, dataset: { type: id },
@@ -4749,6 +4829,78 @@
           draft.note,
         );
       })() : null;
+      // S17 (#118, design §9.6): a Spread filed as a Hub Card fixes the type and the Workspace and
+      // leaves the placement to these controls. A rewrite goes back to the one hub it was drafted
+      // from and nowhere else; a new draft may be filed at any destination a create allows.
+      const hubOptions = !hub ? [] : hub.destination && hub.destination.how === 'edit'
+        ? [hub.destination]
+        : (hub.choices || []).filter((choice) => choice.how === 'side');
+      const hubLevels = [...new Set(hubOptions.map((choice) => choice.level))];
+      const hubPlaced = hub ? {
+        level: hub.destination ? hub.destination.level : (hubLevels[0] || ''),
+        how: hub.destination ? hub.destination.how : 'side',
+        at: hub.destination ? hub.destination.at : '',
+        base: hub.destination ? hub.destination.base || null : null,
+      } : null;
+      if (hub) hub.chosen = hubPlaced;
+      const hubDestinations = () => hubOptions.filter((choice) => choice.level === hubPlaced.level);
+      const hubLevelPick = hub ? h('select', {
+        class: 'hub-level', 'aria-label': 'Hub level',
+        title: 'How wide the subject is: one line of thought, one Topic tree, or several Topic trees',
+        onchange: (event) => {
+          hubPlaced.level = event.target.value;
+          const [first] = hubDestinations();
+          hubPlaced.at = first ? first.at : '';
+          hubPlaced.base = first && first.base ? first.base : null;
+          fillDestinations();
+          dirty = true;
+          update();
+        },
+      }, hubLevels.map((level) => h('option', { value: level, text: level }))) : null;
+      const hubDestPick = hub ? h('select', {
+        class: 'hub-dest', 'aria-label': 'Destination of the hub draft',
+        title: 'The Card the hub is filed under: a side successor of a Card of the agent Workspace',
+        onchange: (event) => {
+          if (event.target.value === '') {
+            hubPlaced.at = '';
+            hubPlaced.base = null;
+          } else {
+            const choice = hubDestinations()[Number(event.target.value)];
+            hubPlaced.at = choice ? choice.at : '';
+            hubPlaced.base = choice && choice.base ? choice.base : null;
+          }
+          dirty = true;
+          update();
+        },
+      }) : null;
+      const hubFaults = hub ? h('div', { class: 'hub-faults', 'aria-live': 'polite' }) : null;
+      // `keepEmpty` starts the select on its "where is it filed?" placeholder, which is how a plan
+      // with no destination — a missing register — asks the reader for one inside the editor.
+      const fillDestinations = (keepEmpty = false) => {
+        if (!hubDestPick) return;
+        const options = hubDestinations();
+        const placeholder = keepEmpty ? [h('option', { value: '', text: '— where is it filed? —' })] : [];
+        let index = options.findIndex((choice) => choice.at === hubPlaced.at);
+        if (index < 0 && !keepEmpty && options.length) {
+          hubPlaced.at = options[0].at;
+          hubPlaced.base = options[0].base || null;
+          index = 0;
+        }
+        hubDestPick.replaceChildren(...placeholder, ...(options.length
+          ? options.map((choice, at) => h('option', { value: String(at), text: `${choice.title || '(untitled)'} · ${choice.at}`, title: choice.note || '' }))
+          : [h('option', { value: '', text: 'no destination at this level' })]));
+        hubDestPick.value = index >= 0 ? String(index) : '';
+      };
+      if (hubLevelPick) hubLevelPick.value = hubPlaced.level;
+      if (hubPlaced.at) fillDestinations();
+      else fillDestinations(true);
+      const hubBar = hub ? h('div', { class: 'hub-bar' },
+        h('span', { class: 'lbl', text: 'Hub Card' }),
+        h('span', { class: 'hub-ws', text: 'agent workspace', title: 'A filed Spread becomes an agent Workspace Hub Card, whatever Workspace the cabinet shows; filing a Spread itself creates no Card' }),
+        h('span', { class: 'lbl', text: 'level' }), hubLevelPick,
+        h('span', { class: 'lbl', text: 'under' }), hubDestPick,
+        h('span', { class: 'hub-note', text: hub.note || '' }),
+      ) : null;
       const bib = bibtex !== undefined
         ? h('textarea', { class: 'bib', spellcheck: 'false', 'aria-label': 'BibTeX', placeholder: '@book{Smith2024,\n  title = {Example Book}\n}' })
         : null;
@@ -4762,6 +4914,43 @@
       let dirty = false;
 
       const setMsg = (message, kind) => { msg.textContent = message || ''; msg.className = 'msg' + (kind ? ' ' + kind : ''); };
+      // S17: the last hub precheck answer. Its faults are painted under the Markdown pane and Save
+      // waits for a draft that would pass, so a hub is never filed with a fault the report names.
+      let hubCheck = null;
+      const paintHubCheck = () => {
+        if (!hubFaults) return;
+        const faults = (hubCheck && hubCheck.faults) || [];
+        hubFaults.replaceChildren(...(faults.length
+          ? faults.map((fault) => h('div', { class: 'hub-fault', dataset: { fault: fault.fault } },
+            h('span', { class: 'f', text: fault.fault }), h('span', { class: 'd', text: fault.detail })))
+          : [h('div', { class: 'hub-ok', text: hubCheck ? 'the hub precheck passes' : 'checking…' })]));
+        saveBtn.disabled = faults.length > 0 || !hubCheck;
+        if (faults.length) setMsg(`${faults.length} hub fault${faults.length === 1 ? '' : 's'} to fix before Save`, 'err');
+      };
+      const hubPrecheck = async () => {
+        if (!hub) return;
+        if (!hubPlaced.at) {
+          hubCheck = {
+            ok: false,
+            faults: [{
+              fault: 'destination',
+              detail: !hubOptions.length
+                ? 'the agent Workspace has no Card a hub can be filed under: create an agent Topic or publish the register first'
+                : hub.missing === 'register'
+                  ? 'the agent Workspace has no register, so a field hub has nowhere to hang; choose a destination for a topic or line hub'
+                  : 'choose where the hub is filed',
+            }],
+          };
+          paintHubCheck();
+          return;
+        }
+        try {
+          hubCheck = await hub.check(text.value, hubPlaced.level, hubPlaced.how, hubPlaced.at);
+        } catch (error) {
+          hubCheck = { ok: false, faults: [{ fault: 'destination', detail: error.message || String(error) }] };
+        }
+        paintHubCheck();
+      };
       const update = debounce(async () => {
         try {
           if (bib) {
@@ -4784,14 +4973,16 @@
           if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
           wireMarkdown(preview);
           if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
+          await hubPrecheck();
         } catch (error) { setMsg(error.message, 'err'); }
       }, 160);
 
       const close = openOverlay(h('div', { class: 'sheet-dlg', role: 'dialog' },
         h('div', { class: 'dlg-head' }, h('h3', { text: heading }), typePick),
         replyBar,
+        hubBar,
         h('div', { class: 'dlg-body' },
-          h('div', { class: 'pane' },
+          h('div', { class: 'pane' + (hub ? ' hub-pane' : '') },
             bib ? h('div', { class: 'pane-label' }, h('span', { text: 'BibTeX metadata' })) : null,
             bib,
             h('div', { class: 'pane-label' }, h('span', { text: 'Markdown' }), h('span', {},
@@ -4808,6 +4999,7 @@
               } }, '＋ Figure or document'),
               ' · [[ links · text below the reverse-links marker is generated')),
             text,
+            hub ? h('div', { class: 'hub-check' }, h('div', { class: 'pane-label' }, h('span', { text: 'Hub precheck' })), hubFaults) : null,
           ),
           h('div', { class: 'pane' }, h('div', { class: 'pane-label' }, h('span', { text: 'Preview' })), preview),
         ),
@@ -4817,13 +5009,17 @@
 
       const finish = (address) => { close(); resolve(address); };
       const doSave = async () => {
+        if (hub && !(hubCheck && hubCheck.ok)) {
+          setMsg('the hub precheck must pass before Save; fix the named faults', 'err');
+          return;
+        }
         saveBtn.disabled = true;
         try {
           const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           setMsg(error.message, 'err');
-        } finally { saveBtn.disabled = false; }
+        } finally { saveBtn.disabled = hub ? !(hubCheck && hubCheck.ok) : false; }
       };
       const doCancel = () => {
         if (dirty && !window.confirm('Discard your changes to this card?')) return;

@@ -8,7 +8,7 @@
 //! hubs, and faults from the stored Cards; it reports faults and never
 //! enforces them. See `docs/hub-cards-design.md`.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -708,6 +708,565 @@ fn literature_tree_of(snapshot: &Snapshot, target: &str) -> Option<String> {
     root_card.is_lit.then(|| tree.to_string())
 }
 
+/// The precheck of a Hub Card draft that is not saved yet (S17, #118; design §9.6, D235-D237):
+/// the body rules `Graph::check` applies to a saved hub, plus the placement rules of filing. It
+/// reads the Snapshot and answers one value; it writes nothing, so the composer runs it on every
+/// edit of the desk.
+///
+/// The request names the whole Card `text`, the `level` the draft is filed at (`line`, `topic`, or
+/// `field`), how it is filed — `how: "side"` makes it a side successor of `at`, `how: "edit"`
+/// rewrites the hub already at `at` — and `at`, the Card it is filed under. The answer is
+/// `{ok, level, title, at, anchor, tree, workspace, lines, faults}`.
+pub(crate) fn precheck(snapshot: &Snapshot, args: &Value) -> Result<Value> {
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .context("`text` must be the draft's Card text")?;
+    let level_name = args
+        .get("level")
+        .and_then(Value::as_str)
+        .context("`level` must name the hub level the draft is filed at: line, topic, or field")?;
+    let at = args
+        .get("at")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|at| !at.is_empty())
+        .context("`at` must name the Card the draft is filed under")?;
+    let edit = match args.get("how").and_then(Value::as_str) {
+        Some("edit") => true,
+        Some("side") | None => false,
+        Some(other) => bail!("unknown `how` `{other}`; expected side or edit"),
+    };
+    let mut faults = Vec::new();
+    let fault = |faults: &mut Vec<Value>, id: &str, detail: String| {
+        faults.push(json!({ "fault": id, "detail": detail }));
+    };
+    let level = HubLevel::parse(level_name)?;
+    if level == HubLevel::Register {
+        fault(
+            &mut faults,
+            "level",
+            "a draft is filed at line, topic, or field level; the register is the Workspace's one register".into(),
+        );
+    }
+    // The Card text itself: a draft that is not a Card is judged on nothing else.
+    let parsed = match crate::parse_card_text(text) {
+        Ok(parsed) => Some(parsed),
+        Err(error) => {
+            fault(&mut faults, "text", error.to_string());
+            None
+        }
+    };
+    let destination = snapshot.by_address.get(at);
+    let workspace = destination.map(|card| card.workspace);
+    // The placement: the draft is filed in the agent Workspace, at a destination its level allows.
+    match destination {
+        None => fault(
+            &mut faults,
+            "destination",
+            format!("`{at}` does not exist; choose where the hub is filed"),
+        ),
+        Some(card) if edit => {
+            if card.card_type != CardType::Hub {
+                fault(
+                    &mut faults,
+                    "destination",
+                    format!("`{at}` is not a Hub Card; reuse rewrites the hub already filed there"),
+                );
+            }
+            if card.workspace != Workspace::Agent {
+                fault(
+                    &mut faults,
+                    "workspace",
+                    format!(
+                        "`{at}` is in the {} Workspace; a hub draft is filed in the agent Workspace",
+                        card.workspace.id()
+                    ),
+                );
+            }
+            if card.hub_level != Some(level) {
+                fault(
+                    &mut faults,
+                    "placement",
+                    format!(
+                        "`{at}` is a `{}` hub; reuse keeps its level",
+                        card.hub_level.map_or("level-less", HubLevel::id)
+                    ),
+                );
+            }
+        }
+        Some(card) => {
+            if card.workspace != Workspace::Agent {
+                fault(
+                    &mut faults,
+                    "workspace",
+                    format!(
+                        "`{at}` is in the {} Workspace; a hub draft is filed in the agent Workspace",
+                        card.workspace.id()
+                    ),
+                );
+            }
+            if crate::is_tree_root(card) {
+                fault(
+                    &mut faults,
+                    "placement",
+                    format!("side successors cannot start from a tree root; choose a Card inside the tree, not `{at}`"),
+                );
+            }
+            let tree = crate::tree_id(&card.address);
+            let topic_tree = snapshot
+                .by_address
+                .get(&crate::tree_root_address(tree))
+                .is_some_and(|root| root.is_topic);
+            match level {
+                HubLevel::Field => match crate::entry::register_addresses(snapshot, Workspace::Agent).as_slice() {
+                    [] => fault(
+                        &mut faults,
+                        "placement",
+                        "the agent Workspace has no register, so a field hub has no place to hang; file a topic or line hub, or publish the register first".into(),
+                    ),
+                    [register] if register != at => fault(
+                        &mut faults,
+                        "placement",
+                        format!("a field hub is filed under the agent register (`{register}`), not under `{at}`"),
+                    ),
+                    [_] => {}
+                    _ => fault(
+                        &mut faults,
+                        "placement",
+                        "the agent Workspace has two registers; none is used, so a field hub has no place to hang".into(),
+                    ),
+                },
+                HubLevel::Topic => {
+                    if !topic_tree {
+                        fault(
+                            &mut faults,
+                            "placement",
+                            format!("a topic hub is filed inside a Topic tree; `{at}` is in the Literature tree `{tree}`"),
+                        );
+                    }
+                    for other in topic_hubs_of(snapshot, tree) {
+                        if other != at {
+                            fault(
+                                &mut faults,
+                                "duplicate",
+                                format!("[[{other}]] is another topic hub of tree {tree}; reuse it instead of writing a second one"),
+                            );
+                        }
+                    }
+                }
+                HubLevel::Line => {
+                    if !topic_tree {
+                        fault(
+                            &mut faults,
+                            "placement",
+                            format!("a line hub is filed where its line starts, inside a Topic tree; `{at}` is in the Literature tree `{tree}`"),
+                        );
+                    }
+                }
+                HubLevel::Register => {}
+            }
+        }
+    }
+    // The body rules a saved hub is judged by. A side successor is filed under `at`, so its
+    // address is the one the write would give it; a reuse keeps the hub's own address.
+    let mut lines = 0;
+    let draft_address = if edit {
+        at.to_string()
+    } else {
+        side_address(snapshot, at)
+    };
+    if let Some(parsed) = &parsed {
+        let graph = Graph::new(snapshot);
+        let body = parse_body(&parsed.body);
+        lines = body.lines.len();
+        let anchors = graph.anchors(&draft_address, Some(level));
+        let lower = graph.lower_in(&body, &draft_address);
+        faults.extend(graph.body_faults(
+            &draft_address,
+            Some(level),
+            &parsed.title,
+            &parsed.body,
+            &body,
+            &anchors,
+            &lower,
+            &Limits::default(),
+        ));
+    }
+    let title = parsed
+        .as_ref()
+        .map(|parsed| parsed.title.clone())
+        .unwrap_or_default();
+    Ok(json!({
+        "ok": faults.is_empty(),
+        "level": if level == HubLevel::Register { Value::Null } else { json!(level.id()) },
+        "title": title,
+        "at": at,
+        "how": if edit { "edit" } else { "side" },
+        "address": draft_address,
+        "anchor": crate::parent_location(&draft_address),
+        "tree": crate::tree_id(at),
+        "workspace": workspace.map(Workspace::id),
+        "lines": lines,
+        "faults": faults,
+    }))
+}
+
+/// The address a draft would take as a side successor of `at`: the next free side label, as the
+/// write allocates it (`crate::next_side_successor`).
+fn side_address(snapshot: &Snapshot, at: &str) -> String {
+    let mut highest = 0;
+    for card in &snapshot.cards {
+        if let Some(label) = crate::immediate_side_label(&card.address, at) {
+            highest = highest.max(crate::side_label_to_number(&label));
+        }
+    }
+    format!("{at}|{}", crate::number_to_side_label(highest + 1))
+}
+
+/// The topic hubs of one tree, in natural address order.
+fn topic_hubs_of(snapshot: &Snapshot, tree: &str) -> Vec<String> {
+    let mut hubs = snapshot
+        .cards
+        .iter()
+        .filter(|card| {
+            card.card_type == CardType::Hub
+                && card.hub_level == Some(HubLevel::Topic)
+                && crate::tree_id(&card.address) == tree
+        })
+        .map(|card| card.address.clone())
+        .collect::<Vec<_>>();
+    hubs.sort_by(|left, right| crate::model::address_order(left, right));
+    hubs
+}
+
+/// The plan and the draft of the agent Hub Card that files a Spread (S17, #118; design §9.6,
+/// D235-D237). It reads the supplied Cards, the `question` the Spread was kept from and the
+/// `reasons` the answer gave each Card, and answers where the hub would be filed, at what level,
+/// the draft the desk opens with, every legal destination, and the precheck of that draft. Nothing
+/// is written, so a cancelled draft leaves no Card behind.
+///
+/// The default placement is the design's: a set spanning several Trees is a field hub under the
+/// agent register; a set inside one agent Topic is a topic hub under that tree's first Card, or a
+/// rewrite of the tree's topic hub when it already has one. Everything else asks for a
+/// destination instead of filing into a tree the agent does not own.
+pub(crate) fn draft(snapshot: &Snapshot, args: &Value) -> Result<Value> {
+    let cards = args
+        .get("cards")
+        .and_then(Value::as_array)
+        .context("`cards` must be the list of the Spread's addresses")?;
+    let question = args
+        .get("question")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|question| !question.is_empty())
+        .unwrap_or_default();
+    let reasons = args.get("reasons").and_then(Value::as_object);
+    let mut members: Vec<&Card> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for value in cards {
+        let at = value
+            .as_str()
+            .context("every `cards` item must be a Card address")?
+            .trim();
+        let card = snapshot
+            .by_address
+            .get(at)
+            .with_context(|| format!("card `{at}` does not exist"))?;
+        if seen.insert(card.address.clone()) {
+            members.push(card);
+        }
+    }
+    if members.is_empty() {
+        bail!("a hub draft needs at least one Card; the Spread is empty");
+    }
+    // The Trees the set spans, in natural address order: the hub's groups are these Trees.
+    let mut trees: Vec<(String, Vec<&Card>)> = Vec::new();
+    for member in &members {
+        let tree = crate::tree_id(&member.address).to_string();
+        match trees.iter_mut().find(|(seen, _)| *seen == tree) {
+            Some((_, held)) => held.push(member),
+            None => trees.push((tree, vec![member])),
+        }
+    }
+    trees.sort_by(|(left, _), (right, _)| crate::model::address_order(left, right));
+    let registers = crate::entry::register_addresses(snapshot, Workspace::Agent);
+    // The default placement.
+    let mut level = HubLevel::Field;
+    let mut planned: Option<(String, bool)> = None;
+    let mut missing: Option<&'static str> = None;
+    let mut note = String::new();
+    if let [(tree, _)] = trees.as_slice()
+        && snapshot
+            .by_address
+            .get(&crate::tree_root_address(tree))
+            .is_some_and(|root| root.is_topic && root.workspace == Workspace::Agent)
+    {
+        let topic = tree_title(snapshot, tree);
+        let hubs = topic_hubs_of(snapshot, tree);
+        if let Some(hub) = hubs.first() {
+            level = HubLevel::Topic;
+            planned = Some((hub.clone(), true));
+            note = format!(
+                "one agent Topic “{topic}”; its topic hub `{hub}` already exists, so the draft adds these Cards to it"
+            );
+        } else if let Some(first) = snapshot.by_address.get(&format!("{tree}/1")) {
+            level = HubLevel::Topic;
+            planned = Some((first.address.clone(), false));
+            note = format!(
+                "one agent Topic “{topic}”; a topic hub is filed under its first Card `{}`",
+                first.address
+            );
+        }
+    }
+    if planned.is_none() {
+        level = HubLevel::Field;
+        match registers.as_slice() {
+            [register] => {
+                planned = Some((register.clone(), false));
+                note = if trees.len() > 1 {
+                    format!(
+                        "the set spans {} Trees, so it is a field hub filed under the agent register `{register}`",
+                        trees.len()
+                    )
+                } else {
+                    format!(
+                        "the set lies outside the agent Topics, so it is a field hub filed under the agent register `{register}`"
+                    )
+                };
+            }
+            [] => {
+                missing = Some("register");
+                note = "the agent Workspace has no register, so a field hub has nowhere to hang; choose a destination".into();
+            }
+            _ => {
+                missing = Some("register");
+                note = "the agent Workspace has two registers; none is used, so a field hub has nowhere to hang; choose a destination".into();
+            }
+        }
+    }
+    // Every legal destination, so the placement controls can offer them.
+    let choices = destination_choices(snapshot, &registers, &trees, &members);
+    // The draft's title: a rewrite keeps the hub's own title, a new one takes the Spread's name,
+    // its question, or a plain name.
+    let title = match &planned {
+        Some((at, true)) => snapshot.title(at),
+        _ => args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or(if question.is_empty() { "Hub draft" } else { question })
+            .to_string(),
+    };
+    let lines = members
+        .iter()
+        .map(|member| hub_line(member, reasons))
+        .collect::<Vec<_>>();
+    let scope = match question.is_empty() {
+        true => format!(
+            "范围：{} 张卡，来自 {} 棵树。",
+            members.len(),
+            trees.len()
+        ),
+        false => format!(
+            "范围：{} 张卡，来自 {} 棵树，回答“{question}”。",
+            members.len(),
+            trees.len()
+        ),
+    };
+    let body = match &planned {
+        Some((at, true)) => {
+            // A rewrite keeps the authored body byte for byte and adds one group of the new Cards.
+            let held = snapshot
+                .parsed
+                .get(at)
+                .map(|parsed| parsed.body.trim().to_string())
+                .unwrap_or_default();
+            let heading = if question.is_empty() {
+                "新增成员".to_string()
+            } else {
+                question.chars().take(80).collect::<String>()
+            };
+            format!("{held}\n\n## {heading}\n{}", lines.join("\n"))
+        }
+        // A new draft groups its members by the Trees they lie in, which is how a field hub reads
+        // and how a smaller hub starts: the reader sorts the groups and edits the reasons.
+        _ => {
+            let mut groups = Vec::new();
+            for (tree, held) in &trees {
+                let title = tree_title(snapshot, tree);
+                let held = held
+                    .iter()
+                    .map(|member| hub_line(member, reasons))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                groups.push(format!("## {title}\n{held}"));
+            }
+            format!("{scope}\n\n{}", groups.join("\n\n"))
+        }
+    };
+    let text = crate::compose_card_text(&title, &body, "");
+    let destination = match &planned {
+        Some((at, edit)) => {
+            let card = snapshot.by_address.get(at).expect("a planned destination");
+            let mut value = json!({
+                "at": at,
+                "title": snapshot.title(at),
+                "level": level.id(),
+                "how": if *edit { "edit" } else { "side" },
+                "reuse": *edit,
+            });
+            if *edit {
+                // The rewrite is guarded by the hub's own text: a body that changed elsewhere is a
+                // conflict to show, never to overwrite.
+                value["base"] = json!(card.text);
+            }
+            Some(value)
+        }
+        None => None,
+    };
+    let check = precheck(
+        snapshot,
+        &json!({
+            "text": text,
+            "level": level.id(),
+            "how": destination.as_ref().map_or("side", |destination| destination["how"].as_str().unwrap_or("side")),
+            "at": destination.as_ref().map_or(Value::Null, |destination| destination["at"].clone()),
+        }),
+    )
+    .unwrap_or_else(|error| json!({ "ok": false, "faults": [{ "fault": "destination", "detail": error.to_string() }] }));
+    Ok(json!({
+        "workspace": Workspace::Agent.id(),
+        "question": question,
+        "cards": members.iter().map(|member| json!({
+            "at": member.address,
+            "title": snapshot.title(&member.address),
+            "type": member.card_type.id(),
+            "tree": crate::tree_id(&member.address),
+            "tree_title": tree_title(snapshot, crate::tree_id(&member.address)),
+            "workspace": member.workspace.id(),
+        })).collect::<Vec<_>>(),
+        "trees": trees.iter().map(|(tree, held)| json!({
+            "tree": tree,
+            "title": tree_title(snapshot, tree),
+            "kind": if snapshot.by_address.get(&crate::tree_root_address(tree)).is_some_and(|root| root.is_topic) { "topic" } else { "literature" },
+            "workspace": snapshot.by_address.get(&crate::tree_root_address(tree)).map(|root| root.workspace.id()),
+            "cards": held.iter().map(|member| member.address.clone()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "level": level.id(),
+        "destination": destination,
+        "choices": choices,
+        "missing": missing,
+        "note": note,
+        "draft": { "title": title, "text": text },
+        "check": check,
+    }))
+}
+
+/// The title of one Tree: its root Card's title, or a plain fallback.
+fn tree_title(snapshot: &Snapshot, tree: &str) -> String {
+    let title = snapshot.title(&crate::tree_root_address(tree));
+    if title.trim().is_empty() {
+        format!("Tree {tree}")
+    } else {
+        title
+    }
+}
+
+/// One member line of a hub body: the Card's Link and, when the answer justified it, its reason.
+fn hub_line(member: &Card, reasons: Option<&serde_json::Map<String, Value>>) -> String {
+    let reason = reasons
+        .and_then(|reasons| reasons.get(&member.address))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    match reason.is_empty() {
+        true => format!("- [[{}]]", member.address),
+        false => format!("- [[{}]]：{reason}", member.address),
+    }
+}
+
+/// Every destination a Spread's hub may be filed at, in the order the placement controls offer
+/// them: the agent register (a field hub), each agent Topic's topic hub or first Card (a topic
+/// hub), and the Cards the Spread's own members hang under (a line hub).
+fn destination_choices(
+    snapshot: &Snapshot,
+    registers: &[String],
+    trees: &[(String, Vec<&Card>)],
+    members: &[&Card],
+) -> Vec<Value> {
+    let mut choices: Vec<Value> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push = |at: &str, level: HubLevel, edit: bool, note: &str| {
+        if !seen.insert((at.to_string(), level.id(), edit)) {
+            return;
+        }
+        choices.push(json!({
+            "at": at,
+            "title": snapshot.title(at),
+            "level": level.id(),
+            "how": if edit { "edit" } else { "side" },
+            "reuse": edit,
+            "note": note,
+        }));
+    };
+    if let [register] = registers {
+        push(register, HubLevel::Field, false, "filed under the agent register");
+    }
+    // The agent's Topic trees, natural order, bounded by the fixed 40 choices of one desk.
+    let mut topics = snapshot
+        .cards
+        .iter()
+        .filter(|card| card.is_topic && card.workspace == Workspace::Agent)
+        .map(|card| crate::tree_id(&card.address).to_string())
+        .collect::<Vec<_>>();
+    topics.sort_by(|left, right| crate::model::address_order(left, right));
+    for tree in topics {
+        let hubs = topic_hubs_of(snapshot, &tree);
+        for hub in &hubs {
+            push(hub, HubLevel::Topic, true, "the Tree's topic hub, rewritten in place");
+        }
+        // A second topic hub of one tree is a `duplicate`: a Tree that has one offers only its
+        // rewrite, never a fresh hub beside it.
+        if hubs.is_empty()
+            && let Some(first) = snapshot.by_address.get(&format!("{tree}/1"))
+        {
+            push(
+                &first.address,
+                HubLevel::Topic,
+                false,
+                "a topic hub filed under the Tree's first Card",
+            );
+        }
+    }
+    // A line hub is filed where its line starts: the Card one of the Spread's own members hangs
+    // under, inside an agent Topic tree.
+    for member in members {
+        let Some(parent) = crate::parent_location(&member.address) else {
+            continue;
+        };
+        let Some(card) = snapshot.by_address.get(&parent) else {
+            continue;
+        };
+        let tree = crate::tree_id(&card.address);
+        let topic = snapshot
+            .by_address
+            .get(&crate::tree_root_address(tree))
+            .is_some_and(|root| root.is_topic && root.workspace == Workspace::Agent);
+        if topic && !crate::is_tree_root(card) && card.card_type != CardType::Hub {
+            push(
+                &parent,
+                HubLevel::Line,
+                false,
+                "a line hub filed where its line starts",
+            );
+        }
+    }
+    let _ = trees;
+    choices
+}
+
 /// Every hub of the archive with its parsed body, read once per request.
 pub(crate) struct Graph<'a> {
     snapshot: &'a Snapshot,
@@ -820,17 +1379,8 @@ impl<'a> Graph<'a> {
 
     /// The hubs a hub lists, in body order.
     fn lower(&self, address: &str) -> Vec<String> {
-        let mut seen = BTreeSet::new();
         self.body(address)
-            .map(|body| {
-                body.lines
-                    .iter()
-                    .flat_map(|line| line.targets.iter())
-                    .filter(|target| self.hubs.contains_key(*target) && *target != address)
-                    .filter(|target| seen.insert((*target).clone()))
-                    .cloned()
-                    .collect()
-            })
+            .map(|body| self.lower_in(body, address))
             .unwrap_or_default()
     }
 
@@ -988,14 +1538,57 @@ impl<'a> Graph<'a> {
         })
     }
 
-    fn check(&self, hub: &Card, limits: &Limits) -> (Vec<Value>, Advice) {
+    /// The Cards whose title a hub of this level may not copy: the Card it hangs under and, for a
+    /// topic hub, its tree's Topic Card (D130, D169).
+    fn anchors(&self, address: &str, level: Option<HubLevel>) -> Vec<String> {
+        if !matches!(level, Some(HubLevel::Line) | Some(HubLevel::Topic)) {
+            return Vec::new();
+        }
+        let mut anchors: Vec<String> = crate::parent_location(address).into_iter().collect();
+        if level == Some(HubLevel::Topic) {
+            let topic = crate::tree_root_address(crate::tree_id(address));
+            if !anchors.contains(&topic) {
+                anchors.push(topic);
+            }
+        }
+        anchors
+    }
+
+    /// The hubs one body lists, in body order: every Link target that is a Hub Card other than the
+    /// body's own Card.
+    fn lower_in(&self, body: &Body, address: &str) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        body.lines
+            .iter()
+            .flat_map(|line| line.targets.iter())
+            .filter(|target| self.hubs.contains_key(*target) && *target != address)
+            .filter(|target| seen.insert((*target).clone()))
+            .cloned()
+            .collect()
+    }
+
+    /// The rules one hub body answers on its own: `level`, `anchor-title` (D130, D169),
+    /// `oversize`/`flat` (H5), `bare` (H8), `broken` members and `upward` (H6). `Graph::check`
+    /// judges a saved Hub Card by it and [`precheck`] a draft that is not saved yet, so the
+    /// composer's draft runs the report's own rules rather than a second copy of them.
+    ///
+    /// `title` is the hub's own title, `raw` its authored body text, `anchors` the Cards whose
+    /// titles it may not copy, and `lower` the hubs the body lists in body order.
+    fn body_faults(
+        &self,
+        address: &str,
+        level: Option<HubLevel>,
+        title: &str,
+        raw: &str,
+        body: &Body,
+        anchors: &[String],
+        lower: &[String],
+        limits: &Limits,
+    ) -> Vec<Value> {
         let mut faults = Vec::new();
         let fault = |faults: &mut Vec<Value>, id: &str, detail: String| {
             faults.push(json!({ "fault": id, "detail": detail }));
         };
-        let address = hub.address.as_str();
-        let body = self.body(address).cloned().unwrap_or_default();
-        let level = hub.hub_level;
         if level.is_none() {
             fault(
                 &mut faults,
@@ -1009,20 +1602,12 @@ impl<'a> Graph<'a> {
         // hub also names the tree's Topic Card: that is the Card the compiler's precheck
         // anchors a new draft to, so a draft it refuses is a fault this report names.
         if matches!(level, Some(HubLevel::Line) | Some(HubLevel::Topic)) {
-            // The anchors in report order: the Card it hangs under, then the Topic Card.
-            let mut anchors: Vec<String> = crate::parent_location(address).into_iter().collect();
-            if level == Some(HubLevel::Topic) {
-                let topic = crate::tree_root_address(crate::tree_id(address));
-                if !anchors.contains(&topic) {
-                    anchors.push(topic);
-                }
-            }
-            let own = normalized_title(&self.snapshot.title(address));
+            let own = normalized_title(title);
             let copied = if own.is_empty() {
                 None
             } else {
                 anchors
-                    .into_iter()
+                    .iter()
                     .find(|anchor| normalized_title(&self.snapshot.title(anchor)) == own)
             };
             if let Some(anchor) = copied {
@@ -1038,13 +1623,7 @@ impl<'a> Graph<'a> {
         // H5: size. The register's size is its number of terms; each term names 1 to 3 ways in,
         // and its rows are checked by their own grammar (D050, D289, D297).
         if level == Some(HubLevel::Register) {
-            let raw = self
-                .snapshot
-                .parsed
-                .get(address)
-                .map(|parsed| parsed.body.clone())
-                .unwrap_or_default();
-            for row in register_rows(&raw) {
+            for row in register_rows(raw) {
                 let exists = |at: &str| self.snapshot.by_address.contains_key(at);
                 faults.extend(register_row_faults(&row, &exists));
             }
@@ -1124,22 +1703,43 @@ impl<'a> Graph<'a> {
         // H6: a hub lists only hubs of a lower level, and no cycle. A line hub may also list the
         // line hub of a branch inside its own branch.
         let own = level.map_or(0, HubLevel::number);
-        for lower in self.lower(address) {
-            let lower_level = self.level(&lower).map_or(0, HubLevel::number);
+        for lower in lower {
+            let lower_level = self.level(lower).map_or(0, HubLevel::number);
             let nested = level == Some(HubLevel::Line)
-                && self.level(&lower) == Some(HubLevel::Line)
-                && nested_line(address, &lower);
+                && self.level(lower) == Some(HubLevel::Line)
+                && nested_line(address, lower);
             if level.is_some() && lower_level >= own && !nested {
                 fault(
                     &mut faults,
                     "upward",
                     format!(
                         "lists [[{lower}]], a hub of level {} or higher",
-                        self.level(&lower).map_or("none", HubLevel::id)
+                        self.level(lower).map_or("none", HubLevel::id)
                     ),
                 );
             }
         }
+        faults
+    }
+
+    fn check(&self, hub: &Card, limits: &Limits) -> (Vec<Value>, Advice) {
+        let address = hub.address.as_str();
+        let body = self.body(address).cloned().unwrap_or_default();
+        let level = hub.hub_level;
+        let raw = self
+            .snapshot
+            .parsed
+            .get(address)
+            .map(|parsed| parsed.body.as_str())
+            .unwrap_or_default();
+        let title = self.snapshot.title(address);
+        let anchors = self.anchors(address, level);
+        let lower = self.lower(address);
+        let mut faults =
+            self.body_faults(address, level, &title, raw, &body, &anchors, &lower, limits);
+        let fault = |faults: &mut Vec<Value>, id: &str, detail: String| {
+            faults.push(json!({ "fault": id, "detail": detail }));
+        };
         if self.in_cycle(address) {
             fault(
                 &mut faults,
@@ -1904,5 +2504,580 @@ mod tests {
         // A fenced row is not a declaration.
         let fenced = register_part_rows("## 词条分册\n```\n- [[196/1|a]] A–F\n```\n");
         assert!(fenced.is_empty(), "{fenced:?}");
+    }
+
+    /// A scratch archive for the draft precheck: the agent register (a Hub Card of level
+    /// `register`, the first Card of the Topic `索引`), one agent Topic with two Cards, and one
+    /// human Topic with a Card — the tree the cabinet usually shows.
+    struct DraftArchive {
+        _temp: tempfile::TempDir,
+        snapshot: Snapshot,
+        register: String,
+
+        topic_card: String,
+        human_card: String,
+    }
+
+    impl DraftArchive {
+        fn new() -> Self {
+            use crate::Access;
+            use crate::ops::{self, Successor, TypeChange};
+            let temp = tempfile::tempdir().expect("temp dir");
+            let root = temp.path();
+            crate::initialize_database(root).expect("initialize database");
+            // Two books, so a draft can name Cards of two trees.
+            for (key, title) in [("bookA", "Book A"), ("bookB", "Book B")] {
+                crate::ops::create_literature(
+                    root,
+                    Access::Owner,
+                    Workspace::Agent,
+                    &format!("@book{{{key}, title={{{title}}}}}"),
+                    &format!("# {title}\n\n该书。\n"),
+                )
+                .expect(title);
+            }
+            let index = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 索引\n\n入口。\n")
+                .expect("agent Topic");
+            let register = ops::create_successor(
+                root,
+                Access::Owner,
+                Successor::Direct,
+                &index,
+                CardType::Hub,
+                None,
+                "# 索引：代理工作区的入口\n\n## 词条\n",
+            )
+            .expect("register");
+            ops::edit(
+                root,
+                Access::Owner,
+                &register,
+                None,
+                TypeChange {
+                    hub_level: Some(Some(HubLevel::Register)),
+                    ..TypeChange::default()
+                },
+                None,
+            )
+            .expect("register level");
+            let topic = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 学习\n\n学。\n")
+                .expect("agent Topic");
+            let first = ops::create_successor(
+                root,
+                Access::Owner,
+                Successor::Direct,
+                &topic,
+                CardType::Idea,
+                None,
+                "# 学习的第一张卡\n\n文本。\n",
+            )
+            .expect("topic Card");
+            for (title, body) in [
+                ("学习的个体行为", "学习改变信念。\n\n来源：[[bookA]]"),
+                ("学习的产业生产率", "学习提高产出。\n\n来源：[[bookB]]"),
+            ] {
+                ops::create_successor(
+                    root,
+                    Access::Owner,
+                    Successor::Side,
+                    &first,
+                    CardType::Idea,
+                    None,
+                    &format!("# {title}\n\n{body}\n"),
+                )
+                .expect("topic Card");
+            }
+            // The register accepts the term its entry Card states.
+            ops::edit(
+                root,
+                Access::Owner,
+                &register,
+                Some(&format!(
+                    "# 索引：代理工作区的入口\n\n## 词条\n- 学习：[[{first}]]\n"
+                )),
+                TypeChange::default(),
+                None,
+            )
+            .expect("register body");
+            let human = ops::create_topic(root, Access::Owner, Workspace::Human, "# 人的主题\n\n人。\n")
+                .expect("human Topic");
+            let human_card = ops::create_successor(
+                root,
+                Access::Owner,
+                Successor::Direct,
+                &human,
+                CardType::Idea,
+                None,
+                "# 人的卡\n\n文本。\n",
+            )
+            .expect("human Card");
+            let snapshot = Snapshot::read(root).expect("snapshot");
+            Self {
+                _temp: temp,
+                snapshot,
+                register,
+
+                topic_card: first,
+                human_card,
+            }
+        }
+
+        fn draft(&self, at: &str, level: &str, body: &str) -> Value {
+            precheck(
+                &self.snapshot,
+                &json!({
+                    "text": format!("# 跨书的多重均衡\n\n{body}\n<!-- zt:reverse-links -->\n"),
+                    "level": level,
+                    "how": "side",
+                    "at": at,
+                }),
+            )
+            .expect("precheck")
+        }
+
+        fn faults(&self, at: &str, level: &str, body: &str) -> Vec<String> {
+            self.draft(at, level, body)["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .map(|fault| fault["fault"].as_str().expect("fault id").to_string())
+                .collect()
+        }
+
+        /// The title of the Card the single-Topic drafts hang under.
+        fn topic_card_title(&self) -> String {
+            self.snapshot.title(&self.topic_card)
+        }
+
+        /// The tree's topic hub: a Hub Card of level `topic`, a Side successor of its first Card —
+        /// the placement the digest's hub stage uses.
+        fn topic_hub(&self) -> String {
+            use crate::Access;
+            use crate::ops::{self, Successor, TypeChange};
+            let root = self._temp.path();
+            let hub = ops::create_successor(
+                root,
+                Access::Owner,
+                Successor::Side,
+                &self.topic_card,
+                CardType::Hub,
+                None,
+                "# 学习的入口\n\n## 个体学习\n- [[bookA]]：学习会改变个体的信念。\n",
+            )
+            .expect("topic hub");
+            ops::edit(
+                root,
+                Access::Owner,
+                &hub,
+                None,
+                TypeChange {
+                    hub_level: Some(Some(HubLevel::Topic)),
+                    ..TypeChange::default()
+                },
+                None,
+            )
+            .expect("topic hub level");
+            hub
+        }
+    }
+
+    /// S17 (#118, D235-D237, S17-AC02, S17-AC03): a field-hub draft is filed under the agent
+    /// Workspace's register; the same draft offered at a Topic Card or in the human tree is
+    /// refused, so a Spread is never saved into the tree the cabinet happens to show.
+    #[test]
+    fn a_field_hub_draft_is_filed_under_the_agent_register() {
+        let archive = DraftArchive::new();
+        let body = "## Book A\n- [[bookA]]：多重均衡来自策略互补。\n\n## Book B\n- [[bookB]]：策略互补解释多重均衡。";
+        let filed = archive.draft(&archive.register, "field", body);
+        assert_eq!(filed["ok"], json!(true), "{filed}");
+        assert_eq!(filed["faults"], json!([]), "{filed}");
+        assert_eq!(filed["level"], json!("field"));
+        assert_eq!(filed["workspace"], json!("agent"));
+        assert_eq!(filed["at"], json!(archive.register));
+        assert_eq!(filed["anchor"], json!(archive.register));
+        assert_eq!(filed["title"], json!("跨书的多重均衡"));
+        assert_eq!(filed["lines"], json!(2), "the precheck counts the members it read: {filed}");
+        // A Topic Card is no place for a field hub.
+        let wrong = archive.draft(&archive.topic_card, "field", body);
+        assert_eq!(wrong["ok"], json!(false), "{wrong}");
+        assert!(
+            wrong["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("placement")),
+            "{wrong}"
+        );
+        // The human tree is never a destination for an agent draft.
+        let human = archive.draft(&archive.human_card, "field", body);
+        assert_eq!(human["ok"], json!(false), "{human}");
+        assert_eq!(human["workspace"], json!("human"));
+        assert!(
+            human["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("workspace")),
+            "{human}"
+        );
+    }
+
+    /// S17 (#118, S17-AC02, S17-AC04): a topic-hub draft is filed under the tree's first Card; a
+    /// tree that already has a topic hub is a `duplicate` (reuse it), a title that copies the
+    /// anchor's or the Topic's title is `anchor-title`, and reuse rewrites the hub already filed.
+    #[test]
+    fn a_topic_hub_draft_is_filed_under_the_trees_first_card_and_reuses_an_existing_hub() {
+        let archive = DraftArchive::new();
+        let body = "## 个体学习\n- [[bookA]]：学习会改变个体的信念。\n\n## 产业学习\n- [[bookB]]：学习会提高产业的产出。";
+        let filed = archive.draft(&archive.topic_card, "topic", body);
+        assert_eq!(filed["ok"], json!(true), "{filed}");
+        assert_eq!(filed["level"], json!("topic"));
+        assert_eq!(filed["anchor"], json!(archive.topic_card));
+        let address = filed["address"].as_str().expect("address");
+        assert!(
+            address.starts_with(&format!("{}|", archive.topic_card)),
+            "the draft is placed where the write would put it: {filed}"
+        );
+        assert!(
+            !archive.snapshot.by_address.contains_key(address),
+            "the draft's place is free: {filed}"
+        );
+        assert_eq!(filed["tree"], json!(crate::tree_id(&archive.topic_card)));
+        // A title that copies the Card it hangs under tells the reader nothing.
+        let copied = precheck(
+            &archive.snapshot,
+            &json!({
+                "text": format!("# {}\n\n{body}", archive.topic_card_title()),
+                "level": "topic",
+                "at": archive.topic_card,
+            }),
+        )
+        .expect("precheck");
+        assert_eq!(copied["ok"], json!(false), "{copied}");
+        assert!(
+            copied["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("anchor-title")),
+            "{copied}"
+        );
+        // Reuse rewrites the hub already filed there, never a Card that is not a hub.
+        let not_a_hub = precheck(
+            &archive.snapshot,
+            &json!({ "text": format!("# 学习的两条线\n\n{body}"), "level": "topic", "how": "edit", "at": archive.topic_card }),
+        )
+        .expect("precheck");
+        assert_eq!(not_a_hub["how"], json!("edit"));
+        assert!(
+            not_a_hub["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("destination")),
+            "a Card that is not a hub has nothing to reuse: {not_a_hub}"
+        );
+        let hub = archive.topic_hub();
+        let snapshot = Snapshot::read(archive._temp.path()).expect("snapshot");
+        let second = precheck(
+            &snapshot,
+            &json!({ "text": format!("# 另一条入口\n\n{body}"), "level": "topic", "at": archive.topic_card }),
+        )
+        .expect("precheck");
+        assert!(
+            second["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("duplicate")),
+            "a second topic hub of one tree is named: {second}"
+        );
+        let reuse = precheck(
+            &snapshot,
+            &json!({
+                "text": "# 学习的入口\n\n## 个体学习\n- [[bookA]]：学习会改变个体的信念。\n\n## 产业学习\n- [[bookB]]：学习会提高产业的产出。",
+                "level": "topic",
+                "how": "edit",
+                "at": hub,
+            }),
+        )
+        .expect("precheck");
+        assert_eq!(reuse["ok"], json!(true), "the existing hub is rewritten in place: {reuse}");
+        assert_eq!(reuse["address"], json!(hub));
+        let wrong_level = precheck(
+            &snapshot,
+            &json!({ "text": "# 学习的入口\n\n## 个体学习\n- [[bookA]]：学习会改变个体的信念。", "level": "line", "how": "edit", "at": hub }),
+        )
+        .expect("precheck");
+        assert!(
+            wrong_level["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault["fault"] == json!("placement")),
+            "reuse keeps the hub's level: {wrong_level}"
+        );
+        // The hub exists and its body is unchanged by any precheck.
+        assert_eq!(
+            snapshot.parsed[&hub].body,
+            "## 个体学习\n- [[bookA]]：学习会改变个体的信念。",
+            "a precheck writes nothing"
+        );
+    }
+
+    /// S17 (#118, S17-AC03, S17-AC04): the draft's level is required and legal, and the body is
+    /// judged by the report's own rules: a missing reason, a missing member, a hub of the same or a
+    /// higher level listed, and the size rules.
+    #[test]
+    fn a_hub_draft_runs_the_report_rules_before_it_is_saved() {
+        let archive = DraftArchive::new();
+        // No level, an unknown level, a missing destination.
+        assert!(precheck(&archive.snapshot, &json!({ "text": "# 草稿\n", "at": archive.register })).is_err());
+        assert!(
+            precheck(&archive.snapshot, &json!({ "text": "# 草稿\n", "level": "concept", "at": archive.register }))
+                .expect_err("an unknown level")
+                .to_string()
+                .contains("unknown hub level")
+        );
+        assert!(
+            precheck(&archive.snapshot, &json!({ "text": "# 草稿\n", "level": "field" }))
+                .expect_err("no destination")
+                .to_string()
+                .contains("`at`")
+        );
+        // The register is the Workspace's one register, never a draft's level.
+        let register = precheck(
+            &archive.snapshot,
+            &json!({ "text": "# 草稿\n", "level": "register", "at": archive.register }),
+        )
+        .expect("precheck");
+        assert_eq!(register["ok"], json!(false));
+        assert_eq!(register["level"], Value::Null, "{register}");
+        // The body's own rules: a reason too short, a member that does not exist.
+        let faults = archive.faults(
+            &archive.register,
+            "field",
+            "## Book A\n- [[bookA]]：短\n\n## Book B\n- [[noSuchCard]]：策略互补解释多重均衡。",
+        );
+        assert!(faults.contains(&"bare".to_string()), "{faults:?}");
+        assert!(faults.contains(&"broken".to_string()), "{faults:?}");
+        // A draft that lists the register itself lists a hub of a higher level.
+        let upward = archive.faults(
+            &archive.register,
+            "field",
+            &format!("## Book A\n- [[bookA]]：多重均衡来自策略互补。\n\n## Book B\n- [[{}]]：另一条入口。", archive.register),
+        );
+        assert!(upward.contains(&"upward".to_string()), "{upward:?}");
+        // Nine lines in one group are `flat`: the draft must be sorted into named groups.
+        let lines = (0..9)
+            .map(|index| format!("- [[bookA]]：第 {index} 条理由写在这里。"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flat = archive.faults(&archive.register, "field", &format!("## Book A\n{lines}"));
+        assert!(flat.contains(&"flat".to_string()), "{flat:?}");
+    }
+
+    /// S17 (#118, D235-D237, S17-AC01, S17-AC02): a Spread that spans Trees becomes a field-hub
+    /// draft under the agent register — its question, its selected Links and their reasons — and
+    /// the draft passes the precheck.
+    #[test]
+    fn a_cross_tree_spread_becomes_a_field_hub_draft_under_the_agent_register() {
+        let archive = DraftArchive::new();
+        let plan = draft(
+            &archive.snapshot,
+            &json!({
+                "cards": ["1/1|a", "bookA", "bookB"],
+                "question": "为什么学习可能造成多重均衡？",
+                "reasons": {
+                    "1/1|a": "States the accepted term 学习（个体行为）.",
+                    "bookA": "Reached in 1 semantic step(s) from the entry Card.",
+                    "bookB": "Adds the other book's treatment of the same term.",
+                },
+            }),
+        )
+        .expect("draft");
+        assert_eq!(plan["level"], json!("field"), "{plan}");
+        assert_eq!(plan["workspace"], json!("agent"));
+        assert_eq!(plan["destination"]["at"], json!(archive.register), "{plan}");
+        assert_eq!(plan["destination"]["how"], json!("side"));
+        assert_eq!(plan["destination"]["reuse"], json!(false));
+        assert_eq!(plan["missing"], Value::Null);
+        assert_eq!(plan["question"], json!("为什么学习可能造成多重均衡？"));
+        assert_eq!(
+            plan["trees"].as_array().expect("trees").len(),
+            3,
+            "each Tree the set spans is named: {plan}"
+        );
+        let text = plan["draft"]["text"].as_str().expect("draft text");
+        assert_eq!(plan["draft"]["title"], json!("为什么学习可能造成多重均衡？"));
+        assert!(
+            text.starts_with("# 为什么学习可能造成多重均衡？\n"),
+            "the desk opens with the question: {text}"
+        );
+        assert!(
+            text.contains("范围：") && text.contains("为什么学习可能造成多重均衡？"),
+            "the drafted body states its scope and carries the whole question: {text}"
+        );
+        for (group, member, reason) in [
+            ("学习", "[[1/1|a]]", "States the accepted term"),
+            ("Book A", "[[bookA]]", "Reached in 1 semantic step(s)"),
+            ("Book B", "[[bookB]]", "Adds the other book's treatment"),
+        ] {
+            assert!(text.contains(&format!("## {group}")), "{group}: {text}");
+            assert!(
+                text.lines()
+                    .any(|line| line.contains(member) && line.contains(reason)),
+                "the drafted line names {member} with its reason: {text}"
+            );
+        }
+        assert!(
+            text.trim_end().ends_with("<!-- zt:reverse-links -->"),
+            "{text}"
+        );
+        assert_eq!(plan["check"]["ok"], json!(true), "{plan}");
+        assert_eq!(plan["check"]["faults"], json!([]), "{plan}");
+    }
+
+    /// S17 (#118, S17-AC02): a Spread inside one agent Topic is a topic-hub draft under that
+    /// Tree's first Card; when the Topic already has a topic hub the draft rewrites it, keeping
+    /// the body it had, instead of writing a second one.
+    #[test]
+    fn a_single_topic_spread_becomes_a_topic_hub_draft_or_rewrites_the_tree_hub() {
+        let archive = DraftArchive::new();
+        let question = "为什么学习可能造成多重均衡？";
+        let plan = draft(
+            &archive.snapshot,
+            &json!({
+                "cards": [archive.topic_card, "1/1|a"],
+                "question": question,
+                "reasons": { "1/1": "The first Card of the Topic states the subject.", "1/1|a": "States the accepted term 学习（个体行为）." },
+            }),
+        )
+        .expect("draft");
+        assert_eq!(plan["level"], json!("topic"), "{plan}");
+        assert_eq!(plan["destination"]["at"], json!(archive.topic_card));
+        assert_eq!(plan["destination"]["how"], json!("side"));
+        assert_eq!(plan["destination"]["reuse"], json!(false));
+        assert_eq!(plan["trees"].as_array().expect("trees").len(), 1);
+        let text = plan["draft"]["text"].as_str().expect("text");
+        assert!(text.contains("## 学习\n"), "one group, named by the Tree: {text}");
+        assert!(text.contains("- [[1/1|a]]：States the accepted term"), "{text}");
+        assert!(text.contains("- [[1/1]]：The first Card of the Topic"), "{text}");
+        assert_eq!(plan["check"]["ok"], json!(true), "{plan}");
+
+        // The Tree already has a topic hub: the draft adds this question's Cards to it.
+        let hub = archive.topic_hub();
+        let snapshot = Snapshot::read(archive._temp.path()).expect("snapshot");
+        let reuse = draft(
+            &snapshot,
+            &json!({
+                "cards": [archive.topic_card, "1/1|a"],
+                "question": question,
+                "reasons": { "1/1": "The first Card of the Topic states the subject.", "1/1|a": "States the accepted term 学习（个体行为）." },
+            }),
+        )
+        .expect("draft");
+        assert_eq!(reuse["level"], json!("topic"), "{reuse}");
+        assert_eq!(reuse["destination"]["at"], json!(hub), "{reuse}");
+        assert_eq!(reuse["destination"]["how"], json!("edit"));
+        assert_eq!(reuse["destination"]["reuse"], json!(true));
+        assert!(
+            reuse["destination"]["base"].as_str().is_some_and(|base| !base.is_empty()),
+            "a rewrite is guarded by the hub's own text: {reuse}"
+        );
+        let merged = reuse["draft"]["text"].as_str().expect("text");
+        assert!(
+            merged.starts_with("# 学习的入口\n\n## 个体学习\n- [[bookA]]：学习会改变个体的信念。\n"),
+            "the hub's authored body survives byte for byte: {merged}"
+        );
+        assert!(
+            merged.contains(&format!("## {question}\n")),
+            "the addition is one named group: {merged}"
+        );
+        assert!(
+            merged.contains("- [[1/1|a]]：States the accepted term 学习（个体行为）."),
+            "the new members carry their reasons: {merged}"
+        );
+        assert!(merged.trim_end().ends_with("<!-- zt:reverse-links -->"), "{merged}");
+        assert_eq!(reuse["check"]["ok"], json!(true), "{reuse}");
+        // A Tree that has a topic hub offers its rewrite, never a second hub beside it.
+        let choices = reuse["choices"].as_array().expect("choices");
+        assert!(
+            choices.iter().any(|choice| choice["at"] == json!(hub) && choice["how"] == json!("edit")),
+            "{reuse}"
+        );
+        assert!(
+            !choices.iter().any(|choice| {
+                choice["at"] == json!(archive.topic_card) && choice["level"] == json!("topic")
+            }),
+            "a duplicate topic hub is never offered: {reuse}"
+        );
+    }
+
+    /// S17 (#118, S17-AC03): a Spread the agent cannot file inside its own tree asks for a
+    /// destination instead — a cross-Tree set with no register, and a set that lies in the human
+    /// Workspace.
+    #[test]
+    fn a_spread_without_an_agent_home_asks_for_a_destination() {
+        use crate::Access;
+        use crate::ops;
+        // A fresh agent Workspace: a Topic with Cards, but no register yet.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        crate::ops::create_literature(
+            root,
+            Access::Owner,
+            Workspace::Agent,
+            "@book{bookA, title={Book A}}",
+            "# Book A\n\n该书。\n",
+        )
+        .expect("Book A");
+        let topic = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 学习\n\n学。\n")
+            .expect("Topic");
+        let card = ops::create_successor(
+            root,
+            Access::Owner,
+            ops::Successor::Direct,
+            &topic,
+            CardType::Idea,
+            None,
+            "# 学习的个体行为\n\n学习会改变个体的信念。\n",
+        )
+        .expect("Card");
+        let snapshot = Snapshot::read(root).expect("snapshot");
+        let plan = draft(
+            &snapshot,
+            &json!({
+                "cards": [card, "bookA"],
+                "question": "学习怎样影响产出？",
+                "reasons": { "bookA": "Adds the book's treatment of learning." },
+            }),
+        )
+        .expect("draft");
+        assert_eq!(plan["missing"], json!("register"), "{plan}");
+        assert_eq!(plan["destination"], Value::Null, "{plan}");
+        assert!(
+            plan["note"].as_str().is_some_and(|note| note.contains("no register")),
+            "the desk asks for a destination: {plan}"
+        );
+        let choices = plan["choices"].as_array().expect("choices");
+        assert!(
+            choices.iter().any(|choice| choice["at"] == json!(format!("{}/1", crate::tree_id(&topic)))
+                && choice["level"] == json!("topic")),
+            "an agent Topic is still a legal destination: {plan}"
+        );
+        assert!(
+            choices.iter().all(|choice| choice["level"] != json!("field")),
+            "no register means no field destination: {plan}"
+        );
+        // The draft is still written; only its placement is missing.
+        assert!(
+            plan["draft"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("## Book A") && text.contains("## 学习")),
+            "{plan}"
+        );
+        assert_eq!(plan["check"]["ok"], json!(false), "{plan}");
     }
 }

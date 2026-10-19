@@ -1904,8 +1904,10 @@ pub(crate) fn register_of(snapshot: &Snapshot, workspace: Workspace) -> Option<V
 }
 
 /// The addresses of one Workspace's registers, in natural address order: none, one, or several (a
-/// Workspace has one, and several are reported rather than chosen between).
-fn register_addresses(snapshot: &Snapshot, workspace: Workspace) -> Vec<String> {
+/// Workspace has one, and several are reported rather than chosen between). The draft precheck of
+/// a field hub (`src/hub.rs::precheck`) reads the same list, so both say a Workspace's register is
+/// one Card or none.
+pub(crate) fn register_addresses(snapshot: &Snapshot, workspace: Workspace) -> Vec<String> {
     let mut found = snapshot
         .cards
         .iter()

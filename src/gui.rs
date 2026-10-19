@@ -958,6 +958,8 @@ impl App {
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
             (Method::Post, "/api/ask") => self.ask(body),
+            (Method::Post, "/api/hub/draft") => self.hub_draft(body),
+            (Method::Post, "/api/hub/check") => self.hub_check(body),
             (Method::Get, "/api/distant") => self.distant(
                 &param("at")?,
                 query.get("table").map(String::as_str),
@@ -1101,6 +1103,21 @@ impl App {
     fn ask(&self, body: &Value) -> ApiResult {
         let args = crate::entry::AskArgs::from_args(body).map_err(ApiError::from)?;
         Ok(crate::read::ask(&self.root, &args)?)
+    }
+
+    /// The plan of the agent Hub Card that files a Spread (S17, #118; design §9.6, D235-D237):
+    /// where the draft would be filed, at what level, the Markdown it opens with, every legal
+    /// destination, and the precheck of that draft. Read-only: filing needs the separate Save.
+    fn hub_draft(&self, body: &Value) -> ApiResult {
+        let snapshot = self.snapshot()?;
+        Ok(crate::hub::draft(&snapshot, body)?)
+    }
+
+    /// The draft precheck (§9.6, S17-AC04): the hub report's own rules run over a hub body that is
+    /// not saved yet, so the desk can refuse a draft before it writes one. Read-only.
+    fn hub_check(&self, body: &Value) -> ApiResult {
+        let snapshot = self.snapshot()?;
+        Ok(crate::hub::precheck(&snapshot, body)?)
     }
 
     /// The one distant Card of the Card the reader has open or holds (§10.2, D249-D256; `/api/distant`
@@ -2280,6 +2297,9 @@ fn respond_json(request: Request, status: u16, value: &Value) {
 mod tests {
     use super::*;
 
+    /// This module's own source text, so a page test can pin the route table it mounts.
+    const GUI_RS: &str = include_str!("gui.rs");
+
     #[test]
     fn query_strings_decode_percent_escapes_and_plus_signs() {
         let query = parse_query("at=0%2F1%7Ca&q=hello+world&bad=%zz");
@@ -3408,6 +3428,100 @@ mod tests {
         assert!(
             why.contains("position: absolute") && why.contains("background:") && why.contains("var(--paper)"),
             "the reason is its own legible band over the ruled paper: {why}"
+        );
+    }
+
+    /// S17 (#118, S17-AC01, S17-AC04, S17-AC05, S17-AC06): the shipped page files a kept Ask Spread
+    /// as one agent Hub Card draft through the existing composer — `fileSpread` reads the plan, the
+    /// desk states the agent Workspace and the Hub type, the placement controls choose the level and
+    /// the destination, the hub precheck gates Save, and the one existing create (or guarded edit)
+    /// route writes the Card. Filing itself writes nothing, and Cancel writes nothing.
+    #[test]
+    fn the_front_end_files_a_kept_spread_as_an_agent_hub_draft() {
+        // The routes exist and read through the cached Snapshot, like `/api/ask`.
+        assert!(GUI_RS.contains("(Method::Post, \"/api/hub/draft\") => self.hub_draft(body),"));
+        assert!(GUI_RS.contains("(Method::Post, \"/api/hub/check\") => self.hub_check(body),"));
+        assert!(GUI_RS.contains("crate::hub::draft(&snapshot, body)"));
+        assert!(GUI_RS.contains("crate::hub::precheck(&snapshot, body)"));
+        // `fileSpread` branches on the Spread's kept question and opens the plan, unchanged for the
+        // Spreads that were never a question.
+        assert!(APP_JS.contains("if (spread && spread.question) return fileAskSpread(spread, cards);"));
+        assert!(APP_JS.contains("async function fileAskSpread(spread, cards)"));
+        assert!(
+            APP_JS.contains("plan = await api('hub/draft', { cards: addresses, question: spread.question, title: spread.name, reasons });"),
+            "the page asks for the plan, and passes the reasons the answer gave"
+        );
+        assert!(
+            APP_JS.contains("const proposal = await api('ask', { question });"),
+            "a Spread kept in an earlier session reads its own question again for its reasons"
+        );
+        assert!(
+            APP_JS.contains("if (wanted.has(card.at) && card.reason) reasons[card.at] = card.reason;"),
+            "only the reasons of the Spread's own Cards are used"
+        );
+        // The desk states the agent Workspace and the Hub type, whatever the cabinet shows, and the
+        // one create route writes a side successor at the chosen level.
+        assert!(APP_JS.contains("heading: `Hub draft · ${spread.name || 'Spread'} · agent workspace`"));
+        assert!(APP_JS.contains("cardType: 'hub',"));
+        assert!(APP_JS.contains("h('span', { class: 'hub-ws', text: 'agent workspace'"));
+        assert!(APP_JS.contains(
+            "api('create', { kind: 'side', at: placement.at, text, type: 'hub', level: placement.level })"
+        ));
+        assert!(APP_JS.contains(
+            "api('edit', { at: placement.at, text, base: placement.base })"
+        ));
+        assert!(
+            APP_JS.contains("if (!placement || !placement.at) throw new Error('choose where the hub is filed first');"),
+            "no placement is no Save"
+        );
+        // The placement controls: the level select and the destination select, filled from the
+        // plan's legal choices, a rewrite never offered a second hub.
+        assert!(APP_JS.contains("'aria-label': 'Hub level'"));
+        assert!(APP_JS.contains("'aria-label': 'Destination of the hub draft'"));
+        assert!(
+            APP_JS.contains("const hubOptions = !hub ? [] : hub.destination && hub.destination.how === 'edit'")
+                && APP_JS.contains("? [hub.destination]")
+                && APP_JS.contains(": (hub.choices || []).filter((choice) => choice.how === 'side');"),
+            "a rewrite goes back to the one hub it was drafted from, and a new draft to a create"
+        );
+        assert!(APP_JS.contains("const fillDestinations = (keepEmpty = false) => {"));
+        assert!(
+            APP_JS.contains("{ value: '', text: '— where is it filed? —' }"),
+            "a plan with no destination asks for one inside the editor"
+        );
+        // The hub precheck runs with every edit and gates Save.
+        assert!(APP_JS.contains("hubCheck = await hub.check(text.value, hubPlaced.level, hubPlaced.how, hubPlaced.at);"));
+        assert!(APP_JS.contains("await hubPrecheck();"), "every edit rechecks the draft");
+        assert!(APP_JS.contains("saveBtn.disabled = faults.length > 0 || !hubCheck;"));
+        assert!(APP_JS.contains("if (hub && !(hubCheck && hubCheck.ok)) {"));
+        assert!(APP_JS.contains("the hub precheck must pass before Save; fix the named faults"));
+        assert!(APP_JS.contains("h('div', { class: 'hub-fault', dataset: { fault: fault.fault } }"));
+        // Cancel and an empty plan write nothing: the Save is the one write, behind `if (!address)`.
+        assert!(APP_JS.contains("if (!address) return;"), "Cancel returns without writing");
+        assert!(APP_JS.contains("await afterChange(address, `filed the hub draft as ${address}`);"));
+        assert!(
+            !APP_JS.contains("api('hub/draft', { cards: addresses, question: spread.question, title: spread.name, reasons }).then"),
+            "the plan's answer is checked before the desk opens"
+        );
+        // The plan and the precheck are read-only: no write route is added for them.
+        for route in ["api('hub/create'", "api('hub/save'", "api('hub/file'"] {
+            assert!(!APP_JS.contains(route), "no second composer or write route: {route}");
+        }
+        // The placement bar and the fault panel are painted from the theme's own variables.
+        for rule in [".hub-bar {", ".hub-ws {", ".hub-level, .hub-dest {", ".hub-fault {", ".hub-ok {"] {
+            assert!(APP_CSS.contains(rule), "the stylesheet has {rule}");
+        }
+        let start = APP_CSS.find(".hub-bar {").expect("hub-bar rule");
+        let block = &APP_CSS[start..start + APP_CSS[start..].find("\n}").expect("rule end")];
+        assert!(
+            !block.contains('#') && block.contains("var(--"),
+            "the hub bar is painted from the theme: {block}"
+        );
+        // The desk's own rules are one composer: the reply, create, and insert paths still use it.
+        assert_eq!(
+            APP_JS.matches("function openEditor(").count(),
+            1,
+            "one writing desk serves every composer"
         );
     }
 }

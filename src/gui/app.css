@@ -1173,6 +1173,38 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .reply-note.err { color: var(--link); font-weight: 600; }
 .reply-btn { border-color: color-mix(in srgb, var(--link) 55%, var(--line)); }
 
+/* A filed Spread drafts one agent Hub Card: the Workspace and the type stand fixed in the bar,
+   the reader chooses the Hub level and the Card it is filed under, and the precheck panel under
+   the Markdown names every fault that stands between the draft and Save (S17, #118). */
+.hub-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 18px;
+  border-bottom: 1px solid var(--hairline); background: var(--line-soft);
+  font: 11.5px var(--sans); color: var(--ink-soft); flex-wrap: wrap;
+}
+.hub-bar .lbl { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+.hub-ws {
+  font: 600 10px var(--sans); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 3px; padding: 1px 5px;
+}
+.hub-level, .hub-dest {
+  font: 600 11.5px var(--sans); color: var(--ink); background: var(--paper);
+  border: 1.5px solid var(--line); border-radius: 4px; padding: 2px 6px;
+}
+.hub-dest { max-width: 320px; }
+.hub-note {
+  font: 11.5px var(--sans); color: var(--ink-faint); flex: 1 1 220px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hub-check { margin-top: 10px; flex: 0 0 auto; max-height: 22vh; overflow: auto; border-top: 1px solid var(--hairline); }
+.hub-pane textarea { min-height: 34vh; }
+.hub-check .pane-label { padding-top: 10px; }
+.hub-faults { display: flex; flex-direction: column; gap: 3px; font: 11.5px var(--sans); }
+.hub-fault { color: var(--link); }
+.hub-fault .f { font-weight: 700; letter-spacing: .04em; margin-right: 6px; }
+.hub-fault .d { color: var(--ink-soft); }
+.hub-ok { color: var(--ink-faint); }
+
 /* ---------- math and charts ---------- */
 .md .math-display { display: block; margin: .4em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .md .katex { font-size: 1.04em; }
