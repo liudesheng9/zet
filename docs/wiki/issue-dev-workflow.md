@@ -180,5 +180,6 @@ The goal path itself is checked live in the bridge repository with `scripts/goal
 
 ## Change history
 
+- `2026-10-18` — zt-issue-dev 1.1.1 inlines **DeepSeek Subagent Managed Protocol v1.1**: a manager starts every conversation with `wait_seconds 0` (the bridge runs `deepseek_run` calls one after another, so a blocking start delayed each later one), then polls every open session with `wait_seconds 0`, collects and deletes the finished ones at once, blocks on one running session for at most 90 seconds, and cancels a session that outlives its 240-minute budget as a recorded timeout. The relay module's own manager waits (900 s, at most 12 per manager) are unchanged, and `issue-relay.tests.mjs` still passes its 16 scenarios.
 - `2026-10-18` — zt-issue-dev 1.1.0 (relay module v2): each conversation starts with a real dsh goal set through the bridge (`deepseek_run` `goal`, bridge 0.11). Issues end on the goal's phase. Questions from every goal round reach the main agent. New args `maxGoalRounds` and `maxAsks` replace `maxRounds`. The `STATUS: ASK`, nudge and prompt-resume paths are removed.
 - `2026-10-18` — Wiki doc created with zt-issue-dev 1.0.0: issue list, sequential Haiku-relayed DeepSeek conversations, main-agent asks, repo-state check, harness.
