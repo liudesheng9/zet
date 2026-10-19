@@ -199,6 +199,7 @@ A prompt names these lines and the compiler writes them into the job file. A cha
 - **Links survive every rewrite.** The card, proof-review, and fill prompts require that every `[[…]]` of the old body stays. The scripts refuse an entry that drops one (`refuse` in the card precheck; `proof-apply` refuses a body without the old Links).
 - **Order in a batch.** `@@N` can name only an earlier call. A Model Card comes before the Cards that link it, and back-Links are added at the end with `edit_card`.
 - **Figures** are pasted as the exact `![图 …](artifact:<sha256>)` line, once, in the Card that explains the figure. The writer never makes up a hash.
+- **Earlier context comes before writing** (S05, #98). The digest writer's job names `earlier-context.md`, the frozen pack of at most twenty earlier Cards that `zt-digest group-start` selected; `dsh-instructions.zh.md` tells the writer to read it in its one exploration command, forbids asserting an identity, a contradiction or an exact formula from a shortened excerpt (it reads the whole Card through the pack's `get_card` locator), keeps human Cards read-only references that are never a filing destination, and forbids rewriting an earlier agent Card's body from a group.
 - **Bridge judges only judge.** A judge reads the frozen candidates, checks actors, time, scope, assumptions, and direction, and writes only its assigned `br-NNN.json`. Its helper reads use the empty `read-only.allow.txt`. A human Card, a Model part, a Theory Card, a root, an anchor, a hub, a 术语表, a 符号表, or a structure Card is never a carrier. A Model Card never links a Model part, and no carrier rests on a Model part. The kind word stands right before the Link, with at most one space. An earlier carrier (a Card of another book that rests on a new math unit) needs its own acceptance. A passed check never means that the relation is true or that the user accepted it.
 
 ## Data and storage
@@ -296,7 +297,7 @@ $jobs += [ordered]@{ id = $id; files = @($docCopy, $jobFile); prompt = '按以�
 
 ## Testing
 
-No test checks a prompt's wording. These tests touch the prompt files or their composition. Run them from `E:\zet`. The `.ps1` tests start a scratch zt service (`ZT_CONFIG_DIR`). Give `-Zt <zt.exe>` to test a zt build that is not installed yet.
+No test checks a prompt's wording. These tests touch the prompt files or their composition. Run them from `E:\zet`. The `.ps1` tests start a scratch zt service (`ZT_CONFIG_DIR`). Give `-Zt <zt.exe>` to test a zt build that is not installed yet. `scripts/book-digest/tests/earlier-context.tests.ps1` (#98) reads the digest writer prompt the real `group-start` publishes and asserts that it names the earlier-context pack it must read.
 
 ```powershell
 pwsh -NoProfile -File scripts\book-digest\tests\math-compiler.tests.ps1     # -Step docs: math-prefix.md = shared prefix + 数学书补充说明; fill.zh.md has 填写模型分卡 before 填写数学单元
@@ -337,6 +338,8 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令") are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
+
+- `2026-10-19` — The digest writer reads the group's earlier context (#98, S05; D088–D096, D286): `dsh-instructions.zh.md` lists `earlier-context.md` among the disks' read-only material, makes reading it the one exploration command, and adds the "早前上下文包" section — the pack is reading material, not a link list; an identity, a contradiction or an exact-formula match needs the whole Card through the pack's locator, not the excerpt; human Cards are read-only references and never a destination; an earlier agent Card may be a Link target but its body is not rewritten; an earlier Card that already states the claim means rewriting or merging, never a near-duplicate title.
 
 - `2026-10-19` — Add the concept judge (#97, S04; D008, D064, D065): `dsh-concept-instructions.zh.md` is the one new Chinese prompt of the slice, and a supplement — the base digest rules and the Card language still hold. It shows the judge the book's term row (术语, 不用, 意思, 首次定义), the proposed statement with its assumptions and formulas, at most ten Topic candidates with their questions and representative Cards, and at most ten existing statements together, and it decides only `topic-concept` and `restatement`: `same` needs a stated `scope`, a shared formula under different assumptions is `different`, a shared word or title is a candidate signal and not a verdict, and insufficient evidence is `uncertain` with the addresses still to read. It writes one JSON file and no Card, and its `SELF-CHECK` is `zt-digest concepts -Step judge`.
 

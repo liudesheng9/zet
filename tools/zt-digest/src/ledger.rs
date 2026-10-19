@@ -5936,7 +5936,7 @@ fn publish(path: &Path, text: &str) -> Result<Value> {
 }
 
 fn start_view(job: &Value, path: &Path, reused: bool, lease_until: i64) -> Value {
-    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"draft":job["draft"],"expected_jobs":job["expected_jobs"],"reused":reused,"recovered":job["recovery"]["reason"]==json!("receipts_committed"),"recovery":job["recovery"],"lease_until":lease_until})
+    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"earlier_context":job["earlier_context"],"earlier_context_path":job["artifacts"]["earlier_context"]["path"],"earlier_context_text":job["artifacts"]["earlier_context_text"]["path"],"draft":job["draft"],"expected_jobs":job["expected_jobs"],"reused":reused,"recovered":job["recovery"]["reason"]==json!("receipts_committed"),"recovery":job["recovery"],"lease_until":lease_until})
 }
 
 fn read_group_job(
@@ -6018,6 +6018,13 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     if !progress.is_object() {
         bail!("invalid group progress object");
     }
+    // S05 (#98): a group that has not completed is still a placeholder anchor, so it is never
+    // offered to another group as earlier thought (D094).
+    let unfinished = {
+        let mut statement = tx.prepare("SELECT id FROM units WHERE id GLOB 'digest/g*' AND state<>'done'")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
     let run = meta(&tx, "run_id")?;
     tx.commit()?;
     drop(conn);
@@ -6070,6 +6077,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         p.contract["options"]["no_figures"] == true,
         p.contract["options"].get("run_options"),
     )?;
+    let mut terms_text = String::new();
     let terms = if run_options["terms"] == true {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
         let required:Option<(String,String)>=conn.query_row("SELECT o.locator,o.fingerprint FROM outputs o JOIN units u ON u.id=o.unit_id WHERE o.unit_id='terms/book@1' AND o.output_key='terms' AND o.kind='file' AND u.state='done'",[],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
@@ -6086,6 +6094,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         }
         let terms = std::str::from_utf8(&bytes)?;
         let terms = terms.strip_prefix('\u{feff}').unwrap_or(terms);
+        terms_text = terms.to_string();
         let path = directory.join("terms.md");
         publish(&path, terms)?
     } else {
@@ -6101,8 +6110,6 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         &directory.join("shared-prefix.md"),
         std::str::from_utf8(&prefix_bytes)?,
     )?;
-    let inputs = json!({"schema_version":1,"prompt_contract":1,"draft_schema":1,"mode":"draft_only","run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"group":group,"anchor":{"address":anchor["address"],"fingerprint":crate::calls::authored_fingerprint(anchor)},"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"contracts":p.contract["contracts"]});
-    let input_hash = canon::hash_value(&inputs);
     let mut source = String::new();
     for section in group["sections"].as_array().unwrap() {
         let bytes = std::fs::read(field(section, "path")?)?;
@@ -6112,6 +6119,55 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         source.push_str(std::str::from_utf8(&bytes)?);
         source.push_str("\n\n");
     }
+    // S05 (#98): the bounded earlier-Card pack, built once from this start's own title catalogue
+    // and one bounded body read. It is frozen in `inputs`, so a resumed group reads the same pack
+    // (D088, D093).
+    let earlier = {
+        let key = field(&p.contract, "citation_key")?;
+        let mut exclude: BTreeSet<String> = BTreeSet::new();
+        for id in &unfinished {
+            if let Some(number) = id
+                .strip_prefix("digest/g")
+                .and_then(|rest| rest.split('@').next())
+                .and_then(|number| number.parse::<u64>().ok())
+            {
+                exclude.insert(format!("{key}/{number}"));
+            }
+        }
+        exclude.insert(field(anchor, "address")?.to_string());
+        let mut title = s(&group["chapter"]);
+        for heading in group["headings"].as_array().into_iter().flatten() {
+            let heading = s(heading);
+            if !heading.is_empty() && !title.contains(&heading) {
+                title.push(' ');
+                title.push_str(&heading);
+            }
+        }
+        let claims = match p.contract["group_extension"]["marker"].as_str() {
+            Some(marker) => crate::earlier::group_claims(field(group, "path")?, marker),
+            None => Vec::new(),
+        };
+        let request = crate::earlier::Request {
+            unit: unit.clone(),
+            group: number,
+            query: crate::earlier::Query {
+                title,
+                source: source.clone(),
+                terms: terms_text.clone(),
+                claims,
+            },
+            exclude,
+        };
+        let pack = crate::earlier::build(zt, &trees, revision, &p.contract["archive_identity"], &request)?;
+        let record = publish(
+            &directory.join("earlier-context.json"),
+            &serde_json::to_string_pretty(&pack.json)?,
+        )?;
+        let text = publish(&directory.join("earlier-context.md"), &pack.markdown)?;
+        (record, text, pack)
+    };
+    let inputs = json!({"schema_version":1,"prompt_contract":1,"draft_schema":1,"mode":"draft_only","run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"group":group,"anchor":{"address":anchor["address"],"fingerprint":crate::calls::authored_fingerprint(anchor)},"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"contracts":p.contract["contracts"]});
+    let input_hash = canon::hash_value(&inputs);
     // R280 (#87): a previous attempt's accepted plan whose every call already committed is the
     // group's checked result. Rebound to this claim's token it starts no DeepSeek job: the group
     // finishes from the archive receipts without rebuilding a Card.
@@ -6138,7 +6194,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         draft_path.display()
     );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
         snapshot_path.display(),
@@ -6147,6 +6203,8 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         } else {
             format!("`{}`", field(&terms, "path")?)
         },
+        field(&earlier.1, "path")?,
+        earlier.2.candidates,
         inputs["anchor"]["fingerprint"].as_str().unwrap(),
         serde_json::to_string_pretty(&draft)?,
         field(anchor, "title")?,
@@ -6158,6 +6216,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         prefix["path"].clone(),
         json!(prompt_path.to_string_lossy()),
         json!(snapshot_path.to_string_lossy()),
+        earlier.1["path"].clone(),
     ];
     if !terms.is_null() {
         files.push(terms["path"].clone());
@@ -6169,7 +6228,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         json!([{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
     };
     let expected_jobs = if recovered { json!(0) } else { json!(1) };
-    let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"rebound_draft":draft_record},"jobs":jobs});
+    let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"earlier_context":earlier.2.facts(),"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"earlier_context_text":earlier.1,"rebound_draft":draft_record},"jobs":jobs});
     if recovered {
         job["recovery"] = json!({
             "reason":"receipts_committed",
@@ -6200,7 +6259,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         Some(&claimed.owner),
         Some(token),
         "group_started",
-        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"lease_until":tx_lease,"recovered":recovered}),
+        &json!({"input_hash":input_hash,"job":record,"snapshot_revision":revision,"earlier_context":earlier.2.facts(),"lease_until":tx_lease,"recovered":recovered}),
     )?;
     if recovered {
         event(

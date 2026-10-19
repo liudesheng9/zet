@@ -17,9 +17,13 @@
 //       create the flag file; while it exists, get_card of ZT_FAIL_CARD fails.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
-//   ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
+// ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
 //       archive revision than the one before it, so a caller that needs one view must retry once
-//       and then report its changing-view fault. `once` drifts on the first read only.
+//       and then report its changing-view fault. `once` drifts on the first drifted read only.
+//       ZT_DRIFT_AFTER <n> leaves the first n-1 read replies (get_cards, export_titles) clean, so a
+//       test can drift one read set of a command instead of its earliest reads.
+//       ZT_DRIFT_MIN_ADDRESSES <n> drifts only a get_cards reply that carries at least n Cards, so a
+//       test can cross one bulk read set (a bounded body read) and leave identity probes alone.
 //   ZT_SCHOLAR_FIXTURE   a JSON file that answers the read-only Scholar Archive bridge, so
 //       `zt-digest prepare -Book` runs without a live archive. It holds `works` (a Work id to the
 //       `get_work` result), `search` (a normalised title to Work ids), `files` (a Work id to
@@ -60,11 +64,15 @@ const scholar = () => {
 }
 const digest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 // ZT_DRIFT_REVISION: a read whose archive revision is not the archive's own current one.
+let readReplies = 0
 let drifted = 0
 const drift = reply => {
   if (!env.ZT_DRIFT_REVISION || failed(reply)) return
   const value = reply.result.structuredContent
   if (!value || typeof value.archive_revision !== 'number') return
+  readReplies += 1
+  if (env.ZT_DRIFT_AFTER && readReplies < Number(env.ZT_DRIFT_AFTER)) return
+  if (env.ZT_DRIFT_MIN_ADDRESSES && (value.cards ? value.cards.length : 0) < Number(env.ZT_DRIFT_MIN_ADDRESSES)) return
   drifted += 1
   if (env.ZT_DRIFT_REVISION === 'once' && drifted > 1) return
   value.archive_revision = Number(value.archive_revision) + drifted

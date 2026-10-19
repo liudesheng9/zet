@@ -24,6 +24,7 @@ mod canon;
 mod card;
 mod check;
 mod concepts;
+mod earlier;
 mod event;
 mod faults;
 mod figures;
