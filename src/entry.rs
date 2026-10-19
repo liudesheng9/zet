@@ -224,7 +224,7 @@ impl Entry {
 pub(crate) struct View {
     pub(crate) register: String,
     pub(crate) entries: Vec<Entry>,
-    /// Row, part, and restatement faults of the register as a whole.
+    /// Row, part, restatement, and ambiguous-label faults of the register as a whole.
     pub(crate) faults: Vec<Value>,
     /// The declared `词条分册` parts, in declaration order.
     pub(crate) parts: Vec<Value>,
@@ -260,7 +260,60 @@ impl View {
         view.add_rows(snapshot, register, None, &body, bodies);
         view.read_parts(snapshot, register, &body, bodies);
         view.read_restatements(snapshot, restatement_sections);
+        view.mark_ambiguous_terms();
         view
+    }
+
+    /// Identical term labels with conflicting destinations are one ambiguous term (§12.3, D299):
+    /// every row stays an entry and every destination stays visible, and one fault names the
+    /// conflict. The reader never merges the labels and never chooses between the senses; the
+    /// register author gives each sense its own scoped label (§8.4).
+    fn mark_ambiguous_terms(&mut self) {
+        let mut by_term: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            by_term.entry(entry.term.as_str()).or_default().push(index);
+        }
+        let mut faults = Vec::new();
+        for (term, indices) in by_term {
+            let mut distinct = BTreeSet::new();
+            for index in &indices {
+                let mut targets = self.entries[*index]
+                    .targets
+                    .iter()
+                    .map(|target| target.address.clone())
+                    .collect::<Vec<_>>();
+                targets.sort();
+                distinct.insert(targets);
+            }
+            if distinct.len() < 2 {
+                continue;
+            }
+            faults.push(json!({
+                "fault": "ambiguous",
+                "term": term,
+                "detail": format!(
+                    "the term `{term}` is written {} times with different destinations; each sense needs its own scoped label",
+                    indices.len()
+                ),
+                "rows": indices
+                    .iter()
+                    .map(|index| {
+                        let entry = &self.entries[*index];
+                        json!({
+                            "card": entry.card,
+                            "line": entry.line,
+                            "part": entry.part,
+                            "targets": entry
+                                .targets
+                                .iter()
+                                .map(|target| target.address.clone())
+                                .collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        self.faults.extend(faults);
     }
 
     /// The term rows of one Card (the register or a declared part).

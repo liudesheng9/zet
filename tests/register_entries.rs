@@ -176,6 +176,25 @@ impl Gui {
         let start = response.find("\r\n\r\n").expect("header end") + 4;
         serde_json::from_str(&response[start..]).expect("JSON response")
     }
+
+    /// One authenticated API call with a JSON body. The owner's GUI may write the human
+    /// Workspace; the MCP server cannot, so a human Card fixture comes through here.
+    fn post(&self, path: &str, body: &Value) -> Value {
+        use std::net::TcpStream;
+        let payload = serde_json::to_string(body).expect("JSON body");
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect to gui");
+        let port = self.port;
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nConnection: close\r\nHost: 127.0.0.1:{port}\r\nX-ZT-Token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+            self.token,
+            payload.len()
+        );
+        stream.write_all(request.as_bytes()).expect("send request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        let start = response.find("\r\n\r\n").expect("header end") + 4;
+        serde_json::from_str(&response[start..]).expect("JSON response")
+    }
 }
 
 fn http_page(port: u16) -> String {
@@ -637,6 +656,324 @@ fn an_accepted_move_keeps_the_register_entry_current() {
         .expect("the register body")
         .to_string();
     assert!(body.contains(&format!("[[{moved}]]")), "{body}");
+}
+
+#[test]
+fn a_human_card_is_a_read_only_target_of_an_agent_register() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "学习", 1);
+    let agent_card = format!("{tree}/1");
+    // The person's own Card, made through the owner's GUI: only that route writes the human
+    // Workspace (the MCP server reads it and never changes it).
+    let gui = home.gui();
+    let human_root = address(gui.post(
+        "/api/create",
+        &json!({
+            "kind": "topic",
+            "workspace": "human",
+            "text": "# 人的学习\n\n人自己的问题。\n",
+        }),
+    ));
+    let human_card = address(gui.post(
+        "/api/create",
+        &json!({
+            "kind": "direct",
+            "at": human_root,
+            "text": "# 学习是个体行为\n\n重复练习改变个体技能。\n",
+        }),
+    ));
+    let authored = mcp.ok("get_card", json!({ "at": human_card }));
+    assert_eq!(authored["workspace"], json!("human"));
+
+    // An agent register may name the human Card as a target: agents read both Workspaces.
+    let reg = register(
+        &mut mcp,
+        &format!("## 词条\n- 学习：[[{agent_card}]] [[{human_card}]]\n"),
+    );
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        terms(&view),
+        vec![(
+            "学习".to_string(),
+            vec![agent_card.clone(), human_card.clone()]
+        )],
+        "the human Card is the term's second target"
+    );
+    assert_eq!(view["complete"], json!(true));
+    let human = &view["entries"][0]["targets"][1];
+    assert_eq!(human["address"], json!(human_card));
+    assert_eq!(human["exists"], json!(true));
+    assert_eq!(human["workspace"], json!("human"));
+    assert_eq!(human["title"], json!("学习是个体行为"));
+    assert!(
+        human["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("重复练习")),
+        "the human target carries its authored body: {human}"
+    );
+
+    // Read-only: the human Card's authored title and body never change. Only its generated
+    // Reverse section follows the new Link (`workspace.rs`: that text is not an edit).
+    let after = mcp.ok("get_card", json!({ "at": human_card }));
+    assert_eq!(after["title"], authored["title"]);
+    assert_eq!(after["body"], authored["body"]);
+    assert_eq!(after["workspace"], json!("human"));
+    // The register is reported as a hub of the human Card at its second target (D051).
+    assert!(
+        after["hubs"].as_array().is_some_and(|hubs| hubs.iter().any(|hub| {
+            hub["address"] == json!(reg)
+                && hub["term"] == json!("学习")
+                && hub["target_index"] == json!(1)
+        })),
+        "the human Card reports the agent register: {}",
+        after["hubs"]
+    );
+    // The view is the agent register's; the human Workspace has no register of its own.
+    let human_view = mcp.ok("get_register", json!({ "workspace": "human" }));
+    assert_eq!(human_view["register_missing"], json!(true));
+}
+
+#[test]
+fn a_confirmed_restatement_is_projected_and_a_malformed_one_is_a_fault() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "斯卢茨基", 2);
+    let entry = format!("{tree}/1");
+    let substantive = format!("{tree}/2");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": substantive, "title": "斯卢茨基分解" }),
+    );
+    // The entry states its confirmed restatement: exactly one substantive Card (§4.5).
+    mcp.ok(
+        "edit_card",
+        json!({
+            "at": entry,
+            "title": "斯卢茨基分解的陈述入口",
+            "body": format!("陈述。\n\n## 同述入口\n\n- [[{substantive}]] 给出完整定义。\n"),
+        }),
+    );
+    register(
+        &mut mcp,
+        &format!("## 词条\n- 斯卢茨基分解：[[{entry}]]\n"),
+    );
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(view["complete"], json!(true));
+    assert_eq!(
+        view["restatements"],
+        json!([{
+            "entry": entry,
+            "substantive": substantive,
+            "title": "斯卢茨基分解",
+        }]),
+        "the confirmed restatement is part of the view"
+    );
+
+    // Two Links in the section is a malformed restatement: reported, and the entry is not
+    // recorded as confirmed.
+    mcp.ok(
+        "edit_card",
+        json!({
+            "at": entry,
+            "body": format!("陈述。\n\n## 同述入口\n\n- [[{substantive}]] 一处\n- [[{entry}]] 两处\n"),
+        }),
+    );
+    let malformed = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(malformed["complete"], json!(false));
+    assert_eq!(malformed["restatements"], json!([]));
+    assert!(
+        malformed["faults"].as_array().is_some_and(|faults| faults.iter().any(|fault| {
+            fault["fault"] == json!("restatement")
+                && fault["card"] == json!(entry)
+                && fault["detail"].as_str().is_some_and(|detail| detail.contains("names 2 Cards"))
+        })),
+        "the section names two Cards: {}",
+        malformed["faults"]
+    );
+
+    // A section that names its own Card is malformed too.
+    mcp.ok(
+        "edit_card",
+        json!({
+            "at": entry,
+            "body": format!("陈述。\n\n## 同述入口\n\n- [[{entry}]] 指向自己\n"),
+        }),
+    );
+    let itself = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(itself["complete"], json!(false));
+    assert!(
+        itself["faults"].as_array().is_some_and(|faults| faults.iter().any(|fault| {
+            fault["fault"] == json!("restatement")
+                && fault["detail"].as_str().is_some_and(|detail| detail.contains("itself"))
+        })),
+        "the section points at itself: {}",
+        itself["faults"]
+    );
+}
+
+#[test]
+fn every_entry_page_is_read_at_one_revision_and_a_write_moves_the_register() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "分页", 4);
+    let cards = (1..=4)
+        .map(|n| format!("{tree}/{n}"))
+        .collect::<Vec<_>>();
+    register(
+        &mut mcp,
+        &format!(
+            "## 词条\n- 词一：[[{}]]\n- 词二：[[{}]]\n- 词三：[[{}]]\n- 词四：[[{}]]\n",
+            cards[0], cards[1], cards[2], cards[3]
+        ),
+    );
+    let full = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(full["entry_total"], json!(4));
+    let first = mcp.ok(
+        "get_register",
+        json!({ "workspace": "agent", "entry_offset": 0, "entry_limit": 2 }),
+    );
+    let second = mcp.ok(
+        "get_register",
+        json!({ "workspace": "agent", "entry_offset": 2, "entry_limit": 2 }),
+    );
+    assert_eq!(first["entry_next_offset"], json!(2));
+    assert_eq!(second["entry_next_offset"], Value::Null);
+    for page in [&first, &second] {
+        assert_eq!(page["entry_total"], json!(4));
+        assert_eq!(page["archive_revision"], full["archive_revision"]);
+        assert_eq!(page["archive_identity"], full["archive_identity"]);
+    }
+    assert_eq!(
+        terms(&first)
+            .into_iter()
+            .chain(terms(&second))
+            .collect::<Vec<_>>(),
+        terms(&full),
+        "the pages are the whole catalog in page order"
+    );
+    // The same page read twice is the same page at the same revision: pagination is stable.
+    let again = mcp.ok(
+        "get_register",
+        json!({ "workspace": "agent", "entry_offset": 0, "entry_limit": 2 }),
+    );
+    assert_eq!(again["archive_revision"], first["archive_revision"]);
+    assert_eq!(again["entry_total"], first["entry_total"]);
+    assert_eq!(terms(&again), terms(&first));
+
+    // A write to an entry's body advances the revision, and the page shows the new body.
+    let long = "被改写的正文。".repeat(200);
+    mcp.ok(
+        "edit_card",
+        json!({ "at": cards[0], "title": "词一的定义", "body": long }),
+    );
+    let changed = mcp.ok(
+        "get_register",
+        json!({ "workspace": "agent", "entry_offset": 0, "entry_limit": 2 }),
+    );
+    assert!(
+        changed["archive_revision"].as_u64() > full["archive_revision"].as_u64(),
+        "a write advances the revision: {} then {}",
+        full["archive_revision"],
+        changed["archive_revision"]
+    );
+    assert_eq!(changed["entry_total"], json!(4));
+    assert_eq!(changed["entry_next_offset"], json!(2));
+    let target = &changed["entries"][0]["targets"][0];
+    assert_eq!(target["title"], json!("词一的定义"));
+    assert_eq!(target["body_chars"], json!(long.chars().count()));
+    assert_eq!(target["body_truncated"], json!(true));
+}
+
+#[test]
+fn a_scoped_term_stays_its_label_and_a_second_destination_is_an_ambiguity_fault() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let tree = topic(&mut mcp, "学习", 3);
+    let individual = format!("{tree}/1");
+    let industry = format!("{tree}/2");
+    let curve = format!("{tree}/3");
+    // Scope belongs in the label (§8.4): one bare word with two senses is two scoped labels.
+    let reg = register(
+        &mut mcp,
+        &format!(
+            "## 词条\n- 学习（个体行为）：[[{individual}]]\n- 学习（产业生产率）：[[{industry}]]\n"
+        ),
+    );
+    let view = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        terms(&view),
+        vec![
+            ("学习（个体行为）".to_string(), vec![individual.clone()]),
+            ("学习（产业生产率）".to_string(), vec![industry.clone()]),
+        ],
+        "a scoped term is read as its whole label, not reduced to the bare word"
+    );
+    assert_eq!(view["complete"], json!(true));
+    assert_eq!(
+        view["terms_by_card"][&individual],
+        json!(["学习（个体行为）"])
+    );
+
+    // The same label written twice with different destinations is one ambiguous term: both
+    // destinations stay visible and the conflict is reported; nothing is merged or chosen.
+    mcp.ok(
+        "edit_card",
+        json!({
+            "at": reg,
+            "body": format!(
+                "## 词条\n- 学习（个体行为）：[[{individual}]]\n- 学习（产业生产率）：[[{industry}]]\n- 学习（个体行为）：[[{curve}]]\n"
+            ),
+        }),
+    );
+    let ambiguous = mcp.ok("get_register", json!({ "workspace": "agent" }));
+    assert_eq!(
+        ambiguous["entry_total"],
+        json!(3),
+        "every authored row stays an entry: {ambiguous}"
+    );
+    assert_eq!(ambiguous["complete"], json!(false));
+    let faults = ambiguous["faults"].as_array().expect("faults");
+    let fault = faults
+        .iter()
+        .find(|fault| fault["fault"] == json!("ambiguous"))
+        .unwrap_or_else(|| panic!("the identical label is an ambiguity fault: {faults:?}"));
+    assert_eq!(fault["term"], json!("学习（个体行为）"));
+    let rows = fault["rows"].as_array().expect("the conflicting rows");
+    assert_eq!(rows.len(), 2, "both rows are named: {fault}");
+    assert!(
+        rows.iter()
+            .any(|row| row["targets"] == json!([individual.clone()])),
+        "{fault}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["targets"] == json!([curve.clone()])),
+        "{fault}"
+    );
+    let same_term = ambiguous["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["term"] == json!("学习（个体行为）"))
+        .map(|entry| entry["targets"][0]["address"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        same_term,
+        vec![json!(individual), json!(curve)],
+        "the separate destinations stay in body order"
+    );
+    // get_hub on the register keeps the same explanation.
+    let hub = mcp.ok("get_hub", json!({ "at": reg }));
+    assert!(
+        hub["faults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fault| fault["fault"] == json!("ambiguous")),
+        "{hub}"
+    );
+    assert_eq!(hub["complete"], json!(false));
 }
 
 #[test]

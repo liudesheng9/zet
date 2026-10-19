@@ -18,15 +18,19 @@
                            three substantive targets (a definition or statement, then a whole
                            model, then a standalone Topic claim), the terms of one book row
                            grouped by their accepted spellings, the unresolved source rows, the
-                           exact register body, and the id of the reviewed report it read.
+                           exact register body, and the id of the reviewed report it read. A
+                           reviewed entry in the human Workspace is a read-only target; a
+                           reviewed entry no Card holds is an excluded stale review. A register
+                           that already declares 词条分册 parts is refused: publishing parts is
+                           S11 (#104).
     apply                  publishes the staged body: creates the Topic 索引 and the register
                            Hub Card when the Workspace has none, otherwise edits that one
                            register, keeping every group it does not own (the field-hub
-                           navigation among them). It then reads the register back through
-                           get_register and verifies every term and target. Running it again
-                           over the same plan writes nothing.
-    check                  compares the staged plan with the published entries and prints the
-                           terms that are missing, diverged, or extra.
+                           navigation among them). It then reads every page of the register
+                           back through get_register at one revision and verifies every term and
+                           target. Running it again over the same plan writes nothing.
+    check                  reads every page and compares the staged plan with the published
+                           entries: the terms that are missing, diverged, or extra.
 
   Parameters: -Step plan|apply|check and -Work <folder> (required); -Review <file>.
 

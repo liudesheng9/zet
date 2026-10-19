@@ -7,21 +7,26 @@
 //! compiler's `fields.json` register still lists field and topic hubs, and this step keeps every
 //! group it does not own (the `## 领域` field-hub navigation among them).
 //!
-//!     plan   reads the agent book term tables (through zt-check's term-table parser) and the
-//!            model-head names, reads an optional reviewed concept report as read-only evidence,
-//!            and stages `<Work>\out\register-plan.json`: one entry per accepted spelling with up
-//!            to three substantive targets, the accepted spellings of one term, the unresolved
-//!            source rows, the exact register body, and the id of the report it was read from.
+//!     plan   reads the agent book term tables (through zt-check's term-table parser), the
+//!            model-head names, and both Workspaces' titles, reads an optional reviewed concept
+//!            report as read-only evidence, and stages `<Work>\out\register-plan.json`: one entry
+//!            per accepted spelling with up to three substantive targets, the accepted spellings
+//!            of one term, the read-only targets the review selected in the human Workspace, the
+//!            unresolved source rows, the exact register body, and the id of the report it was
+//!            read from. A reviewed entry no Card holds is an excluded stale review.
 //!     apply  publishes the staged body (creating the Topic 索引 and the register Hub Card when
-//!            the Workspace has none, otherwise editing the one register), then reads the register
-//!            back through `get_register` and verifies every term and target. A second run over
-//!            the same plan writes nothing: no new Card, no changed body, the same plan id.
-//!     check  compares the staged plan with the published entries and prints the differences.
+//!            the Workspace has none, otherwise editing the one register), then reads every page
+//!            of the register back through `get_register` at one revision and verifies every term
+//!            and target. A second run over the same plan writes nothing: no new Card, no changed
+//!            body, the same plan id.
+//!     check  reads every page and compares the staged plan with the published entries.
 //!
 //! What the step does not do: it does not judge meanings (the concept review does, S04), it does
-//! not publish register parts or pinyin grouping (S11), and it does not correct an existing Card
-//! other than the one register body it publishes. Discovery writes only the staging file, and a
-//! plan staged for another archive or another revision is refused rather than applied.
+//! not publish register parts or pinyin grouping (S11, #104: a register that declares `词条分册`
+//! parts is refused before any write), and it does not correct an existing Card other than the one
+//! register body it publishes. A human Card is only ever a read-only target the review selects
+//! explicitly (D174); the step never writes the human Workspace. Discovery writes only the staging
+//! file, and a plan staged for another archive or another revision is refused rather than applied.
 
 use crate::args::Args;
 use crate::canon;
@@ -34,6 +39,10 @@ use std::collections::{BTreeMap, BTreeSet};
 const SCHEMA_VERSION: i64 = 1;
 /// The most targets a term may name (D289).
 const MAX_TARGETS: usize = 3;
+/// The page size of one `get_register` read (D276, §8.5): the largest page it serves.
+const ENTRY_PAGE: usize = 1000;
+/// The most pages one register read follows, so a broken `entry_next_offset` cannot loop.
+const ENTRY_PAGES_MAX: usize = 1000;
 /// The title every book term table carries (R6's own marker).
 const TERM_TABLE_PREFIX: &str = "术语表";
 /// The default first line of a register this step creates.
@@ -253,6 +262,9 @@ struct TermDraft {
     ambiguous: bool,
     overflow: usize,
     reviewed: Vec<String>,
+    /// The targets the review selected in the human Workspace: read-only Cards (D174). The
+    /// register names them; no agent write ever touches them.
+    read_only: Vec<String>,
 }
 
 impl TermDraft {
@@ -264,6 +276,7 @@ impl TermDraft {
             "ambiguous": self.ambiguous,
             "overflow": self.overflow,
             "reviewed": self.reviewed,
+            "read_only_targets": self.read_only,
         })
     }
 }
@@ -278,11 +291,15 @@ impl Register {
             let (identity, revision) = self.archive_identity()?;
             let titles = self.call("export_titles", json!({"workspace": "agent"}))?;
             let checked = titles["archive_revision"].as_u64().unwrap_or_default();
+            // The human Workspace is read too: a review may select one of its Cards explicitly
+            // as a read-only target (D174). A human Card is never a candidate by itself.
+            let humans = self.call("export_titles", json!({"workspace": "human"}))?;
             let tables = self.term_tables(&titles)?;
             let review = self.read_review(&identity)?;
-            let titles = parse_titles(&titles);
-            let draft_here = draft_terms(&titles, &tables, review);
             if checked == revision {
+                let titles = parse_titles(&titles);
+                let human = parse_titles(&humans);
+                let draft_here = draft_terms(&titles, &human, &tables, review);
                 draft = Some((identity, revision, draft_here));
                 break;
             }
@@ -291,6 +308,7 @@ impl Register {
             bail!("the archive changed during every register read; run -Step plan again");
         };
         let current = self.current_register()?;
+        refuse_parts(&current)?;
         let current_body = current["body"].as_str().unwrap_or_default().to_string();
         let body = register_body(&current_body, &draft.terms);
         let plan = plan_value(&identity, revision, &current, &draft, &body);
@@ -306,6 +324,7 @@ impl Register {
             "unresolved": draft.unresolved.len(),
             "faults": draft.faults.len(),
             "excluded": draft.excluded.len(),
+            "read_only": draft.terms.iter().map(|term| term.read_only.len()).sum::<usize>(),
             "review": plan["review"],
             "body_lines": body.lines().count(),
             "path": self.plan_file(),
@@ -441,11 +460,12 @@ impl Register {
     }
 
     /// The one register of the agent Workspace, as `get_register` reads it. Two registers are
-    /// reported, never chosen between; no register is an empty answer.
+    /// reported, never chosen between; no register is an empty answer. `parts` is the declared
+    /// `词条分册` list: publishing parts is S11's (#104), so the caller refuses them.
     fn current_register(&mut self) -> Result<Value> {
         let view = self.call("get_register", json!({"workspace": "agent"}))?;
         if view["register_missing"] == json!(true) {
-            return Ok(json!({"address": Value::Null, "body": "", "missing": true}));
+            return Ok(json!({"address": Value::Null, "body": "", "missing": true, "parts": []}));
         }
         if view["register"].is_null() {
             bail!(
@@ -461,7 +481,71 @@ impl Register {
             "missing": false,
             "entries": view["entry_total"],
             "complete": view["complete"],
+            "parts": view["parts"],
         }))
+    }
+
+    /// The Card addresses of both Workspaces, and those of the human one: a planned target may
+    /// be an agent Card, or a human Card the review selected explicitly (D174).
+    fn workspace_addresses(&mut self) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+        let mut all = BTreeSet::new();
+        let mut human = BTreeSet::new();
+        for workspace in ["agent", "human"] {
+            let titles = self.call("export_titles", json!({"workspace": workspace}))?;
+            for row in crate::ps::pipe(&titles["titles"]) {
+                let address = crate::ps::s(&row["address"]);
+                if workspace == "human" {
+                    human.insert(address.clone());
+                }
+                all.insert(address);
+            }
+        }
+        Ok((all, human))
+    }
+
+    /// Every published entry of the agent register at one revision: the pages of `get_register`
+    /// followed until `entry_next_offset` is null (D276, §8.5). A revision that moves between
+    /// pages is retried once; a read set that keeps moving is one changing-view fault (§12.3).
+    fn published(&mut self) -> Result<(Value, Vec<(String, Vec<String>)>)> {
+        let mut changing = String::new();
+        for _ in 0..2 {
+            let pages = self.entry_pages()?;
+            match merged_terms(&pages) {
+                Ok(read) => return Ok(read),
+                Err(Merge::Changing(detail)) => changing = detail,
+                Err(Merge::Fault(detail)) => bail!("{detail}"),
+            }
+        }
+        bail!("{changing}")
+    }
+
+    /// The register's entry pages, in order, from offset 0 to the page whose
+    /// `entry_next_offset` is null.
+    fn entry_pages(&mut self) -> Result<Vec<Value>> {
+        let mut pages = Vec::new();
+        let mut offset = 0u64;
+        for _ in 0..ENTRY_PAGES_MAX {
+            let page = self.call(
+                "get_register",
+                json!({
+                    "workspace": "agent",
+                    "entry_offset": offset,
+                    "entry_limit": ENTRY_PAGE,
+                }),
+            )?;
+            let next = page["entry_next_offset"].as_u64();
+            pages.push(page);
+            match next {
+                Some(next) if next > offset => offset = next,
+                Some(_) => bail!(
+                    "the register's entry_next_offset did not advance past {offset}; the pages cannot be one catalog"
+                ),
+                None => return Ok(pages),
+            }
+        }
+        bail!(
+            "the register needs more than {ENTRY_PAGES_MAX} pages of {ENTRY_PAGE} entries; read a smaller register"
+        )
     }
 }
 
@@ -535,9 +619,13 @@ fn plan_value(
 /// The accepted spellings of each term and their targets, as the plan stages them.
 fn draft_terms(
     titles: &[Title],
+    human: &[Title],
     tables: &[(String, String, Vec<zt_check::check::TermRow>)],
     review: Option<Review>,
 ) -> Draft {
+    // The human Workspace is read-only: it is never a source of automatic candidates, and only a
+    // review's explicit selection makes one of its Cards a target (D174).
+    let human: BTreeSet<&str> = human.iter().map(|title| title.address.as_str()).collect();
     // One concept is one source row: its preferred spelling and the book's rejected words for it
     // name the same thing, so every spelling of the concept gets the same targets. Two rows that
     // share a spelling (two books, or a model head and a book term) are combined at the spelling.
@@ -603,7 +691,11 @@ fn draft_terms(
             }
             if let Some(review) = &review {
                 for entry in review.accepted.get(spelling).into_iter().flatten() {
-                    if titles.iter().any(|title| &title.address == entry) {
+                    if titles.iter().any(|title| &title.address == entry)
+                        || human.contains(entry.as_str())
+                    {
+                        // A reviewed entry outside the agent Workspace is an explicitly
+                        // selected human Card: a read-only target, never an agent write.
                         own.push((1, entry.clone()));
                     }
                 }
@@ -638,18 +730,29 @@ fn draft_terms(
         .flat_map(|concept| concept.sources.iter().cloned())
         .collect::<Vec<_>>();
     let mut draft = build_terms(&rows, &candidates, &vetoes);
-    // A reviewed entry the agent Workspace does not hold cannot be a target: a human Card needs
-    // an explicit selection, and a missing Card is a stale review.
+    // The register names a reviewed human target, but agent maintenance never writes that Card.
+    for term in &mut draft.terms {
+        term.read_only = term
+            .targets
+            .iter()
+            .filter(|target| human.contains(target.as_str()))
+            .cloned()
+            .collect();
+    }
+    // A reviewed entry the archive does not hold cannot be a target: a missing Card is a stale
+    // review and needs a fresh review, never an invented address.
     let mut excluded = Vec::new();
     if let Some(review) = &review {
         for (spelling, entries) in &review.accepted {
             for entry in entries {
-                if !titles.iter().any(|title| &title.address == entry) {
+                if !titles.iter().any(|title| &title.address == entry)
+                    && !human.contains(entry.as_str())
+                {
                     excluded.push(json!({
                         "term": spelling,
                         "address": entry,
-                        "reason": "reviewed_entry_not_in_agent_workspace",
-                        "detail": "a reviewed entry outside the agent Workspace is a human or missing Card; it needs an explicit selection",
+                        "reason": "reviewed_entry_missing",
+                        "detail": "the reviewed entry Card is in neither Workspace; a stale review needs reviewing again",
                     }));
                 }
             }
@@ -749,6 +852,7 @@ fn build_terms(
             ambiguous,
             overflow,
             reviewed: Vec::new(),
+            read_only: Vec::new(),
         });
     }
     terms.sort_by(|a, b| canon::ordinal_cmp(&a.term, &b.term));
@@ -909,12 +1013,9 @@ impl Register {
         }
         let planned = planned_terms(&plan)?;
         // Every planned target must still exist: a moved or deleted Card makes the staged
-        // addresses stale, and the write path would otherwise refuse a new broken Link.
-        let titles = self.call("export_titles", json!({"workspace": "agent"}))?;
-        let present = crate::ps::pipe(&titles["titles"])
-            .into_iter()
-            .map(|row| crate::ps::s(&row["address"]))
-            .collect::<BTreeSet<_>>();
+        // addresses stale, and the write path would otherwise refuse a new broken Link. A
+        // review-selected human Card is a target too, and stays read-only (D174).
+        let (present, human) = self.workspace_addresses()?;
         let gone = planned
             .iter()
             .flat_map(|(_, targets)| targets.iter())
@@ -923,11 +1024,17 @@ impl Register {
             .collect::<Vec<_>>();
         if !gone.is_empty() {
             bail!(
-                "the staged plan names Cards that are no longer in the agent Workspace: {}; run -Step plan again",
+                "the staged plan names Cards that are in neither Workspace: {}; run -Step plan again",
                 gone.join(", ")
             );
         }
         let current = self.current_register()?;
+        refuse_parts(&current)?;
+        let read_only = planned
+            .iter()
+            .flat_map(|(_, targets)| targets.iter())
+            .filter(|address| human.contains(*address))
+            .count();
         let mut created = 0;
         let mut changed = false;
         let address = if current["missing"] == json!(true) {
@@ -952,9 +1059,9 @@ impl Register {
                 address
             }
         };
-        // A fresh read must confirm the exact register, terms, and targets (§8.5).
-        let view = self.call("get_register", json!({"workspace": "agent"}))?;
-        let published = published_terms(&view)?;
+        // A fresh read must confirm the exact register, terms, and targets (§8.5): every page at
+        // one revision, not only the first.
+        let (view, published) = self.published()?;
         let mut divergence = Vec::new();
         for (term, targets) in &planned {
             match published.iter().find(|(name, _)| name == term) {
@@ -987,6 +1094,7 @@ impl Register {
             "created": created,
             "changed": changed,
             "entries": published.len(),
+            "read_only": read_only,
             "unresolved": plan["unresolved"].as_array().map_or(0, Vec::len),
             "review": plan["review"],
             "complete": view["complete"],
@@ -996,17 +1104,21 @@ impl Register {
     }
 
     fn check(&mut self) -> Result<()> {
-        let view = self.call("get_register", json!({"workspace": "agent"}))?;
-        let published = published_terms(&view)?;
+        let (view, published) = self.published()?;
         let mut missing = Vec::new();
         let mut diverged = Vec::new();
         let mut extra = Vec::new();
         let mut plan_id = Value::Null;
         let mut unresolved = 0;
+        let mut read_only = 0;
         if crate::ps::exists(&self.plan_file()) {
             let plan = canon::read_json(&self.plan_file())?;
             plan_id = plan["plan_id"].clone();
             unresolved = plan["unresolved"].as_array().map_or(0, Vec::len);
+            read_only = crate::ps::pipe(&plan["terms"])
+                .into_iter()
+                .map(|row| crate::ps::pipe(&row["read_only_targets"]).len())
+                .sum::<usize>();
             let planned = planned_terms(&plan)?;
             for (term, targets) in &planned {
                 match published.iter().find(|(name, _)| name == term) {
@@ -1030,6 +1142,7 @@ impl Register {
             "register": view["register"],
             "register_missing": view["register_missing"],
             "entries": published.len(),
+            "read_only": read_only,
             "unresolved": unresolved,
             "complete": view["complete"],
             "faults": view["faults"],
@@ -1057,10 +1170,83 @@ fn planned_terms(plan: &Value) -> Result<Vec<(String, Vec<String>)>> {
     Ok(terms)
 }
 
-/// The published entries as term → target addresses, in register order.
-fn published_terms(view: &Value) -> Result<Vec<(String, Vec<String>)>> {
+/// One register read that is not one catalog: a page sequence that crossed a revision (retried
+/// once), or one that cannot be the whole catalog.
+enum Merge {
+    Changing(String),
+    Fault(String),
+}
+
+/// Publishing `词条分册` parts is S11's (#104): this step publishes a register without parts. A
+/// register that already declares parts is refused before any write, so a correct root
+/// publication is never reported as a failure over rows this step does not own.
+fn refuse_parts(current: &Value) -> Result<()> {
+    let parts = current["parts"].as_array().map_or(0, Vec::len);
+    if parts > 0 {
+        bail!(
+            "the agent register declares {parts} 词条分册 parts; publishing register parts is S11 (#104), and this step publishes a register without parts"
+        );
+    }
+    Ok(())
+}
+
+/// The pages as one catalog: every page at the same revision and of the same register, the pages
+/// contiguous from offset 0, and their entries adding up to `entry_total` (§8.5, S10-AC06).
+fn merged_terms(
+    pages: &[Value],
+) -> std::result::Result<(Value, Vec<(String, Vec<String>)>), Merge> {
+    let Some(first) = pages.first() else {
+        return Err(Merge::Fault(
+            "the register read returned no page at all".into(),
+        ));
+    };
+    let revision = first["archive_revision"].as_u64();
+    let total = first["entry_total"].as_u64();
     let mut terms = Vec::new();
-    for entry in crate::ps::pipe(&view["entries"]) {
+    let mut offset = 0u64;
+    for page in pages {
+        let page_revision = page["archive_revision"].as_u64();
+        if page_revision != revision || page["register"] != first["register"] {
+            return Err(Merge::Changing(format!(
+                "the agent register changed while it was read (revision {} then {}, register {} then {}); run the step again",
+                revision.map_or("none".to_string(), |value| value.to_string()),
+                page_revision.map_or("none".to_string(), |value| value.to_string()),
+                crate::ps::json_compact(&first["register"]),
+                crate::ps::json_compact(&page["register"]),
+            )));
+        }
+        if page["entry_total"].as_u64() != total {
+            return Err(Merge::Changing(format!(
+                "the agent register changed while it was read ({} entries then {}); run the step again",
+                total.map_or("none".to_string(), |value| value.to_string()),
+                page["entry_total"]
+                    .as_u64()
+                    .map_or("none".to_string(), |value| value.to_string()),
+            )));
+        }
+        if page["entry_offset"].as_u64() != Some(offset) {
+            return Err(Merge::Fault(format!(
+                "the register's entry pages are not contiguous: offset {offset} came back as {}",
+                crate::ps::json_compact(&page["entry_offset"])
+            )));
+        }
+        let rows = crate::ps::pipe(&page["entries"]);
+        terms.extend(published_terms(&rows));
+        offset += rows.len() as u64;
+    }
+    if total != Some(offset) {
+        return Err(Merge::Fault(format!(
+            "the register names {} entries but its pages hold {offset}; the read is not the whole catalog",
+            total.map_or("none".to_string(), |value| value.to_string())
+        )));
+    }
+    Ok((first.clone(), terms))
+}
+
+/// The published entries as term → target addresses, in register order.
+fn published_terms(entries: &[&Value]) -> Vec<(String, Vec<String>)> {
+    let mut terms = Vec::new();
+    for entry in entries {
         let term = crate::ps::s(&entry["term"]);
         let targets = crate::ps::pipe(&entry["targets"])
             .into_iter()
@@ -1071,7 +1257,7 @@ fn published_terms(view: &Value) -> Result<Vec<(String, Vec<String>)>> {
             terms.push((term, targets));
         }
     }
-    Ok(terms)
+    terms
 }
 
 #[cfg(test)]
@@ -1199,6 +1385,7 @@ mod tests {
             ambiguous: false,
             overflow: 0,
             reviewed: Vec::new(),
+            read_only: Vec::new(),
         }];
         let body = register_body(current, &terms);
         assert_eq!(
@@ -1215,5 +1402,145 @@ mod tests {
         assert!(!is_report_id("r-1"));
         assert!(!is_report_id(&format!("e-{}", "a".repeat(64))));
         assert!(!is_report_id(&format!("r-{}", "A".repeat(64))));
+    }
+
+    fn term_row(term: &str, avoid: &[&str], meaning: &str) -> zt_check::check::TermRow {
+        zt_check::check::TermRow {
+            term: term.to_string(),
+            avoid: avoid.iter().map(|word| word.to_string()).collect(),
+            meaning: meaning.to_string(),
+            defined: "§1".to_string(),
+        }
+    }
+
+    fn term_tables(
+        rows: Vec<zt_check::check::TermRow>,
+    ) -> Vec<(String, String, Vec<zt_check::check::TermRow>)> {
+        vec![("K/1|a".to_string(), "术语表：产权".to_string(), rows)]
+    }
+
+    #[test]
+    fn a_reviewed_human_entry_is_a_read_only_target_and_a_missing_one_is_excluded() {
+        let titles = vec![title("5/1", "5", "idea", None, "别的卡")];
+        let human = vec![title("0/1", "0", "idea", None, "所有权的归属")];
+        let tables = term_tables(vec![term_row("产权", &[], "谁拥有企业")]);
+        let mut review = Review::default();
+        review
+            .accepted
+            .insert("产权".into(), vec!["0/1".into(), "9/9".into()]);
+        let draft = draft_terms(&titles, &human, &tables, Some(review));
+        assert_eq!(draft.terms.len(), 1);
+        assert_eq!(draft.terms[0].targets, vec!["0/1"]);
+        assert_eq!(
+            draft.terms[0].read_only,
+            vec!["0/1"],
+            "the reviewed human Card is named as a read-only target"
+        );
+        assert_eq!(draft.excluded.len(), 1);
+        assert_eq!(draft.excluded[0]["address"], "9/9");
+        assert_eq!(draft.excluded[0]["reason"], "reviewed_entry_missing");
+        assert!(draft.unresolved.is_empty());
+    }
+
+    #[test]
+    fn a_human_card_is_never_a_target_without_the_review() {
+        let titles = vec![title("5/1", "5", "idea", None, "别的卡")];
+        let human = vec![title("0/1", "0", "idea", None, "产权")];
+        let tables = term_tables(vec![term_row("产权", &[], "谁拥有企业")]);
+        let draft = draft_terms(&titles, &human, &tables, None);
+        assert!(draft.terms.is_empty(), "{:?}", draft.terms);
+        assert_eq!(draft.unresolved.len(), 1);
+        assert_eq!(draft.unresolved[0]["term"], "产权");
+        assert_eq!(draft.unresolved[0]["reason"], "no_defensible_target");
+    }
+
+    fn page(
+        offset: u64,
+        total: u64,
+        revision: u64,
+        register: &str,
+        entries: Vec<Value>,
+    ) -> Value {
+        json!({
+            "register": register,
+            "entries": entries,
+            "entry_offset": offset,
+            "entry_limit": 1000,
+            "entry_total": total,
+            "entry_next_offset": Value::Null,
+            "archive_revision": revision,
+        })
+    }
+
+    fn entry(term: &str, targets: &[&str]) -> Value {
+        json!({
+            "term": term,
+            "targets": targets
+                .iter()
+                .map(|address| json!({ "address": address, "exists": true }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    #[test]
+    fn a_register_is_read_as_one_catalog_across_pages() {
+        let pages = vec![
+            page(
+                0,
+                3,
+                7,
+                "196/1",
+                vec![entry("甲", &["5/1"]), entry("乙", &["5/2"])],
+            ),
+            page(2, 3, 7, "196/1", vec![entry("丙", &["5/3"])]),
+        ];
+        let merged = merged_terms(&pages).ok().expect("one catalog");
+        assert_eq!(merged.0["entry_total"], 3);
+        assert_eq!(
+            merged.1,
+            vec![
+                ("甲".to_string(), vec!["5/1".to_string()]),
+                ("乙".to_string(), vec!["5/2".to_string()]),
+                ("丙".to_string(), vec!["5/3".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_that_crosses_a_revision_is_a_changing_view() {
+        let pages = vec![
+            page(
+                0,
+                3,
+                7,
+                "196/1",
+                vec![entry("甲", &["5/1"]), entry("乙", &["5/2"])],
+            ),
+            page(2, 3, 8, "196/1", vec![entry("丙", &["5/3"])]),
+        ];
+        assert!(matches!(merged_terms(&pages), Err(Merge::Changing(_))));
+    }
+
+    #[test]
+    fn pages_that_do_not_add_up_are_a_fault() {
+        let short = vec![page(
+            0,
+            3,
+            7,
+            "196/1",
+            vec![entry("甲", &["5/1"]), entry("乙", &["5/2"])],
+        )];
+        assert!(matches!(merged_terms(&short), Err(Merge::Fault(_))));
+        let gap = vec![
+            page(
+                0,
+                3,
+                7,
+                "196/1",
+                vec![entry("甲", &["5/1"]), entry("乙", &["5/2"])],
+            ),
+            page(3, 3, 7, "196/1", vec![entry("丙", &["5/3"])]),
+        ];
+        assert!(matches!(merged_terms(&gap), Err(Merge::Fault(_))));
     }
 }
