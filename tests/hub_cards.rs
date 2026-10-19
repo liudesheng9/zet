@@ -363,6 +363,268 @@ fn get_hub_reports_faults_and_list_hubs_finds_the_missing_hubs() {
     assert_eq!(graph["counts"]["register"], 1);
 }
 
+/// The row `list_hubs` reports for one Topic tree's `## 入口` section, if it reads one.
+fn entry_section(graph: &Value, tree: &str) -> Option<Value> {
+    graph["entries"]
+        .as_array()?
+        .iter()
+        .find(|row| row["tree"].as_str() == Some(tree))
+        .cloned()
+}
+
+fn missing_tree(graph: &Value, tree: &str) -> bool {
+    graph["missing"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["tree"].as_str() == Some(tree)))
+}
+
+#[test]
+fn a_topic_body_entry_section_satisfies_the_topic_hub_requirement() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 8);
+    // Eight Cards: the tree requires a topic hub.
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert!(missing_tree(&graph, &a), "{}", graph["missing"]);
+    assert!(entry_section(&graph, &a).is_none(), "{graph}");
+
+    // Four entries are more than the documented one to three: no exception.
+    let four = (1..=4)
+        .map(|i| format!("- [[{a}/{i}]]：第 {i} 张卡给出逆向选择的一步。"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n## 入口\n{four}") }),
+    );
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert!(missing_tree(&graph, &a), "{}", graph["missing"]);
+    let section = entry_section(&graph, &a).expect("a section is read");
+    assert_eq!(section["valid"], json!(false));
+    assert_eq!(section["fault"], json!("entry-shape"));
+    // The missing row says why the entry requirement is still unmet.
+    let row = graph["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["tree"].as_str() == Some(a.as_str()))
+        .cloned()
+        .unwrap();
+    assert_eq!(row["entries"]["fault"], json!("entry-shape"));
+
+    // One to three entry Links in the Topic body satisfy the requirement without a hub.
+    let three = (1..=3)
+        .map(|i| format!("- [[{a}/{i}]]：第 {i} 张卡给出逆向选择的一步。"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n## 入口\n{three}") }),
+    );
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert!(!missing_tree(&graph, &a), "{}", graph["missing"]);
+    let section = entry_section(&graph, &a).expect("a section is read");
+    assert_eq!(section["valid"], json!(true));
+    assert_eq!(
+        section["entries"],
+        json!([format!("{a}/1"), format!("{a}/2"), format!("{a}/3")])
+    );
+
+    // A broken entry restores the advice: a Card the section names is deleted after the fact.
+    let doomed = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/3"), "kind": "side", "title": "会消失的入口" }),
+    ));
+    let two = (1..=2)
+        .map(|i| format!("- [[{a}/{i}]]：第 {i} 张卡给出逆向选择的一步。"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n## 入口\n{two}\n- [[{doomed}]]：第三张入口卡。") }),
+    );
+    mcp.ok("delete_card", json!({ "at": doomed, "confirm": "delete" }));
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert!(missing_tree(&graph, &a), "{}", graph["missing"]);
+    let section = entry_section(&graph, &a).unwrap();
+    assert_eq!(section["fault"], json!("entry-target"));
+    assert!(
+        section["detail"].as_str().unwrap().contains(&doomed),
+        "{section}"
+    );
+
+    // An entry must be a Card of the tree, and it must say what it adds.
+    let outside = topic(&mut mcp, "信号传递", 2);
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n## 入口\n- [[{outside}/1]]：另一棵树里的卡。") }),
+    );
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert_eq!(entry_section(&graph, &a).unwrap()["fault"], json!("entry-target"));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n## 入口\n- [[{a}/1]]：") }),
+    );
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert_eq!(entry_section(&graph, &a).unwrap()["fault"], json!("entry-bare"));
+
+    // Removing the section restores the missing-entry advice.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": format!("{a}/0"), "body": "问题。" }),
+    );
+    let graph = mcp.ok("list_hubs", json!({ "workspace": "agent" }));
+    assert!(missing_tree(&graph, &a), "{}", graph["missing"]);
+    assert!(entry_section(&graph, &a).is_none(), "{graph}");
+}
+
+/// A Literature Card (a book) with `n` Cards under it; returns the Citation key.
+fn book(mcp: &mut Mcp, key: &str, title: &str, n: usize) -> String {
+    mcp.ok(
+        "create_literature",
+        json!({ "bibtex": format!("@book{{{key}, title = {{{title}}}}}") }),
+    );
+    let mut at = key.to_string();
+    for i in 1..=n {
+        at = address(mcp.ok(
+            "create_successor",
+            json!({ "at": at, "title": format!("{title} 第 {i} 节") }),
+        ));
+    }
+    key.to_string()
+}
+
+#[test]
+fn one_book_advice_names_a_supported_treatment_from_another_book() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 6);
+    let b = book(&mut mcp, "stiglitz2014learning", "学习", 3);
+    let other = book(&mut mcp, "acemoglu2019", "技术", 3);
+    // Every Card of tree a cites the same book: the subject carries one book's evidence.
+    for i in 1..=6 {
+        mcp.ok(
+            "edit_card",
+            json!({ "at": format!("{a}/{i}"), "body": format!("逆向选择让市场萎缩。\n\n来源：[[{b}]] §{i}") }),
+        );
+    }
+    let hub = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/1"), "kind": "side", "type": "hub", "level": "topic",
+                "title": "信息不对称市场的入口",
+                "body": format!("## 后果\n- [[{a}/2]]：逆向选择让市场萎缩。\n- [[{a}/3]]：均衡可能完全瓦解。\n- [[{a}/4]]：约束帕累托最优是评价标准。\n- [[{a}/5]]：干预只在均衡非约束最优时有用。\n- [[{a}/6]]：多重均衡让干预更难。\n") }),
+    ));
+    mcp.ok("edit_card", json!({ "at": format!("{a}/0"), "body": format!("问题。\n\n入口见 [[{hub}]]。") }));
+    // An accepted register term links the tree's Card to two treatments of one term.
+    let index = topic(&mut mcp, "索引", 0);
+    let register = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{index}/0"), "type": "hub", "level": "register", "title": "索引：代理工作区的入口",
+                "body": format!("范围：代理工作区的入口。\n\n## 词条\n- 逆向选择：[[{a}/2]] [[{other}/1]]\n- 多重均衡：[[{a}/6]] [[{b}/2]]\n") }),
+    ));
+    // Before the other book's treatment is in 邻近: one-book advice names it, with its source.
+    let report = mcp.ok("get_hub", json!({ "at": hub }));
+    let one = &report["one_book"];
+    assert_eq!(one["sources"], json!([b]), "{report}");
+    let candidates = one["candidates"].as_array().expect("candidates");
+    assert_eq!(candidates.len(), 1, "{report}");
+    let candidate = candidates[0].to_string();
+    assert!(candidate.contains(&other), "{candidate}");
+    assert_eq!(candidates[0]["address"], json!(format!("{other}/1")));
+    assert_eq!(candidates[0]["source"], json!(other));
+    assert_eq!(candidates[0]["term"], json!("逆向选择"));
+    assert_eq!(candidates[0]["member"], json!(format!("{a}/2")));
+
+    // A treatment of the subject's own book is no cross-book candidate.
+    assert_eq!(
+        one["unknown"].as_array().expect("unknown").len(),
+        0,
+        "{report}"
+    );
+
+    // Once the hub's 邻近 names the other book's treatment, the advice is gone.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": hub, "body": format!("## 后果\n- [[{a}/2]]：逆向选择让市场萎缩。\n- [[{a}/3]]：均衡可能完全瓦解。\n- [[{a}/4]]：约束帕累托最优是评价标准。\n- [[{a}/5]]：干预只在均衡非约束最优时有用。\n- [[{a}/6]]：多重均衡让干预更难。\n\n## 邻近\n- 对照 [[{other}/1]]：技术选择也有逆向选择。\n") }),
+    );
+    let report = mcp.ok("get_hub", json!({ "at": hub }));
+    assert_eq!(
+        report["one_book"]["candidates"],
+        json!([]),
+        "{}",
+        report["one_book"]
+    );
+
+    // A treatment with unknown source evidence is shown separately, never as an advice.
+    let unknown = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{a}/1"), "kind": "side", "title": "没有来源的入口" }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": register, "body": format!("范围：代理工作区的入口。\n\n## 词条\n- 逆向选择：[[{a}/2]] [[{unknown}]]\n") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": hub, "body": format!("## 后果\n- [[{a}/2]]：逆向选择让市场萎缩。\n- [[{a}/3]]：均衡可能完全瓦解。\n- [[{a}/4]]：约束帕累托最优是评价标准。\n- [[{a}/5]]：干预只在均衡非约束最优时有用。\n- [[{a}/6]]：多重均衡让干预更难。\n") }),
+    );
+    let report = mcp.ok("get_hub", json!({ "at": hub }));
+    let one = &report["one_book"];
+    assert_eq!(one["candidates"], json!([]), "{one}");
+    let unknown_rows = one["unknown"].as_array().expect("unknown");
+    assert_eq!(unknown_rows.len(), 1, "{one}");
+    assert_eq!(unknown_rows[0]["address"], json!(unknown));
+    assert_eq!(unknown_rows[0]["term"], json!("逆向选择"));
+}
+
+#[test]
+fn a_field_hub_crosses_two_topics_and_names_the_literature_cards_it_needs() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let a = topic(&mut mcp, "逆向选择", 3);
+    let b = topic(&mut mcp, "信号传递", 3);
+    let other = book(&mut mcp, "acemoglu2019", "技术", 2);
+    let index = topic(&mut mcp, "索引", 0);
+    let register = address(mcp.ok(
+        "create_successor",
+        json!({ "at": format!("{index}/0"), "type": "hub", "level": "register", "title": "索引：代理工作区的入口",
+                "body": "范围：代理工作区的入口。" }),
+    ));
+    // A field hub under the register: selected treatments of two Topic trees and one
+    // substantive Literature-tree Card that explains how the two books state the concept.
+    let field = address(mcp.ok(
+        "create_successor",
+        json!({ "at": register, "kind": "side", "type": "hub", "level": "field",
+                "title": "私人信息改变市场均衡的各个入口",
+                "body": format!("## 定义\n- [[{a}/1]]：逆向选择让高质量卖者退出市场。\n- [[{b}/1]]：信号让知情者的类型变得可见。\n\n## 需要的一手材料\n- [[{other}/2]]：技术选择也面对同一信息问题。\n") }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": register, "body": format!("范围：代理工作区的入口。\n\n## 领域\n- 信息：[[{field}]]\n") }),
+    );
+    let report = mcp.ok("get_hub", json!({ "at": field }));
+    assert_eq!(report["level"], "field");
+    // The two Topic trees are the range; the Literature-tree Card is a member, not a whole tree.
+    assert_eq!(report["range"], json!(6), "{report}");
+    assert!(
+        report["unreached"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|address| !address.as_str().unwrap().starts_with("acemoglu2019")),
+        "{report}"
+    );
+    // The crossing is one member line of the field hub, and the Card knows the hub lists it.
+    let named = report["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line["address"] == json!(format!("{other}/2")));
+    assert!(named, "{report}");
+    let card = mcp.ok("get_card", json!({ "at": format!("{other}/2") }));
+    assert_eq!(card["hubs"][0]["address"], json!(field));
+}
+
 #[test]
 fn a_hub_that_copies_its_anchor_title_is_named() {
     let home = TestHome::new();

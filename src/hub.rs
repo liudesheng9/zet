@@ -642,6 +642,12 @@ pub(crate) struct Graph<'a> {
     /// Per-request indexed occurrences for policy projections. The full
     /// Snapshot path remains the independent GUI/test oracle.
     indexed_links: Option<&'a BTreeMap<String, Vec<String>>>,
+    /// Authored bodies an indexed read loaded beyond the Hub and Topic Cards it keeps, for the
+    /// source evidence of `one-book` advice (§8.2, D166). A missing body leaves the evidence
+    /// unknown, never guessed.
+    bodies: BTreeMap<String, String>,
+    /// True when the Snapshot came from a full read, so every authored body is present.
+    full: bool,
 }
 
 impl<'a> Graph<'a> {
@@ -673,6 +679,8 @@ impl<'a> Graph<'a> {
             hubs,
             upper,
             indexed_links: None,
+            bodies: BTreeMap::new(),
+            full: true,
         }
     }
 
@@ -682,7 +690,38 @@ impl<'a> Graph<'a> {
     ) -> Self {
         let mut graph = Self::new(snapshot);
         graph.indexed_links = Some(links);
+        graph.full = false;
         graph
+    }
+
+    /// Supplies the authored bodies an indexed read did not keep (the members of the hub the
+    /// request reports, and the register's targets): the evidence `one-book` advice needs.
+    pub(crate) fn with_bodies(mut self, bodies: BTreeMap<String, String>) -> Self {
+        self.bodies = bodies;
+        self
+    }
+
+    /// One Card's authored body: the supplied evidence body, else the Snapshot's own read when the
+    /// read kept whole bodies. `None` means this read did not load it, so its source evidence is
+    /// unknown rather than empty.
+    fn authored(&self, address: &str) -> Option<&str> {
+        if let Some(body) = self.bodies.get(address) {
+            return Some(body.as_str());
+        }
+        let whole = self.full
+            || self
+                .snapshot
+                .by_address
+                .get(address)
+                .is_some_and(|card| card.card_type == CardType::Hub || card.is_topic);
+        if whole {
+            return self
+                .snapshot
+                .parsed
+                .get(address)
+                .map(|parsed| parsed.body.as_str());
+        }
+        None
     }
 
     fn outbound(&self, at: &str) -> Vec<String> {
@@ -760,11 +799,14 @@ impl<'a> Graph<'a> {
     fn range(&self, hub: &Card) -> Vec<&'a Card> {
         let level = hub.hub_level;
         let body = self.body(&hub.address);
+        // A field hub stands for the Topic trees it crosses; the substantive Literature-tree Cards
+        // it names explain the crossing but are members, not whole trees of its range (§8.1, D162).
         let field_trees = body
             .map(|body| {
                 body.lines
                     .iter()
                     .map(|line| crate::tree_id(&line.target).to_string())
+                    .filter(|tree| crate::valid_topic_id(tree))
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
@@ -858,6 +900,7 @@ impl<'a> Graph<'a> {
             "candidates": advice.candidates,
             "unreached": advice.unreached,
             "unreached_count": advice.unreached_count,
+            "one_book": advice.one_book,
             "limits": limits.json(),
         }))
     }
@@ -1198,13 +1241,253 @@ impl<'a> Graph<'a> {
             candidates,
             unreached_count: unreached.len(),
             unreached: unreached.into_iter().take(40).collect(),
+            one_book: self.one_book(hub, body, covered),
         }
     }
 
+    /// `one-book` advice (§8.2, D166): a topic hub whose members carry one book's source
+    /// evidence, while an accepted register term links a member to a treatment of the same
+    /// subject with source evidence from another book that the hub lists nowhere. The advice
+    /// names that treatment and the source it adds; a treatment whose evidence this read cannot
+    /// see is reported as unknown, never asserted, and no candidate is invented when there is
+    /// none. It is a report only: nothing writes a Link or a group.
+    fn one_book(&self, hub: &Card, body: &Body, covered: &BTreeSet<String>) -> Value {
+        if hub.hub_level != Some(HubLevel::Topic) {
+            return Value::Null;
+        }
+        // An indexed read supplies the evidence bodies; a report without them says nothing
+        // rather than guessing from bodies it never kept.
+        if !self.full && self.bodies.is_empty() {
+            return Value::Null;
+        }
+        // The hub's own evidence: what its members (outside 邻近) are sourced from.
+        let mut sources: Vec<String> = Vec::new();
+        for line in body
+            .lines
+            .iter()
+            .filter(|line| !is_neighbour_group(line.group.as_deref()))
+        {
+            for source in self.source_evidence(&line.target).0 {
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+        // An empty set is unknown, not "no book": claiming another book then would be a guess.
+        let view = crate::entry::register_of(self.snapshot, hub.workspace);
+        let register = view
+            .as_ref()
+            .map_or(Value::Null, |view| json!(view.register));
+        let Some(view) = view else {
+            return json!({"sources": sources, "candidates": [], "unknown": [], "register": register});
+        };
+        if sources.is_empty() {
+            return json!({"sources": [], "candidates": [], "unknown": [], "register": register});
+        }
+        let members: BTreeSet<String> = body
+            .lines
+            .iter()
+            .filter(|line| !is_neighbour_group(line.group.as_deref()))
+            .map(|line| line.target.clone())
+            .collect();
+        let mut candidates: Vec<Value> = Vec::new();
+        let mut unknown: Vec<Value> = Vec::new();
+        for entry in &view.entries {
+            if !entry.faults.is_empty() {
+                continue;
+            }
+            for target in &entry.targets {
+                if !target.exists || covered.contains(&target.address) || members.contains(&target.address) {
+                    continue;
+                }
+                // A treatment is only relevant when an accepted term already links it to a member.
+                let Some(member) = entry
+                    .targets
+                    .iter()
+                    .find(|other| members.contains(&other.address))
+                    .map(|other| other.address.clone())
+                else {
+                    continue;
+                };
+                let (evidence, _) = self.source_evidence(&target.address);
+                let added = evidence
+                    .iter()
+                    .find(|source| !sources.contains(source))
+                    .cloned();
+                match added {
+                    Some(source) => candidates.push(json!({
+                        "address": target.address,
+                        "title": target.title,
+                        "term": entry.term,
+                        "member": member,
+                        "source": source,
+                        "sources": evidence,
+                    })),
+                    None if evidence.is_empty() => unknown.push(json!({
+                        "address": target.address,
+                        "title": target.title,
+                        "term": entry.term,
+                        "member": member,
+                    })),
+                    // The same book, no different source evidence: no advice for it.
+                    None => {}
+                }
+            }
+        }
+        // One row per Card: the first accepted term that names it, in register order.
+        let mut seen = BTreeSet::new();
+        candidates.retain(|row| seen.insert(row["address"].as_str().unwrap_or_default().to_string()));
+        unknown.retain(|row| seen.insert(row["address"].as_str().unwrap_or_default().to_string()));
+        candidates.truncate(10);
+        unknown.truncate(10);
+        json!({
+            "sources": sources,
+            "candidates": candidates,
+            "unknown": unknown,
+            "register": view.register,
+        })
+    }
+
+    /// The source evidence of one Card (design §4.3, D068-D072): the Citation keys its `来源`
+    /// lines name, else the Literature tree it is filed in. A Model part falls back to the
+    /// evidence of its model's head when it has none of its own, and the second element names
+    /// that head. An empty set is unknown; a set of several is mixed, never forced to one book.
+    fn source_evidence(&self, address: &str) -> (Vec<String>, Option<String>) {
+        let mut sources: Vec<String> = Vec::new();
+        let push = |sources: &mut Vec<String>, source: String| {
+            if !source.is_empty() && !sources.iter().any(|seen| seen.eq_ignore_ascii_case(&source)) {
+                sources.push(source);
+            }
+        };
+        if let Some(body) = self.authored(address) {
+            for line in body.lines() {
+                let line = line.trim();
+                if !is_source_line(line) {
+                    continue;
+                }
+                for occurrence in LinkBody::for_rendering(line).occurrences() {
+                    if let Some(source) = self.literature_tree_of(occurrence.target) {
+                        push(&mut sources, source);
+                    }
+                }
+            }
+        }
+        if sources.is_empty()
+            && let Some(source) = self.literature_tree_of(address)
+        {
+            push(&mut sources, source);
+        }
+        if sources.is_empty()
+            && let Some(card) = self.snapshot.by_address.get(address)
+            && card.facet.is_some()
+            && let Some(head) = self.snapshot.model_head(card)
+            && head != address
+        {
+            let (derived, _) = self.source_evidence(&head);
+            return (derived, Some(head));
+        }
+        (sources, None)
+    }
+
+    /// The Literature tree a Link target names: its Citation key, when the target is a
+    /// Literature Card or a Card of one.
+    fn literature_tree_of(&self, target: &str) -> Option<String> {
+        let tree = crate::tree_id(target);
+        let root = crate::tree_root_address(tree);
+        let root_card = self.snapshot.by_address.get(&root)?;
+        root_card.is_lit.then(|| tree.to_string())
+    }
+
+    /// Every Topic body's `## 入口` section (§8.2, D167, D168): the one documented exception to
+    /// the size-based topic-hub requirement. A tree whose section names one to three existing
+    /// Cards of the tree, each saying what it adds, needs no topic hub; a missing, oversized,
+    /// outside, repeated, broken, or unexplained entry is reported so the requirement returns.
+    fn entry_sections(&self) -> Vec<EntrySection> {
+        let mut sections = Vec::new();
+        for card in self.snapshot.cards.iter().filter(|card| card.is_topic) {
+            let tree = crate::tree_id(&card.address).to_string();
+            let body = self
+                .snapshot
+                .parsed
+                .get(&card.address)
+                .map(|parsed| parsed.body.clone())
+                .unwrap_or_default();
+            let parsed = parse_body(&body);
+            if !parsed.groups.iter().any(|group| is_entry_group(Some(group.as_str()))) {
+                continue;
+            }
+            let lines = parsed
+                .lines
+                .iter()
+                .filter(|line| is_entry_group(line.group.as_deref()))
+                .collect::<Vec<_>>();
+            let mut entries: Vec<String> = Vec::new();
+            let mut fault = None;
+            let mut detail = String::new();
+            if lines.is_empty() || lines.len() > ENTRY_MAX {
+                fault = Some("entry-shape");
+                detail = if lines.is_empty() {
+                    format!("the {ENTRY_GROUP} group names no Card; write one to three list items")
+                } else {
+                    format!("the {ENTRY_GROUP} group names {} Cards; write one to three", lines.len())
+                };
+            }
+            for line in &lines {
+                if !entries.contains(&line.target) {
+                    entries.push(line.target.clone());
+                }
+            }
+            if fault.is_none() {
+                fault = Some("entry-target");
+                for line in &lines {
+                    let target = line.target.as_str();
+                    let why = if !self.snapshot.by_address.contains_key(target) {
+                        format!("[[{target}]] does not exist")
+                    } else if !crate::is_tree_member(target, &tree) || target == crate::tree_root_address(&tree) {
+                        format!("[[{target}]] is not a Card of tree {tree}")
+                    } else if self
+                        .snapshot
+                        .by_address
+                        .get(target)
+                        .is_some_and(|card| card.card_type == CardType::Hub)
+                    {
+                        format!("[[{target}]] is a Hub Card; name the Card a reader enters, not a hub")
+                    } else if lines.iter().filter(|other| other.target == target).count() > 1 {
+                        format!("[[{target}]] is named twice")
+                    } else {
+                        continue;
+                    };
+                    detail = why;
+                    break;
+                }
+                if detail.is_empty() {
+                    fault = None;
+                }
+            }
+            if fault.is_none()
+                && let Some(line) = lines.iter().find(|line| reason_chars(&line.reason) == 0)
+            {
+                fault = Some("entry-bare");
+                detail = format!("[[{}]] has no explanation of what it adds", line.target);
+            }
+            sections.push(EntrySection {
+                tree,
+                card: card.address.clone(),
+                entries,
+                fault,
+                detail,
+            });
+        }
+        sections
+    }
+
     /// Every hub of a Workspace with its level, upper and lower hubs, and
-    /// faults, and the hubs the policy requires but the Workspace lacks.
-    pub(crate) fn list(&self, workspace: Option<Workspace>, limits: &Limits) -> Value {        let in_workspace =
+    /// faults, the hubs the policy requires but the Workspace lacks, and the
+    /// Topic-body entry sections that satisfy the topic-hub requirement.
+    pub(crate) fn list(&self, workspace: Option<Workspace>, limits: &Limits) -> Value {
+        let in_workspace =
             |card: &Card| workspace.is_none_or(|workspace| card.workspace == workspace);
+        let sections = self.entry_sections();
         let mut hubs = Vec::new();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for card in self
@@ -1231,17 +1514,37 @@ impl<'a> Graph<'a> {
                 "unreached": advice.unreached_count,
             }));
         }
+        let entries: Vec<Value> = sections
+            .iter()
+            .filter(|section| {
+                self.snapshot
+                    .by_address
+                    .get(&section.card)
+                    .is_some_and(|card| in_workspace(card))
+            })
+            .map(|section| {
+                json!({
+                    "tree": section.tree,
+                    "card": section.card,
+                    "entries": section.entries,
+                    "valid": section.fault.is_none(),
+                    "fault": section.fault,
+                    "detail": section.detail,
+                })
+            })
+            .collect();
         json!({
             "workspace": workspace.map(Workspace::id),
             "limits": limits.json(),
             "counts": counts,
             "hubs": hubs,
-            "missing": self.missing(workspace, limits),
+            "entries": entries,
+            "missing": self.missing(workspace, limits, &sections),
         })
     }
 
     /// H1, H2, and H4: the required hubs that do not exist yet.
-    fn missing(&self, workspace: Option<Workspace>, limits: &Limits) -> Vec<Value> {
+    fn missing(&self, workspace: Option<Workspace>, limits: &Limits, sections: &[EntrySection]) -> Vec<Value> {
         // A register's declared parts are navigation Cards of the 索引 tree, not content of it
         // (§8.5, D188): they neither make the tree require a topic hub of its own nor form a branch.
         let register_parts: BTreeSet<String> = self
@@ -1283,13 +1586,30 @@ impl<'a> Graph<'a> {
                     .iter()
                     .any(|hub| hub.hub_level == Some(HubLevel::Topic))
             {
-                missing.push(json!({
-                    "level": "topic",
-                    "tree": tree,
-                    "anchor": format!("{tree}/1"),
-                    "title": self.snapshot.title(&root.address),
-                    "cards": content,
-                }));
+                // H1's one documented exception (§8.2, D168): an accepted, valid entry section in
+                // the Topic body is a way in without a redundant topic hub. A broken or removed
+                // section is no exception, and its fault stays in the row so nothing is skipped
+                // silently.
+                let section = sections
+                    .iter()
+                    .find(|section| section.tree == tree && section.card == root.address);
+                if section.is_none_or(|section| section.fault.is_some()) {
+                    let mut row = json!({
+                        "level": "topic",
+                        "tree": tree,
+                        "anchor": format!("{tree}/1"),
+                        "title": self.snapshot.title(&root.address),
+                        "cards": content,
+                    });
+                    if let Some(section) = section {
+                        row["entries"] = json!({
+                            "valid": false,
+                            "fault": section.fault,
+                            "detail": section.detail,
+                        });
+                    }
+                    missing.push(row);
+                }
             }
             // A branch: a Side successor that is not part of a model.
             for branch in members.iter().filter(|card| {
@@ -1363,6 +1683,8 @@ struct Advice {
     candidates: Vec<Value>,
     unreached: Vec<String>,
     unreached_count: usize,
+    /// `one-book` advice of a topic hub, or null for a hub that has no subject tree.
+    one_book: Value,
 }
 
 /// True when `address` or a Card above it in its tree is listed.
@@ -1386,6 +1708,47 @@ fn is_neighbour_group(group: Option<&str>) -> bool {
         let group = group.trim();
         group.starts_with("邻近") || group.eq_ignore_ascii_case("neighbours")
     })
+}
+
+/// The group heading of a Topic body's entry section: one to three Links a reader enters the
+/// subject through, in place of a topic hub whose only useful lines would repeat the tree map
+/// (§8.2, D167, D168). `entries` and `entrance` are the English spellings, like `邻近`.
+pub(crate) const ENTRY_GROUP: &str = "入口";
+
+/// The most Cards one Topic-body entry section may name (§8.2: "one to three entry Links").
+pub(crate) const ENTRY_MAX: usize = 3;
+
+/// True for the group that names the Topic body's entry Cards (`入口`, `entries`, `entrance`).
+fn is_entry_group(group: Option<&str>) -> bool {
+    group.is_some_and(|group| {
+        let group = group.trim();
+        group.starts_with(ENTRY_GROUP) || group.eq_ignore_ascii_case("entries") || group.eq_ignore_ascii_case("entrance")
+    })
+}
+
+/// True for a body line that labels its Links as the Card's source (`来源：[[book]] §3`): the one
+/// authored place source evidence is written, beside the Literature tree a Card is filed in.
+fn is_source_line(line: &str) -> bool {
+    let Some((label, _)) = line.split_once(['：', ':']) else {
+        return false;
+    };
+    let label = label.trim();
+    label.eq_ignore_ascii_case("source") || label.eq_ignore_ascii_case("sources") || label == "来源" || label == "出处"
+}
+
+/// One Topic body's entry section: the Cards a reader enters the subject through, and why the
+/// section does or does not satisfy the topic-hub requirement (§8.2, D167, D168).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EntrySection {
+    /// The tree the section belongs to.
+    pub(crate) tree: String,
+    /// The Topic Card the section is written on.
+    pub(crate) card: String,
+    /// The entry Cards, in body order, without repeats.
+    pub(crate) entries: Vec<String>,
+    /// `None` when the section is accepted; else the fault that keeps the requirement standing.
+    pub(crate) fault: Option<&'static str>,
+    pub(crate) detail: String,
 }
 
 /// A title for exact comparison: whitespace collapsed, case ignored. `anchor-title` uses

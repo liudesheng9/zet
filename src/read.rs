@@ -675,7 +675,9 @@ struct HubRead {
 }
 
 fn hub_read(conn: &Connection) -> Result<HubRead> {
-    let mut query=conn.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form FROM cards ORDER BY COALESCE(location,citation_key)")?;
+    // Hub bodies are parsed for the hub policy and a Topic's body carries its `## 入口` section;
+    // every other Card contributes its heading line only (the indexed read's economy).
+    let mut query=conn.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' OR is_topic = 1 THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form FROM cards ORDER BY COALESCE(location,citation_key)")?;
     let cards = query
         .query_map([], crate::card_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -698,6 +700,52 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
     })
 }
 
+/// The authored bodies `one-book` advice needs from an indexed read (§8.2, D166): the members of
+/// the hub the request reports, and the accepted register's term targets. Nothing else is fetched,
+/// so an ordinary body never enters the hub read; a Card beyond the bound stays unknown evidence.
+fn hub_evidence(
+    conn: &Connection,
+    read: &HubRead,
+    at: &str,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    const EVIDENCE_MAX: usize = 800;
+    let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(parsed) = read.snapshot.parsed.get(at) {
+        for line in crate::hub::parse_body(&parsed.body).lines {
+            wanted.insert(line.target);
+        }
+    }
+    if let Some(hub) = read.snapshot.by_address.get(at) {
+        for card in read.snapshot.cards.iter().filter(|card| {
+            card.card_type == crate::card_type::CardType::Hub
+                && card.hub_level == Some(crate::hub::HubLevel::Register)
+                && card.workspace == hub.workspace
+        }) {
+            let body = read
+                .snapshot
+                .parsed
+                .get(&card.address)
+                .map(|parsed| parsed.body.clone())
+                .unwrap_or_default();
+            for row in crate::hub::register_rows(&body) {
+                wanted.extend(row.targets);
+            }
+            wanted.extend(crate::hub::register_part_targets(&body));
+        }
+    }
+    wanted.remove(at);
+    let mut bodies = std::collections::BTreeMap::new();
+    let mut query = conn.prepare("SELECT text FROM cards WHERE COALESCE(location,citation_key) = ?1")?;
+    for address in wanted.into_iter().take(EVIDENCE_MAX) {
+        if let Some(text) = query.query_row([&address], |row| row.get::<_, String>(0)).ok() {
+            if let Ok(parsed) = crate::parse_card_text(&text) {
+                bodies.insert(address, parsed.body);
+            }
+        }
+    }
+    Ok(bodies)
+}
+
 /// Hub policy is global: stream metadata/title lines and the index once, and
 /// parse full authored bodies only for Hub Cards. Domain policy stays in Graph.
 ///
@@ -715,7 +763,13 @@ pub(crate) fn hubs(
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let read = hub_read(&tx)?;
-    let graph = crate::hub::Graph::with_links(&read.snapshot, &read.links);
+    let graph = match at {
+        Some(at) => {
+            let bodies = hub_evidence(&tx, &read, at)?;
+            crate::hub::Graph::with_links(&read.snapshot, &read.links).with_bodies(bodies)
+        }
+        None => crate::hub::Graph::with_links(&read.snapshot, &read.links),
+    };
     let value = if let Some(at) = at {
         let mut value = graph.report(at, limits)?;
         if value["level"] == json!("register") {

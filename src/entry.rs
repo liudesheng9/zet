@@ -1233,6 +1233,27 @@ fn lexical_candidates(
 /// The archive's registers, in `Workspace::ALL` order, each built from the one Card read. Two
 /// registers in one Workspace are reported and neither is used, so search never chooses between
 /// them (D296, D299).
+/// The one register of a Workspace as an entry view, or none: the same discovery `registers` uses.
+/// A Workspace with two registers answers none, so the evidence never chooses between them
+/// (D299). `hub` reads it for the accepted terms that justify `one-book` advice (§8.2, D166).
+pub(crate) fn register_of(snapshot: &Snapshot, workspace: Workspace) -> Option<View> {
+    let mut found = snapshot
+        .cards
+        .iter()
+        .filter(|card| {
+            card.card_type == CardType::Hub
+                && card.hub_level == Some(crate::hub::HubLevel::Register)
+                && card.workspace == workspace
+        })
+        .map(|card| card.address.clone())
+        .collect::<Vec<_>>();
+    found.sort_by(|left, right| crate::model::address_order(left, right));
+    match found.as_slice() {
+        [at] => Some(read_view(snapshot, at)),
+        _ => None,
+    }
+}
+
 fn registers(snapshot: &Snapshot) -> Registers {
     let mut views = Vec::new();
     let mut summary = Vec::new();
