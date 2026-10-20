@@ -116,7 +116,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-struct Register {
+pub(crate) struct Register {
     out: String,
     review: String,
     /// The accepted pinyin readings of the plan; an absent file leaves every term unclassified.
@@ -138,6 +138,38 @@ impl Register {
 
     fn call(&mut self, tool: &str, arguments: Value) -> Result<Value> {
         self.zt()?.call(tool, arguments)
+    }
+
+    /// The register's current state from one coherent `get_register` read (S27, #119): the root,
+    /// its body, every declared part's exact body and the entry count.
+    pub(crate) fn read_current(&mut self, tolerate_unlisted: bool) -> Result<Value> {
+        self.current_register(tolerate_unlisted)
+    }
+
+    /// Every published entry of the agent register at one revision (S27, #119).
+    pub(crate) fn read_published(&mut self) -> Result<(Value, Vec<(String, Vec<String>)>)> {
+        self.published()
+    }
+
+    /// This publisher's one `zt mcp` client, for a caller that reads through the same process.
+    pub(crate) fn client(&mut self) -> Result<&mut Zt> {
+        self.zt()
+    }
+
+    /// One tool call on that client.
+    pub(crate) fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<Value> {
+        self.call(tool, arguments)
+    }
+}
+
+/// A register publisher for the review gate (S27, #119). It publishes the plan it is given, not
+/// the Work folder's plan file, so the gate's own re-staged subset keeps its own receipt base.
+pub(crate) fn publisher() -> Register {
+    Register {
+        out: String::new(),
+        review: String::new(),
+        readings_file: String::new(),
+        zt: None,
     }
 }
 
@@ -774,10 +806,22 @@ fn draft_terms(
             }
         }
     }
-    // Model-head names are terms too (D170-D175, §8.3).
+    // Model-head names are terms too (D170-D175, §8.3). A term row is `term：links` (§8.4), so a
+    // label that itself holds `：` cannot be a term: it would publish a row whose term is a prefix
+    // and whose targets never read back. It is excluded with its reason, never rewritten.
+    let mut excluded = Vec::new();
     for title in titles.iter().filter(|title| title.is_model_head()) {
         let spelling = title.title.trim().to_string();
         if spelling.is_empty() {
+            continue;
+        }
+        if spelling.contains('：') || spelling.contains(':') {
+            excluded.push(json!({
+                "term": spelling,
+                "address": title.address,
+                "reason": "term_separator",
+                "detail": "a term label cannot hold the row separator `：`; rename the Card or name the term in a book term table",
+            }));
             continue;
         }
         concepts.push(Concept {
@@ -855,7 +899,6 @@ fn draft_terms(
     }
     // A reviewed entry the archive does not hold cannot be a target: a missing Card is a stale
     // review and needs a fresh review, never an invented address.
-    let mut excluded = Vec::new();
     if let Some(review) = &review {
         for (spelling, entries) in &review.accepted {
             for entry in entries {
@@ -1654,6 +1697,98 @@ fn fill_parts(body: &str, addresses: &[String]) -> Result<String> {
     Ok(text)
 }
 
+// --- the review gate's re-staging (S27, #119) -----------------------------------------------------
+
+/// The term rows of a plan, as the staging code sees them.
+fn term_drafts(rows: &[Value]) -> Vec<TermDraft> {
+    rows.iter()
+        .map(|row| TermDraft {
+            term: crate::ps::s(&row["term"]),
+            targets: crate::ps::pipe(&row["targets"]).into_iter().map(crate::ps::s).collect(),
+            sources: crate::ps::pipe(&row["sources"])
+                .into_iter()
+                .map(|source| RowSource {
+                    book: crate::ps::s(&source["book"]),
+                    table: crate::ps::s(&source["term_table"]),
+                    row: source["row"].as_u64().unwrap_or_default() as usize,
+                    meaning: crate::ps::s(&source["meaning"]),
+                    spelling: crate::ps::s(&source["spelling"]),
+                    preferred: source["preferred"] == json!(true),
+                })
+                .collect(),
+            ambiguous: row["ambiguous"] == json!(true),
+            overflow: row["overflow"].as_u64().unwrap_or_default() as usize,
+            reviewed: crate::ps::pipe(&row["reviewed"]).into_iter().map(crate::ps::s).collect(),
+            read_only: crate::ps::pipe(&row["read_only_targets"]).into_iter().map(crate::ps::s).collect(),
+        })
+        .collect()
+}
+
+/// The accepted readings of a plan, as the stager's `-Readings` input parses them.
+fn accepted_readings(value: &Value) -> BTreeMap<String, Reading> {
+    crate::ps::pipe(&value["accepted"])
+        .into_iter()
+        .filter_map(|row| {
+            let initial = crate::ps::s(&row["initial"]).chars().next()?;
+            Some((
+                crate::ps::s(&row["term"]),
+                Reading {
+                    reading: crate::ps::s(&row["reading"]),
+                    initial: Some(initial),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Re-stage one register publication from a reviewed plan's term rows, keeping only the accepted
+/// ones (S27, #119). The gate presents those rows for a decision; the rows it keeps are published
+/// through [`Register::publish_plan`] with the same part layout, band grouping and root body the
+/// register compiler stages, so a declined term simply is not written and a part left without
+/// rows keeps its address (D185). `current` is a fresh `get_register` view of the register.
+pub(crate) fn restage(plan: &Value, accepted: &[Value], current: &Value) -> Result<Value> {
+    let terms = term_drafts(accepted);
+    let readings = accepted_readings(&plan["readings"]);
+    // The same part decision the plan took: a register that is already split keeps its parts, and
+    // an over-120-row register is staged as parts (D179, D185).
+    let declared = crate::ps::pipe(&current["parts"]).len();
+    let parts = if terms.len() > PART_SPLIT || declared > 0 {
+        bucket_parts(&terms, &readings)
+    } else {
+        Vec::new()
+    };
+    let staged = stage_register(current, &terms, &parts, &readings)?;
+    let accepted_rows = accepted.to_vec();
+    let mut payload = json!({
+        "schema_version": SCHEMA_VERSION,
+        "archive": plan["archive"].clone(),
+        "register": {
+            "address": current["address"],
+            "missing": current["missing"],
+            "entries": current["entries"],
+            "complete": current["complete"],
+            "parts": crate::ps::pipe(&current["parts"]).len(),
+        },
+        "terms": accepted_rows,
+        "unresolved": plan["unresolved"],
+        "faults": plan["faults"],
+        "excluded": plan["excluded"],
+        "review": plan["review"],
+        "readings": plan["readings"],
+        "parts": staged.parts.iter().map(StagedPart::json).collect::<Vec<_>>(),
+        "obsolete_parts": staged.obsolete.iter().map(StagedObsolete::json).collect::<Vec<_>>(),
+        "terms_on_root": staged.terms_on_root,
+        "root_before": staged.root_before,
+        "body": staged.root_body,
+        "calls": staged.calls,
+        "root_call": staged.root_call,
+    });
+    payload["plan_id"] = json!(plan_id(&payload));
+    payload["restaged_from"] = plan["plan_id"].clone();
+    payload["created_at"] = json!(canon::utc_now_o());
+    Ok(payload)
+}
+
 // --- apply ----------------------------------------------------------------------------------------
 
 impl Register {
@@ -1694,7 +1829,30 @@ impl Register {
                 crate::ps::pipe(&plan["terms"]).len()
             );
         }
-        let planned = planned_terms(&plan)?;
+        // The plan's operation prefix: the same accepted plan reuses its receipts, so retrying an
+        // interrupted publication replays each committed call instead of creating a second Card
+        // (§8.5, D189). The plan id is the acceptance, not the attempt.
+        let short = crate::ps::s(&plan["plan_id"])
+            .trim_start_matches("rp-")
+            .chars()
+            .take(16)
+            .collect::<String>();
+        let base = if short.is_empty() {
+            "register/plan".to_string()
+        } else {
+            format!("register/{short}")
+        };
+        let summary = self.publish_plan(&plan, &base)?;
+        util::print_last(&summary)
+    }
+
+    /// Publish one staged register plan through its identified calls and verify the exact root,
+    /// parts, entries and revision (§8.5, D189, D190). `-Step apply` publishes the plan in its
+    /// Work folder; the review gate (S27, `publish`) re-stages the accepted term rows first and
+    /// publishes that subset through this same path, with a receipt base of its own.
+    pub(crate) fn publish_plan(&mut self, plan: &Value, base: &str) -> Result<Value> {
+        let planned = planned_terms(plan)?;
+        let body = crate::ps::s(&plan["body"]);
         // Every planned target must still exist: a moved or deleted Card makes the staged
         // addresses stale, and the write path would otherwise refuse a new broken Link. A
         // review-selected human Card is a target too, and stays read-only (D174).
@@ -1717,19 +1875,7 @@ impl Register {
             .flat_map(|(_, targets)| targets.iter())
             .filter(|address| human.contains(*address))
             .count();
-        // The plan's operation prefix: the same accepted plan reuses its receipts, so retrying an
-        // interrupted publication replays each committed call instead of creating a second Card
-        // (§8.5, D189). The plan id is the acceptance, not the attempt.
-        let short = crate::ps::s(&plan["plan_id"])
-            .trim_start_matches("rp-")
-            .chars()
-            .take(16)
-            .collect::<String>();
-        let prefix = if short.is_empty() {
-            "register/plan".to_string()
-        } else {
-            format!("register/{short}")
-        };
+        let prefix = base.to_string();
         let calls = plan["calls"].as_array().cloned().unwrap_or_default();
         let mut wrote = 0;
         let mut replayed = 0;
@@ -1925,8 +2071,8 @@ impl Register {
                 bail!("the obsolete part `{address}` is not the empty navigation entry the plan staged");
             }
         }
-        let verified_parts = verify_published_layout(&plan, &view, &part_addresses)?;
-        util::print_last(&json!({
+        let verified_parts = verify_published_layout(plan, &view, &part_addresses)?;
+        Ok(json!({
             "ok": true,
             "step": "apply",
             "plan_id": plan["plan_id"],
@@ -2265,6 +2411,7 @@ fn published_terms(entries: &[&Value]) -> Vec<(String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ps;
 
     fn title(address: &str, tree: &str, kind: &str, facet: Option<&str>, title: &str) -> Title {
         Title {
@@ -2962,4 +3109,43 @@ mod tests {
         ];
         assert!(matches!(merged_terms(&gap), Err(Merge::Fault(_))));
     }
+    /// S27 (#119): the review gate re-stages a plan from the rows a reviewer accepted, so a
+    /// declined new term is simply not written and a part it no longer fills keeps its address.
+    #[test]
+    fn a_restaged_publication_holds_only_the_accepted_rows() {
+        let plan = json!({
+            "schema_version": 1,
+            "archive": {"identity": {"id": "a".repeat(32)}, "revision": 3},
+            "unresolved": [],
+            "faults": [],
+            "excluded": [],
+            "review": Value::Null,
+            "readings": {"accepted": [{"term": "学习", "reading": "xué xí", "initial": "x"}], "unresolved": [], "count": 1},
+            "terms": [
+                {"term": "学习", "targets": ["3/1"], "sources": [], "ambiguous": false, "overflow": 0, "reviewed": [], "read_only_targets": []},
+                {"term": "信用", "targets": ["3/2"], "sources": [], "ambiguous": false, "overflow": 0, "reviewed": [], "read_only_targets": []},
+            ],
+        });
+        let accepted = vec![json!({"term": "学习", "targets": ["3/1"], "sources": [], "ambiguous": false, "overflow": 0, "reviewed": [], "read_only_targets": []})];
+        let current = current_register(json!("2/1"), "范围：入口。\n\n## 词条\n- 旧词：[[3/9]]", vec![]);
+        let restaged = restage(&plan, &accepted, &current).unwrap();
+        assert!(ps::s(&restaged["body"]).contains("- 学习：[[3/1]]"));
+        assert!(!ps::s(&restaged["body"]).contains("信用"), "a declined row is not written: {}", ps::s(&restaged["body"]));
+        assert!(!ps::s(&restaged["body"]).contains("旧词"), "the current rows are rebuilt: {}", ps::s(&restaged["body"]));
+        assert_eq!(restaged["terms"].as_array().map(Vec::len), Some(1));
+        assert!(ps::s(&restaged["plan_id"]).starts_with("rp-"));
+        assert_eq!(ps::s(&restaged["restaged_from"]), "");
+        // The same acceptance re-stages the same publication: the id is the content, not the attempt.
+        let again = restage(&plan, &accepted, &current).unwrap();
+        assert_eq!(ps::s(&restaged["plan_id"]), ps::s(&again["plan_id"]));
+        // A different accepted set is a different publication.
+        let both = vec![
+            json!({"term": "学习", "targets": ["3/1"], "sources": [], "ambiguous": false, "overflow": 0, "reviewed": [], "read_only_targets": []}),
+            json!({"term": "信用", "targets": ["3/2"], "sources": [], "ambiguous": false, "overflow": 0, "reviewed": [], "read_only_targets": []}),
+        ];
+        let wider = restage(&plan, &both, &current).unwrap();
+        assert_ne!(ps::s(&restaged["plan_id"]), ps::s(&wider["plan_id"]));
+        assert!(ps::s(&wider["body"]).contains("信用"));
+    }
 }
+

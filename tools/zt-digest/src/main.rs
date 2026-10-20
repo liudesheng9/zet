@@ -11,6 +11,7 @@
 //!   zt-digest register -Step plan|apply|check -Work <folder> [-Review <report>] ...   (the concept register, #101)
 //!   zt-digest join  -Step plan|apply -Work <folder> [-File <selection>] ...   (existing Topic pairs and one approved join, #109)
 //!   zt-digest pilot -Step plan|preflight|qualify -Staging <out> -Work <folder> ...   (the one-book pilot gate, #117)
+//!   zt-digest publish -Step plan|apply|check -Work <folder> [-Register <p>] [-Hub <p>] [-File <s>] ...   (the existing-register and crossing-hub publication gate, #119)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -41,6 +42,7 @@ mod model;
 mod organize;
 mod pilot;
 mod prepare;
+mod publish;
 mod ps;
 mod register;
 mod report;
@@ -164,6 +166,7 @@ fn main() {
         "topic-home" => topic_home::cli(&rest),
         "restate" => restate::cli(&rest),
         "pilot" => pilot::cli(&rest),
+        "publish" => publish::cli(&rest),
         "group-start" => ledger::group_start_cli(&rest),
         "group-finish" => ledger::group_finish_cli(&rest),
         "link-start" => ledger::link_start_cli(&rest),
@@ -184,7 +187,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
-       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
             Ok(2)
         }
     };

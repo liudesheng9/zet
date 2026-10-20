@@ -8,6 +8,8 @@
 //!   survey                 survey.json, survey.md; prints the size statistics
 //!   plan -Limits <json>    clamps and saves the limits; one topic job per -PerJob trees, one field job
 //!   apply                  out\hub-<tree>.json and out\fields.json → line, topic, field hubs, register
+//!   stage                  the same changes with no write: out of the drafts to <Work>\hub-plan.json,
+//!                          each changed existing hub with its authored base (the S27 gate, #119)
 //!   check                  get_hub on every hub of the state; one follow-up job per writer with faults
 //!   report                 list_hubs: counts, faults, missing hubs; report.json
 //!   precheck -File <file>  read-only: judges one DeepSeek file; fault lines, then `faults: N`
@@ -22,6 +24,7 @@ mod text;
 
 use crate::args::Args;
 use crate::calls;
+use crate::canon;
 use crate::model::read_calls;
 use crate::ps::{self, CiMap, NL};
 use crate::util;
@@ -71,6 +74,31 @@ pub(crate) struct Hub {
     /// The precheck's fault lines.
     pre: Vec<String>,
     pre_limits: Value,
+    /// `-Step stage`: every write recorded instead of sent, with its reviewed evidence.
+    stage: Option<Stage>,
+}
+
+/// The dry run of `apply`: the exact call list it would send, and the evidence of each call.
+#[derive(Default)]
+struct Stage {
+    calls: Vec<Value>,
+    /// For each call, its kind, the Card it changes, the body and fingerprint it replaces, and the
+    /// `get_hub` policy facts of an existing hub (S27-AC01, AC05).
+    evidence: Vec<Value>,
+}
+
+impl Stage {
+    fn record(&mut self, call: Value, evidence: Value) -> String {
+        let index = self.calls.len();
+        let address = if evidence["kind"] == json!("create") {
+            format!("@@{index}")
+        } else {
+            st(&evidence["at"])
+        };
+        self.calls.push(call);
+        self.evidence.push(evidence);
+        address
+    }
 }
 
 /// The folder of the PowerShell scripts: ZT_DIGEST_SCRIPTS, else this repository's scripts\book-digest.
@@ -152,9 +180,14 @@ impl Hub {
     }
 
     /// `Invoke-Write`: the calls through the helper in one batch; the address of each `N ok` line.
+    /// In `-Step stage` every call is recorded instead, and its address is the call's own result
+    /// reference (`@@N`), which the review gate resolves when it publishes that change.
     fn write(&mut self, calls: Vec<Value>) -> Result<Vec<String>> {
         if calls.is_empty() {
             return Ok(Vec::new());
+        }
+        if self.stage.is_some() {
+            return self.stage_write(calls);
         }
         let (done, failure) = calls::run(self.zt()?, &calls, &mut calls::Options::new()).map_err(|e| anyhow!("zt helper failed: {e:#}"))?;
         let mut addresses = Vec::new();
@@ -173,7 +206,58 @@ impl Hub {
         Ok(addresses)
     }
 
+    /// Record one write batch for `-Step stage`, with the reviewed evidence of every call.
+    fn stage_write(&mut self, calls: Vec<Value>) -> Result<Vec<String>> {
+        let mut addresses = Vec::new();
+        for mut call in calls {
+            let tool = st(&call["tool"]);
+            let creates = tool != "edit_card";
+            let at = st(&call["arguments"]["at"]);
+            let mut evidence = json!({
+                "kind": if creates { "create" } else { "edit" },
+                "at": at,
+                "level": call["arguments"]["level"],
+                "title": call["arguments"]["title"],
+            });
+            if !creates && !at.starts_with("@@") {
+                let card = self.read_one("get_card", json!({ "at": at }))?;
+                if card.is_null() {
+                    bail!("the hub stage would edit `{at}`, which is not an agent Card");
+                }
+                // The identified write needs the reviewed authored base, and the review shows
+                // exactly the body it replaces (S27-AC01, AC02).
+                call["arguments"]["base_fingerprint"] = json!(crate::calls::authored_fingerprint(&card));
+                evidence["old_body"] = card["body"].clone();
+                evidence["old_fingerprint"] = json!(crate::calls::authored_fingerprint(&card));
+                evidence["type"] = card["type"].clone();
+                if ps::eq(&st(&card["type"]), "hub") {
+                    let limits = self.read_limits()?;
+                    let mut arguments = Self::limit_args(&limits)?;
+                    arguments.insert("at".into(), json!(at));
+                    let report = self.read_one("get_hub", Value::Object(arguments))?;
+                    let anchor = ps::pipe(&report["faults"])
+                        .into_iter()
+                        .find(|fault| ps::eq(&st(&fault["fault"]), "anchor-title"))
+                        .map(|fault| st(&fault["detail"]))
+                        .unwrap_or_default();
+                    evidence["policy"] = json!({
+                        "mirror": report["mirror"],
+                        "one_book": report["one_book"]["candidates"],
+                        "faults": report["faults"],
+                    });
+                    evidence["anchor_title"] = json!(anchor);
+                }
+            }
+            let address = self.stage.as_mut().map(|stage| stage.record(call, evidence)).unwrap_or_default();
+            addresses.push(address);
+        }
+        Ok(addresses)
+    }
+
     fn save_state(&self) -> Result<()> {
+        if self.stage.is_some() {
+            return Ok(());
+        }
         save(&self.state_file, &ps::json_pretty(&self.state))
     }
 
@@ -653,6 +737,61 @@ impl Hub {
     }
 
     fn step_apply(&mut self) -> Result<()> {
+        let summary = self.apply_run()?;
+        util::print_line(&ps::json_compact(&summary))
+    }
+
+    // --- stage: the same changes, without a write (S27, #119) ---------------------------------
+
+    /// Run the apply logic with every write recorded instead of sent, then publish the exact plan
+    /// under `<Work>\hub-plan.json`. A created Card has no address yet, so the call list names the
+    /// N-th call's own result (`@@N`) and the review gate resolves it when it publishes that item
+    /// (`publish.rs`). Each changed existing Card carries the authored body and fingerprint it
+    /// replaces, so the review shows exactly what it would overwrite (AC01).
+    fn step_stage(&mut self) -> Result<()> {
+        self.stage = Some(Stage::default());
+        let summary = self.apply_run()?;
+        let stage = self.stage.take().unwrap_or_default();
+        let items = stage_items(&stage.calls, &stage.evidence)?;
+        let view = self.zt()?.archive_view()?;
+        let limits = self.read_limits()?;
+        let mut plan = json!({
+            "schema_version": 1,
+            "contract": "hub-plan/1",
+            "plan_id": "",
+            "created_at": canon::utc_now_o(),
+            "archive": {"identity": view["archive_identity"], "revision": view["archive_revision"]},
+            "work": self.work,
+            "limits": limits,
+            "calls": stage.calls,
+            "items": items,
+            "state": self.state,
+            "dropped": summary["dropped"],
+            "trees": summary["trees"],
+            "fields": summary["fields"],
+            "register": summary["register"],
+        });
+        plan["plan_id"] = json!(format!("hp-{}", canon::content_hash(&plan, &["plan_id", "created_at"])));
+        let path = ps::join(&self.work, "hub-plan.json");
+        canon::save_json(&path, &plan)?;
+        util::print_line(&ps::json_compact(&json!({
+            "ok": true,
+            "step": "stage",
+            "plan_id": plan["plan_id"],
+            "writes": "none",
+            "calls": plan["calls"].as_array().map_or(0, Vec::len),
+            "items": plan["items"].as_array().map_or(0, Vec::len),
+            "created": plan["items"].as_array().map_or(0, |items| items.iter().filter(|item| item["kind"] == json!("create")).count()),
+            "edited": plan["items"].as_array().map_or(0, |items| items.iter().filter(|item| item["kind"] == json!("edit")).count()),
+            "trees": plan["trees"],
+            "fields": plan["fields"],
+            "register": plan["register"],
+            "dropped": plan["dropped"],
+            "path": path,
+        })))
+    }
+
+    fn apply_run(&mut self) -> Result<Value> {
         let survey = read_json(&ps::join(&self.work, "survey.json"))?;
         let (mut created, mut updated) = (0i64, 0i64);
         let mut dropped: Vec<String> = Vec::new();
@@ -949,12 +1088,12 @@ impl Hub {
         updated += count;
         self.save_state()?;
         let dropped: Vec<String> = dropped.into_iter().take(40).collect();
-        util::print_line(&ps::json_compact(&json!({
+        Ok(json!({
             "created": created, "updated": updated,
             "trees": self.state["trees"].as_object().map_or(0, Map::len),
             "fields": self.state["fields"].as_object().map_or(0, Map::len),
             "register": register, "dropped": dropped,
-        })))
+        }))
     }
 
     // --- check ---------------------------------------------------------------------------------
@@ -1130,12 +1269,137 @@ fn read_json_text(text: &str) -> Result<Value> {
     ps::parse_json(text).map_err(|e| anyhow!("Conversion from JSON failed with error: {e}"))
 }
 
+/// The tree id of a Card address (`3/2|a` → `3`).
+fn tree_of(address: &str) -> String {
+    address.split('/').next().unwrap_or_default().to_string()
+}
+
+/// Every `[[address]]` a staged body names.
+fn stage_links(body: &str) -> Vec<String> {
+    static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]").unwrap());
+    let mut out = Vec::new();
+    for captures in LINK.captures_iter(body) {
+        let target = captures[1].trim().to_string();
+        if !target.is_empty() && !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    out
+}
+
+/// The staged changes as review items: each created hub together with the call that writes its
+/// final body, and each existing Card change on its own (S27-AC01). A create and its filling edit
+/// are one change, so a reviewer decides about one hub, not about two operations.
+fn stage_items(calls: &[Value], evidence: &[Value]) -> Result<Vec<Value>> {
+    struct Group {
+        first: usize,
+        calls: Vec<usize>,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    let mut owner: HashMap<usize, usize> = HashMap::new();
+    for (index, call) in calls.iter().enumerate() {
+        if st(&call["tool"]) != "edit_card" {
+            groups.push(Group { first: index, calls: vec![index] });
+            owner.insert(index, groups.len() - 1);
+            continue;
+        }
+        let at = st(&call["arguments"]["at"]);
+        let parent = at.strip_prefix("@@").and_then(|n| n.parse::<usize>().ok());
+        match parent.and_then(|parent| owner.get(&parent).copied()) {
+            Some(group) => groups[group].calls.push(index),
+            None => groups.push(Group { first: index, calls: vec![index] }),
+        }
+    }
+    let mut items = Vec::new();
+    for group in groups {
+        let first = group.first;
+        let last = *group.calls.last().unwrap_or(&first);
+        let created = evidence.get(first).is_some_and(|row| row["kind"] == json!("create"));
+        // A call that omits the level keeps the Card's own hub level, so the review shows the kind
+        // of hub it changes; a new hub always names its level.
+        let level = group
+            .calls
+            .iter()
+            .rev()
+            .map(|index| st(&calls[*index]["arguments"]["level"]))
+            .find(|level| !level.is_empty())
+            .or_else(|| ps::eq(&st(&evidence[first]["type"]), "hub").then_some("existing".to_string()))
+            .unwrap_or_default();
+        let title = group
+            .calls
+            .iter()
+            .rev()
+            .map(|index| st(&calls[*index]["arguments"]["title"]))
+            .find(|title| !title.is_empty())
+            .unwrap_or_default();
+        let new_body = st(&calls[last]["arguments"]["body"]);
+        let anchor = st(&evidence[first]["at"]);
+        let tree = if level == "register" {
+            "register".to_string()
+        } else if level == "field" {
+            "field".to_string()
+        } else {
+            tree_of(&anchor)
+        };
+        let written_body = st(&calls[first]["arguments"]["body"]);
+        let linked = stage_links(&new_body);
+        let crossings = linked
+            .iter()
+            // A @@N target is a Card this plan creates; it has no tree yet, and the review
+            // shows it as the staged change it is.
+            .filter(|target| !target.starts_with("@@") && tree_of(target) != tree && tree != "field" && tree != "register")
+            .cloned()
+            .collect::<Vec<_>>();
+        let policy = evidence[first]["policy"].clone();
+        let anchor_title = evidence[first]["anchor_title"].clone();
+        let (old_body, old_fingerprint, reused, why) = if created {
+            (
+                String::new(),
+                String::new(),
+                false,
+                format!("a new {} hub the staged draft needs (opening body `{}`)", level, written_body.lines().next().unwrap_or_default()),
+            )
+        } else {
+            let is_hub = ps::eq(&st(&evidence[first]["type"]), "hub");
+            (
+                st(&evidence[first]["old_body"]),
+                st(&evidence[first]["old_fingerprint"]),
+                is_hub,
+                if is_hub {
+                    "the existing hub is reused: its own body is rewritten in place, no second hub is created".to_string()
+                } else {
+                    "the Topic Card's own body gains or replaces its `## 入口` section".to_string()
+                },
+            )
+        };
+        items.push(json!({
+            "id": format!("hub:{first:03}"),
+            "kind": if created { "create" } else { "edit" },
+            "calls": group.calls,
+            "level": level,
+            "tree": tree,
+            "address": if created { Value::Null } else { json!(anchor) },
+            "title": title,
+            "old_body": old_body,
+            "old_fingerprint": old_fingerprint,
+            "new_body": new_body,
+            "reuse": reused,
+            "why": why,
+            "links": linked,
+            "crossings": crossings,
+            "policy": if policy.is_null() { json!({"mirror": Value::Null, "one_book": [], "faults": []}) } else { policy },
+            "anchor_title": if anchor_title.is_null() { json!("") } else { anchor_title },
+        }));
+    }
+    Ok(items)
+}
+
 /// `zt-digest hub`.
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = ["Step", "Work", "File", "Limits", "Trees", "PerJob"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["Rebuild"])?;
     let p = Params {
-        step: a.choice("Step", &["survey", "plan", "apply", "check", "report", "precheck"])?,
+        step: a.choice("Step", &["survey", "plan", "apply", "stage", "check", "report", "precheck"])?,
         file: a.str("File"),
         limits: a.str("Limits"),
         trees: a.str("Trees"),
@@ -1157,14 +1421,105 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         json!({ "trees": {}, "fields": {}, "register": null, "jobs": {}, "seq": 0 })
     };
     let doc = ps::join(&scripts_dir(), "dsh-hub-instructions.zh.md");
-    let mut hub = Hub { p, work, out, state_file, state, doc, zt: None, cards: None, pre: Vec::new(), pre_limits: Value::Null };
+    let mut hub = Hub { p, work, out, state_file, state, doc, zt: None, cards: None, pre: Vec::new(), pre_limits: Value::Null, stage: None };
     match hub.p.step.as_str() {
         "survey" => hub.step_survey()?,
         "plan" => hub.step_plan()?,
         "apply" => hub.step_apply()?,
+        "stage" => hub.step_stage()?,
         "check" => hub.step_check()?,
         "report" => hub.step_report()?,
         _ => hub.step_precheck()?,
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create(at: &str, level: &str, title: &str) -> Value {
+        json!({"tool": "create_successor", "arguments": {"at": at, "kind": "side", "type": "hub", "level": level, "title": title, "body": "范围：待写。"}})
+    }
+
+    fn edit(at: &str, title: &str, body: &str, extra: Value) -> Value {
+        let mut arguments = json!({"at": at, "title": title, "body": body, "base_fingerprint": "f"});
+        if let Some(map) = extra.as_object() {
+            for (key, value) in map {
+                arguments[key] = value.clone();
+            }
+        }
+        json!({"tool": "edit_card", "arguments": arguments})
+    }
+
+    fn evidence(kind: &str, at: &str, level: &str) -> Value {
+        json!({"kind": kind, "at": at, "level": level, "title": "", "old_body": "", "old_fingerprint": ""})
+    }
+
+    /// S27 (#119): a new hub and the call that writes its body are one review item, so a reviewer
+    /// decides about one hub; an existing hub is its own edit item with the authored base it
+    /// replaces and the crossings it adds.
+    #[test]
+    fn a_staged_line_hub_and_its_filling_edit_are_one_item() {
+        let calls = vec![
+            create("3/1", "line", "枢纽：一支"),
+            edit("@@0", "枢纽：一支", "范围：一支的入口。\n\n## 机制\n- [[3/1]]：甲。", json!({})),
+            edit("3/1|a", "主题枢纽", "## 线索\n- [[@@0]]（枢纽）：甲。\n\n## 邻近\n- 对照 [[4/2]]：乙。", json!({"level": "topic"})),
+        ];
+        let mut items_evidence = vec![
+            evidence("create", "3/1", "line"),
+            evidence("edit", "@@0", ""),
+            evidence("edit", "3/1|a", "topic"),
+        ];
+        items_evidence[2]["type"] = json!("hub");
+        items_evidence[2]["old_body"] = json!("## 旧");
+        items_evidence[2]["old_fingerprint"] = json!("0123");
+        items_evidence[2]["policy"] = json!({"mirror": false, "one_book": [], "faults": []});
+        let items = stage_items(&calls, &items_evidence).unwrap();
+        assert_eq!(items.len(), 2, "the create and its edit are one item: {items:?}");
+        assert_eq!(ps::s(&items[0]["kind"]), "create");
+        assert_eq!(items[0]["calls"].as_array().map(Vec::len), Some(2));
+        assert_eq!(ps::s(&items[0]["level"]), "line");
+        assert_eq!(ps::s(&items[0]["tree"]), "3");
+        assert_eq!(items[0]["address"], Value::Null);
+        assert!(ps::s(&items[0]["new_body"]).contains("一支的入口"));
+        assert_eq!(ps::s(&items[0]["old_fingerprint"]), "");
+        assert_eq!(ps::s(&items[1]["kind"]), "edit");
+        assert_eq!(ps::s(&items[1]["address"]), "3/1|a");
+        assert_eq!(ps::s(&items[1]["old_fingerprint"]), "0123");
+        assert_eq!(items[1]["reuse"], json!(true));
+        assert!(ps::s(&items[1]["why"]).contains("reused"));
+        assert_eq!(items[1]["crossings"], json!(["4/2"]));
+        assert_eq!(items[1]["id"], json!("hub:002"));
+    }
+
+    #[test]
+    fn a_staged_edit_keeps_the_level_a_new_hub_would_name() {
+        let calls = vec![edit("2/1", "领域：学习", "范围：领域。\n\n## 基础\n- [[@]]", json!({"level": "field"}))];
+        let mut items_evidence = vec![evidence("edit", "2/1", "")];
+        items_evidence[0]["type"] = json!("hub");
+        let items = stage_items(&calls, &items_evidence).unwrap();
+        assert_eq!(ps::s(&items[0]["level"]), "field");
+        assert_eq!(ps::s(&items[0]["tree"]), "field");
+    }
+
+    #[test]
+    fn a_topic_body_edit_is_not_a_hub_reuse() {
+        let calls = vec![edit("3/0", "", "范围：题目。\n\n## 入口\n- [[3/1]]：甲。", json!({}))];
+        let mut items_evidence = vec![evidence("edit", "3/0", "")];
+        items_evidence[0]["type"] = json!("idea");
+        let items = stage_items(&calls, &items_evidence).unwrap();
+        assert_eq!(items[0]["reuse"], json!(false));
+        assert_eq!(ps::s(&items[0]["tree"]), "3");
+    }
+
+    #[test]
+    fn a_staged_body_names_each_link_once() {
+        assert_eq!(
+            stage_links("- [[3/1]] 与 [[3/1|a]] 和 [[pub2020/2]]"),
+            vec!["3/1", "pub2020/2"]
+        );
+        assert!(stage_links("范围：没有链接。").is_empty());
+        assert_eq!(tree_of("3/2|a"), "3");
+    }
 }

@@ -966,6 +966,7 @@ mod tests {
             cards: Some(cards),
             pre: Vec::new(),
             pre_limits: json!({ "topic_min": 7, "line_min": 12, "max_lines": 25, "max_groups": 7, "min_reason": 8, "neighbour_links": 3 }),
+            stage: None,
         }
     }
 
