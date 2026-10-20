@@ -71,8 +71,9 @@ function Show-Checks($gui, $addresses) {
     Write-Output @'
 what the page must show (issue #120, S24-AC05/AC06):
   1. search tray: type 多重均衡 in the search box and open the tray. The register entry rows come
-     first (book A's Card, book B's Card, the side Idea Card), then the hub member line, then the
-     body hits; the held Card stays the visual focus and the tray does not become a second stage.
+     first (its three targets: book A's Card, book B's Card, the side Idea Card), then the hub
+     member line, then the body hits; the held Card stays the visual focus and the tray does not
+     become a second stage.
   2. Ask: type a question (例如 为什么策略互补会产生多重均衡？), preview the proposal, Keep it. The
      Table shows the kept Spread and its whole question; Cancel keeps the Table as it was.
   3. file as card: from the kept Spread, open the file-as-card draft. The draft names the agent

@@ -10,14 +10,23 @@ This is the source-and-scratch release package for **S24 / #120**, the qualifica
 
 | Item | Value |
 |---|---|
-| Branch and commit | `main` at the commit that carries this file |
+| Branch and commit | `main` at the commit that carries this file (two qualification commits, the browser-pass fix and its wiki stamp) |
 | `zt` | `zt 0.20.0` (`src/`, `tests/`), Rust 2024, SQLite bundled |
 | `zt-check` | `0.1.0` (`tools/zt-check`) |
 | `zt-digest` | `0.4.2` (`tools/zt-digest`, takes zt-check as a library) |
 | Frozen workflows | `zt-econ-digest` 5.0.0, `zt-math-digest` 4.0.0, `zt-issue-dev` 1.3.0 — `assemble.mjs verify --scope project` reports `ok: true`, `problems: []`, `libraryDrift: []` for all three |
 | Rule set | `R2-R21, I1-I7, E1-E5, F1-F4, L1-L3` (reported by the baseline audit itself) |
 
-The installed executables are rebuilt from this commit and their SHA-256 is recorded with the closing evidence in issue #120. Before this slice the installed `zt.exe` was one build behind `main` (it lacked the S27 publication and target-text changes), which is a deployment finding, not a code finding: the same source passed every suite in section 2.
+Installed executables (rebuilt from this commit, `--release --locked`, then installed; each matches its build output byte for byte):
+
+| Binary | SHA-256 |
+|---|---|
+| `zt.exe` | `D350F0034CA2F577F44CE3EF84D7859BBE12F8C8241D5D06F695C590F2F89B04` |
+| `zt-boot.exe` | `7984EBBBBB0F7A9271822AE2E61B59A9ADC2C5A69676ACE28D756EC492CAF93D` |
+| `zt-check.exe` | `F6641653CCD9AA7AEB4C65A7A31BC4028A98537F7A95D2BB31039062634600E2` |
+| `zt-digest.exe` | `C402625FFEC00F867ED1015833594067FBC0E503BD5E105F3E65D275F6426AA4` |
+
+The live service (`zt up`, archive `D:\zt`, GUI `http://127.0.0.1:4717/`) runs that `zt.exe`, reports `daemon: version=0.20.0` and serves the real archive (10 895 Cards, 211 Topics, 7 Literature trees, 0 broken links) with the new entry search. Before this slice the installed `zt.exe` was one build behind `main`; its replaceable copy is kept beside it as `zt.exe.old-<time>` for rollback.
 
 ## 2. Suites run (release commands)
 
@@ -25,7 +34,7 @@ All commands ran on Windows from `E:\zet`, with the separate target directories 
 
 | Check | Command | Result |
 |---|---|---|
-| Root, all targets, locked | `CARGO_TARGET_DIR=D:\zt-target cargo test --all-targets --locked` | **513 passed, 0 failed, 1 ignored** (the manual real-clipboard smoke test). Log: `D:\zt-target\qualification\issue120\root-tests.log` |
+| Root, all targets, locked | `CARGO_TARGET_DIR=D:\zt-target cargo test --all-targets --locked` | **515 passed, 0 failed, 1 ignored** (the manual real-clipboard smoke test). Logs: `D:\zt-target\qualification\issue120\root-tests.log` (before the browser-pass fix) and `root-tests-final.log` (the release run, including the two new `src/gui.rs` page tests) |
 | Checker, locked | `CARGO_TARGET_DIR=D:\zt-check-target cargo test --manifest-path tools/zt-check/Cargo.toml --locked` | **20 passed, 0 failed** |
 | Digest tools, locked | `CARGO_TARGET_DIR=D:\zt-digest-target cargo test --manifest-path tools/zt-digest/Cargo.toml --locked` | **273 passed, 0 failed** |
 | Aggregate public runner | `pwsh -NoProfile -File scripts\book-digest\tests\run-all.ps1 -Throttle 4 -Zt D:\zt-target\debug\zt.exe -Logs D:\zt-target\qualification\issue120\public` | **83 suites, 0 failed, 412 s**, 2 981 named `ok:` assertions. Logs: `D:\zt-target\qualification\issue120\public\` |
@@ -108,9 +117,18 @@ Supporting tool: `scripts/book-digest/tests/qualify-gui-fixture.ps1` builds the 
 
 ## 7. GUI browser pass (S24-AC05, S24-AC06)
 
-The routes under test are the GUI's `/api/search`, `/api/ask`, `/api/spreads`, `/api/hub/draft`, `/api/hub/check`, `/api/create`, `/api/reply`, `/api/distant`, `/api/card`, `/api/register`, `/api/graph`, `/api/overview`, `/api/broken`, `/api/insert`, `/api/move`, `/api/delete` and `/api/metadata`; the Rust suites above drive every one of them against a running service. The rendering, focus and keyboard behavior is the page's own (`src/gui/app.js`, `layout.js`, `ask.js`, `draft.js`), which this slice does not change.
+The routes under test are the GUI's `/api/search`, `/api/ask`, `/api/spreads`, `/api/hub/draft`, `/api/hub/check`, `/api/create`, `/api/reply`, `/api/distant`, `/api/card`, `/api/register`, `/api/graph`, `/api/overview`, `/api/broken`, `/api/insert`, `/api/move`, `/api/delete` and `/api/metadata`; the Rust suites above drive every one of them against a running service. The rendering, focus and keyboard behavior is the page's own (`src/gui/app.js`, `layout.js`, `ask.js`, `draft.js`), which this slice's backend work does not change.
 
-Result: see the closing comment in issue #120 for the browser pass on the fixture (search tray, Ask preview with Keep/Cancel, file as card, Reply changed-target, Table distant slot, light/dark/focus, and the shortcut exclusions for editor, input, command bar and modal), with the retained screenshots and the exact build it ran on.
+The browser pass ran twice: once on the deployed build of `a946d61` (fixture URL `http://127.0.0.1:60844/`), and again on a build of the fix below (fixture URL `http://127.0.0.1:54258/`). It found two page defects and fixed them in `423bfce` (with `src/gui.rs` page tests and the gui wiki block; `3c557a7` stamps the block):
+
+1. **Every writing desk except the hub draft threw on open** (`src/gui/app.js`, since #118): `openEditor` read `hubPlaced.at` at its top level while `hubPlaced` is null outside the hub draft, so `r`, `e`, `t`, the Reply button and the Edit button opened nothing and toasted `Cannot read properties of null (reading 'at')`. The placement is now read only under `if (hub)`. New page test `every_desk_but_the_hub_draft_opens_without_reading_a_hub_placement`.
+2. **A kept Spread's whole question was nowhere on the Table**: only its 80-character name showed, cut in the Spreads picker. The Table now lays the question as a faint slip at the head of the Cards on the Table plane — above the top row so it covers no Card, moving with the Cards, folded to three lines and unfolded by a click, hidden during a proposal, taken in by `fit`. New page test `a_spread_kept_from_a_question_shows_the_whole_question_on_the_table`.
+
+Per-check result on the fixed build: search tray PASS (the three entry rows first, then the hub member line, then body hits, in exactly the order `/api/search mode=entry` returns); Ask PASS after fix 2 (Cancel leaves the Table as it was, a blank question shows its error, `maxlength` 512, `p` refused during a preview, `y` with no proposal does nothing, Keep adds one Spread and changes no Card, a 156-character question keeps its name at 80 characters while the slip shows all 156); file as card PASS (agent Workspace, `field` level, under the register `1/1`, Markdown shown, precheck passes, Cancel writes nothing); reader Reply FAIL before fix 1 and PASS after (after `-Action touch`, Save names the fresh target beside `Reply to bookB/1`, the draft and destination stay, nothing is written; a second save creates exactly one human Card `2/1` in `回应` `2/0`); distant slot PASS (exactly one Card, `bookB/1`, in the reader and on the Table; opening it writes no Link); light/dark/focus PASS (question slip 6.6:1 in light and 8.5:1 in dark, held Card title 16.8:1 and 12.4:1, focus ring visible, search/Ask/Reply checked in dark); shortcuts PASS (`t`, `/`, space, `f`, `g` do not fire in the search input, the editor, the focused command bar or a modal; a control press of `/` on the body does open the tray).
+
+Retained evidence: `C:/Users/chenx/AppData/Local/Temp/claude/E--zet/bec8c206-2ed2-4369-9210-d2482a5b7267/scratchpad/s24-gui-pass.log` with the screenshots taken in both themes. Regression runs on the fixed build: `cargo test --bin zt gui::` 37 passed (two new), `ask_spread` 4, `cli_service` 69, `hub_draft` 3, `integrated_release` 3, wiki `gui` FRESH.
+
+Two observations are recorded and not fixed (they need a design decision, not a claim): right after `p` the Table's reach box can run about 45 px under the reader until `f`, and the gather can overlap the lifted held Card with a neighbour by about 20 px.
 
 ## 8. Named gaps and limits
 
