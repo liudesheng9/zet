@@ -2132,6 +2132,9 @@
     let hovered = null;
     let drag = null;
     let reachOpen = false;
+    let questionOpen = false;   // the kept question's slip shows every line
+    const QUESTION_GAP = 14;    // between the question slip and the top row of cards
+    const QUESTION_WIDTH = 640; // a readable line, however wide the Spread lies
     let current = { cards: [], focus: null, near: new Set() };
 
     /** A Card's angle at rest: a few degrees either way, the same every time. */
@@ -2250,6 +2253,7 @@
         els.delete(address);
         leave(el);
       }
+      paintQuestion(cards);
       paintThreads();
       renderReach();
       renderHand();
@@ -2262,6 +2266,54 @@
       applyCamera();
       return cards.length;
     }
+
+    /**
+     * A Spread kept from a question keeps that whole question on the Table (S24, #120; CONTEXT
+     * "Spread"): a pencilled slip at the head of its cards, on the Table plane, so it moves with
+     * them and grows upward from above the top row instead of covering one. It is a heading, not a
+     * card — no stock, faint ink — so the held Card keeps the eye. A long question folds to three
+     * lines and the slip unfolds it; a proposal still names its question in the ask bar instead.
+     */
+    function paintQuestion(cards) {
+      const slip = $('#spread-question');
+      const spread = spreads.now();
+      const question = !spreads.previewing() && cards.length && spread && spread.question ? spread.question : '';
+      if (!question) {
+        slip.hidden = true;
+        slip.dataset.q = '';
+        return;
+      }
+      if (slip.dataset.q !== question) {
+        slip.dataset.q = question;
+        questionOpen = false;
+        $('#spread-question-text').textContent = question;
+        slip.title = question;
+        // The question settles onto the Table as the Spread is kept or opened.
+        slip.classList.remove('settling');
+        void slip.offsetWidth;
+        slip.classList.add('settling');
+      }
+      const xs = cards.map((card) => card.x);
+      const left = Math.min(...xs);
+      const span = Math.max(...xs) + size.w - left;
+      slip.hidden = false;
+      slip.style.left = left + 'px';
+      slip.style.top = (Math.min(...cards.map((card) => card.y)) - QUESTION_GAP) + 'px';
+      slip.style.width = Math.min(Math.max(span, size.w * 2 + size.gap), QUESTION_WIDTH) + 'px';
+      slip.classList.toggle('open', questionOpen);
+      slip.setAttribute('aria-expanded', String(questionOpen));
+    }
+
+    /** The room the question slip takes above the cards, in Table units (0 when none shows). */
+    function questionRoom() {
+      const slip = $('#spread-question');
+      return slip.hidden ? 0 : slip.offsetHeight + QUESTION_GAP;
+    }
+
+    $('#spread-question').addEventListener('click', () => {
+      questionOpen = !questionOpen;
+      paintQuestion(spreads.cards());
+    });
 
     /** A Card put back slides toward the box and drops into it. */
     function leave(el) {
@@ -2536,6 +2588,10 @@
       }
       const xs = cards.map((card) => card.x); const ys = cards.map((card) => card.y);
       const b = { x: Math.min(...xs) - 20, y: Math.min(...ys) - 20, w: Math.max(...xs) - Math.min(...xs) + size.w + 40, h: Math.max(...ys) - Math.min(...ys) + size.h + 40 };
+      // The kept question lies above the top row: the view takes it in with the cards.
+      const asked = questionRoom();
+      b.y -= asked;
+      b.h += asked;
       const reach = reachWidth();
       const room = { w: vw - 64, h: vh - STAGE_TOP - 40 };
       const whole = Math.min(1.05, room.w / (b.w + reach), room.h / b.h);
@@ -4891,9 +4947,12 @@
           : [h('option', { value: '', text: 'no destination at this level' })]));
         hubDestPick.value = index >= 0 ? String(index) : '';
       };
-      if (hubLevelPick) hubLevelPick.value = hubPlaced.level;
-      if (hubPlaced.at) fillDestinations();
-      else fillDestinations(true);
+      // Only the hub draft has a placement: every other desk (Edit, a new Card, Insert, Reply) opens
+      // with `hubPlaced` null and must not read it (S24, #120: reading it broke every other desk).
+      if (hub) {
+        hubLevelPick.value = hubPlaced.level;
+        fillDestinations(!hubPlaced.at);
+      }
       const hubBar = hub ? h('div', { class: 'hub-bar' },
         h('span', { class: 'lbl', text: 'Hub Card' }),
         h('span', { class: 'hub-ws', text: 'agent workspace', title: 'A filed Spread becomes an agent Workspace Hub Card, whatever Workspace the cabinet shows; filing a Spread itself creates no Card' }),

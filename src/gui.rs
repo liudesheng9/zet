@@ -3524,6 +3524,84 @@ mod tests {
             "one writing desk serves every composer"
         );
     }
+
+    /// S24 (#120, S24-AC05 check 4): the one writing desk serves Edit, a new Card, Insert and Reply
+    /// as well as the hub draft, and only the hub draft has a placement (`hubPlaced` is null for
+    /// every other desk). A statement the desk runs as it opens may read the placement only under
+    /// `if (hub)`; any other read sits inside a handler or helper that only the hub draft's own
+    /// controls call. The browser pass found `if (hubPlaced.at)` at the desk's top level, which
+    /// threw on every non-hub desk (Reply and Edit showed "Cannot read properties of null").
+    #[test]
+    fn every_desk_but_the_hub_draft_opens_without_reading_a_hub_placement() {
+        // A Windows checkout may hold the page with CRLF line ends; the desk is read line by line.
+        let page = APP_JS.replace("\r\n", "\n");
+        let start = page.find("function openEditor(").expect("the writing desk");
+        let body = &page[start..];
+        let body = &body[..body.find("\n  }\n").expect("the end of openEditor")];
+        // The desk's own top level is the Promise body, six spaces in.
+        for line in body.lines().filter(|line| line.contains("hubPlaced.")) {
+            let indent = line.len() - line.trim_start().len();
+            if indent != 6 {
+                continue;
+            }
+            let code = line.trim_start();
+            assert!(
+                code.starts_with("if (hub) ") || code.contains("=> "),
+                "a desk statement reads the hub placement without the hub guard: {code}"
+            );
+        }
+        assert!(
+            !page.contains("      if (hubPlaced.at) fillDestinations();"),
+            "the unguarded destination fill is gone"
+        );
+        assert!(page.contains(
+            "      if (hub) {\n        hubLevelPick.value = hubPlaced.level;\n        fillDestinations(!hubPlaced.at);\n      }"
+        ));
+    }
+
+    /// S24 (#120, S24-AC05 check 2; CONTEXT "Spread"): a Spread kept from a question shows that
+    /// whole question on the Table, not only its cut display name. The question lies on the Table
+    /// plane as a slip at the head of the cards — above their top row, so it covers no card and
+    /// moves with them — painted faint and without card stock so the held Card keeps the eye; a long
+    /// question folds to three lines and the slip unfolds it. A proposal names its question in the
+    /// ask bar, so the slip stands down while one lies on the Table, and fitting the view takes the
+    /// slip in with the cards.
+    #[test]
+    fn a_spread_kept_from_a_question_shows_the_whole_question_on_the_table() {
+        let plane = INDEX_HTML.find("id=\"table-plane\"").expect("the Table plane");
+        let slip = INDEX_HTML.find("id=\"spread-question\"").expect("the question slip");
+        let cards = INDEX_HTML.find("id=\"tcards\"").expect("the cards");
+        assert!(plane < slip && slip < cards, "the slip lies on the Table plane, under the cards");
+        assert!(INDEX_HTML.contains("id=\"spread-question-text\""));
+        assert!(APP_JS.contains(
+            "const question = !spreads.previewing() && cards.length && spread && spread.question ? spread.question : '';"
+        ));
+        assert!(
+            APP_JS.contains("$('#spread-question-text').textContent = question;"),
+            "the slip carries the whole question, never the cut name"
+        );
+        assert!(APP_JS.contains("slip.title = question;"));
+        assert!(
+            APP_JS.contains("slip.style.top = (Math.min(...cards.map((card) => card.y)) - QUESTION_GAP) + 'px';"),
+            "the slip sits above the top row of cards"
+        );
+        let render = APP_JS.find("      paintQuestion(cards);").expect("the Table paints the slip");
+        let fit = APP_JS[render..].find("if (fresh) fit(false);").expect("the first fit");
+        assert!(fit > 0, "the slip is painted before the view is fitted around it");
+        assert!(APP_JS.contains("const asked = questionRoom();"));
+        assert!(APP_JS.contains("b.y -= asked;") && APP_JS.contains("b.h += asked;"));
+        // A heading, not a card: faint ink, no stock or shadow, no blur, eased motion.
+        let start = APP_CSS.find(".spread-question {").expect("the slip rule");
+        let block = &APP_CSS[start..start + APP_CSS[start..].find("\n}").expect("rule end")];
+        assert!(block.contains("transform: translateY(-100%);"), "it grows upward: {block}");
+        assert!(block.contains("background: none;") && block.contains("color: var(--ink-soft);"));
+        assert!(!block.contains("box-shadow") && !block.contains("blur("), "no lift or blur: {block}");
+        assert!(block.contains("cubic-bezier(.45, 0, .25, 1)"), "it moves with ease-in-out: {block}");
+        assert!(APP_CSS.contains(".spread-question .sq-text {") && APP_CSS.contains("-webkit-line-clamp: 3;"));
+        assert!(APP_CSS.contains(".spread-question.open .sq-text { display: block; -webkit-line-clamp: unset; }"));
+        // The Map's classes stay its own.
+        assert!(!INDEX_HTML.contains("class=\"slip") && !INDEX_HTML.contains("class=\"fold"));
+    }
 }
 
 #[cfg(test)]

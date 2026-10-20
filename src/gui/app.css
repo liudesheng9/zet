@@ -1527,6 +1527,31 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .ask-msg { display: block; margin-top: 8px; min-height: 16px; font: 11.5px/1.5 var(--sans); color: var(--ink-faint); }
 .ask-msg.err { color: var(--broken); }
 
+/* The question a kept Spread answers (S24, #120): a pencilled heading at the head of its cards on
+   the Table plane. It is no card — no stock, no shadow, faint ink — so the held Card keeps the eye;
+   it grows upward from just above the top row, so it never covers a card, and it moves with the
+   cards when they are arranged. A long question folds to three lines; the slip unfolds it. */
+.spread-question {
+  position: absolute; z-index: 1; transform: translateY(-100%);
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 3px 6px 3px 2px;
+  border: 0; border-radius: 4px; background: none; text-align: left; cursor: pointer;
+  color: var(--ink-soft);
+  transition: left .32s cubic-bezier(.45, 0, .25, 1), top .32s cubic-bezier(.45, 0, .25, 1), width .32s cubic-bezier(.45, 0, .25, 1), color .2s;
+}
+.spread-question[hidden] { display: none; }
+.spread-question .sq-mark {
+  flex: none; display: grid; place-items: center; width: 18px; height: 18px; margin-top: 2px;
+  border: 1px solid var(--hairline); border-radius: 50%; color: var(--ink-faint); font: 700 11px var(--sans);
+}
+.spread-question .sq-text {
+  min-width: 0; font: italic 14px/1.5 var(--serif); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.spread-question.open .sq-text { display: block; -webkit-line-clamp: unset; }
+.spread-question:hover, .spread-question:focus-visible { color: var(--ink); }
+.spread-question.settling { animation: question-settle .3s cubic-bezier(.45, 0, .25, 1); }
+@keyframes question-settle { from { opacity: 0; margin-top: -10px; } }
+
 
 .table-tools { display: inline-flex; align-items: center; gap: 8px; }
 .table-tools[hidden] { display: none; }
