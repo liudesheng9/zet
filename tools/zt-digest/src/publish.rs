@@ -609,13 +609,26 @@ fn register_section(
     for part in &declared {
         let label = ps::s(&part["label"]);
         let staged_address = ps::s(&part["address"]);
-        let now = parts_current.iter().find(|row| ps::s(&row["label"]) == label).cloned().unwrap_or(Value::Null);
+        let now = parts_current
+            .iter()
+            .find(|row| ps::s(&row["label"]) == label)
+            .or_else(|| parts_current.iter().find(|row| ps::s(&row["address"]) == staged_address))
+            .cloned()
+            .unwrap_or(Value::Null);
+        // A part the register already declares is a Card this gate would rewrite: its authored base
+        // is shown beside its old body, so "all old addresses and fingerprints" holds for parts too.
+        let fingerprint_before = if now["card"].is_object() {
+            json!(calls::authored_fingerprint(&now["card"]))
+        } else {
+            Value::Null
+        };
         parts.push(json!({
             "label": label,
             "address": if staged_address.is_empty() { now["address"].clone() } else { json!(staged_address) },
             "title": part["title"],
             "rows_planned": ps::pipe(&part["terms"]).len(),
             "body_before": now["body"],
+            "fingerprint_before": fingerprint_before,
             "body_planned": part["body"],
             "reused": part["reused"],
             "terms": part["terms"],
@@ -795,10 +808,17 @@ fn hub_section(archive: &mut Archive, hub_plan: Option<&Value>, hub_path: &str, 
         let mut item_checks = Vec::new();
         if code == "edit" {
             let card = archive.card(&address)?;
-            let now = if card.is_null() { String::new() } else { calls::authored_fingerprint(&card) };
             let reviewed = ps::s(&item["old_fingerprint"]);
-            if reviewed.is_empty() || now != reviewed {
-                item_checks.push(json!({"id": "base-fingerprint", "ok": false, "detail": "the reviewed authored base changed; stage the hub plan again"}));
+            if reviewed.is_empty() {
+                bail!("the hub plan's item `{id}` names no authored base for `{address}`; run `zt-digest hub -Step stage` again");
+            }
+            // The review presents changes the archive still holds. A base that moved since the plan
+            // was staged makes every item it touches a change nobody can review as written (§11.3).
+            let now = if card.is_null() { String::new() } else { calls::authored_fingerprint(&card) };
+            if now != reviewed {
+                bail!(
+                    "the hub plan is stale: the authored base of `{address}` changed since it was staged; run `zt-digest hub -Step stage` again, then -Step plan"
+                );
             }
             if item["policy"]["mirror"] == json!(true) {
                 item_checks.push(json!({"id": "mirror", "ok": false, "detail": "this topic hub only repeats its tree map; the entry-section alternative is reported, not written"}));
@@ -1652,8 +1672,24 @@ fn publish_register(archive: &mut Archive, review: &Value, selection: &Selection
         }
         return Ok(json!({"applied": false, "reason": detail, "entries": 0}));
     }
+    // The review binds one exact register plan. A plan re-staged since then is not what the
+    // reviewer read, even when the accepted row happens to keep its targets: publishing it would
+    // write rows nobody reviewed.
     let plan_path = ps::s(&review["register"]["path"]);
-    let plan = canon::read_json(&plan_path).with_context(|| format!("read the register plan `{plan_path}`"))?;
+    let plan = match canon::read_json(&plan_path) {
+        Ok(plan) => plan,
+        Err(error) => {
+            let detail = format!("the staged register plan `{plan_path}` cannot be read: {error:#}; run `zt-digest register -Step plan` and `zt-digest publish -Step plan` again");
+            return Ok(register_unbound(outcomes, &accepted, &declined, &detail));
+        }
+    };
+    if ps::s(&plan["plan_id"]) != ps::s(&review["register"]["plan_id"]) {
+        let detail = format!(
+            "the staged register plan `{plan_path}` is no longer the reviewed plan (`{}`): run `zt-digest register -Step plan` and `zt-digest publish -Step plan` again",
+            ps::s(&plan["plan_id"])
+        );
+        return Ok(register_unbound(outcomes, &accepted, &declined, &detail));
+    }
     let rows = ps::pipe(&plan["terms"])
         .into_iter()
         .filter(|row| accepted.contains(ps::s(&row["term"]).as_str()))
@@ -1706,6 +1742,18 @@ fn publish_register(archive: &mut Archive, review: &Value, selection: &Selection
             Ok(json!({"applied": false, "reason": format!("{error:#}"), "entries": 0}))
         }
     }
+}
+
+/// The register items when the reviewed plan itself cannot be published: every accepted row is a
+/// conflict with the reason, and every declined one stays declined. No Card is written (AC02, AC06).
+fn register_unbound(outcomes: &mut Vec<Value>, accepted: &BTreeSet<String>, declined: &BTreeSet<String>, detail: &str) -> Value {
+    for term in accepted {
+        outcomes.push(outcome(&term_id(term), true, "conflict", detail, Value::Null));
+    }
+    for term in declined {
+        outcomes.push(outcome(&term_id(term), false, "declined", "the selection does not accept this register row", Value::Null));
+    }
+    json!({"applied": false, "reason": detail, "entries": 0})
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -157,7 +157,20 @@ try {
     Assert ($editItem.old_fingerprint -and $editItem.old_body) 'hub: the edit item carries the authored base it replaces'
     Assert (@($hubPlan.items | Where-Object { $_.kind -eq 'create' }).Count -ge 1) 'hub: a new field or line hub is a create item'
 
+    # A plan whose reviewed base moved is stale: the review refuses to present it instead of
+    # offering changes the archive no longer holds (§11.3, S27-AC01).
+    $staleBase = Publish @('-Step', 'plan', '-Work', $work)
+    Assert ($staleBase.code -eq 0) 'stale hub plan: the review is written while the base still holds'
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $topicHub; body = "## 机制`n- [[$topic/1]]：另一个写者的版本。" } })
+    $stalePlan = Publish @('-Step', 'plan', '-Work', $work)
+    Assert ($stalePlan.code -ne 0) 'stale hub plan: a review over a moved authored base is refused'
+    Assert ($stalePlan.text -match 'stale|stage.*again') 'stale hub plan: the refusal names the re-staged plan it needs'
+    $restored = @($hubPlan.items | Where-Object { $_.address -eq $topicHub })[0].old_body
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $topicHub; body = $restored } })
+    Assert ((Card $topicHub).body -eq $restored) 'stale hub plan: the original body is restored for the review'
+
     # --- the review ----------------------------------------------------------------------------
+    $revisionBefore = Revision
     $planRun = Publish-Json @('-Step', 'plan', '-Work', $work)
     Assert ($planRun.code -eq 0) 'publish plan: the review is written'
     $review = Read-Json (Join-Path $work 'publish-review.json')
@@ -261,6 +274,37 @@ try {
     Assert ((Card-Count) -eq $cardsNow) "retry: no Card is created twice ($cardsNow then $(Card-Count))"
     Assert ($retryResult.hubs.replayed -ge 1 -or $retryResult.summary.applied -eq $review.items.Count) 'retry: the committed calls are replayed from their receipts'
 
+    # --- a re-staged register plan is not the one that was reviewed ---------------------------
+    # The first publication consumed the hub plan, so the operator stages both plans again.
+    $stageAfter = Split-Digest @('hub', '-Step', 'stage', '-Work', $work)
+    Assert ($stageAfter.code -eq 0) 'register plan: the hub plan is staged again after the publication'
+    $replanFirst = Split-Digest @('register', '-Step', 'plan', '-Work', $work, '-Readings', (Join-Path $work 'out\register-readings.json'))
+    Assert ($replanFirst.code -eq 0) 'register plan: the register plan is staged again after the publication'
+    $planRun = Publish-Json @('-Step', 'plan', '-Work', $work)
+    Assert ($planRun.code -eq 0) 'register plan: the review over the current plan is written'
+    $reviewA = Read-Json (Join-Path $work 'publish-review.json')
+    $script:review = $reviewA
+    $script:backup = Backup
+    $termItem = @($reviewA.register.terms)[0].id
+    $changedTable = "本卡是《学习与增长》的术语表。`n`n术语表`n`n| 术语 | 不用 | 意思 | 首次定义 |`n| --- | --- | --- | --- |`n| 学习 | 习得 | 重复练习积累技能 | §2 |`n| 多重均衡 | 均衡的多重性 | 策略互补时有多个均衡 | §3 |`n| 新词 | 旧词 | 一个新词 | §4 |"
+    $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $table; body = $changedTable } })
+    $replanA = Split-Digest @('register', '-Step', 'plan', '-Work', $work, '-Readings', (Join-Path $work 'out\register-readings.json'))
+    Assert ($replanA.code -eq 0) 'register plan: the changed term table is planned again'
+    $planB = Read-Json (Join-Path $work 'out\register-plan.json')
+    Assert ($planB.plan_id -ne $reviewA.register.plan_id) 'register plan: the re-staged plan has another plan id'
+    $cardsBefore = Card-Count
+    # Every row the register serves is accepted, so the partial-rebuild refusal cannot answer for
+    # the plan check: the reviewed plan itself moved.
+    $termItems = @($reviewA.items | Where-Object { $_ -like 'term:*' })
+    Write-Json (Join-Path $work 'publish-selection.json') (Selection $termItems)
+    $movedPlan = Publish-Json @('-Step', 'apply', '-Work', $work)
+    $movedResult = Read-Json (Join-Path $work 'publish-result.json')
+    Assert ($movedPlan.code -ne 0) 'register plan: a re-staged plan is not published under the older review'
+    Assert ((Outcome $movedResult $termItem).status -eq 'conflict') 'register plan: the accepted row is a conflict, not a write'
+    Assert (@($movedResult.outcomes | Where-Object { $_.accepted -and $_.detail -match 'no longer the reviewed plan' }).Count -eq $termItems.Count) "register plan: every accepted row names the moved plan ($((Outcome $movedResult $termItem).detail))"
+    Assert ($movedResult.register.applied -eq $false) 'register plan: nothing is published to the register'
+    Assert ((Card-Count) -eq $cardsBefore) 'register plan: no Card is written'
+
     # --- a stale old base returns a revised plan ----------------------------------------------
     $replan = Split-Digest @('register', '-Step', 'plan', '-Work', $work, '-Readings', (Join-Path $work 'out\register-readings.json'))
     Assert ($replan.code -eq 0) 'stale: the register is planned again'
@@ -287,6 +331,8 @@ try {
     }
 
     # --- a changed protected Card stops the publication ---------------------------------------
+    $stageProtected = Split-Digest @('hub', '-Step', 'stage', '-Work', $work)
+    Assert ($stageProtected.code -eq 0) 'protected: the hub plan is staged again after the other writer''s change'
     $planRun = Publish-Json @('-Step', 'plan', '-Work', $work)
     Assert ($planRun.code -eq 0) 'protected: the review is written again'
     $review3 = Read-Json (Join-Path $work 'publish-review.json')
@@ -317,6 +363,44 @@ try {
     Assert ((Outcome $conflictResult $served.id).status -eq 'conflict') 'declined served row: the accepted row is a conflict'
     Assert ($conflictResult.register.applied -eq $false) 'declined served row: nothing is published to the register'
 
+    # --- a register with a declared part: the review names the part's old body and fingerprint ---
+    $facts = @(Invoke-Zt @(@{ tool = 'get_cards'; arguments = @{ addresses = @(); view = 'text' } }))[0]
+    $partTarget = "$topic/1"
+    $partBody = "## 词条`n- 甲：[[$partTarget]]"
+    $registerNow = Card $registerCard
+    $rootBody = "范围：代理工作区的入口。每个词条指向一到三个实质卡。`n`n## 词条分册`n`n- [[{{part:0}}]] A–F"
+    $crafted = [ordered]@{
+        schema_version = 1
+        archive        = [ordered]@{ identity = $facts.archive_identity; revision = $facts.archive_revision }
+        register       = [ordered]@{ address = $registerCard; missing = $false; entries = 0; complete = $false; parts = 0 }
+        terms          = @([ordered]@{ term = '甲'; targets = @($partTarget); sources = @(); ambiguous = $false; overflow = 0; reviewed = @(); read_only_targets = @() })
+        unresolved     = @(); faults = @(); excluded = @(); review = $null
+        readings       = [ordered]@{ accepted = @([ordered]@{ term = '甲'; reading = 'jiǎ'; initial = 'j' }); unresolved = @(); count = 1 }
+        parts          = @([ordered]@{ label = 'A–F'; bucket = 'latin'; title = '词条 A–F'; address = $null; body = $partBody; terms = @('甲'); call = 0; reused = $false })
+        obsolete_parts = @(); terms_on_root = $false
+        root_before    = $registerNow.body
+        body           = $rootBody
+        calls          = @([ordered]@{ tool = 'create_successor'; arguments = [ordered]@{ at = $registerCard; kind = 'side'; title = '词条 A–F'; body = $partBody } })
+        root_call      = [ordered]@{ tool = 'edit_card'; arguments = [ordered]@{ at = $null; body = $rootBody } }
+        plan_id        = 'rp-' + ('a' * 64)
+    }
+    Write-Json (Join-Path $work 'out\register-plan.json') $crafted
+    $partApply = Split-Digest @('register', '-Step', 'apply', '-Work', $work)
+    Assert ($partApply.code -eq 0) "parts: the crafted split register is published ($($partApply.text))"
+    $partAfter = Register
+    Assert (@($partAfter.parts).Count -ge 1) 'parts: the register declares its part'
+    $partAddress = @($partAfter.parts)[0].address
+    $replanParts = Split-Digest @('register', '-Step', 'plan', '-Work', $work, '-Readings', (Join-Path $work 'out\register-readings.json'))
+    Assert ($replanParts.code -eq 0) 'parts: the register is planned again with its declared part'
+    $stageParts = Split-Digest @('hub', '-Step', 'stage', '-Work', $work)
+    Assert ($stageParts.code -eq 0) 'parts: the hub plan is staged again'
+    $partsReview = Publish-Json @('-Step', 'plan', '-Work', $work)
+    Assert ($partsReview.code -eq 0) "parts: the review is written ($($partsReview.text))"
+    $reviewParts = Read-Json (Join-Path $work 'publish-review.json')
+    $reviewedPart = @($reviewParts.register.parts)[0]
+    Assert ($reviewedPart.fingerprint_before -match '^[0-9a-f]{64}$') "parts: the review shows the part's authored fingerprint ($($reviewedPart.fingerprint_before))"
+    Assert ($reviewedPart.body_before -match '甲') 'parts: the review shows the part body it would replace'
+    Assert ($reviewedPart.address -eq $partAddress) 'parts: the review names the declared part address'
     Write-Output "failed: $failed"
 } finally {
     zt down 2>&1 | Out-Null
