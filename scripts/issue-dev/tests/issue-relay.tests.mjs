@@ -111,7 +111,7 @@ await test('question in a goal round -> main agent -> respond; goal complete -> 
   assert.equal(r.result.stages.check.status, 'done')
   const byLabel = l => r.calls.find(c => new RegExp(l).test(c.label))
   assert.equal(byLabel('manager start$').model, 'haiku')
-  assert.equal(byLabel('main agent 1$').model, undefined, 'the main agent inherits the session model')
+  assert.equal(byLabel('main agent 1$').model, 'opus', 'the main agent is Opus')
   assert.equal(byLabel('repo state').model, 'haiku')
   assert.ok(r.calls.some(c => /workspace cleanup/.test(c.label)), 'the workspace cleanup ran')
   assert.equal(r.result.deepseek.deleted, 1)
@@ -297,6 +297,23 @@ await test('a mark for another issue whose number starts the same does not pass 
   ])
   assert.equal(r.result.result.issues[0].outcome, 'done')
   assert.equal(r.result.result.issues[0].session, 'y')
+})
+
+await test('GUI work goes to the Opus main agent under gui-first-principles; DeepSeek writes no GUI code', async () => {
+  await run('gui', [issue(120)], [
+    { label: 'manager start$', answer: st({ status: 'needs_response', pending: [{ request_id: 'q', kind: 'question', detail: '{"questions":[{"id":"g","question":"GUI request: show the reply bar"}]}' }] }) },
+    { label: 'main agent 1$', answer: { outcome: 'done', result: 'commit abc: reply bar', answers: [{ id: 'g', text: 'commit abc: reply bar' }], decision: 'none' } },
+    { label: 'manager respond 1$', answer: done() },
+  ], { src: spy })
+  const prompt = globalThis.__zirOps.find(o => o.op === 'start').run.prompt
+  assert.match(prompt, /\*\*GUI work belongs to the main agent \(Claude Opus\)\.\*\* Do not write or change GUI code yourself: the browser front end under `src\/gui\/`/)
+  assert.match(prompt, /call ask_user_question with ONE GUI request/)
+  const ex = bp.roles.executor
+  assert.equal(ex.model, 'opus')
+  assert.match(ex.instructions, /gui-first-principles\\SKILL\.md and follow both principles/)
+  assert.match(ex.instructions, /real index cards: card stock, a red header line, blue rules/)
+  assert.match(ex.instructions, /never by writing D:\\zt/)
+  assert.match(ex.instructions, /Commit only your GUI files, with a message that names the issue; do not push/)
 })
 
 await test('the old maxRounds arg is refused', async () => {

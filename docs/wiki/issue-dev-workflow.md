@@ -40,7 +40,7 @@ updated: 2026-10-18
 
 - `Goal` — dsh's long-running completion objective, one per conversation. The Desktop's goal-round driver queues a goal round each time the agent goes idle, until the model marks the goal complete (`update_goal`) or blocked, or the round cap (`max_goal_rounds`) is reached. The bridge reports the conversation as `running` (or `needs_response`) until then, and every report carries `goal: {phase, rounds, activation, blocked_reason}`.
 - `Manager` — a Haiku agent (role `manager`) that relays one DeepSeek conversation: it starts it with the goal, waits, responds, resumes the goal, or deletes the conversation. It never answers or decides anything itself. Each issue has exactly one DeepSeek conversation. Each relay step is a new manager agent on the same `session_id`.
-- `Main agent` — role `executor` (no model set, so the session model) that does what the DeepSeek agent asked and returns `{outcome done|refused|failed, result, answers, decision}` (`ZIR_EXEC`).
+- `Main agent` — role `executor` (Opus since 1.3.0) that does what the DeepSeek agent asked and returns `{outcome done|refused|failed, result, answers, decision}` (`ZIR_EXEC`).
 - `Ask` — a question (`ask_user_question`) or a tool approval: bridge status `needs_response`. Ending a round does not reach the main agent: the driver just starts the next round.
 - `STATUS line` — the last `STATUS: DONE|NEEDS-HUMAN` line of an answer (`zirStatus`), used as the summary.
 - `Outcome` — per issue: `done` (goal complete), `needs-human` (goal blocked), `max-rounds` (blocked `round-limit`), `max-asks`, `timeout`, `failed`.
@@ -108,6 +108,7 @@ The manager calls `deepseek_run` with:
 
 ### Rules
 
+- **GUI work goes to the Opus main agent.** The DeepSeek agent writes no GUI code: the browser front end under `src/gui/` and its browser-side tests. It builds and tests the backend (data, routes in `src/gui.rs`, MCP, tools). Then it sends one GUI request per issue with `ask_user_question`. The main agent builds the GUI under `gui-first-principles` and the user's GUI preferences, tests it on a scratch archive, and commits only its own GUI files. The DeepSeek agent then deploys, verifies and pushes.
 - **One issue per conversation.** The first message carries the scope rules:
   - no work, comment, relabel or close on another issue;
   - a PRD only verifies its plan and its map of child issues;
@@ -156,7 +157,7 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 
 ## Testing
 
-`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (22 tests):
+`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (23 tests):
 - `expandIssues`;
 - the start arguments: `goal` objective, `max_goal_rounds`, model, effort, `tdd`, no placeholders left;
 - the manager prompt passing `goal` and loading `deepseek_goal`;
@@ -177,7 +178,8 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 - an off-scope start (the 1.1.1 range rewrite) deleted and restarted;
 - a start with no goal echo treated as off scope;
 - two off-scope starts failing the issue while the next issue still runs;
-- `#9` not matching `#97`'s mark.
+- `#9` not matching `#97`'s mark;
+- GUI work routed to the Opus main agent: the first message forbids DeepSeek GUI code, and the executor is `opus` with the GUI principles.
 
 The goal path itself is checked live in the bridge repository with `scripts/goal-check.mjs`; it passed against the Desktop on 2026-10-18. The first real run of the workflow is the pilot `{issues: [65]}`.
 
@@ -193,6 +195,7 @@ The goal path itself is checked live in the bridge repository with `scripts/goal
 
 ## Change history
 
+- `2026-10-20` — zt-issue-dev 1.3.0: GUI development moves from DeepSeek to the main agent, pinned to `opus`. The main agent follows `gui-first-principles`, the user's GUI preferences (real index cards, focus+context, physical motion, easy set-building) and the GUI pitfalls (rebuild after each edit, CSS class collisions, scratch-archive testing, overlap check). The DeepSeek agent sends one GUI request per issue. The harness has 23 scenarios.
 - `2026-10-19` — zt-issue-dev 1.2.0 (relay module v3): one issue per conversation.
   - Scope rules in the first message and the goal.
   - A one-issue rule in every manager prompt and for the main agent.
