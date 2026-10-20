@@ -56,7 +56,7 @@ use crate::register;
 use crate::util;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
@@ -81,6 +81,8 @@ const MAX_PROTECTED: usize = 20_000;
 const READ_CHUNK: usize = 200;
 /// The most items one review may name.
 const MAX_ITEMS: usize = 4_000;
+/// The most characters of a target Card body a review shows beside the row that names it.
+const EXCERPT_CHARS: usize = 200;
 /// `@@N`: a reference to the N-th call's own result (the identified-call contract).
 static RESULT_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@@(\d+)").unwrap());
 
@@ -242,6 +244,20 @@ impl Archive {
         self.call("get_card", json!({ "at": address }))
     }
 
+    /// The authored bodies of the Cards a review names, tolerating a missing one: a target the
+    /// archive no longer holds is a fault the review reports, not a plan that cannot be read.
+    fn excerpts(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for chunk in addresses.chunks(READ_CHUNK) {
+            let wanted = chunk.iter().map(|at| json!(at)).collect::<Vec<_>>();
+            let read = self.call("get_cards", json!({ "addresses": wanted, "view": "text" }))?;
+            for card in ps::pipe(&read["cards"]) {
+                out.insert(ps::s(&card["address"]), card.clone());
+            }
+        }
+        Ok(out)
+    }
+
     fn cards(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
         let mut out = BTreeMap::new();
         for chunk in addresses.chunks(READ_CHUNK) {
@@ -259,7 +275,13 @@ impl Archive {
 }
 
 /// One target of a register term, with the evidence a reviewer decides on (§8.3, AC03).
-fn target_evidence(titles: &BTreeMap<String, Value>, address: &str, register_address: &str, part_of_register: &BTreeSet<String>) -> Value {
+fn target_evidence(
+    titles: &BTreeMap<String, Value>,
+    bodies: &BTreeMap<String, Value>,
+    address: &str,
+    register_address: &str,
+    part_of_register: &BTreeSet<String>,
+) -> Value {
     let tree = tree_of(address);
     let topic = is_topic_tree(&tree);
     let row = titles.get(address);
@@ -272,6 +294,9 @@ fn target_evidence(titles: &BTreeMap<String, Value>, address: &str, register_add
     let term_table = title.as_str().is_some_and(|text| text.trim_start().starts_with("术语表"));
     let hub = kind == "hub";
     let model_head = kind == "model" && facet.is_null();
+    // The target's own text is the evidence the reviewer decides on (S27-AC01: target texts).
+    let body = bodies.get(address).map(|card| ps::s(&card["body"])).unwrap_or_default();
+    let excerpt = body.chars().take(EXCERPT_CHARS).collect::<String>();
     let tier = if hub || term_table || literature_root || part_of_register.contains(address) || address == register_address {
         Value::Null
     } else if topic_root {
@@ -296,6 +321,9 @@ fn target_evidence(titles: &BTreeMap<String, Value>, address: &str, register_add
         "exists": row.is_some(),
         "substantive": !tier.is_null(),
         "tier": tier,
+        "body_chars": body.chars().count(),
+        "excerpt": excerpt,
+        "body_truncated": body.chars().count() > EXCERPT_CHARS,
     })
 }
 
@@ -534,6 +562,15 @@ fn register_section(
     items: &mut Vec<String>,
     checks: &mut Vec<Value>,
 ) -> Result<Value> {
+    // Every Card the planned rows name, read once so each target shows its own authored text.
+    let mut wanted = ps::pipe(&plan["terms"])
+        .into_iter()
+        .flat_map(|row| ps::pipe(&row["targets"]).into_iter().map(ps::s).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    wanted.sort_by(|a, b| canon::ordinal_cmp(a, b));
+    wanted.dedup();
+    wanted.truncate(MAX_PROTECTED);
+    let bodies = archive.excerpts(&wanted)?;
     let missing = current["missing"] == json!(true);
     let address = ps::s(&current["address"]);
     let root_card = if missing { Value::Null } else { archive.card(&address)? };
@@ -552,7 +589,7 @@ fn register_section(
         let targets = ps::pipe(&row["targets"]).into_iter().map(ps::s).collect::<Vec<_>>();
         let evidence = targets
             .iter()
-            .map(|target| target_evidence(&archive.titles, target, &address, &part_of_register))
+            .map(|target| target_evidence(&archive.titles, &bodies, target, &address, &part_of_register))
             .collect::<Vec<_>>();
         let substantive = evidence.iter().filter(|row| row["substantive"] == json!(true)).count();
         let literature = evidence
@@ -1599,7 +1636,9 @@ fn merge_state(old: &Value, planned: &Value) -> Value {
     match planned {
         Value::String(text) if RESULT_REF.is_match(text) => old.clone(),
         Value::Object(map) => {
-            let mut out = Map::new();
+            // The planned state names the parts this plan touches; every other tree, field, job and
+            // counter the hub stage recorded stays as it is (an overlay, never a replacement).
+            let mut out = old.as_object().cloned().unwrap_or_default();
             for (key, value) in map {
                 let previous = old.get(key).cloned().unwrap_or(Value::Null);
                 out.insert(key.clone(), merge_state(&previous, value));
@@ -2089,5 +2128,26 @@ mod tests {
         let mut hub_only = selection(&reviewed, &["hub:000"], &[], "accept one hub change");
         hub_only["readings_reviewed"] = json!(false);
         assert!(validate_selection(&value, &hub_only, "s").err().map(|error| error.to_string()).unwrap_or_default().contains("backup"));
+    }
+
+    /// The hub stage's state covers the whole Workspace. Publishing one plan must keep every tree,
+    /// field and counter the plan does not name, or the next stage forgets them (S27-AC05).
+    #[test]
+    fn a_published_plan_keeps_the_hub_state_it_does_not_name() {
+        let old = json!({
+            "trees": {"3": {"topic": "3/1", "hash": "h3"}, "4": {"topic": "4/1", "hash": "h4"}},
+            "fields": {"甲": "3/1|a"},
+            "register": "2/1",
+            "seq": 7,
+            "jobs": {"job-1": {"kind": "topic"}},
+        });
+        let planned = json!({"trees": {"3": {"topic": "3/1", "hash": "new"}}});
+        let merged = merge_state(&old, &planned);
+        assert_eq!(merged["trees"]["3"]["hash"], json!("new"));
+        assert_eq!(merged["trees"]["4"]["hash"], json!("h4"), "a tree the plan does not name stays: {merged}");
+        assert_eq!(merged["fields"]["甲"], json!("3/1|a"));
+        assert_eq!(merged["register"], json!("2/1"));
+        assert_eq!(merged["seq"], json!(7));
+        assert_eq!(merged["jobs"]["job-1"]["kind"], json!("topic"));
     }
 }

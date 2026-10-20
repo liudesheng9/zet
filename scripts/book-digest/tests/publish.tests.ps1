@@ -12,7 +12,7 @@
 param([string]$Zt = '', [string]$Digest = '')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$scratch = Join-Path ([IO.Path]::GetTempPath()) "publish-test-$PID"
+$scratch = Join-Path ([IO.Path]::GetTempPath()) "publish-test-$PID-$([guid]::NewGuid().ToString('n').Substring(0, 8))"
 $env:ZT_CONFIG_DIR = Join-Path $scratch 'config'
 $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
@@ -189,6 +189,9 @@ try {
     Assert (@($study.targets | Where-Object { $_.zone -eq 'topic' -and $_.substantive }).Count -ge 1) 'publish plan: a substantive Topic target is named with its Zone'
     Assert (@($study.targets | Where-Object { $_.zone -eq 'literature' -and $_.substantive }).Count -ge 1) 'publish plan: a substantive Literature target is named with its Zone'
     Assert (@($study.sources | Where-Object { $_.term_table -eq $table }).Count -ge 1) 'publish plan: the term table row is the source evidence'
+    $topicTarget = @($study.targets | Where-Object { $_.address -eq "$topic/1" })[0]
+    Assert ($topicTarget.excerpt -match '学习是产出的来源') "publish plan: the target's own text is shown ($($topicTarget.excerpt))"
+    Assert ($topicTarget.body_chars -gt 0) 'publish plan: the target text carries its size'
     Assert ($review.register.readings.accepted.Count -eq 1 -and $review.register.readings.unresolved.Count -ge 2) 'publish plan: the accepted readings and the unresolved ones are separate'
     Assert (@($review.register.readings.unresolved | Where-Object { $_.term -eq '多重均衡' }).Count -eq 1) 'publish plan: a term without a reading is reported unresolved'
     Assert (@($review.checks | Where-Object { $_.id -eq 'register-destinations' })[0].ok -eq $true) 'publish plan: the destinations reach Topic and Literature treatments'
