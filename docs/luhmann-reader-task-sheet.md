@@ -40,7 +40,10 @@ with the reason. Do not invent a number.
 
 ## What the sheet file looks like
 
-The observations go into one JSON file (the audit refuses any other shape):
+The observations go into one JSON file,
+`D:\zt-target\qualification\issue121\reader-task-sheet.json` (the audit refuses any other shape).
+Copy this skeleton and fill every field; an empty interval, `useful_address` or `kept_spread` is an
+unfinished sheet, not a measured zero:
 
 ```json
 {
@@ -58,6 +61,17 @@ The observations go into one JSON file (the audit refuses any other shape):
   "annotation": []
 }
 ```
+
+Then turn the sheet into the measures (read-only; about six minutes on the whole archive):
+
+```powershell
+zt-digest audit -Out D:\zt-target\qualification\issue121\audit `
+  -TaskSheet D:\zt-target\qualification\issue121\reader-task-sheet.json -SkipModels
+```
+
+`audit.json` reports `baseline.measures.P12_P13`, `P15` and `P14` with the sheet's interval and
+validity. See [`docs/luhmann-reader-release.md`](luhmann-reader-release.md) §7 for the handoff and
+what stays unresolved until then.
 
 `removed_cards` lists addresses of Cards you deleted during the run (none is expected). `human_replies`
 counts the Reply Cards you saved on the run. `annotation` stays empty unless you hand-annotate the
