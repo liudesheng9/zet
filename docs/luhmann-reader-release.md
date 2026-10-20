@@ -187,11 +187,14 @@ Re-checked at this package's commit: the same 16 files still hash equal to `skil
 
 | Scope | What it proves | Where |
 |---|---|---|
-| Source tests | The code contract of each feature and the new switches | the suites in §3 |
-| Frozen simulation/assembly | The two digest variants and the issue workflow still assemble and simulate | `assemble.mjs verify`; framework harness |
+| Code and build | The source at `38c53e6` and the binary it produces (rebuilt here, same SHA-256 as the installed file) | §1, §3 |
+| Source tests | The code contract of each feature and the new switches, including the GUI/MCP search parity the earlier suites already hold | the suites in §3 |
+| Frozen Workflow / simulation | The two digest variants and the issue workflow still assemble and simulate | `assemble.mjs verify`; framework harness |
 | Installed behavior | The actual running 0.21.0 service, its routes, MCP server and page assets | §1, §4, §5; `reverify\live-reverify.json` |
 | Rollback retention | The previous build, Workflow locks and a verified archive backup exist and are re-checkable | §6 |
-| Human usability | **Deferred**: the four-task sheet, Owner Save/Keep and keyboard/attention | §7 |
+| Actual provider pilot | **Not this package**: a real provider pilot is [#117](https://github.com/liudesheng9/zet/issues/117) | §9, item 5 |
+| Historical migration | **Not this package**: the existing register and crossing-hub plan is [#119](https://github.com/liudesheng9/zet/issues/119); nothing here migrates an old Card | §9, item 5 |
+| Human usability / user acceptance | **Deferred**: the four-task sheet, Owner Save/Keep and keyboard/attention | §7 |
 
 Named limits, unchanged or newly recorded:
 
