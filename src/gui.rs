@@ -33,6 +33,7 @@ const APP_CSS: &str = include_str!("gui/app.css");
 const APP_JS: &str = include_str!("gui/app.js");
 const DRAFT_JS: &str = include_str!("gui/draft.js");
 const ASK_JS: &str = include_str!("gui/ask.js");
+const FEATURES_JS: &str = include_str!("gui/features.js");
 const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
@@ -801,6 +802,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     ASK_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, "/features.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    FEATURES_JS.to_string(),
                 );
                 return;
             }
@@ -2394,6 +2404,176 @@ mod tests {
         page_module_js("ask.js", ASK_JS, "ZtAsk", expression)
     }
 
+    /// S28 (#121): the feature-switch rules — what the page takes from `/api/overview.features`,
+    /// which command and key belong to which feature — are the page's own DOM-free code
+    /// (`src/gui/features.js`), run here rather than described.
+    fn features_js(expression: &str) -> Option<Value> {
+        page_module_js("features.js", FEATURES_JS, "ZtFeatures", expression)
+    }
+
+    /// The text of one top-level `function <name>` of `app.js`, up to its closing brace (the
+    /// first line that starts with two spaces and `}`), so a page test can say where in that
+    /// function a guard stands.
+    fn app_function(name: &str) -> &'static str {
+        let start = APP_JS
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("app.js has no function {name}"));
+        let end = APP_JS[start..]
+            .find("\n  }")
+            .unwrap_or_else(|| panic!("function {name} does not close"));
+        &APP_JS[start..start + end]
+    }
+
+    #[test]
+    fn the_page_reads_each_feature_switch_from_the_overview_and_keeps_it_on_by_default() {
+        let Some(value) = features_js(
+            "{
+               on: ZtFeatures.read(null),
+               older: ZtFeatures.read({ fingerprint: 'x' }),
+               one: ZtFeatures.read({ features: { search: false, ask: true, reply: true } }),
+               all: ZtFeatures.read({ features: { search: false, ask: false, reply: false } }),
+               odd: ZtFeatures.read({ features: { search: 'off', ask: null } }),
+               same: ZtFeatures.changed(ZtFeatures.read(null), ZtFeatures.read({ features: { search: true, ask: true, reply: true } })),
+               moved: ZtFeatures.changed(ZtFeatures.read(null), ZtFeatures.read({ features: { reply: false } })),
+             }",
+        ) else {
+            eprintln!("node is not installed; the feature rules were not run");
+            return;
+        };
+        let all_on = serde_json::json!({"search": true, "ask": true, "reply": true});
+        assert_eq!(value["on"], all_on, "before any answer every feature is on");
+        assert_eq!(value["older"], all_on, "a service without `features` leaves them on");
+        assert_eq!(value["one"], serde_json::json!({"search": false, "ask": true, "reply": true}));
+        assert_eq!(value["all"], serde_json::json!({"search": false, "ask": false, "reply": false}));
+        assert_eq!(value["odd"], all_on, "only an exact `false` turns a feature off");
+        assert_eq!(value["same"], false);
+        assert_eq!(value["moved"], true);
+    }
+
+    #[test]
+    fn each_command_and_key_belongs_to_its_own_feature() {
+        let Some(value) = features_js(
+            "{
+               slash: ZtFeatures.forKey('/', false),
+               ctrlK: ZtFeatures.forKey('k', true),
+               ctrlShiftK: ZtFeatures.forKey('K', true),
+               r: ZtFeatures.forKey('r', false),
+               ctrlR: ZtFeatures.forKey('r', true),
+               n: ZtFeatures.forKey('n', false),
+               k: ZtFeatures.forKey('k', false),
+               ask: ZtFeatures.forCommand('ask'),
+               reply: ZtFeatures.forCommand('reply'),
+               go: ZtFeatures.forCommand('go'),
+               offAsk: ZtFeatures.allows({ search: true, ask: false, reply: true }, 'ask'),
+               offOther: ZtFeatures.allows({ search: true, ask: false, reply: true }, 'reply'),
+               none: ZtFeatures.allows({ search: false, ask: false, reply: false }, null),
+               note: ZtFeatures.offNote('ask'),
+             }",
+        ) else {
+            eprintln!("node is not installed; the feature rules were not run");
+            return;
+        };
+        assert_eq!(value["slash"], "search");
+        assert_eq!(value["ctrlK"], "search");
+        assert_eq!(value["ctrlShiftK"], "search");
+        assert_eq!(value["r"], "reply");
+        assert_eq!(value["ctrlR"], Value::Null, "Ctrl+R still reloads the page");
+        assert_eq!(value["n"], Value::Null);
+        assert_eq!(value["k"], Value::Null);
+        assert_eq!(value["ask"], "ask");
+        assert_eq!(value["reply"], "reply");
+        assert_eq!(value["go"], Value::Null);
+        assert_eq!(value["offAsk"], false);
+        assert_eq!(value["offOther"], true, "one switch gates only its own feature");
+        assert_eq!(value["none"], true, "a key of no feature is never gated");
+        let note = value["note"].as_str().expect("note");
+        assert!(note.contains("zt config set gui_ask on"), "{note}");
+    }
+
+    #[test]
+    fn a_switch_turned_back_on_shows_on_the_next_overview_poll() {
+        let Some(value) = features_js(
+            "(() => {
+               const off = ZtFeatures.read({ features: { search: false, ask: false, reply: false } });
+               const back = ZtFeatures.read({ features: { search: true, ask: true, reply: true } });
+               return { moved: ZtFeatures.changed(off, back), back,
+                        search: ZtFeatures.allows(back, ZtFeatures.forKey('/', false)),
+                        reply: ZtFeatures.allows(back, ZtFeatures.forCommand('reply')) };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the feature rules were not run");
+            return;
+        };
+        assert_eq!(value["moved"], true);
+        assert_eq!(value["search"], true);
+        assert_eq!(value["reply"], true);
+        // The page takes the states on boot, on every refresh, and on every 4 s overview poll —
+        // before the fingerprint check, so a switch shows although no Card changed.
+        let watch = app_function("watchForChanges");
+        let applied = watch.find("applyFeatures(overview);").expect("the poll applies the switches");
+        let compared = watch.find("overview.fingerprint !== state.fingerprint").expect("fingerprint check");
+        assert!(applied < compared, "{watch}");
+        assert!(APP_JS.contains("setInterval(watchForChanges, 4000);"));
+        assert!(app_function("refresh").contains("applyFeatures(overview);"));
+        assert!(app_function("boot").contains("applyFeatures(overview);"));
+        let apply = app_function("applyFeatures");
+        assert!(apply.contains("if (!ZtFeatures.changed(state.features, next)) return;"), "{apply}");
+        assert!(apply.contains("paintFeatures();"));
+        assert!(apply.contains("renderReader(); paintDistant();"), "the Reply actions come and go with the switch");
+    }
+
+    #[test]
+    fn the_front_end_removes_a_switched_off_feature_whole_and_asks_nothing() {
+        // The module loads before the page and is served on its own route.
+        let features = INDEX_HTML.find("<script src=\"/features.js\" defer></script>").expect("features.js");
+        let app = INDEX_HTML.find("<script src=\"/app.js\" defer></script>").expect("app.js");
+        assert!(features < app);
+        assert!(GUI_RS.contains("(Method::Get, \"/features.js\") => {"));
+        // Search: the rail's search field is removed with its row, and the tray (the only caller
+        // of `/api/search`) opens nothing, whether `/`, Ctrl+K, the field or the command bar asked.
+        let paint = app_function("paintFeatures");
+        assert!(paint.contains("$('#search-open').closest('.rail-search').hidden = !on('search');"), "{paint}");
+        assert!(paint.contains("$('#ask-open').hidden = !on('ask');"), "{paint}");
+        assert_eq!(APP_JS.matches("api(`search?").count(), 1, "one search call, inside the tray");
+        let open = &APP_JS[APP_JS.find("    function open(text) {").expect("finder.open")..];
+        let guard = open.find("if (!ZtFeatures.allows(state.features, 'search')) return;").expect("search guard");
+        assert!(guard < open.find("if (!built) build();").expect("build"), "the tray is not even built");
+        assert!(APP_JS.contains("if (ZtFeatures.allows(state.features, 'search') && trimmed &&"), "no `search \"…\"` suggestion");
+        assert!(app_function("applyFeatures").contains("if (!next.search && finder.isOpen) finder.close();"));
+        // Keys: one gate before every key of the switch, Ctrl+K included.
+        let keys = app_function("installKeys");
+        let gate = keys
+            .find("if (!ZtFeatures.allows(state.features, ZtFeatures.forKey(event.key, event.ctrlKey || event.metaKey))) return;")
+            .expect("key gate");
+        assert!(gate < keys.find("finder.open();").expect("Ctrl+K"), "{keys}");
+        // Ask: the button is hidden, the command neither offered nor run, and no question is asked.
+        let ask = app_function("askBox");
+        let ask_guard = ask.find("if (!ZtFeatures.allows(state.features, 'ask')) throw new Error(ZtFeatures.offNote('ask'));").expect("ask guard");
+        assert!(ask_guard < ask.find("api('ask'").expect("ask call"));
+        let reasons = app_function("askReasons");
+        assert!(
+            reasons.find("if (!ZtFeatures.allows(state.features, 'ask')) return {};").expect("reasons guard")
+                < reasons.find("api('ask'").expect("reasons call")
+        );
+        assert_eq!(APP_JS.matches("api('ask'").count(), 2, "no other question call");
+        assert!(APP_JS.contains("const offered = (syntax, scope) => available(scope)"));
+        assert!(APP_JS.contains("if (!offered(syntax, scope)) continue;"), "the menu offers only what is on");
+        assert!(app_function("showHelp").contains("COMMANDS.filter(([syntax, , scope]) => offered(syntax, scope))"));
+        let run = app_function("runCommand");
+        assert!(
+            run.find("if (!ZtFeatures.allows(state.features, feature)) throw new Error(ZtFeatures.offNote(feature));").expect("command gate")
+                < run.find("case 'ask': return askBox(rest.join(' '));").expect("ask case")
+        );
+        // Reply: the reader's and the distant slot's Reply are not drawn, and no reply is saved.
+        assert!(APP_JS.contains("card.workspace === 'agent' && ZtFeatures.allows(state.features, 'reply') ? actionButton('Reply', 'r', replyTo, {"));
+        assert!(APP_JS.contains("agent && ZtFeatures.allows(state.features, 'reply') ? h('button', {\n          class: 'distant-reply'")
+            || APP_JS.contains("agent && ZtFeatures.allows(state.features, 'reply') ? h('button', {\r\n          class: 'distant-reply'"));
+        let reply = app_function("replyTo");
+        let reply_guard = reply.find("if (!ZtFeatures.allows(state.features, 'reply')) throw new Error(ZtFeatures.offNote('reply'));").expect("reply guard");
+        assert!(reply_guard < reply.find("api('reply'").expect("reply call"));
+        assert_eq!(APP_JS.matches("api('reply'").count(), 1, "no other reply call");
+    }
+
     /// The shipped page scripts parse: a broken statement in `app.js` or `layout.js` ships as a
     /// page that never boots, and no other test reads the whole file as a program. Node is the
     /// project's own checker (the wiki and the draft tests use it); without Node the check says so.
@@ -2405,6 +2585,7 @@ mod tests {
             ("layout.js", LAYOUT_JS),
             ("draft.js", DRAFT_JS),
             ("ask.js", ASK_JS),
+            ("features.js", FEATURES_JS),
         ] {
             let file = dir.path().join(name);
             fs::write(&file, source).expect("write the script");

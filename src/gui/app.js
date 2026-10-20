@@ -95,6 +95,9 @@
   // ------------------------------------------------------------------ state
   const state = {
     overview: null,
+    // The reader features the service has on (S28, #121): `/api/overview.features`, taken at boot
+    // and on every overview read, so a switch shows on the next 4 s poll without a reload.
+    features: ZtFeatures.read(null),
     nodes: [],            // every Card summary, for link completion and the sky
     byAddress: new Map(), // address -> Card summary
     inboundOf: new Map(), // address -> addresses of the Cards that link it
@@ -313,11 +316,16 @@
   const available = (scope) =>
     scope === 'always' || (scope === 'card' && context() !== 'root') || (scope === 'regular' && context() === 'regular')
     || (scope === 'agent-card' && context() !== 'root' && !!state.card && state.card.workspace === 'agent');
+  // A command of a reader feature the service has off (`ask`, `reply`) is not offered (S28, #121).
+  const offered = (syntax, scope) => available(scope)
+    && ZtFeatures.allows(state.features, ZtFeatures.forCommand(syntax.split(' ')[0]));
 
   async function runCommand(line) {
     const parts = line.trim().split(/\s+/).filter(Boolean);
     const [name, ...rest] = parts;
     if (!name) return;
+    const feature = ZtFeatures.forCommand(name);
+    if (!ZtFeatures.allows(state.features, feature)) throw new Error(ZtFeatures.offNote(feature));
     const needCard = () => {
       if (!state.card) throw new Error(`${name} needs a Card; use go <target> first`);
     };
@@ -453,6 +461,7 @@
     spreads.take(kept);
     state.overview = overview;
     state.fingerprint = overview.fingerprint;
+    applyFeatures(overview);
     setNodes(graph.nodes);
     state.tree = null;
     sky.invalidate();
@@ -669,6 +678,8 @@
     }
 
     function open(text) {
+      // Search turned off (`gui_search off`, S28 #121): the tray opens nothing and asks nothing.
+      if (!ZtFeatures.allows(state.features, 'search')) return;
       if (!built) build();
       clearTimeout(closing);
       previews.clear();
@@ -1780,6 +1791,7 @@
 
   /** Ask one question and show its proposal on the temporary Table. A failed question writes nothing. */
   async function askBox(asked) {
+    if (!ZtFeatures.allows(state.features, 'ask')) throw new Error(ZtFeatures.offNote('ask'));
     let question = asked == null ? '' : String(asked).trim();
     if (!question) {
       question = await askQuestionDialog('');
@@ -2014,6 +2026,8 @@
    */
   async function askReasons(question, addresses) {
     const wanted = new Set(addresses);
+    // Ask turned off: the draft keeps its lines without reasons and the precheck reports them.
+    if (!ZtFeatures.allows(state.features, 'ask')) return {};
     try {
       const proposal = await api('ask', { question });
       const reasons = {};
@@ -3064,7 +3078,7 @@
           title: 'Lay it beside this Card; it writes no Link',
           onclick: () => { toggleTable(candidate.address); },
         }),
-        agent ? h('button', {
+        agent && ZtFeatures.allows(state.features, 'reply') ? h('button', {
           class: 'distant-reply', text: 'Reply',
           title: 'Answer this agent Card with a human Card; the draft opens empty',
           onclick: () => replyTo(candidate).catch(fail),
@@ -3296,7 +3310,7 @@
           cls: 'study-btn',
         }) : null,
         actionButton('Edit', 'e', editCard, { primary: true }),
-        card.workspace === 'agent' ? actionButton('Reply', 'r', replyTo, {
+        card.workspace === 'agent' && ZtFeatures.allows(state.features, 'reply') ? actionButton('Reply', 'r', replyTo, {
           title: 'Answer this agent Card with a human Card: 印证, 反驳, 放宽, or 对应, then the Link back',
           cls: 'reply-btn',
         }) : null,
@@ -4653,11 +4667,16 @@
   }
 
   function showHelp() {
-    const rows = COMMANDS.filter(([, , scope]) => available(scope));
+    const rows = COMMANDS.filter(([syntax, , scope]) => offered(syntax, scope));
+    const on = (feature) => ZtFeatures.allows(state.features, feature);
+    const keys = [': command', on('search') ? '/ or Ctrl+K search' : null, 'Alt+← Alt+→ back forward', 'g go',
+      on('reply') ? 'n b e r m i' : 'n b e m i', 'Del delete', 'u up', '↑↓→ walk', 'v view', 'x unfold', 'p table',
+      'P table with relations', 's study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up)',
+      'w workspace', 'f fit', on('ask') ? 'ask the box, then y keeps the proposed Table and Esc cancels it' : null, 'Esc close'];
     listDialog('Commands', [
       h('p', { text: 'The command bar speaks the Session’s language:' }),
       h('pre', { text: rows.map(([syntax, desc]) => `${syntax.padEnd(30)} ${desc}`).join('\n') }),
-      h('p', { text: 'Keys: : command · / or Ctrl+K search · Alt+← Alt+→ back forward · g go · n b e m i · Del delete · u up · ↑↓→ walk · v view · x unfold · p table · P table with relations · s study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up) · w workspace · f fit · ask the box, then y keeps the proposed Table and Esc cancels it · Esc close' }),
+      h('p', { text: 'Keys: ' + keys.filter(Boolean).join(' · ') }),
     ]);
   }
 
@@ -5231,6 +5250,7 @@
    * The human Card is written in the writing desk and filed in a human Topic.
    */
   async function replyTo(card = state.card) {
+    if (!ZtFeatures.allows(state.features, 'reply')) throw new Error(ZtFeatures.offNote('reply'));
     if (!card) throw new Error('r needs a Card; use go <target> first');
     if (card.workspace !== 'agent') {
       throw new Error('Reply answers an agent Card; open one of the agent workspace first (w switches workspace)');
@@ -5491,14 +5511,14 @@
       } else if (!mvMatch) {
         const word = trimmed.split(/\s/)[0] || '';
         for (const [syntax, desc, scope] of COMMANDS) {
-          if (!available(scope)) continue;
+          if (!offered(syntax, scope)) continue;
           const name = syntax.split(' ')[0];
           if (!word || name.startsWith(word)) {
             const takesArg = syntax.includes('<');
             list.push({ syntax, desc, group: 'Commands', fill: takesArg && !trimmed.includes(' ') ? name + ' ' : null, run: takesArg ? null : name });
           }
         }
-        if (trimmed && !list.some((item) => item.syntax.split(' ')[0] === word) && trimmed.length > 1) {
+        if (ZtFeatures.allows(state.features, 'search') && trimmed && !list.some((item) => item.syntax.split(' ')[0] === word) && trimmed.length > 1) {
           list.push({ syntax: `search “${trimmed}”`, desc: 'find cards by text', group: 'Search', search: trimmed });
         }
       }
@@ -5576,6 +5596,8 @@
       if (state.editing || finder.isOpen) return;
       // The study desk takes the keys while it lies open.
       if (study.isOpen()) { study.key(event); return; }
+      // A key of a reader feature the service has off (`/`, Ctrl+K, `r`) does nothing (S28, #121).
+      if (!ZtFeatures.allows(state.features, ZtFeatures.forKey(event.key, event.ctrlKey || event.metaKey))) return;
       // Ctrl+K searches from anywhere, as in most desktop apps.
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -5682,11 +5704,38 @@
     document.body.append(service.notice);
   }
 
+  // ------------------------------------------------------------- features
+  // S28 (#121): `zt config set gui_search|gui_ask|gui_reply off` turns one reader feature off. The
+  // page takes the states from every overview read and removes that feature's controls whole, so
+  // nothing stands empty where they were; Cards, the Map and the Table stay as they are.
+  const COMMAND_PLACEHOLDER = $('#command-input').getAttribute('placeholder') || '';
+
+  /** Show only the controls of the features that are on. */
+  function paintFeatures() {
+    const on = (feature) => ZtFeatures.allows(state.features, feature);
+    $('#search-open').closest('.rail-search').hidden = !on('search');
+    $('#ask-open').hidden = !on('ask');
+    $('#command-input').setAttribute('placeholder', on('search') ? COMMAND_PLACEHOLDER : COMMAND_PLACEHOLDER.replace(/\s*— or search$/, ''));
+  }
+
+  /** Take the feature states of one overview answer; repaint only when a switch moved. */
+  function applyFeatures(overview) {
+    const next = ZtFeatures.read(overview);
+    if (!ZtFeatures.changed(state.features, next)) return;
+    const replyMoved = state.features.reply !== next.reply;
+    state.features = next;
+    paintFeatures();
+    if (!next.search && finder.isOpen) finder.close();
+    if (replyMoved && state.card) { renderReader(); paintDistant(); }
+  }
+
   // ------------------------------------------------------------------ boot
   async function watchForChanges() {
     if (document.hidden || state.editing) return;
     try {
       const overview = await api('overview');
+      // A switch turned off or back on shows on this poll, even when no Card changed.
+      applyFeatures(overview);
       if (overview.fingerprint !== state.fingerprint) await refresh();
     } catch { /* the server may be restarting */ }
   }
@@ -5727,6 +5776,7 @@
       const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
       state.overview = overview;
       state.fingerprint = overview.fingerprint;
+      applyFeatures(overview);
       setNodes(graph.nodes);
       spreads.take(kept);
       route();

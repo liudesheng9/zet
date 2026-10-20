@@ -284,11 +284,24 @@ Exported as `window.ZtAsk` or `module.exports`; the page loads it before `app.js
 | `askChanged(preview, fresh)` | `{changed:[{at, then, now}], missing:[{at, then}], unchanged:[at]}` — a Card whose authored fingerprint moved (a new occupant of an old address included) is `changed`, a vanished one `missing`, and a proposal with no fingerprint is never trusted silently |
 | `askWithout(preview, addresses)` | the same temporary Table without the named Cards (Keep saves only what still stands) |
 
+### `ZtFeatures` (`src/gui/features.js`)
+
+Exported as `window.ZtFeatures` or `module.exports`; served at `/features.js` and loaded before `app.js` (after `ask.js`). All functions are pure, so the feature-switch rules run under Node without a browser (S28, #121).
+
+| Function | Inputs → output |
+|---|---|
+| `read(overview)` | `{search, ask, reply}` from `overview.features`; a feature is off only for an exact `false`, so a missing `features` (an older service), a missing key or an odd value leaves it on |
+| `changed(before, after)` | whether any of the three states differs (the page repaints only then) |
+| `forCommand(word)` | `'ask'` for `ask`, `'reply'` for `reply`, else `null` |
+| `forKey(key, modified)` | `'search'` for `/` and Ctrl/Cmd+K, `'reply'` for a bare `r`, else `null` (Ctrl+R still reloads) |
+| `allows(state, feature)` | `false` only when that feature is off; `null` is always allowed |
+| `offNote(feature)` | the toast for a typed command of an off feature, naming `zt config set gui_<feature> on` |
+
 ### Keys and command bar
 
 The command bar (`installCommandBar`, `runCommand`) speaks the Session vocabulary listed in `COMMANDS` in `app.js`: `go [<target>]`, `root`, `ws [<workspace>]`, `up`, `back`, `fwd`, `ls`, `t <title>`, `l`, `n`, `b`, `e`, `reply`, `ask [<question>]`, `del`, `ins`, `mv [alone] <new-location>`, `mv [alone] before <location>`, `ty <idea|event|finding|model|hub> [<facet>]`, `lv <level|none>`, `mf <form|none>`, `stats`, `status`, `lsbk`, `help`, `q`, each with an availability (`always`, `card`, `regular`, `agent-card`). Text that is no command offers `search "…"`.
 
-Keys outside text fields (`installKeys`): `:` command bar, `/` or `Ctrl+K` search, `Alt+←`/`Alt+→` or `Backspace` history, `g` go, `n` `b` `e` `r` `t` `l` `m` `i` `Delete`, `u`/`↑`/`←` parent, `↓` Direct successor, `→` first Side successor, `v` next view, `p` lay on / take off the Table, `P` lay down with every related Card, `y` keep a question's proposed Table, `w` switch Workspace, `f` fit, `x` unfold the whole tree, `s` study, `?` help, `Esc`. `r` replies to the open agent Card and does nothing for a human Card or a tree-root-only view; `y` does nothing unless a question's proposal lies on the Table, and `Esc` cancels that proposal before it closes anything else. No key fires inside an input, the writing desk, or a modal (`isTyping`, `state.editing`, `finder.isOpen`). While the study desk is open it takes the keys (`study.key`: `←`/`→`/`j`/`k`/PageUp/PageDown, Space/Enter turn over, `1`/`2`/`3` reading mode, Esc).
+Keys outside text fields (`installKeys`): `:` command bar, `/` or `Ctrl+K` search, `Alt+←`/`Alt+→` or `Backspace` history, `g` go, `n` `b` `e` `r` `t` `l` `m` `i` `Delete`, `u`/`↑`/`←` parent, `↓` Direct successor, `→` first Side successor, `v` next view, `p` lay on / take off the Table, `P` lay down with every related Card, `y` keep a question's proposed Table, `w` switch Workspace, `f` fit, `x` unfold the whole tree, `s` study, `?` help, `Esc`. `r` replies to the open agent Card and does nothing for a human Card or a tree-root-only view; `y` does nothing unless a question's proposal lies on the Table, and `Esc` cancels that proposal before it closes anything else. No key fires inside an input, the writing desk, or a modal (`isTyping`, `state.editing`, `finder.isOpen`). A key or command of a reader feature the service has off (`/`, Ctrl+K, `r`, `ask`, `reply`) is gated by `ZtFeatures` (S28, #121): the key does nothing, the command is not offered, and typed in full it toasts how to turn the feature back on. While the study desk is open it takes the keys (`study.key`: `←`/`→`/`j`/`k`/PageUp/PageDown, Space/Enter turn over, `1`/`2`/`3` reading mode, Esc).
 
 ## Behaviour
 
@@ -340,7 +353,7 @@ Keys outside text fields (`installKeys`): `:` command bar, `/` or `Ctrl+K` searc
 
 1. `boot()` installs the theme, steady hand (no text selection during drags), pan/zoom, command bar, keys, buttons, and history; sets the view mode from `localStorage`; then fetches `overview`, `graph`, and `spreads` in parallel, indexes the nodes (`setNodes`: `byAddress`, `inboundOf`, `childrenOf`), and calls `route()`.
 2. `route()` reads `#/card/<address>` into `state.pointer`, records the step in `nav`, closes the search tray when the Pointer moved, and calls `loadPointer()`, which fetches `/api/card`, switches the Workspace to the Card's, fetches `/api/tree` when the tree changed (building `state.outline`), and calls `renderAll()`. A Card that no longer exists toasts and falls back to its nearest known ancestor, or keeps stepping in the history direction (`nav.skipMissing`).
-3. `watchForChanges()` (every 4 s and on focus, skipped while hidden or editing) compares the overview fingerprint and calls `refresh()` on a change. `refresh()` flushes Spreads, refetches overview, graph, and Spreads, resets the tree, invalidates the Constellation, and reloads the Pointer.
+3. `watchForChanges()` (every 4 s and on focus, skipped while hidden or editing) first applies the overview's reader feature switches (`applyFeatures`, see Feature switches), then compares the overview fingerprint and calls `refresh()` on a change. `refresh()` flushes Spreads, refetches overview, graph, and Spreads, resets the tree, invalidates the Constellation, and reloads the Pointer.
 4. `heartbeat()` (every 2 s) pings `/api/ping`. A network failure calls `serviceDown()`: the window closes, or, while a dialog holds text, a notice says the text is kept. A 403 (new token) or a service that is back reloads the page when nothing is being edited; while editing, it fetches `/`, takes the new token from the meta tag, and lets the reader save.
 
 ### A change through Card operations
@@ -460,7 +473,21 @@ config file on every request (`Features::load`); `App::handle` asks `Features::g
 an API call, so `/api/search` or `/api/ask` or `/api/reply` answers `409 {"error":…,"disabled":"gui_<feature>"}`
 while every other `/api/` route (Card, tree, graph, Table, Spreads, register, distant, writes)
 answers as before. `/api/overview` carries `features:{search,ask,reply}`, read outside the memoized
-Snapshot, so the page can apply a switch on its next boot or refresh. The switch is the GUI's only:
+Snapshot. The page (`applyFeatures`, `paintFeatures`, `src/gui/features.js`) takes the states at boot, on
+every `refresh()`, and on every 4 s `watchForChanges` poll before the fingerprint check, so a switch
+turned off or back on shows within about 4 s without a reload or a Card change. An off feature's
+controls are removed whole, so nothing stands empty where they were: search off hides the rail's
+search row (`.rail-search`), makes `/` and Ctrl+K do nothing, drops the command bar's
+`search "…"` suggestion and its placeholder's "or search", closes an open tray, and `finder.open`
+returns before it builds the tray, so no `/api/search` is sent; Ask off hides the Table's
+`Ask the box`, drops `ask` from the command menu and `help`, and `askBox` throws before
+`/api/ask` (`askReasons` answers `{}` without asking, so `File as card` on a kept question opens
+its hub draft without reasons and the precheck names them); Reply off drops the reader's and the
+distant slot's `Reply`, makes `r` do nothing, drops `reply` from the menu, and `replyTo` throws
+before the desk opens. A command of an off feature typed in full toasts `offNote` (the command that
+turns it back on). A question already on the Table keeps its Keep and Cancel. Before the first
+overview answer the page treats every feature as on; the route's 409 stays the guard.
+The service switch is the GUI's only:
 the MCP server keeps its tools, and the CLI and Session are not gated. A switch never writes a Card,
 a Spread, or the archive revision.
 
@@ -733,6 +760,8 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 - **An over-long Spread name is cut, not refused.** `normalize` truncates `name` to 80 characters by characters and refuses only a `question` over 512; this is what lets a long question name its own Spread. An older binary that lacks the field silently drops every `question` on its next Spread save (rollback risk; see Spreads §5).
 
 ## Change history
+
+- `2026-10-20` — #121 S28 page half: the page honours the three reader feature switches. The new DOM-free `src/gui/features.js` (`ZtFeatures`, served at `/features.js`) reads `/api/overview.features`; `applyFeatures` takes them at boot, on every refresh and on every 4 s overview poll (before the fingerprint check), so a switch turned off or back on shows without a reload. Search off removes the rail's search row, `/`, Ctrl+K and the command bar's search suggestion, and the tray asks no `/api/search`; Ask off removes `Ask the box` and the `ask` command and sends no `/api/ask` (a kept question's hub draft then opens without reasons); Reply off removes the reader's and the distant slot's `Reply`, `r` and the `reply` command and sends no `/api/reply`. Each control goes whole, so no empty slot is left, and Cards, the Map and the Table are unchanged. New page tests: `the_page_reads_each_feature_switch_from_the_overview_and_keeps_it_on_by_default`, `each_command_and_key_belongs_to_its_own_feature`, `a_switch_turned_back_on_shows_on_the_next_overview_poll`, `the_front_end_removes_a_switched_off_feature_whole_and_asks_nothing`.
 
 - `2026-10-20` — #121 S28: the three reader features can be turned off independently. `src/features.rs` reads `gui_search`, `gui_ask`, `gui_reply` from the config file on every request (only the exact word `off` disables one; a missing or malformed line leaves it on), `zt config set <key> on|off` writes one line without stopping the service and `zt config show` prints all three, `/api/overview` gains `features:{search,ask,reply}` outside the memoized Snapshot, and `App::handle` answers `409 {"error":…,"disabled":"gui_search|gui_ask|gui_reply"}` on that feature's own route. Cards, trees, the graph, the register, the distant slot, the Table and saved Spreads are not gated; the MCP server keeps its tools. New coverage: `src/features.rs` unit tests and `tests/reader_release.rs` (3 tests).
 
