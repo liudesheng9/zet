@@ -5757,7 +5757,7 @@ mod tests {
     /// path, prefers a new source, tree or Relation kind among comparably relevant Cards, and
     /// breaks the last tie by address order.
     #[test]
-    fn a_question_selects_distinct_statements_then_cross_source_Cards_then_address_order() {
+    fn a_question_selects_distinct_statements_then_cross_source_cards_then_address_order() {
         let (temp, _register) = archive(
             &[],
             &[

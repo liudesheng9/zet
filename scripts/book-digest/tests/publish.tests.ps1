@@ -404,6 +404,26 @@ try {
     Assert ($reviewedPart.fingerprint_before -match '^[0-9a-f]{64}$') "parts: the review shows the part's authored fingerprint ($($reviewedPart.fingerprint_before))"
     Assert ($reviewedPart.body_before -match '甲') 'parts: the review shows the part body it would replace'
     Assert ($reviewedPart.address -eq $partAddress) 'parts: the review names the declared part address'
+
+    # --- a changing archive view: retried once, then a changing-view fault (§12.3, D300) --------
+    # The plan review reads the register, the staged hub plan and the archive identity as one view.
+    # A parallel writer that keeps committing between those reads leaves the review no single view,
+    # so the review is refused instead of binding a revision it never held; no Card is written.
+    $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
+    $env:ZT_DRIFT_REVISION = 'all'
+    $env:ZT_DRIFT_AFTER = '1'
+    try {
+        $revisionBeforeDrift = Revision
+        $reviewPath = Join-Path $work 'publish-review.json'
+        $reviewBefore = (Get-FileHash -LiteralPath $reviewPath -Algorithm SHA256).Hash
+        $drift = Publish @('-Step', 'plan', '-Work', $work)
+        Assert ($drift.code -ne 0) "changing view: a plan review over a view that keeps changing fails ($($drift.last))"
+        Assert ($drift.text -match 'changed while it was read') "changing view: the refusal names the changed revision it saw ($($drift.last))"
+        Assert ((Get-FileHash -LiteralPath $reviewPath -Algorithm SHA256).Hash -eq $reviewBefore) 'changing view: the refused review replaces no reviewed plan'
+        Assert ((Revision) -eq $revisionBeforeDrift) 'changing view: the refused review writes no Card'
+    } finally {
+        Remove-Item Env:ZT_CHECK_ZT, Env:ZT_DRIFT_REVISION, Env:ZT_DRIFT_AFTER -ErrorAction SilentlyContinue
+    }
     Write-Output "failed: $failed"
 } finally {
     zt down 2>&1 | Out-Null
