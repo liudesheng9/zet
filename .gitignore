@@ -8,3 +8,6 @@ tools/*/target/
 
 # scratch message files used while committing
 /.msg.txt
+
+# local backup of the slip-box database: never tracked
+/backups/
