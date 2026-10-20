@@ -632,6 +632,8 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
     const disk = fs.existsSync(installed) ? fs.readFileSync(installed, 'utf8') : ''
     console.log(`${disk === builds[which].script ? 'note' : 'note'}: .claude/workflows/${builds[which].name}.js is ${disk === builds[which].script ? 'the current build' : 'not the current build (reinstall both variants)'}`)
   }
+  // PowerShell's New-Item has no -LiteralPath: a resource registration that used it never recorded a run id.
+  for (const which of ['econ', 'math']) check(!/New-Item\b[^;`\n]*-LiteralPath/.test(sources[which]), `${which}: no command passes -LiteralPath to New-Item`)
   const tampered = sources.econ.replace('"perManager"', '"perManagerX"')
   const rt = runtime('book')
   let err = null

@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v13 ====
+// ==== module zt-digest-lib v14 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -574,7 +574,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
       answer: typeof r.answer === 'string' && r.answer.trim() ? r.answer : `no answer: ${r.status || 'failed'}`,
     }))
     const record = { schema_version: 1, unit, token, workspace: { id: dsh, path: dsh }, conversations }
-    const command = `New-Item -ItemType Directory -Force -LiteralPath "${RESOURCES}" | Out-Null; Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(record))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Unit "${unit}" -Token ${token} -Register "${file}"`
+    const command = `[void][System.IO.Directory]::CreateDirectory("${RESOURCES}"); Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(record))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Unit "${unit}" -Token ${token} -Register "${file}"`
     const out = await runScript(label, LEDGER_PHASE, command)
     const parsed = out.json
     if (!parsed || !parsed.cleanup_unit) {
@@ -616,7 +616,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const file = resourceFile('observe')
     const body = { schema_version: 1, ...record }
     const fence = unit && token ? ` -Unit "${unit}" -Token ${token}` : ''
-    const command = `New-Item -ItemType Directory -Force -LiteralPath "${RESOURCES}" | Out-Null; Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(body))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Observe "${file}"${fence}`
+    const command = `[void][System.IO.Directory]::CreateDirectory("${RESOURCES}"); Set-Content -LiteralPath "${file}" -Value ${psQuote(JSON.stringify(body))} -Encoding utf8; ${ZD_DIGEST} ledger resource -Out "${OUT}" -Observe "${file}"${fence}`
     const out = await runScript(label, LEDGER_PHASE, command)
     return { ok: !!(out.run && out.run.ok) && !!out.json, json: out.json, error: String((out.run && out.run.output) || '') }
   }
@@ -752,7 +752,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '13', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '14', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
 })
 // ==== end module zt-digest-lib ====
