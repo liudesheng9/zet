@@ -8,7 +8,7 @@ paths:
   - "src/spread.rs"
   - "src/reply.rs"
   - "tests/integrated_release.rs"
-synced: 4a18410a62b3
+synced: bc12871a9ac7
 updated: 2026-10-20
 ---
 
