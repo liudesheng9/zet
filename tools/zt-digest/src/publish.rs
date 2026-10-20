@@ -121,7 +121,8 @@ fn full_path(path: &str) -> Result<String> {
     Ok(full.to_string_lossy().to_string())
 }
 
-fn file_sha256(path: &str) -> Result<String> {
+/// The SHA-256 of one file's bytes, as a recorded backup names it.
+pub(crate) fn file_sha256(path: &str) -> Result<String> {
     let bytes = std::fs::read(path).with_context(|| format!("read {path}"))?;
     Ok(canon::sha256_hex(&bytes))
 }
@@ -134,7 +135,7 @@ fn is_topic_tree(tree: &str) -> bool {
     !tree.is_empty() && tree.chars().all(|ch| ch.is_ascii_digit())
 }
 
-fn blank(text: &str) -> bool {
+pub(crate) fn blank(text: &str) -> bool {
     text.trim().is_empty()
 }
 
@@ -184,16 +185,19 @@ fn links_in(body: &str) -> Vec<String> {
 
 // --- the archive reads ----------------------------------------------------------------------------
 
-struct Archive {
+/// The archive reads a review-first gate needs: identity, both Workspaces' title rows and one
+/// coherent revision. `publish` (S27) and the historical batch gate (S29, [`crate::resolve`]) read
+/// through it, so both compare the same facts about the same archive.
+pub(crate) struct Archive {
     zt: register::Register,
-    identity: Value,
-    revision: u64,
+    pub(crate) identity: Value,
+    pub(crate) revision: u64,
     /// address → title row (`export_titles`) of both Workspaces.
-    titles: BTreeMap<String, Value>,
+    pub(crate) titles: BTreeMap<String, Value>,
 }
 
 impl Archive {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         Ok(Self {
             zt: register::publisher(),
             identity: Value::Null,
@@ -202,17 +206,17 @@ impl Archive {
         })
     }
 
-    fn call(&mut self, tool: &str, arguments: Value) -> Result<Value> {
+    pub(crate) fn call(&mut self, tool: &str, arguments: Value) -> Result<Value> {
         self.zt.call_tool(tool, arguments)
     }
 
-    fn view(&mut self) -> Result<Value> {
+    pub(crate) fn view(&mut self) -> Result<Value> {
         self.zt.client()?.archive_view()
     }
 
     /// One coherent read set: identity, both title lists. A revision that moves under the read is
     /// retried once, then reported as a changing view.
-    fn read(&mut self) -> Result<()> {
+    pub(crate) fn read(&mut self) -> Result<()> {
         let mut last = String::new();
         for _ in 0..2 {
             let view = self.view()?;
@@ -240,13 +244,13 @@ impl Archive {
         bail!("{last}; run -Step plan again")
     }
 
-    fn card(&mut self, address: &str) -> Result<Value> {
+    pub(crate) fn card(&mut self, address: &str) -> Result<Value> {
         self.call("get_card", json!({ "at": address }))
     }
 
     /// The authored bodies of the Cards a review names, tolerating a missing one: a target the
     /// archive no longer holds is a fault the review reports, not a plan that cannot be read.
-    fn excerpts(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
+    pub(crate) fn excerpts(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
         let mut out = BTreeMap::new();
         for chunk in addresses.chunks(READ_CHUNK) {
             let wanted = chunk.iter().map(|at| json!(at)).collect::<Vec<_>>();
@@ -258,7 +262,7 @@ impl Archive {
         Ok(out)
     }
 
-    fn cards(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
+    pub(crate) fn cards(&mut self, addresses: &[String]) -> Result<BTreeMap<String, Value>> {
         let mut out = BTreeMap::new();
         for chunk in addresses.chunks(READ_CHUNK) {
             let wanted = chunk.iter().map(|at| json!(at)).collect::<Vec<_>>();
@@ -329,7 +333,7 @@ fn target_evidence(
 
 /// Every human Card and every agent Model Card with its authored fingerprint: the scope no
 /// review may change (AC05, §11.3).
-fn protected_scope(archive: &mut Archive) -> Result<Value> {
+pub(crate) fn protected_scope(archive: &mut Archive) -> Result<Value> {
     let mut addresses: Vec<String> = Vec::new();
     for (address, row) in &archive.titles {
         let workspace = ps::s(&row["workspace"]);
@@ -367,7 +371,7 @@ fn protected_scope(archive: &mut Archive) -> Result<Value> {
 }
 
 /// The protected Cards that no longer carry the reviewed fingerprint.
-fn protected_diff(review: &Value, after: &Value) -> Vec<Value> {
+pub(crate) fn protected_diff(review: &Value, after: &Value) -> Vec<Value> {
     let before: BTreeMap<String, String> = ps::pipe(&review["protected"]["addresses"])
         .into_iter()
         .map(|row| (ps::s(&row["address"]), ps::s(&row["fingerprint"])))
@@ -1225,12 +1229,17 @@ fn item_ids(review: &Value) -> Vec<String> {
 /// The selected backup must be this archive's own and hold Cards: a backup of another archive or
 /// of nothing protects nothing (AC06).
 fn verify_backup(path: &str, review: &Value) -> Result<()> {
+    verify_backup_of(path, &ps::s(&review["archive"]["identity"]["id"]))
+}
+
+/// The same check against a named archive identity, for a gate whose review records the archive
+/// id directly.
+pub(crate) fn verify_backup_of(path: &str, expected: &str) -> Result<()> {
     let conn = rusqlite::Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("the selected backup `{path}` is not a readable SQLite database"))?;
-    let expected = ps::s(&review["archive"]["identity"]["id"]);
     let ident: Option<String> = conn
         .query_row("SELECT value FROM metadata WHERE key='archive_id'", [], |row| row.get(0))
         .ok()

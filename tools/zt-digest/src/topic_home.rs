@@ -1066,13 +1066,13 @@ fn render_result(result: &Value) -> String {
 
 // --- the reviewed selection ----------------------------------------------------------------------
 
-#[derive(Clone)]
-struct Decision {
-    finding: String,
-    entry: String,
-    remedy: String,
-    note: String,
-    draft: Option<(String, String)>,
+#[derive(Clone, Debug)]
+pub(crate) struct Decision {
+    pub(crate) finding: String,
+    pub(crate) entry: String,
+    pub(crate) remedy: String,
+    pub(crate) note: String,
+    pub(crate) draft: Option<(String, String)>,
 }
 
 fn item_of<'a>(review: &'a Value, finding: &str, entry: &str) -> Option<&'a Value> {
@@ -1084,7 +1084,7 @@ fn item_of<'a>(review: &'a Value, finding: &str, entry: &str) -> Option<&'a Valu
 
 /// §11.3: a reviewed selection binds the report id, the exact item, the remedy, the exact proposed
 /// text or operation and a note. Anything the review does not support is refused.
-fn validate_selection(review: &Value, asked: &Value) -> Result<Vec<Decision>> {
+pub(crate) fn validate_selection(review: &Value, asked: &Value) -> Result<Vec<Decision>> {
     let map = asked.as_object().ok_or_else(|| refuse("the selection must be an object"))?;
     for name in map.keys() {
         if !["schema_version", "report_id", "decisions"].contains(&name.as_str()) {
@@ -1211,7 +1211,8 @@ fn check_distinct_draft(title: &str, body: &str, target: &str, book: &str) -> Re
 
 // --- the apply step ------------------------------------------------------------------------------
 
-fn read_review(work: &str) -> Result<Value> {
+/// The reviewed report of this work folder, verified against its own content id.
+pub(crate) fn read_review(work: &str) -> Result<Value> {
     let path = ps::join(work, "topic-home-review.json");
     if !ps::exists(&path) {
         return Err(refuse(format!("topic-home apply needs the reviewed report `{path}`, written by -Step plan")));
@@ -1230,6 +1231,40 @@ fn read_review(work: &str) -> Result<Value> {
     Ok(value)
 }
 
+/// The qualified transfer engine: one `zt mcp` client, one archive identity check and one
+/// Broken-link baseline for a set of selected items. `-Step apply` and the S29 historical batch
+/// gate ([`crate::resolve`]) both drive their items through this seam, so a selected historical
+/// transfer is the same two identified writes as a fresh one.
+fn engine(work: &str, review: Value, decisions: Vec<Decision>, prefix: &str, max_carriers: usize) -> Result<Run> {
+    let mut zt = crate::zt::start()?;
+    let (archive_id, _, revision) = archive_identity(&mut zt)?;
+    if archive_id != f(&review["archive"], "id") {
+        return Err(refuse(format!(
+            "the review belongs to archive `{}`, but this service serves `{archive_id}`; regenerate the review on this archive",
+            f(&review["archive"], "id")
+        )));
+    }
+    let broken_before = broken_links(&mut zt)?;
+    Ok(Run {
+        zt,
+        review,
+        decisions,
+        work: work.to_string(),
+        prefix: prefix.to_string(),
+        revision,
+        archive_id,
+        broken_before,
+        max_carriers,
+        created: BTreeMap::new(),
+    })
+}
+
+/// One selection's items, executed as the qualified transfer path executes them: a caller that
+/// holds the reviewed report and validated decisions gets the same payload `-Step apply` records.
+pub(crate) fn run_selected(work: &str, review: Value, decisions: Vec<Decision>, prefix: &str, max_carriers: usize) -> Result<Value> {
+    engine(work, review, decisions, prefix, max_carriers)?.execute()
+}
+
 fn apply(p: &Params) -> Result<i32> {
     if p.prefix.trim().is_empty() {
         return Err(refuse(
@@ -1243,14 +1278,7 @@ fn apply(p: &Params) -> Result<i32> {
     }
     let asked = canon::read_json(&selection_path)?;
     let decisions = validate_selection(&review, &asked)?;
-    let mut zt = crate::zt::start()?;
-    let (archive_id, _, revision) = archive_identity(&mut zt)?;
-    if archive_id != f(&review["archive"], "id") {
-        return Err(refuse(format!(
-            "the review belongs to archive `{}`, but this service serves `{archive_id}`; regenerate the review on this archive",
-            f(&review["archive"], "id")
-        )));
-    }
+    let mut run = engine(&p.work, review, decisions, &p.prefix, p.max_carriers)?;
     let result_path = ps::join(&p.work, "topic-home-result.json");
     let hash = canon::hash_value(&asked);
     if let Ok(previous) = util::read_json(&result_path)
@@ -1269,19 +1297,6 @@ fn apply(p: &Params) -> Result<i32> {
         })))?;
         return Ok(0);
     }
-    let broken_before = broken_links(&mut zt)?;
-    let mut run = Run {
-        zt,
-        review,
-        decisions,
-        work: p.work.clone(),
-        prefix: p.prefix.clone(),
-        revision,
-        archive_id,
-        broken_before,
-        max_carriers: p.max_carriers,
-        created: BTreeMap::new(),
-    };
     let mut payload = run.execute()?;
     payload["selection_id"] = json!(hash);
     payload["selection"] = json!(selection_path);
@@ -1305,7 +1320,7 @@ fn apply(p: &Params) -> Result<i32> {
     Ok(0)
 }
 
-fn broken_links(zt: &mut Zt) -> Result<usize> {
+pub(crate) fn broken_links(zt: &mut Zt) -> Result<usize> {
     let value = zt.call("list_broken_links", json!({ "workspace": "agent" }))?;
     Ok(ps::ps_items(&value["links"]).len())
 }

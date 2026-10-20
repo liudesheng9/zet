@@ -1297,15 +1297,16 @@ fn list(value: &Value) -> String {
 
 /// One accepted decision: the finding it names and, for a move, the reviewed plan and operations.
 #[derive(Clone, Debug)]
-struct Decision {
-    finding: String,
-    action: String,
-    note: String,
-    plan: Option<String>,
-    operations: Vec<String>,
+pub(crate) struct Decision {
+    pub(crate) finding: String,
+    pub(crate) action: String,
+    pub(crate) note: String,
+    pub(crate) plan: Option<String>,
+    pub(crate) operations: Vec<String>,
 }
 
-fn read_review(work: &str) -> Result<Value> {
+/// The reviewed report of this work folder, verified against its own content id.
+pub(crate) fn read_review(work: &str) -> Result<Value> {
     let path = ps::join(work, "topic-join-review.json");
     if !ps::exists(&path) {
         return Err(refuse(format!("join apply needs the reviewed report `{path}`, written by -Step plan")));
@@ -1333,7 +1334,7 @@ fn plan_of<'a>(finding: &'a Value, id: &str) -> Option<&'a Value> {
 
 /// §11.3: a reviewed selection binds the report id, the finding and plan ids, the reviewed
 /// authored fingerprints and a note. Anything the report does not support is refused.
-fn validate_selection(review: &Value, asked: &Value) -> Result<Vec<Decision>> {
+pub(crate) fn validate_selection(review: &Value, asked: &Value) -> Result<Vec<Decision>> {
     let map = asked.as_object().ok_or_else(|| refuse("the selection must be an object"))?;
     for name in map.keys() {
         if !["schema_version", "report_id", "decisions"].contains(&name.as_str()) {
@@ -1429,14 +1430,11 @@ fn validate_selection(review: &Value, asked: &Value) -> Result<Vec<Decision>> {
     Ok(accepted)
 }
 
-fn apply(p: &Params) -> Result<i32> {
-    let review = read_review(&p.work)?;
-    let selection_path = if p.file.is_empty() { ps::join(&p.work, "join-selection.json") } else { p.file.clone() };
-    if !ps::exists(&selection_path) {
-        return Err(refuse(format!("join apply needs the reviewed selection `{selection_path}`")));
-    }
-    let asked = canon::read_json(&selection_path)?;
-    let decisions = validate_selection(&review, &asked)?;
+/// The qualified join engine: one `zt mcp` client, one archive identity check and one Broken-link
+/// baseline for a set of selected findings. `-Step apply` and the S29 historical batch gate
+/// ([`crate::resolve`]) both drive their findings through this seam, so a selected historical join
+/// is the same reviewed, replanned, one-at-a-time move as a fresh one.
+fn engine(review: Value, decisions: Vec<Decision>) -> Result<Run> {
     let mut zt = crate::zt::start()?;
     let (id, _, revision) = archive_identity(&mut zt)?;
     if id != f(&review["archive"], "id") {
@@ -1445,6 +1443,25 @@ fn apply(p: &Params) -> Result<i32> {
             f(&review["archive"], "id")
         )));
     }
+    let broken_before = broken_links(&mut zt)?;
+    Ok(Run { zt, review, decisions, revision, archive_id: id, broken_before, quiet: None })
+}
+
+/// One selection's findings, applied as the qualified join path applies them: a caller that holds
+/// the reviewed report and validated decisions gets the same payload `-Step apply` records.
+pub(crate) fn run_selected(review: Value, decisions: Vec<Decision>) -> Result<Value> {
+    engine(review, decisions)?.execute()
+}
+
+fn apply(p: &Params) -> Result<i32> {
+    let review = read_review(&p.work)?;
+    let selection_path = if p.file.is_empty() { ps::join(&p.work, "join-selection.json") } else { p.file.clone() };
+    if !ps::exists(&selection_path) {
+        return Err(refuse(format!("join apply needs the reviewed selection `{selection_path}`")));
+    }
+    let asked = canon::read_json(&selection_path)?;
+    let decisions = validate_selection(&review, &asked)?;
+    let mut run = engine(review, decisions)?;
     let result_path = ps::join(&p.work, "join-result.json");
     let hash = canon::hash_value(&asked);
     if let Ok(previous) = util::read_json(&result_path)
@@ -1463,8 +1480,6 @@ fn apply(p: &Params) -> Result<i32> {
         })))?;
         return Ok(0);
     }
-    let broken_before = broken_links(&mut zt)?;
-    let mut run = Run { zt, review, decisions, revision, archive_id: id, broken_before, quiet: None };
     let mut payload = run.execute()?;
     payload["selection_id"] = json!(hash);
     payload["selection"] = json!(selection_path);
