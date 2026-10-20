@@ -5326,6 +5326,18 @@ fn claim_lease(base: i64, requested: i64) -> i64 {
     base.max(requested)
 }
 
+/// The lease a start step writes: the base lease from now, or the claim's current lease when that
+/// is longer, so the step never cuts the provider-run lease its claim was granted (#92).
+fn start_lease(now: i64, base: i64, current: Option<i64>) -> i64 {
+    (now + base).max(current.unwrap_or(0))
+}
+
+/// `start_lease` for one claimed unit inside the step's transaction.
+fn held_lease(tx: &Transaction, unit: &str) -> Result<i64> {
+    let current: Option<i64> = tx.query_row("SELECT lease_until FROM units WHERE id=?1", [unit], |r| r.get(0))?;
+    Ok(start_lease(now_seconds(), lease_seconds(), current))
+}
+
 /// One bounded claim of `take` ready units.
 ///
 /// `lease` is the claim's own requested lifetime in seconds: the workflow passes the frozen
@@ -6259,7 +6271,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     claim(&tx, &unit, token)?;
-    let tx_lease = now_seconds() + lease_seconds();
+    let tx_lease = held_lease(&tx, &unit)?;
     tx.execute(
         "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
         params![unit, canon::canonical_json(&progress), tx_lease],
@@ -9361,7 +9373,7 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     claim(&tx, &unit, token)?;
-    let lease_until = now_seconds() + lease_seconds();
+    let lease_until = held_lease(&tx, &unit)?;
     tx.execute(
         "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
         params![unit, canon::canonical_json(&progress), lease_until],
@@ -12531,9 +12543,10 @@ fn terms_plan(
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     claim(&tx, unit, token)?;
+    let lease_until = held_lease(&tx, unit)?;
     tx.execute(
         "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
-        params![unit, canon::canonical_json(&progress), now_seconds() + 120],
+        params![unit, canon::canonical_json(&progress), lease_until],
     )?;
     event(
         &tx,
@@ -15381,6 +15394,16 @@ mod tests {
         assert_eq!(claim_lease(120, 1500), 1500);
         assert_eq!(claim_lease(2, 60), 60);
         assert_eq!(LEASE_MAX, 7200);
+    }
+
+    // A start step (terms plan, group start, link start) refreshes the claim's lease but never
+    // cuts the provider-run lease the claim was granted: a 3-minute DeepSeek run under a
+    // 1500-second claim lost its claim when the plan reset the lease to 120 seconds.
+    #[test]
+    fn a_start_step_keeps_the_longer_claim_lease() {
+        assert_eq!(start_lease(1000, 120, Some(2500)), 2500);
+        assert_eq!(start_lease(1000, 120, Some(1050)), 1120);
+        assert_eq!(start_lease(1000, 120, None), 1120);
     }
 
     #[test]
