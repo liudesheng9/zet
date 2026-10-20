@@ -161,8 +161,9 @@ Commands marked "up" call `require_service_up` and fail with `service is not up`
 | `zt scholar …` | — | `scholar::run_cli(rest)` | [Scholar bridge](scholar-bridge.md). |
 | `zt gui [--open]` | up | `gui::run(rest)` | [GUI](gui.md): `zt gui: <url>`, `port: <n>`. |
 | `zt autostart [on\|off]` | Windows | `autostart::run(rest)` | See below. |
-| `zt config show` | — | `cmd_config_show` | `archive_root=<path>` or `archive_root=<unset>` |
+| `zt config show` | — | `cmd_config_show` | `archive_root=<path>` or `archive_root=<unset>`, then `gui_search=on\|off`, `gui_ask=on\|off`, `gui_reply=on\|off` |
 | `zt config set archive_root <path>` | service down | `cmd_config_set_archive_root` | Writes the config, prints `archive_root=<path>`; fails `cannot change archive_root while service is up`. |
+| `zt config set gui_search\|gui_ask\|gui_reply on\|off` | — | `cmd_config_set_feature` | Turns one reader feature off or on (S28, #121); prints `<key>=<on\|off>` and may run while the service is up, because the GUI reads the switch on every request. A value other than `on`/`off` is refused before the file is written. |
 | `zt t [--ws <workspace>] <title…>` | up, lock | `shell_create_topic` | Title words joined by spaces, must be one non-empty line; opens `EDITOR` on `topic_template(title)`; prints the new `<n>/0`. Default Workspace human. |
 | `zt l [--ws <workspace>]` | up, lock | `shell_create_literature` | `EDITOR` on a `.bib` buffer until it parses and its key is free (case-insensitively), then `EDITOR` on the Card text; prints the Citation key. |
 | `zt n --at <target>` | up, lock | `shell_create_direct` | Direct successor of a Topic, Literature, or Regular Card; fails `direct successor already exists: <loc>`; prints the Location. |
@@ -433,7 +434,7 @@ The Link-index migration already records `metadata.archive_id` as 16 OS-random b
 
 | File | Written by | Content |
 |---|---|---|
-| `config.toml` | `Config::save` | `archive_root=<path>` (`key=value` lines, not real TOML; `save` changes only this line and keeps the rest) |
+| `config.toml` | `Config::save` | `archive_root=<path>`, `gui_search=on\|off`, `gui_ask=on\|off`, `gui_reply=on\|off` (`key=value` lines, not real TOML; `save` rewrites the lines it owns and keeps the rest) |
 | `autostart.log` | `autostart::record_boot` | `<unix-seconds> <outcome>` per sign-in |
 | `scholar-bridge.json`, `scholar-archive/` | [Scholar bridge](scholar-bridge.md) | pairing credential, cache |
 
@@ -545,6 +546,7 @@ bibtex: |+
 | Setting | Where | Default | Effect |
 |---|---|---|---|
 | `archive_root` | `config.toml` via `zt config set archive_root <path>` | unset | The archive every command uses; refused while the service is up. |
+| `gui_search`, `gui_ask`, `gui_reply` | `config.toml` via `zt config set <key> on\|off` | on (no line) | One reader feature each, read by the GUI on every request ([GUI](gui.md#feature-switches-s28-121-design-15-release-d380)); they may change while the service is up, and they gate only the GUI's own route. |
 | `ZT_CONFIG_DIR` | env var | Windows `%APPDATA%\zt`, else `$HOME/.config/zt` | Config directory (`config_file`); also carried into the login command as `--config-dir`. |
 | `APPDATA` / `HOME` | env var | — | Base of the default config directory; missing → `APPDATA is not set` / `HOME is not set`. |
 | `EDITOR` | env var | none (`EDITOR is not set`) | Editor command for shell writes; split on whitespace, the temp path is appended. |
@@ -677,7 +679,7 @@ Gaps:
 - **`zt status` and `zt help` may start the service.** They call `is_service_up`, which restarts a daemon that ended without `zt down`. Only `zt up`, `zt down`, and `zt config set` never restart.
 - **`zt down` does not wait for the daemon to exit.** A `zt up` right after it starts a new daemon that blocks on the daemon lock until the old one releases it; `zt up` waits up to 15 s for the record.
 - **A daemon of zt 0.7 or earlier has no lock file**: `daemon_alive` returns `None`, which counts as alive everywhere except `clear_stale_legacy_service` in `zt up`.
-- **`config.toml` is not TOML.** It is `key=value` lines; values are not quoted. `Config::save` rewrites only the `archive_root` line (in place, or appended) and keeps every other line, comments included (test `config_set_rewrites_only_the_archive_root_line`).
+- **`config.toml` is not TOML.** It is `key=value` lines; values are not quoted. `Config::save` rewrites the four lines it owns (`archive_root` and the three GUI switches, in place or appended) and keeps every other line, comments included (test `config_set_rewrites_only_the_archive_root_line`). A key the `Config` holds no value for is dropped, so `archive_root` can still be unset.
 - **`EDITOR` is split on whitespace**, so an editor path with spaces needs a wrapper or a path without spaces.
 - **Structural changes still scan the archive.** `regenerate_reverse_links_tx` rebuilds the occurrence index for moves, renames, insertions and deletions; `apply_location_mapping_tx` rewrites only changed authored text. Ordinary writes use `link_index::source_changed` instead and index one body. Full integrity checks and reindex are intentionally global operations.
 - **Two `move_plan`s.** `crate::move_plan` (plain move to a free Location) is the base case; the shell calls `place::move_plan`, which delegates to it only for `To` without `--alone`.
@@ -688,6 +690,7 @@ Gaps:
 
 ## Change history
 
+- `2026-10-20` — #121 S28: `zt config` owns three more lines. `zt config set gui_search|gui_ask|gui_reply on|off` writes one switch while the service may run (the GUI reads it per request, [GUI](gui.md#feature-switches-s28-121-design-15-release-d380)); `zt config show` prints all three after `archive_root`; `Config::save` now rewrites the four lines it owns and keeps every other line. The zt package version moves to 0.21.0 so the installed release is distinguishable from the 0.20.0 build. No schema column or migration changes.
 - `2026-10-19` — Re-verify #99 S18 (Reply) again with the tool binaries rebuilt from `HEAD`: `tests/cli_service.rs` now also replies to a Side-successor agent Card whose address carries a pipe (the desk's usual target), so the whole `[[0/1|a]]` address is proven to be the Link's target and its Reverse link is proven to reach that Card. The `src/reply.rs` comments now spell the default Topic `回应`, as the code does. No service, CLI or schema code changed.
 - `2026-10-19` — Re-verify #99 S18 (Reply): `tests/cli_service.rs` now also proves the served `/draft.js`, all four relation words, that a request's `workspace` is ignored (the route writes only the human Workspace), that refusals write no human Card, and that a failed Save rolls back the default Topic it created. No service or CLI code changed.
 - `2026-10-19` — #93 S10 (#101): the crate declares one more module, `src/entry.rs` (the concept register's shared entry projection); no command, flag, schema column, or migration changes.
@@ -723,3 +726,4 @@ Gaps:
 - `2026-09-30` `316b454`, `4e4141a` — Markdown Cards with the `ensure_markdown_cards` conversion and backup, the GUI, Literature trees.
 - `2026-07-08`–`2026-07-22` `b7bf74d`, `8454199`, `2e2f420`, `28e1319`, and others — Literature Cards, `zt dp` and atomic `zt clear`, the PTY test harness, Session fixes.
 - `2026-10-16` — Wiki doc created.
+

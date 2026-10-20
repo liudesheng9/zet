@@ -18,6 +18,7 @@ mod card;
 mod card_type;
 mod dump;
 mod entry;
+mod features;
 mod gui;
 mod hub;
 mod link;
@@ -106,6 +107,9 @@ fn run() -> Result<()> {
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
             cmd_config_set_archive_root(value)
+        }
+        [cmd, sub, key, value] if cmd == "config" && sub == "set" && features::is_key(key) => {
+            cmd_config_set_feature(key, value)
         }
         [cmd, rest @ ..] if cmd == "t" => {
             let (workspace, title) = parse_workspace_option(rest)?;
@@ -230,6 +234,11 @@ fn parse_edit_args(args: &[String]) -> Result<(String, Option<EditPart>)> {
 #[derive(Debug, Default)]
 struct Config {
     archive_root: Option<PathBuf>,
+    /// The declared GUI switches, in `features::KEYS` order: `Some(true)` on, `Some(false)` off,
+    /// `None` when no line is written (on).
+    gui_search: Option<bool>,
+    gui_ask: Option<bool>,
+    gui_reply: Option<bool>,
 }
 
 impl Config {
@@ -246,7 +255,29 @@ impl Config {
                 config.archive_root = Some(PathBuf::from(value));
             }
         }
+        config.gui_search = features::declared(&raw, features::KEYS[0]);
+        config.gui_ask = features::declared(&raw, features::KEYS[1]);
+        config.gui_reply = features::declared(&raw, features::KEYS[2]);
         Ok(config)
+    }
+
+    /// One declared switch, by its config key.
+    fn switch(&self, key: &str) -> Option<bool> {
+        match key {
+            "gui_search" => self.gui_search,
+            "gui_ask" => self.gui_ask,
+            "gui_reply" => self.gui_reply,
+            _ => None,
+        }
+    }
+
+    fn set_switch(&mut self, key: &str, on: bool) {
+        match key {
+            "gui_search" => self.gui_search = Some(on),
+            "gui_ask" => self.gui_ask = Some(on),
+            "gui_reply" => self.gui_reply = Some(on),
+            _ => {}
+        }
     }
 
     fn save(&self) -> Result<()> {
@@ -256,32 +287,57 @@ impl Config {
                 format!("failed to create config directory {}", parent.display())
             })?;
         }
-        // Only the archive_root line changes; every other line of the file stays as it was.
-        let root_line = self
-            .archive_root
-            .as_ref()
-            .map(|root| format!("archive_root={}\n", root.to_string_lossy()));
+        // The lines this struct owns are rewritten from its fields; every other line stays as it
+        // was. A key the struct holds no value for is dropped, so `archive_root` can still be
+        // unset.
+        let switch_line = |key: &str, value: Option<bool>| {
+            value.map(|on| format!("{key}={}\n", if on { "on" } else { "off" }))
+        };
+        let owned: [(&str, Option<String>); 4] = [
+            (
+                "archive_root",
+                self.archive_root
+                    .as_ref()
+                    .map(|root| format!("archive_root={}\n", root.to_string_lossy())),
+            ),
+            (features::KEYS[0], switch_line(features::KEYS[0], self.gui_search)),
+            (features::KEYS[1], switch_line(features::KEYS[1], self.gui_ask)),
+            (features::KEYS[2], switch_line(features::KEYS[2], self.gui_reply)),
+        ];
         let mut body = String::new();
-        let mut placed = false;
+        let mut placed = [false; 4];
         for line in fs::read_to_string(&path).unwrap_or_default().lines() {
-            if line.starts_with("archive_root=") {
-                if !placed {
-                    body.push_str(root_line.as_deref().unwrap_or_default());
-                    placed = true;
+            let name = line
+                .split_once('=')
+                .map(|(name, _)| name.trim())
+                .unwrap_or("");
+            match owned.iter().position(|(key, _)| *key == name) {
+                Some(index) => {
+                    if !placed[index] {
+                        placed[index] = true;
+                        if let Some(value) = &owned[index].1 {
+                            body.push_str(value);
+                        }
+                    }
                 }
-                continue;
+                None => {
+                    body.push_str(line);
+                    body.push('\n');
+                }
             }
-            body.push_str(line);
-            body.push('\n');
         }
-        if !placed {
-            body.push_str(root_line.as_deref().unwrap_or_default());
+        for (index, (_, value)) in owned.iter().enumerate() {
+            if !placed[index]
+                && let Some(value) = value
+            {
+                body.push_str(value);
+            }
         }
         fs::write(&path, body).with_context(|| format!("failed to write config {}", path.display()))
     }
 }
 
-fn config_file() -> Result<PathBuf> {
+pub(crate) fn config_file() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("ZT_CONFIG_DIR") {
         return Ok(PathBuf::from(dir).join("config.toml"));
     }
@@ -527,9 +583,17 @@ fn clear_stale_legacy_service(root: &Path) {
 
 fn cmd_config_show() -> Result<()> {
     let config = Config::load()?;
-    match config.archive_root {
+    match &config.archive_root {
         Some(root) => println!("archive_root={}", root.display()),
         None => println!("archive_root=<unset>"),
+    }
+    for key in features::KEYS {
+        let value = match config.switch(key) {
+            Some(true) => "on",
+            Some(false) => "off",
+            None => "on",
+        };
+        println!("{key}={value}");
     }
     Ok(())
 }
@@ -541,11 +605,21 @@ fn cmd_config_set_archive_root(value: &str) -> Result<()> {
     {
         bail!("cannot change archive_root while service is up");
     }
-    let config = Config {
-        archive_root: Some(new_root),
-    };
+    let mut config = Config::load()?;
+    config.archive_root = Some(new_root);
     config.save()?;
     println!("archive_root={value}");
+    Ok(())
+}
+
+/// Turn one GUI reader feature on or off. The switch takes effect on the running service's next
+/// request, so it never needs a restart; `archive_root` alone is refused while the service is up.
+fn cmd_config_set_feature(key: &str, value: &str) -> Result<()> {
+    let on = features::parse_switch(value)?;
+    let mut config = Config::load()?;
+    config.set_switch(key, on);
+    config.save()?;
+    println!("{key}={}", if on { "on" } else { "off" });
     Ok(())
 }
 
@@ -1810,6 +1884,7 @@ fn cmd_help() -> Result<()> {
     println!("  zt help");
     println!("  zt config show");
     println!("  zt config set archive_root <path>");
+    println!("  zt config set gui_search|gui_ask|gui_reply on|off");
     println!("  zt scholar [status|pair [--rotate]|unpair|tools]");
     println!("  zt scholar call <tool> [<json-arguments>]");
     println!("  zt scholar sql [--db archive|vectors] [--limit <n>] <sql>");

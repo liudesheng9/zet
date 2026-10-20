@@ -888,6 +888,22 @@ impl App {
             );
             return;
         }
+        // A reader feature the release turned off answers one clear refusal; every other route
+        // (Cards, trees, the map, the Table, saved Spreads) keeps working.
+        if let Some(key) = crate::features::Features::load().gate(&path) {
+            respond_json(
+                request,
+                409,
+                &json!({
+                    "error": format!(
+                        "the {} feature is disabled in the GUI; run `zt config set {key} on`",
+                        crate::features::label(key)
+                    ),
+                    "disabled": key,
+                }),
+            );
+            return;
+        }
         let body = if method == Method::Post {
             let mut raw = String::new();
             if request.as_reader().read_to_string(&mut raw).is_err() {
@@ -999,7 +1015,7 @@ impl App {
     }
 
     fn overview(&self) -> ApiResult {
-        Ok(self.snapshots.overview(|snapshot| {
+        let mut overview = self.snapshots.overview(|snapshot| {
             let counts = crate::card_counts(&self.root)?;
             let workspaces = Workspace::ALL
                 .into_iter()
@@ -1029,7 +1045,11 @@ impl App {
                 "workspaces": workspaces,
                 "trees": snapshot.trees(),
             }))
-        })?)
+        })?;
+        // The switches are read per answer, not cached with the Snapshot, so turning one off or on
+        // takes effect for the next request without a restart.
+        overview["features"] = crate::features::Features::load().json();
+        Ok(overview)
     }
 
     fn tree(&self, tree: &str) -> ApiResult {

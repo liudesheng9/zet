@@ -7,7 +7,9 @@ paths:
   - "!src/gui/vendor/**"
   - "src/spread.rs"
   - "src/reply.rs"
+  - "src/features.rs"
   - "tests/integrated_release.rs"
+  - "tests/reader_release.rs"
 synced: 423bfceb935b
 updated: 2026-10-20
 ---
@@ -182,12 +184,12 @@ The chart policy (`respond_chart`) is `sandbox allow-scripts; default-src 'none'
 
 ### API routes (`/api/*`, token required)
 
-All answers are JSON. A missing or wrong token gives `403 {"error":"missing or invalid GUI token"}`. A POST body that is not UTF-8 or not JSON gives 400; an empty POST body reads as `{}`. Any error from a handler gives `400 {"error":"<message with causes>"}`; an unknown path gives 400 `unknown endpoint <path>`. Query parameters are percent-decoded, `+` is a space (`parse_query`).
+All answers are JSON. A missing or wrong token gives `403 {"error":"missing or invalid GUI token"}`. A reader feature that `zt config set gui_search|gui_ask|gui_reply off` turned off gives `409 {"error":"the <feature> feature is disabled in the GUI; run `zt config set <key> on`","disabled":"<key>"}` for its own route (`/api/search`, `/api/ask`, `/api/reply`); every other route keeps working. A POST body that is not UTF-8 or not JSON gives 400; an empty POST body reads as `{}`. Any error from a handler gives `400 {"error":"<message with causes>"}`; an unknown path gives 400 `unknown endpoint <path>`. Query parameters are percent-decoded, `+` is a space (`parse_query`).
 
 | Method and path | Inputs | Output | Side effects |
 |---|---|---|---|
 | `GET /api/ping` | — | `{"ok":true}` | none (heartbeat) |
-| `GET /api/overview` | — | `{fingerprint, archive_root, stats:{total,topics,regular,literature}, broken, workspaces:[{id,label,topic_trees,literature_trees,cards,agent_writable}], trees:[Snapshot::trees]}` | built once per Snapshot |
+| `GET /api/overview` | — | `{fingerprint, archive_root, stats:{total,topics,regular,literature}, broken, workspaces:[{id,label,topic_trees,literature_trees,cards,agent_writable}], trees:[Snapshot::trees], features:{search,ask,reply}}` | the Card/archive part is built once per Snapshot; `features` is read fresh on every answer, so a switch takes effect on the next request without a restart |
 | `GET /api/tree?id=<tree>` | tree id (Topic number or Citation key) | `{tree, root, workspace, kind:"topic"\|"literature", title, cards:[summary]}` | error `tree … does not exist` |
 | `GET /api/card?at=<address>` | Location or Citation key | `{address, tree, workspace, kind, type, facet, emphasis, level, form, model, hubs, context:"tree-root"\|"regular", title, text, body, html, bibtex, citation_key, authored_fingerprint, parent, direct, sides, inbound, outbound}` | `authored_fingerprint` is the Card's authored identity (title, body, BibTeX and type fields; the generated Reverse section is not authored and not in it), which a Reply captures and re-checks. Renders the body (may add charts to the store). |
 | `GET /api/graph` | — | `{nodes:[summary]}` for every Card | — |
@@ -450,6 +452,18 @@ Every change the page makes goes through `api()` to a write route, which calls t
 - Saving an edit carries `base`, so a Card changed by the CLI, a Session, or the MCP server since it was opened is refused, not overwritten.
 - A write that needs confirmation never happens on the first call.
 
+### Feature switches (S28, #121; design §15-release, D380)
+
+The release can turn GUI search, Ask and Reply off one at a time, so a reader can drop one new flow
+without giving up the Cards and Spreads. `src/features.rs` reads the three `gui_*` lines of the
+config file on every request (`Features::load`); `App::handle` asks `Features::gate` before it routes
+an API call, so `/api/search` or `/api/ask` or `/api/reply` answers `409 {"error":…,"disabled":"gui_<feature>"}`
+while every other `/api/` route (Card, tree, graph, Table, Spreads, register, distant, writes)
+answers as before. `/api/overview` carries `features:{search,ask,reply}`, read outside the memoized
+Snapshot, so the page can apply a switch on its next boot or refresh. The switch is the GUI's only:
+the MCP server keeps its tools, and the CLI and Session are not gated. A switch never writes a Card,
+a Spread, or the archive revision.
+
 ## Data and storage
 
 ### `<archive_root>/zt.gui`
@@ -532,6 +546,7 @@ A Card summary from `/api/graph`:
 | Setting | Where | Default | Effect |
 |---|---|---|---|
 | `ZT_GUI_PORT` | environment of the process that starts the daemon (`zt up`) | unset | A port number binds exactly that port (failure: the GUI does not start). `0` lets the system choose. Unset or blank: 4717, retried 10 × 100 ms, then any free port. A non-numeric value fails `gui::start` with `invalid ZT_GUI_PORT`. Tests set it to `0`. |
+| `gui_search`, `gui_ask`, `gui_reply` | `zt config set <key> on\|off` (the config file) | on | Each turns one reader feature off independently (S28, #121): its own route answers 409 `disabled`, `/api/overview.features` reports the states, and the page hides the control. Read on every request and changeable while the service is up, so a switch needs no restart; Cards, trees, the map, the Table and saved Spreads stay readable. `zt config show` prints the three lines. |
 | `DEFAULT_PORT` | `src/gui.rs` constant | 4717 | the preferred port |
 | `CHART_CAPACITY` | `src/gui.rs` constant | 512 | chart pages kept in memory |
 | `MAX_SPREADS`, `MAX_CARDS`, `MAX_NAME`, `MAX_ID`, `MAX_COORD` | `src/spread.rs` constants | 64, 400, 80, 40, 1e6 | Spread bounds |
@@ -610,6 +625,7 @@ Unit tests (the crate is the binary `zt`):
 ```bash
 cargo test --bin zt gui::
 cargo test --bin zt spread::
+cargo test --bin zt features::
 ```
 
 `cargo test --bin zt gui::` runs `src/gui.rs` `tests` (query decoding, the recorded URL, the writing desk's draft rules — `src/gui/draft.js` run under Node when it is installed: the desk skeleton, the prefix swap, the destination choice — the Ask rules — `src/gui/ask.js` run under Node: question bounds and the character-counted name cut, the temporary Table and its reasons, Keep's new document and untouched earlier Spreads, the changed/missing/unchanged endpoint set, the dropped Cards — every `RelationKind` id as a `KINDS` key in `app.js`, no `@keyframes` name defined twice in `app.css`) and `render_tests` (Snapshot cache invalidation by another connection, TeX spans and LaTeX delimiters, chart fences and raw HTML charts into frames, plain inline tags and comments, artifact figures and forged digests, Document links, KaTeX inlining with fonts, chart store capacity) and `src/gui/document.rs` `tests` (image path resolution, reading page and its script policy).
@@ -629,9 +645,22 @@ cargo test --test distant_card
 cargo test --test ask_spread
 cargo test --test hub_draft
 cargo test --test integrated_release
+cargo test --test reader_release
 ```
 
 They cover: the GUI runs with the service and stops with it, `zt gui` only reports, the token guard and a new token after restart, `/api/quit` is gone (400), a dead daemon leaves no `zt.gui`, the API's create/edit/delete with plans and confirmations, rendering of Links and code, KaTeX assets and fonts, chart pages and their CSP, typed Cards, both Workspaces, insert and move, artifacts, `/api/register` answering the same entry view as MCP `get_register` (addresses, order, total, revision, identity), `/api/search` `mode=entry` answering exactly the MCP `search_cards mode: entry` value (`tests/search_rank.rs`), including the register-missing fallback and the unknown-mode refusal, `/api/distant` answering the one distant Card (`tests/distant_card.rs`), `/api/ask` answering exactly the MCP `ask_box` value (`tests/ask_spread.rs`), and `/api/hub/draft` / `/api/hub/check` answering the agent hub draft of a kept Spread and its precheck (`tests/hub_draft.rs`).
+
+`tests/reader_release.rs` (S28, #121) drives the three feature switches on one scratch service:
+`a_switch_turns_one_feature_off_without_stopping_the_service` turns GUI search off through
+`zt config set gui_search off` while the service runs, proves `/api/overview.features` reports it,
+the route answers `409 disabled`, Ask still answers, the Cards, the tree, the graph and the saved
+Spreads stay readable, and the MCP `search_cards` tool still searches;
+`each_switch_gates_only_its_own_route_and_the_reader_stays_usable` does the same for Ask and Reply
+one at a time, then all three off together (Cards, tree, graph, `/api/spreads` and the page itself
+still answer; each disabled route names its own key; both MCP reads still work), then back on;
+`a_switch_persists_across_a_restart_and_unknown_config_lines_survive` proves an unknown config line
+survives a switch write, a refused value writes nothing, `zt config show` prints the three lines,
+and the switch survives `zt down`/`zt up`.
 
 `tests/hub_draft.rs` (S17, #118) drives a kept Ask Spread into an agent Hub Card through the real routes: `a_cross_tree_ask_spread_files_as_one_agent_field_hub` asks a question across two books, keeps the page's own Spread document, and proves the plan's `field` level at the agent register, its two Tree groups, the answer's reason on each Link, `check.ok`, and that planning changes neither `/api/overview` nor the Spreads; then it saves through `POST /api/create` and proves the filed Card's `type: hub`, `level: field`, `workspace: agent`, `parent` = the register, both groups in the body, both members' `authored_fingerprint` unchanged (and the Model Card's text unchanged), and `get_hub` reporting the two lines with none of `bare`/`broken`/`anchor-title`/`upward`/`oversize`/`flat`/`level` (only the anchor line the hub stage publishes may still be outstanding). `a_single_topic_ask_spread_rewrites_the_trees_topic_hub` proves the reuse plan (`how: edit`, the hub's own text as `base`, its title and authored line kept, the question as one added group), the guarded `POST /api/edit`, and that a second Save with the stale `base` is a 400 naming the changed Card and writes nothing. `a_spread_without_a_register_asks_for_a_destination` proves the missing-register plan (no `destination`, `missing: register`, no field choice, a `destination` fault) and the new routes' token guard and 400s. The routes are read-only: `ZT_DIGEST_HELPER` names no file in this file too.
 
@@ -704,6 +733,8 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 - **An over-long Spread name is cut, not refused.** `normalize` truncates `name` to 80 characters by characters and refuses only a `question` over 512; this is what lets a long question name its own Spread. An older binary that lacks the field silently drops every `question` on its next Spread save (rollback risk; see Spreads §5).
 
 ## Change history
+
+- `2026-10-20` — #121 S28: the three reader features can be turned off independently. `src/features.rs` reads `gui_search`, `gui_ask`, `gui_reply` from the config file on every request (only the exact word `off` disables one; a missing or malformed line leaves it on), `zt config set <key> on|off` writes one line without stopping the service and `zt config show` prints all three, `/api/overview` gains `features:{search,ask,reply}` outside the memoized Snapshot, and `App::handle` answers `409 {"error":…,"disabled":"gui_search|gui_ask|gui_reply"}` on that feature's own route. Cards, trees, the graph, the register, the distant slot, the Table and saved Spreads are not gated; the MCP server keeps its tools. New coverage: `src/features.rs` unit tests and `tests/reader_release.rs` (3 tests).
 
 - `2026-10-20` — #120 S24 browser pass (S24-AC05/AC06) on the qualification fixture, two page defects fixed. (1) Every writing desk but the hub draft threw on open: `openEditor` read `hubPlaced.at` at its top level, and `hubPlaced` is `null` outside the hub draft (since #118), so Edit, a new Card, Insert and Reply opened nothing and toasted `Cannot read properties of null (reading 'at')`; the placement is now read only under `if (hub)`. (2) A kept Spread's whole question was nowhere on the Table — only its 80-character name, ellipsized in the Spreads picker. The Table now lays it as a faint question slip at the head of the Cards (`paintQuestion`, `#spread-question`, `.spread-question`), above the top row on the Table plane, folded to three lines and unfolded by a click, and `fit` takes it in. New page tests: `every_desk_but_the_hub_draft_opens_without_reading_a_hub_placement`, `a_spread_kept_from_a_question_shows_the_whole_question_on_the_table`.
 - `2026-10-20` — #120 S24: the integrated release contract. `tests/integrated_release.rs` drives every delivered read and Owner write through one scratch archive and one running service: entry search, the Ask proposal and the register projection byte-identical over MCP and the GUI, each plain mode keeping its own legacy shape, one distant Card, before/after authored fingerprints and revision, Keep, Reply (with `target_changed`), the filed hub draft, a restart, an insert, a Citation-key rename through `/api/metadata` and a delete of a register target, with `zt status --check-links` after each step. `scripts/book-digest/tests/qualify-gui-fixture.ps1` builds the same fixture for the browser pass. No page code changed in this slice.
