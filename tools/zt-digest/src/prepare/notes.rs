@@ -280,7 +280,8 @@ fn notes_blocks(lines: &[&str], headings: &[Heading], at: usize) -> Vec<Block> {
             let raw_body: Vec<&str> = if child.line + 1 <= end { lines[child.line..end].to_vec() } else { Vec::new() };
             // The span points at the note text itself, not at the blank lines around it.
             let lead = raw_body.iter().take_while(|line| line.trim().is_empty()).count();
-            let tail = raw_body.iter().rev().take_while(|line| line.trim().is_empty()).count();
+            // An all-blank body has no trailing lines left once its leading ones are counted.
+            let tail = raw_body[lead..].iter().rev().take_while(|line| line.trim().is_empty()).count();
             let body = raw_body[lead..raw_body.len().saturating_sub(tail)].join("\n");
             let first = (child.line + 1 + lead).min(end.max(child.line + 1));
             let last = end.saturating_sub(tail).max(first);
@@ -781,6 +782,18 @@ mod tests {
         assert_eq!(blocks[0].note_ids, vec!["1.1", "1.2"]);
         assert!(blocks[0].text.contains("[1.1] 契约不完全。"));
         assert_eq!(blocks[0].span, (5, 7));
+        assert_eq!(blocks[1].note_ids, vec!["2.1"]);
+    }
+
+    #[test]
+    fn a_subsection_with_only_blank_lines_gives_an_empty_block() {
+        let raw = "# 注释\n\n## 第一章 契约\n\n## 第二章 边界\n\n[2.1] 资产互补性。\n\n# 参考文献\n";
+        let headings = scan_headings(raw);
+        let lines: Vec<&str> = raw.split('\n').collect();
+        let blocks = notes_blocks(&lines, &headings, 0);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].text.is_empty());
+        assert!(blocks[0].note_ids.is_empty());
         assert_eq!(blocks[1].note_ids, vec!["2.1"]);
     }
 }
