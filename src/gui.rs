@@ -1744,7 +1744,7 @@ impl App {
                 "plan_changed": true,
                 "confirm": "unlock",
                 "plan": fresh,
-                "lines": unlock_lines(&plan),
+                "lines": unlock_lines(&fresh),
             }));
         }
         let lock = crate::tree_lock::unlock_tx(&tx, lock_id)?;
@@ -1794,7 +1794,7 @@ impl App {
                 "plan_changed": true,
                 "confirm": "note",
                 "plan": fresh,
-                "lines": note_lines(&plan),
+                "lines": note_lines(&fresh),
             }));
         }
         let lock = crate::tree_lock::note_tx(&tx, lock_id, note)?;

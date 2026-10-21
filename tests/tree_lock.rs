@@ -892,6 +892,16 @@ fn a_lock_note_adds_one_history_event_and_never_reseals() {
     assert_eq!(status, 200);
     assert_eq!(stale["plan_changed"], true, "{stale}");
     assert_eq!(gui.active_lock()["note"], "second note");
+    let stale_lines = stale["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        stale_lines.iter().any(|line| line.contains("third note")),
+        "the renewed lines describe the renewed plan: {stale_lines:?}"
+    );
 }
 
 #[test]
@@ -922,6 +932,14 @@ fn unlock_releases_exactly_one_lock_and_keeps_its_history() {
     );
     assert_eq!(status, 200, "{stale}");
     assert_eq!(stale["plan_changed"], true);
+    assert!(
+        stale["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str().unwrap().contains("releases 2 cards")),
+        "the renewed lines describe the renewed unlock plan: {stale}"
+    );
     assert!(gui.active_lock()["lock_id"].is_number(), "still locked");
 
     let ended = gui.unlock(lock_id);
