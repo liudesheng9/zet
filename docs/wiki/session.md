@@ -6,7 +6,7 @@ paths:
   - "src/session/**"
   - "tests/pty_session.rs"
 synced: 909f04aa4052
-updated: 2026-10-18
+updated: 2026-10-21
 ---
 
 # Terminal Session
@@ -146,7 +146,7 @@ The command bar takes bare words; the line is split on whitespace (so quotes are
 | `lv <level\|none>` | Regular | on a Hub Card set its Hub level (`line`, `topic`, `field`, `register`); otherwise the Model elaboration level (`concept`, `formal`) | unchanged | yes | — |
 | `mf <form\|none>` | Regular | set the Math form of a Model Card (`theory`, `definition`, `axiom`, `theorem`, `proposition`, `lemma`, `corollary`) | unchanged | yes | — |
 | `stats` | all | card counts: total, topics, regular, literature (`card_counts`) | unchanged | no | — |
-| `status` | all | pid from `zt.pid`, archive root, SQLite path, card count, open Sessions (`session_count`, which also prunes `zt.sessions`) | unchanged | no | — |
+| `status` | all | pid from `zt.pid`, archive root, SQLite path, card count, the `locks:` line (`zt status` reads it the same way; see [Locks in the Session](#locks-in-the-session)), open Sessions (`session_count`, which also prunes `zt.sessions`) | unchanged | no | — |
 | `lsbk` | all | Broken links from `link_lifecycle(&conn)?.broken_links()`: panel `broken links: N` with one `<source> <title> -> <target>: <line>` entry each, or the message `no broken links` | unchanged | no | — |
 | `help` | all | panel of the commands offered at the Pointer | unchanged | no | — |
 | `q` | all | quit | — | no | — |
@@ -226,7 +226,7 @@ n
 `view_lines(conn, pointer, workspace)` builds the content for both front ends:
 
 1. ROOT: `ROOT`; hint `workspace: <ws> (switch with ws <other>)`; `topics:` then one `Entry` per Topic of the current Workspace, or the hint `(none yet; create one with t <title>)`; `literature:` then one `Entry` per Literature Card, or `(none yet; create one with l)`. Order is `load_cards` order.
-2. Literature Card: `citation key: <key>`, `metadata:`, the BibTeX lines; other Cards: `location: <address>` plus a bracket after it for non-Idea Cards: `[<type> · <facet> · <emphasis>]` for a Model part, `[<type> · <form> · <level>]` (either part optional) for a Model Card, `[<type>]` otherwise.
+2. Literature Card: `citation key: <key>`, `metadata:`, the BibTeX lines; other Cards: `location: <address>` plus a bracket after it for non-Idea Cards: `[<type> · <facet> · <emphasis>]` for a Model part, `[<type> · <form> · <level>]` (either part optional) for a Model Card, `[<type>]` otherwise. That title row then appends the Lock marks (see [Locks in the Session](#locks-in-the-session)).
 3. The Card's stored Markdown verbatim, one `Linked` line per text line; lines inside fenced code blocks are `Plain`, so `[[...]]` there is not a Link (`markdown_view_lines`, `link::fenced_code_ranges`).
 4. `parent: [[<parent>]]` if the parent exists; `direct: [[<direct>]]` if the Direct successor exists; `side: [[<loc>]]` for each immediate Side successor, ordered by label (not for Tree roots).
 5. Hint `workspace: <ws>`.
@@ -285,6 +285,16 @@ n
 1. `del`, `mv`, `ins`, and a Citation-key rename call `Interaction::confirm(expected, lines)` with the verification lines from the plan (`delete_verification_lines`, `move_verification_lines`, `place::insert_verification_lines`, `citation_rename_lines`).
 2. The TUI (`tui_read_confirmation`) clears the screen, shows the lines, an empty row, an error row, and ``type `<expected>` to confirm: <input>``; it redraws only when the input or selection changes, so the prompt is not duplicated. `Enter` compares the trimmed input; a mismatch or `Esc` fails with `confirmation did not match`, which ends the command without any change (the plan is applied only after `confirm` returns).
 3. The line Session prints the lines and uses `read_confirmation`.
+
+### Locks in the Session
+
+A **Lock** is the owner's promise about a whole tree, and only the GUI takes or releases it ([GUI](gui.md)). The Session shows the promise, refuses what it forbids, and offers no `lock`/`unlock` command at all (R034, R044, R231–R232, S08-AC01–AC03).
+
+1. **Marks.** The Card view's title row — `location: <address>` for a Topic or Regular Card and `citation key: <key>` for a Literature Card — appends ` [locked]` when the held Card is a member of an active Locked tree and ` [pinned]` when one or more active Locked trees link it from outside, in that order (`card_marks`, `tree_lock::LockView::read` for that one row). A Card can carry both. The marks describe the held Card only, so any navigation to another Card clears them; line mode and the TUI render the same text, because both draw `view_lines`. ROOT and result panels carry no mark. An archive whose Tree Lock record is unreadable shows no mark rather than an invented one, and the read stays available.
+2. **Refusals.** Every write command gives the gate's typed refusal, which names the refused Card, the Locked tree, the Lock id and the way out: ``card `<x>` is in locked tree `<root>` (lock <id>); unlock the tree in the GUI first``, or `` `<destination>` is inside locked tree `<root>` (lock <id>); a locked tree takes no new cards`` for a destination inside the tree. A pin names the Locked trees and the source Cards that hold the Links. The error reaches the human unchanged: the line Session prints it, the TUI shows it as the status message.
+3. **Prechecks before a prompt.** `e`, `n`, `b`, `del`, `ins` and `mv` call `tree_lock::ensure_unlocked` between planning and the first prompt — the same `Change::Edit`/`CreateAt`/`Mapping`/`Delete` the writer will use — so a Locked Card or destination is refused before an editor opens or a confirmation is typed. `ty`, `lv` and `mf` write with no prompt and are refused by the writer's own guard (`model::set`, `hub::set_level`, `model::set_level`, `math::set_form`). The transaction-time guard stays mandatory for every writer: the precheck reads a view that a Lock taken later can invalidate, and the write itself is what must be safe.
+4. **Concurrency.** The edit lock (previous section) is held for the whole command, so no Lock can be taken between a precheck and its write, and a Lock cannot be taken under an open Session editor. A Card frozen while the Session sat on its view is refused on the next command, not silently accepted.
+5. **Status.** `status` prints the `zt status` `locks:` line: `locks: 3 trees, 412 cards, 57 pinned targets; integrity ok`, or the concise diagnostic and the faulted roots instead, or `locks: unavailable (...)` when the record cannot be read. The TUI's status message stays the short `state: up | sessions: N | cards: N` summary.
 
 ### Edit lock and concurrency with other Sessions
 
@@ -397,11 +407,12 @@ assert!(session.wait_for_exit().success());
 
 | Suite | Command | Covers |
 |---|---|---|
-| Unit tests, front ends | `cargo test --bin zt session::tests` | result presentation per front end, panels, scroll arithmetic, command-bar tail, clipping by cells, key filters (release, `Ctrl+Shift+C` vs `Ctrl+C`, `Ctrl+Shift+V`), Link hit-testing (half-open spans), screen selection over wraps and wide characters, clipboard copy/paste normalization and atomic failure, `EditorModel` movement, editing, selection, paste, viewport offsets, mouse-cell mapping, drag direction |
+| Unit tests, front ends | `cargo test --bin zt session::tests` | result presentation per front end, panels, scroll arithmetic, command-bar tail, clipping by cells, key filters (release, `Ctrl+Shift+C` vs `Ctrl+C`, `Ctrl+Shift+V`), Link hit-testing (half-open spans), screen selection over wraps and wide characters, clipboard copy/paste normalization and atomic failure, `EditorModel` movement, editing, selection, paste, viewport offsets, mouse-cell mapping, drag direction, the `[locked]`/`[pinned]` title-row marks for a member, a pinned target and a Card that is both |
 | Unit tests, commands | `cargo test --bin zt session::command::tests` | `go`/bare `go`/`root`, `q`, unknown commands, `ls` at ROOT and in a Literature tree, `up`, `back`/`fwd`, Literature `n`, Tree-root refusals, tree boundary on `mv`, `del` with confirmation (and a Tree root's own address), Citation-key rename, `ty`, missing-Pointer recovery, `stats`, `status`, `lsbk`, `help` per context, `t`/`n`/`b`/`l`/`e` with scripted edits, `ins` and `mv alone before` |
 | PTY tests | `cargo test --test pty_session` | the real TUI: start/quit, drag highlight, fake-clipboard copy (and resize clearing the selection), command-bar paste without running, editor copy and plain `Ctrl+C` cancel, editor paste over a selection, drag auto-scroll on both axes and selection across resize, Chinese titles and body, Literature tree growth with panels, PgUp/PgDn and `lines a-b of N`, Literature creation, retry and atomic cancel, edit lock seen by a shell write (the live Session's lock file survives it), Link and citation clicks, Tree-root refusals, Literature part choice and rename, quotes in titles, bare `go`, `go` usage, read-only commands, `n`/`b` with caret keys, service disconnect, `mv`/`del` confirmations, no duplicated delete prompt, save retry, `status --check-links` after the Session's own writes; on Windows, `zt clear` confirmation after a Session returns to PowerShell |
 | Manual clipboard smoke | `cargo test --test pty_session -- --ignored manual_real_windows_clipboard_copy_and_paste_smoke` | the real Windows clipboard (seeds and restores it) |
 | Line Session | `cargo test --test cli_service session` | owned by [Service, CLI and storage](service-and-cli.md) |
+| Session Lock tests | `cargo test --test tree_lock` | owned by [Service, CLI and storage](service-and-cli.md), which carries `tests/tree_lock.rs`: the line and TUI `[locked]`/`[pinned]` marks, a mark clearing on navigation, the refusal before an editor or a confirmation for `e`/`n`/`b`/`del`/`ins`/`mv` and both Literature edit parts, the unchanged archive after a refusal, the `ty`/`lv`/`mf` writer refusals, a view drawn before a Lock refusing the later write, the same work after an unlock, and the Session `status` `locks:` line |
 
 On this machine builds usually go to another drive: prefix with `CARGO_TARGET_DIR=D:/zt-target` (Bash) or set `$env:CARGO_TARGET_DIR = 'D:/zt-target'` (PowerShell).
 
@@ -449,6 +460,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 
 - `2026-10-17` — Session `ty`, `lv`, and `mf` metadata changes commit with the shared archive revision in one transaction. Identical metadata does not advance it; authored Link occurrences are unchanged.
 
+- `2026-10-21` — Tree Lock S08 (#131): the Card view's title row appends ` [locked]` and/or ` [pinned]` from one `tree_lock::LockView` read of the held row (`card_marks`), so line mode and the TUI show the same facts and navigation clears them. `e`, `n`, `b`, `del`, `ins` and `mv` precheck the Locked Card or destination between planning and the first prompt, while `ty`/`lv`/`mf` rely on the unchanged writer guards; `status` prints the `zt status` `locks:` line. No Session Lock command exists.
 - `2026-10-16` — `zt.sessions` is read, changed, and written only under the `zt.sessions.lock` OS lock (`update_session_pids`), so Sessions that start or quit together keep each other's pid.
 - `2026-10-16` — `del` calls `apply_delete_plan(conn, plan)`; a delete keeps later Side successors in place when a breaking Link would land on a renamed one ([Card operations](card-operations.md)).
 - `2026-10-16` `753bd7b` — `ty finding`: the Session can make Finding Cards.

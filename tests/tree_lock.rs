@@ -1,10 +1,13 @@
 //! Tree Lock S01 (#124): one owner promise about one whole tree.
 //!
-//! These tests use the real token-guarded GUI routes, the real stdio MCP server and the real shell
-//! command, on scratch archives (`ZT_CONFIG_DIR`, `ZT_GUI_PORT=0`). They compare stored facts — the
-//! lock tables, member fingerprints, seals and Card rows — not only the returned messages.
+//! These tests use the real token-guarded GUI routes, the real stdio MCP server, the real shell
+//! command and the real terminal Session, on scratch archives (`ZT_CONFIG_DIR`, `ZT_GUI_PORT=0`).
+//! They compare stored facts — the lock tables, member fingerprints, seals and Card rows — not only
+//! the returned messages.
 
 #![allow(dead_code)]
+
+mod support;
 
 use assert_cmd::Command;
 use rusqlite::Connection;
@@ -3022,6 +3025,474 @@ fn the_check_locks_command_records_evidence_and_exits_on_a_fault() {
         said.contains(&format!("latched: lock {lock_id} trigger-missing lock_no_move_in")),
         "{said}"
     );
+}
+
+/// R232/S08-AC02: a Literature tree is a tree too. The Session refuses its metadata and authored
+/// edits before the part choice, so no editor opens over frozen bibliographic data.
+#[test]
+fn the_session_refuses_a_locked_literature_edit_before_the_part_choice() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let key = address(mcp.ok(
+        "create_literature",
+        json!({ "bibtex": "@book{Smith2024, title={Book}}", "body": "该书。" }),
+    ));
+    let chapter = card(&mut mcp, &key, "Chapter", &format!("chapter of [[{key}]]"));
+    let lock = gui.lock(&key, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let before = stored_texts(&home);
+    let output = home
+        .cmd()
+        .write_stdin(format!("go {key}\ne\ngo {chapter}\ne\nq\n"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    // The Literature Card's title row is the Citation key row, and it carries the same mark.
+    assert!(said.contains(&format!("citation key: {key} [locked]")), "{said}");
+    assert_eq!(
+        said.matches(&format!(
+            "card `{key}` is in locked tree `{key}` (lock {lock_id}); unlock the tree in the GUI first"
+        ))
+        .count(),
+        1,
+        "{said}"
+    );
+    assert_eq!(
+        said.matches(&format!(
+            "card `{chapter}` is in locked tree `{key}` (lock {lock_id}); unlock the tree in the GUI first"
+        ))
+        .count(),
+        1,
+        "{said}"
+    );
+    // Neither the part choice nor a metadata or text editor was offered.
+    assert!(!said.contains("invalid edit option"), "{said}");
+    assert!(!said.contains("metadata edit"), "{said}");
+    assert!(!said.contains("edit mode"), "{said}");
+    assert_eq!(stored_texts(&home), before);
+}
+
+/// R034/R044/S08-AC03: the shell and the Session offer no Lock control. A terminal user sees the
+/// marks, the refusal hint and the status counts, and the only Lock command anywhere is the GUI.
+#[test]
+fn the_shell_and_the_session_offer_no_lock_command() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+
+    // The shell help names no Lock action; `--check-locks` reports the promise, it cannot change it.
+    let shell = home.cmd().arg("help").output().expect("zt help");
+    let said = String::from_utf8_lossy(&shell.stdout);
+    assert!(said.contains("zt status --check-locks"), "{said}");
+    let without_check = said.replace("--check-locks", "");
+    assert!(
+        !without_check.to_lowercase().contains("lock"),
+        "the shell offers no Lock control: {said}"
+    );
+    // So does the Session's help, at ROOT and on a Card, and a lock command is unknown.
+    let output = home
+        .cmd()
+        .write_stdin(format!(
+            "help\ngo {first}\nhelp\nlock {root}\nunlock {root}\nq\n"
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    for line in said
+        .lines()
+        .filter(|line| line.starts_with("  ") || line.contains(" | "))
+    {
+        assert!(
+            !line.to_lowercase().contains("lock"),
+            "the Session offers no Lock command: {line}"
+        );
+    }
+    assert!(said.contains("unknown session command: lock"), "{said}");
+    assert!(said.contains("unknown session command: unlock"), "{said}");
+    // The status counts are the shell's view of the promise, not a control over it.
+    assert!(
+        String::from_utf8_lossy(&home.cmd().arg("status").output().unwrap().stdout)
+            .contains("locks: 1 tree, 2 cards, 0 pinned targets; integrity ok"),
+        "status reports the promise"
+    );
+}
+
+/// R233/R234/R235/S08-AC04: `zt status` reports the active Locked trees, their member snapshot rows
+/// and the DISTINCT pinned target rows, prints `integrity ok` only for a healthy comparison, and
+/// keeps its exit code 0: only `--check-locks` fails on a fault.
+#[test]
+fn ordinary_status_reports_the_lock_scope_and_its_integrity() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let side = side_card(&mut mcp, &first, "Side", "side body");
+    let outside_root = topic(&mut mcp, "Outside");
+    let target = card(&mut mcp, &outside_root, "Target", "target body");
+    // Two members of the Locked tree name the same outside Card: two pin rows, one target row.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("links [[{target}]]") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": side, "body": format!("links [[{target}]] too") }),
+    );
+    let lock = gui.lock(&root, Some("status scope"));
+
+    let status = home.cmd().arg("status").output().expect("zt status");
+    assert!(
+        status.status.success(),
+        "ordinary status reports; it does not fail: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    let said = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        said.contains("locks: 1 tree, 3 cards, 1 pinned target; integrity ok"),
+        "{said}"
+    );
+    // The checked command names the same scope on its own line and still exits 0 while healthy.
+    let checked = home
+        .cmd()
+        .args(["status", "--check-locks"])
+        .output()
+        .expect("zt status --check-locks");
+    assert_eq!(checked.status.code(), Some(0));
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(
+        said.contains("locks: 1 tree, 3 cards, 1 pinned target"),
+        "{said}"
+    );
+    // R236/S08-AC06: the counts come from the Lock book itself. No persisted check result and no new
+    // polling table was added to answer status.
+    let tables: Vec<String> = home
+        .db()
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%lock%' ORDER BY name")
+        .expect("tables")
+        .query_map([], |row| row.get(0))
+        .expect("tables")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("tables");
+    assert_eq!(
+        tables,
+        ["lock_events", "lock_members", "lock_pins", "locks"],
+        "the Lock schema is still the four evidence tables"
+    );
+
+    // An ended Lock counts nowhere: its members are history, not an active promise.
+    gui.unlock(lock["lock_id"].as_i64().expect("lock id"));
+    let said = String::from_utf8_lossy(&home.cmd().arg("status").output().unwrap().stdout).to_string();
+    assert!(
+        said.contains("locks: 0 trees, 0 cards, 0 pinned targets; integrity ok"),
+        "{said}"
+    );
+
+    // A second promise with no Links out counts its own tree only.
+    let second = gui.lock(&outside_root, None);
+    let said = String::from_utf8_lossy(&home.cmd().arg("status").output().unwrap().stdout).to_string();
+    assert!(
+        said.contains("locks: 1 tree, 2 cards, 0 pinned targets; integrity ok"),
+        "{said}"
+    );
+    gui.unlock(second["lock_id"].as_i64().expect("lock id"));
+}
+
+/// R235/S08-AC04: a fault prints the faulted roots and a concise diagnostic instead of a health
+/// claim, while ordinary status still reports rather than failing.
+#[test]
+fn an_ordinary_status_reports_a_lock_fault_instead_of_health() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+    // Outside tampering: the member's authored text changes while its trigger is gone.
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_change")
+        .expect("drop the trigger");
+    home.db()
+        .execute(
+            "UPDATE cards SET text = '# First\n\nchanged body\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper");
+    let status = home.cmd().arg("status").output().expect("zt status");
+    assert!(
+        status.status.success(),
+        "ordinary status reports a fault without failing: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    let said = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        said.contains("locks: 1 tree, 2 cards, 0 pinned targets; integrity faulted"),
+        "{said}"
+    );
+    assert!(said.contains(&format!("faulted roots: {root}")), "{said}");
+    assert!(!said.contains("integrity ok"), "{said}");
+    // The check command is the one that fails, and it agrees about the scope and the fault.
+    let checked = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert_eq!(checked.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(
+        said.contains("locks: 1 tree, 2 cards, 0 pinned targets"),
+        "{said}"
+    );
+}
+
+/// R235/S08-AC05: a database the command cannot read is reported as unavailable, never converted
+/// into a healthy zero-Lock result, and the unconfigured archive keeps its down/unset output.
+#[test]
+fn an_unreadable_database_reports_the_lock_scope_as_unavailable() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    drop(mcp);
+    home.cmd().arg("down").assert().success();
+    // A file that is not a SQLite database: the read fails instead of answering "no Locks".
+    fs::write(home.archive_root.join("zt.sqlite3"), "not a database").expect("corrupt the database");
+    let status = home.cmd().arg("status").output().expect("zt status");
+    let said = String::from_utf8_lossy(&status.stdout);
+    assert!(said.contains("locks: unavailable ("), "{said}");
+    assert!(
+        !said.contains("0 trees, 0 cards, 0 pinned targets"),
+        "an unreadable database is not a healthy zero: {said}"
+    );
+    let checked = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert_eq!(checked.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(said.contains("integrity: unavailable ("), "{said}");
+    assert!(!said.contains("integrity: ok"), "{said}");
+    // An archive that is not configured keeps today's down/unset output and adds no lock claim.
+    let unset = tempfile::tempdir().expect("tempdir");
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("zt"))
+        .arg("status")
+        .env("ZT_CONFIG_DIR", unset.path())
+        .env("ZT_GUI_PORT", "0")
+        .output()
+        .expect("zt status without an archive");
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("state: down"), "{said}");
+    assert!(said.contains("archive_root: <unset>"), "{said}");
+    assert!(!said.contains("locks:"), "{said}");
+    let checked = std::process::Command::new(assert_cmd::cargo::cargo_bin("zt"))
+        .args(["status", "--check-locks"])
+        .env("ZT_CONFIG_DIR", unset.path())
+        .env("ZT_GUI_PORT", "0")
+        .output()
+        .expect("zt status --check-locks without an archive");
+    assert_eq!(checked.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(said.contains("archive_root: <unset>"), "{said}");
+    assert!(!said.contains("locks:"), "{said}");
+    assert!(!said.contains("integrity: ok"), "{said}");
+}
+
+/// R231/S08-AC01: the line Session's Card view marks the held Card with `[locked]` and/or
+/// `[pinned]`, the marks clear when navigation leaves that state, and ordinary navigation stays
+/// available. The marks name the held Card, never the tree it came from.
+#[test]
+fn the_line_session_marks_the_held_card_locked_or_pinned() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside_root = topic(&mut mcp, "Outside");
+    let target = card(&mut mcp, &outside_root, "Target", "target body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("links [[{target}]]") }),
+    );
+    gui.lock(&root, None);
+    let output = home
+        .cmd()
+        .write_stdin(format!(
+            "go {root}\ngo {first}\ngo {target}\ngo {outside_root}\nup\nstatus\nq\n"
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    assert!(
+        said.contains(&format!("location: {root} [locked]")),
+        "the Locked tree's root is marked: {said}"
+    );
+    assert!(
+        said.contains(&format!("location: {first} [locked]")),
+        "a member is marked: {said}"
+    );
+    assert!(
+        said.contains(&format!("location: {target} [pinned]")),
+        "a pinned target is marked, and is not called locked: {said}"
+    );
+    // Navigating outside the promise clears the marks, so they describe the held Card only.
+    assert!(
+        said.contains(&format!("location: {outside_root}\n")),
+        "an unlocked Card carries no mark: {said}"
+    );
+    assert!(
+        !said.contains(&format!("location: {outside_root} [")),
+        "no mark survives navigation: {said}"
+    );
+    // The Session's own status names the same promise the shell reports (R044, S08-AC04).
+    assert!(
+        said.contains("locks: 1 tree, 2 cards, 1 pinned target; integrity ok"),
+        "the Session status reports the promise: {said}"
+    );
+}
+
+/// R231/S08-AC01: the TUI renders the same facts, through the same Card view and against the real
+/// terminal protocol.
+#[test]
+fn the_tui_marks_the_held_card_locked_or_pinned() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+    let program = assert_cmd::cargo::cargo_bin("zt");
+    let mut session = support::pty::PtySession::spawn(&program, &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text(&format!("go {first}"));
+    session.send_enter();
+    session.wait_for_text(&format!("location: {first} [locked]"));
+    session.send_text(&format!("go {root}"));
+    session.send_enter();
+    session.wait_for_text(&format!("location: {root} [locked]"));
+    session.send_text("q");
+    session.send_enter();
+    session.wait_for_exit();
+}
+
+/// R232/S08-AC02/S08-AC03: the Session refuses every locked write before it opens an editor or asks
+/// for confirmation, names the Locked tree and the GUI unlock, and leaves the archive as it was. The
+/// metadata setters write with no editor, so their refusal is the transaction-time guard itself.
+#[test]
+fn the_session_refuses_locked_writes_before_any_editor_or_confirmation() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside_root = topic(&mut mcp, "Outside");
+    let movable = card(&mut mcp, &outside_root, "Movable", "movable body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let before = stored_texts(&home);
+    let members_before = {
+        let conn = home.db();
+        member_rows(&conn, lock_id)
+    };
+
+    let output = home
+        .cmd()
+        .write_stdin(format!(
+            "go {first}\ne\nn\nb\ndel\nins\nmv before {movable}\nty event\nlv concept\nmf theorem\nq\n"
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    // The owner's refusal names the exact Card, its Locked tree and the only way out (R217, R232).
+    let refusal = format!("card `{first}` is in locked tree `{root}` (lock {lock_id}); unlock the tree in the GUI first");
+    assert_eq!(said.matches(&refusal).count(), 7, "{said}");
+    // A new Card would land inside the Locked tree, and a Locked tree takes none.
+    let next_direct = format!("{}/2", tree_of(&first));
+    assert!(
+        said.contains(&format!(
+            "`{next_direct}` is inside locked tree `{root}` (lock {lock_id})"
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("`{first}|a` is inside locked tree `{root}`")),
+        "{said}"
+    );
+    // No editor opened and no confirmation was asked, so no work was typed away and lost.
+    assert!(!said.contains("edit mode"), "no editor opened: {said}");
+    assert!(!said.contains("to confirm"), "no prompt opened: {said}");
+    // Nothing was written: every Card text and every member baseline is unchanged.
+    assert_eq!(stored_texts(&home), before);
+    let conn = home.db();
+    assert_eq!(member_rows(&conn, lock_id), members_before);
+    drop(conn);
+
+    // After the owner unlocks in the GUI the same work is available again.
+    gui.unlock(lock_id);
+    let output = home
+        .cmd()
+        .write_stdin(format!(
+            "go {first}\nn\n# New\n\nnew body\n\n<!-- zt:reverse-links -->\n\x13\nq\n"
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    assert!(!said.contains("locked tree"), "{said}");
+    assert!(said.contains("edit mode"), "the editor opened: {said}");
+    assert!(
+        said.contains(&format!("location: {next_direct}")),
+        "the new Card was created: {said}"
+    );
+}
+
+/// R232/S08-AC02: a Session whose read view was drawn before a Lock still refuses the later write, so
+/// a stale view cannot carry an edit into a frozen tree. The transaction-time guard covers the
+/// commands that write with no editor at all.
+#[test]
+fn a_session_view_drawn_before_a_lock_refuses_the_later_write() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let before = stored_texts(&home);
+    let program = assert_cmd::cargo::cargo_bin("zt");
+    let mut session = support::pty::PtySession::spawn(&program, &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text(&format!("go {first}"));
+    session.send_enter();
+    // The view names the Card and no mark: the tree is not locked yet.
+    session.wait_for_text(&format!("location: {first}\n"));
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    // The editor never opens over the Card the later Lock froze.
+    session.send_text("e");
+    session.send_enter();
+    session.wait_for_text(&format!("is in locked tree `{root}` (lock {lock_id})"));
+    // A setter that needs no editor is refused by the transaction-time guard itself.
+    session.send_text("ty event");
+    session.send_enter();
+    session.wait_for_text_count(&format!("is in locked tree `{root}` (lock {lock_id})"), 2);
+    session.send_text("q");
+    session.send_enter();
+    session.wait_for_exit();
+    let said = session.plain_output();
+    assert!(
+        !said.contains("edit mode"),
+        "the editor never opened over a Locked Card: {said}"
+    );
+    assert_eq!(stored_texts(&home), before, "the refused commands changed no Card");
 }
 
 /// R295/S06-AC06: a run that cannot persist its evidence says so and exits 1; it never reports a

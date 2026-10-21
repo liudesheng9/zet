@@ -347,6 +347,9 @@ pub(super) struct Status {
     pub(super) archive_root: String,
     pub(super) sqlite: String,
     pub(super) cards: i64,
+    /// The `locks:` line: the active promise and its integrity, exactly as `zt status` reports it
+    /// (R044, R234, S08-AC04).
+    pub(super) locks: String,
     pub(super) sessions: i64,
 }
 
@@ -515,6 +518,7 @@ fn execute_command(
                 archive_root: root.display().to_string(),
                 sqlite: crate::db_path(root).display().to_string(),
                 cards: counts.total,
+                locks: crate::lock_status_line(root),
                 sessions: super::session_count(root),
             })))
         }
@@ -556,6 +560,9 @@ fn execute_command(
             if crate::location_exists(&conn, &location)? {
                 bail!("direct successor already exists: {location}");
             }
+            // R232 (S08-AC02): a Locked destination refuses before the editor opens. The writer
+            // checks again, because an editor can outlive the view this precheck reads.
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
             let mut save = |text: &str| {
                 crate::insert_card(
                     &mut conn,
@@ -579,6 +586,7 @@ fn execute_command(
             let parent = crate::load_card(&conn, &at)?;
             crate::ensure_side_parent(&parent)?;
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
             let mut save = |text: &str| {
                 crate::insert_card(
                     &mut conn,
@@ -630,6 +638,9 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root, "session e")?;
             let mut conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
+            // R232 (S08-AC02): the Locked Card refuses before the part choice or the editor opens.
+            // The writers check again, so an editor opened before a Lock cannot save into it.
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Edit(card.row_id))?;
             if card.is_lit {
                 return match interaction.choose_literature_edit_part()? {
                     crate::EditPart::Metadata => {
@@ -700,6 +711,8 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root, "session del")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::delete_plan(&conn, &at)?;
+            // R232 (S08-AC02): no confirmation is asked for a deletion the Lock forbids.
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Delete(&plan))?;
             interaction.confirm(&plan.confirmation, &crate::delete_verification_lines(&plan))?;
             crate::apply_delete_plan(&mut conn, plan)?;
             state.pointer = crate::parent_location(&at)
@@ -723,6 +736,8 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root, "session mv")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::place::move_plan(&conn, &at, &target, alone)?;
+            // R232 (S08-AC02): the complete mapping refuses before the confirmation prompt.
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
             interaction.confirm("move", &crate::move_verification_lines(&plan))?;
             crate::apply_move_plan(&mut conn, &plan)?;
             let moved_to = plan.mapping.get(&at).cloned().unwrap_or(at);
@@ -735,6 +750,10 @@ fn execute_command(
             let _lock = crate::acquire_edit_lock(root, "session ins")?;
             let mut conn = crate::open_db(root)?;
             let plan = crate::place::insert_plan(&conn, &at)?;
+            // R232 (S08-AC02): the renumbering and the new Card's destination are both checked
+            // before the confirmation or the editor opens.
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
+            crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
             interaction.confirm("insert", &crate::place::insert_verification_lines(&plan))?;
             let mut save = |text: &str| {
                 crate::place::apply_insert_plan(&mut conn, &plan, crate::CardType::Idea, None, text)
@@ -1410,6 +1429,7 @@ mod tests {
                 archive_root: temp.path().display().to_string(),
                 sqlite: crate::db_path(temp.path()).display().to_string(),
                 cards: 0,
+                locks: "locks: 0 trees, 0 cards, 0 pinned targets; integrity ok".to_string(),
                 sessions: 0,
             }))
         );

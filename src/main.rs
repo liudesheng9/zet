@@ -1835,6 +1835,7 @@ fn cmd_status() -> Result<()> {
         "cards: {}",
         card_counts(&root).map(|c| c.total).unwrap_or(0)
     );
+    println!("{}", lock_status_line(&root));
     println!("sessions: {}", session::session_count(&root));
     if let Some(line) = autostart::status_line() {
         println!("{line}");
@@ -1842,11 +1843,30 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
+/// The `locks:` line of ordinary status (R233–R235, S08-AC04): the active Locked trees, their member
+/// snapshot rows and the distinct pinned target rows, with the full comparison that alone licenses
+/// the words `integrity ok`. A database or read error is reported as unavailable, never converted
+/// into a healthy zero-Lock result (R235).
+fn lock_status_line(root: &Path) -> String {
+    if !db_path(root).exists() {
+        return "locks: unavailable (no archive database yet)".to_string();
+    }
+    read_lock_status(root).unwrap_or_else(|error| format!("locks: unavailable ({error:#})"))
+}
+
+fn read_lock_status(root: &Path) -> Result<String> {
+    let conn = open_db(root)?;
+    let scope = tree_lock::scope(&conn)?;
+    let integrity = tree_lock::check(&conn)?;
+    Ok(scope.line(&integrity))
+}
+
 /// `zt status --check-locks` (R291, S06-AC06): the full integrity comparison, with any newly
 /// observed fault recorded once under the edit lock, then exit 1 on a current or latched fault of an
 /// active Lock. A healthy archive is only read. A run that finds a fault but cannot hold the edit
 /// lock says so and also exits 1: it may not report a health it did not record (R295). The status
-/// check never queues behind a writer; rerun it when the writer is done.
+/// check never queues behind a writer; rerun it when the writer is done. It first prints the active
+/// Lock scope as its own `locks:` line (R236, S08-AC05).
 fn cmd_status_check_locks() -> Result<()> {
     let config = Config::load()?;
     let Some(root) = config.archive_root else {
@@ -1856,14 +1876,15 @@ fn cmd_status_check_locks() -> Result<()> {
         std::process::exit(1);
     };
     println!("archive_root: {}", root.display());
-    let checked = (|| -> Result<(tree_lock::Integrity, usize, tree_lock::Integrity)> {
+    let checked = (|| -> Result<(tree_lock::Scope, tree_lock::Integrity, usize, tree_lock::Integrity)> {
         let conn = open_db(&root)?;
+        let scope = tree_lock::scope(&conn)?;
         let integrity = tree_lock::check(&conn)?;
         if !integrity.needs_recording() {
             // Nothing new to store: a latch is already stored evidence, so one comparison answers
             // both what was found and what the panel will show.
             let after = integrity.clone();
-            return Ok((integrity, 0, after));
+            return Ok((scope, integrity, 0, after));
         }
         let _lock = acquire_edit_lock(&root, "status --check-locks")?;
         let tx = conn.unchecked_transaction()?;
@@ -1872,9 +1893,9 @@ fn cmd_status_check_locks() -> Result<()> {
         tx.commit()?;
         // The latches the service will show include the events this run just wrote.
         let after = tree_lock::check(&conn)?;
-        Ok((fresh, recorded, after))
+        Ok((scope, fresh, recorded, after))
     })();
-    let (integrity, recorded, after) = match checked {
+    let (scope, integrity, recorded, after) = match checked {
         Ok(checked) => checked,
         Err(error) => {
             println!("integrity: unavailable ({error:#})");
@@ -1882,6 +1903,7 @@ fn cmd_status_check_locks() -> Result<()> {
             std::process::exit(1);
         }
     };
+    println!("{}", scope.counts());
     println!("integrity: {}", if after.ok() { "ok" } else { "faulted" });
     println!("recorded: {recorded} new fault event(s)");
     for fault in &integrity.faults {

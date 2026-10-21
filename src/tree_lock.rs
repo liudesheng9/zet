@@ -2054,6 +2054,120 @@ impl Integrity {
     }
 }
 
+/// The active promise scope one `zt status` line reports (R233–R235, S08-AC04): the active Locks, the
+/// member snapshot rows they promise and the distinct pinned target rows they freeze. A Lock that
+/// ended counts nowhere, and two pin rows naming one target count once.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Scope {
+    trees: i64,
+    cards: i64,
+    pinned_targets: i64,
+    /// One root address per active Lock id, so a fault names the trees it leaves unprotected.
+    roots: BTreeMap<i64, String>,
+}
+
+impl Scope {
+    /// `locks: 3 trees, 412 cards, 57 pinned targets`: the counts alone, for a command that prints its
+    /// integrity result on its own line.
+    pub(crate) fn counts(&self) -> String {
+        format!(
+            "locks: {} {}, {} {}, {} pinned {}",
+            self.trees,
+            plural(self.trees, "tree"),
+            self.cards,
+            plural(self.cards, "card"),
+            self.pinned_targets,
+            plural(self.pinned_targets, "target"),
+        )
+    }
+
+    /// The exact user-facing contract of §11: the counts and `; integrity ok`, or a concise
+    /// diagnostic and the faulted roots instead of that claim (R234, R235).
+    pub(crate) fn line(&self, integrity: &Integrity) -> String {
+        let mut line = format!("{}; {}", self.counts(), integrity.summary());
+        if !integrity.ok() {
+            let roots = self.faulted_roots(integrity);
+            line.push_str(&format!(
+                "; faulted roots: {}",
+                if roots.is_empty() {
+                    "none".to_string()
+                } else {
+                    roots.join(", ")
+                }
+            ));
+        }
+        line
+    }
+
+    /// The active Locked roots that carry a current or latched fault. A schema fault leaves every
+    /// active promise unprotected, so it names every root.
+    fn faulted_roots(&self, integrity: &Integrity) -> Vec<String> {
+        self.roots
+            .iter()
+            .filter(|(lock_id, _)| {
+                !integrity.faults_of(**lock_id).is_empty() || !integrity.latched_of(**lock_id).is_empty()
+            })
+            .map(|(_, root)| root.clone())
+            .collect()
+    }
+}
+
+fn plural(count: i64, word: &str) -> String {
+    if count == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
+/// The active Lock scope of one archive. An archive whose Tree Lock record is not installed or is not
+/// the supported generation cannot answer, so its caller reports `unavailable` instead of a healthy
+/// zero-Lock result (R235, R298). Reading the scope starts no Lock operation and writes nothing.
+pub(crate) fn scope(conn: &Connection) -> Result<Scope> {
+    if schema_version(conn)? != Some(SCHEMA_VERSION.to_string()) {
+        bail!("the Tree Lock schema is not installed or is not the supported generation");
+    }
+    if conn.is_autocommit() {
+        let view = conn.unchecked_transaction()?;
+        let scope = read_scope(&view)?;
+        let _ = view.rollback();
+        Ok(scope)
+    } else {
+        read_scope(conn)
+    }
+}
+
+fn read_scope(conn: &Connection) -> Result<Scope> {
+    let active = "FROM locks l WHERE l.unlocked_at IS NULL";
+    let trees = conn.query_row(&format!("SELECT COUNT(*) {active}"), [], |row| row.get(0))?;
+    let cards = conn.query_row(
+        "SELECT COUNT(*) FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
+          WHERE l.unlocked_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let pinned_targets = conn.query_row(
+        "SELECT COUNT(DISTINCT p.target_row) FROM lock_pins p JOIN locks l ON l.lock_id = p.lock_id
+          WHERE l.unlocked_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut roots = BTreeMap::new();
+    let mut stmt = conn.prepare(&format!("SELECT lock_id, root_address {active} ORDER BY lock_id"))?;
+    for row in stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (lock_id, root) = row?;
+        roots.insert(lock_id, root);
+    }
+    Ok(Scope {
+        trees,
+        cards,
+        pinned_targets,
+        roots,
+    })
+}
+
 /// A stored Card row with its raw metadata values, so a decoder fallback cannot hide a changed
 /// Workspace, kind or type (R288).
 struct StoredCard {
@@ -3376,6 +3490,157 @@ mod tests {
         let second = lock_tx(&tx, &plan_again).expect("second lock");
         tx.commit().expect("commit");
         assert_ne!(second.lock_id, lock.lock_id);
+    }
+
+    /// R234/R235/S08-AC04: the `zt status` line reports the active Locks, their member snapshot rows
+    /// and the distinct pinned target rows. Two locked sources naming one target count once, an
+    /// ended Lock counts nowhere, and the healthy form is exactly the user-facing contract.
+    #[test]
+    fn the_status_line_counts_active_locks_member_rows_and_distinct_pinned_targets() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        crate::insert_card(
+            &mut conn,
+            "2/0",
+            true,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Far", "far body"),
+        )
+        .expect("far topic");
+        crate::insert_card(
+            &mut conn,
+            "3/0",
+            true,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Outside", "outside body"),
+        )
+        .expect("outside topic");
+        crate::insert_card(
+            &mut conn,
+            "3/1",
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Target", "target body"),
+        )
+        .expect("target card");
+        // A second member of the same tree names the same external target, so the two pin rows are
+        // one distinct pinned target.
+        crate::insert_card(
+            &mut conn,
+            &format!("{}|b", first_address(&root)),
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Side again", "links [[3/1]] as well"),
+        )
+        .expect("second side card");
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        let healthy = scope(&conn).expect("scope");
+        assert_eq!(healthy.trees, 1);
+        assert_eq!(healthy.cards, 4, "the root and its three Regular Cards");
+        assert_eq!(healthy.pinned_targets, 1, "two pin rows, one target row");
+        assert_eq!(
+            healthy.line(&check(&conn).expect("check")),
+            "locks: 1 tree, 4 cards, 1 pinned target; integrity ok"
+        );
+        // A second active Lock counts; ending the first one removes its members from the counts.
+        let second_root = "2/0";
+        let second_plan = resolve_plan(&conn, second_root, None).expect("second plan");
+        let tx = conn.transaction().expect("transaction");
+        lock_tx(&tx, &second_plan).expect("second lock");
+        tx.commit().expect("commit");
+        let both = scope(&conn).expect("scope both");
+        assert_eq!((both.trees, both.cards, both.pinned_targets), (2, 5, 1));
+        let tx = conn.transaction().expect("transaction");
+        unlock_tx(&tx, lock.lock_id).expect("unlock");
+        tx.commit().expect("commit");
+        assert_eq!(
+            scope(&conn).expect("scope after unlock").line(&check(&conn).expect("check")),
+            "locks: 1 tree, 1 card, 0 pinned targets; integrity ok"
+        );
+    }
+
+    /// R235/S08-AC04: a fault prints the faulted roots and a concise diagnostic instead of a health
+    /// claim, and recorded evidence that a later comparison cannot erase keeps it faulted.
+    #[test]
+    fn a_faulted_status_line_names_the_faulted_roots_and_the_diagnostic() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        assert_eq!(
+            scope(&conn).expect("scope").line(&check(&conn).expect("check")),
+            "locks: 1 tree, 3 cards, 0 pinned targets; integrity ok"
+        );
+        // Outside tampering: a member's authored text changes while its protection trigger is gone.
+        let original = crate::load_card(&conn, &first_address(&root)).expect("first");
+        conn.execute_batch("DROP TRIGGER lock_no_change")
+            .expect("drop trigger");
+        conn.execute(
+            "UPDATE cards SET text = '# First\n\nchanged body\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [first_address(&root)],
+        )
+        .expect("tamper");
+        let faulted = scope(&conn).expect("scope").line(&check(&conn).expect("check"));
+        assert!(
+            faulted.starts_with("locks: 1 tree, 3 cards, 0 pinned targets; integrity faulted: 2 current faults"),
+            "{faulted}"
+        );
+        assert!(faulted.ends_with(&format!("faulted roots: {root}")), "{faulted}");
+        // Recording the evidence and restoring the archive does not restore health: the latch keeps
+        // the tree's root faulted until the owner reviews it.
+        let observed = check(&conn).expect("check");
+        let tx = conn.transaction().expect("transaction");
+        record_faults_tx(&tx, &observed).expect("record");
+        tx.commit().expect("commit");
+        // Restoring the text is only possible while the trigger is still gone; restoring the trigger
+        // then leaves no current fault, only the recorded evidence.
+        conn.execute(
+            "UPDATE cards SET text = ?1 WHERE location = ?2",
+            params![original.text, first_address(&root)],
+        )
+        .expect("restore the text");
+        let trigger = TRIGGER_DEFS
+            .iter()
+            .find(|(name, _)| *name == "lock_no_change")
+            .map(|(_, sql)| *sql)
+            .expect("the canonical trigger");
+        conn.execute_batch(trigger).expect("restore the trigger");
+        let latched = check(&conn).expect("check");
+        assert!(latched.faults.is_empty(), "{:?}", latched.faults);
+        assert_eq!(latched.latched.len(), 2, "{:?}", latched.latched);
+        let line = scope(&conn).expect("scope").line(&latched);
+        assert!(!line.contains("integrity ok"), "{line}");
+        assert!(line.contains("2 latched"), "{line}");
+        assert!(line.ends_with(&format!("faulted roots: {root}")), "{line}");
+    }
+
+    /// R235/R298/S08-AC04: an archive whose Tree Lock record is not installed cannot answer with
+    /// counts, so the caller reports `unavailable` instead of a healthy zero-Lock result.
+    #[test]
+    fn a_scope_without_the_lock_schema_is_an_error_not_a_healthy_zero() {
+        let (_temp, mut conn) = archive();
+        topic_tree(&mut conn);
+        conn.execute_batch(&format!(
+            "DELETE FROM metadata WHERE key = '{SCHEMA_KEY}';"
+        ))
+        .expect("erase the version marker");
+        let error = scope(&conn).expect_err("an uninstalled Lock record cannot be read");
+        assert!(error.to_string().contains("not installed"), "{error}");
+        // The same archive's comparison reports the unreadable record as a fault, never as health.
+        assert!(!check(&conn).expect("check").ok());
     }
 
     /// S02 (#125, R083): one pin per distinct `(locked source row, existing target row)` pair, so a

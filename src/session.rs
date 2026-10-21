@@ -178,6 +178,7 @@ fn line_result_lines(result: CommandResult) -> Vec<String> {
             format!("archive_root: {}", status.archive_root),
             format!("sqlite: {}", status.sqlite),
             format!("cards: {}", status.cards),
+            status.locks,
             format!("sessions: {}", status.sessions),
         ],
         CommandResult::List(_)
@@ -342,6 +343,23 @@ fn markdown_view_lines(text: &str) -> Vec<ViewLine> {
         .collect()
 }
 
+/// The marks the Card view's title row appends (R231, S08-AC01): ` [locked]` for a Card of an active
+/// Locked tree, ` [pinned]` for a Card one or more active Locked trees link from outside, and both
+/// when both hold. Columns name the held Card, so ordinary navigation clears them; no terminal
+/// command can take or release a Lock (R034, R044). An archive whose Lock record cannot be read
+/// shows no mark rather than a made-up one.
+fn card_marks(conn: &Connection, row_id: i64) -> Result<String> {
+    let lock = crate::tree_lock::LockView::read(conn, Some(&[row_id]))?;
+    let mut marks = String::new();
+    if lock.is_locked(row_id) {
+        marks.push_str(" [locked]");
+    }
+    if !lock.pinned_by(row_id).is_empty() {
+        marks.push_str(" [pinned]");
+    }
+    Ok(marks)
+}
+
 /// The card view shared by the line Session and the TUI. ROOT shows the two
 /// Zones of the current Workspace: its Topics and its Literature Cards.
 fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Result<Vec<ViewLine>> {
@@ -384,12 +402,15 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
         }
         Pointer::Card(target) => {
             let card = load_card(conn, target)?;
+            let marks = card_marks(conn, card.row_id)?;
             if card.is_lit {
                 let citation_key = card
                     .citation_key
                     .as_deref()
                     .context("Literature Card is missing its Citation key")?;
-                lines.push(ViewLine::Plain(format!("citation key: {citation_key}")));
+                lines.push(ViewLine::Plain(format!(
+                    "citation key: {citation_key}{marks}"
+                )));
                 lines.push(ViewLine::Plain("metadata:".to_string()));
                 let bibtex = card
                     .bibtex
@@ -413,7 +434,7 @@ fn view_lines(conn: &Connection, pointer: &Pointer, workspace: Workspace) -> Res
                     },
                 };
                 lines.push(ViewLine::Plain(format!(
-                    "location: {}{card_type}",
+                    "location: {}{card_type}{marks}",
                     card.address
                 )));
             }
@@ -2580,6 +2601,62 @@ mod tests {
         let mut registered = active_session_pids(root.path(), |_| true);
         registered.sort_unstable();
         assert_eq!(registered, (1..=12).collect::<Vec<_>>());
+    }
+
+    /// R231/S08-AC01: a Card can carry both marks at once, and each mark is read from that Card's own
+    /// row: a member of one Locked tree that another Locked tree links from outside is both.
+    #[test]
+    fn the_title_row_marks_a_card_that_is_both_locked_and_pinned() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let mut conn = crate::open_db(temp.path()).expect("open database");
+        let text = |title: &str, body: &str| crate::compose_card_text(title, body, "");
+        let frozen = crate::create_topic(&mut conn, crate::Workspace::Human, &text("Frozen", "frozen"))
+            .expect("frozen topic");
+        let inner = format!("{}/1", crate::tree_id(&frozen));
+        crate::insert_card(
+            &mut conn,
+            &inner,
+            false,
+            crate::Workspace::Human,
+            crate::CardType::Idea,
+            None,
+            &text("Inner", "inner body"),
+        )
+        .expect("inner card");
+        let linker_root =
+            crate::create_topic(&mut conn, crate::Workspace::Human, &text("Linker", "linker"))
+                .expect("linker topic");
+        let linker = format!("{}/1", crate::tree_id(&linker_root));
+        crate::insert_card(
+            &mut conn,
+            &linker,
+            false,
+            crate::Workspace::Human,
+            crate::CardType::Idea,
+            None,
+            &text("Linker card", &format!("links [[{inner}]]")),
+        )
+        .expect("linker card");
+        for root in [&frozen, &linker_root] {
+            let plan = crate::tree_lock::plan(&conn, root, None).expect("plan");
+            let tx = conn.transaction().expect("transaction");
+            crate::tree_lock::lock_tx(&tx, &plan).expect("lock");
+            tx.commit().expect("commit");
+        }
+        let card = crate::load_card(&conn, &inner).expect("inner card");
+        assert_eq!(card_marks(&conn, card.row_id).expect("marks"), " [locked] [pinned]");
+        let member_only = crate::load_card(&conn, &frozen).expect("frozen root");
+        assert_eq!(card_marks(&conn, member_only.row_id).expect("marks"), " [locked]");
+        // A Card in no promise carries no mark at all, so navigation clears both.
+        let loose_root = crate::create_topic(
+            &mut conn,
+            crate::Workspace::Human,
+            &text("Loose", "loose"),
+        )
+        .expect("loose topic");
+        let loose = crate::load_card(&conn, &loose_root).expect("loose root");
+        assert_eq!(card_marks(&conn, loose.row_id).expect("marks"), "");
     }
 
     #[test]
