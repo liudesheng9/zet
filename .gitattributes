@@ -4,3 +4,7 @@
 .claude/workflows/zt-math-digest.js text eol=lf
 .claude/workflow-framework/** text eol=lf
 scripts/book-digest/workflow/** text eol=lf
+
+# The Tree Lock PRD, design and issue map: every issue cites the design's SHA-256, so the bytes must
+# be the same in every checkout.
+docs/tree-lock-*.md text eol=lf
