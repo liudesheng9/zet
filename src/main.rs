@@ -93,6 +93,7 @@ fn run() -> Result<()> {
         [cmd] if cmd == "down" => cmd_down(),
         [cmd] if cmd == "status" => cmd_status(),
         [cmd, flag] if cmd == "status" && flag == "--check-links" => link_index::command(false),
+        [cmd, flag] if cmd == "status" && flag == "--check-locks" => cmd_status_check_locks(),
         [cmd] if cmd == "reindex" => link_index::command(true),
         [cmd] if cmd == "stats" => cmd_stats(),
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
@@ -1316,6 +1317,12 @@ fn initialize_database(root: &Path) -> Result<()> {
         cards_table("IF NOT EXISTS cards")
     ))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // R293: a migration here can rebuild `cards`, change row identity or drop the protection
+    // triggers, so an existing promise is compared and its evidence recorded before it runs.
+    {
+        let _lock = acquire_edit_lock(root, "migration integrity check")?;
+        tree_lock::check_before_migration(&conn)?;
+    }
     ensure_workspace_column(&conn, root)?;
     ensure_card_type_column(&conn, root)?;
     ensure_model_facet_column(&conn, root)?;
@@ -1327,9 +1334,33 @@ fn initialize_database(root: &Path) -> Result<()> {
     drop(conn);
     ensure_markdown_cards(root)?;
     // The Tree Lock tables and triggers are installed after every Card-table rebuild, so a
-    // migration never drops the SQL backstop it just installed.
+    // migration never drops the SQL backstop it just installed. The guarded startup comparison
+    // inspects the protection catalog BEFORE repairing it, so an accidentally missing or altered
+    // trigger is recorded and latched rather than silently restored (R290, R296–R298).
     let conn = open_db(root)?;
-    tree_lock::ensure_tx(&conn)?;
+    {
+        let _lock = acquire_edit_lock(root, "startup integrity check")?;
+        let guard = tree_lock::startup_guard(&conn)?;
+        let integrity = &guard.integrity;
+        if guard.recorded > 0 || !guard.repaired.is_empty() {
+            log_event(
+                root,
+                &format!(
+                    "tree lock startup: {} new fault event(s) recorded; protection reinstalled: {}",
+                    guard.recorded,
+                    if guard.repaired.is_empty() {
+                        "none".to_string()
+                    } else {
+                        guard.repaired.join(", ")
+                    }
+                ),
+            )
+            .ok();
+        }
+        if !integrity.ok() {
+            log_event(root, &format!("tree lock {}", integrity.summary())).ok();
+        }
+    }
     drop(conn);
     Ok(())
 }
@@ -1778,6 +1809,84 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
+/// `zt status --check-locks` (R291, S06-AC06): the full integrity comparison, with any newly
+/// observed fault recorded once under the edit lock, then exit 1 on a current or latched fault of an
+/// active Lock. A healthy archive is only read. A run that finds a fault but cannot hold the edit
+/// lock says so and also exits 1: it may not report a health it did not record (R295). The status
+/// check never queues behind a writer; rerun it when the writer is done.
+fn cmd_status_check_locks() -> Result<()> {
+    let config = Config::load()?;
+    let Some(root) = config.archive_root else {
+        println!("state: down");
+        println!("archive_root: <unset>");
+        println!("integrity: unavailable (archive_root is unset)");
+        std::process::exit(1);
+    };
+    println!("archive_root: {}", root.display());
+    let checked = (|| -> Result<(tree_lock::Integrity, usize, tree_lock::Integrity)> {
+        let conn = open_db(&root)?;
+        let integrity = tree_lock::check(&conn)?;
+        if !integrity.needs_recording() {
+            // Nothing new to store: a latch is already stored evidence, so one comparison answers
+            // both what was found and what the panel will show.
+            let after = integrity.clone();
+            return Ok((integrity, 0, after));
+        }
+        let _lock = acquire_edit_lock(&root, "status --check-locks")?;
+        let tx = conn.unchecked_transaction()?;
+        let fresh = tree_lock::check(&tx)?;
+        let recorded = tree_lock::record_faults_tx(&tx, &fresh)?;
+        tx.commit()?;
+        // The latches the service will show include the events this run just wrote.
+        let after = tree_lock::check(&conn)?;
+        Ok((fresh, recorded, after))
+    })();
+    let (integrity, recorded, after) = match checked {
+        Ok(checked) => checked,
+        Err(error) => {
+            println!("integrity: unavailable ({error:#})");
+            println!("recording: failed; no fault evidence was stored");
+            std::process::exit(1);
+        }
+    };
+    println!("integrity: {}", if after.ok() { "ok" } else { "faulted" });
+    println!("recorded: {recorded} new fault event(s)");
+    for fault in &integrity.faults {
+        println!("fault: {}", fault_line(fault));
+    }
+    for latched in &after.latched {
+        println!(
+            "latched: lock {} {} {} recorded {}",
+            latched.lock_id,
+            latched.kind,
+            latched.card.as_deref().unwrap_or("-"),
+            latched.at
+        );
+    }
+    // A latched fault stays unhealthy until the owner unlocks or relocks, so the exit code follows
+    // the same rule the panel does (R289, S06-AC05).
+    if !after.ok() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// One current fault as a single line, with the expected and observed fact that explains it.
+fn fault_line(fault: &tree_lock::Fault) -> String {
+    let scope = match fault.lock_id {
+        Some(lock_id) => format!("lock {lock_id}"),
+        None => "schema".to_string(),
+    };
+    let mut line = format!("{scope} {} {}: {}", fault.kind, fault.subject, fault.detail);
+    if let Some(expected) = &fault.expected {
+        line.push_str(&format!("; expected {expected}"));
+    }
+    if let Some(actual) = &fault.actual {
+        line.push_str(&format!("; found {actual}"));
+    }
+    line
+}
+
 fn cmd_stats() -> Result<()> {
     let root = require_service_up()?;
     let counts = card_counts(&root)?;
@@ -1893,6 +2002,7 @@ fn cmd_help() -> Result<()> {
         .unwrap_or(false);
     println!("zt commands:");
     println!("  zt status --check-links");
+    println!("  zt status --check-locks");
     println!("  zt reindex");
     println!("  zt up");
     println!("  zt down");

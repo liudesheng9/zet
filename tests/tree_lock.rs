@@ -1118,34 +1118,57 @@ fn the_panel_records_a_new_integrity_fault_once() {
         .collect::<Vec<_>>();
     assert!(kinds.contains(&"fingerprint-changed"), "{kinds:?}");
     assert!(kinds.contains(&"trigger-missing"), "{kinds:?}");
-    let first_events = panel["locks"]
+    // Each fault carries the facts that explain it, so the panel can answer "expected vs found".
+    let changed = faults
+        .iter()
+        .find(|fault| fault["kind"] == "fingerprint-changed")
+        .expect("fingerprint fault");
+    assert_eq!(changed["lock_id"], json!(lock_id));
+    assert_eq!(changed["card"], json!(first));
+    assert!(changed["expected"].as_str().is_some_and(|text| text.len() == 64));
+    assert!(changed["actual"].as_str().is_some_and(|text| text.len() == 64));
+    // The active Lock carries its own faults and a broken seal beside the seal it reviewed.
+    let listed = panel["locks"]
         .as_array()
         .unwrap()
         .iter()
         .find(|item| item["lock_id"] == lock_id)
-        .unwrap()["events"]
+        .expect("the active Lock");
+    assert_eq!(listed["seal_intact"], false);
+    assert_eq!(listed["seal"], lock["seal"], "the seal is never silently updated");
+    assert!(listed["faults"].as_array().unwrap().len() >= 2, "{listed}");
+    let first_events = listed["events"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|event| event["action"] == "integrity-fault")
         .count();
-    assert_eq!(first_events, 1, "a new fault is recorded once");
+    assert_eq!(first_events, 2, "the member fault and the lost trigger, once each");
 
     // A second scan of the same faults adds no event, and the seal is not silently repaired.
     let panel = gui.panel();
-    let again = panel["locks"]
+    let listed = panel["locks"]
         .as_array()
         .unwrap()
         .iter()
         .find(|item| item["lock_id"] == lock_id)
-        .unwrap()["events"]
+        .unwrap();
+    let again = listed["events"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|event| event["action"] == "integrity-fault")
         .count();
-    assert_eq!(again, 1);
+    assert_eq!(again, 2);
     assert_eq!(panel["locks"][0]["seal"], lock["seal"]);
+    assert_eq!(
+        panel["integrity"]["latched"].as_array().unwrap().len(),
+        2,
+        "the recorded faults stay latched on the active Lock: {panel}"
+    );
+    assert!(panel["integrity"]["summary"]
+        .as_str()
+        .is_some_and(|line| line.starts_with("integrity faulted:")));
 
     // The owner can still release a faulted Lock from its retained record. The missing trigger is
     // still reported, so the archive is not called healthy; the next service start reinstalls it.
@@ -1154,6 +1177,11 @@ fn the_panel_records_a_new_integrity_fault_once() {
     assert!(gui.active_lock().is_null());
     let panel = gui.panel();
     assert_eq!(panel["integrity"]["ok"], false, "{panel}");
+    assert_eq!(
+        panel["integrity"]["latched"],
+        json!([]),
+        "an ended Lock is history, not an active promise"
+    );
     let kinds = panel["integrity"]["faults"]
         .as_array()
         .unwrap()
@@ -2734,3 +2762,430 @@ fn the_lock_has_gui_routes_only_and_no_mcp_control_tool() {
     assert_eq!(status, 403, "{refused}");
     assert_eq!(gui.panel()["locks"].as_array().map(Vec::len), Some(0));
 }
+
+// ---------------------------------------------------------------------------------------------
+// S06 (#129): detect exact integrity faults and keep owner recovery reachable.
+// ---------------------------------------------------------------------------------------------
+
+/// The integrity-fault events a Lock retains, newest last.
+fn fault_events(panel: &Value, lock_id: i64) -> Vec<Value> {
+    panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .find(|lock| lock["lock_id"] == json!(lock_id))
+        .expect("the Lock")["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|event| event["action"] == "integrity-fault")
+        .cloned()
+        .collect()
+}
+
+fn fault_kinds(panel: &Value) -> Vec<String> {
+    panel["integrity"]["faults"]
+        .as_array()
+        .expect("faults")
+        .iter()
+        .map(|fault| fault["kind"].as_str().expect("kind").to_string())
+        .collect()
+}
+
+/// R027/R289/S06-AC04: an intact archive writes nothing when the panel opens, and a tampered one
+/// never gains a second event for the same fault.
+#[test]
+fn a_panel_open_records_nothing_while_the_promise_holds() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let revision: i64 = home
+        .db()
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'archive_revision'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("revision");
+
+    for _ in 0..3 {
+        let panel = gui.panel();
+        assert_eq!(panel["integrity"]["ok"], true, "{panel}");
+        assert_eq!(panel["integrity"]["latched"], json!([]));
+        assert_eq!(fault_events(&panel, lock_id), Vec::<Value>::new());
+    }
+    // An ordinary read and refresh is not a check point either.
+    mcp.ok("get_card", json!({ "at": first }));
+    gui.get("/api/overview");
+    let panel = gui.panel();
+    assert_eq!(fault_events(&panel, lock_id), Vec::<Value>::new());
+    let after: i64 = home
+        .db()
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'archive_revision'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("revision");
+    assert_eq!(
+        after, revision,
+        "reading, refreshing or opening a healthy panel changes no revision"
+    );
+}
+
+/// R229/R377/T20/T23, S06-AC08/S06-AC09: with the locked root gone, the panel reports the exact
+/// fault, keeps the reviewed seal, and still lets the owner release the retained Lock by id; the
+/// old evidence stays in history and a later Lock gets a new id.
+#[test]
+fn an_orphaned_faulted_lock_is_reported_and_released_from_the_panel() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, Some("keep the evidence"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let seal = lock["seal"].clone();
+
+    // Outside tampering: the protection triggers go first, then the whole tree, so the Lock keeps
+    // its record while its root Card is gone.
+    let raw = home.db();
+    raw.execute_batch(
+        "DROP TRIGGER lock_no_delete; DROP TRIGGER lock_no_change; DROP TRIGGER lock_no_insert;
+         DROP TRIGGER lock_no_move_in; DROP TRIGGER lock_pin_no_delete; DROP TRIGGER lock_pin_no_move;",
+    )
+    .expect("drop the protection triggers");
+    raw.execute("DELETE FROM cards WHERE location = ?1", [&root])
+        .expect("delete the root");
+
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], false);
+    let facts = panel["integrity"]["faults"].as_array().expect("faults");
+    let root_missing = facts
+        .iter()
+        .find(|fault| fault["kind"] == "root-missing")
+        .unwrap_or_else(|| panic!("no root-missing fault: {panel}"));
+    assert_eq!(root_missing["lock_id"], json!(lock_id));
+    assert_eq!(root_missing["card"], json!(root));
+    assert!(fault_kinds(&panel).contains(&"trigger-missing".to_string()));
+    let listed = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the retained Lock");
+    assert_eq!(listed["root"], json!(root));
+    assert_eq!(listed["seal"], seal, "a fault never rewrites the reviewed seal");
+    assert_eq!(listed["seal_intact"], false);
+    assert_eq!(listed["note"], "keep the evidence");
+    assert!(
+        !fault_events(&panel, lock_id).is_empty(),
+        "the faults are recorded once"
+    );
+    // Reading is untouched: the surviving Cards of the archive are still served.
+    let overview = gui.get("/api/overview");
+    assert!(overview["stats"]["total"].as_i64().is_some_and(|total| total >= 0), "{overview}");
+
+    // Unlock is planned and committed from the retained record, with no root Card to open.
+    let ended = gui.unlock(lock_id);
+    assert!(ended["unlocked_at"].is_string());
+    assert!(gui.active_lock().is_null());
+    let panel = gui.panel();
+    let history = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the ended Lock keeps its history");
+    assert!(history["unlocked_at"].is_string());
+    assert_eq!(history["seal"], seal);
+    let actions = history["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["action"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(actions.contains(&"lock".to_string()), "{actions:?}");
+    assert!(actions.contains(&"unlock".to_string()), "{actions:?}");
+    assert!(
+        actions.iter().filter(|action| *action == "integrity-fault").count() >= 2,
+        "the old fault evidence survives the release: {actions:?}"
+    );
+    assert_eq!(
+        panel["integrity"]["latched"],
+        json!([]),
+        "an ended Lock is historical evidence, not an active promise"
+    );
+
+    // The protection comes back at the next start; a new promise on another tree gets a new id.
+    home.restart();
+    let gui = home.gui();
+    let panel = gui.panel();
+    assert_eq!(
+        panel["integrity"]["faults"],
+        json!([]),
+        "the guarded startup restored every protection trigger: {panel}"
+    );
+    assert_eq!(panel["integrity"]["ok"], true);
+    home.db()
+        .execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
+             VALUES('5/0', NULL, 1, 0, NULL, ?1, 'human', 'idea')",
+            ["# Fresh\n\nfresh root\n\n<!-- zt:reverse-links -->\n"],
+        )
+    .expect("a fresh root for the next promise");
+    let second = gui.lock("5/0", None);
+    assert_ne!(second["lock_id"], json!(lock_id), "a new Lock id");
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], true, "a new promise starts clean");
+    let old = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the first Lock stays in history");
+    assert_eq!(old["seal"], seal);
+    assert!(fault_events(&panel, lock_id).len() >= 2);
+}
+
+/// R291/R295/S06-AC06: `zt status --check-locks` runs the full comparison, records its evidence
+/// once, and exits 1 on a current or latched fault.
+#[test]
+fn the_check_locks_command_records_evidence_and_exits_on_a_fault() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+
+    let healthy = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert!(
+        healthy.status.success(),
+        "a healthy archive exits 0: {}",
+        String::from_utf8_lossy(&healthy.stdout)
+    );
+    let said = String::from_utf8_lossy(&healthy.stdout);
+    assert!(said.contains("integrity: ok"), "{said}");
+    assert!(said.contains("recorded: 0 new fault event(s)"), "{said}");
+
+    // Outside tampering: a lost protection trigger is a current fault that the command records.
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_move_in")
+        .expect("drop the trigger");
+    let faulted = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert_eq!(
+        faulted.status.code(),
+        Some(1),
+        "a fault exits 1: {}",
+        String::from_utf8_lossy(&faulted.stdout)
+    );
+    let said = String::from_utf8_lossy(&faulted.stdout);
+    assert!(said.contains("integrity: faulted"), "{said}");
+    assert!(said.contains("fault: schema trigger-missing lock_no_move_in"), "{said}");
+    assert!(said.contains("recorded: 1 new fault event(s)"), "{said}");
+    assert_eq!(
+        fault_events(&gui.panel(), lock_id).len(),
+        1,
+        "the command's evidence is the panel's evidence"
+    );
+    // The same fault is never recorded twice; the latch alone still exits 1.
+    home.db()
+        .execute_batch(
+            "CREATE TRIGGER lock_no_move_in BEFORE UPDATE OF location, citation_key ON cards
+             WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_key)
+              AND EXISTS (
+                 SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL
+                   AND l.tree = CASE WHEN instr(COALESCE(NEW.location, NEW.citation_key), '/') = 0
+                                     THEN COALESCE(NEW.location, NEW.citation_key)
+                                     ELSE substr(COALESCE(NEW.location, NEW.citation_key), 1,
+                                                 instr(COALESCE(NEW.location, NEW.citation_key), '/') - 1)
+                                END
+             )
+             BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;",
+        )
+        .expect("restore a canonical trigger by hand");
+    let latched = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert_eq!(latched.status.code(), Some(1), "the latch keeps exiting 1");
+    let said = String::from_utf8_lossy(&latched.stdout);
+    assert!(
+        said.contains("integrity: faulted"),
+        "the latch still faults the Lock: {said}"
+    );
+    assert!(said.contains("recorded: 0 new fault event(s)"), "{said}");
+    assert!(
+        said.contains(&format!("latched: lock {lock_id} trigger-missing lock_no_move_in")),
+        "{said}"
+    );
+}
+
+/// R295/S06-AC06: a run that cannot persist its evidence says so and exits 1; it never reports a
+/// healthy archive it could not record.
+#[cfg(windows)]
+#[test]
+fn a_check_locks_run_that_cannot_record_says_so() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_delete")
+        .expect("drop the trigger");
+    // A live edit-lock holder: the command cannot take the writer lock, so it cannot record.
+    let path = home.archive_root.join("zt.edit.lock");
+    fs::write(&path, "zt edit lock\npid 999999\n").expect("write the lock file");
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open the live lock file");
+    holder.lock().expect("hold the live lock");
+    let output = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("recording: failed"), "{said}");
+    assert!(!said.contains("integrity: ok"), "{said}");
+    holder.unlock().expect("release the live lock");
+    drop(holder);
+    assert!(path.exists(), "a live holder's lock file is kept");
+}
+
+/// R290/R296/R297/S06-AC07: a protection trigger lost before startup is recorded and latched
+/// before the canonical one is reinstalled, so the evidence survives the repair.
+#[test]
+fn a_service_start_records_a_lost_trigger_before_repairing_it() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let canonical: String = home
+        .db()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'lock_no_change'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the canonical trigger");
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_change")
+        .expect("lose the trigger");
+
+    home.restart();
+
+    let gui = home.gui();
+    let panel = gui.panel();
+    assert_eq!(
+        panel["integrity"]["faults"],
+        json!([]),
+        "the guarded startup restored the backstop: {panel}"
+    );
+    let latched = panel["integrity"]["latched"].as_array().expect("latched");
+    assert_eq!(latched.len(), 1, "{panel}");
+    assert_eq!(latched[0]["lock_id"], json!(lock_id));
+    assert_eq!(latched[0]["kind"], "trigger-missing");
+    assert_eq!(latched[0]["card"], json!("lock_no_change"));
+    assert!(
+        latched[0]["at"].as_str().is_some_and(|at| at.contains('T')),
+        "the latch carries when it was observed"
+    );
+    let listed = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the Lock");
+    assert_eq!(listed["seal_intact"], false, "a latched fault breaks the seal");
+    assert_eq!(listed["seal"], lock["seal"]);
+    assert_eq!(
+        fault_events(&panel, lock_id).len(),
+        1,
+        "the loss was recorded once, by the startup scan"
+    );
+    let restored: String = home
+        .db()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'lock_no_change'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the restored trigger");
+    assert_eq!(
+        restored, canonical,
+        "the canonical definition is back, not an approximation"
+    );
+    // The restored backstop really refuses a write again.
+    let refused = home
+        .db()
+        .execute(
+            "UPDATE cards SET text = '# First\n\nrewritten\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [first_address(&root)],
+        )
+        .expect_err("the trigger protects again");
+    assert!(refused.to_string().contains("locked tree"), "{refused}");
+    // The restarted service still refuses through its own path, so the latch is not the only guard.
+    let mut mcp = home.mcp();
+    let refused = mcp.refused(
+        "edit_card",
+        json!({ "at": first_address(&root), "body": "x" }),
+    );
+    assert_eq!(refused["code"], "locked", "{refused}");
+    // The startup line is in the log, so an operator sees what happened.
+    let log = fs::read_to_string(home.archive_root.join("zt.log")).unwrap_or_default();
+    assert!(log.contains("tree lock startup:"), "{log}");
+    assert!(log.contains("lock_no_change"), "{log}");
+}
+
+/// R298/S06-AC07: a damaged baseline is reported and refuses writable startup; the product never
+/// fabricates an empty snapshot or a new seal to hide it.
+#[test]
+fn a_damaged_lock_baseline_refuses_writable_startup() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.cmd().arg("down").assert().success();
+    // Outside tampering: the baseline loses the column that holds each member's fingerprint.
+    home.db()
+        .execute_batch("ALTER TABLE lock_members DROP COLUMN authored_fp")
+        .expect("damage the baseline");
+    let up = home.cmd().arg("up").output().expect("run zt up");
+    assert!(
+        !up.status.success(),
+        "a damaged baseline refuses writable startup: {}",
+        String::from_utf8_lossy(&up.stdout)
+    );
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&up.stdout),
+        String::from_utf8_lossy(&up.stderr)
+    );
+    assert!(said.contains("lock_members"), "{said}");
+    assert!(said.contains("unsupported column set"), "{said}");
+    assert!(said.contains("archive was not modified"), "{said}");
+    // Nothing fabricated a snapshot or a new seal, and the retained Lock record still names its
+    // promise, so an owner can read it and restore a consistent backup.
+    let (members, seal): (i64, String) = home
+        .db()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM lock_members), range_fingerprint FROM locks WHERE lock_id = ?1",
+            [lock_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the retained Lock");
+    assert_eq!(members, 2, "the snapshot rows are still there");
+    assert_eq!(json!(seal), lock["seal"], "the reviewed seal is unchanged");
+}
+

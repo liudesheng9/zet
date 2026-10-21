@@ -23,17 +23,9 @@ use crate::Workspace;
 pub(crate) const SCHEMA_VERSION: &str = "1";
 const SCHEMA_KEY: &str = "tree_lock_schema_version";
 
-/// The six canonical trigger names, in the order the design lists them.
-pub(crate) const TRIGGER_NAMES: [&str; 6] = [
-    "lock_no_delete",
-    "lock_no_change",
-    "lock_no_insert",
-    "lock_no_move_in",
-    "lock_pin_no_delete",
-    "lock_pin_no_move",
-];
-
-const SCHEMA_SQL: &str = "
+/// The four lock tables of schema 1. Their column sets are compared as well, because a rebuild
+/// that loses or reorders a column would otherwise let the baseline evidence be misread (R298).
+const SCHEMA_TABLES_SQL: &str = "
 CREATE TABLE IF NOT EXISTS locks (
     lock_id           INTEGER PRIMARY KEY,
     root_row          INTEGER NOT NULL,
@@ -46,8 +38,6 @@ CREATE TABLE IF NOT EXISTS locks (
     member_count      INTEGER NOT NULL CHECK(member_count >= 1),
     unlocked_at       TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS locks_active_tree
-    ON locks(root_address) WHERE unlocked_at IS NULL;
 CREATE TABLE IF NOT EXISTS lock_members (
     lock_id     INTEGER NOT NULL REFERENCES locks(lock_id),
     row_id      INTEGER NOT NULL,
@@ -55,7 +45,6 @@ CREATE TABLE IF NOT EXISTS lock_members (
     authored_fp TEXT NOT NULL,
     PRIMARY KEY(lock_id, row_id)
 );
-CREATE INDEX IF NOT EXISTS lock_members_by_row ON lock_members(row_id);
 CREATE TABLE IF NOT EXISTS lock_pins (
     lock_id        INTEGER NOT NULL REFERENCES locks(lock_id),
     source_row     INTEGER NOT NULL,
@@ -63,7 +52,6 @@ CREATE TABLE IF NOT EXISTS lock_pins (
     target_address TEXT NOT NULL,
     PRIMARY KEY(lock_id, source_row, target_row)
 );
-CREATE INDEX IF NOT EXISTS lock_pins_by_target ON lock_pins(target_row);
 CREATE TABLE IF NOT EXISTS lock_events (
     event_id INTEGER PRIMARY KEY,
     lock_id  INTEGER NOT NULL REFERENCES locks(lock_id),
@@ -72,25 +60,47 @@ CREATE TABLE IF NOT EXISTS lock_events (
     at       TEXT NOT NULL,
     detail   TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS lock_events_by_lock ON lock_events(lock_id, event_id);
 ";
 
-/// Every trigger joins `locks` with `unlocked_at IS NULL`. Insertion and move-in compare the
-/// destination's Tree id with the active `locks.tree`, which is the same canonical value as
-/// `tree_root_address(tree_id(address))` without a function call. Update protection compares the
-/// authored bytes before the generated Reverse marker; a Reverse-only refresh keeps them identical.
-/// The predicates use only built-in SQL so that an external connection can still write an archive
-/// that holds no Lock (T11 keeps the function-less connection as an unsupported writer of a locked
-/// body, not of every Card).
-const TRIGGERS_SQL: &str = "
-CREATE TRIGGER IF NOT EXISTS lock_no_delete BEFORE DELETE ON cards
+/// The required indexes of schema 1, each with the exact statement that creates it. An integrity
+/// scan compares the stored definition, so an index replaced under the same name is a fault, not a
+/// silent success (R287, S06-AC03).
+const INDEX_DEFS: [(&str, &str); 4] = [
+    (
+        "locks_active_tree",
+        "CREATE UNIQUE INDEX IF NOT EXISTS locks_active_tree
+    ON locks(root_address) WHERE unlocked_at IS NULL;",
+    ),
+    (
+        "lock_members_by_row",
+        "CREATE INDEX IF NOT EXISTS lock_members_by_row ON lock_members(row_id);",
+    ),
+    (
+        "lock_pins_by_target",
+        "CREATE INDEX IF NOT EXISTS lock_pins_by_target ON lock_pins(target_row);",
+    ),
+    (
+        "lock_events_by_lock",
+        "CREATE INDEX IF NOT EXISTS lock_events_by_lock ON lock_events(lock_id, event_id);",
+    ),
+];
+
+/// The six canonical protection triggers of schema 1, each with the exact statement that creates
+/// it, in the order the design lists them. The scan compares the stored definition because a
+/// trigger replaced under the same name would still pass a name-only check (R026, R287).
+const TRIGGER_DEFS: [(&str, &str); 6] = [
+    (
+        "lock_no_delete",
+        "CREATE TRIGGER IF NOT EXISTS lock_no_delete BEFORE DELETE ON cards
 WHEN EXISTS (
     SELECT 1 FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
     WHERE m.row_id = OLD.row_id AND l.unlocked_at IS NULL
 )
-BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;
-
-CREATE TRIGGER IF NOT EXISTS lock_no_change BEFORE UPDATE ON cards
+BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
+    ),
+    (
+        "lock_no_change",
+        "CREATE TRIGGER IF NOT EXISTS lock_no_change BEFORE UPDATE ON cards
 WHEN EXISTS (
     SELECT 1 FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
     WHERE m.row_id = OLD.row_id AND l.unlocked_at IS NULL
@@ -114,9 +124,11 @@ WHEN EXISTS (
        (CASE WHEN instr(OLD.text, '<!-- zt:reverse-links -->') = 0 THEN OLD.text
              ELSE substr(OLD.text, 1, instr(OLD.text, '<!-- zt:reverse-links -->') - 1) END)
 )
-BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;
-
-CREATE TRIGGER IF NOT EXISTS lock_no_insert BEFORE INSERT ON cards
+BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
+    ),
+    (
+        "lock_no_insert",
+        "CREATE TRIGGER IF NOT EXISTS lock_no_insert BEFORE INSERT ON cards
 WHEN EXISTS (
     SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL
       AND l.tree = CASE WHEN instr(COALESCE(NEW.location, NEW.citation_key), '/') = 0
@@ -125,9 +137,11 @@ WHEN EXISTS (
                                     instr(COALESCE(NEW.location, NEW.citation_key), '/') - 1)
                    END
 )
-BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
-
-CREATE TRIGGER IF NOT EXISTS lock_no_move_in BEFORE UPDATE OF location, citation_key ON cards
+BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;",
+    ),
+    (
+        "lock_no_move_in",
+        "CREATE TRIGGER IF NOT EXISTS lock_no_move_in BEFORE UPDATE OF location, citation_key ON cards
 WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_key)
  AND EXISTS (
     SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL
@@ -137,16 +151,20 @@ WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_k
                                     instr(COALESCE(NEW.location, NEW.citation_key), '/') - 1)
                    END
 )
-BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
-
-CREATE TRIGGER IF NOT EXISTS lock_pin_no_delete BEFORE DELETE ON cards
+BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;",
+    ),
+    (
+        "lock_pin_no_delete",
+        "CREATE TRIGGER IF NOT EXISTS lock_pin_no_delete BEFORE DELETE ON cards
 WHEN EXISTS (
     SELECT 1 FROM lock_pins p JOIN locks l ON l.lock_id = p.lock_id
     WHERE p.target_row = OLD.row_id AND l.unlocked_at IS NULL
 )
-BEGIN SELECT RAISE(ABORT, 'zt: card is a pinned target of a locked tree'); END;
-
-CREATE TRIGGER IF NOT EXISTS lock_pin_no_move BEFORE UPDATE ON cards
+BEGIN SELECT RAISE(ABORT, 'zt: card is a pinned target of a locked tree'); END;",
+    ),
+    (
+        "lock_pin_no_move",
+        "CREATE TRIGGER IF NOT EXISTS lock_pin_no_move BEFORE UPDATE ON cards
 WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_key
       OR NEW.row_id IS NOT OLD.row_id OR NEW.workspace IS NOT OLD.workspace
       OR NEW.is_topic IS NOT OLD.is_topic OR NEW.is_lit IS NOT OLD.is_lit)
@@ -154,8 +172,31 @@ WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_k
     SELECT 1 FROM lock_pins p JOIN locks l ON l.lock_id = p.lock_id
     WHERE p.target_row = OLD.row_id AND l.unlocked_at IS NULL
 )
-BEGIN SELECT RAISE(ABORT, 'zt: card is a pinned target of a locked tree'); END;
-";
+BEGIN SELECT RAISE(ABORT, 'zt: card is a pinned target of a locked tree'); END;",
+    ),
+];
+
+// Every trigger joins `locks` with `unlocked_at IS NULL`. Insertion and move-in compare the
+// destination's Tree id with the active `locks.tree`, which is the same canonical value as
+// `tree_root_address(tree_id(address))` without a function call. Update protection compares the
+// authored bytes before the generated Reverse marker; a Reverse-only refresh keeps them identical.
+// The predicates use only built-in SQL so that an external connection can still write an archive
+// that holds no Lock (T11 keeps the function-less connection as an unsupported writer of a locked
+// body, not of every Card).
+
+/// The canonical trigger names, in the order the design lists them.
+pub(crate) const TRIGGER_NAMES: [&str; 6] = [
+    "lock_no_delete",
+    "lock_no_change",
+    "lock_no_insert",
+    "lock_no_move_in",
+    "lock_pin_no_delete",
+    "lock_pin_no_move",
+];
+
+fn schema_sql() -> String {
+    SCHEMA_TABLES_SQL.to_string()
+}
 
 // ---------------------------------------------------------------------------------------------
 // SQL backstop
@@ -264,17 +305,21 @@ fn schema_version(conn: &Connection) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Install or validate schema version 1 and its triggers. Called once at service startup, after the
-/// Card-table rebuilds, so it never fights a migration. An unsupported generation refuses to write
-/// rather than attempting a repair.
-pub(crate) fn ensure_tx(conn: &Connection) -> Result<()> {
+/// Install or validate schema version 1 and its protection. Called once at service startup, after
+/// the Card-table rebuilds, so it never fights a migration. An unsupported generation refuses to
+/// write rather than attempting a repair; a supported generation has a missing or altered trigger,
+/// index or table re-created here, and the caller has already recorded that fault. Answers the
+/// canonical objects this call had to reinstall, in catalog order.
+fn install_or_repair(conn: &Connection) -> Result<Vec<String>> {
+    let mut repaired = Vec::new();
     match schema_version(conn)? {
         None => {
-            conn.execute_batch(SCHEMA_SQL)
+            conn.execute_batch(&schema_sql())
                 .context("failed to install the Tree Lock tables")?;
             validate_schema(conn)?;
-            conn.execute_batch(TRIGGERS_SQL)
-                .context("failed to install the Tree Lock triggers")?;
+            repaired.extend(reinstall_indexes(conn)?);
+            repaired.extend(reinstall_triggers(conn)?);
+            validate_indexes(conn)?;
             validate_triggers(conn)?;
             conn.execute(
                 "INSERT INTO metadata(key, value) VALUES(?1, ?2)
@@ -283,16 +328,21 @@ pub(crate) fn ensure_tx(conn: &Connection) -> Result<()> {
             )?;
         }
         Some(version) if version == SCHEMA_VERSION => {
+            // A damaged column set is reported, never repaired: fabricating a snapshot or a new
+            // seal would replace the owner's evidence with a lie (R298).
             validate_schema(conn)?;
-            conn.execute_batch(TRIGGERS_SQL)
-                .context("failed to install the Tree Lock triggers")?;
+            conn.execute_batch(&schema_sql())
+                .context("failed to restore the Tree Lock tables")?;
+            repaired.extend(reinstall_indexes(conn)?);
+            repaired.extend(reinstall_triggers(conn)?);
+            validate_indexes(conn)?;
             validate_triggers(conn)?;
         }
         Some(other) => bail!(
             "unsupported Tree Lock schema version `{other}`; archive was not modified"
         ),
     }
-    Ok(())
+    Ok(repaired)
 }
 
 fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -303,37 +353,33 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(columns)
 }
 
+/// The column set of each lock table, in the order schema 1 stores it.
+fn expected_columns(table: &str) -> Option<&'static [&'static str]> {
+    match table {
+        "locks" => Some(&[
+            "lock_id",
+            "root_row",
+            "root_address",
+            "tree",
+            "workspace",
+            "note",
+            "locked_at",
+            "range_fingerprint",
+            "member_count",
+            "unlocked_at",
+        ]),
+        "lock_members" => Some(&["lock_id", "row_id", "address", "authored_fp"]),
+        "lock_pins" => Some(&["lock_id", "source_row", "target_row", "target_address"]),
+        "lock_events" => Some(&["event_id", "lock_id", "action", "at", "detail"]),
+        _ => None,
+    }
+}
+
+const LOCK_TABLES: [&str; 4] = ["locks", "lock_members", "lock_pins", "lock_events"];
+
 fn validate_schema(conn: &Connection) -> Result<()> {
-    let expected: [(&str, &[&str]); 4] = [
-        (
-            "locks",
-            &[
-                "lock_id",
-                "root_row",
-                "root_address",
-                "tree",
-                "workspace",
-                "note",
-                "locked_at",
-                "range_fingerprint",
-                "member_count",
-                "unlocked_at",
-            ],
-        ),
-        (
-            "lock_members",
-            &["lock_id", "row_id", "address", "authored_fp"],
-        ),
-        (
-            "lock_pins",
-            &["lock_id", "source_row", "target_row", "target_address"],
-        ),
-        (
-            "lock_events",
-            &["event_id", "lock_id", "action", "at", "detail"],
-        ),
-    ];
-    for (table, columns) in expected {
+    for table in LOCK_TABLES {
+        let columns = expected_columns(table).expect("every lock table has an expected column set");
         let found = table_columns(conn, table)
             .with_context(|| format!("Tree Lock table `{table}` is unreadable"))?;
         if found != columns {
@@ -345,12 +391,37 @@ fn validate_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The stored definition of one schema object, `None` when it does not exist.
+fn stored_sql(conn: &Connection, kind: &str, name: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            params![kind, name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Two schema definitions are the same promise: the same tokens in the same order, so the stored
+/// text may differ in spacing, line breaks, letter case, an `IF NOT EXISTS` prefix or a trailing
+/// semicolon. A changed predicate, table, column or message is a different definition.
+fn same_definition(stored: &str, canonical: &str) -> bool {
+    fn normalized(sql: &str) -> String {
+        sql.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+            .trim_end_matches(';')
+            .trim()
+            .to_string()
+            .replace("if not exists ", "")
+    }
+    normalized(stored) == normalized(canonical)
+}
+
 fn trigger_exists(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1)",
-        [name],
-        |row| row.get(0),
-    )?)
+    Ok(stored_sql(conn, "trigger", name)?.is_some())
 }
 
 fn validate_triggers(conn: &Connection) -> Result<()> {
@@ -359,7 +430,72 @@ fn validate_triggers(conn: &Connection) -> Result<()> {
             bail!("Tree Lock trigger `{name}` is missing; archive was not modified");
         }
     }
+    for (name, sql) in TRIGGER_DEFS {
+        let stored = stored_sql(conn, "trigger", name)?
+            .with_context(|| format!("Tree Lock trigger `{name}` is missing"))?;
+        if !same_definition(&stored, sql) {
+            bail!(
+                "Tree Lock trigger `{name}` has an altered definition; archive was not modified"
+            );
+        }
+    }
     Ok(())
+}
+
+fn validate_indexes(conn: &Connection) -> Result<()> {
+    for (name, _) in INDEX_DEFS {
+        if stored_sql(conn, "index", name)?.is_none() {
+            bail!("Tree Lock index `{name}` is missing; archive was not modified");
+        }
+    }
+    for (name, sql) in INDEX_DEFS {
+        let stored = stored_sql(conn, "index", name)?
+            .with_context(|| format!("Tree Lock index `{name}` is missing"))?;
+        if !same_definition(&stored, sql) {
+            bail!("Tree Lock index `{name}` has an altered definition; archive was not modified");
+        }
+    }
+    Ok(())
+}
+
+/// Re-create every missing or altered canonical trigger, in catalog order, and answer their names.
+fn reinstall_triggers(conn: &Connection) -> Result<Vec<String>> {
+    let mut repaired = Vec::new();
+    for (name, sql) in TRIGGER_DEFS {
+        let canonical = match stored_sql(conn, "trigger", name)? {
+            Some(stored) => same_definition(&stored, sql),
+            None => false,
+        };
+        if canonical {
+            continue;
+        }
+        conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
+            .with_context(|| format!("failed to replace Tree Lock trigger `{name}`"))?;
+        conn.execute_batch(sql)
+            .with_context(|| format!("failed to install Tree Lock trigger `{name}`"))?;
+        repaired.push(name.to_string());
+    }
+    Ok(repaired)
+}
+
+/// Re-create every missing or altered canonical index, in catalog order, and answer their names.
+fn reinstall_indexes(conn: &Connection) -> Result<Vec<String>> {
+    let mut repaired = Vec::new();
+    for (name, sql) in INDEX_DEFS {
+        let canonical = match stored_sql(conn, "index", name)? {
+            Some(stored) => same_definition(&stored, sql),
+            None => false,
+        };
+        if canonical {
+            continue;
+        }
+        conn.execute_batch(&format!("DROP INDEX IF EXISTS {name};"))
+            .with_context(|| format!("failed to replace Tree Lock index `{name}`"))?;
+        conn.execute_batch(sql)
+            .with_context(|| format!("failed to install Tree Lock index `{name}`"))?;
+        repaired.push(name.to_string());
+    }
+    Ok(repaired)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1637,141 +1773,534 @@ fn check_link_rewrites(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Integrity
+// Integrity (S06, #129)
 // ---------------------------------------------------------------------------------------------
 
-/// One observed integrity fault with a stable identifier, so a repeated scan adds no event.
+/// One observed integrity fault with a stable identifier, so a repeated scan adds no event (R289).
+/// The identifier is the Lock id (or the schema scope), the fault kind and the affected row or
+/// address; the event records the expected and the observed fact that explains it (R103).
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct Fault {
-    pub(crate) id: String,
     pub(crate) lock_id: Option<i64>,
     pub(crate) kind: String,
-    pub(crate) card: Option<String>,
+    /// The affected row, address or schema object name.
+    pub(crate) subject: String,
     pub(crate) detail: String,
+    pub(crate) expected: Option<String>,
+    pub(crate) actual: Option<String>,
 }
 
 impl Fault {
-    fn new(lock_id: Option<i64>, kind: &str, subject: &str, detail: impl Into<String>) -> Self {
+    fn schema(kind: &str, subject: &str, detail: impl Into<String>) -> Self {
         Self {
-            id: format!(
-                "lock-{}:{kind}:{subject}",
-                lock_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "schema".to_string())
-            ),
-            lock_id,
+            lock_id: None,
             kind: kind.to_string(),
-            card: Some(subject.to_string()),
+            subject: subject.to_string(),
             detail: detail.into(),
+            expected: None,
+            actual: None,
         }
+    }
+
+    fn lock(lock_id: i64, kind: &str, subject: &str, detail: impl Into<String>) -> Self {
+        Self {
+            lock_id: Some(lock_id),
+            ..Self::schema(kind, subject, detail)
+        }
+    }
+
+    fn expected(mut self, expected: impl Into<String>) -> Self {
+        self.expected = Some(expected.into());
+        self
+    }
+
+    fn actual(mut self, actual: impl Into<String>) -> Self {
+        self.actual = Some(actual.into());
+        self
+    }
+
+    /// This fault's stored identifier, which is what records are deduplicated by.
+    pub(crate) fn id(&self) -> String {
+        match self.lock_id {
+            Some(lock_id) => self.id_for_lock(lock_id),
+            None => format!("lock-schema:{}:{}", self.kind, self.subject),
+        }
+    }
+
+    /// The same fault attributed to one active Lock, so a schema fault is latched on every Lock it
+    /// leaves unprotected.
+    pub(crate) fn id_for_lock(&self, lock_id: i64) -> String {
+        format!("lock-{lock_id}:{}:{}", self.kind, self.subject)
     }
 
     pub(crate) fn value(&self) -> Value {
         json!({
-            "id": self.id,
+            "id": self.id(),
             "lock_id": self.lock_id,
             "kind": self.kind,
+            "card": self.subject,
+            "detail": self.detail,
+            "expected": self.expected,
+            "actual": self.actual,
+        })
+    }
+}
+
+/// One recorded fault event of an active Lock: evidence that stays true about the promise even
+/// after a later comparison succeeds (R289, S06-AC05).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Latched {
+    pub(crate) lock_id: i64,
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) card: Option<String>,
+    pub(crate) at: String,
+    pub(crate) detail: String,
+}
+
+impl Latched {
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "lock_id": self.lock_id,
+            "id": self.id,
+            "kind": self.kind,
             "card": self.card,
+            "at": self.at,
             "detail": self.detail,
         })
     }
 }
 
-/// The pure result of one integrity comparison. It repairs nothing and never reseals.
+/// The result of one integrity comparison: the current faults and the fault evidence latched on
+/// still-active Locks. It repairs nothing and never reseals (R300).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Integrity {
     pub(crate) faults: Vec<Fault>,
+    pub(crate) latched: Vec<Latched>,
 }
 
 impl Integrity {
+    /// Healthy requires both no current fault and no latched fault on an active Lock (R289).
     pub(crate) fn ok(&self) -> bool {
-        self.faults.is_empty()
+        self.faults.is_empty() && self.latched.is_empty()
+    }
+
+    /// Whether this comparison observed a fault that may not be recorded yet. A latch alone needs
+    /// no recording: it is already stored evidence.
+    pub(crate) fn needs_recording(&self) -> bool {
+        !self.faults.is_empty()
+    }
+
+    /// The current faults that belong to one Lock, schema faults included: a broken backstop leaves
+    /// every promise unverifiable.
+    pub(crate) fn faults_of(&self, lock_id: i64) -> Vec<&Fault> {
+        self.faults
+            .iter()
+            .filter(|fault| fault.lock_id.is_none() || fault.lock_id == Some(lock_id))
+            .collect()
+    }
+
+    /// The recorded faults of one Lock that a later comparison has not erased.
+    pub(crate) fn latched_of(&self, lock_id: i64) -> Vec<&Latched> {
+        self.latched
+            .iter()
+            .filter(|latched| latched.lock_id == lock_id)
+            .collect()
+    }
+
+    /// One concise page-level line for the lock panel (R229, S06-AC08).
+    pub(crate) fn summary(&self) -> String {
+        if self.ok() {
+            return "integrity ok".to_string();
+        }
+        let current = self.faults.len();
+        let mut line = format!(
+            "integrity faulted: {current} current fault{}",
+            if current == 1 { "" } else { "s" }
+        );
+        if let Some(first) = self.faults.first() {
+            let scope = match first.lock_id {
+                Some(lock_id) => format!("lock {lock_id} "),
+                None => "schema ".to_string(),
+            };
+            line.push_str(&format!(" ({scope}{} {})", first.kind, first.subject));
+        }
+        if !self.latched.is_empty() {
+            line.push_str(&format!(", {} latched", self.latched.len()));
+        }
+        line
     }
 
     pub(crate) fn value(&self) -> Value {
         json!({
             "ok": self.ok(),
+            "faulted": self.needs_recording(),
+            "summary": self.summary(),
             "faults": self.faults.iter().map(Fault::value).collect::<Vec<_>>(),
+            "latched": self.latched.iter().map(Latched::value).collect::<Vec<_>>(),
         })
     }
 }
 
-/// Compare every active Lock's promise with the stored Cards and the lock tables.
-pub(crate) fn check(conn: &Connection) -> Result<Integrity> {
-    let mut integrity = Integrity::default();
-    let Some(state) = load_state(conn)? else {
-        integrity.faults.push(Fault::new(
-            None,
-            "schema",
-            "tree_lock",
-            "the Tree Lock schema is not installed",
-        ));
-        return Ok(integrity);
-    };
-    for name in TRIGGER_NAMES {
-        if !trigger_exists(conn, name)? {
-            integrity.faults.push(Fault::new(
-                None,
-                "trigger-missing",
-                name,
-                "the canonical trigger is missing, so the SQL backstop is incomplete",
-            ));
-        }
+/// A stored Card row with its raw metadata values, so a decoder fallback cannot hide a changed
+/// Workspace, kind or type (R288).
+struct StoredCard {
+    row_id: i64,
+    address: String,
+    is_topic: i64,
+    is_lit: i64,
+    bibtex: Option<String>,
+    text: String,
+    workspace: String,
+    card_type: String,
+    facet: Option<String>,
+    emphasis: Option<String>,
+    level: Option<String>,
+    hub_level: Option<String>,
+    form: Option<String>,
+}
+
+impl StoredCard {
+    /// The authored fingerprint of the stored row, or why the raw metadata cannot be decoded.
+    fn fingerprint(&self) -> Result<String> {
+        fingerprint_of_raw(
+            &self.text,
+            self.bibtex.as_deref(),
+            &self.card_type,
+            self.facet.as_deref(),
+            self.emphasis.as_deref(),
+            self.level.as_deref(),
+            self.hub_level.as_deref(),
+            self.form.as_deref(),
+        )
     }
-    let cards = crate::load_cards(conn)?;
-    let by_address = cards
-        .iter()
-        .map(|card| (card.address.clone(), card))
-        .collect::<BTreeMap<_, _>>();
-    let by_row = cards
-        .iter()
-        .map(|card| (card.row_id, card))
-        .collect::<BTreeMap<_, _>>();
-    for lock in state.locks.values().filter(|lock| lock.unlocked_at.is_none()) {
-        match by_address.get(&lock.root) {
-            None => integrity.faults.push(Fault::new(
-                Some(lock.lock_id),
-                "root-missing",
-                &lock.root,
-                "the locked Tree root no longer exists at its saved address",
-            )),
-            Some(card) => {
-                if card.workspace != lock.workspace {
-                    integrity.faults.push(Fault::new(
-                        Some(lock.lock_id),
-                        "root-changed",
-                        &lock.root,
-                        "the locked Tree root changed its Workspace",
-                    ));
-                }
-                if crate::tree_root_address(crate::tree_id(&card.address)) != lock.root
-                    || !crate::is_tree_root(card)
-                {
-                    integrity.faults.push(Fault::new(
-                        Some(lock.lock_id),
-                        "root-changed",
-                        &lock.root,
-                        "the saved root address is no longer a Tree root",
-                    ));
-                }
-            }
-        }
-        let mut members = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT row_id, address, authored_fp FROM lock_members WHERE lock_id = ?1 ORDER BY address",
-        )?;
-        for row in stmt.query_map([lock.lock_id], |row| {
+
+    fn is_tree_root(&self) -> bool {
+        self.is_topic == 1 || self.is_lit == 1
+    }
+}
+
+fn stored_cards(conn: &Connection) -> Result<Vec<StoredCard>> {
+    let mut stmt = conn.prepare(
+        "SELECT row_id, COALESCE(location, citation_key), is_topic, is_lit, bibtex, text,
+                workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
+           FROM cards",
+    )?;
+    let cards = stmt
+        .query_map([], |row| {
+            Ok(StoredCard {
+                row_id: row.get(0)?,
+                address: row.get(1)?,
+                is_topic: row.get(2)?,
+                is_lit: row.get(3)?,
+                bibtex: row.get(4)?,
+                text: row.get(5)?,
+                workspace: row.get(6)?,
+                card_type: row.get(7)?,
+                facet: row.get(8)?,
+                emphasis: row.get(9)?,
+                level: row.get(10)?,
+                hub_level: row.get(11)?,
+                form: row.get(12)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(cards)
+}
+
+/// One active Lock with its raw stored facts, so the comparison never falls back to a decoded
+/// default for a value it cannot read.
+struct StoredLock {
+    lock_id: i64,
+    root_row: i64,
+    root: String,
+    tree: String,
+    workspace: String,
+    seal: String,
+    member_count: i64,
+}
+
+fn stored_locks(conn: &Connection) -> Result<Vec<StoredLock>> {
+    let mut stmt = conn.prepare(
+        "SELECT lock_id, root_row, root_address, tree, workspace, range_fingerprint, member_count
+           FROM locks WHERE unlocked_at IS NULL ORDER BY lock_id",
+    )?;
+    let locks = stmt
+        .query_map([], |row| {
+            Ok(StoredLock {
+                lock_id: row.get(0)?,
+                root_row: row.get(1)?,
+                root: row.get(2)?,
+                tree: row.get(3)?,
+                workspace: row.get(4)?,
+                seal: row.get(5)?,
+                member_count: row.get(6)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(locks)
+}
+
+/// The member snapshot rows of one Lock: row identity, address and authored baseline.
+fn stored_members(conn: &Connection, lock_id: i64) -> Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn
+        .prepare("SELECT row_id, address, authored_fp FROM lock_members WHERE lock_id = ?1 ORDER BY address")?;
+    let members = stmt
+        .query_map([lock_id], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
             ))
-        })? {
-            members.push(row?);
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(members)
+}
+
+/// The pin snapshot rows of one Lock: source row, target row and target address.
+fn stored_pins(conn: &Connection, lock_id: i64) -> Result<Vec<(i64, i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_row, target_row, target_address FROM lock_pins WHERE lock_id = ?1
+         ORDER BY target_address, source_row",
+    )?;
+    let pins = stmt
+        .query_map([lock_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(pins)
+}
+
+/// The ids of every active Lock, in creation order. A damaged archive answers none instead of
+/// failing: a fault that cannot be attributed is still reported, just not recorded.
+fn active_lock_ids(conn: &Connection) -> Result<Vec<i64>> {
+    if schema_version(conn).ok().flatten().as_deref() != Some(SCHEMA_VERSION) {
+        return Ok(Vec::new());
+    }
+    let Ok(mut stmt) = conn.prepare("SELECT lock_id FROM locks WHERE unlocked_at IS NULL ORDER BY lock_id")
+    else {
+        return Ok(Vec::new());
+    };
+    let ids = stmt
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// The schema-side facts of one scan: the version marker, the four lock tables and their columns,
+/// the required indexes and the six canonical triggers. `false` means the baseline evidence cannot
+/// be read at all, so no per-Lock comparison is attempted and nothing is fabricated (R298).
+fn schema_faults(conn: &Connection, integrity: &mut Integrity) -> Result<bool> {
+    let version = schema_version(conn)?;
+    if version.as_deref() != Some(SCHEMA_VERSION) {
+        integrity.faults.push(
+            Fault::schema(
+                "schema-version",
+                SCHEMA_KEY,
+                "the Tree Lock schema is not installed or is not the supported generation",
+            )
+            .expected(SCHEMA_VERSION)
+            .actual(version.unwrap_or_else(|| "<missing>".to_string())),
+        );
+        return Ok(false);
+    }
+    let mut readable = true;
+    for table in LOCK_TABLES {
+        let columns = expected_columns(table).expect("every lock table has an expected column set");
+        let found = table_columns(conn, table)
+            .with_context(|| format!("Tree Lock table `{table}` is unreadable"))?;
+        if found != columns {
+            integrity.faults.push(
+                Fault::schema(
+                    "schema-table",
+                    table,
+                    "a required Tree Lock table is missing or has an unsupported column set",
+                )
+                .expected(columns.join(","))
+                .actual(if found.is_empty() {
+                    "missing".to_string()
+                } else {
+                    found.join(",")
+                }),
+            );
+            readable = false;
         }
-        if members.len() as i64 != lock.member_count {
-            integrity.faults.push(Fault::new(
-                Some(lock.lock_id),
+    }
+    if !readable {
+        return Ok(false);
+    }
+    for (name, sql) in INDEX_DEFS {
+        match stored_sql(conn, "index", name)? {
+            None => integrity.faults.push(
+                Fault::schema("schema-index", name, "a required Lock index is missing")
+                    .expected("the canonical index")
+                    .actual("missing"),
+            ),
+            Some(stored) if !same_definition(&stored, sql) => {
+                integrity.faults.push(
+                    Fault::schema("schema-index", name, "a required Lock index was replaced")
+                        .expected("the canonical index")
+                        .actual("an altered definition"),
+                )
+            }
+            Some(_) => {}
+        }
+    }
+    for (name, sql) in TRIGGER_DEFS {
+        match stored_sql(conn, "trigger", name)? {
+            None => integrity.faults.push(
+                Fault::schema(
+                    "trigger-missing",
+                    name,
+                    "the canonical protection trigger is missing, so the SQL backstop is incomplete",
+                )
+                .expected("the canonical trigger")
+                .actual("missing"),
+            ),
+            Some(stored) if !same_definition(&stored, sql) => integrity.faults.push(
+                Fault::schema(
+                    "trigger-altered",
+                    name,
+                    "a protection trigger was replaced under its canonical name",
+                )
+                .expected("the canonical trigger")
+                .actual("an altered definition"),
+            ),
+            Some(_) => {}
+        }
+    }
+    Ok(true)
+}
+
+/// The recorded fault events of every active Lock, newest record per identifier kept once.
+fn latched_faults(conn: &Connection) -> Result<Vec<Latched>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.lock_id, e.at, e.detail FROM lock_events e
+           JOIN locks l ON l.lock_id = e.lock_id
+          WHERE e.action = 'integrity-fault' AND l.unlocked_at IS NULL
+          ORDER BY e.lock_id, e.event_id",
+    )?;
+    let mut latched = Vec::new();
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (lock_id, at, raw) = row?;
+        let detail = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+        let evidence = &detail["evidence"];
+        latched.push(Latched {
+            lock_id,
+            id: detail["fault"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| raw.clone()),
+            kind: evidence["kind"]
+                .as_str()
+                .unwrap_or("integrity-fault")
+                .to_string(),
+            card: evidence["card"].as_str().map(str::to_string),
+            at,
+            detail: evidence["detail"].as_str().unwrap_or_default().to_string(),
+        });
+    }
+    Ok(latched)
+}
+
+/// The kind facts of one member row: the root is the Topic or Literature root of its own tree and
+/// every other member is a Regular Card of that tree kind.
+fn member_kind_ok(lock: &StoredLock, card: &StoredCard) -> bool {
+    let literature = crate::is_literature_tree_id(&lock.tree);
+    let root = card.address == lock.root;
+    card.is_topic == i64::from(root && !literature) && card.is_lit == i64::from(literature)
+}
+
+fn member_kind_expected(lock: &StoredLock, address: &str) -> &'static str {
+    if crate::is_literature_tree_id(&lock.tree) {
+        "a Literature tree member"
+    } else if address == lock.root {
+        "the Topic root"
+    } else {
+        "a Topic tree member"
+    }
+}
+
+/// Compare one active Lock's promise with the stored archive and lock tables (R278–R289).
+fn compare_lock(
+    conn: &Connection,
+    lock: &StoredLock,
+    cards: &[StoredCard],
+    by_address: &BTreeMap<&str, &StoredCard>,
+    by_row: &BTreeMap<i64, &StoredCard>,
+    integrity: &mut Integrity,
+) -> Result<()> {
+    let id = lock.lock_id;
+    // R279: the root row exists at the saved root address, keeps the saved Workspace and is the
+    // Tree root of the saved tree.
+    match by_address.get(lock.root.as_str()) {
+        None => integrity.faults.push(
+            Fault::lock(
+                id,
+                "root-missing",
+                &lock.root,
+                "the locked Tree root no longer exists at its saved address",
+            )
+            .expected(lock.root.clone())
+            .actual("no card at this address"),
+        ),
+        Some(card) => {
+            if card.row_id != lock.root_row {
+                integrity.faults.push(
+                    Fault::lock(
+                        id,
+                        "root-changed",
+                        &lock.root,
+                        "the saved root address now resolves to a different Card row",
+                    )
+                    .expected(lock.root_row.to_string())
+                    .actual(card.row_id.to_string()),
+                );
+            }
+            if card.workspace != lock.workspace {
+                integrity.faults.push(
+                    Fault::lock(
+                        id,
+                        "root-changed",
+                        &lock.root,
+                        "the locked Tree root changed its Workspace",
+                    )
+                    .expected(lock.workspace.clone())
+                    .actual(card.workspace.clone()),
+                );
+            }
+            if crate::tree_root_address(crate::tree_id(&card.address)) != lock.root
+                || !card.is_tree_root()
+            {
+                integrity.faults.push(
+                    Fault::lock(
+                        id,
+                        "root-changed",
+                        &lock.root,
+                        "the saved root address is no longer a Tree root",
+                    )
+                    .expected(lock.root.clone())
+                    .actual(card.address.clone()),
+                );
+            }
+        }
+    }
+    // R280: the stored member count equals the number of snapshot rows.
+    let members = stored_members(conn, id)?;
+    if members.len() as i64 != lock.member_count {
+        integrity.faults.push(
+            Fault::lock(
+                id,
                 "member-count",
                 &lock.root,
                 format!(
@@ -1779,201 +2308,255 @@ pub(crate) fn check(conn: &Connection) -> Result<Integrity> {
                     lock.member_count,
                     members.len()
                 ),
-            ));
-        }
-        let mut baseline = BTreeMap::new();
-        for (row_id, address, fingerprint) in &members {
-            baseline.insert(address.clone(), fingerprint.clone());
-            match by_row.get(row_id) {
-                None => integrity.faults.push(Fault::new(
-                    Some(lock.lock_id),
+            )
+            .expected(lock.member_count.to_string())
+            .actual(members.len().to_string()),
+        );
+    }
+    let mut baseline = BTreeMap::new();
+    let mut member_rows = BTreeSet::new();
+    for (row_id, address, fingerprint) in &members {
+        baseline.insert(address.clone(), fingerprint.clone());
+        member_rows.insert(*row_id);
+        // R281: every snapshot row resolves to its saved row, address, Workspace and kind.
+        match by_row.get(row_id) {
+            None => integrity.faults.push(
+                Fault::lock(
+                    id,
                     "member-missing",
                     address,
                     format!("snapshot row {row_id} no longer exists"),
-                )),
-                Some(card) => {
-                    if &card.address != address {
-                        integrity.faults.push(Fault::new(
-                            Some(lock.lock_id),
+                )
+                .expected(format!("row {row_id} at `{address}`"))
+                .actual("no such row"),
+            ),
+            Some(card) => {
+                if &card.address != address {
+                    integrity.faults.push(
+                        Fault::lock(
+                            id,
                             "member-changed",
                             address,
                             format!("snapshot row {row_id} now holds `{}`", card.address),
-                        ));
-                        continue;
-                    }
-                    if card.workspace != lock.workspace {
-                        integrity.faults.push(Fault::new(
-                            Some(lock.lock_id),
+                        )
+                        .expected(address.clone())
+                        .actual(card.address.clone()),
+                    );
+                    continue;
+                }
+                if card.workspace != lock.workspace {
+                    integrity.faults.push(
+                        Fault::lock(
+                            id,
                             "member-changed",
                             address,
                             "the member changed its Workspace",
-                        ));
-                    }
-                    if address == &lock.root
-                        && (!crate::is_tree_root(card)
-                            || crate::tree_root_address(crate::tree_id(address)) != lock.root)
-                    {
-                        integrity.faults.push(Fault::new(
-                            Some(lock.lock_id),
-                            "member-changed",
-                            address,
-                            "the root member is no longer a Tree root",
-                        ));
-                    }
-                    let current = crate::card::authored_fingerprint(card)?;
-                    if &current != fingerprint {
-                        integrity.faults.push(Fault::new(
-                            Some(lock.lock_id),
+                        )
+                        .expected(lock.workspace.clone())
+                        .actual(card.workspace.clone()),
+                    );
+                }
+                if !member_kind_ok(lock, card) {
+                    integrity.faults.push(
+                        Fault::lock(id, "member-changed", address, "the member changed its kind")
+                            .expected(member_kind_expected(lock, address))
+                            .actual(format!(
+                                "is_topic={} is_lit={}",
+                                card.is_topic, card.is_lit
+                            )),
+                    );
+                }
+                // R282: each current authored fingerprint matches its stored baseline.
+                match card.fingerprint() {
+                    Ok(current) if &current != fingerprint => integrity.faults.push(
+                        Fault::lock(
+                            id,
                             "fingerprint-changed",
                             address,
                             "the member's authored identity changed",
-                        ));
-                    }
+                        )
+                        .expected(fingerprint.clone())
+                        .actual(current),
+                    ),
+                    Ok(_) => {}
+                    Err(error) => integrity.faults.push(
+                        Fault::lock(
+                            id,
+                            "member-undecodable",
+                            address,
+                            format!("the stored metadata cannot be decoded: {error:#}"),
+                        )
+                        .expected("valid stored metadata")
+                        .actual("an unsupported value"),
+                    ),
                 }
             }
         }
-        if seal_of(&baseline) != lock.seal {
-            integrity.faults.push(Fault::new(
-                Some(lock.lock_id),
+    }
+    // R284: the recomputed range fingerprint equals the saved seal.
+    let recomputed = seal_of(&baseline);
+    if recomputed != lock.seal {
+        integrity.faults.push(
+            Fault::lock(
+                id,
                 "seal-changed",
                 &lock.root,
                 "the stored snapshot no longer matches the Lock seal",
-            ));
-        }
-        let snapshot = baseline.keys().cloned().collect::<BTreeSet<_>>();
-        let current = cards
-            .iter()
-            .filter(|card| crate::is_tree_member(&card.address, &lock.tree))
-            .map(|card| card.address.clone())
-            .collect::<BTreeSet<_>>();
-        for address in current.difference(&snapshot) {
-            integrity.faults.push(Fault::new(
-                Some(lock.lock_id),
-                "member-extra",
+            )
+            .expected(lock.seal.clone())
+            .actual(recomputed),
+        );
+    }
+    // R283: the current exact tree membership equals the snapshot, extras included.
+    let snapshot = baseline.keys().cloned().collect::<BTreeSet<_>>();
+    let current = cards
+        .iter()
+        .filter(|card| crate::is_tree_member(&card.address, &lock.tree))
+        .map(|card| card.address.clone())
+        .collect::<BTreeSet<_>>();
+    for address in current.difference(&snapshot) {
+        integrity.faults.push(Fault::lock(
+            id,
+            "member-extra",
+            address,
+            "a Card is inside the locked tree but not in its snapshot",
+        ));
+    }
+    for address in snapshot.difference(&current) {
+        // A missing Card is reported once, by its snapshot row, above.
+        if by_address.contains_key(address.as_str()) {
+            integrity.faults.push(Fault::lock(
+                id,
+                "member-moved",
                 address,
-                "a Card is inside the locked tree but not in its snapshot",
+                "the member no longer belongs to the locked tree",
             ));
         }
-        for address in snapshot.difference(&current) {
-            // A missing Card is reported once, by its snapshot row, above.
-            if by_address.contains_key(address) {
-                integrity.faults.push(Fault::new(
-                    Some(lock.lock_id),
-                    "member-moved",
-                    address,
-                    "the member no longer belongs to the locked tree",
-                ));
-            }
-        }
-        let mut pins = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT p.source_row, p.target_row, p.target_address FROM lock_pins p WHERE p.lock_id = ?1",
-        )?;
-        for row in stmt.query_map([lock.lock_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })? {
-            pins.push(row?);
-        }
-        for (source_row, target_row, target_address) in &pins {
-            if !state.member_by_row.contains_key(source_row) {
-                integrity.faults.push(Fault::new(
-                    Some(lock.lock_id),
+    }
+    // R285: every pin source is a member, every target still exists at its saved row/address and
+    // lies outside the locked tree.
+    let pins = stored_pins(conn, id)?;
+    for (source_row, target_row, target_address) in &pins {
+        if !member_rows.contains(source_row) {
+            integrity.faults.push(
+                Fault::lock(
+                    id,
                     "pin-source",
                     target_address,
-                    format!("pin source row {source_row} is not a member"),
-                ));
-            }
-            match by_row.get(target_row) {
-                None => integrity.faults.push(Fault::new(
-                    Some(lock.lock_id),
+                    format!("pin source row {source_row} is not a member of this Lock"),
+                )
+                .expected("a member row")
+                .actual(format!("row {source_row}")),
+            );
+        }
+        match by_row.get(target_row) {
+            None => integrity.faults.push(
+                Fault::lock(
+                    id,
                     "pin-missing",
                     target_address,
                     format!("pinned target row {target_row} no longer exists"),
-                )),
-                Some(card) if &card.address != target_address => {
-                    integrity.faults.push(Fault::new(
-                        Some(lock.lock_id),
-                        "pin-changed",
-                        target_address,
-                        format!("pinned target row {target_row} now holds `{}`", card.address),
-                    ));
-                }
-                Some(card) if crate::is_tree_member(&card.address, &lock.tree) => {
-                    integrity.faults.push(Fault::new(
-                        Some(lock.lock_id),
-                        "pin-inside",
-                        target_address,
-                        "a pin names a Card inside its own locked tree",
-                    ));
-                }
-                Some(_) => {}
+                )
+                .expected(format!("row {target_row} at `{target_address}`"))
+                .actual("no such row"),
+            ),
+            Some(card) if &card.address != target_address => integrity.faults.push(
+                Fault::lock(
+                    id,
+                    "pin-changed",
+                    target_address,
+                    format!("pinned target row {target_row} now holds `{}`", card.address),
+                )
+                .expected(target_address.clone())
+                .actual(card.address.clone()),
+            ),
+            Some(card) if crate::is_tree_member(&card.address, &lock.tree) => {
+                integrity.faults.push(Fault::lock(
+                    id,
+                    "pin-inside",
+                    target_address,
+                    "a pin names a Card inside its own locked tree",
+                ))
             }
-        }
-        for fault in link_pin_faults(conn, lock, &members, &pins)? {
-            integrity.faults.push(fault);
+            Some(_) => {}
         }
     }
-    integrity.faults.sort();
-    integrity.faults.dedup();
-    Ok(integrity)
+    // R286: the authored external Links and the derived index still agree with the stored pins.
+    integrity.faults.extend(link_pin_faults(
+        conn,
+        lock,
+        &members,
+        &pins,
+        by_address,
+        by_row,
+    )?);
+    Ok(())
 }
 
-/// Compare each member's resolvable external Links with the stored pins, excluding the addresses
-/// that were already broken when the owner accepted the Lock.
-fn link_pin_faults(
-    conn: &Connection,
-    lock: &Lock,
-    members: &[(i64, String, String)],
-    pins: &[(i64, i64, String)],
-) -> Result<Vec<Fault>> {
-    let mut faults = Vec::new();
-    let cards = crate::load_cards(conn)?;
-    let by_address = cards
-        .iter()
-        .map(|card| (card.address.clone(), card))
-        .collect::<BTreeMap<_, _>>();
+/// The Broken Links the owner saw when one Lock was accepted, from its retained `lock` event.
+fn captured_warnings(conn: &Connection, lock_id: i64) -> Result<BTreeSet<(String, String)>> {
     let mut broken = BTreeSet::new();
     if let Some(detail) = conn
         .query_row(
             "SELECT detail FROM lock_events WHERE lock_id = ?1 AND action = 'lock'
              ORDER BY event_id LIMIT 1",
-            [lock.lock_id],
+            [lock_id],
             |row| row.get::<_, String>(0),
         )
         .optional()?
         && let Ok(value) = serde_json::from_str::<Value>(&detail)
     {
         for warning in value["warnings"].as_array().into_iter().flatten() {
-            if let (Some(source), Some(target)) = (
-                warning["source"].as_str(),
-                warning["target"].as_str(),
-            ) {
+            if let (Some(source), Some(target)) =
+                (warning["source"].as_str(), warning["target"].as_str())
+            {
                 broken.insert((source.to_string(), target.to_string()));
             }
         }
     }
+    Ok(broken)
+}
+
+/// Compare each member's authored external Links with the stored pins, excluding the addresses that
+/// were already broken when the owner accepted the Lock, and cross-check the Link index rows.
+fn link_pin_faults(
+    conn: &Connection,
+    lock: &StoredLock,
+    members: &[(i64, String, String)],
+    pins: &[(i64, i64, String)],
+    by_address: &BTreeMap<&str, &StoredCard>,
+    by_row: &BTreeMap<i64, &StoredCard>,
+) -> Result<Vec<Fault>> {
+    let mut faults = Vec::new();
+    let broken = captured_warnings(conn, lock.lock_id)?;
+    let indexed = crate::link_index::ready(conn);
     for (row_id, address, _) in members {
-        let Some(card) = by_address.get(address) else {
+        let Some(card) = by_address.get(address.as_str()) else {
             continue;
         };
-        let parsed = crate::parse_card_text(&card.text)?;
-        let body = crate::link::LinkBody::parse(&parsed.body)?;
+        let Ok(parsed) = crate::parse_card_text(&card.text) else {
+            // An unreadable body is already reported once, by the member's fingerprint check.
+            continue;
+        };
+        let Ok(body) = crate::link::LinkBody::parse(&parsed.body) else {
+            continue;
+        };
+        let occurrences = body.occurrences();
         let mut expected = BTreeSet::new();
-        for occurrence in body.occurrences() {
-            let Some(target) = by_address.get(occurrence.target) else {
+        let mut authored = Vec::new();
+        for occurrence in occurrences {
+            let target = occurrence.target;
+            authored.push(target.to_string());
+            let Some(target_card) = by_address.get(target) else {
                 continue;
             };
-            if crate::is_tree_member(&target.address, &lock.tree) {
+            if crate::is_tree_member(&target_card.address, &lock.tree) {
                 continue;
             }
-            if broken.contains(&(address.clone(), occurrence.target.to_string())) {
+            if broken.contains(&(address.clone(), target.to_string())) {
                 continue;
             }
-            expected.insert(target.row_id);
+            expected.insert(target_card.row_id);
         }
         let stored = pins
             .iter()
@@ -1981,50 +2564,183 @@ fn link_pin_faults(
             .map(|(_, target_row, _)| *target_row)
             .collect::<BTreeSet<_>>();
         if expected != stored {
-            faults.push(Fault::new(
-                Some(lock.lock_id),
-                "pin-set",
-                address,
-                format!(
-                    "resolvable external Links of row {row_id} do not agree with its stored pins"
-                ),
-            ));
+            let expected_addresses = expected
+                .iter()
+                .map(|row| by_row.get(row).map_or_else(|| row.to_string(), |card| card.address.clone()))
+                .collect::<Vec<_>>();
+            let stored_addresses = pins
+                .iter()
+                .filter(|(source_row, _, _)| source_row == row_id)
+                .map(|(_, _, target)| target.clone())
+                .collect::<Vec<_>>();
+            faults.push(
+                Fault::lock(
+                    lock.lock_id,
+                    "pin-set",
+                    address,
+                    format!(
+                        "resolvable external Links of row {row_id} do not agree with its stored pins"
+                    ),
+                )
+                .expected(expected_addresses.join(", "))
+                .actual(stored_addresses.join(", ")),
+            );
+        }
+        if indexed {
+            let mut stmt = conn.prepare("SELECT target FROM links WHERE source = ?1 ORDER BY ord")?;
+            let rows = stmt
+                .query_map([address.as_str()], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            if rows != authored {
+                faults.push(
+                    Fault::lock(
+                        lock.lock_id,
+                        "index-changed",
+                        address,
+                        "the derived Link index disagrees with the authored body; run `zt reindex`",
+                    )
+                    .expected(authored.join(", "))
+                    .actual(rows.join(", ")),
+                );
+            }
         }
     }
     Ok(faults)
 }
 
+/// Compare every active Lock's promise with the stored archive in one consistent read view. This is
+/// the pure scan (R027, R278): it records nothing, so it is also usable read-only.
+fn scan(conn: &Connection) -> Result<Integrity> {
+    let mut integrity = Integrity::default();
+    if !schema_faults(conn, &mut integrity)? {
+        integrity.faults.sort();
+        integrity.faults.dedup();
+        return Ok(integrity);
+    }
+    let locks = stored_locks(conn)?;
+    if locks.is_empty() {
+        integrity.faults.sort();
+        integrity.faults.dedup();
+        return Ok(integrity);
+    }
+    let cards = stored_cards(conn)?;
+    let by_address = cards
+        .iter()
+        .map(|card| (card.address.as_str(), card))
+        .collect::<BTreeMap<_, _>>();
+    let by_row = cards
+        .iter()
+        .map(|card| (card.row_id, card))
+        .collect::<BTreeMap<_, _>>();
+    for lock in &locks {
+        compare_lock(conn, lock, &cards, &by_address, &by_row, &mut integrity)?;
+    }
+    integrity.latched = latched_faults(conn)?;
+    integrity.faults.sort();
+    integrity.faults.dedup();
+    integrity
+        .latched
+        .sort_by(|a, b| (&a.lock_id, &a.id).cmp(&(&b.lock_id, &b.id)));
+    integrity.latched.dedup();
+    Ok(integrity)
+}
+
+/// The full integrity comparison. It runs in one consistent read view: in its own read transaction
+/// when the caller has none, or inside the caller's transaction (R278).
+pub(crate) fn check(conn: &Connection) -> Result<Integrity> {
+    if conn.is_autocommit() {
+        let view = conn.unchecked_transaction()?;
+        let integrity = scan(&view)?;
+        let _ = view.rollback();
+        Ok(integrity)
+    } else {
+        scan(conn)
+    }
+}
+
 /// Persist newly observed faults as `integrity-fault` events under the caller's edit lock and
-/// transaction. A repeated scan of the same fault adds no event.
+/// transaction (R027, R295). A repeated scan of the same fault adds no event; a schema fault is
+/// latched once on every active Lock it leaves unprotected.
 pub(crate) fn record_faults_tx(conn: &Connection, integrity: &Integrity) -> Result<usize> {
+    let active = active_lock_ids(conn)?;
     let mut recorded = 0;
     for fault in &integrity.faults {
-        let Some(lock_id) = fault.lock_id else {
-            continue;
+        let targets: Vec<i64> = match fault.lock_id {
+            Some(lock_id) => vec![lock_id],
+            None => active.clone(),
         };
-        let seen = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM lock_events
-                 WHERE lock_id = ?1 AND action = 'integrity-fault'
-                   AND json_extract(detail, '$.fault') = ?2)",
-                params![lock_id, fault.id],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-        if seen {
-            continue;
+        for lock_id in targets {
+            let id = fault.id_for_lock(lock_id);
+            let seen = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM lock_events
+                     WHERE lock_id = ?1 AND action = 'integrity-fault'
+                       AND CASE WHEN json_valid(detail) THEN json_extract(detail, '$.fault') END = ?2)",
+                    params![lock_id, id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+            if seen {
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO lock_events(lock_id, action, at, detail)
+                 VALUES(?1, 'integrity-fault', strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?2)",
+                params![
+                    lock_id,
+                    json!({"fault": id, "evidence": fault.value()}).to_string()
+                ],
+            )?;
+            recorded += 1;
         }
-        let detail = fault.value();
-        conn.execute(
-            "INSERT INTO lock_events(lock_id, action, at, detail)
-             VALUES(?1, 'integrity-fault', strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?2)",
-            params![lock_id, json!({"fault": fault.id, "evidence": detail}).to_string()],
-        )?;
-        recorded += 1;
     }
     if recorded > 0 {
         crate::link_index::bump_revision(conn)?;
     }
+    Ok(recorded)
+}
+
+/// What one guarded startup comparison did: the faults it recorded first, the protection it
+/// reinstalled second, and the state the service starts with.
+pub(crate) struct StartupGuard {
+    pub(crate) recorded: usize,
+    pub(crate) repaired: Vec<String>,
+    pub(crate) integrity: Integrity,
+}
+
+/// The guarded startup comparison (R290, R296–R298). In one transaction it compares the promise with
+/// the stored archive and the protection catalog **before** any repair, records every newly observed
+/// fault, then reinstalls the canonical protection that is missing or altered and validates it. A
+/// backstop that cannot be restored refuses writable startup.
+pub(crate) fn startup_guard(conn: &Connection) -> Result<StartupGuard> {
+    let tx = conn.unchecked_transaction()?;
+    let integrity = scan(&tx)?;
+    let recorded = record_faults_tx(&tx, &integrity)?;
+    let repaired = install_or_repair(&tx)?;
+    validate_schema(&tx)?;
+    validate_indexes(&tx)?;
+    validate_triggers(&tx)?;
+    tx.commit()?;
+    Ok(StartupGuard {
+        recorded,
+        repaired,
+        integrity: check(conn)?,
+    })
+}
+
+/// The comparison a Card, row-identity or trigger migration runs first (R293). A no-op when no
+/// promise could be affected: no lock schema, or no active Lock.
+pub(crate) fn check_before_migration(conn: &Connection) -> Result<usize> {
+    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+        return Ok(0);
+    }
+    if active_lock_ids(conn)?.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let integrity = scan(&tx)?;
+    let recorded = record_faults_tx(&tx, &integrity)?;
+    tx.commit()?;
     Ok(recorded)
 }
 
@@ -2033,14 +2749,16 @@ pub(crate) fn record_faults_tx(conn: &Connection, integrity: &Integrity) -> Resu
 // ---------------------------------------------------------------------------------------------
 
 /// The versioned dump and panel representation: every Lock (active or ended), its retained
-/// snapshots, its ordered events and the current integrity result.
-pub(crate) fn export(conn: &Connection) -> Result<Value> {
+/// snapshots, its ordered events and the current integrity result. Each active Lock also carries its
+/// own current and latched faults, so the panel can mark that tree's seal (R229, S06-AC08).
+/// The same representation for one already computed comparison, so the panel route scans once.
+pub(crate) fn export_with(conn: &Connection, integrity: &Integrity) -> Result<Value> {
     let Some(state) = load_state(conn)? else {
         return Ok(json!({
             "version": 1,
             "schema_version": Value::Null,
             "locks": [],
-            "integrity": {"ok": false, "faults": [{"id": "lock-schema:tree_lock:tree_lock", "kind": "schema"}]},
+            "integrity": integrity.value(),
         }));
     };
     let mut locks = Vec::new();
@@ -2106,13 +2824,40 @@ pub(crate) fn export(conn: &Connection) -> Result<Value> {
         let warnings = retained_warnings(conn, lock.lock_id)?;
         object.insert("warnings".into(), Value::Array(warnings));
         object.insert("events".into(), Value::Array(events));
+        // A fault and a latch are both shown beside the Lock they belong to; a fault never hides a
+        // Lock, a Card or the seal the owner reviewed.
+        if lock.unlocked_at.is_none() {
+            object.insert(
+                "faults".into(),
+                Value::Array(
+                    integrity
+                        .faults_of(lock.lock_id)
+                        .iter()
+                        .map(|fault| fault.value())
+                        .collect(),
+                ),
+            );
+            object.insert(
+                "latched_faults".into(),
+                Value::Array(
+                    integrity
+                        .latched_of(lock.lock_id)
+                        .iter()
+                        .map(|latched| latched.value())
+                        .collect(),
+                ),
+            );
+            let broken = !integrity.faults_of(lock.lock_id).is_empty()
+                || !integrity.latched_of(lock.lock_id).is_empty();
+            object.insert("seal_intact".into(), Value::Bool(!broken));
+        }
         locks.push(value);
     }
     Ok(json!({
         "version": 1,
         "schema_version": SCHEMA_VERSION,
         "locks": locks,
-        "integrity": check(conn)?.value(),
+        "integrity": integrity.value(),
     }))
 }
 
@@ -2509,7 +3254,7 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("events");
         assert_eq!(events, ["lock", "unlock"]);
-        let export = export(&conn).expect("export");
+        let export = export_with(&conn, &check(&conn).expect("check")).expect("export");
         assert_eq!(export["locks"][0]["unlocked_at"].is_string(), true);
         assert_eq!(export["locks"][0]["events"][0]["action"], "lock");
         // The tree can be locked again, with a new Lock id and the same seal.
@@ -2714,6 +3459,9 @@ mod tests {
         assert!(ensure_unlocked(&conn, Change::Delete(&other_plan)).is_ok());
     }
 
+    /// S06-AC04/S06-AC05: a tampered member and a dropped trigger are exact faults, each is
+    /// recorded once, the schema fault is latched on every active Lock, and a repeated scan adds no
+    /// second event.
     #[test]
     fn check_reports_a_changed_member_and_a_dropped_trigger_once() {
         let (temp, mut conn) = archive();
@@ -2739,8 +3487,9 @@ mod tests {
         assert!(kinds.contains("fingerprint-changed"), "{kinds:?}");
         assert!(kinds.contains("trigger-missing"), "{kinds:?}");
         let tx = conn.transaction().expect("transaction");
-        // The lock-bound fault is recorded; a schema fault has no Lock to attach its evidence to.
-        assert_eq!(record_faults_tx(&tx, &integrity).expect("record"), 1);
+        // The member fault belongs to the Lock; the schema fault is latched on that same Lock, so
+        // one Lock keeps one record per observed fault.
+        assert_eq!(record_faults_tx(&tx, &integrity).expect("record"), 2);
         tx.commit().expect("commit");
         let recorded: Vec<String> = conn
             .prepare("SELECT detail FROM lock_events WHERE action = 'integrity-fault'")
@@ -2749,15 +3498,33 @@ mod tests {
             .expect("events")
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("events");
-        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded.len(), 2);
         assert!(
-            recorded[0].contains("fingerprint-changed"),
-            "{}",
-            recorded[0]
+            recorded
+                .iter()
+                .any(|detail| detail.contains("fingerprint-changed")),
+            "{recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|detail| detail.contains("trigger-missing")),
+            "{recorded:?}"
         );
         let tx = conn.transaction().expect("transaction");
         assert_eq!(record_faults_tx(&tx, &integrity).expect("record again"), 0);
         tx.commit().expect("commit");
+        // The two records are latched on the still-active Lock: health now needs both a clean
+        // comparison and no latch.
+        let after = check(&conn).expect("check");
+        assert!(!after.ok());
+        assert_eq!(after.latched.len(), 2, "{:?}", after.latched);
+        assert!(
+            after
+                .latched
+                .iter()
+                .any(|latched| latched.kind == "trigger-missing")
+        );
         let _ = temp;
     }
 
@@ -2919,9 +3686,14 @@ mod tests {
 
     #[test]
     fn the_installed_triggers_name_the_shared_reverse_marker_and_use_no_custom_functions() {
-        assert!(TRIGGERS_SQL.contains(crate::card::REVERSE_MARKER));
-        assert!(!TRIGGERS_SQL.contains("zt_authored_fp"));
-        assert!(!TRIGGERS_SQL.contains("zt_tree_root"));
+        for (name, sql) in TRIGGER_DEFS {
+            assert!(!sql.contains("zt_authored_fp"), "{name} uses only built-in SQL");
+            assert!(!sql.contains("zt_tree_root"), "{name} uses only built-in SQL");
+        }
+        assert!(
+            TRIGGER_DEFS[1].1.contains(crate::card::REVERSE_MARKER),
+            "the update trigger compares the authored text before the generated Reverse marker"
+        );
         let (_temp, mut conn) = archive();
         let installed: String = conn
             .query_row(
@@ -3255,6 +4027,565 @@ mod tests {
             json!(expected)
         );
         assert_eq!(annotated(&view, &conn, &side)["lock"]["tree"], json!(first_tree));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // S06 (#129): exact integrity faults, fault latches and the guarded startup comparison.
+    // -----------------------------------------------------------------------------------------
+
+    fn fault_ids(integrity: &Integrity) -> Vec<String> {
+        integrity.faults.iter().map(Fault::id).collect()
+    }
+
+    fn fault_kinds(integrity: &Integrity) -> BTreeSet<&str> {
+        integrity
+            .faults
+            .iter()
+            .map(|fault| fault.kind.as_str())
+            .collect()
+    }
+
+    /// A locked tree, the state every S06 test starts from.
+    fn locked_topic(conn: &mut Connection) -> (String, Lock) {
+        let root = topic_tree(conn);
+        let plan = resolve_plan(conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        (root, lock)
+    }
+
+    /// R278/R287/S06-AC03: an intact archive passes the canonical catalog comparison, records
+    /// nothing, and a pure scan writes nothing at all.
+    #[test]
+    fn an_intact_locked_archive_has_no_fault_and_records_nothing() {
+        let (_temp, mut conn) = archive();
+        let (root, lock) = locked_topic(&mut conn);
+        let revision = crate::link_index::revision(&conn).expect("revision");
+        let integrity = check(&conn).expect("check");
+        assert!(integrity.ok(), "{:?}", fault_ids(&integrity));
+        assert!(integrity.latched.is_empty());
+        assert!(!integrity.needs_recording());
+        assert_eq!(integrity.summary(), "integrity ok");
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+            .expect("events");
+        assert_eq!(events, 1, "the pure scan wrote no event");
+        assert_eq!(
+            crate::link_index::revision(&conn).expect("revision"),
+            revision,
+            "the pure scan changed no revision"
+        );
+        let tx = conn.transaction().expect("transaction");
+        assert_eq!(record_faults_tx(&tx, &integrity).expect("record"), 0);
+        tx.commit().expect("commit");
+        let panel = export_with(&conn, &integrity).expect("export");
+        assert_eq!(panel["integrity"]["ok"], true);
+        assert_eq!(panel["locks"][0]["seal_intact"], true);
+        assert_eq!(panel["locks"][0]["faults"], json!([]));
+        assert_eq!(panel["locks"][0]["lock_id"], json!(lock.lock_id));
+        assert_eq!(panel["locks"][0]["root"], json!(root));
+    }
+
+    /// R287/S06-AC03: a trigger replaced under its canonical name is a different definition, so it
+    /// is an exact fault even though the name is present.
+    #[test]
+    fn a_trigger_replaced_under_its_canonical_name_is_an_altered_fault() {
+        let (_temp, mut conn) = archive();
+        let (_root, lock) = locked_topic(&mut conn);
+        conn.execute_batch(
+            "DROP TRIGGER lock_no_change;
+             CREATE TRIGGER lock_no_change BEFORE UPDATE ON cards
+             WHEN 0 BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
+        )
+        .expect("replace the trigger");
+        let integrity = check(&conn).expect("check");
+        let kinds = fault_kinds(&integrity);
+        assert!(kinds.contains("trigger-altered"), "{kinds:?}");
+        assert!(!kinds.contains("trigger-missing"), "{kinds:?}");
+        let fault = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "trigger-altered")
+            .expect("altered fault");
+        assert_eq!(fault.subject, "lock_no_change");
+        assert!(fault.lock_id.is_none(), "a schema fault names no Lock");
+        assert_eq!(fault.value()["expected"], "the canonical trigger");
+        assert_eq!(fault.value()["actual"], "an altered definition");
+        let tx = conn.transaction().expect("transaction");
+        assert_eq!(record_faults_tx(&tx, &integrity).expect("record"), 1);
+        tx.commit().expect("commit");
+        // R296/R297: the guarded startup comparison records first, then repairs, and the latch
+        // keeps the seal broken after the definition is canonical again.
+        let guard = startup_guard(&conn).expect("guarded startup");
+        assert_eq!(guard.recorded, 0, "the fault was already recorded");
+        assert_eq!(guard.repaired, vec!["lock_no_change".to_string()]);
+        assert!(
+            check(&conn).expect("check").faults.is_empty(),
+            "the canonical trigger is back"
+        );
+        let after = check(&conn).expect("check");
+        assert!(!after.ok(), "the latch survives the repair");
+        assert_eq!(after.latched.len(), 1);
+        assert_eq!(after.latched[0].lock_id, lock.lock_id);
+        assert_eq!(after.latched[0].kind, "trigger-altered");
+        // A second guarded startup adds no event and repairs nothing.
+        let again = startup_guard(&conn).expect("guarded startup again");
+        assert_eq!(again.recorded, 0);
+        assert!(again.repaired.is_empty(), "{:?}", again.repaired);
+    }
+
+    /// R290/R296: a trigger lost before startup is recorded *before* the canonical one is
+    /// reinstalled, so its evidence is not lost by the repair.
+    #[test]
+    fn a_trigger_lost_before_startup_is_recorded_before_it_is_reinstalled() {
+        let (_temp, mut conn) = archive();
+        let (root, lock) = locked_topic(&mut conn);
+        conn.execute_batch("DROP TRIGGER lock_pin_no_delete")
+            .expect("drop trigger");
+        let guard = startup_guard(&conn).expect("guarded startup");
+        assert_eq!(guard.recorded, 1, "the loss is evidence before the repair");
+        assert_eq!(guard.repaired, vec!["lock_pin_no_delete".to_string()]);
+        assert!(
+            guard.integrity.faults.is_empty(),
+            "the repair restored the backstop: {:?}",
+            fault_ids(&guard.integrity)
+        );
+        assert_eq!(guard.integrity.latched.len(), 1);
+        let recorded: String = conn
+            .query_row(
+                "SELECT detail FROM lock_events WHERE action = 'integrity-fault' AND lock_id = ?1",
+                [lock.lock_id],
+                |row| row.get(0),
+            )
+            .expect("the recorded fault");
+        assert!(recorded.contains("trigger-missing"), "{recorded}");
+        assert!(recorded.contains("lock_pin_no_delete"), "{recorded}");
+        // The repaired trigger really protects again.
+        let error = conn
+            .execute("DELETE FROM cards WHERE location = ?1", [&root])
+            .expect_err("the reinstall protects the root again");
+        assert!(error.to_string().contains("locked tree"), "{error}");
+    }
+
+    /// R287/S06-AC03: a required index that disappears is a fault, not a silent success; the same
+    /// guarded startup restores it and keeps the latch.
+    #[test]
+    fn a_missing_index_is_a_fault_and_the_guarded_startup_restores_it() {
+        let (_temp, mut conn) = archive();
+        let (_root, lock) = locked_topic(&mut conn);
+        conn.execute_batch("DROP INDEX lock_pins_by_target")
+            .expect("drop index");
+        let integrity = check(&conn).expect("check");
+        let kinds = fault_kinds(&integrity);
+        assert!(kinds.contains("schema-index"), "{kinds:?}");
+        let guard = startup_guard(&conn).expect("guarded startup");
+        assert_eq!(guard.recorded, 1);
+        assert_eq!(guard.repaired, vec!["lock_pins_by_target".to_string()]);
+        assert_eq!(
+            lock_events_with(&conn, lock.lock_id, "integrity-fault"),
+            1,
+            "one event for the lost index"
+        );
+        let restored: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'lock_pins_by_target'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the restored index");
+        assert!(restored.contains("lock_pins(target_row)"), "{restored}");
+        assert!(!check(&conn).expect("check").ok(), "the latch stays");
+    }
+
+    fn lock_events_with(conn: &Connection, lock_id: i64, action: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1 AND action = ?2",
+            params![lock_id, action],
+            |row| row.get(0),
+        )
+        .expect("event count")
+    }
+
+    /// R287/S06-AC03: every one of the six canonical triggers is compared by definition, not only
+    /// one of them, and the guarded startup restores each exact statement.
+    #[test]
+    fn all_six_canonical_triggers_are_compared_and_restored() {
+        for (name, _) in TRIGGER_DEFS {
+            let (_temp, mut conn) = archive();
+            let (_root, lock) = locked_topic(&mut conn);
+            conn.execute_batch(&format!(
+                "DROP TRIGGER {name};
+                 CREATE TRIGGER {name} BEFORE DELETE ON cards WHEN 0
+                 BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;"
+            ))
+            .expect("replace one trigger");
+            let integrity = check(&conn).expect("check");
+            let altered = integrity
+                .faults
+                .iter()
+                .filter(|fault| fault.kind == "trigger-altered")
+                .map(|fault| fault.subject.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(altered, vec![name], "exactly `{name}` is altered");
+            let guard = startup_guard(&conn).expect("guarded startup");
+            assert_eq!(guard.recorded, 1, "{name}");
+            assert_eq!(guard.repaired, vec![name.to_string()]);
+            assert!(
+                validate_triggers(&conn).is_ok(),
+                "{name} must be canonical again"
+            );
+            assert!(!check(&conn).expect("check").ok(), "{name}: the latch stays");
+            assert_eq!(lock.lock_id, lock.lock_id);
+        }
+    }
+
+    /// R295/S06-AC04: recording a newly observed fault advances the archive revision once, and a
+    /// repeated recording of the same evidence advances nothing.
+    #[test]
+    fn recording_a_new_fault_advances_the_revision_once() {
+        let (_temp, mut conn) = archive();
+        let (_root, _lock) = locked_topic(&mut conn);
+        conn.execute_batch("DROP TRIGGER lock_pin_no_move")
+            .expect("drop a trigger");
+        let integrity = check(&conn).expect("check");
+        let before = crate::link_index::revision(&conn).expect("revision");
+        let tx = conn.transaction().expect("transaction");
+        assert_eq!(record_faults_tx(&tx, &integrity).expect("record"), 1);
+        tx.commit().expect("commit");
+        let after = crate::link_index::revision(&conn).expect("revision");
+        assert_eq!(after, before + 1, "one recording, one revision");
+        let tx = conn.transaction().expect("transaction");
+        assert_eq!(record_faults_tx(&tx, &integrity).expect("record again"), 0);
+        tx.commit().expect("commit");
+        assert_eq!(
+            crate::link_index::revision(&conn).expect("revision"),
+            after,
+            "repeated evidence changes nothing"
+        );
+    }
+
+    /// R293/S06-AC06: the comparison a migration runs first records the promise it could break, and
+    /// is a no-op when no promise exists.
+    #[test]
+    fn check_before_migration_records_only_the_promises_a_migration_could_break() {
+        let (_temp, mut conn) = archive();
+        // No lock schema: nothing to compare.
+        assert_eq!(check_before_migration(&conn).expect("no schema"), 0);
+        // A lock schema but no active Lock: no promise to compare.
+        let root = topic_tree(&mut conn);
+        let _ = &root;
+        assert_eq!(check_before_migration(&conn).expect("no lock"), 0);
+        // An active Lock with a tampered member: the migration check records the evidence.
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        conn.execute_batch("DROP TRIGGER lock_no_change")
+            .expect("drop the trigger");
+        conn.execute(
+            "UPDATE cards SET text = '# Topic\n\nchanged\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [&root],
+        )
+        .expect("tamper");
+        assert_eq!(check_before_migration(&conn).expect("recorded"), 2);
+        assert_eq!(lock_events_with(&conn, lock.lock_id, "integrity-fault"), 2);
+        assert_eq!(check_before_migration(&conn).expect("again"), 0);
+    }
+
+    /// S06-AC06/R290/R293: the boot sequence keeps each check where the contract puts it — the
+    /// promise comparison before a Card migration, the guarded comparison after the Card rebuilds,
+    /// and the two explicit check points reachable from the shell and the panel.
+    #[test]
+    fn the_boot_sequence_keeps_each_integrity_check_where_it_belongs() {
+        let source = include_str!("main.rs");
+        let boot = source
+            .split("fn initialize_database")
+            .nth(1)
+            .expect("initialize_database");
+        let boot = &boot[..boot.find("fn cards_table").unwrap_or(boot.len())];
+        let before_migration = boot
+            .find("tree_lock::check_before_migration")
+            .expect("the pre-migration comparison");
+        let first_migration = boot
+            .find("ensure_workspace_column(&conn, root)")
+            .expect("the first Card migration");
+        let rebuild = boot
+            .find("ensure_markdown_cards(root)")
+            .expect("the Card rebuild");
+        let guarded = boot
+            .find("tree_lock::startup_guard")
+            .expect("the guarded startup comparison");
+        assert!(
+            before_migration < first_migration,
+            "the promise is compared before a migration can change Cards"
+        );
+        assert!(
+            rebuild < guarded,
+            "the guarded comparison sees the protection catalog after the Card rebuilds"
+        );
+        assert!(
+            source.contains("cmd == \"status\" && flag == \"--check-locks\""),
+            "`zt status --check-locks` reaches the full comparison"
+        );
+        let gui = include_str!("gui.rs");
+        let panel = gui
+            .split("fn locks(&self)")
+            .nth(1)
+            .expect("the panel route");
+        assert!(
+            panel.contains("crate::tree_lock::check(&conn)?"),
+            "opening the panel runs the comparison"
+        );
+        assert!(
+            panel.contains("record_faults_tx"),
+            "the panel records newly observed faults once"
+        );
+    }
+
+    /// R288/S06-AC02: the comparison reads raw stored values, so a decoder fallback for a value
+    /// the schema does not accept cannot hide a changed Workspace or kind.
+    #[test]
+    fn a_raw_undecodable_workspace_or_kind_is_a_fault_not_a_default() {
+        let (_temp, mut conn) = archive();
+        let (root, lock) = locked_topic(&mut conn);
+        let first = first_address(&root);
+        // The CHECK constraints refuse these values through ordinary SQL and the statement trigger
+        // refuses any member change at all; the fixture allows both to prove the comparison reads the
+        // raw stored values instead of falling back to `human` or an Idea Card.
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON; DROP TRIGGER lock_no_change;")
+            .expect("allow the fixture");
+        conn.execute(
+            "UPDATE cards SET workspace = 'elsewhere' WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper workspace");
+        conn.execute(
+            "UPDATE cards SET is_lit = 2 WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper kind");
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF;")
+            .expect("restore the schema");
+        let integrity = check(&conn).expect("check");
+        let changed = integrity
+            .faults
+            .iter()
+            .filter(|fault| fault.kind == "member-changed" && fault.subject == first)
+            .collect::<Vec<_>>();
+        assert!(
+            changed
+                .iter()
+                .any(|fault| fault.actual.as_deref() == Some("elsewhere")),
+            "{:?}",
+            fault_ids(&integrity)
+        );
+        assert!(
+            changed
+                .iter()
+                .any(|fault| fault.actual.as_deref() == Some("is_topic=0 is_lit=2")),
+            "{:?}",
+            fault_ids(&integrity)
+        );
+        assert_eq!(changed[0].lock_id, Some(lock.lock_id));
+    }
+
+    /// R283/R281/S06-AC01: an extra Card, a removed member and a member that moved out are three
+    /// distinct exact faults, each naming its own address.
+    #[test]
+    fn extra_missing_and_moved_members_are_distinct_faults() {
+        let (_temp, mut conn) = archive();
+        let (root, _lock) = locked_topic(&mut conn);
+        let side = side_address(&root);
+        // An extra Card inside the locked tree, a removed member and a moved member, written by a
+        // raw connection: every protection trigger that stops them is dropped first, which is its
+        // own fault and the honest shape of an outside tamper.
+        conn.execute_batch(
+            "DROP TRIGGER lock_no_insert; DROP TRIGGER lock_no_delete; DROP TRIGGER lock_no_change;",
+        )
+        .expect("drop the protection triggers");
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type)
+             VALUES(?1, NULL, 0, 0, NULL, ?2, 'human', 'idea')",
+            params![
+                format!("{}/9", crate::tree_id(&root)),
+                card_text("Extra", "not in the snapshot")
+            ],
+        )
+        .expect("extra card");
+        // A removed member and a member moved out of the tree.
+        conn.execute("DELETE FROM cards WHERE location = ?1", [&side])
+            .expect("delete a member");
+        let first = first_address(&root);
+        conn.execute(
+            "UPDATE cards SET location = '7/1' WHERE location = ?1",
+            [&first],
+        )
+        .expect("move a member out");
+        let integrity = check(&conn).expect("check");
+        let kinds = fault_kinds(&integrity);
+        assert!(kinds.contains("member-extra"), "{kinds:?}");
+        assert!(kinds.contains("member-missing"), "{kinds:?}");
+        let extra = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "member-extra")
+            .expect("extra fault");
+        assert_eq!(extra.subject, format!("{}/9", crate::tree_id(&root)));
+        let missing = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "member-missing")
+            .expect("missing fault");
+        assert_eq!(missing.subject, side);
+        // A moved member is one exact fault at its old address: the snapshot row no longer holds
+        // the Card it promised.
+        let moved = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.subject == first)
+            .unwrap_or_else(|| panic!("no fault names the moved member: {:?}", fault_ids(&integrity)));
+        assert_eq!(moved.kind, "member-changed");
+        assert_eq!(moved.actual.as_deref(), Some("7/1"));
+    }
+
+    /// R285/R286/S06-AC02: a pin whose target vanished or changed its row, a pin inside the tree,
+    /// a pin source that is not a member, and a pin set that disagrees with the authored Links are
+    /// each their own fault.
+    #[test]
+    fn every_pin_and_link_disagreement_is_its_own_fault() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let root = linking_tree(&mut conn, "Frozen", &target);
+        let lock_id = lock_rows(&mut conn, &root);
+        // The pin target is deleted by a raw connection; the pin delete trigger refuses it, so the
+        // fixture drops that trigger (itself a fault).
+        conn.execute_batch("DROP TRIGGER lock_pin_no_delete")
+            .expect("drop the pin trigger");
+        conn.execute("DELETE FROM cards WHERE location = ?1", [&target])
+            .expect("delete the pinned target");
+        let integrity = check(&conn).expect("check");
+        let kinds = fault_kinds(&integrity);
+        assert!(kinds.contains("pin-missing"), "{kinds:?}");
+        assert!(kinds.contains("pin-set"), "{kinds:?}");
+        let pin_missing = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "pin-missing")
+            .expect("pin-missing");
+        assert_eq!(pin_missing.subject, target);
+        assert_eq!(pin_missing.lock_id, Some(lock_id));
+        // The pin set fault names the source member whose authored Link no longer has a target.
+        let pin_set = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "pin-set")
+            .expect("pin-set");
+        assert_eq!(pin_set.subject, first_address(&root));
+
+        // A pin source that is not one of the Lock's members, and a pin inside the locked tree.
+        conn.execute(
+            "INSERT INTO lock_pins(lock_id, source_row, target_row, target_address)
+             VALUES(?1, 999999, 999998, 'nowhere')",
+            [lock_id],
+        )
+        .expect("foreign pin source");
+        let inside = first_address(&root);
+        let inside_row = row_of(&conn, &inside);
+        conn.execute(
+            "INSERT INTO lock_pins(lock_id, source_row, target_row, target_address)
+             VALUES(?1, ?2, ?2, ?3)",
+            params![lock_id, inside_row, inside],
+        )
+        .expect("pin inside the tree");
+        let integrity = check(&conn).expect("check");
+        let kinds = fault_kinds(&integrity);
+        assert!(kinds.contains("pin-source"), "{kinds:?}");
+        assert!(kinds.contains("pin-inside"), "{kinds:?}");
+    }
+
+    /// R286/S06-AC02: the derived Link index is cross-checked against the authored body, so a
+    /// dropped index row is a fault even when the pins still match.
+    #[test]
+    fn a_link_index_that_disagrees_with_the_authored_body_is_a_fault() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let root = linking_tree(&mut conn, "Frozen", &target);
+        let first = first_address(&root);
+        lock_rows(&mut conn, &root);
+        conn.execute("DELETE FROM links WHERE source = ?1", [&first])
+            .expect("drop one indexed source");
+        let integrity = check(&conn).expect("check");
+        let fault = integrity
+            .faults
+            .iter()
+            .find(|fault| fault.kind == "index-changed")
+            .expect("index fault");
+        assert_eq!(fault.subject, first);
+        assert!(fault.expected.as_deref().is_some_and(|text| text.contains(&target)));
+        assert_eq!(fault.actual.as_deref(), Some(""));
+    }
+
+    /// R289/S06-AC05: a recorded fault is never erased by a later clean comparison, so the archive
+    /// needs the owner's explicit review; the pure scan does not re-record it.
+    #[test]
+    fn a_later_clean_comparison_does_not_erase_a_latched_fault() {
+        let (_temp, mut conn) = archive();
+        let (root, lock) = locked_topic(&mut conn);
+        let first = first_address(&root);
+        let original = crate::load_card(&conn, &first).expect("member").text;
+        conn.execute_batch("DROP TRIGGER lock_no_change")
+            .expect("drop the update trigger");
+        conn.execute(
+            "UPDATE cards SET text = '# First\n\ntampered\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper");
+        let integrity = check(&conn).expect("check");
+        let tx = conn.transaction().expect("transaction");
+        assert_eq!(
+            record_faults_tx(&tx, &integrity).expect("record"),
+            2,
+            "the member fault and the lost trigger"
+        );
+        tx.commit().expect("commit");
+        // The owner restores the authored text by hand and the next service start restores the
+        // trigger: the current comparison is clean, the evidence is not.
+        conn.execute("UPDATE cards SET text = ?1 WHERE location = ?2", params![original, first])
+            .expect("restore");
+        let guard = startup_guard(&conn).expect("guarded startup");
+        assert_eq!(guard.recorded, 0);
+        assert_eq!(guard.repaired, vec!["lock_no_change".to_string()]);
+        let after = check(&conn).expect("check");
+        assert!(after.faults.is_empty(), "{:?}", fault_ids(&after));
+        assert!(!after.ok(), "the latch keeps the Lock unhealthy");
+        assert_eq!(after.latched.len(), 2);
+        assert_eq!(lock_events_with(&conn, lock.lock_id, "integrity-fault"), 2);
+        // The panel shows the broken seal beside the same seal the owner reviewed.
+        let panel = export_with(&conn, &after).expect("export");
+        let listed = &panel["locks"][0];
+        assert_eq!(listed["seal"], json!(lock.seal));
+        assert_eq!(listed["seal_intact"], false);
+        assert_eq!(listed["latched_faults"].as_array().expect("latched").len(), 2);
+    }
+
+    /// R278/R027: the comparison uses the caller's transaction when there is one, so a tamper
+    /// inside an uncommitted transaction is visible and a rollback brings the clean answer back.
+    #[test]
+    fn check_reads_the_callers_transaction_and_writes_nothing() {
+        let (_temp, mut conn) = archive();
+        let (_root, _lock) = locked_topic(&mut conn);
+        let tx = conn.transaction().expect("transaction");
+        tx.execute_batch("DROP TRIGGER lock_no_delete")
+            .expect("drop inside the transaction");
+        let inside = check(&tx).expect("check inside the transaction");
+        assert!(fault_kinds(&inside).contains("trigger-missing"));
+        let events: i64 = tx
+            .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+            .expect("events");
+        assert_eq!(events, 1, "a pure check records nothing, even inside a transaction");
+        tx.rollback().expect("rollback");
+        assert!(check(&conn).expect("check after rollback").faults.is_empty());
     }
 }
 

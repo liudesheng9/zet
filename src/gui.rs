@@ -1652,19 +1652,22 @@ impl App {
 
     /// The Lock panel: every Lock, its retained history and the current integrity result. Opening
     /// the panel is one of the design's integrity check points, so newly observed faults are recorded
-    /// once under the edit lock; a healthy archive is only read.
+    /// once under the edit lock; a healthy archive is only read (R292, R027).
     fn locks(&self) -> ApiResult {
         let mut conn = crate::open_db(&self.root)?;
         let integrity = crate::tree_lock::check(&conn)?;
-        if !integrity.ok() {
+        if integrity.needs_recording() {
             let _lock =
                 crate::acquire_edit_lock_within(&self.root, EDIT_PATIENCE, "locks")?;
             let tx = conn.transaction()?;
             let fresh = crate::tree_lock::check(&tx)?;
             crate::tree_lock::record_faults_tx(&tx, &fresh)?;
             tx.commit()?;
+            // Re-read so the answer carries the latch this open just recorded.
+            let recorded = crate::tree_lock::check(&conn)?;
+            return Ok(crate::tree_lock::export_with(&conn, &recorded)?);
         }
-        Ok(crate::tree_lock::export(&conn)?)
+        Ok(crate::tree_lock::export_with(&conn, &integrity)?)
     }
 
     /// Plan a Lock (`{root, note?}`) and commit it only with the matching `confirm: "lock"` word,
