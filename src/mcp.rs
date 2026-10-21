@@ -986,7 +986,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "list_trees",
             "List trees",
-            "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, size, and how many Event Cards, Finding Cards, and models each holds.",
+            "List tree roots (Topics and Literature Cards) with their Workspace, Zone, title, size, how many Event Cards, Finding Cards, and models each holds, and `locked` (whether an active Tree Lock governs that tree).",
             json!({
                 "workspace": workspace_filter,
                 "zone": { "type": "string", "enum": ["topic", "literature", "all"], "description": "Only this Zone; omit for both." },
@@ -998,7 +998,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_tree",
             "Get tree",
-            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub), edge (root, direct, side), parent, excerpt, and Links.",
+            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub), edge (root, direct, side), parent, excerpt, Links, and the Card's active Lock facts (`lock`, `pinned_by`).",
             json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." },"bodies":{"type":"boolean","description":"Include complete body, stored text and BibTeX in each summary."} }),
             &["tree"],
             true,
@@ -1007,7 +1007,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "export_titles",
             "Export titles",
-            "Read titles in one selected-text pass, filtered by Workspace and Zone. Each row carries `restatement` when the Card holds the derived navigation role of an accepted restatement entry (a `## 同述入口` section), so a title-only reader never treats an entry as a claim. Includes count and archive revision; no bodies.",
+            "Read titles in one selected-text pass, filtered by Workspace and Zone. Each row carries `restatement` when the Card holds the derived navigation role of an accepted restatement entry (a `## 同述入口` section), so a title-only reader never treats an entry as a claim, and the Card's active Lock facts (`lock`, `pinned_by`) so a destination plan sees the Cards a Lock freezes. Includes count and archive revision; no bodies.",
             json!({"workspace":workspace_filter,"zone":{"type":"string","enum":["topic","literature","all"]}}),
             &[],
             true,
@@ -1016,7 +1016,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, or hub), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept. A Model Card or Model part also reports `model`: its model's structure.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, or hub), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept. A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
             json!({ "at": at }),
             &["at"],
             true,
@@ -1025,7 +1025,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_cards",
             "Get cards",
-            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Every Card carries the derived `restatement` navigation role and its exact `statement_fingerprint`. Reports missing addresses explicitly. archive_identity contains the persisted random 128-bit id and resolved archive path, including for an empty address list; bind prepared runs to it rather than a path alone.",
+            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Every Card carries the derived `restatement` navigation role, its exact `statement_fingerprint`, its active Lock facts (`lock`, `pinned_by`) and the truthful `writable`; the full and the text view answer the same Lock facts at one revision. Reports missing addresses explicitly. archive_identity contains the persisted random 128-bit id and resolved archive path, including for an empty address list; bind prepared runs to it rather than a path alone.",
             json!({"addresses":{"type":"array","items":{"type":"string"},"maxItems":200},"view":{"type":"string","enum":["full","text"],"default":"full"}}),
             &["addresses"],
             true,
@@ -1123,7 +1123,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "search_cards",
             "Search cards",
-            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it (the existing listing, in every mode). `mode: entry` ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching Card title, then a matching authored body. Inside a tier, exact matches precede prefixes and partial hits, the current lexical score orders the rest, and natural address order breaks the final tie. Each row keeps the summary fields and adds `role` (`entry`, `member`, or `hit`), `rank_tier` (1 to 6), `matched_term` or `matched_line`, `reason`, the navigation `origin`, and the term's surviving `entry_targets`. A confirmed restatement is one row: an accepted `## 同述入口` entry and the substantive Card it names, or two Idea Cards whose exact statement fingerprints are equal (line endings, outer whitespace and a separately labelled source line ignored; formulas, values, signs, variables, negation, assumptions and scope kept; a Model part, Event Card or Finding Card never folds on an equal body, because its facet, labels or source are part of its meaning). That row reports `representative` (the canonical substantive Card), `folded` (how many matching rows it replaces), `members` (every member with its `role`, whether it is an `entry` or `substantive` statement, `matched`, `kept`, `canonical`), and `member_total`; a row in no confirmed group reports `members: null`. `total` counts matching Cards, `row_total` counts rows after folding and before the page limit, and `folded_total` names the difference. `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, and `archive_fingerprint` state the evidence and the bounded work. A search starts no model. An omitted `mode` is `plain`, the existing lexical order and result shape.",
+            "Case-insensitive full-text search over Card addresses, titles, and bodies. Each result names the Card's type and its active Lock facts (`lock`, `pinned_by`); retrieval and ranking are unchanged. With `type` or `form`, only Cards of that type or Math form match, and `query` may be empty or left out to list every Card of it (the existing listing, in every mode). `mode: entry` ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching Card title, then a matching authored body. Inside a tier, exact matches precede prefixes and partial hits, the current lexical score orders the rest, and natural address order breaks the final tie. Each row keeps the summary fields and adds `role` (`entry`, `member`, or `hit`), `rank_tier` (1 to 6), `matched_term` or `matched_line`, `reason`, the navigation `origin`, and the term's surviving `entry_targets`. A confirmed restatement is one row: an accepted `## 同述入口` entry and the substantive Card it names, or two Idea Cards whose exact statement fingerprints are equal (line endings, outer whitespace and a separately labelled source line ignored; formulas, values, signs, variables, negation, assumptions and scope kept; a Model part, Event Card or Finding Card never folds on an equal body, because its facet, labels or source are part of its meaning). That row reports `representative` (the canonical substantive Card), `folded` (how many matching rows it replaces), `members` (every member with its `role`, whether it is an `entry` or `substantive` statement, `matched`, `kept`, `canonical`), and `member_total`; a row in no confirmed group reports `members: null`. `total` counts matching Cards, `row_total` counts rows after folding and before the page limit, and `folded_total` names the difference. `registers`, `register_missing`, `register_faults`, `bounds`, `scanned`, and `archive_fingerprint` state the evidence and the bounded work. A search starts no model. An omitted `mode` is `plain`, the existing lexical order and result shape.",
             json!({
                 "query": { "type": "string", "description": "Text to find; required unless `type` or `form` is given." },
                 "mode": { "type": "string", "enum": ["plain", "entry"], "description": "`plain` (default) keeps the existing lexical order; `entry` ranks register terms and hub ways in before ordinary title and body hits." },

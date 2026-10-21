@@ -126,12 +126,14 @@ All items are `pub(crate)`. ZT is one binary crate, with no library API.
 
 | Method | Returns |
 |---|---|
-| `Snapshot::read(root)` / `Snapshot::load(conn)` | the read model. `read` first runs the schema upgrades in `ensure_markdown_cards` |
-| `fingerprint()` | 24 hex characters, from the SHA-256 of each Card's address, text, BibTeX, Workspace, type, facet, emphasis, level id, and form. Open GUI windows poll it to notice changes |
-| `title(addr)`, `workspace(addr)`, `reference(addr)` | title, Workspace, and `{address, title, workspace}` |
+| `Snapshot::read(root)` / `Snapshot::load(conn)` | the read model, read in one SQLite read transaction: the Cards, their active Lock facts (`tree_lock::LockView`) and the archive revision. `read` first runs the schema upgrades in `ensure_markdown_cards`; `load` opens its own read transaction unless the caller already holds one |
+| `from_cards(cards, lock, revision)` | the shared domain calculations over a complete request context. The Lock view and the revision are explicit arguments, so a database-backed read cannot silently show a real archive as lock-free (R207, S03-AC04). Only an isolated pure fixture passes `LockView::empty()` |
+| `fingerprint()` | 24 hex characters, from the SHA-256 of the archive revision and then each Card's address, text, BibTeX, Workspace, type, facet, emphasis, level id, and form. Open GUI windows poll it to notice changes, including a Lock-only commit that changes no Card (S03-AC06) |
+| `revision()`, `lock()`, `decorate(value, row_id)`, `locked(row_id)` | the revision the Snapshot was read at, its Lock view, the decorator that attaches `lock` and `pinned_by`, and whether an active Lock promises that row |
+| `title(addr)`, `workspace(addr)`, `reference(addr)` | title, Workspace, and `{address, title, workspace, lock, pinned_by}` |
 | `outbound(addr)` | each distinct Link target as `{address, title, workspace, broken}` |
-| `summary(card)` | `{address, tree, workspace, title, kind, type, facet, emphasis, level, form, head, edge ("root"/"side"/"direct"), parent, excerpt, restatement (the derived navigation role of a `## 同述入口` entry), links (not broken), kinds (target -> Relation kind, plain refers left out), inbound (count)}` |
-| `trees()` | one row per Tree root: `{tree, root, workspace, kind (Zone), title, excerpt, count, events, findings, models}`. `events`, `findings`, and `models` count only Cards without a facet |
+| `summary(card)` | `{address, tree, workspace, title, kind, type, facet, emphasis, level, form, head, edge ("root"/"side"/"direct"), parent, excerpt, restatement (the derived navigation role of a `## 同述入口` entry), links (not broken), kinds (target -> Relation kind, plain refers left out), inbound (count), lock, pinned_by}` |
+| `trees()` | one row per Tree root: `{tree, root, workspace, kind (Zone), title, excerpt, count, events, findings, models, locked}`. `events`, `findings`, and `models` count only Cards without a facet |
 | `model_head(card)` | the first Model Card a Model part belongs to (`model::heads`). `None` for a Card without a facet |
 | `model(addr)` | `model::structure(...)`: the model view that `get_card`/`get_model` use |
 | `sides(card)` | the direct child Side successors of a Regular Card, as references |
@@ -312,6 +314,18 @@ Worked mappings (from the tests in `src/place.rs` and `tests/self_sufficient_mod
 
 Every whitespace-separated term of the lower-cased query must occur in the address, the title, or the body. Score per term: title +300 if the title starts with it (else +200); address +800 if equal, +120 if it starts with it, else +40; body +20 plus 2 per occurrence (at most 5). Then +1000 for the whole title (with or without spaces), +40 for Tree roots and Hub Cards, and minus title length / 8. Ties keep `cards` order (address order). `workspaces` counts matches under the type filter, and `types` counts them under the Workspace filter. Each hit's `snippet` is a window of about 150 characters around the first body term (`context_snippet`), else the excerpt.
 
+### The Lock facts of a read view (S03, #126)
+
+A Card projection names the active Locks that govern it, from one bulk `tree_lock::LockView` per read:
+
+- `lock` is `null` for an unlocked Card, or `{lock_id, tree, since}` where `tree` is the Locked tree's **root address** (R068: the Card's own `tree` field stays the tree id, and its `root` meaning is unchanged) and `since` is the Lock's UTC start.
+- `pinned_by` is the sorted, deduplicated list of active Locked tree roots whose Cards link this one; an unpinned Card has `[]`. Several members of one Locked tree name that root once, and one Card can have both a `lock` and a nonempty `pinned_by`.
+- `writable` on a Card object is the reading client's Workspace permission **and** no active Lock (`LockView::writable_for`). The MCP server reads with Agent Access, the GUI with Owner Access; a pin alone never clears `writable`, because movement and deletion are constrained by the writer gate instead.
+
+`LockView::read(conn, rows)` loads the facts in two queries from the member-row (`lock_members_by_row`) and target-row (`lock_pins_by_target`) indexes: `None` for every Card of a full Snapshot, `Some(rows)` for a scoped read's selected and context rows. No read reparses a locked tree, recomputes a seal, or queries once per rendered Card, and the view is not a cache — it lives for one read. `tree_lock::decorate_card(value, row_id, view)` is the one helper that attaches the two fields.
+
+The projections that carry them: `Snapshot::summary` (`/api/graph`, `/api/tree`, MCP `get_tree`), `Snapshot::reference` (the GUI's `parent`/`direct`/`sides`/`inbound` navigation rows), `Snapshot::find` and `Snapshot::search_in` (both search views), `read::text_value` and `read::text_facts` (MCP `get_card` and both `get_cards` views, plus an `apply_batch` preview's final Cards), `entry::row` (entry-first search rows), `read::titles` (`export_titles`, which destination plans read), `read::trees` and `Snapshot::trees` (`locked` only) and the GUI's `/api/card` detail. Model and hub reports name their Cards with bare references (`{address, title, …}`) and stay unchanged; `ask_box` and entry search keep their selection and ranking rules, so their annotations are descriptive only.
+
 ### Rules the code keeps
 
 - One edit lock for every writer. GUI and MCP writes wait up to 20 s (a digest batch client declares 180 s for its child `zt mcp`, and `apply_batch` honours it). Session and shell writes fail at once with `edit in progress`. A two-step operation releases the lock between the plan call and the confirmed call.
@@ -443,6 +457,9 @@ cargo test --test card_types --test model_structure --test model_levels --test h
 | `tests/tree_lock.rs` `a_target_in_another_locked_tree_obeys_its_own_lock` | the stronger `locked` refusal of a Card that is both a member and a pinned target, then the pin alone after that Lock ends |
 | `tests/tree_lock.rs` `a_draft_into_a_locked_destination_leaves_no_partial_card` | the kept `locked_destination` Reply refusal with no fallback Topic, the refused hub-draft filing route, and a Spread over locked Cards being allowed |
 | `src/tree_lock.rs` `the_seal_checks_address_workspace_and_kind_separately_and_refuses_no_ops` | the authored fingerprint ignoring address/row/Workspace/kind, the trigger refusing a kind change, a no-op `Edit` refusal, and the separate integrity fault once the trigger is removed |
+| `src/tree_lock.rs` `the_lock_view_annotates_members_and_pinned_targets_from_one_bulk_read` | `LockView::read` for all rows and for selected rows, the `lock`/`pinned_by` shape, an empty view, and `writable_for` for Owner/Agent on a member, a pinned target and an unrelated Card |
+| `src/tree_lock.rs` `a_target_pinned_by_two_trees_names_both_roots_once` | a target two Locked trees pin names both roots once, in one sorted order, even when two members of one tree link it |
+| `tests/tree_lock.rs` `every_read_projection_names_the_same_lock_facts_at_one_revision` | `get_card`, both `get_cards` views, `get_tree` with and without bodies, `list_trees`, `search_cards` (plain and entry), `export_titles`, and the GUI's `/api/tree`, `/api/graph`, `/api/card` (detail and navigation) and `/api/overview` (`locked`, `revision`) against the stored `locks`/`lock_pins` rows; a note change writing no Card yet moving the overview fingerprint and advancing the revision once; unlock clearing every annotation |
 | `tests/cli_service.rs` `delete_side_successor_compacts_later_sides_and_rewrites_links`, `move_subtree_validates_target_and_rewrites_links`, `citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind`, `literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary` | the `src/main.rs` plans that `ops` reuses, through the shell |
 | `tests/card_types.rs`, `tests/model_structure.rs`, `tests/model_levels.rs`, `tests/hub_cards.rs`, `tests/math_units.rs` | type, facet, level, hub level, and form through `create_successor` + `edit` from MCP and the GUI |
 
@@ -469,12 +486,14 @@ Pitfalls:
 - **`insert_card` sets no level, hub level, or form.** Set them with `edit_card` afterwards; the MCP tool description says so ([MCP server](mcp-server.md)).
 - **The Session and the shell skip `Access`.** They call `src/main.rs` and `src/place.rs` directly, which is correct only because they always act as the owner. A new non-owner client must go through `ops`.
 - **`Snapshot::read` runs the schema upgrades** (`ensure_markdown_cards`) and parses every Card, which takes "a few hundred milliseconds" (the `Snapshots` comment in `src/gui.rs`). Keep new per-request work over all Cards memoized per Snapshot, as `folded` is.
+- **The Lock facts are read once per view, never per Card.** `LockView` is bulk-loaded from the two row indexes, not queried inside a projection; adding a per-Card lock query would undo S03-AC05. A scoped read passes its own rows, so its annotations cover exactly its selection and its context.
 - In `src/place.rs`, the comment in `before_reorders_one_step_of_a_chain` says "Move 3/4 alone", but the call passes `alone = false`.
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
 
 
+- `2026-10-21` — Tree Lock S03 (#126): the read view. `Snapshot` carries the archive revision and the active Lock facts (`tree_lock::LockView`), read with the Cards in one SQLite read transaction; `from_cards` takes both explicitly, so a database-backed read cannot show a real archive as lock-free. `fingerprint` hashes the revision first, so a Lock-only commit moves it. `summary`, `reference`, both search views, both `get_cards` views, `entry` rows, `export_titles` rows and the GUI's card detail add `lock` (`null` or `{lock_id, tree, since}` with `tree` the Locked tree's root address) and `pinned_by` (sorted, deduplicated roots); `trees()` and `read::trees` add `locked`; a Card's `writable` is the reader's Workspace permission and no active Lock. Additive only: no Card `tree`/`root` meaning, selection or ranking changed.
 - `2026-10-21` — Tree Lock S02 (#125): the allowed side of the gate. A pinned target passes `Edit(row_id)` (body, title, BibTeX without a Citation-key rename, type, model/hub/math fields) and is refused only where an effect moves, renames or deletes it; a target that is also a locked member answers `locked` first; an unlocked source may add or remove a Link naming a Locked member while a rewritten macro inside a Locked source is refused. `reply::write_tx` turns a locked human destination into a kept `Outcome::Refused` (`reason: "locked_destination"`, with the structured `refusal`) and `reply::write` rolls the transaction back instead of committing, so no fallback Topic or partial reply Card remains. The pin plan deduplicates a repeated macro to one `(source row, target row)` row.
 - `2026-10-21` — Tree Lock S01 (#124): every `ops` change and every transaction-level writer calls `tree_lock::ensure_unlocked` with a typed `Change` before it writes; `Refusal` reaches the GUI as a `409` and MCP as a structured `isError` result; the shell commands precheck before an editor or prompt.
 - `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.

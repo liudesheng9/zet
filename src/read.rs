@@ -28,11 +28,12 @@ impl Limit {
     }
 }
 
-pub(crate) fn text_value(card: &Card) -> Result<Value> {
+pub(crate) fn text_value(card: &Card, lock: &crate::tree_lock::LockView) -> Result<Value> {
     let parsed = crate::parse_card_text(&card.text)?;
-    Ok(json!({
+    let mut value = json!({
         "address":card.address,"tree":crate::tree_id(&card.address),
-        "workspace":card.workspace.id(),"writable":Access::Agent.can_write(card.workspace),
+        "workspace":card.workspace.id(),
+        "writable":lock.writable_for(card.row_id, Access::Agent, card.workspace),
         "kind":crate::ops::kind(card),"type":card.card_type.id(),
         "facet":card.facet.as_ref().map(crate::model::Facet::id),
         "emphasis":card.emphasis.map(crate::model::Emphasis::id),
@@ -44,7 +45,9 @@ pub(crate) fn text_value(card: &Card) -> Result<Value> {
         // every read and stored nowhere.
         "restatement":crate::entry::is_restatement_entry(&parsed.body),
         "statement_fingerprint":crate::card::statement_fingerprint(&parsed.body)
-    }))
+    });
+    crate::tree_lock::decorate_card(&mut value, card.row_id, lock);
+    Ok(value)
 }
 
 pub(crate) fn card_value(snapshot: &Snapshot, at: &str) -> Result<Value> {
@@ -52,7 +55,7 @@ pub(crate) fn card_value(snapshot: &Snapshot, at: &str) -> Result<Value> {
         .by_address
         .get(at)
         .with_context(|| format!("card `{at}` does not exist"))?;
-    let mut value = text_value(card)?;
+    let mut value = text_value(card, snapshot.lock())?;
     value["model"] = json!(snapshot.model(at));
     value["hubs"] = json!(crate::hub::hubs_of(snapshot, at));
     value["parent"] = json!(snapshot.nav(crate::parent_location(at)));
@@ -72,9 +75,15 @@ fn existing(conn: &Connection, at: &str) -> Result<bool> {
 }
 
 /// Cheap authored-body/index facts for scoped clients, without model or hub
-/// projections and without fetching a whole tree to recover its summaries.
-pub(crate) fn text_facts(conn: &Connection, card: &Card) -> Result<Value> {
-    let mut value = text_value(card)?;
+/// projections and without fetching a whole tree to recover its summaries. The
+/// caller passes the Lock view of the same read, so a lean read and a full read
+/// answer the same Lock facts at one revision.
+pub(crate) fn text_facts(
+    conn: &Connection,
+    card: &Card,
+    lock: &crate::tree_lock::LockView,
+) -> Result<Value> {
+    let mut value = text_value(card, lock)?;
     value["excerpt"] = json!(crate::ops::excerpt(
         value["body"].as_str().unwrap_or_default()
     ));
@@ -355,7 +364,13 @@ fn context(conn: &Connection, addresses: &[String], models: bool) -> Result<Snap
     }
     // BTreeMap order preserves the existing navigation/Reverse presentation;
     // the tree endpoint sorts its selected output in ZET address order itself.
-    Snapshot::from_cards(scope.cards.into_values().collect())
+    // The selected rows' Lock facts and the archive revision come from the same read, so a scoped
+    // view answers the full view's annotations at one revision (R207, S03-AC07).
+    let cards = scope.cards.into_values().collect::<Vec<_>>();
+    let rows = cards.iter().map(|card| card.row_id).collect::<Vec<_>>();
+    let lock = crate::tree_lock::LockView::read(conn, Some(&rows))?;
+    let revision = crate::link_index::revision(conn)?;
+    Snapshot::from_cards(cards, lock, revision)
 }
 
 fn log_large_context(
@@ -445,18 +460,30 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
     }
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let snapshot = (!text).then(|| context(&tx, addresses, true)).transpose()?;
-    let mut values = Vec::new();
     let mut missing = Vec::new();
+    let mut cards = Vec::new();
     for at in addresses {
-        if !existing(&tx, at)? {
-            missing.push(at.clone());
-            continue;
-        }
-        values.push(if let Some(snapshot) = &snapshot {
-            card_value(snapshot, at)?
+        if existing(&tx, at)? {
+            cards.push(crate::load_card(&tx, at)?);
         } else {
-            text_facts(&tx, &crate::load_card(&tx, at)?)?
+            missing.push(at.clone());
+        }
+    }
+    let snapshot = (!text).then(|| context(&tx, addresses, true)).transpose()?;
+    // One Lock view for the whole lean read: every requested row's facts from one pair of queries,
+    // so a lean `get_cards` and a full one answer the same annotations at one revision.
+    let lean = match &snapshot {
+        Some(_) => crate::tree_lock::LockView::empty(),
+        None => {
+            let rows = cards.iter().map(|card| card.row_id).collect::<Vec<_>>();
+            crate::tree_lock::LockView::read(&tx, Some(&rows))?
+        }
+    };
+    let mut values = Vec::new();
+    for card in &cards {
+        values.push(match &snapshot {
+            Some(snapshot) => card_value(snapshot, &card.address)?,
+            None => text_facts(&tx, card, &lean)?,
         });
     }
     let identity = archive_identity(&tx, root)?;
@@ -525,7 +552,7 @@ pub(crate) fn titles(
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
+    let mut statement=tx.prepare("SELECT COALESCE(location,citation_key),text,workspace,card_type,model_facet,row_id FROM cards WHERE (?1 IS NULL OR workspace=?1) AND (?2 IS NULL OR CASE WHEN is_lit=1 OR citation_key IS NOT NULL OR location GLOB '[A-Za-z]*' THEN 'literature' ELSE 'topic' END=?2)")?;
     let rows = statement.query_map(
         rusqlite::params![workspace.map(crate::Workspace::id), zone],
         |r| {
@@ -535,16 +562,25 @@ pub(crate) fn titles(
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         },
     )?;
     let mut titles = Vec::new();
+    let mut title_rows = Vec::new();
     for row in rows {
-        let (at, text, workspace, card_type, facet) = row?;
+        let (at, text, workspace, card_type, facet, row_id) = row?;
         let parsed = crate::parse_card_text(&text).with_context(|| format!("Card `{at}`"))?;
         titles.push(json!({"address":at,"tree":crate::tree_id(&at),"workspace":workspace,"type":card_type,"facet":facet,"title":parsed.title,"restatement":crate::entry::is_restatement_entry(&parsed.body)}));
+        title_rows.push(row_id);
     }
     drop(statement);
+    // A destination plan reads these titles, so it learns there which destinations a Lock freezes
+    // (R208). The facts come from the same read as the rows.
+    let lock = crate::tree_lock::LockView::read(&tx, Some(&title_rows))?;
+    for (value, row_id) in titles.iter_mut().zip(&title_rows) {
+        crate::tree_lock::decorate_card(value, *row_id, &lock);
+    }
     titles.sort_by(|a, b| {
         crate::model::address_order(
             a["address"].as_str().unwrap(),
@@ -587,6 +623,12 @@ pub(crate) fn trees(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
     roots.sort_by(|a, b| crate::model::address_order(a, b));
+    // The rows' Lock facts, from the same read as the tree rows they annotate (R204, S03-AC01).
+    let rows = roots
+        .iter()
+        .filter_map(|at| crate::load_card(&tx, at).ok().map(|card| card.row_id))
+        .collect::<Vec<_>>();
+    let lock = crate::tree_lock::LockView::read(&tx, Some(&rows))?;
     let mut trees = Vec::new();
     for at in roots {
         let card = crate::load_card(&tx, &at)?;
@@ -595,7 +637,7 @@ pub(crate) fn trees(
         let lower = format!("{tree}/");
         let upper = format!("{tree}0");
         let (count,events,findings,models):(u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models}));
+        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"locked":lock.is_locked(card.row_id)}));
     }
     tx.commit()?;
     Ok(json!({"trees":trees}))
@@ -687,7 +729,9 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
         .query_map([], crate::card_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
-    let snapshot = Snapshot::from_cards(cards)?;
+    let revision = crate::link_index::revision(conn)?;
+    let lock = crate::tree_lock::LockView::read(conn, None)?;
+    let snapshot = Snapshot::from_cards(cards, lock, revision)?;
     let mut query = conn.prepare(
         "SELECT source,target FROM links GROUP BY source,target ORDER BY source,MIN(ord)",
     )?;
@@ -701,7 +745,7 @@ fn hub_read(conn: &Connection) -> Result<HubRead> {
     Ok(HubRead {
         snapshot,
         links,
-        revision: crate::link_index::revision(conn)?,
+        revision,
     })
 }
 

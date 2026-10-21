@@ -670,7 +670,7 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                     .push(json!({"address":address,"body":text,"links":targets,"kinds":kinds}));
             }
         }
-        let mut cards = Vec::new();
+        let mut previewed = Vec::new();
         for (address, expected) in expected {
             let observed = fingerprint(&tx, address)?;
             if observed != expected {
@@ -682,7 +682,18 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                     observed_fingerprint: observed,
                 }));
             }
-            cards.push(crate::read::text_facts(&tx, &crate::load_card(&tx, address)?)?);
+            previewed.push(crate::load_card(&tx, address)?);
+        }
+        // A preview's final projections carry the same Lock facts a committed read would show,
+        // read from the same uncommitted transaction (R208, S03-AC04).
+        let rows = previewed
+            .iter()
+            .map(|card| card.row_id)
+            .collect::<Vec<_>>();
+        let lock = crate::tree_lock::LockView::read(&tx, Some(&rows))?;
+        let mut cards = Vec::new();
+        for card in &previewed {
+            cards.push(crate::read::text_facts(&tx, card, &lock)?);
         }
         tx.rollback()?;
         return Ok(

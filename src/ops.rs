@@ -525,6 +525,12 @@ pub(crate) struct Snapshot {
     pub(crate) parsed: BTreeMap<String, crate::ParsedCard>,
     pub(crate) lifecycle: LinkLifecycle,
     pub(crate) inbound: BTreeMap<String, BTreeSet<String>>,
+    /// The active Lock facts of the same read: which Cards an active Lock promises and which it
+    /// pins. It arrives with the Cards and the revision, so a projection never mixes revisions.
+    lock: crate::tree_lock::LockView,
+    /// The archive revision this Snapshot was read at. The GUI fingerprint carries it, so a Lock,
+    /// note or fault that changes no Card text still reaches an open browser (R210, S03-AC06).
+    revision: u64,
     /// Each Card's address, title, and body in lower case, in `cards` order, made on the
     /// first search; a Snapshot kept across requests then folds case only once.
     folded: OnceLock<Vec<Folded>>,
@@ -558,14 +564,34 @@ impl Snapshot {
         Self::load(&conn)
     }
 
+    /// The Cards, their active Lock facts and the archive revision, read in one SQLite read
+    /// transaction (R210, S03-AC06).
     pub(crate) fn load(conn: &Connection) -> Result<Self> {
+        if !conn.is_autocommit() {
+            return Self::from_connection(conn);
+        }
+        let read = conn.unchecked_transaction()?;
+        let snapshot = Self::from_connection(&read)?;
+        read.commit()?;
+        Ok(snapshot)
+    }
+
+    fn from_connection(conn: &Connection) -> Result<Self> {
         let cards = crate::load_cards(conn)?;
-        Self::from_cards(cards)
+        let lock = crate::tree_lock::LockView::read(conn, None)?;
+        let revision = crate::link_index::revision(conn)?;
+        Self::from_cards(cards, lock, revision)
     }
 
     /// Shared domain calculations over a complete request context. The GUI keeps
-    /// loading the full archive; indexed MCP readers supply only relevant Cards.
-    pub(crate) fn from_cards(cards: Vec<Card>) -> Result<Self> {
+    /// loading the full archive; indexed MCP readers supply only relevant Cards and the
+    /// [`crate::tree_lock::LockView`] of those same rows, so neither can silently show a real
+    /// archive's Lock state as empty (R207, S03-AC04).
+    pub(crate) fn from_cards(
+        cards: Vec<Card>,
+        lock: crate::tree_lock::LockView,
+        revision: u64,
+    ) -> Result<Self> {
         let lifecycle = crate::link_lifecycle_from_cards(&cards)?;
         let mut parsed = BTreeMap::new();
         for card in &cards {
@@ -592,18 +618,43 @@ impl Snapshot {
             parsed,
             lifecycle,
             inbound,
+            lock,
+            revision,
             folded: OnceLock::new(),
             fingerprint: OnceLock::new(),
         })
     }
 
-    /// Changes whenever any Card changes, so open windows can follow edits
-    /// made from the shell or a Session. Made once per Snapshot and kept.
+    /// The archive revision of the read that made this Snapshot.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The active Lock facts of the read that made this Snapshot.
+    pub(crate) fn lock(&self) -> &crate::tree_lock::LockView {
+        &self.lock
+    }
+
+    /// Attach this read's active Lock facts to one Card projection (R205, R208).
+    pub(crate) fn decorate(&self, value: &mut Value, row_id: i64) {
+        crate::tree_lock::decorate_card(value, row_id, &self.lock);
+    }
+
+    /// Whether an active Lock promises this Card, so a client sees `writable` as false.
+    pub(crate) fn locked(&self, row_id: i64) -> bool {
+        self.lock.is_locked(row_id)
+    }
+
+    /// Changes whenever any Card changes, or a Lock, note, reseal or recorded fault advances the
+    /// archive revision, so open windows can follow edits and metadata-only changes made from the
+    /// shell, a Session, the MCP server or another browser. Made once per Snapshot and kept.
     pub(crate) fn fingerprint(&self) -> String {
         self.fingerprint
             .get_or_init(|| {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
+                hasher.update(self.revision.to_le_bytes());
+                hasher.update([0]);
                 for card in &self.cards {
                     hasher.update(card.address.as_bytes());
                     hasher.update([0]);
@@ -645,13 +696,18 @@ impl Snapshot {
         self.by_address.get(address).map(|card| card.workspace)
     }
 
-    /// A short reference to another Card: its address, title, and Workspace.
+    /// A short reference to another Card: its address, title, and Workspace, with the active Lock
+    /// facts of this read (R208: the GUI's navigation rows).
     pub(crate) fn reference(&self, address: &str) -> Value {
-        json!({
+        let mut value = json!({
             "address": address,
             "title": self.title(address),
             "workspace": self.workspace(address).map(Workspace::id),
-        })
+        });
+        if let Some(card) = self.by_address.get(address) {
+            self.decorate(&mut value, card.row_id);
+        }
+        value
     }
 
     pub(crate) fn outbound(&self, address: &str) -> Vec<Value> {
@@ -695,7 +751,7 @@ impl Snapshot {
                     .or_insert_with(|| Value::String(read.kind.id().to_string()));
             }
         }
-        json!({
+        let mut value = json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
             "workspace": card.workspace.id(),
@@ -714,12 +770,13 @@ impl Snapshot {
             "links": links,
             "kinds": kinds,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
-        })
+        });
+        self.decorate(&mut value, card.row_id);
+        value
     }
-
-    /// Every tree root, with its Workspace, Zone, size, and how many Event
+    /// Every tree root, with its Workspace, Zone, size, how many Event
     /// Cards, Finding Cards, and models (Model Cards, not counting their
-    /// parts) it holds.
+    /// parts) it holds, and whether an active Lock governs it (R204, S03-AC01).
     pub(crate) fn trees(&self) -> Vec<Value> {
         self.cards
             .iter()
@@ -749,6 +806,7 @@ impl Snapshot {
                     "events": typed(CardType::Event),
                     "findings": typed(CardType::Finding),
                     "models": typed(CardType::Model),
+                    "locked": self.locked(card.row_id),
                 })
             })
             .collect()
@@ -945,7 +1003,7 @@ impl Snapshot {
             .map(|found| {
                 let card = &self.cards[found.order];
                 let tree = crate::tree_id(&card.address);
-                json!({
+                let mut row = json!({
                     "address": card.address,
                     "title": self.title(&card.address),
                     "kind": kind(card),
@@ -960,7 +1018,11 @@ impl Snapshot {
                     "field": found.field,
                     "score": found.score,
                     "snippet": self.snippet(&card.address, found.body_term.as_deref()),
-                })
+                });
+                // A search row is a Card projection, so it names the same Lock facts the Card it
+                // opens does; the ranking above is unchanged (R208).
+                self.decorate(&mut row, card.row_id);
+                row
             })
             .collect::<Vec<_>>();
         json!({ "results": results, "total": total, "workspaces": workspaces, "types": types })
@@ -1010,18 +1072,24 @@ impl Snapshot {
                     let line = lower[..at].matches('\n').count();
                     clip(haystack.lines().nth(line).unwrap_or_default().trim(), 160)
                 };
-                Some(json!({
-                    "address": card.address,
-                    "title": parsed.title,
-                    "kind": kind(card),
-                    "type": card.card_type.id(),
-                    "facet": card.facet.as_ref().map(Facet::id),
-                    "emphasis": card.emphasis.map(Emphasis::id),
-                    "level": card.level_id(),
-                    "form": card.form.map(crate::math::MathForm::id),
-                    "workspace": card.workspace.id(),
-                    "snippet": snippet,
-                }))
+                Some({
+                    let mut row = json!({
+                        "address": card.address,
+                        "title": parsed.title,
+                        "kind": kind(card),
+                        "type": card.card_type.id(),
+                        "facet": card.facet.as_ref().map(Facet::id),
+                        "emphasis": card.emphasis.map(Emphasis::id),
+                        "level": card.level_id(),
+                        "form": card.form.map(crate::math::MathForm::id),
+                        "workspace": card.workspace.id(),
+                        "snippet": snippet,
+                    });
+                    // A search row is a Card projection, so it names the same Lock facts the Card
+                    // it opens does; the selection and the listing order are unchanged (R208).
+                    self.decorate(&mut row, card.row_id);
+                    row
+                })
             })
             .take(limit)
             .collect()

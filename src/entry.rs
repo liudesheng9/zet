@@ -1603,7 +1603,7 @@ fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, plan: &Planned) ->
         Some(fold) => fold_reason(fold, candidate),
         None => candidate.reason.clone(),
     };
-    Some(json!({
+    let mut value = json!({
         "address": card.address,
         "title": snapshot.title(&card.address),
         "kind": crate::ops::kind(card),
@@ -1630,7 +1630,11 @@ fn row(snapshot: &Snapshot, args: &SearchArgs, query: &Query, plan: &Planned) ->
         "representative": plan.fold.as_ref().map(|fold| fold.canonical.clone()),
         "members": plan.fold.as_ref().map(|fold| fold.members.clone()),
         "members_truncated": plan.fold.as_ref().is_some_and(|fold| fold.members_truncated),
-    }))
+    });
+    // A search row is a Card projection, so it carries the same Lock facts as the Card it opens
+    // (R208). Its selection and ranking rules are unchanged.
+    snapshot.decorate(&mut value, card.row_id);
+    Some(value)
 }
 
 /// Whether a target Card survives the Workspace, type, and form filters. Filters apply to the

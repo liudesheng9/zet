@@ -2139,3 +2139,208 @@ fn a_locked_archive_keeps_its_link_index_and_reverse_sections_exact() {
         "the generated Reverse section names its source: {reverse}"
     );
 }
+
+/// The row of one address from any read payload's array, by its own `address` field.
+fn row_at<'a>(rows: &'a Value, address: &str) -> &'a Value {
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["address"] == json!(address))
+        .unwrap_or_else(|| panic!("no row for `{address}` in {rows}"))
+}
+
+/// Every stored Card text, in row order: the independent oracle for "no Card changed".
+fn stored_texts(home: &TestHome) -> Vec<(String, String)> {
+    let conn = home.db();
+    let mut statement = conn
+        .prepare("SELECT COALESCE(location,citation_key), text FROM cards ORDER BY row_id")
+        .expect("query");
+    statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("rows")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("texts")
+}
+
+/// S03-AC01..AC07: every read projection names the same Lock facts at one archive revision, a lean
+/// read answers what a full read answers, and a Lock-only change reaches the open GUI.
+#[test]
+fn every_read_projection_names_the_same_lock_facts_at_one_revision() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "the quokka equilibrium");
+    let side = side_card(&mut mcp, &first, "Side", "the quokka side");
+    let outside = topic(&mut mcp, "Outside");
+    let target = card(&mut mcp, &outside, "Target", "the quokka target");
+    // The first tree promises the outside Card with an authored Link, so its Lock pins that Card.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": side, "body": format!("the quokka side cites [[{target}]]") }),
+    );
+    let tree = root.split_once('/').expect("tree id").0.to_string();
+
+    let lock = gui.lock(&root, Some("frozen for review"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    assert_eq!(gui.active_lock()["seal"], lock["seal"]);
+
+    // The stored facts, read straight from SQLite, are the independent oracle.
+    let (stored_lock, stored_root): (i64, String) = home
+        .db()
+        .query_row(
+            "SELECT lock_id, root_address FROM locks WHERE unlocked_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the active Lock row");
+    assert_eq!(stored_lock, lock_id);
+    assert_eq!(stored_root, root);
+    let stored_pin: String = home
+        .db()
+        .query_row("SELECT target_address FROM lock_pins", [], |row| {
+            row.get(0)
+        })
+        .expect("the pin row");
+    assert_eq!(stored_pin, target);
+
+    // get_card: a member carries the Lock, the pinned target carries the pin, neither changes the
+    // existing Card `tree` field.
+    let member = mcp.ok("get_card", json!({ "at": side }));
+    assert_eq!(member["lock"]["lock_id"], json!(lock_id), "{member}");
+    assert_eq!(
+        member["lock"]["tree"],
+        json!(root),
+        "the annotation names the Locked tree's root address"
+    );
+    assert!(member["lock"]["since"].is_string(), "{member}");
+    assert_eq!(member["pinned_by"], json!([]));
+    assert_eq!(member["writable"], json!(false), "an active Lock is not writable");
+    assert_eq!(member["tree"], json!(tree), "the Card tree id is unchanged");
+
+    let pinned = mcp.ok("get_card", json!({ "at": target }));
+    assert!(pinned["lock"].is_null(), "{pinned}");
+    assert_eq!(pinned["pinned_by"], json!([root]));
+    assert_eq!(
+        pinned["writable"],
+        json!(true),
+        "a pin alone leaves authored editing possible"
+    );
+
+    // Both bulk views agree with get_card and with each other, at one revision.
+    let addresses = json!([root, first, side, target, outside]);
+    let full = mcp.ok("get_cards", json!({ "addresses": addresses, "view": "full" }));
+    let lean = mcp.ok("get_cards", json!({ "addresses": addresses, "view": "text" }));
+    assert_eq!(full["archive_revision"], lean["archive_revision"]);
+    for at in [&root, &first, &side, &target, &outside] {
+        let full_row = row_at(&full["cards"], at);
+        let lean_row = row_at(&lean["cards"], at);
+        let single = mcp.ok("get_card", json!({ "at": at }));
+        for field in ["lock", "pinned_by", "writable"] {
+            assert_eq!(full_row[field], single[field], "{field} of `{at}` in the full view");
+            assert_eq!(lean_row[field], single[field], "{field} of `{at}` in the lean view");
+        }
+    }
+
+    // get_tree, with and without bodies, carries the annotations on every member.
+    let bodies = mcp.ok("get_tree", json!({ "tree": tree, "bodies": true }));
+    let summaries = mcp.ok("get_tree", json!({ "tree": tree }));
+    for value in [&bodies, &summaries] {
+        let row = row_at(&value["cards"], &side);
+        assert_eq!(row["lock"]["lock_id"], json!(lock_id), "{value}");
+        assert_eq!(row["pinned_by"], json!([]));
+    }
+
+    // list_trees and the GUI's own tree list add `locked`.
+    let trees = mcp.ok("list_trees", json!({ "workspace": "agent" }));
+    for row in trees["trees"].as_array().expect("tree rows") {
+        let expected = row["root"] == json!(root);
+        assert_eq!(row["locked"], json!(expected), "{row}");
+    }
+    let overview = gui.get("/api/overview");
+    for row in overview["trees"].as_array().expect("gui tree rows") {
+        let expected = row["root"] == json!(root);
+        assert_eq!(row["locked"], json!(expected), "{row}");
+    }
+    assert_eq!(
+        overview["revision"],
+        full["archive_revision"],
+        "the GUI and the MCP server read one revision"
+    );
+
+    // Search rows (plain and entry) and the exported title rows carry the same facts.
+    for mode in ["plain", "entry"] {
+        let found = mcp.ok(
+            "search_cards",
+            json!({ "query": "quokka", "workspace": "agent", "mode": mode }),
+        );
+        let row = row_at(&found["results"], &side);
+        assert_eq!(row["lock"]["lock_id"], json!(lock_id), "{mode}: {found}");
+        assert_eq!(row_at(&found["results"], &target)["pinned_by"], json!([root]));
+    }
+    let titles = mcp.ok("export_titles", json!({ "workspace": "agent" }));
+    assert_eq!(row_at(&titles["titles"], &side)["lock"]["lock_id"], json!(lock_id));
+    assert_eq!(row_at(&titles["titles"], &target)["pinned_by"], json!([root]));
+    assert_eq!(
+        titles["archive_revision"],
+        full["archive_revision"],
+        "the title rows are read at the same revision"
+    );
+
+    // The GUI's summary, detail and navigation rows say the same.
+    let gui_tree = gui.get(&format!("/api/tree?id={tree}"));
+    assert_eq!(row_at(&gui_tree["cards"], &side)["lock"]["lock_id"], json!(lock_id));
+    let graph = gui.get("/api/graph");
+    assert_eq!(row_at(&graph["nodes"], &target)["pinned_by"], json!([root]));
+    let detail = gui.get(&format!("/api/card?at={side}"));
+    assert_eq!(detail["lock"]["lock_id"], json!(lock_id));
+    assert_eq!(detail["pinned_by"], json!([]));
+    assert_eq!(detail["writable"], json!(false));
+    assert_eq!(
+        detail["parent"]["lock"]["lock_id"],
+        json!(lock_id),
+        "the navigation rows carry the facts of the Card they open"
+    );
+
+    // A Lock-only change: no Card text moves, yet the browser's heartbeat sees a new fingerprint.
+    let texts = stored_texts(&home);
+    let plan = gui.post("/api/lock/note", &json!({ "lock_id": lock_id, "note": "still frozen" }));
+    let applied = gui.post(
+        "/api/lock/note",
+        &json!({
+            "lock_id": lock_id,
+            "note": "still frozen",
+            "confirm": "note",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert_eq!(applied["applied"], json!(true), "{applied}");
+    let noted = gui.get("/api/overview");
+    assert_eq!(stored_texts(&home), texts, "a changed note writes no Card");
+    assert_ne!(
+        noted["fingerprint"], overview["fingerprint"],
+        "the existing heartbeat sees a metadata-only change"
+    );
+    assert_eq!(
+        noted["revision"].as_u64(),
+        overview["revision"].as_u64().map(|revision| revision + 1),
+        "one note advances the revision exactly once"
+    );
+
+    // Releasing the Lock takes the annotations off every projection again.
+    gui.unlock(lock_id);
+    let released = mcp.ok("get_card", json!({ "at": side }));
+    assert!(released["lock"].is_null(), "{released}");
+    assert_eq!(released["writable"], json!(true));
+    let unfettered = mcp.ok("get_card", json!({ "at": target }));
+    assert_eq!(unfettered["pinned_by"], json!([]));
+    let after = gui.get("/api/overview");
+    assert_ne!(after["fingerprint"], noted["fingerprint"]);
+    for row in after["trees"].as_array().expect("gui tree rows") {
+        assert_eq!(row["locked"], json!(false), "{row}");
+    }
+    assert_eq!(gui.active_lock(), Value::Null);
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}

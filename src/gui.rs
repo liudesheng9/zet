@@ -1091,6 +1091,7 @@ impl App {
             let broken = snapshot.lifecycle.broken_links()?.len();
             Ok(json!({
                 "fingerprint": snapshot.fingerprint(),
+                "revision": snapshot.revision(),
                 "archive_root": self.root.display().to_string(),
                 "stats": {
                     "total": counts.total,
@@ -1244,7 +1245,7 @@ impl App {
         } else {
             "regular"
         };
-        Ok(json!({
+        let mut value = json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
             "workspace": card.workspace.id(),
@@ -1274,7 +1275,17 @@ impl App {
             "sides": snapshot.sides(card),
             "inbound": snapshot.inbound_refs(&card.address),
             "outbound": snapshot.outbound(&card.address),
-        }))
+        });
+        // The Card's own Lock facts (R201-R204, S03-AC01): the reader learns here whether an active
+        // Lock governs this Card and which Locked trees pin it. `writable` is the GUI's own Owner
+        // access and no active Lock.
+        snapshot.decorate(&mut value, card.row_id);
+        value["writable"] = json!(snapshot.lock().writable_for(
+            card.row_id,
+            ACCESS,
+            card.workspace,
+        ));
+        Ok(value)
     }
 
     /// Search hits for the tray: the existing plain lexical order (`All matches`), or the entry-first

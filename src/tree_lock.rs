@@ -689,6 +689,176 @@ fn load_lock(conn: &Connection, lock_id: i64) -> Result<Option<Lock>> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The read view
+// ---------------------------------------------------------------------------------------------
+
+/// One active Lock as a Card read names it: the Lock's identity, its Locked tree's root address and
+/// when the owner took it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LockFact {
+    pub(crate) lock_id: i64,
+    /// The Locked tree's root address. The public annotation calls this field `tree`, and it is the
+    /// root address, never the Card `tree` id (R068, S03-AC01).
+    pub(crate) tree: String,
+    /// The Lock's UTC start, as `locks.locked_at` stores it.
+    pub(crate) since: String,
+}
+
+/// The active Lock facts one read uses: which Card rows an active Lock promises, and which rows its
+/// pins keep addressable. Bulk-loaded once from the member-row and target-row indexes (R206,
+/// S03-AC04): a rendered Card costs no query, and no read reparses a locked tree or recomputes a
+/// seal. It is not a cache: it lives for one read.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LockView {
+    locked: BTreeMap<i64, LockFact>,
+    pinned: BTreeMap<i64, Vec<String>>,
+}
+
+/// Card rows per `IN (...)` list, well below SQLite's bound on statement parameters.
+const VIEW_ROWS: usize = 400;
+
+impl LockView {
+    /// An isolated pure fixture that has no archive: no Lock can govern it. A database-backed read
+    /// must ask [`LockView::read`] instead, so it can never show a real archive as lock-free (R207).
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// The active Lock facts of `rows`, or of every Card row when `rows` is `None`. A read of an
+    /// archive whose Tree Lock schema is not installed is legitimately lock-free. The caller reads
+    /// its Cards, these facts and the archive revision in one SQLite read transaction.
+    pub(crate) fn read(conn: &Connection, rows: Option<&[i64]>) -> Result<Self> {
+        if schema_version(conn)? != Some(SCHEMA_VERSION.to_string()) {
+            return Ok(Self::empty());
+        }
+        let mut view = Self::default();
+        match rows {
+            None => {
+                let mut members = conn.prepare(
+                    "SELECT m.row_id, l.lock_id, l.root_address, l.locked_at
+                       FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
+                      WHERE l.unlocked_at IS NULL",
+                )?;
+                for row in members.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })? {
+                    let (row_id, lock_id, tree, since) = row?;
+                    view.locked.insert(row_id, LockFact { lock_id, tree, since });
+                }
+                let mut pins = conn.prepare(
+                    "SELECT p.target_row, l.root_address
+                       FROM lock_pins p JOIN locks l ON l.lock_id = p.lock_id
+                      WHERE l.unlocked_at IS NULL",
+                )?;
+                for row in pins.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })? {
+                    let (row_id, tree) = row?;
+                    view.pin(row_id, tree);
+                }
+            }
+            Some(rows) => {
+                for chunk in rows.chunks(VIEW_ROWS) {
+                    let mut members = conn.prepare(&format!(
+                        "SELECT m.row_id, l.lock_id, l.root_address, l.locked_at
+                           FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
+                          WHERE l.unlocked_at IS NULL AND m.row_id IN ({})",
+                        in_list(chunk.len())
+                    ))?;
+                    for row in members.query_map(rusqlite::params_from_iter(chunk), |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })? {
+                        let (row_id, lock_id, tree, since) = row?;
+                        view.locked.insert(row_id, LockFact { lock_id, tree, since });
+                    }
+                    let mut pins = conn.prepare(&format!(
+                        "SELECT p.target_row, l.root_address
+                           FROM lock_pins p JOIN locks l ON l.lock_id = p.lock_id
+                          WHERE l.unlocked_at IS NULL AND p.target_row IN ({})",
+                        in_list(chunk.len())
+                    ))?;
+                    for row in
+                        pins.query_map(rusqlite::params_from_iter(chunk), |row| {
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                        })?
+                    {
+                        let (row_id, tree) = row?;
+                        view.pin(row_id, tree);
+                    }
+                }
+            }
+        }
+        Ok(view)
+    }
+
+    /// One target row pinned by one Locked root. Several members of one Locked tree list that root
+    /// once; the roots stay sorted and deduplicated (R202, R203).
+    fn pin(&mut self, row_id: i64, tree: String) {
+        let roots = self.pinned.entry(row_id).or_default();
+        if let Err(at) = roots.binary_search(&tree) {
+            roots.insert(at, tree);
+        }
+    }
+
+    pub(crate) fn lock_of(&self, row_id: i64) -> Option<&LockFact> {
+        self.locked.get(&row_id)
+    }
+
+    /// Whether an active Lock promises this Card row.
+    pub(crate) fn is_locked(&self, row_id: i64) -> bool {
+        self.locked.contains_key(&row_id)
+    }
+
+    /// The active Locked tree roots whose Cards link this row, sorted and deduplicated.
+    pub(crate) fn pinned_by(&self, row_id: i64) -> &[String] {
+        self.pinned.get(&row_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `access` may change this Card's authored text (S03-AC03): Workspace permission and
+    /// no active Lock. A pin alone leaves editing possible; movement and deletion are constrained
+    /// by the writer gate instead.
+    pub(crate) fn writable_for(
+        &self,
+        row_id: i64,
+        access: crate::Access,
+        workspace: Workspace,
+    ) -> bool {
+        access.can_write(workspace) && !self.is_locked(row_id)
+    }
+}
+
+fn in_list(count: usize) -> String {
+    std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
+}
+
+/// Attach the active Lock facts to one Card projection (R201, R205, S03-AC01). `lock` is `null` for
+/// an unlocked Card, or `{lock_id, tree, since}` where `tree` is the Locked tree's root address;
+/// `pinned_by` is the sorted, deduplicated roots of the active Locks whose Cards link this one, and
+/// is `[]` when no Lock pins it. A Card can have both. The existing Card `tree` and `root` fields do
+/// not change.
+pub(crate) fn decorate_card(value: &mut Value, row_id: i64, view: &LockView) {
+    value["lock"] = match view.lock_of(row_id) {
+        Some(fact) => json!({
+            "lock_id": fact.lock_id,
+            "tree": fact.tree,
+            "since": fact.since,
+        }),
+        None => Value::Null,
+    };
+    value["pinned_by"] = json!(view.pinned_by(row_id));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Plan
 // ---------------------------------------------------------------------------------------------
 
@@ -2904,6 +3074,181 @@ mod tests {
         assert_eq!(noted.note.as_deref(), Some("why"));
         assert!(crate::link_index::revision(&conn).expect("revision") > before);
         assert_eq!(noted.seal, lock.seal, "a note never reseals");
+    }
+
+    /// A Topic tree whose first Card links `target`, so a Lock on the tree pins that Card.
+    fn linking_tree(conn: &mut Connection, title: &str, target: &str) -> String {
+        let root = crate::create_topic(conn, Workspace::Human, &card_text(title, "root body"))
+            .expect("create topic");
+        let first = format!("{}/1", crate::tree_id(&root));
+        crate::insert_card(
+            conn,
+            &first,
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("First", &format!("links [[{target}]]")),
+        )
+        .expect("first card");
+        root
+    }
+
+    /// A Topic tree whose Cards link nothing.
+    fn plain_tree(conn: &mut Connection, title: &str) -> (String, String) {
+        let root = crate::create_topic(conn, Workspace::Human, &card_text(title, "root body"))
+            .expect("create topic");
+        let first = format!("{}/1", crate::tree_id(&root));
+        crate::insert_card(
+            conn,
+            &first,
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Card", "no link"),
+        )
+        .expect("card");
+        (root, first)
+    }
+
+    fn lock_rows(conn: &mut Connection, root: &str) -> i64 {
+        let tx = conn.transaction().expect("transaction");
+        let plan = resolve_plan(&tx, root, None).expect("plan");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        lock.lock_id
+    }
+
+    fn row_of(conn: &Connection, address: &str) -> i64 {
+        conn.query_row(
+            "SELECT row_id FROM cards WHERE COALESCE(location,citation_key)=?1",
+            [address],
+            |row| row.get(0),
+        )
+        .expect("row id")
+    }
+
+    fn annotated(view: &LockView, conn: &Connection, address: &str) -> Value {
+        let mut value = json!({ "address": address });
+        decorate_card(&mut value, row_of(conn, address), view);
+        value
+    }
+
+    /// S03-AC01/S03-AC04: one bulk view annotates every projection, a member may also be pinned, and
+    /// a target several members of one Locked tree link lists that root once.
+    #[test]
+    fn the_lock_view_annotates_members_and_pinned_targets_from_one_bulk_read() {
+        let (_temp, mut conn) = archive();
+        let (outside, target) = plain_tree(&mut conn, "Outside");
+        let root = linking_tree(&mut conn, "Frozen", &target);
+        let first = first_address(&root);
+        let second = format!("{first}|a");
+        crate::insert_card(
+            &mut conn,
+            &second,
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Second", "no link"),
+        )
+        .expect("second card");
+        let lock_id = lock_rows(&mut conn, &root);
+
+        let view = LockView::read(&conn, None).expect("bulk view");
+        let locked = annotated(&view, &conn, &root);
+        assert_eq!(locked["lock"]["lock_id"], json!(lock_id));
+        assert_eq!(
+            locked["lock"]["tree"],
+            json!(root),
+            "the annotation names the root address"
+        );
+        assert!(
+            locked["lock"]["since"]
+                .as_str()
+                .is_some_and(|at| at.contains('T'))
+        );
+        assert_eq!(locked["pinned_by"], json!([]), "a member need not be pinned");
+        assert_eq!(annotated(&view, &conn, &first)["lock"]["tree"], json!(root));
+        assert_eq!(annotated(&view, &conn, &second)["lock"]["tree"], json!(root));
+
+        // The pinned target: not a member, held by the Locked tree's root address, once.
+        let pinned = annotated(&view, &conn, &target);
+        assert!(pinned["lock"].is_null(), "a pinned target is not a member");
+        assert_eq!(pinned["pinned_by"], json!([root]));
+
+        // A Card of neither tree carries no annotation at all.
+        let free = annotated(&view, &conn, &outside);
+        assert!(free["lock"].is_null());
+        assert_eq!(free["pinned_by"], json!([]));
+
+        // A scoped read answers the same facts from the member-row and target-row indexes.
+        let rows = vec![
+            row_of(&conn, &second),
+            row_of(&conn, &target),
+            row_of(&conn, &outside),
+        ];
+        let scoped = LockView::read(&conn, Some(&rows)).expect("scoped view");
+        assert_eq!(
+            annotated(&scoped, &conn, &second),
+            annotated(&view, &conn, &second)
+        );
+        assert_eq!(
+            annotated(&scoped, &conn, &target),
+            annotated(&view, &conn, &target)
+        );
+        assert_eq!(
+            annotated(&scoped, &conn, &outside),
+            annotated(&view, &conn, &outside)
+        );
+        assert!(
+            !scoped.is_locked(row_of(&conn, &root)),
+            "a scoped view holds only the selected rows"
+        );
+
+        // An isolated fixture's empty view annotates nothing.
+        let empty = LockView::empty();
+        assert!(annotated(&empty, &conn, &root)["lock"].is_null());
+        assert_eq!(annotated(&empty, &conn, &target)["pinned_by"], json!([]));
+
+        // `writable` is Workspace permission and no active Lock: a pin alone leaves editing open.
+        assert!(!view.writable_for(row_of(&conn, &root), crate::Access::Owner, Workspace::Human));
+        assert!(!view.writable_for(row_of(&conn, &root), crate::Access::Agent, Workspace::Human));
+        assert!(view.writable_for(row_of(&conn, &target), crate::Access::Owner, Workspace::Human));
+        assert!(!view.writable_for(row_of(&conn, &target), crate::Access::Agent, Workspace::Human));
+    }
+
+    /// S03-AC01: a target two Locked trees pin names both roots, in one sorted order.
+    #[test]
+    fn a_target_pinned_by_two_trees_names_both_roots_once() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let first_tree = linking_tree(&mut conn, "First", &target);
+        let second_tree = linking_tree(&mut conn, "Second", &target);
+        // A second member of the first tree links the same target.
+        let side = side_address(&first_tree);
+        crate::insert_card(
+            &mut conn,
+            &side,
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Side", &format!("also [[{target}]]")),
+        )
+        .expect("side card");
+        lock_rows(&mut conn, &first_tree);
+        lock_rows(&mut conn, &second_tree);
+
+        let view = LockView::read(&conn, None).expect("bulk view");
+        let mut expected = vec![first_tree.clone(), second_tree.clone()];
+        expected.sort();
+        assert_eq!(
+            annotated(&view, &conn, &target)["pinned_by"],
+            json!(expected)
+        );
+        assert_eq!(annotated(&view, &conn, &side)["lock"]["tree"], json!(first_tree));
     }
 }
 
