@@ -1,5 +1,6 @@
-/* zt gui lock — pure, DOM-free rules for the Tree Lock panel and its dialogs (S01, #124), and
- * for which writes a locked or pinned Card offers (S05, #128).
+/* zt gui lock — pure, DOM-free rules for the Tree Lock panel and its dialogs (S01, #124), for
+ * which writes a locked or pinned Card offers (S05, #128), and for how current and latched
+ * integrity faults read and keep the owner's recovery reachable (S06, #129).
  *
  * The owner locks a whole tree, edits a Lock's note, and unlocks it only through the GUI routes
  * `POST /api/lock`, `POST /api/lock/note` and `POST /api/unlock`: each answers a plan first and
@@ -94,36 +95,112 @@
   }
 
   /**
+   * Whether a recorded fault (a latch) is the record of one current fault: the same identifier, or
+   * for a schema fault (no Lock of its own, latched on every active Lock) the same kind and subject.
+   */
+  function sameFault(fault, latch) {
+    if (!fault || !latch) return false;
+    if (fault.id && fault.id === latch.id) return true;
+    return fault.lock_id == null && latch.kind === fault.kind && (latch.card ?? null) === (fault.card ?? null);
+  }
+
+  /**
    * The panel's reading of a `GET /api/locks` answer: active Locks and ended ones, each in
    * creation order (Lock id); the integrity faults of each Lock; and the faults that belong to no
    * listed Lock (a schema fault). A fault never hides a Lock or a Card; it is shown beside it.
+   *
+   * S06 (#129): `integrity.latched` is recorded evidence that a later clean comparison never
+   * erases. Each Lock's list merges its current faults and its latches into one row per fault: a
+   * current fault has `current: true` and, once recorded, its record's `at`; a latch the current
+   * comparison no longer sees has `current: false` and its `at`. The latch of a current schema
+   * fault is that same fault, so it is counted once. `broken` names each active Lock whose seal is
+   * broken: by a current or latched fault of its own, by a current schema fault, or by the route's
+   * own `seal_intact: false`. The seal itself is never read from anything but the Lock.
    */
   function panel(exported) {
     const locks = ((exported && exported.locks) || []).slice().sort((a, b) => a.lock_id - b.lock_id);
     const integrity = (exported && exported.integrity) || { ok: true, faults: [] };
     const faults = integrity.faults || [];
+    const latched = integrity.latched || [];
     const ids = new Set(locks.map((lock) => lock.lock_id));
     const faultsOf = {};
     const loose = [];
+    const recordOf = (fault, lockId) => latched.find((latch) => (lockId == null || latch.lock_id === lockId) && sameFault(fault, latch));
     for (const fault of faults) {
-      if (fault.lock_id != null && ids.has(fault.lock_id)) (faultsOf[fault.lock_id] ||= []).push(fault);
-      else loose.push(fault);
+      const own = fault.lock_id != null && ids.has(fault.lock_id);
+      const record = recordOf(fault, own ? fault.lock_id : null);
+      const row = { ...fault, current: true, at: record ? record.at : null };
+      if (own) (faultsOf[fault.lock_id] ||= []).push(row);
+      else loose.push(row);
     }
+    let latchedOnly = 0;
+    for (const latch of latched) {
+      const current = faults.find((fault) => sameFault(fault, latch));
+      if (current && current.lock_id != null) continue; // already that Lock's current row
+      if (!current) latchedOnly += 1;
+      const row = { ...latch, current: Boolean(current) };
+      if (ids.has(latch.lock_id)) (faultsOf[latch.lock_id] ||= []).push(row);
+      else if (!current) loose.push(row);
+    }
+    const schemaNow = faults.some((fault) => fault.lock_id == null);
+    const active = locks.filter((lock) => !lock.unlocked_at);
+    const broken = {};
+    for (const lock of active) {
+      broken[lock.lock_id] = Boolean((faultsOf[lock.lock_id] || []).length) || schemaNow || lock.seal_intact === false;
+    }
+    const faultCount = faults.length + latchedOnly;
     return {
-      ok: integrity.ok !== false && !faults.length,
-      active: locks.filter((lock) => !lock.unlocked_at),
+      ok: integrity.ok !== false && !faultCount,
+      active,
       ended: locks.filter((lock) => lock.unlocked_at),
       faultsOf,
       loose,
-      faultCount: faults.length,
+      broken,
+      faultCount,
+      latchedCount: latchedOnly,
     };
   }
 
-  /** The one page-level line for integrity faults, or `null` when every Lock is intact. */
+  /**
+   * The one page-level line for integrity faults, or `null` when every Lock is intact. It counts
+   * the current faults and the latches no current fault repeats, and names the latched share.
+   */
   function faultLine(exported) {
     const read = panel(exported);
     if (!read.faultCount) return null;
-    return `${read.faultCount} lock fault${read.faultCount === 1 ? '' : 's'}`;
+    const latched = read.latchedCount ? ` (${read.latchedCount} latched)` : '';
+    return `${read.faultCount} lock fault${read.faultCount === 1 ? '' : 's'}${latched}`;
+  }
+
+  /**
+   * One fault row's words: what is wrong, where, and when (S06, #129). A current fault reads
+   * `now`, then its record's time once it is recorded; a latch reads `latched · recorded <at>`.
+   */
+  function faultText(row) {
+    const at = row && row.at ? String(row.at).replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, ' UTC') : null;
+    const when = row && row.current
+      ? (at ? `now · recorded ${at}` : 'now')
+      : `latched · recorded ${at || 'earlier'}`;
+    return {
+      kind: String((row && row.kind) || 'fault'),
+      where: [row && row.card, row && row.detail].filter(Boolean).join(' · '),
+      when,
+    };
+  }
+
+  /**
+   * The actions of one active Lock's entry in the panel, in order (S06, #129). `Open tree` needs
+   * the root Card; `Edit note…` and `Unlock tree…` act on the Lock itself, so they stay reachable
+   * when the root Card is gone or the Lock is faulted: the owner's recovery never depends on the
+   * damaged tree. An ended Lock offers nothing.
+   */
+  function entryActions(lock, rootPresent) {
+    if (!lock || lock.unlocked_at) return [];
+    return [
+      rootPresent ? { id: 'open', label: 'Open tree' } : null,
+      { id: 'note', label: 'Edit note…' },
+      { id: 'unlock', label: 'Unlock tree…', danger: true },
+    ].filter(Boolean);
   }
 
   /**
@@ -156,8 +233,12 @@
         return `${at} · note: ${detail.previous_note ?? 'none'} → ${detail.note ?? 'none'}`;
       case 'reseal':
         return `${at} · resealed · seal ${sealShort(detail.seal)}`;
-      case 'integrity-fault':
-        return `${at} · integrity fault · ${detail.fault || ''}`;
+      case 'integrity-fault': {
+        // The record keeps the fault's identifier and its evidence (S06, #129).
+        const evidence = detail.evidence && typeof detail.evidence === 'object' ? detail.evidence : {};
+        const said = [evidence.kind, evidence.card, evidence.detail].filter(Boolean).join(' · ');
+        return `${at} · integrity fault · ${said || detail.fault || ''}`;
+      }
       default:
         return `${at} · ${(event && event.action) || 'event'}`;
     }
@@ -302,7 +383,7 @@
   }
 
   return {
-    NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine, cardState,
+    NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, sameFault, panel, faultLine, faultText, entryActions, pinGroups, eventLine, cardState,
     WRITES, COMMAND_WRITES, pinHolders, writeGate, destinationLock, treeActions, bandText,
   };
 });

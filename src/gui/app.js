@@ -4808,7 +4808,7 @@
    * The tree as an index card in the dialog: what the owner freezes. Its address stamp sits in the
    * corner, the seal beside the count, and the rest folds away below.
    */
-  function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since }) {
+  function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since, lockId }) {
     return h('div', { class: 'lock-card' + (kind === 'literature' ? ' literature' : ' topic') },
       h('div', { class: 'lock-card-head' },
         h('span', { class: 'kind-tag ' + (kind || ''), text: `${kind === 'literature' ? 'Literature' : 'Topic'} tree` }),
@@ -4819,6 +4819,8 @@
         h('div', { class: 'lock-facts' },
           h('span', { class: 'lock-count' }, h('b', { text: String(count) }), ` card${count === 1 ? '' : 's'}`),
           h('span', { class: 'lock-sub', text: `${pins} pinned target${pins === 1 ? '' : 's'}` }),
+          // S06 (#129): a relock is a new promise, so the card names which Lock it shows.
+          lockId != null ? h('span', { class: 'lock-sub', text: `lock ${lockId}` }) : null,
           since ? h('span', { class: 'lock-sub', text: `locked ${dateOf(since)}` }) : null,
           sealStamp(seal, broken)),
         note ? h('p', { class: 'lock-note-text', text: note }) : null));
@@ -4956,12 +4958,13 @@
   /** An existing Lock's plan (unlock or note): the same tree card, built from the Lock's facts. */
   function existingLockView(plan, extra) {
     const card = state.byAddress.get(plan.root);
-    const faults = ZtLock.panel(state.locks).faultsOf[plan.lock_id] || [];
+    // A latched fault breaks the seal exactly as a current one does (S06, #129).
+    const broken = Boolean(ZtLock.panel(state.locks).broken[plan.lock_id]);
     return [
       lockCardView({
         root: plan.root, title: card ? card.title : plan.root, kind: card ? card.kind : (/^\d+\//.test(plan.root) ? 'topic' : 'literature'),
-        workspace: plan.workspace, count: plan.member_count, pins: plan.pin_count, seal: plan.seal, broken: faults.length > 0,
-        note: plan.previous_note, since: plan.locked_at,
+        workspace: plan.workspace, count: plan.member_count, pins: plan.pin_count, seal: plan.seal, broken,
+        note: plan.previous_note, since: plan.locked_at, lockId: plan.lock_id,
       }),
       ...extra,
       digestFold(plan.seal),
@@ -5034,31 +5037,52 @@
       h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), h('button', { class: 'btn primary', text: 'Close', onclick: () => close() })),
     ));
     const act = (fn) => () => fn().then((done) => { if (done) paint(); }).catch(fail);
-    const faultRows = (faults) => faults.map((fault) => h('li', {},
-      h('span', { class: 'a', text: fault.kind }),
-      h('span', { class: 'b', text: [fault.card, fault.detail].filter(Boolean).join(' · ') })));
-    const entry = (lock, faults) => {
+    // S06 (#129): one row per fault, current or latched; a latch names when it was recorded and
+    // recedes a step below a fault the last comparison still sees.
+    const faultRows = (faults) => faults.map((fault) => {
+      const said = ZtLock.faultText(fault);
+      return h('li', { class: fault.current ? 'fault-now' : 'fault-latched', title: [fault.expected && `expected ${fault.expected}`, fault.actual && `found ${fault.actual}`].filter(Boolean).join(' · ') || null },
+        h('span', { class: 'a', text: said.kind }),
+        said.where ? h('span', { class: 'b', text: said.where }) : null,
+        h('span', { class: 'fault-when', text: said.when }));
+    });
+    const history = (lock) => lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) })));
+    // Reading, the members, the pins and the whole history stay on a faulted Lock; the seal shown
+    // is the one the owner reviewed (`lock.seal`), never one computed from damaged content.
+    const entry = (lock, faults, broken) => {
       const card = state.byAddress.get(lock.root);
-      return h('section', { class: 'lock-entry' + (faults.length ? ' faulted' : '') + (lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
+      const run = {
+        open: () => { close(); go(lock.root); },
+        note: act(() => editLockNote(lock)),
+        unlock: act(() => unlockTree(lock)),
+      };
+      return h('section', { class: 'lock-entry' + (broken ? ' faulted' : '') + (lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
         lockCardView({
           root: lock.root, title: card ? card.title : `${lock.root} (root missing)`, kind: card ? card.kind : (/^\d+\//.test(lock.root) ? 'topic' : 'literature'),
           workspace: lock.workspace, count: lock.member_count, pins: ZtLock.pinGroups(lock).length,
-          seal: lock.seal, broken: faults.length > 0, note: lock.note, since: lock.locked_at,
+          seal: lock.seal, broken, note: lock.note, since: lock.locked_at, lockId: lock.lock_id,
         }),
         faults.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(faults)) : null,
         h('div', { class: 'lock-entry-actions' },
-          card ? h('button', { class: 'btn', text: 'Open tree', onclick: () => { close(); go(lock.root); } }) : null,
-          h('button', { class: 'btn', text: 'Edit note…', onclick: act(() => editLockNote(lock)) }),
-          h('button', { class: 'btn danger', text: 'Unlock tree…', onclick: act(() => unlockTree(lock)) })),
+          ZtLock.entryActions(lock, Boolean(card)).map((item) => h('button', {
+            class: 'btn' + (item.danger ? ' danger' : ''), text: item.label, dataset: { act: item.id }, onclick: run[item.id],
+          }))),
         digestFold(lock.seal),
+        lockFold('Members', (lock.members || []).map((member) => h('li', {},
+          h('span', { class: 'a', text: member.address }),
+          h('span', { class: 'b fp', title: member.fingerprint, text: String(member.fingerprint || '').slice(0, 12) })))),
         lockFold('Pinned targets', pinRows(ZtLock.pinGroups(lock))),
-        lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) }))),
+        history(lock),
       );
     };
-    const ended = (lock) => h('li', { class: 'lock-ended' },
-      h('span', { class: 'a', text: `${lock.root} · lock ${lock.lock_id}` }),
-      h('span', { class: 'b', text: `seal ${ZtLock.sealShort(lock.seal)} · ${dateOf(lock.locked_at)} → ${dateOf(lock.unlocked_at)}` }),
-      lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) }))));
+    const ended = (lock) => {
+      const recorded = (lock.events || []).filter((event) => event.action === 'integrity-fault').length;
+      return h('li', { class: 'lock-ended' },
+        h('span', { class: 'a', text: `${lock.root} · lock ${lock.lock_id}` }),
+        h('span', { class: 'b', text: `seal ${ZtLock.sealShort(lock.seal)} · ${dateOf(lock.locked_at)} → ${dateOf(lock.unlocked_at)}`
+          + (recorded ? ` · ${recorded} integrity fault${recorded === 1 ? '' : 's'} recorded` : '') }),
+        history(lock));
+    };
     async function paint() {
       try {
         await loadLocks();
@@ -5072,7 +5096,7 @@
       body.replaceChildren(...[
         read.loose.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(read.loose)) : null,
         read.active.length
-          ? read.active.map((lock) => entry(lock, read.faultsOf[lock.lock_id] || []))
+          ? read.active.map((lock) => entry(lock, read.faultsOf[lock.lock_id] || [], Boolean(read.broken[lock.lock_id])))
           : h('p', { class: 'hint', text: 'No tree is locked. Open a Topic or Literature root and choose Lock tree to freeze it.' }),
         read.ended.length ? h('details', { class: 'lock-fold lock-history' },
           h('summary', { text: `Ended locks · ${read.ended.length}` }),
@@ -5234,10 +5258,10 @@
         h('span', { class: 'lock-state', text: 'Unlocked tree' }),
         actionButton('Lock tree…', null, () => lockTree(card.address), { cls: 'lock-btn', title: 'Review this whole tree, then freeze it' }));
     }
-    const faults = ZtLock.panel(state.locks).faultsOf[lock.lock_id] || [];
+    const broken = Boolean(ZtLock.panel(state.locks).broken[lock.lock_id]);
     return h('div', { class: 'lock-line locked' },
       h('span', { class: 'lock-state', title: 'Edit, type, move, delete, insert and new cards wait for an unlock; reading, linking, the Table and Reply stay open', text: `Locked since ${dateOf(lock.locked_at)} · writing waits for an unlock` }),
-      sealStamp(lock.seal, faults.length > 0),
+      sealStamp(lock.seal, broken),
       actionButton('Lock panel', null, () => lockPanel(card.address), { cls: 'lock-btn' }),
       actionButton('Unlock tree…', null, () => unlockTree(lock), { cls: 'lock-btn', danger: true }));
   }

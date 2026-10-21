@@ -2268,6 +2268,10 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .lock-faults { padding-left: 0; margin: 10px 0 0; }
 .lock-faults > li { color: var(--broken); }
 .lock-faults .a, .lock-faults .b { color: var(--broken); }
+/* S06 (#129): a latch (recorded, not seen by the last comparison) recedes one step below a current
+   fault; its record time sits last, faint, in both. */
+.lock-faults > li.fault-latched .a, .lock-faults > li.fault-latched .b { color: color-mix(in srgb, var(--broken) 60%, var(--ink-soft)); }
+.lock-faults .fault-when { flex-basis: 100%; margin: -3px 0 4px; color: var(--ink-faint); font-size: 11px; }
 .lock-note-field { display: block; margin-top: 16px; }
 .lock-note-label {
   display: flex; justify-content: space-between; margin-bottom: 6px;

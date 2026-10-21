@@ -2858,6 +2858,135 @@ mod tests {
         assert_eq!(value["noteEvent"], "2026-10-21 09:05:00Z · note: none → final");
     }
 
+    /// S06 (#129, S06-AC08, AC05): a latched fault breaks its tree's seal exactly as a current one
+    /// does and is labelled with when it was recorded; a current fault and its own record are one
+    /// row, and a schema fault latched on every Lock counts once while it is current. The one
+    /// page-level line counts current faults plus the latches no current fault repeats.
+    #[test]
+    fn a_latched_fault_breaks_the_seal_like_a_current_one_and_counts_once() {
+        let Some(value) = lock_js(
+            "(() => {
+               const seal3 = 'c'.repeat(64);
+               const exported = {
+                 version: 1, schema_version: '1',
+                 locks: [
+                   { lock_id: 3, root: '3/0', seal: seal3, unlocked_at: null, seal_intact: false, members: [], pins: [], events: [] },
+                   { lock_id: 2, root: 'Smith2024', seal: 'b'.repeat(64), unlocked_at: null, seal_intact: false, members: [], pins: [], events: [] },
+                   { lock_id: 4, root: '4/0', seal: 'd'.repeat(64), unlocked_at: null, seal_intact: true, members: [], pins: [], events: [] },
+                 ],
+                 integrity: { ok: false, faulted: true, summary: 'integrity faulted: 2 current faults', faults: [
+                   { id: 'lock-3:changed:3/1', lock_id: 3, kind: 'changed', card: '3/1', detail: 'fingerprint differs', expected: 'aa', actual: 'bb' },
+                   { id: 'lock-schema:trigger-missing:zt_lock_guard', lock_id: null, kind: 'trigger-missing', card: 'zt_lock_guard', detail: 'the trigger is gone' },
+                 ], latched: [
+                   { lock_id: 3, id: 'lock-3:changed:3/1', kind: 'changed', card: '3/1', at: '2026-10-21T09:00:00.000Z', detail: 'fingerprint differs' },
+                   { lock_id: 3, id: 'lock-3:trigger-missing:zt_lock_guard', kind: 'trigger-missing', card: 'zt_lock_guard', at: '2026-10-21T09:00:00.000Z', detail: 'the trigger is gone' },
+                   { lock_id: 2, id: 'lock-2:trigger-missing:zt_lock_guard', kind: 'trigger-missing', card: 'zt_lock_guard', at: '2026-10-21T09:00:00.000Z', detail: 'the trigger is gone' },
+                   { lock_id: 2, id: 'lock-2:missing:Smith2024/4', kind: 'missing', card: 'Smith2024/4', at: '2026-10-20T08:30:00.000Z', detail: 'member row is gone' },
+                 ] },
+               };
+               const read = ZtLock.panel(exported);
+               const rows = (id) => (read.faultsOf[id] || []).map((row) => ({ kind: row.kind, current: row.current, at: row.at, text: ZtLock.faultText(row) }));
+               // The same Lock after a clean comparison: the current faults are gone, the latches stay.
+               const clean = { locks: [{ lock_id: 2, root: 'Smith2024', seal: 'b'.repeat(64), unlocked_at: null, members: [], pins: [], events: [] }],
+                 integrity: { ok: false, faulted: false, faults: [], latched: [exported.integrity.latched[3]] } };
+               const after = ZtLock.panel(clean);
+               return {
+                 rows3: rows(3), rows2: rows(2), rows4: rows(4),
+                 loose: read.loose.map((row) => [row.kind, row.current, row.at]),
+                 broken: read.broken, count: read.faultCount, latched: read.latchedCount, ok: read.ok,
+                 line: ZtLock.faultLine(exported),
+                 seal3: read.active.find((lock) => lock.lock_id === 3).seal === seal3,
+                 afterBroken: after.broken, afterLine: ZtLock.faultLine(clean), afterOk: after.ok,
+                 afterRows: after.faultsOf[2].map((row) => ZtLock.faultText(row).when),
+                 bare: ZtLock.faultText({ kind: 'extra', card: '3/9', current: false }).when,
+                 recorded: ZtLock.eventLine({ action: 'integrity-fault', at: '2026-10-21T09:00:00Z', detail: { fault: 'lock-3:changed:3/1', evidence: { kind: 'changed', card: '3/1', detail: 'fingerprint differs' } } }),
+                 recordedBare: ZtLock.eventLine({ action: 'integrity-fault', at: '2026-10-21T09:00:00Z', detail: { fault: 'lock-3:changed:3/1' } }),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(
+            value["rows3"],
+            json!([
+                {"kind": "changed", "current": true, "at": "2026-10-21T09:00:00.000Z",
+                 "text": {"kind": "changed", "where": "3/1 · fingerprint differs", "when": "now · recorded 2026-10-21 09:00 UTC"}},
+                {"kind": "trigger-missing", "current": true, "at": "2026-10-21T09:00:00.000Z",
+                 "text": {"kind": "trigger-missing", "where": "zt_lock_guard · the trigger is gone", "when": "now · recorded 2026-10-21 09:00 UTC"}}
+            ]),
+            "a current fault and its record are one row; the schema latch is the current schema fault"
+        );
+        assert_eq!(
+            value["rows2"][1],
+            json!({"kind": "missing", "current": false, "at": "2026-10-20T08:30:00.000Z",
+                   "text": {"kind": "missing", "where": "Smith2024/4 · member row is gone", "when": "latched · recorded 2026-10-20 08:30 UTC"}}),
+            "a latch alone is labelled with when it was recorded"
+        );
+        assert_eq!(value["rows4"], json!([]));
+        assert_eq!(value["loose"], json!([["trigger-missing", true, "2026-10-21T09:00:00.000Z"]]), "the schema fault is listed once");
+        assert_eq!(value["broken"], json!({"2": true, "3": true, "4": true}), "a current schema fault breaks every seal");
+        assert_eq!(value["count"], 3, "two current faults and one latch no current fault repeats");
+        assert_eq!(value["latched"], 1);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["line"], "3 lock faults (1 latched)");
+        assert_eq!(value["seal3"], true, "the shown seal is the Lock's own");
+        assert_eq!(value["afterBroken"], json!({"2": true}), "a latch alone breaks the seal like a current fault");
+        assert_eq!(value["afterLine"], "1 lock fault (1 latched)");
+        assert_eq!(value["afterOk"], false, "a later clean comparison never makes a latched Lock healthy");
+        assert_eq!(value["afterRows"], json!(["latched · recorded 2026-10-20 08:30 UTC"]));
+        assert_eq!(value["bare"], "latched · recorded earlier");
+        assert_eq!(value["recorded"], "2026-10-21 09:00:00Z · integrity fault · changed · 3/1 · fingerprint differs");
+        assert_eq!(value["recordedBare"], "2026-10-21 09:00:00Z · integrity fault · lock-3:changed:3/1");
+    }
+
+    /// S06 (#129, S06-AC09): the owner's recovery stays reachable. An active Lock whose root Card
+    /// is gone, or which is faulted, still offers `Edit note…` and `Unlock tree…` in the panel
+    /// list; only `Open tree` needs the root. A faulted entry keeps reading, its members, its pins
+    /// and its whole history, shows the Lock's own seal, and an ended Lock keeps its recorded
+    /// integrity faults in its history under its own Lock id.
+    #[test]
+    fn unlock_stays_reachable_from_the_panel_for_a_lock_whose_root_is_gone() {
+        let Some(value) = lock_js(
+            "(() => {
+               const lock = { lock_id: 7, root: '3/0', seal: 'c'.repeat(64), unlocked_at: null, seal_intact: false };
+               const ids = (items) => items.map((item) => item.id);
+               return {
+                 gone: ids(ZtLock.entryActions(lock, false)),
+                 present: ids(ZtLock.entryActions(lock, true)),
+                 danger: ZtLock.entryActions(lock, false).find((item) => item.id === 'unlock'),
+                 ended: ZtLock.entryActions({ ...lock, unlocked_at: '2026-10-21T10:00:00Z' }, true),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["gone"], json!(["note", "unlock"]), "the root is gone: unlock stays");
+        assert_eq!(value["present"], json!(["open", "note", "unlock"]));
+        assert_eq!(value["danger"], json!({"id": "unlock", "label": "Unlock tree…", "danger": true}));
+        assert_eq!(value["ended"], json!([]));
+        // The panel draws exactly those actions, and the unlock dialog needs no root Card.
+        let panel = app_function("lockPanel");
+        assert!(panel.contains("ZtLock.entryActions(lock, Boolean(card)).map((item) =>"), "{panel}");
+        assert!(panel.contains("unlock: act(() => unlockTree(lock)),"));
+        assert!(!panel.contains("card ? h('button', { class: 'btn danger'"), "no unlock depends on the root Card");
+        assert!(app_function("existingLockView").contains("card ? card.title : plan.root"), "the unlock plan reads without the root");
+        // A faulted entry keeps everything and shows the reviewed seal.
+        assert!(panel.contains("seal: lock.seal, broken, note: lock.note, since: lock.locked_at, lockId: lock.lock_id,"));
+        assert!(panel.contains("lockFold('Members', (lock.members || [])"));
+        assert!(panel.contains("lockFold('Pinned targets', pinRows(ZtLock.pinGroups(lock))),"));
+        assert!(panel.contains("digestFold(lock.seal),"));
+        assert_eq!(panel.matches("history(lock)").count(), 2, "active and ended Locks both keep their history");
+        assert!(panel.contains("event.action === 'integrity-fault'"), "an ended Lock counts its recorded faults");
+        assert!(panel.contains("text: `${lock.root} · lock ${lock.lock_id}`"), "an ended Lock names its own id");
+        assert!(app_function("lockCardView").contains("text: `lock ${lockId}`"), "a relock shows its new Lock id");
+        // A latched fault breaks the seal wherever the seal is stamped.
+        assert!(app_function("lockLine").contains("sealStamp(lock.seal, broken)"));
+        assert!(app_function("existingLockView").contains("ZtLock.panel(state.locks).broken[plan.lock_id]"));
+        assert_eq!(APP_JS.matches("faultsOf[").count(), 1, "only the panel list reads the rows; the seal reads `broken`");
+    }
+
     /// S01 (#124): the page's Lock dialogs send nothing on Cancel, confirm only with the plan's own
     /// word and hash, keep the note through a renewed plan, and a refused Save keeps the draft.
     #[test]
