@@ -1,4 +1,4 @@
-// ==== module zt-explain v4 ====
+// ==== module zt-explain v5 ====
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. Each claimed block is written by the existing explanation chain
 // (plan one job per chain, DeepSeek JSON, the script writes 思路/说明/解读 and refuses a changed 起点/step/结果,
@@ -6,7 +6,7 @@
 // `explain-finish`, which re-reads the parts and refuses a part that still lacks text. Runs in mode explain and
 // after the model layer in mode full.
 defineModule({
-  id: 'zt-explain', version: '4', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '5', requires: ['zt-model-lib'],
   summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written by the explanation chain and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -21,7 +21,8 @@ defineModule({
     const work = `${Z.OUT}\\explain`
     const xstep = (s, extra = '') => `${Z.COMPILER} -Step ${s} -Work "${work}" -Staging "${Z.OUT}" ${Z.LIMITS}${extra}`
     const result = await Z.layer('explain', {
-      layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models',
+      // hold: the chain renews only its first unit's claim; the driver keeps every claim of the block current.
+      layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models', hold: true,
       work: async (units) => {
         const models = units.map(u => (u.inputs && u.inputs.model) || '').filter(Boolean)
         const only = Array.isArray(A.only) && A.only.length ? ` -Models "${models.join(',')}"` : ` -Models "${models.join(',')}"`

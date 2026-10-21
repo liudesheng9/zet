@@ -1,10 +1,10 @@
-// ==== module zt-organize v2 ====
+// ==== module zt-organize v5 ====
 // Organize: organize-survey.ps1 lists what to decide; Opus writes only decisions.json (thesis, Topic merges,
 // moves, Card notes); organize-apply.ps1 carries out the merges and moves; a card cycle hands the notes to
 // DeepSeek; book-skeleton.ps1 and one DeepSeek job write the Literature Card index, the structure Card, and the
 // Topic bodies. args.organize "legacy" runs the old single Opus job instead.
 defineModule({
-  id: 'zt-organize', version: '2', requires: ['zt-digest-lib'],
+  id: 'zt-organize', version: '5', requires: ['zt-digest-lib'],
   summary: 'ZT digest: Organize (survey → Opus decisions → apply → notes card cycle → skeleton), or the legacy Opus job.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -19,12 +19,21 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
+    if (await Z.settledOnResume('organize', ['organize', 'skeleton'])) return { status: 'done', reused: true, publications: {} }
     const A = Z.A, KEY = Z.KEY, OUT = Z.OUT, SCRIPTS = Z.SCRIPTS, MODE = Z.MODE
     const groupCount = p.groups || 0
     const modelReports = p.models || p.modelsBook || []
-    const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]${r.level === 'concept' ? '（概念模型）' : r.level === 'formal' ? '（形式模型）' : ''}：${(r.parts || []).map(pp => `${pp.facet}${pp.emphasis === 'core' ? '（核心）' : ''} [[${pp.address}]]`).join('、')}${(r.issues || []).length ? `；未解决：${r.issues.join('；')}` : ''}${r.notes && r.notes.length ? `；建议：${r.notes.join('；')}` : ''}`).join('\n')
+    const modelLines = modelReports.filter(r => r.status === 'done').map(r => `- [[${r.model}]]${r.level === 'concept' ? '（概念模型）' : r.level === 'formal' ? '（形式模型）' : ''}：${Array.isArray(r.parts) ? r.parts.map(pp => `${pp.facet}${pp.emphasis === 'core' ? '（核心）' : ''} [[${pp.address}]]`).join('、') : `${Number(r.parts) || 0} 张分卡（${Number(r.core) || 0} 张核心，见模型卡的结构列表）`}${(r.issues || []).length ? `；未解决：${r.issues.join('；')}` : ''}${r.notes && r.notes.length ? `；建议：${r.notes.join('；')}` : ''}`).join('\n')
     const groupLines = ((MODE === 'full' ? p.digest : p.link) || []).map(r => `- 第 ${r.group} 组 [[${KEY}/${r.group}]]：${r.status}${r.cards ? `，${r.cards} 张` : ''}${r.models ? `，模型卡 ${r.models}` : ''}${r.events ? `，事件卡 ${r.events}` : ''}${r.topics && r.topics.length ? `；新主题：${r.topics.join('、')}` : ''}${r.errors && r.errors !== '无' ? `；问题：${r.errors}` : ''}`).join('\n')
     const ORG = `${OUT}\\organize`
+    // The stage publishes its own book revision (`zt-digest finalize -Step stage`): the ledger binds its artifacts
+    // by hash and checks the coverage it derives. On grossman2002integration trial 8 no stage published, so the
+    // revision stayed ready and the run could never be content-complete.
+    const publish = async (layer, more) => {
+      const { run, json } = await Z.runScript(`${layer}: publish`, 'Organize', `${Z.DIGEST} finalize -Step stage -Out "${Z.OUT}" -Layer ${layer}${more}`, ' (it records the stage publication in the ledger)')
+      log(json && json.state ? `${layer}: publication ${json.unit || ''} ${json.state}${json.disposition ? ` (${json.disposition})` : ''}.` : `${layer}: the publication failed: ${(run && run.output) || 'no output'}`)
+      return json || { layer, state: 'failed', error: (run && run.output) || 'no output' }
+    }
     if (A.organize === 'legacy') {
       const report = await Z.zAgent(
         `You are the final coordinator of a ZET book digest. DeepSeek agents have digested 《${A.bookTitle}》 group by group into the agent Workspace of the ZET slip-box, then added reasoned cross-part Links to their own Cards. Your job is to organize the whole card structure. Use the zettelkasten and zt skills (load them with the Skill tool first). Make every zt call through the helper script, not the mcp__zt__* tools (the conversation's MCP server may be an older zt): write a JSON array of calls and run it in one PowerShell command, e.g.
@@ -84,6 +93,8 @@ Return thesis, merges, moves, notes (the counts), and report: a short Chinese re
     if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused` : `apply failed (${applied && applied.run && applied.run.output})`}; ${decided.notes || 0} notes.`)
     // 4. The notes go to DeepSeek as a card cycle: every hard rule in mode "full" (the script adds N1), else N1.
     const notes = decided && decided.notes ? await Z.runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
+    // 4a. Organize publishes its revision once its decisions are applied and its notes are disposed.
+    const organizePublished = moved ? await publish('organize', ` -Decisions "${ORG}\\decisions.json" -Applied "${ORG}\\applied.json"`) : null
     // 5. The skeleton: the Literature Card index, the structure Card, the Topic bodies.
     const SK = `${OUT}\\skeleton`
     const kstep = (s, more = '') => `${Z.tool('book-skeleton')} -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`
@@ -91,7 +102,8 @@ Return thesis, merges, moves, notes (the counts), and report: a short Chinese re
     await Z.drive('organize: skeleton', { ...kopts, command: kstep('plan') })
     const sk = zdLastJson(((await Z.drive('organize: skeleton apply', { ...kopts, command: kstep('apply', ` -Decisions "${ORG}\\decisions.json" -Apply`), cleanup: true })) || {}).output)
     log(sk && sk.ok ? `Organize: structure Card ${sk.written && sk.written.structure} ("${sk.thesis}"), ${sk.argument} argument lines, ${sk.models} models, ${sk.events} events, ${sk.topics} Topic bodies.` : `Organize: the skeleton failed: ${JSON.stringify((sk && sk.problems) || 'no output')}`)
-    return { survey, decisions: decided, applied: moved, notes: notes && notes.report, skeleton: sk }
+    const skeletonPublished = sk && sk.ok ? await publish('skeleton', ` -Skeleton "${SK}\\out\\skeleton.json"`) : null
+    return { survey, decisions: decided, applied: moved, notes: notes && notes.report, skeleton: sk, publications: { organize: organizePublished, skeleton: skeletonPublished } }
   },
 })
 // ==== end module zt-organize ====

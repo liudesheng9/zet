@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v7 ====
+// ==== module zt-digest-prepare v9 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -11,7 +11,7 @@
 // identity from the ledger (#87, R274-R285). Other modes take the group count from args.groups.
 // The output also carries groupList, the per-group items the digest stage's chains are built from.
 defineModule({
-  id: 'zt-digest-prepare', version: '7', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -35,12 +35,20 @@ defineModule({
       if (!facts || !['resumed', 'nothing_to_resume'].includes(facts.status)) {
         throw new Error(`mode resume needs a resumable prepared run ledger: ${(resumed.run && resumed.run.output) || 'no ledger resume'}`)
       }
-      const status = await Z.runScript('resume status', 'Prepare', `${Z.LEDGER} status -Out "${Z.OUT}"`, ' (the retained run ledger)')
+      // -Summary: the units counted per layer and state. The full status of a long book (about 450 KB
+      // for 171 groups) is more than one relayed output line can carry.
+      const status = await Z.runScript('resume status', 'Prepare', `${Z.LEDGER} status -Out "${Z.OUT}" -Summary`, ' (the retained run ledger, summarized)')
       const view = status.json
-      if (!view || !Array.isArray(view.units)) throw new Error(`mode resume needs a prepared run ledger with its frozen inputs: ${(status.run && status.run.output) || 'no ledger status'}`)
-      const digestUnits = view.units.filter(u => u.layer === 'digest')
-      if (!digestUnits.length) throw new Error('mode resume found no retained digest groups; prepare the book again')
-      groups = digestUnits.length
+      if (!view) throw new Error(`mode resume needs a prepared run ledger with its frozen inputs: ${(status.run && status.run.output) || 'no ledger status'}`)
+      groups = (view.layers && view.layers.digest && view.layers.digest.total) || 0
+      if (!groups) {
+        // grossman2002integration trial 17: a relay returned the summary without `layers` (a `layers_open`
+        // map of its own instead); the digest layer's own brief gate carries the retained group count.
+        const digestGate = await Z.gate('resume digest groups', 'digest')
+        groups = (digestGate && digestGate.counts && (digestGate.counts.total || digestGate.counts.declared)) || 0
+        log(`Resume: the status line carried no layer counts; the digest gate gives ${groups} retained groups.`)
+      }
+      if (!groups) throw new Error('mode resume found no retained digest groups; prepare the book again')
       const settings = view.settings || {}
       if (facts.status === 'nothing_to_resume') {
         log(`Resume: no executable or failed unit remains (${groups} retained groups, invocation ${facts.invocation}); the retained coverage stays what the ledger reports, and no resume was spent.`)

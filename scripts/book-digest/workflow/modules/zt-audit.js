@@ -1,8 +1,8 @@
-// ==== module zt-audit v2 ====
+// ==== module zt-audit v3 ====
 // The audit: digest-audit.ps1, read-only, on one book (args.citationKey) or on every book of the agent Workspace.
 // It changes no Card; it writes audit.json, audit.md, and audit-faults.txt in args.out.
 defineModule({
-  id: 'zt-audit', version: '2', requires: ['zt-digest-lib'],
+  id: 'zt-audit', version: '3', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the read-only audit of the book\'s Cards (digest-audit.ps1).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -11,6 +11,7 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
+    if (await Z.settledOnResume('audit', ['audit'])) return { status: 'done', reused: true }
     const { run, json: summary } = await Z.runScript('audit cards', 'Audit',
       `${Z.tool('digest-audit')}${Z.KEY ? ` -CitationKey ${Z.KEY}` : ''} -Out "${Z.OUT}"`,
       ' (it may take several minutes)')

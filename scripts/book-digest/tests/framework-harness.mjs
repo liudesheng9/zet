@@ -45,6 +45,17 @@ const lastJson = (text) => {
   return null
 }
 
+// `ledger status -Summary`: identity, settings and the units counted per layer and state, as the tool prints it.
+function statusSummary(kind, led) {
+  const layers = {}
+  for (const u of led.units.values()) {
+    const l = (layers[u.layer] = layers[u.layer] || { total: 0 })
+    l[u.state] = (l[u.state] || 0) + 1
+    l.total += 1
+  }
+  return { schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', layers }
+}
+
 // --- the in-memory ledger: units are claimed, completed and gated for real -------------------------------------
 function makeLedger() {
   const units = new Map()
@@ -54,9 +65,9 @@ function makeLedger() {
     return units.get(id)
   }
   const layer = (name) => [...units.values()].filter((u) => u.layer === name)
-  const next = (name, take) => {
+  const next = (name, take, owner = '') => {
     const ready = layer(name).filter((u) => u.state === 'ready').slice(0, take)
-    for (const u of ready) { u.state = 'claimed'; u.token += 1 }
+    for (const u of ready) { u.state = 'claimed'; u.token += 1; u.owner = owner }
     return ready.map((u) => ({ id: u.id, layer: u.layer, token: u.token, input_hash: `ih-${u.id}`, inputs: u.inputs }))
   }
   const gate = (name) => {
@@ -87,6 +98,7 @@ const CANNED = {
   'finding apply': () => ({ ok: true, applied_jobs: 1, created: 2, linked: 2, refused: [], pending_jobs: 0 }),
   'finding report': () => ({ jobs: 1, created: 2, linked: 2, refused: 0, errors: [] }),
   'model brief': () => ({ jobs: [{ id: 'brief', files: ['a', 'b'], prompt: 'p' }], skipped: [] }),
+  'model close': () => ({ jobs: [], faults: 0, unowned: [] }),
   'model report': () => ({ models: [{ model: 'Key/2|c', status: 'done', level: 'formal', parts: [], faults: {} }] }),
   'model explain': () => ({ parts: 3, jobs: [{ id: 'm:x01', files: ['a', 'b', 'c'], prompt: 'p' }] }),
   'model explain-apply': () => ({ applied: 2, refused: [], blocked: [], jobs: [] }),
@@ -187,12 +199,14 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
   // resume path drains a real closure instead of halting on an empty ledger.
   if (opts.retained) for (const [layer, id] of opts.retained) led.add(id, layer)
+  if (opts.retainedDone) for (const u of led.units.values()) if (opts.retainedDone.includes(u.layer)) led.finish(u.id)
+  const scenario = opts
   const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0, resources: new Map() }
   const failedStep = []
 
@@ -249,7 +263,31 @@ function runtime(kind, opts = {}) {
     }
     if (/ ledger next /.test(cmd)) {
       const take = Number((cmd.match(/-Take (\d+)/) || [])[1])
-      const units = led.next(layer, take)
+      const owner = (cmd.match(/-Owner "([^"]*)"/) || [])[1] || ''
+      const claimed = led.next(layer, take, owner)
+      // trial 6: a producer's late group adds a unit after the layer's earlier claims found work. Each of the
+      // first opts.lateUnits.count claims of that layer makes one more unit ready for the next claim.
+      if (opts.lateUnits && opts.lateUnits.layer === layer) {
+        state.lateClaims = (state.lateClaims || 0) + 1
+        if (state.lateClaims <= opts.lateUnits.count) led.add(`${layer}/g${String(100 + state.lateClaims)}@1`, layer)
+      }
+      // `-Brief` keeps only a unit's Model address (header, model) of its inputs, as zt-digest does.
+      const briefIn = (inputs) => { const k = {}; for (const f of ['header', 'model']) if (typeof (inputs || {})[f] === 'string') k[f] = inputs[f]; return Object.keys(k).length ? k : undefined }
+      const units = / -Brief\b/.test(cmd) ? claimed.map(({ inputs, ...u }) => (briefIn(inputs) ? { ...u, inputs: briefIn(inputs) } : u)) : claimed
+      // grossman2002integration trial 4: a relay returned the claim line whole except every unit's inputs.
+      if (opts.droppedInputs && opts.droppedInputs === layer && units.length) {
+        return { ok: true, output: json({ schema_version: 1, layer, units: units.map(({ inputs, ...u }) => u), counts: led.gate(layer).counts, settled: led.gate(layer).settled }) }
+      }
+      // grossman2002integration trial 3: a relay returned the claim line with its units array retyped as a
+      // sentence; the driver must take its units from the ledger (`ledger status -Held`), not the relay.
+      if (opts.summarizedClaim && opts.summarizedClaim === layer && units.length) {
+        return { ok: true, output: json({ schema_version: 1, layer, counts: led.gate(layer).counts, settled: led.gate(layer).settled, units: `(${units.length} units claimed: ${units.map((u) => u.id).join(', ')}; owner '${owner}', lease 1500s)` }) }
+      }
+      // grossman2002integration trial 17: a relay returned the claim line with its units array replaced by a
+      // field of its own, `units_claimed` (the ids only); the line has no `units` at all.
+      if (opts.renamedUnits && opts.renamedUnits === layer && units.length) {
+        return { ok: true, output: json({ schema_version: 1, layer, counts: led.gate(layer).counts, settled: led.gate(layer).settled, units_claimed: units.map((u) => u.id) }) }
+      }
       return { ok: true, output: json({ schema_version: 1, layer, units, counts: led.gate(layer).counts, settled: led.gate(layer).settled }) }
     }
     if (/ ledger gate /.test(cmd)) {
@@ -261,9 +299,25 @@ function runtime(kind, opts = {}) {
       led.add(unit, 'cards-book', {})
       return { ok: true, output: json({ schema_version: 1, layer: 'cards-book', logical_key: 'book', unit, revision: 1, input_hash: 'ih-pub', reused: false }) }
     }
+    if (/^zt-digest model-deps /.test(cmd)) {
+      // R233: the producer of a referenced part is done (resolved) or not yet (waiting), per scenario.
+      const model = (cmd.match(/ -Model '([^']+)'/) || [])[1] || ''
+      const waiting = opts.depsWaiting && opts.depsWaiting.test(model)
+      return { ok: true, output: json({ ok: true, unit: 'models/x', waiting: !!waiting, refs: [], state: waiting ? 'registered' : 'claimed' }) }
+    }
+    if (/ ledger hold /.test(cmd)) {
+      // A hold renews the listed claims that are still held and releases the rest, as zt-digest does.
+      const list = ((cmd.match(/ -Units "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean).map((e) => { const i = e.lastIndexOf(':'); return { unit: e.slice(0, i), token: Number(e.slice(i + 1)) } })
+      const isHeld = (t) => { const u = led.find(t.unit); return !!u && u.state === 'claimed' && u.token === t.token }
+      holds.push(list.map((t) => t.unit))
+      return { ok: true, output: json({ schema_version: 1, held: list.filter(isHeld), released: list.filter((t) => !isHeld(t)), renewals: list.filter(isHeld).length, seconds: 0 }) }
+    }
     if (/ ledger renew /.test(cmd)) return { ok: true, output: json({ schema_version: 1, unit: 'x', token: 1, renewed: true }) }
     if (/ ledger fail /.test(cmd)) {
       const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      // The real ledger refuses a fault with no input hash (trial 4: "incomplete prepared contract: input_hash").
+      const fault = (cmd.match(/ -Fault '(.*)'$/) || [])[1]
+      if (fault !== undefined) { try { if (!JSON.parse(fault.replace(/''/g, "'")).input_hash) { faultRefusals.push(id); return { ok: false, exit: 1, output: 'zt-digest ledger: incomplete prepared contract: input_hash' } } } catch {} }
       const klass = (cmd.match(/-Class (\w+)/) || [])[1]
       led.fail(id, klass === 'retryable' ? 'retry' : 'failed')
       return { ok: true, output: json({ schema_version: 1, unit: id, state: klass === 'retryable' ? 'retry' : 'failed', class: klass }) }
@@ -273,8 +327,21 @@ function runtime(kind, opts = {}) {
       led.finish(id)
       return { ok: true, output: json({ schema_version: 1, unit: id, state: 'done', complete: true }) }
     }
+    if (/ ledger status /.test(cmd) && / -Held /.test(cmd)) {
+      const owner = (cmd.match(/ -Held "([^"]*)"/) || [])[1]
+      heldReads.push(owner)
+      const held = [...led.units.values()].filter((u) => u.state === 'claimed' && u.owner === owner)
+      const keep = (inputs) => { const k = {}; for (const f of ['header', 'model']) if (typeof (inputs || {})[f] === 'string') k[f] = inputs[f]; return Object.keys(k).length ? k : null }
+      return { ok: true, output: json({ schema_version: 1, owner, units: held.map((u) => ({ id: u.id, owner, token: u.token, lease_until: 9, input_hash: `ih-${u.id}`, inputs: keep(u.inputs) })) }) }
+    }
+    if (/ ledger status /.test(cmd) && / -Units /.test(cmd)) {
+      const ids = (cmd.match(/ -Units (\S+)/) || [])[1].split(',')
+      const stateOf = (u) => (u.state === 'retry' ? 'ready' : u.state)
+      return { ok: true, output: json({ schema_version: 1, units: ids.map((id) => { const u = led.find(id); return u ? { id, state: stateOf(u), token: u.token, input_hash: `ih-${id}`, attempts: u.token, fault_class: null, disposition: u.state === 'done' ? 'verified' : null } : { id, state: 'unknown' } }) }) }
+    }
     if (/ ledger status /.test(cmd)) {
-      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+      if (opts.rewrittenSummary && / -Summary/.test(cmd)) { const { layers, ...rest } = statusSummary(kind, led); return { ok: true, output: json({ ...rest, layers_open: Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.open || 0])) }) } }
+      return { ok: true, output: / -Summary\b/.test(cmd) ? json(statusSummary(kind, led)) : json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     // R331/R343: the verified run report the cleanup stage renders after every stage settles. Its usage is
     // per-run, never the difference of two account totals (the removed I22 shape).
@@ -300,7 +367,79 @@ function runtime(kind, opts = {}) {
     // Owned provider resources (#83): the workflow records the returned ids, observes the provider's
     // facts, and settles the cleanup unit through its checked verifier.
     if (/ ledger resource /.test(cmd)) {
+      // The listings the cleanup stage and its agents read (zt-digest `resource_brief`, `resource_counts`, `resource_brief_of`).
+      const briefSpaces = () => {
+        const spaces = new Map()
+        for (const r of state.resources.values()) {
+          const w = spaces.get(r.workspace.path) || { id: r.workspace.id, path: r.workspace.path, recorded: [], open: [], bare: [] }
+          for (const c of r.conversations) { w.recorded.push(c.id); if (!c.lost && c.deleted !== true) w.open.push(c.id); if (!c.lost && !(c.evidence && typeof c.evidence === 'object')) w.bare.push(c.id) }
+          spaces.set(r.workspace.path, w)
+        }
+        return [...spaces.values()]
+      }
+      if (/-List -Counts/.test(cmd)) {
+        briefLists.push(cmd)
+        return { ok: true, output: json({ schema_version: 1, action: 'list', counts: true, resources: state.resources.size, workspaces: briefSpaces().map((w) => (opts.listNoPath ? { id: w.id || w.path, recorded: w.recorded.length, open: w.open.length, bare: w.bare.length } : { id: w.id, path: w.path, recorded: w.recorded.length, open: w.open.length, bare: w.bare.length })) }) }
+      }
+      const oneSpace = cmd.match(/-List -Workspace "([^"]+)"/)
+      if (oneSpace) {
+        workspaceLists.push(oneSpace[1])
+        return { ok: true, output: json({ schema_version: 1, action: 'list', workspace: briefSpaces().find((w) => w.path === oneSpace[1]) || { path: oneSpace[1], recorded: [], open: [], bare: [] } }) }
+      }
+      if (/-SweepEvidence "/.test(cmd)) {
+        const ids = briefSpaces().flatMap((w) => w.bare)
+        for (const id of ids) for (const r of state.resources.values()) for (const c of r.conversations) if (c.id === id) c.evidence = { answer: { path: `D:\\x\\Key\\answers\\${id}.txt`, sha256: 'a'.repeat(64) } }
+        sweeps.push(ids)
+        return { ok: true, output: json({ schema_version: 1, action: 'sweep_evidence', recorded: ids.length, missing: 0, first_missing: [] }) }
+      }
+      if (/-List -Brief/.test(cmd)) {
+        briefLists.push(cmd)
+        return { ok: true, output: json({ schema_version: 1, action: 'list', brief: true, resources: state.resources.size, workspaces: briefSpaces() }) }
+      }
       if (/-List/.test(cmd)) return { ok: true, output: json({ schema_version: 1, action: 'list', resources: [...state.resources.values()] }) }
+      const holding = (id) => [...state.resources.values()].find((r) => r.conversations.some((c) => c.id === id))
+      // The manager's own records (zt-digest-lib v15): plain arguments, no record file.
+      const registerId = cmd.match(/-Unit (?:"([^"]+)"|(run))(?: -Token (\d+))? -RegisterId (\S+) -Workspace "([^"]+)"/)
+      if (registerId) {
+        const unitName = registerId[1] || registerId[2]
+        extraRecord = { schema_version: 1, unit: unitName, token: unitName === 'run' ? 1 : Number(registerId[3]), workspace: { id: registerId[5], path: registerId[5] }, conversations: [{ id: registerId[4] }], via: 'manager' }
+      }
+      // The cleanup stage's evidence sweep: every listed id whose answer file exists gets its evidence.
+      const sweep = cmd.match(/foreach \(\$zdId in @\(([^)]*)\)\)/)
+      if (sweep) {
+        const ids = (sweep[1].match(/'([^']+)'/g) || []).map((q) => q.slice(1, -1))
+        const ok = []
+        for (const id of ids) { const target = holding(id); if (!target) continue; for (const c of target.conversations) if (c.id === id) c.evidence = { answer: { path: `D:\\x\\Key\\answers\\${id}.txt`, sha256: 'a'.repeat(64) } }; ok.push(id) }
+        sweeps.push(ids)
+        return { ok: true, output: json({ recorded: ok.length, missing: ids.filter((id) => !ok.includes(id)) }) }
+      }
+      const evidenceFor = cmd.match(/-EvidenceFor (\S+) -Evidence "([^"]+)"/)
+      if (evidenceFor && opts.skipEvidence && opts.skipEvidence.test(evidenceFor[1])) {
+        // trial 6: the manager wrote the answer file but its evidence record never reached the ledger.
+        return { ok: true, output: json({ schema_version: 1, action: 'observe', op: 'evidence', skipped: true }) }
+      }
+      if (evidenceFor) {
+        const target = holding(evidenceFor[1])
+        if (!target) return { ok: false, exit: 1, output: `unknown conversation: no recorded resource holds \`${evidenceFor[1]}\`` }
+        for (const c of target.conversations) if (c.id === evidenceFor[1]) c.evidence = { answer: { path: evidenceFor[2], sha256: 'a'.repeat(64) } }
+        evidenceRecords.push({ id: evidenceFor[1], file: evidenceFor[2] })
+        return { ok: true, output: json({ schema_version: 1, action: 'observe', op: 'evidence', resources: [...state.resources.values()] }) }
+      }
+      const settle = cmd.match(/-Settle (\S+) -State (\w+) -Deleted (\w+)/)
+      if (settle) {
+        const target = holding(settle[1])
+        if (!target) return { ok: false, exit: 1, output: `unknown conversation: no recorded resource holds \`${settle[1]}\`` }
+        for (const c of target.conversations) if (c.id === settle[1]) { c.terminal = true; c.outcome = settle[2]; c.deleted = settle[3] !== 'failed' }
+        settleRecords.push({ id: settle[1], state: settle[2], deleted: settle[3] })
+        return { ok: true, output: json({ schema_version: 1, action: 'observe', op: 'deleted', resources: [...state.resources.values()] }) }
+      }
+      const settleWorkspace = cmd.match(/-SettleWorkspace "([^"]+)" -Removed (true|false)/)
+      if (settleWorkspace) {
+        const targets = [...state.resources.values()].filter((r) => r.workspace.path === settleWorkspace[1])
+        if (!targets.length) return { ok: false, exit: 1, output: `unknown workspace: no recorded resource uses \`${settleWorkspace[1]}\`` }
+        for (const r of targets) { r.workspace_removed = settleWorkspace[2] === 'true'; r.listing = { conversations: [], unknown: [] } }
+        return { ok: true, output: json({ schema_version: 1, action: 'observe', op: 'workspace', resources: [...state.resources.values()] }) }
+      }
       if (/-Register/.test(cmd)) {
         const record = extraRecord || resourceRecord(cmd)
         if (!record) return { ok: false, exit: 1, output: 'no resource record in the command' }
@@ -332,6 +471,8 @@ function runtime(kind, opts = {}) {
     }
     if (/zt-digest cleanup-finish /.test(cmd)) {
       const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      cleanupFinishes.push(id)
+      if (opts.failingCleanup && opts.failingCleanup.test(id)) return { ok: false, exit: 1, output: 'zt-digest cleanup-finish: cleanup_evidence_missing: no per-run usage was retained for this resource' }
       led.finish(id)
       const resources = [...state.resources.values()].filter((r) => id === 'cleanup/book@1' || r.cleanup_unit === id)
       const cleanupComplete = resources.every((r) => r.conversations.every((c) => c.terminal && c.deleted) && (id !== 'cleanup/book@1' || r.workspace_removed === true))
@@ -356,8 +497,14 @@ function runtime(kind, opts = {}) {
     failedStep.push(cmd)
     const denied = opts.failWhen && opts.failWhen.test(cmd) ? cmd : null
     if (opts.contentWhen && opts.contentWhen.test(cmd)) return { ok: true, exit: 0, output: json({ schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' }) }
+    // A crashed command changes nothing: the stand-in refuses before the ledger applies it.
+    if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
     const ledAns = ledgerAnswer(cmd, extraRecord)
-    if (ledAns) return denied ? { ok: false, exit: 1, output: 'stand-in crash' } : ledAns
+    // grossman2002integration trial 5: the finish ran and the ledger recorded it, but the relay cut its line.
+    if (ledAns && opts.cutFinish && opts.cutFinish.test(cmd)) return { ...ledAns, output: String(ledAns.output).slice(0, 60) }
+    // trial 10: the relay rewrote the end of a completion as prose; only a nested file record still parses.
+    if (ledAns && opts.proseFinish && opts.proseFinish.test(cmd)) return { ...ledAns, output: '{"schema_version":1,"kind":"cards_completion","files":{"check":{"path":"D:\\x\\Key\\cards-check-g001.json","sha256":"f1"},"completion":{"path":"cards-finish for group 1 completed with state done and complete true."}' }
+    if (ledAns) return ledAns
     const tool = cmd.match(/^zt-digest ([\w-]+) -Step ([\w-]+)/)
     if (tool) {
       const key = `${tool[1] === 'card' ? 'card' : tool[1] === 'model' ? 'model' : tool[1] === 'event' ? 'event' : tool[1] === 'finding' ? 'finding' : tool[1] === 'hub' ? 'hub' : tool[1] === 'bridge' ? 'bridge' : tool[1] === 'math' ? 'math' : tool[1] === 'terms' ? 'terms' : tool[1] === 'skeleton' ? 'skeleton' : tool[1]} ${tool[2]}`
@@ -366,6 +513,8 @@ function runtime(kind, opts = {}) {
       // S23 / #115 scenarios: a review whose frozen decision the archive moved past, a recorded merge
       // verdict no rewrite covers, and an interrupted register publication whose accepted plan stays
       // staged. Each is a real refusal of the delivered tool, answered here instead of by a live run.
+      // trials 17-19: a close round whose writers answer but leave faults; the next close round sees fewer.
+      if (key === 'model close' && opts.closeFaults) { state.closeRounds = (state.closeRounds || 0) + 1; const left = Math.max(0, opts.closeFaults - state.closeRounds + 1); return { ok: true, output: json({ jobs: left ? [{ id: 'Key_2_c:f01+9', continue: 'Key_2_c:f01', files: ['D:/x/follow.md'] }] : [], faults: left, unowned: [], refreshed: 0 }) } }
       if (key === 'restate apply' && opts.staleDecision) return { ok: false, exit: 1, output: 'endpoint_changed: Key/3|a changed after the review' }
       if (key === 'restate report' && opts.staleDecision) {
         return { ok: true, exit: 0, output: json({ ok: true, step: 'report', report_id: 'rr-s2', status: 'partial', complete: false, counts: { pairs: 3, recommended: 1, resolved_by_rewrite: 0, pending_existing_card_change: 0, unverified: 0, different: 0, unresolved: 1, unjudged: 0 }, written: [] }) }
@@ -382,6 +531,8 @@ function runtime(kind, opts = {}) {
         if (tool[1] === 'card' && tool[2] === 'apply' && state.applyPending > 0) { value.pending_jobs = state.applyPending - 1 }
         if (tool[1] === 'card' && tool[2] === 'plan' && state.planJobs !== 21) value.jobs = Array.from({ length: state.planJobs }, (_, i) => ({ id: `fix-${i + 1}`, kind: 'fix', file: `fix-${i + 1}.md` }))
         if (tool[1] === 'terms' && tool[2] === 'apply') led.finish('terms/book@1')
+        // trial 10: a relay abridged the whole-book plan line inside its jobs array.
+        if (tool[1] === 'card' && tool[2] === 'plan' && opts.garbledCardPlan && cmd.includes('-Work "D:\\x\\Key\\cards" ')) return { ok: true, exit: 0, output: '{"book":"Key","picked":69,"jobs":[fix-01 (fix), orphans-02 (orphans)]} (abridged: full JSON had a sample block)' }
         return { ok: true, exit: 0, output: json(value) }
       }
     }
@@ -397,6 +548,11 @@ function runtime(kind, opts = {}) {
       const jobs = gap > 0 ? [{ id: `link-g${String(group).padStart(3, '0')}-t${token}`, files: ['D:\\x\\Key\\link-prefix.md', `D:\\x\\Key\\link-g0${group}.md`, job], prompt: 'p', output: draft }] : []
       return { ok: true, output: json({ schema_version: 1, unit, token, run_id: 'r1', input_hash: `ih-${unit}`, unit_input_hash: `ih-${unit}`, job, draft, expected_jobs: gap > 0 ? 1 : 0, no_op: gap > 0 ? null : { reason: 'no_semantic_gaps', gaps: 0, skipped: 3 }, done: false, gap: [], skipped: [], position: gap > 0 ? 'anchor_position_missing' : 'linked', counts: { owned: 3, gaps: gap, skipped: gap > 0 ? 1 : 3 }, jobs, lease_until: 1000 }) }
     }
+    const staged = cmd.match(/^zt-digest finalize -Step stage -Out "[^"]*" -Layer ([a-z-]+)/)
+    if (staged) {
+      stagePublications.push(cmd)
+      return { ok: true, exit: 0, output: json({ layer: staged[1], unit: `${staged[1]}/book@2`, revision: 2, state: 'done', complete: true, disposition: 'published', reused: false, superseded: [`${staged[1]}/book@1`], coverage: {} }) }
+    }
     const direct = cmd.match(/^zt-digest (organize-survey|organize-apply|audit|figures|prepare-link|snapshot-topics|list-models) /)
     if (direct) {
       if (denied) return { ok: false, exit: 1, output: 'stand-in crash' }
@@ -409,6 +565,62 @@ function runtime(kind, opts = {}) {
       return { ok: true, exit: 0, output: json(CANNED[direct[1]] ? CANNED[direct[1]]() : { ok: true }) }
     }
     return { ok: true, exit: 0, output: json({ ok: true }) }
+  }
+
+  // A manager records each job's id and its answer itself (zt-digest-lib v15): the stand-in runs the record
+  // commands the prompt prescribes, with the session id, the owner and the answer file filled in.
+  const recordJob = (prompt, sessionId, unit, token, settleNow = false) => {
+    const rule = prompt.match(/ledger resource -Out "([^"]+)" (-Unit run|-Unit "[^"]*" -Token \S+) -RegisterId <session_id> -Workspace "([^"]+)"/)
+    if (!rule) return { registered: false, evidence: false, deleted: false }
+    const owner = rule[2] === '-Unit run' ? '-Unit run' : `-Unit "${unit}" -Token ${token}`
+    const registered = commandAnswer(`zt-digest ledger resource -Out "${rule[1]}" ${owner} -RegisterId ${sessionId} -Workspace "${rule[3]}"`).ok
+    const evidence = commandAnswer(`zt-digest ledger resource -Out "${rule[1]}" -EvidenceFor ${sessionId} -Evidence "${rule[1]}\\answers\\${sessionId}.txt"`).ok
+    const deleted = settleNow && /-Settle <session_id> -State finished -Deleted confirmed/.test(prompt)
+      ? commandAnswer(`zt-digest ledger resource -Out "${rule[1]}" -Settle ${sessionId} -State finished -Deleted confirmed`).ok
+      : false
+    return { registered, evidence, deleted }
+  }
+  // A provider returns a fresh id for every conversation it creates.
+  let sessionSeq = 0
+  const sessionOf = (id) => `s-${id}-${++sessionSeq}`
+  const ownerOf = (prompt) => {
+    const m = prompt.match(/-Unit "([^"<{]+)" -Token (\d+) -RegisterId/)
+    return m ? { unit: m[1], token: Number(m[2]) } : { unit: 'run', token: 1 }
+  }
+
+  // The block manager: claim up to eight units, start each, run their jobs, record and delete each conversation,
+  // and finish each unit with its draft.
+  const blockAnswer = async (prompt, callOpts) => {
+    const plan = JSON.parse(prompt.slice(prompt.indexOf('BLOCK PLAN: ') + 'BLOCK PLAN: '.length).split('\n')[0])
+    managers.push({ label: callOpts.label, phase: callOpts.phase, block: true, jobs: [] })
+    const claimed = await commandAnswer(plan.claim)
+    const parsed = lastJson(claimed.output)
+    const units = []
+    for (const held of (parsed && parsed.units) || []) {
+      const group = Number((/g(\d+)@1/.exec(held.id) || [])[1])
+      const fill = (cmd, draft = '') => cmd.replace(/\{\{group\}\}/g, String(group)).replace(/\{\{token\}\}/g, String(held.token)).replace(/\{\{draft\}\}/g, draft)
+      const start = await commandAnswer(fill(plan.start))
+      const started = lastJson(start.output) || {}
+      const count = Array.isArray(started.jobs) ? started.jobs.length : (started.expected_jobs === 0 ? 0 : (started.job ? 1 : 0))
+      const jobs = []
+      for (let i = 0; i < count; i++) {
+        const id = Array.isArray(started.jobs) ? started.jobs[i].id : `digest-g${group}-t${held.token}`
+        const session = sessionOf(id)
+        managers[managers.length - 1].jobs.push(id)
+        jobs.push({ id, session_id: session, status: 'done', ...recordJob(prompt, session, held.id, held.token, true) })
+      }
+      const finish = await commandAnswer(fill(plan.finish, started.draft || ''))
+      units.push({
+        unit: held.id, token: held.token, group,
+        start: { ok: start.ok, output: start.output, ...(start.ok ? {} : { error: start.output }) },
+        finish: { ok: finish.ok, output: finish.output, ...(finish.ok ? {} : { error: finish.output }) },
+        jobs,
+      })
+    }
+    // A relay that summarizes its claim line (run 5, lane 2: "Claimed 8 units ... Output abbreviated").
+    if (opts.dropUnits) units.splice(0, units.length)
+    const claimOutput = opts.proseClaim && units.length ? `Claimed ${units.length} units (${units.map((u) => u.unit).join(', ')}). Output abbreviated.` : claimed.output
+    return { claim: { ok: claimed.ok, output: claimOutput }, units }
   }
 
   // The chain manager: run the plan's commands in order and the jobs they print.
@@ -447,12 +659,14 @@ function runtime(kind, opts = {}) {
       }
       if (parsed && parsed.draft) draft = parsed.draft
       steps.push({ name: st.name, ok: answer.ok, exit: answer.exit || 0, output: answer.output, ...(answer.ok ? {} : { error: answer.output }) })
+      const owner = unit ? { unit, token } : ownerOf(prompt)
       if (parsed && parsed.job && !Array.isArray(parsed.jobs) && (parsed.expected_jobs === undefined || parsed.expected_jobs > 0)) {
-        results.push({ id: `digest-g${group}-t${token}`, step: st.name, session_id: `s-digest-${group}`, status: 'done', answer: '{}' })
+        const session = sessionOf(`digest-${group}`)
+        results.push({ id: `digest-g${group}-t${token}`, step: st.name, session_id: session, status: 'done', answer: '{}', ...recordJob(prompt, session, owner.unit, owner.token) })
       }
       if (st.jobs && parsed && Array.isArray(parsed.jobs) && parsed.jobs.length) {
         managers.push({ label: opts.label, phase: opts.phase, jobs: parsed.jobs.map((j) => j.id), given: parsed.jobs })
-        for (const job of parsed.jobs) results.push({ id: job.id, step: st.name, session_id: `s-${job.id}`, status: 'done', answer: '{}' })
+        for (const job of parsed.jobs) { const session = sessionOf(job.id); results.push({ id: job.id, step: st.name, session_id: session, status: 'done', answer: '{}', ...recordJob(prompt, session, owner.unit, owner.token) }) }
       }
     }
     return { steps, results }
@@ -470,11 +684,15 @@ function runtime(kind, opts = {}) {
     if (/^finalize refresh /.test(label)) return { ok: true, output: json(finalizeRefresh(label.replace('finalize refresh ', ''))) }
     if (/^finalize final$/.test(label)) return { ok: true, output: json(finalizeFinal(opts.finalize || 'fix')) }
     if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, callOpts)
+    if (text.startsWith('You run one block')) return await blockAnswer(text, callOpts)
     if (text.startsWith('You drive DeepSeek Harness')) {
-      if (/Run every job below/.test(text)) {
-        const given = JSON.parse(text.split('\n').find((l) => l.startsWith('[{')) || '[]')
+      if (/Run every job below|Run the jobs with these ids/.test(text)) {
+        const ids = (text.match(/Run the jobs with these ids: (\[[^\n]*?\])\./) || [])[1]
+        const given = ids ? JSON.parse(ids).map((id) => ({ id })) : JSON.parse(text.split('\n').find((l) => l.startsWith('[{')) || '[]')
+        if (ids) driveFiles.push((text.match(/read "([^"]+)" once/) || [])[1] || '')
         managers.push({ label, phase: opts.phase, jobs: given.map((j) => j.id), given })
-        return { ok: true, output: '', results: given.map((j) => ({ id: j.id, session_id: `s-${j.id}`, status: 'done', answer: '{}' })) }
+        const owner = ownerOf(text)
+        return { ok: true, output: '', results: given.map((j) => { const session = sessionOf(j.id); return { id: j.id, session_id: session, status: 'done', answer: '{}', ...recordJob(text, session, owner.unit, owner.token) } }) }
       }
       if (/^Clean up:/m.test(text)) { cleanups.push(label); return { ok: true, results: [], deleted: 2 } }
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
@@ -486,7 +704,8 @@ function runtime(kind, opts = {}) {
       // An owned-resource command writes its JSON first and runs one ledger command on the same line.
       const compound = text.split('\n').map((l) => l.trim()).find((l) => / zt-digest ledger resource /.test(l))
       if (compound) {
-        const inner = compound.slice(compound.indexOf(' zt-digest ') + 1)
+        // The cleanup evidence sweep is one foreach line; it reaches the ledger stand-in whole.
+        const inner = /foreach \(\$zdId in/.test(compound) ? compound : compound.slice(compound.indexOf(' zt-digest ') + 1)
         const r = await commandAnswer(inner, resourceRecord(compound))
         return { ok: r.ok, output: r.output }
       }
@@ -510,6 +729,8 @@ function runtime(kind, opts = {}) {
       led.add('prepare/book@1', 'prepare').state = 'done'
       if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
       led.add('cleanup/book@1', 'cleanup')
+      // trial 10: more cleanup units than three rounds of eight claims, some of them failing every time.
+      for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
       for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
       if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
       return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
@@ -519,7 +740,14 @@ function runtime(kind, opts = {}) {
       return commandAnswer((text.match(/zt-digest ledger resume[^\n]*/) || [])[0] || 'zt-digest ledger resume')
     }
     if (label === 'resume status') {
-      return { ok: true, output: json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
+      // grossman2002integration trial 17: a relay returned the summary without `layers` (and without
+      // `counts.per_layer`), with a `layers_open` map of its own in their place.
+      if (scenario.rewrittenSummary) {
+        const { layers, ...rest } = statusSummary(kind, led)
+        const { per_layer, ...counts } = rest.counts || {}
+        return { ok: true, output: json({ ...rest, counts, layers_open: Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.open || 0])) }) }
+      }
+      return { ok: true, output: / -Summary\b/.test(text) ? json(statusSummary(kind, led)) : json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     if (/^math: /.test(label)) {
       const key = label.replace('math: ', '')
@@ -540,17 +768,22 @@ function runtime(kind, opts = {}) {
     }
     if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
     if (/^prepare link pass$/.test(label)) return { ok: true, ...(opts.linkBlocked ? { pending: [], blocked: opts.linkBlocked, groups: [], unowned: 0, cards_all: '' } : CANNED['prepare-link']()) }
-    if (/^cleanup DeepSeek/.test(label)) {
-      // The recorded resources the prompt lists: the mock agent deletes exactly these ids.
-      const plan = JSON.parse((text.match(/Recorded resources \(JSON\):\n(.+)/) || [])[1] || '[]')
-      const workspaces = [...new Set(plan.map((r) => r.workspace && r.workspace.id))].filter(Boolean)
-      return {
-        workspaces: workspaces.map((id) => ({
-          id, removed: true, unknown: [],
-          conversations: plan.filter((r) => r.workspace.id === id).flatMap((r) => r.conversations.map((c) => ({ id: c.id, state: 'finished', outcome: 'answered', deleted: 'confirmed' }))),
-        })),
-        usage_after: { input_cache_miss: 100, cached_read: 50, output: 20, calls: 3, cost: 0.1 },
-      }
+    if (/^cleanup chunk /.test(label)) {
+      // The stand-in agent reads its workspace's ids from the ledger itself, keeps its share, deletes exactly those and
+      // records each (zt-dsh-cleanup v8: no id list passes through a relay).
+      const listCmd = (text.match(/zt-digest ledger resource -Out "[^"]+" -List -Workspace "[^"]+"/) || [])[0]
+      const share = text.match(/keep only the entries (\d+) to (\d+)/)
+      const view = listCmd ? JSON.parse(commandAnswer(listCmd).output) : { workspace: { open: [] } }
+      const ids = share ? view.workspace.open.slice(Number(share[1]), Number(share[2]) + 1) : []
+      chunkShares.push(...ids)
+      const out = (text.match(/resource -Out "([^"]+)" -Settle/) || [])[1]
+      const failed = ids.filter((id) => !commandAnswer(`zt-digest ledger resource -Out "${out}" -Settle ${id} -State finished -Deleted confirmed`).ok)
+      return { settled: ids.length - failed.length, unrecorded: failed }
+    }
+    if (/^cleanup workspaces /.test(label)) {
+      const listed = JSON.parse((text.match(/Workspaces \(JSON\): (\[[^\n]*\])/) || [])[1] || '[]')
+      const out = (text.match(/resource -Out "([^"]+)" -SettleWorkspace/) || [])[1]
+      return { workspaces: listed.map((path) => ({ id: path, removed: true, unknown: [], remaining: [], recorded: commandAnswer(`zt-digest ledger resource -Out "${out}" -SettleWorkspace "${path}" -Removed true -Remaining '' -Unknown ''`).ok })) }
     }
     if (/^cleanup model managers/.test(label)) return { late_deleted: 0, folders: 1 }
     if (/^show figures$/.test(label)) return { ok: true, output: json(CANNED.figures()) }
@@ -570,8 +803,16 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares,
     agent: async (prompt, opts = {}) => {
+      // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
+      // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
+      if (scenario.blockThrows && !state.blockThrown && /^You run one block of a ZET book digest: link lane/.test(prompt)) {
+        state.blockThrown = true
+        const claimCmd = (prompt.match(/zt-digest ledger next [^\n]*/) || [])[0]
+        if (claimCmd) ledgerAnswer(claimCmd)
+        throw new Error('agent({schema}): StructuredOutput retry cap (5) exceeded')
+      }
       const manager = /^You run one compiler chain/.test(prompt) || /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
       if (!manager) {
         const a = await answer(prompt, opts)
@@ -687,8 +928,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(stageOf('econ', 'finalize').onFail === 'continue', 'schedule: a residual finalization fault leaves a partial result, never a halted run')
   check(stageOf('econ', 'concepts').onFail === 'continue' && stageOf('econ', 'review').onFail === 'continue', 'schedule: a review reports its own unresolved findings instead of halting the run (S23-AC03/AC04)')
   check(after('hubs-first') === 'explain', 'schedule: the mode-hubs preview stage sits beside the content layers')
-  check(stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').foreach.items.$ref === 'stages.prepare.output.groupList', 'schedule: the digest stage is a per-group chain pipeline over the prepared group enumeration')
-  check(stageOf('econ', 'digest').foreach.chain[0].module === 'zt-group-cycle', 'schedule: each group item runs the zt-group-cycle chain')
+  check(!stageOf('econ', 'digest').foreach && stageOf('econ', 'digest').module === 'zt-group-cycle' && stageOf('econ', 'digest').params.groups === '{{stages.prepare.output.groups}}', 'schedule: the digest stage is one zt-group-cycle stage over the prepared group count, run in blocks of up to eight groups per manager')
   // #87: the resume invocation and the repair modes drain their downstream closure.
   for (const which of ['econ', 'math']) {
     const modes = builds[which].bp.modes
@@ -696,6 +936,18 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     const required = ['args', 'prepare', 'digest', 'cards', 'organize', 'hubs', 'audit', 'finalize', 'cleanup', 'report']
     check(required.every((id) => resume.includes(id)), `resume (${which}): mode resume runs the retained run's whole closure (${resume.length} stages: ${resume.join(',')})`)
     check(resume.includes('terms') && resume.includes('link-prepare') && resume.includes('link') && resume.includes('link-check'), `resume (${which}): the term table and the changed-Card Link pass and check are part of the resume`)
+    // A stage the resume names must also let mode resume through its own `when` (grossman2002integration trial 19:
+    // events and findings matched only ^(full|events)$ / ^(full|findings)$, so an open findings unit was never drained).
+    const ctxResume = { mode: 'resume', args: { mode: 'resume', out: 'D:\\x\\Key' } }
+    const valueAt = (p) => p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), ctxResume)
+    const holds = (c) => c.op === 'or' ? c.value.some(holds) : c.op === 'and' ? c.value.every(holds)
+      : c.op === '==' ? valueAt(c.path) === c.value : c.op === '!=' ? valueAt(c.path) !== c.value
+        : c.op === 'matches' ? new RegExp(c.value).test(String(valueAt(c.path) ?? '')) : true
+    const shut = resume.filter((id) => {
+      const st = builds[which].bp.stages.find((s) => s.id === id)
+      return st && !(st.when || []).every(holds)
+    })
+    check(!shut.length, `resume (${which}): every stage the resume names lets mode resume through its own condition (${shut.join(', ')})`)
     if (which === 'econ') {
       check(resume.includes('events') && resume.includes('findings') && resume.includes('models') && resume.includes('explain') && resume.includes('cards-book'), 'resume (econ): the economics layers and the whole-book cycle are drained')
       check(['models', 'explain', 'events', 'findings'].every((mode) => ['link-prepare', 'link', 'link-check', 'organize', 'hubs', 'audit', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (econ): models, explain, events and findings drain the changed-Card Link work, Organize, the touched Hubs, the audit and the settlement')
@@ -752,15 +1004,17 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The group cycle and the ready-work layers (R250-R258)
 // ================================================================================================================
 {
-  const { commands, calls, led, result, logs, report } = await run('econ', { ...base, figures: false })
+  const { commands, calls, led, result, logs, report, managers, driveFiles } = await run('econ', { ...base, figures: false })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'full', 'full: the run reaches its report')
-  check(cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 1 /.test(c)).length === 2, `group cycle: one bounded claim per group chain (${cmds.filter((c) => /-Layer digest/.test(c)).length} claims)`)
-  check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: each chain starts its own group (snapshot before the job manifest)')
-  check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: each chain records its checked completion with the draft bound to the start')
+  const digestClaims = cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 8 /.test(c))
+  check(digestClaims.length === 2 && !cmds.some((c) => /-Layer digest -Take 1 /.test(c)), `group cycle: one lane claims both groups in one block of up to eight, then finds none ready (${digestClaims.length} claims)`)
+  check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: the block starts each held group (snapshot before the job manifest)')
+  check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
-  check(labels.filter((l) => /^group \d attempt 1$/.test(l)).length === 2, 'group cycle: one manager chain per group item')
+  check(labels.filter((l) => /^digest lane 1 block \d+$/.test(l)).length === 2 && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: one manager runs the whole block of groups, not one manager per group')
+  check(managers.filter((m) => m.block && /^digest lane/.test(m.label)).every((m) => m.jobs.length <= 8) && managers.some((m) => m.block && m.jobs.length === 2), 'group cycle: one block manager runs both groups\' DeepSeek jobs side by side, never more than eight')
   const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
   check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
   const cards = [...led.units.values()].filter((u) => u.layer === 'cards')
@@ -771,9 +1025,12 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && cmds.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
   check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && cmds.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
   const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
+  const teed = cmds.filter((c) => /\| Tee-Object -Variable zdLines; .* Set-Content -LiteralPath "D:\\x\\Key\\jobs\\[^"]+\.json"/.test(c))
+  check(teed.length > 0 && driveFiles.length > 0 && driveFiles.every((f) => teed.some((c) => c.includes(f))), `drive: each step command saves its own job line, and every job manager reads that file instead of a retyped list (${teed.length} steps, ${driveFiles.length} managers)`)
+  check(gateCmds.length > 0 && gateCmds.every((c) => / -Brief(?![A-Za-z])/.test(c)), `gate: every layer gate asks for the brief line a relay can return whole (${gateCmds.filter((c) => !/ -Brief(?![A-Za-z])/.test(c)).slice(0, 2).join(' | ')})`)
   check(gateCmds.length >= 3 && gateCmds.some((c) => /-Layer cards/.test(c)) && gateCmds.some((c) => /-Layer models/.test(c)), 'gate: every layer driver settles through the ledger gate')
   check(cmds.some((c) => /ledger publish -Out "D:\\x\\Key" -Layer cards-book/.test(c)) && cmds.some((c) => /book-cards-finish .* -Unit "?cards-book\/book@1"?/.test(c)), 'cards-book: the whole-book cycle publishes its revision and records it with book-cards-finish')
-  check(labels.includes('prepare link pass') && labels.some((l) => /^link group 1 attempt/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
+  check(labels.includes('prepare link pass') && labels.some((l) => /^link lane 1 block 1$/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
   check(cmds.some((c) => /link-start .* -Group 2/.test(c)) && cmds.some((c) => /link-finish .* -Group 2/.test(c)) && !cmds.some((c) => /ledger fail .* -Class content/.test(c) && /link/.test(c)), 'link: a group with no semantic gap settles its unit without a provider job or a legacy content fault')
   check(result.link_gaps && result.link_gaps.scheduled === 1 && result.link_gaps.skipped === 1 && result.link_gaps.gaps === 2 && result.link_gaps.provider_runs === 1 && result.link_gaps.quality && result.link_gaps.quality.faults === 0, `report: the run carries the scheduled/skipped/gap counts, the actual provider runs and the L1/L2 quality (${JSON.stringify(result.link_gaps)})`)
   check(Array.isArray(result.link) && result.link.some((r) => r.group === 1 && r.status === 'done' && r.gaps === 2 && r.provider_runs === 1) && result.link.some((r) => r.group === 2 && r.scheduled === 0 && r.provider_runs === 0), 'report: each group names its gap count, whether it was scheduled and its provider runs')
@@ -781,7 +1038,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
   // #92: every claim covers the frozen provider-run cap, and a chain renews it while its job runs.
-  check(cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 1 .* -Lease 1500/.test(c)).length === 2, `lease: each group claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 1500/.test(c)).length} claims)`)
+  check(digestClaims.length === 2 && digestClaims.every((c) => / -Lease 1500/.test(c)), `lease: each block claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 1500/.test(c)).length} claims)`)
   check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 1500/.test(c)), 'lease: the Link units are claimed with the same covering lease')
   const chainPrompts = calls.map((c) => c.prompt).join('\n')
   check(chainPrompts.includes('ledger renew -Out "D:\\x\\Key" -Unit') && chainPrompts.includes('wait_seconds 90'), 'lease: a chain renews its claim after every wait on a running job, and never waits longer than 90 seconds')
@@ -794,7 +1051,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   ]
   const { calls, result } = await run('econ', { ...base, figures: false }, { linkBlocked: blocked })
   const labels = calls.map((c) => c.label)
-  check(!labels.some((l) => /^link group/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
+  check(!labels.some((l) => /^link lane/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
   check(result && Array.isArray(result.link_blocked) && result.link_blocked.length === 2 && result.link_blocked.every((b) => b.unit && b.state && b.reason && b.group), `report: the run names the blocked groups and their units (${result && JSON.stringify(result.link_blocked)})`)
 }
 {
@@ -803,13 +1060,232 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const cmds = commands
   const fails = cmds.filter((c) => /ledger fail .* -Class retryable/.test(c))
   check(fails.length >= 1, `retries: a failed group is recorded against its own unit as retryable (${fails.length} faults)`)
-  check(cmds.filter((c) => /-Layer digest -Take 1/.test(c)).length >= 3, 'retries: the failed unit is claimed again in a later attempt, not by rerunning the stage')
+  check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, 'retries: a later block claims again after a failure, not a rerun of the stage')
+}
+{
+  // A block manager that summarizes its claim line in prose: the lane still knows the units it held from
+  // the manager's own unit reports, records a failed unit against its own attempt, and keeps claiming.
+  const { commands, logs, faultRefusals } = await run('econ', { ...base, figures: false, until: 'digest' }, { proseClaim: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
+  const cmds = commands
+  check(cmds.some((c) => /ledger fail .*-Unit "?digest\/g002@1"? .*-Class retryable/.test(c)), 'prose claim: a failed unit of a summarized claim is still recorded against its own attempt')
+  check(faultRefusals.length === 0, 'prose claim: the fault carries the unit input hash the ledger holds (' + faultRefusals.length + ' refused)')
+  check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, `prose claim: the lane keeps claiming after a summarized claim (${cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length} claims)`)
+  check(!logs.some((l) => /the claim did not run/.test(l)), 'prose claim: a summarized claim is not mistaken for a failed claim')
+}
+{
+  // A manager that drops its unit reports (run 6: one of eight, or none): the ledger decides each unit. A done
+  // unit is never faulted; a unit the block still holds (its finish failed) gets its fault.
+  const { commands, result } = await run('econ', { ...base, figures: false, until: 'digest' }, { dropUnits: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
+  const cmds = commands
+  check(cmds.some((c) => /ledger status -Out "D:\\x\\Key" -Units digest\/g001@1,digest\/g002@1/.test(c)), 'dropped reports: the block reads its held units\' states from the ledger')
+  check(!cmds.some((c) => /ledger fail .*-Unit "?digest\/g001@1"?/.test(c)), 'dropped reports: a unit the ledger holds done is never faulted')
+  check(cmds.some((c) => /ledger fail .*-Unit "?digest\/g002@1"? .*-Class retryable/.test(c)), 'dropped reports: a unit the block still holds gets its retryable fault')
+  check(cmds.every((c) => !/-Layer digest -Take 8 /.test(c) || / -Brief /.test(c)), 'brief claim: a block claims with -Brief, so its claim line stays short')
+}
+{
+  // A layer claim whose relayed line lost its units array (grossman2002integration trial 3: "(4 units claimed:
+  // cards/g005@1, ...)"): the driver reads the units its claim holds from the ledger by owner, finishes each
+  // with its own token, and never records a fault against an undefined unit.
+  const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'cards' })
+  const cmds = commands
+  check(heldReads.length > 0 && heldReads.every((o) => /^cards claim [0-9]+$/.test(o)), `summarized layer claim: the driver reads its held units from the ledger by owner (${heldReads.join(', ')})`)
+  check(!cmds.some((c) => /undefined/.test(c)), 'summarized layer claim: no command names an undefined unit or token')
+  check(led.layer('cards').length > 0 && led.layer('cards').every((u) => u.state === 'done'), `summarized layer claim: every card check is finished (${led.layer('cards').filter((u) => u.state === 'done').length}/${led.layer('cards').length})`)
+}
+{
+  // Every relay prompt says its command is a step of the run the user started, so a later user message about the
+  // run (trials 17-19: "accelerate it", "stop trial 18 ... start trial 19") does not read as cancelling it.
+  const { calls } = await run('econ', { ...base, figures: false })
+  const relays = calls.filter((c) => /Run this PowerShell command once|^You run one block|You run one compiler chain/.test(c.prompt))
+  const missing = relays.filter((c) => !/never cancels its steps/.test(c.prompt))
+  check(relays.length > 0 && !missing.length, `run step: every relay prompt names its command a step of the user's run (${relays.length} relays, ${missing.length} without: ${missing.slice(0, 2).map((c) => c.label).join(', ')})`)
+}
+{
+  // The model layer claims a block of up to eight Model units (the protocol's eight per manager), and one architect
+  // batch holds up to eight formal models, so a book's models are planned together: in-batch references resolve, and
+  // no second block waits for the first (grossman2002integration trials 16-17: two blocks of four, 76 minutes).
+  const { commands } = await run('econ', { ...base, figures: false })
+  const modelClaims = commands.filter((c) => /ledger next .*-Layer models /.test(c))
+  check(modelClaims.length > 0 && modelClaims.every((c) => /-Take 8\b/.test(c)), `parallel models: every models claim takes up to 8 units (${modelClaims.map((c) => (c.match(/-Take \d+/) || [''])[0]).join(', ')})`)
+  check(/const PER_SONNET = Math\.max\(1, A\.perSonnet \|\| 8\)/.test(sources.econ), 'parallel models: one architect batch holds up to 8 formal models by default')
+}
+{
+  // A block manager that claims its units and then throws (trial 17, the link stage): the stage does not halt;
+  // the units that block's owner holds are read from the ledger, faulted for a retry, and a later block finishes them.
+  const { report, led, heldReads } = await run('econ', { ...base, figures: false }, { blockThrows: true })
+  check(report && !report.halted, `thrown block: the run does not halt (${JSON.stringify(report && report.halted)})`)
+  check(heldReads.some((o) => /^link lane \d+ block \d+$/.test(o)), `thrown block: the block's held units are read from the ledger by its owner (${heldReads.join(', ')})`)
+  check(led.layer('link').length > 0 && led.layer('link').every((u) => u.state === 'done'), `thrown block: every link unit is finished (${led.layer('link').map((u) => u.id + ':' + u.state).join(', ')})`)
+}
+{
+  // trial 20: a resume of a run whose later layers are complete reuses them; the Organize decisions, the skeleton, Figures,
+  // Bridge, the hub writer and the audit never run again (the resume reran Organize's survey and decisions).
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'] })
+  const labels = rt.calls.map((c) => c.label)
+  check(!labels.some((l) => /^organize: (decisions|survey)|^hubs write|^audit cards|^bridge: plan|^finalize plan/.test(l)), `resume reuse: completed later layers are not redone (${labels.filter((l) => /^organize|^hubs|^audit|^bridge|^finalize/.test(l)).join(', ')})`)
+}
+{
+  // trial 20: the relayed counts listing dropped each workspace's `path` (its `id` is the same folder), and the stage
+  // settled nothing, so the run-level cleanup refused every unit as not terminal. A workspace is known by path or id.
+  const { workspaceLists } = await run('econ', { ...base, figures: false }, { listNoPath: true })
+  check(workspaceLists.length > 0, `listing without path: the cleanup agents still read their workspaces (${workspaceLists.length})`)
+}
+{
+  // A model claim whose relayed line has no `units` field (grossman2002integration trial 17: `units_claimed`
+  // with the ids only). A missing field is no empty claim: the driver reads the held units from the ledger and
+  // builds every model, instead of ending the layer with four models claimed and never built.
+  const { led, heldReads } = await run('econ', { ...base, figures: false }, { renamedUnits: 'models' })
+  check(heldReads.some((o) => /^models claim [0-9]+$/.test(o)), `renamed units: the model driver reads its held units from the ledger (${heldReads.join(', ')})`)
+  check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `renamed units: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
+}
+{
+  // A model claim whose relayed line lost every unit's inputs (grossman2002integration trial 4): the layer claims
+  // with -Brief (each unit keeps its Model address), and a unit with no address is read from the ledger by owner.
+  const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { droppedInputs: 'models' })
+  const cmds = commands
+  check(cmds.filter((c) => /ledger next .* -Layer (cards|events|findings|models|explain) /.test(c)).every((c) => / -Brief\b/.test(c)), 'layer claims: every layer driver claims with -Brief')
+  check(heldReads.some((o) => /^models claim [0-9]+$/.test(o)), `dropped inputs: the model driver reads its held units' addresses from the ledger (${heldReads.join(', ')})`)
+  check(!cmds.some((c) => /-Model 'undefined'|-Model ''/.test(c)), 'dropped inputs: no model-finish names an undefined Model')
+  check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `dropped inputs: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
+}
+{
+  // A layer unit's fault carries the claim's input hash, so the ledger records it (trial 4: every layer fault was
+  // refused for an empty input_hash, because the hash was read from the unit's inputs).
+  const { commands, faultRefusals } = await run('econ', { ...base, figures: false }, { failWhen: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)) && faultRefusals.length === 0, `layer faults: a failed card check is recorded with its claim's input hash (${faultRefusals.length} refused)`)
+}
+{
+  // A finish whose relayed line came back cut (trial 5: a 2.5 KB cards completion): the ledger holds the unit done,
+  // so the driver records it done and never sends a fault for it.
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units cards\/g001@1$/.test(c)), 'cut finish: the driver reads the unit state from the ledger')
+  check(!commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)), 'cut finish: a unit the ledger holds done is never faulted')
+  check(led.find('cards/g001@1') && led.find('cards/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)), 'cut finish: the unit stays done and the log says why')
+}
+{
+  // trial 10: the relay rewrote the end of a done cards completion as prose, the line still held a nested file
+  // record, and the driver faulted the done unit (the ledger refused the fault as stale). Every finish that is not
+  // plainly done asks the ledger first.
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { proseFinish: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units cards\/g001@1$/.test(c)), 'prose finish: the driver reads the unit state from the ledger')
+  check(!commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)), 'prose finish: a unit the ledger holds done is never faulted')
+  check(led.find('cards/g001@1') && led.find('cards/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)), 'prose finish: the unit stays done and the log says why')
+}
+{
+  // The model compiler's chains outlive a claim's lease (trial 5: four model claims expired mid-build): the model
+  // and explain drivers hold every claim of a block with `ledger hold` while the work runs; the quick
+  // layers do not.
+  const { commands, holds } = await run('econ', { ...base, figures: false })
+  const holdCmds = commands.filter((c) => / ledger hold /.test(c))
+  check(holds.some((h) => h.length > 0 && h.every((u) => /^models\//.test(u))), `hold: the model driver holds its block's claims (${holds.map((h) => h.join('+')).join(' | ')})`)
+  check(holdCmds.every((c) => / -Seconds 540 -Every 60$/.test(c) && /-Units "[^"]+:\d+/.test(c)), 'hold: each hold is one bounded command naming every claim by unit and token')
+  check(!holds.some((h) => h.some((u) => /^(cards|events|findings)\//.test(u))), 'hold: the quick layers never hold')
+}
+{
+  // A layer whose units keep arriving (trial 6: one digest group retried while the events layer worked the others)
+  // keeps claiming: its rounds bound consecutive idle claims, never the claims that found work.
+  const { led } = await run('econ', { ...base, figures: false }, { lateUnits: { layer: 'events', count: 4 } })
+  const late = led.layer('events').filter((u) => /\/g10\d@1$/.test(u.id))
+  check(late.length === 4 && late.every((u) => u.state === 'done'), `late units: every Event unit that arrived after earlier productive claims is finished (${late.filter((u) => u.state === 'done').length}/${late.length})`)
+}
+{
+  // A manager that wrote a job's answer file but whose evidence record never reached the ledger (trial 6: two review
+  // jobs): the cleanup stage records that evidence from the answer file before it deletes anything, so the cleanup
+  // verifier does not refuse the conversation for missing evidence.
+  const { commands, sweeps, cleanups } = await run('econ', { ...base, figures: false }, { skipEvidence: /^s-/ })
+  const swept = sweeps.flat()
+  const firstSweep = commands.findIndex((c) => / ledger resource -Out \S+ -SweepEvidence /.test(c))
+  const lastList = commands.reduce((at, c, i) => (/ ledger resource -Out \S+ -List( -Brief| -Counts)?$/.test(c) && i < firstSweep ? i : at), -1)
+  const cleanupDeletes = commands.map((c, i) => [c, i]).filter(([c, i]) => i > lastList && / -Settle(Workspace)? /.test(c)).map(([, i]) => i)
+  check(swept.length > 0 && swept.every((id) => /^s-/.test(id)), `evidence sweep: the cleanup stage records the missing evidence from the answer files (${swept.length} ids)`)
+  check(firstSweep > lastList && lastList >= 0 && cleanupDeletes.length > 0 && cleanupDeletes.every((i) => i > firstSweep), `evidence sweep: the cleanup stage records the evidence after reading the resources and before it settles any of them (list ${lastList}, sweep ${firstSweep}, first settle ${cleanupDeletes[0]})`)
+}
+{
+  // trial 6: model-finish refused every model for build faults no step sent back. The model chain runs
+  // `-Step close` after its last fill, derive or split and before its report.
+  const { commands } = await run('econ', { ...base, figures: false })
+  const at = (re) => commands.findIndex((c) => re.test(c))
+  const close = at(/zt-digest model -Step close /), report = at(/zt-digest model -Step report /), apply = at(/zt-digest model -Step apply /)
+  check(close >= 0 && apply < close && close < report, `close: the model chain sends its build faults back before the report (apply ${apply}, close ${close}, report ${report})`)
+}
+{
+  // trials 17-19: close sent each fault back once, a writer left one in place, and model-finish refused the
+  // model. Close runs again while faults remain and its last round sent notes, at most three rounds.
+  const { commands } = await run('econ', { ...base, figures: false }, { closeFaults: 2 })
+  const closes = commands.filter((c) => /zt-digest model -Step close /.test(c)).length
+  check(closes === 3, `close rounds: close runs until its faults are gone (${closes} rounds for 2 rounds of faults)`)
+  const { commands: stuck } = await run('econ', { ...base, figures: false }, { closeFaults: 9 })
+  const stuckCloses = stuck.filter((c) => /zt-digest model -Step close /.test(c)).length
+  check(stuckCloses === 3, `close rounds: at most three close rounds (${stuckCloses})`)
+}
+{
+  // R233/R234 (trial 8: batch 2 took a part of batch 1's model and every model of it failed at the fill): each
+  // planned model registers its references with `zt-digest model-deps` before the fill; a model that waits
+  // for its producer gets no model-finish, and the others are finished as usual.
+  const resolved = await run('econ', { ...base, figures: false })
+  const deps = resolved.commands.filter((c) => /^zt-digest model-deps -Out "D:\\x\\Key" -Model '[^']+' -Token \d+$/.test(c))
+  const fill = resolved.commands.findIndex((c) => /zt-digest model -Step apply /.test(c))
+  check(deps.length > 0 && resolved.commands.indexOf(deps[0]) < fill, `model-deps: each planned model registers its references before the fill (${deps.length} calls, fill at ${fill})`)
+  check(!resolved.commands.some((c) => /zt-digest model -Step defer /.test(c)), 'model-deps: a batch whose models all resolved defers nothing')
+  // trial 9: the fill held jobs for every model of the batch after model-deps had released three of them to wait.
+  // A released model leaves the batch (`model -Step defer`) before any fill; a batch left with no model fills nothing.
+  const { commands } = await run('econ', { ...base, figures: false }, { depsWaiting: /Key\/2\|c/ })
+  const defer = commands.findIndex((c) => /zt-digest model -Step defer .* -Models "Key\/2\|c"$/.test(c))
+  check(defer > commands.findIndex((c) => /^zt-digest model-deps /.test(c)), `model-deps: the waiting model leaves the batch after its registration (defer at ${defer})`)
+  check(!commands.some((c) => /zt-digest model -Step (apply|derive|review|close) /.test(c)), 'model-deps: a batch whose only model waits writes no part (no fill, derive, review or close)')
+  check(!commands.some((c) => /model-finish .*-Model 'Key\/2\|c'/.test(c)), 'model-deps: a model that waits for its producer gets no model-finish')
+}
+{
+  // trial 10: the relay abridged the whole-book card plan line, the cycle ran and reported, and the stage faulted
+  // its claim as "plan failed: no output". A plan line the relay rewrote is no failure when the report line reads.
+  const { calls, logs } = await run('econ', { ...base, figures: false }, { garbledCardPlan: true })
+  check(!calls.some((c) => c.label === 'cards-book fault'), 'garbled plan: the whole-book cycle that reported is not faulted')
+  check(calls.some((c) => c.label === 'cards-book finish: cards-book/book@1' || /^cards-book finish/.test(c.label)) && logs.some((l) => /plan line came back unreadable/.test(l)), 'garbled plan: the stage goes on to its checked finish and logs why')
+}
+{
+  // trial 10: three rounds of eight cleanup claims went to the same failing units, and eight link cleanup units were
+  // never claimed. The cleanup claims until every ready unit was tried, and stops a unit after three failures.
+  const { cleanupFinishes } = await run('econ', { ...base, figures: false }, { extraCleanupUnits: 24, failingCleanup: /extra-g00[1-9]@1/ })
+  const extras = Array.from({ length: 24 }, (_, i) => `cleanup/extra-g${String(i + 1).padStart(3, '0')}@1`)
+  const missing = extras.filter((u) => !cleanupFinishes.includes(u))
+  check(missing.length === 0, `cleanup rounds: every cleanup unit is tried although nine of them keep failing (${missing.length} never tried)`)
+  const most = Math.max(...extras.map((u) => cleanupFinishes.filter((c) => c === u).length))
+  check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
+}
+{
+  // trial 8: no stage published its own book revision, so organize/skeleton/figures book@1 stayed ready and the run
+  // could never be content-complete. Each stage publishes its revision with its own artifacts.
+  const { stagePublications } = await run('econ', { ...base })
+  const layers = stagePublications.map((c) => (c.match(/-Layer ([a-z-]+)/) || [])[1])
+  check(['organize', 'skeleton', 'figures'].every((l) => layers.includes(l)), `stage publish: Organize, the skeleton and Figures publish their own revisions (${layers.join(', ')})`)
+  check(stagePublications.some((c) => /-Layer organize -Decisions "[^"]*\\organize\\decisions\.json" -Applied "[^"]*\\organize\\applied\.json"/.test(c)) && stagePublications.some((c) => /-Layer skeleton -Skeleton "[^"]*\\skeleton\\out\\skeleton\.json"/.test(c)) && stagePublications.some((c) => /-Layer figures -Report "[^"]*\\figures-report\.json"/.test(c)), 'stage publish: each publication names its declared artifacts')
+}
+{
+  // trial 8: the full resource listing (about 52 KB) came back as prose and the cleanup settled nothing. The cleanup
+  // stage reads the brief listing and still settles every recorded conversation.
+  // trial 11: the relay abridged even the brief listing's id arrays and left out two model workspaces. The stage reads
+  // counts only; each deletion agent reads its own workspace's ids from the ledger.
+  const { commands, briefLists, settleRecords, workspaceLists, chunkShares, resourceRecords } = await run('econ', { ...base, figures: false })
+  check(briefLists.length === 1 && briefLists.every((c) => /-List -Counts$/.test(c)) && !commands.some((c) => / ledger resource -Out \S+ -List( -Brief)?$/.test(c)), `cleanup brief: the cleanup stage reads the counts listing only (${briefLists.join(' | ')})`)
+  check(workspaceLists.length > 0 && chunkShares.length > 0, `cleanup brief: each deletion agent reads its own workspace's ids (${workspaceLists.length} reads, ${chunkShares.length} ids)`)
+  check(settleRecords.length > 0, `cleanup brief: the recorded conversations are still settled (${settleRecords.length})`)
 }
 {
   // A content failure keeps the unit failed and the stage result partial, never complete.
   const { commands, calls } = await run('econ', { ...base, figures: false, until: 'digest' }, { contentWhen: /group-finish/ })
   const cmds = commands
   check(cmds.some((c) => /ledger fail .* -Class content/.test(c)), 'partial results: a content failure is recorded as content (no silent retry)')
+}
+
+{
+  // A JSON line followed by a remark is still read (a relay that appends "(abridged)" or a note).
+  const lib = fs.readFileSync(path.join(workflowDir, 'modules', 'zt-digest-lib.js'), 'utf8')
+  const take = (name) => lib.slice(lib.indexOf(`function ${name}(`), lib.indexOf('\n}\n', lib.indexOf(`function ${name}(`)) + 2)
+  const zdJsonIn = new Function(`${take('zdJsonIn')}; return zdJsonIn`)()
+  check(JSON.stringify(zdJsonIn('{"state":"done","unit":"digest/g001@1"} (abridged)')) === '{"state":"done","unit":"digest/g001@1"}', 'json: a JSON line with a trailing remark is still read')
+  check(JSON.stringify(zdJsonIn('done: {"a":{"b":1}} and more {x')) === '{"a":{"b":1}}', 'json: prose before and after the object is ignored')
+  check(zdJsonIn('no json here') === null, 'json: a line without an object reads as nothing')
 }
 
 // ================================================================================================================
@@ -849,7 +1325,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
 // ================================================================================================================
 for (const kind of ['econ', 'math']) {
   const mbase = { ...base, hubs: true, figures: false }
-  const { commands, calls, result, led, resourceRecords } = await run(kind, { ...mbase, mode: 'full' })
+  const { commands, calls, result, led, resourceRecords, evidenceRecords, settleRecords, chunkShares } = await run(kind, { ...mbase, mode: 'full' })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (pattern) => labels.findIndex((l) => pattern.test(l))
@@ -868,21 +1344,27 @@ for (const kind of ['econ', 'math']) {
     check(!calls.some((c) => /^math:/.test(c.label)), 'econ full: no mathematics stage runs')
     check(cmds.some((c) => /zt-digest event -Step plan/.test(c)) && cmds.some((c) => /zt-digest finding -Step plan/.test(c)), 'econ full: the Event and Finding compiler chains run')
   }
-  // #83: the run records every created conversation with its accepted answer, and its cleanup deletes
-  // exactly those ids, observes the provider's facts and settles each cleanup unit through the verifier.
-  const registers = cmds.filter((c) => / ledger resource .*-Register /.test(c))
+  // #83 / zt-digest-lib v15: each manager records the ids it created and their answers itself, with plain
+  // commands; the cleanup agents delete exactly the recorded ids still open and record each fact themselves.
+  const registers = cmds.filter((c) => / ledger resource .*-RegisterId /.test(c))
   const records = resourceRecords
-  check(records.length > 0 && records.every((r) => r.workspace && r.workspace.path && Array.isArray(r.conversations) && r.conversations.every((c) => c.id && c.answer)), `${kind} full: every created conversation is recorded with its accepted answer`)
-  check(records.some((r) => r.unit !== 'run') && registers.some((c) => /-Unit "?digest\/g\d{3}@1"?/.test(c)), `${kind} full: a claimed unit owns its conversations`)
+  check(records.length > 0 && records.every((r) => r.via === 'manager' && r.workspace && r.workspace.path && r.conversations.length === 1 && r.conversations[0].id), `${kind} full: every created conversation is recorded by the manager that started it (${records.length} records)`)
+  check(!cmds.some((c) => /Set-Content .* ledger resource /.test(c)) && !calls.some((c) => /record the run ids|^cleanup: (terminal|delete|workspace|failed)/.test(c.label)), `${kind} full: no relay agent writes a record or an observation for another agent`)
+  check(records.every((r) => evidenceRecords.some((e) => e.id === r.conversations[0].id && /\\answers\\/.test(e.file))), `${kind} full: every recorded conversation gets its answer file as retained evidence`)
+  check(records.some((r) => r.unit !== 'run') && registers.some((c) => /-Unit "?digest\/g\d{3}@1"? -Token \d+ -RegisterId/.test(c)), `${kind} full: a claimed unit owns its conversations`)
+  const blockSessions = records.filter((r) => /^(digest|link)\//.test(r.unit)).map((r) => r.conversations[0].id)
+  check(blockSessions.length > 0 && blockSessions.every((id) => settleRecords.some((x) => x.id === id && x.deleted === 'confirmed')), `${kind} full: a block manager deletes each group conversation once its answer is retained, and records it`)
   const listed = at(/^cleanup: list the recorded resources$/)
-  const asked = at(/^cleanup DeepSeek$/)
-  check(listed >= 0 && asked > listed, `${kind} full: the cleanup reads the recorded ids before it asks the provider (${listed} < ${asked})`)
-  const askedPrompt = (calls.find((c) => /^cleanup DeepSeek$/.test(c.label)) || {}).prompt || ''
-  check(records.every((r) => r.conversations.every((c) => askedPrompt.includes(c.id))), `${kind} full: the cleanup agent may delete only the recorded ids`)
-  check(cmds.some((c) => / ledger resource .*-Observe /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Unit "?cleanup\/book@1"?/.test(c)), `${kind} full: the provider facts are observed and the run-level cleanup is settled by its verifier`)
+  const chunked = at(/^cleanup chunk /)
+  check(listed >= 0 && chunked > listed, `${kind} full: the cleanup reads the recorded ids before it asks the provider (${listed} < ${chunked})`)
+  const chunkPrompts = calls.filter((c) => /^cleanup chunk /.test(c.label)).map((c) => c.prompt).join('\n')
+  check(!/Recorded ids: \[/.test(chunkPrompts), `${kind} full: no cleanup prompt carries an id list`)
+  const chunkIds = chunkShares
+  check(chunkIds.length > 0 && chunkIds.every((id) => records.some((r) => r.conversations[0].id === id)) && !chunkIds.some((id) => blockSessions.includes(id)), `${kind} full: the cleanup agents touch only recorded ids that no manager settled (${chunkIds.length})`)
+  check(cmds.some((c) => / ledger resource .*-SettleWorkspace /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Unit "?cleanup\/book@1"?/.test(c)), `${kind} full: the cleanup records each workspace itself and the run-level cleanup is settled by its verifier`)
   // #110: the Link units now settle through link-finish, so content is complete while the cleanup
   // still reports its own half: the two are still reported apart.
-  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness`)
+  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
   if (kind === 'econ') check(result.cleanup.content_complete === true, 'econ full: the settled Link units leave no content gap')
   check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
@@ -899,7 +1381,7 @@ for (const kind of ['econ', 'math']) {
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
   check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: list the recorded resources') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
-  check(!calls.some((c) => /^cleanup DeepSeek/.test(c.label)) && !commands.some((c) => /deepseek_delete/.test(c)), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
+  check(!calls.some((c) => /^cleanup (chunk|workspaces) /.test(c.label)) && !commands.some((c) => /deepseek_delete/.test(c)), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
 }
 {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })
@@ -934,7 +1416,7 @@ for (const kind of ['econ', 'math']) {
   const at = (p) => labels.findIndex((l) => p.test(l))
   check(cmds.some((c) => /zt-digest concepts -Step propose -Staging "D:\\x\\Key" -Work "D:\\x\\Key\\review\\concepts"/.test(c)), 'concepts: the review proposes from the run\'s own term table (no proposal file is written by an agent)')
   check(cmds.some((c) => /zt-digest concepts -Step prepare /.test(c)) && cmds.some((c) => /zt-digest concepts -Step judge .* -File "D:\\x\\Key\\review\\concepts\\out\\cj-01.json"/.test(c)) && cmds.some((c) => /zt-digest concepts -Step report/.test(c)), 'concepts: the frozen evidence, the validated judge answer and the report are one bounded chain')
-  check(at(/^terms: /) >= 0 && at(/^concepts: /) > at(/^terms: /) && at(/^concepts: /) < at(/^group 1 attempt/), `concepts: the term table, then the concept decisions, then the first group writer (${at(/^terms: /)} < ${at(/^concepts: /)} < ${at(/^group 1 attempt/)})`)
+  check(at(/^terms$/) >= 0 && at(/^concepts: /) > at(/^terms$/) && at(/^concepts: /) < at(/^digest lane 1 block 1$/), `concepts: the term table, then the concept decisions, then the first group writer (${at(/^terms$/)} < ${at(/^concepts: /)} < ${at(/^digest lane 1 block 1$/)})`)
   check(result && result.concepts && result.concepts.review && result.concepts.review.report_id === 'r-c1' && result.concepts.review.complete === true, `report: the result carries the frozen concept review and its id (${result && JSON.stringify(result.concepts && result.concepts.review)})`)
   check(result.schedule && result.schedule.concepts && result.schedule.concepts.complete === true, 'report: the schedule summary names the concept review and its completeness')
   check(report.stages.concepts && report.stages.concepts.status === 'done', 'concepts: the stage ends done when its review is complete')
@@ -948,7 +1430,7 @@ for (const kind of ['econ', 'math']) {
   const labels = calls.map((c) => c.label)
   const at = (p) => labels.findIndex((l) => p.test(l))
   check(cmds.some((c) => /zt-digest restate -Step prepare -Staging "D:\\x\\Key" -Work "D:\\x\\Key\\review\\restate"/.test(c)), 'review: the review reads the run\'s own staged owned-Card manifests (no separate collector)')
-  check(cmds.some((c) => /zt-digest restate -Step apply .*-OperationPrefix "Key\/review\/restate"/.test(c)), 'review: accepted rewrites go through the run\'s own identified operation prefix')
+  check(cmds.some((c) => /zt-digest restate -Step apply .*-OperationPrefix "Key\/restate\/1\/apply"/.test(c)), 'review: accepted rewrites go through the run\'s own identified operation prefix')
   check(cmds.some((c) => /zt-digest restate -Step apply .*-Merges "D:\\x\\Key\\cards\\decisions.json"/.test(c)), 'review: the Card cycle\'s recorded merge verdicts are handed to the apply step')
   check(at(/^cards whole book/) >= 0 && at(/^restatement review/) > at(/^cards whole book/) && at(/^restatement review/) < at(/^prepare link pass/), `review: the scoped review runs after the whole-book cycle and before the gap-only Link pass (${at(/^cards whole book/)} < ${at(/^restatement review/)} < ${at(/^prepare link pass/)})`)
   check(result && result.review && result.review.resolution && result.review.resolution.counts.pending_existing_card_change === 1 && result.review.status === 'partial', `report: a merge verdict no rewrite covers stays pending and keeps the review partial (${result && JSON.stringify(result.review && result.review.resolution)})`)
@@ -1004,6 +1486,27 @@ for (const kind of ['econ', 'math']) {
   check(labels.includes('concept review') && labels.includes('restatement review'), `resume: the retained run re-reviews its own term table and new Cards (${labels.filter((l) => /review/.test(l)).join(', ')})`)
   check(commands.some((c) => /zt-digest ledger resume/.test(c)) && !labels.includes('prepare book'), 'resume: the one supported resume runs and no preparation repeats')
   check(result && result.mode === 'resume' && result.concepts && result.review, 'resume: the resumed run reports both reviews')
+}
+{
+  // The restatement apply's operation prefix has the four parts the identified-call executor requires
+  // (run/unit/positive revision/step); trials 17 and 19 passed `<key>/review/restate` and every apply failed.
+  const { calls } = await run('econ', { ...base, figures: false })
+  const applies = calls.flatMap((c) => (String(c.prompt).match(/restate -Step apply [^\n]*/g) || []))
+  const prefixes = applies.map((a) => (a.match(/-OperationPrefix \\?"([^"\\]+)/) || [])[1])
+  check(prefixes.length > 0 && prefixes.every((x) => /^[^/]+\/[^/]+\/[1-9]\d*\/[^/]+$/.test(x || '')), `restate prefix: the apply names run/unit/revision/step (${prefixes.join(', ')})`)
+}
+{
+  // book-cards-finish requires the deterministic Idea sample; a resumed run's whole-book cycle samples too
+  // (grossman2002integration trial 19: the resume ran the cycle with no -Sample and its finish was refused).
+  const { calls } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  const cycles = calls.filter((c) => /zt-digest card -Step plan .*-Work "D:\\x\\Key\\cards"/.test(c.prompt))
+  check(cycles.length > 0 && cycles.every((c) => /-Sample 0\.1\b/.test(c.prompt)), `resume sample: the resumed whole-book card cycle samples Idea Cards (${cycles.length} cycles)`)
+}
+{
+  // The resume status line came back without its `layers` (grossman2002integration trial 17): the prepare
+  // stage reads the group count from the digest layer's own brief gate instead of halting the resumed run.
+  const { calls, commands, report } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']], rewrittenSummary: true })
+  check(report && !report.halted && calls.some((c) => c.label === 'concept review'), `rewritten summary: the resumed run goes on past prepare (${JSON.stringify(report && report.halted)})`)
 }
 
 console.log(`failed: ${failed}`)

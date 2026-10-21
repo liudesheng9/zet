@@ -1030,7 +1030,7 @@ fn note_suggestions(zt: &mut Zt, path: &str) -> Result<Vec<Value>> {
             .split("[[")
             .nth(1)
             .and_then(|rest| rest.split("]]").next())
-            .map(|link| link.split('|').next().unwrap_or_default().trim().to_string())
+            .map(|link| link.trim().to_string())
             .filter(|target| !target.is_empty())
             .with_context(|| format!("note suggestion `{id}` must name the Link it proposes"))?;
         suggestions.push(json!({"id":id,"card":field(item,"card")?,"note":note,"target":target}));
@@ -2378,14 +2378,70 @@ fn relocate(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
     }
     let run = meta(&tx, "run_id")?;
     tx.commit()?;
+    let manifests = relocate_manifests(&p.out, &mapping)?;
     Ok(json!({
         "schema_version":1,
         "run_id":run,
-        "reused":applied == 0,
+        "reused":applied == 0 && manifests.is_empty(),
         "applied":applied,
         "moves":mapping,
-        "units":units.into_iter().collect::<Vec<_>>()
+        "units":units.into_iter().collect::<Vec<_>>(),
+        "manifests":manifests
     }))
+}
+
+/// The staging manifests that name owned Card addresses follow the same recorded moves: each line of an
+/// `owned-gNN.txt` that is a moved address, and the address before the tab of each `src-gNN.txt` line. On
+/// grossman2002integration trial 11 Organize moved `374/1|b` to `374/1|a|a`, `owned-g01.txt` kept the old
+/// address, and every later card cycle stopped at "incomplete Card read: … missing [\"374/1|b\"]". Returns the
+/// files it rewrote.
+pub(crate) fn relocate_manifests(out: &Path, mapping: &std::collections::BTreeMap<String, String>) -> Result<Vec<String>> {
+    let mut rewritten = Vec::new();
+    if mapping.is_empty() {
+        return Ok(rewritten);
+    }
+    for entry in std::fs::read_dir(out).with_context(|| format!("read the staging folder {}", out.display()))? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let owned = name.starts_with("owned-g") && name.ends_with(".txt");
+        let source = name.starts_with("src-g") && name.ends_with(".txt");
+        if !(owned || source) || !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let mut changed = false;
+        let lines: Vec<String> = text
+            .lines()
+            .map(|line| {
+                let (at, rest) = match line.split_once('\t') {
+                    Some((at, rest)) if source => (at, Some(rest)),
+                    _ => (line, None),
+                };
+                match mapping.get(at.trim()) {
+                    Some(new) => {
+                        changed = true;
+                        match rest {
+                            Some(rest) => format!("{new}\t{rest}"),
+                            None => new.clone(),
+                        }
+                    }
+                    None => line.to_string(),
+                }
+            })
+            .collect();
+        if changed {
+            let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let mut body = lines.join(ending);
+            if text.ends_with('\n') {
+                body.push_str(ending);
+            }
+            util::write_text(&path, &body)?;
+            rewritten.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    rewritten.sort();
+    Ok(rewritten)
 }
 
 /// The compiler artifacts that carry one publication layer's checked result. The
@@ -4599,6 +4655,28 @@ fn run_report(p: &Prepared, verified: Value) -> Result<Value> {
     }))
 }
 
+/// `ledger status -Summary`: the run's identity, settings and counts, with the units replaced by
+/// their number per layer and state. A workflow reads it through one relayed output line; the
+/// full status carries every unit's inputs, progress and result.
+fn status_summary(full: &Value) -> Value {
+    let mut layers = serde_json::Map::new();
+    for unit in full["units"].as_array().into_iter().flatten() {
+        let layer = unit["layer"].as_str().unwrap_or("").to_string();
+        let state = unit["state"].as_str().unwrap_or("").to_string();
+        let entry = layers.entry(layer).or_insert_with(|| json!({"total":0}));
+        entry[&state] = json!(entry[&state].as_i64().unwrap_or(0) + 1);
+        entry["total"] = json!(entry["total"].as_i64().unwrap_or(0) + 1);
+    }
+    let mut summary = serde_json::Map::new();
+    for key in ["schema_version", "run_id", "invocation", "resume_count", "citation_key", "variant", "settings", "counts", "settled", "complete", "sealed"] {
+        if let Some(value) = full.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    summary.insert("layers".to_string(), Value::Object(layers));
+    Value::Object(summary)
+}
+
 fn status(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value> {
     let conn = connect(&out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
@@ -5379,17 +5457,95 @@ fn next_once(p: &Prepared, layer: &str, take: i64, owner: &str, lease: i64) -> R
         claimed.push(claim);
     }
     tx.commit()?;
-    let mut result = status(&p.out, layer, None)?;
-    result["units"] = json!(claimed);
-    // A claim reply is relayed verbatim by one manager: it carries the claim and the layer's
-    // scheduling state, not the run report. Those sections belong to `ledger status -Verify`
-    // and `ledger report` (R331), so they are not repeated on every claim.
-    if let Some(object) = result.as_object_mut() {
-        for key in ["gaps", "timing", "usage", "resume", "bridge", "placeholders"] {
-            object.remove(key);
+    let status = status(&p.out, layer, None)?;
+    Ok(claim_reply(&status, &claimed))
+}
+
+/// `ledger next -Brief`: the claimed units without their frozen inputs (the commands a block manager runs
+/// read those from the ledger), so a claim of eight units stays a short line a relay copies whole.
+fn brief_units(claimed: &[Value]) -> Vec<Value> {
+    claimed
+        .iter()
+        .map(|unit| {
+            let mut unit = unit.clone();
+            if let Some(object) = unit.as_object_mut() {
+                if let Some(inputs) = object.remove("inputs").as_ref().and_then(brief_inputs) {
+                    object.insert("inputs".to_string(), inputs);
+                }
+            }
+            unit
+        })
+        .collect()
+}
+
+/// The part of a unit's frozen inputs a brief reply keeps: the Model address a model or explain unit
+/// works on (`header`, `model`), a short string the driver names in its finish command. Everything
+/// else stays in the ledger (a relay dropped the 1.3 KB inputs of four model units on
+/// grossman2002integration trial 4, and the driver finished `-Model 'undefined'`).
+fn brief_inputs(inputs: &Value) -> Option<Value> {
+    let mut kept = serde_json::Map::new();
+    for key in ["header", "model"] {
+        if let Some(value) = inputs.get(key).filter(|value| value.is_string()) {
+            kept.insert(key.to_string(), value.clone());
         }
     }
-    Ok(result)
+    (!kept.is_empty()).then(|| Value::Object(kept))
+}
+
+/// `ledger status -Units <ids>`: the outcome of the named units, in the order named. A block driver reads
+/// each held unit's state here instead of trusting a manager's report of it.
+fn unit_view(units: &[Value], ids: &[String]) -> Value {
+    let listed: Vec<Value> = ids
+        .iter()
+        .map(|id| match units.iter().find(|unit| unit["id"] == json!(id)) {
+            Some(unit) => json!({
+                "id": id,
+                "state": unit["state"],
+                "token": unit["token"],
+                "input_hash": unit["input_hash"],
+                "attempts": unit["attempts"],
+                "fault_class": unit["fault_class"],
+                "disposition": unit["result"]["disposition"],
+            }),
+            None => json!({"id": id, "state": "unknown"}),
+        })
+        .collect();
+    json!({"schema_version": 1, "units": listed})
+}
+
+/// The claims one owner holds, in the shape a claim reply lists them (id, owner, token, lease, input
+/// hash, inputs). A layer driver reads it when the relayed claim line came back summarized: the
+/// ledger, not the relay, says which units the claim took (grossman2002integration trial 3).
+fn held_view(units: &[Value], owner: &str) -> Value {
+    let held: Vec<Value> = units
+        .iter()
+        .filter(|unit| unit["state"] == json!("claimed") && unit["owner"] == json!(owner))
+        .map(|unit| {
+            json!({
+                "id": unit["id"],
+                "owner": unit["owner"],
+                "token": unit["token"],
+                "lease_until": unit["lease_until"],
+                "input_hash": unit["input_hash"],
+                "inputs": brief_inputs(&unit["inputs"]).unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    json!({"schema_version": 1, "owner": owner, "units": held})
+}
+
+/// A claim reply is relayed whole by one manager: it carries the claimed units and the layer's
+/// scheduling state, not the run report or the dependency graph. Those belong to `ledger status`
+/// (and `-Verify`, `ledger report`, R331), so they are not repeated on every claim.
+fn claim_reply(status: &Value, claimed: &[Value]) -> Value {
+    let mut reply = serde_json::Map::new();
+    for key in ["schema_version", "run_id", "invocation", "citation_key", "variant", "layer", "sealed", "settled", "complete", "counts"] {
+        if let Some(value) = status.get(key) {
+            reply.insert(key.to_string(), value.clone());
+        }
+    }
+    reply.insert("units".to_string(), json!(claimed));
+    Value::Object(reply)
 }
 
 struct Claim {
@@ -5437,10 +5593,42 @@ fn is_sharing_violation(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(32) | Some(33))
 }
 
+/// The quiet window of `ledger reclaim -Release`: a held claim records activity at least every 30
+/// seconds (the heartbeat) or every wait round (a manager's renewal), so a claim with no activity
+/// for this long belongs to a stopped run. The variable exists so a public test can shorten it.
+fn release_quiet_seconds() -> i64 {
+    std::env::var("ZT_LEDGER_RELEASE_QUIET_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(120)
+}
+
+/// Whether a claim's last recorded activity (epoch milliseconds) is older than the quiet window.
+fn quiet_claim(last_activity_ms: Option<i64>, now_ms: i64, quiet_seconds: i64) -> bool {
+    last_activity_ms.is_none_or(|last| now_ms - last >= quiet_seconds * 1000)
+}
+
+/// The time of the last event recorded for one claim (the unit at that token), in epoch milliseconds.
+fn last_activity_ms(tx: &Transaction, unit: &str, token: i64) -> Result<Option<i64>> {
+    let utc: Option<String> = tx
+        .query_row(
+            "SELECT utc FROM events WHERE unit_id=?1 AND claim_token=?2 ORDER BY seq DESC LIMIT 1",
+            params![unit, token],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(utc.as_deref().and_then(crate::report::epoch_millis))
+}
+
 /// A stranded claim is recoverable only through this guarded path: the reclaimer takes the
 /// unit's own OS guard first, so it can never revoke a claim in the middle of an active
 /// apply (R182), and it moves the token forward so the lost owner is fenced (R177).
-fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
+///
+/// `release` (`-Release`) also takes a claim whose lease has not ended, but only a quiet one: no
+/// event for that claim within the quiet window, its guard free and no registered run live. It is
+/// how a stopped run's claims are freed at once instead of after their provider-run lease.
+fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_binding(&tx, p)?;
@@ -5461,7 +5649,7 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
             if state != "claimed" {
                 bail!("claim_active: {unit} is {state}, not claimed");
             }
-            if lease.unwrap_or(0) > now {
+            if lease.unwrap_or(0) > now && !release {
                 bail!(
                     "claim_active: {unit} still holds a live lease until {}",
                     lease.unwrap_or_default()
@@ -5470,10 +5658,11 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
             candidates.push((unit.to_string(), token, owner));
         }
         None => {
+            // With -Release every claim is a candidate; the quiet check below decides each one.
             let mut statement = tx.prepare(
-                "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND coalesce(lease_until,0)<=?1 ORDER BY id LIMIT ?2",
+                "SELECT id,claim_token,owner FROM units WHERE state='claimed' AND (?3 OR coalesce(lease_until,0)<=?1) ORDER BY id LIMIT ?2",
             )?;
-            let rows = statement.query_map(params![now, take], |r| {
+            let rows = statement.query_map(params![now, take, release], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, i64>(1)?,
@@ -5513,11 +5702,25 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
             .optional()?;
         let (state, current, lease, progress) =
             row.with_context(|| format!("unknown unit {unit}"))?;
-        if state != "claimed" || current != token || lease.unwrap_or(0) > now {
+        let live = lease.unwrap_or(0) > now;
+        if state != "claimed" || current != token || (live && !release) {
             if only.is_some() {
                 bail!("claim_active: {unit} changed while its guard was acquired; no claim was reclaimed");
             }
             skipped.push(json!({"unit":unit,"reason":"claim_active"}));
+            tx.rollback()?;
+            drop(guard);
+            continue;
+        }
+        if live && !quiet_claim(last_activity_ms(&tx, &unit, current)?, now * 1000, release_quiet_seconds()) {
+            // A holder that is still working records activity: leave its claim alone.
+            if only.is_some() {
+                bail!(
+                    "claim_recent: {unit} recorded activity within the last {} seconds; its holder may still be working",
+                    release_quiet_seconds()
+                );
+            }
+            skipped.push(json!({"unit":unit,"reason":"claim_recent"}));
             tx.rollback()?;
             drop(guard);
             continue;
@@ -5556,11 +5759,11 @@ fn reclaim(p: &Prepared, only: Option<&str>, take: i64) -> Result<Value> {
             owner.as_deref(),
             Some(current),
             "reclaimed",
-            &json!({"previous_owner":owner,"previous_token":current,"token":new_token,"lease_expired_at":lease,"guard":"held","process":{"pid":std::process::id()}}),
+            &json!({"previous_owner":owner,"previous_token":current,"token":new_token,"lease_expired_at":lease,"released":live,"guard":"held","process":{"pid":std::process::id()}}),
         )?;
         tx.commit()?;
         drop(guard);
-        reclaimed.push(json!({"unit":unit,"previous_owner":owner,"previous_token":current,"token":new_token,"state":"ready"}));
+        reclaimed.push(json!({"unit":unit,"previous_owner":owner,"previous_token":current,"token":new_token,"state":"ready","released":live}));
     }
     Ok(json!({
         "schema_version":1,
@@ -5868,6 +6071,70 @@ fn renew(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
     )?;
     tx.commit()?;
     Ok(json!({"unit":unit,"token":token,"lease_until":until}))
+}
+
+/// The claims a `ledger hold` keeps current: `id:token` pairs, comma separated.
+fn hold_targets(text: &str) -> Result<Vec<(String, i64)>> {
+    let mut targets = Vec::new();
+    for item in text.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+        let (unit, token) = item
+            .rsplit_once(':')
+            .with_context(|| format!("-Units names {item:?}; each entry is <unit id>:<token>"))?;
+        let token: i64 = token
+            .trim()
+            .parse()
+            .ok()
+            .filter(|token| *token > 0)
+            .with_context(|| format!("-Units names {item:?}; its token is not a positive integer"))?;
+        targets.push((unit.trim().to_string(), token));
+    }
+    if targets.is_empty() {
+        bail!("-Units names no claim to hold");
+    }
+    Ok(targets)
+}
+
+/// `ledger hold`: renews every listed claim each `every` seconds for at most `seconds`, and returns as
+/// soon as none of them is still held (a claim that is finished, failed or reclaimed answers
+/// `stale_claim` and is released from the hold). A workflow step that runs longer than a claim's lease
+/// without its own renewals (the model compiler's chains: on grossman2002integration trial 5 four model
+/// claims expired mid-build) runs this beside the work, one bounded command after another.
+fn hold(p: &Prepared, targets: &[(String, i64)], seconds: u64, every: u64) -> Result<Value> {
+    let started = std::time::Instant::now();
+    let mut held: Vec<(String, i64)> = targets.to_vec();
+    let mut released: Vec<Value> = Vec::new();
+    let mut renewals = 0u64;
+    loop {
+        let mut still = Vec::new();
+        for (unit, token) in held {
+            match renew(p, &unit, token) {
+                Ok(_) => {
+                    renewals += 1;
+                    still.push((unit, token));
+                }
+                Err(error) => {
+                    let text = error.to_string();
+                    if text.contains("stale_claim") || text.contains("unknown unit") {
+                        released.push(json!({"unit": unit, "token": token}));
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        held = still;
+        if held.is_empty() || started.elapsed().as_secs() + every > seconds {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(every));
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "held": held.iter().map(|(unit, token)| json!({"unit": unit, "token": token})).collect::<Vec<_>>(),
+        "released": released,
+        "renewals": renewals,
+        "seconds": started.elapsed().as_secs(),
+    }))
 }
 
 fn fault_class(code: &str) -> Result<&'static str> {
@@ -7018,6 +7285,83 @@ fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
     Ok(calls.clone())
 }
 
+/// The prerequisites a book unit may hold beyond its frozen ones: the child units a digest group's
+/// completion registered for it (#69/#70: cards-book waits on cards/gNNN, link-check on link/gNNN).
+/// `children` holds (unit id, layer) of every unit a digest unit created.
+fn registration_deps_ok(
+    id: &str,
+    needs: &std::collections::BTreeSet<(String, String)>,
+    actual: &std::collections::BTreeSet<(String, String)>,
+    children: &std::collections::BTreeSet<(String, String)>,
+) -> bool {
+    let child_layer = match id {
+        "cards-book/book@1" => Some("cards"),
+        "link-check/book@1" => Some("link"),
+        _ => None,
+    };
+    needs.is_subset(actual)
+        && actual.difference(needs).all(|(needed, condition)| {
+            condition == "settled"
+                && child_layer.is_some_and(|layer| children.iter().any(|(child, l)| child == needed && l == layer))
+        })
+}
+
+/// `ledger gate -Brief`: the layer decision a driver relays (identity, sealed/settled/complete, the counts
+/// without the per-layer table, the layer's own unresolved units and coverage faults), not the full status.
+fn gate_brief(full: &Value, layer: &str) -> Value {
+    let mut brief = serde_json::Map::new();
+    for key in ["schema_version", "run_id", "invocation", "layer", "sealed", "settled", "complete"] {
+        if let Some(value) = full.get(key) {
+            brief.insert(key.to_string(), value.clone());
+        }
+    }
+    let layer_counts = full["counts"].clone();
+    let mut counts = full["counts"].clone();
+    if let Some(object) = counts.as_object_mut() {
+        object.remove("per_layer");
+    }
+    brief.insert("counts".to_string(), counts);
+    let prefix = format!("{layer}/");
+    let unresolved: Vec<Value> = full["unresolved"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|unit| layer.is_empty() || unit.as_str().is_some_and(|id| id.starts_with(&prefix)))
+        .cloned()
+        .collect();
+    brief.insert("unresolved".to_string(), json!(unresolved));
+    let own_faults = layer_faults(full["coverage_faults"].as_array().map(Vec::as_slice).unwrap_or(&[]), layer);
+    // A gate for one layer decides `complete` from that layer's own facts: settled, every unit done or
+    // no-op, none of its own unresolved units or coverage faults. The run-wide `complete` also waits on
+    // later layers (a `cards-book` publication that does not exist yet), which held every layer's gate
+    // open (grossman2002integration trial 4: events 8/8 done reported active). An empty layer keeps the
+    // run-wide decision.
+    if !layer.is_empty() {
+        let zero = |key: &str| layer_counts[key].as_i64().unwrap_or(0) == 0;
+        let own_complete = full["settled"] == json!(true)
+            && full["sealed"] == json!(true)
+            && ["open", "failed", "blocked", "refused", "ready", "claimed", "retry", "registered"].iter().all(|key| zero(key))
+            && unresolved.is_empty()
+            && own_faults.is_empty();
+        brief.insert("complete".to_string(), json!(own_complete));
+    }
+    brief.insert("coverage_faults".to_string(), json!(own_faults));
+    Value::Object(brief)
+}
+
+/// The coverage faults that belong to one layer (a fault names its unit), as a brief gate lists them.
+fn layer_faults(faults: &[Value], layer: &str) -> Vec<Value> {
+    if layer.is_empty() {
+        return faults.to_vec();
+    }
+    let prefix = format!("{layer}/");
+    faults
+        .iter()
+        .filter(|fault| fault["unit"].as_str().is_some_and(|unit| unit.starts_with(&prefix)))
+        .cloned()
+        .collect()
+}
+
 fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     let target = target(contract)?;
@@ -7100,6 +7444,11 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
             );
         }
     }
+    // The child units each digest group's completion registered (#69/#70).
+    let digest_children: BTreeSet<(String, String)> = conn
+        .prepare("SELECT id,layer FROM units WHERE created_by LIKE 'digest/%'")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
     for (id, (inputs, needs)) in &units {
         let row: Option<(String, String, Option<String>)> = conn
             .query_row(
@@ -7136,7 +7485,8 @@ fn preparation_registration(conn: &Connection, contract: &Value, hash: &str) -> 
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<BTreeSet<_>>>()?;
-        if actual != needs.iter().cloned().collect() {
+        let frozen: BTreeSet<(String, String)> = needs.iter().cloned().collect();
+        if !registration_deps_ok(id, &frozen, &actual, &digest_children) {
             bail!("preparation registration: changed prerequisites for {id}");
         }
     }
@@ -8253,8 +8603,15 @@ fn frozen_inputs(p: &Prepared, unit: &str) -> Result<Value> {
 /// so a changed or shortened file cannot silently shrink a child obligation.
 fn frozen_owned(p: &Prepared, inputs: &Value, label: &str) -> Result<Vec<String>> {
     let record = &inputs["owned"];
-    check_file(record, &format!("{label} owned manifest"))?;
     let path = Path::new(field(record, "path")?);
+    // A card split appends to the manifest after it was frozen (`card::add_owned`): the frozen lines must still
+    // lead the file unchanged; the split Cards after them join the scope (grossman2002integration trial 19).
+    if let Err(error) = check_file(record, &format!("{label} owned manifest")) {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if !frozen_prefix_holds(&text, field(record, "sha256")?) {
+            return Err(error);
+        }
+    }
     if !path.starts_with(&p.out) {
         bail!("{label} owned manifest escaped the prepared output directory");
     }
@@ -8272,6 +8629,21 @@ fn frozen_owned(p: &Prepared, inputs: &Value, label: &str) -> Result<Vec<String>
         bail!("{label} owned manifest enumerates no Card");
     }
     Ok(owned.into_iter().collect())
+}
+
+/// Whether the text's leading whole lines hash to `sha256`: the frozen manifest, possibly followed by appended lines.
+fn frozen_prefix_holds(text: &str, sha256: &str) -> bool {
+    let mut end = 0;
+    loop {
+        if canon::sha256_hex(text[..end].as_bytes()) == sha256 {
+            return true;
+        }
+        match text[end..].find('\n') {
+            Some(at) => end += at + 1,
+            None if end < text.len() => end = text.len(),
+            None => return false,
+        }
+    }
 }
 
 /// The Link unit's owner binding and exact in-scope set.
@@ -8556,6 +8928,15 @@ fn link_plan(
 /// The reason recorded for an owned Card the frozen gap set excluded (AC01/AC07).
 const NO_GAP_REASON: &str = "no semantic gap: the Card already carries a valid kinded Link outside its own group";
 
+/// Whether an `already_linked` outcome must show a kinded Link of the Card's own. A writer's claim must;
+/// a Card the frozen gap set itself left out (`NO_GAP_REASON`) need not: the gap set asks a kinded Link only
+/// of an Idea Card, so a Topic root or a Model Card it left out may carry none (grossman2002integration
+/// trials 7 and 8: `363/0`, `366/0` and an unbuilt Model Card were refused although no job could be asked to
+/// link them).
+fn already_linked_needs_kind(reason: &Value) -> bool {
+    reason.as_str() != Some(NO_GAP_REASON)
+}
+
 /// A Card's kinded Link targets, as the archive itself computes them: a Link
 /// whose Relation kind is not a plain `refers` statement.
 fn kinded_links(card: &Value) -> Result<std::collections::BTreeSet<String>> {
@@ -8574,14 +8955,10 @@ fn paragraph_targets(text: &str) -> Result<Vec<String>> {
     let target = regex::Regex::new(r"\[\[([^\]]+)\]\]")?;
     Ok(target
         .captures_iter(text)
-        .map(|capture| {
-            capture[1]
-                .split('|')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_string()
-        })
+        // The whole [[...]] is the address: ZT addresses carry '|' (`b/2|a|a|17`), and a Link has no
+        // alias part (grossman2002integration trial 7: a paragraph that rests on a model part was read as
+        // a Link to `b/2` and refused as carrying no kinded Link).
+        .map(|capture| capture[1].trim().to_string())
         .filter(|target| !target.is_empty())
         .collect())
 }
@@ -8697,7 +9074,7 @@ fn link_verify(
                     if !anchor_position(card) {
                         bail!("the anchor `{at}` is recorded as already_linked but holds no linked `{}` paragraph", link_gap::POSITION_PREFIX);
                     }
-                } else if kinds.is_empty() {
+                } else if kinds.is_empty() && already_linked_needs_kind(&outcome["reason"]) {
                     bail!("`{at}` is recorded as already_linked but carries no kinded Link");
                 }
                 if gap.is_some_and(|gap| {
@@ -11372,10 +11749,15 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
             if target == header || !part_ids.contains_key(target) {
                 continue;
             }
-            if !pairs.contains(&(address.clone(), target.to_string())) {
-                bail!("part `{address}` does not author the Link to `{target}` its accepted plan requires");
+            // A split part is authored through any of its pieces (grossman2002integration trial 16).
+            let mut pieces = crate::model::compiler::reference_pieces(&entry["ids"], &compiler["models"], &s(&want["ref"]));
+            if pieces.is_empty() {
+                pieces.push(target.to_string());
             }
-            requirements.push(json!({"from":address,"to":target,"ref":want["ref"],"why":want["why"]}));
+            let Some(authored) = pieces.iter().find(|piece| pairs.contains(&(address.clone(), (*piece).clone()))) else {
+                bail!("part `{address}` does not author the Link to `{target}` its accepted plan requires");
+            };
+            requirements.push(json!({"from":address,"to":authored,"ref":want["ref"],"why":want["why"]}));
         }
     }
     // Explanation needs: the exact own Derivation parts that still lack 思路 or 解读. The
@@ -11743,6 +12125,17 @@ fn plan_cross_refs(plan: &Value) -> Result<Vec<String>> {
     Ok(refs.into_iter().collect())
 }
 
+/// Whether `other` is a model this batch planned: it is still in the batch's order and its plan.json is in
+/// the batch folder, other than the dependent model itself. The plan file, not a plan hash: the compiler
+/// records the hash only at the fill, after `model-deps` has run (grossman2002integration trial 10: every
+/// model of the first batch showed an empty plan hash, so `3|a`, `4|a` and `7|a` still waited for `2|a`).
+fn planned_in_batch(compiler: &Value, batch: &Path, other: &str, header: &str) -> bool {
+    let slug: String = other.chars().map(|c| if matches!(c, '/' | '|' | '\\') { '_' } else { c }).collect();
+    !ps::eq(other, header)
+        && list(&compiler["order"]).iter().any(|model| ps::eq(&s(model), other))
+        && batch.join(slug).join("plan.json").is_file()
+}
+
 /// R233/R234: register the explicit producer dependency of every `X#A` reference before
 /// any dependent fill/apply. A producer that is not done makes the dependent wait without
 /// spending an attempt; a completed producer without the named part is a content fault.
@@ -11760,7 +12153,17 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
     if !ps::eq(&s(&plan["model"]), &header) {
         bail!("the plan for `{header}` describes `{}`", s(&plan["model"]));
     }
-    let refs = plan_cross_refs(&plan)?;
+    // A reference to a model this same batch planned is resolved by the compiler from the batch's own part
+    // map as the fill writes it (the architect plans a shared part in the first model and takes it from the
+    // next); it waits for no ledger producer. On grossman2002integration trial 9 three of four models of one
+    // batch were released to wait for `2|a`, which the same batch was about to build.
+    let (in_batch, refs): (Vec<String>, Vec<String>) = plan_cross_refs(&plan)?
+        .into_iter()
+        .partition(|reference| {
+            reference.split_once('#').is_some_and(|(other, _)| {
+                dir.parent().is_some_and(|batch| planned_in_batch(&compiler, batch, other, &header))
+            })
+        });
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let mut wanted = Vec::new();
     let mut resolutions = Vec::new();
@@ -11890,14 +12293,14 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
             params![unit, canon::canonical_json(&progress)],
         )?;
         event(&tx, unit, Some(&claim.owner), Some(token), "model_dependencies", &json!({"resolved":resolutions,"waiting":[],"plan_hash":plan_hash}))?;
-        json!({"ok":true,"unit":unit,"waiting":false,"refs":resolutions,"plan_hash":plan_hash,"state":"claimed","lease_until":lease_until})
+        json!({"ok":true,"unit":unit,"waiting":false,"refs":resolutions,"in_batch":in_batch,"plan_hash":plan_hash,"state":"claimed","lease_until":lease_until})
     } else {
         tx.execute(
             "UPDATE units SET state='registered',owner=NULL,lease_until=NULL,retry_after=NULL,attempts=MAX(attempts-1,0) WHERE id=?1",
             params![unit],
         )?;
         event(&tx, unit, Some(&claim.owner), Some(token), "deferred_waiting", &json!({"prerequisites":waiting,"resolved":resolutions,"attempts_returned":1}))?;
-        json!({"ok":true,"unit":unit,"waiting":true,"prerequisites":waiting,"refs":resolutions,"plan_hash":plan_hash,"state":"registered"})
+        json!({"ok":true,"unit":unit,"waiting":true,"prerequisites":waiting,"refs":resolutions,"in_batch":in_batch,"plan_hash":plan_hash,"state":"registered"})
     };
     tx.commit()?;
     drop(conn);
@@ -13184,7 +13587,7 @@ fn resume_run(p: &Prepared) -> Result<Value> {
     }
     // R279/R182: a lost owner is reclaimed only through the existing guarded path, so a late writer
     // is fenced by a newer token before the resume counts the unit as unresolved work again.
-    let reclaimed = reclaim(p, None, 64)?;
+    let reclaimed = reclaim(p, None, 64, false)?;
     let blocked = reclaimed["blocked"].as_array().cloned().unwrap_or_default();
     if !blocked.is_empty() {
         let names = blocked
@@ -13662,6 +14065,187 @@ fn resource_view(resources: &[Value]) -> Vec<Value> {
 
 fn resource_register(p: &Prepared, path: &str) -> Result<Value> {
     let input = canon::read_json(path).context("invalid resource registration")?;
+    resource_register_input(p, input)
+}
+
+/// `ledger resource -RegisterId`: the manager that ran a DeepSeek job records the returned id with
+/// plain arguments, at once (R322). zt-digest builds the record, so no agent writes a JSON file
+/// that restates what another agent saw; the answer is added later as a file (`-EvidenceFor`).
+fn resource_register_id(p: &Prepared, unit: &str, token: Option<i64>, id: &str, workspace: &str) -> Result<Value> {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        bail!("-RegisterId needs -Workspace, the DeepSeek workspace (cwd) of the run");
+    }
+    let mut input = json!({
+        "schema_version": 1,
+        "unit": unit,
+        "workspace": {"id": workspace, "path": workspace},
+        "conversations": [{"id": id.trim()}],
+    });
+    if unit != "run" {
+        input["token"] = json!(token.context("-RegisterId for a unit needs its -Token")?);
+    }
+    resource_register_input(p, input)
+}
+
+/// `ledger resource -EvidenceFor <id> [-Evidence <file>] [-Usage <json>]`: the facts of one recorded
+/// conversation, named by the manager that ran it. The answer is a file inside the prepared output
+/// directory (the job's own output, or the answer text the manager saved); zt-digest copies it into
+/// the retained evidence with its hash (R325). The usage is the provider's own numbers for the run.
+fn resource_evidence_for(p: &Prepared, id: &str, evidence: Option<&str>, usage: Option<&str>) -> Result<Value> {
+    let id = id.trim();
+    let key = resource_holding(p, id)?;
+    let mut result = Value::Null;
+    if let Some(file) = evidence {
+        let path = std::fs::canonicalize(file.trim()).with_context(|| format!("missing evidence file {file}"))?;
+        if !path.starts_with(&p.out) {
+            bail!("an evidence file must sit inside the prepared output directory; {file} does not");
+        }
+        let text = std::fs::read_to_string(&path).with_context(|| format!("evidence file {file} is not UTF-8 text"))?;
+        if text.trim().is_empty() {
+            bail!("evidence file {file} is empty");
+        }
+        let input = json!({"schema_version":1,"op":"evidence","resource":key,"conversation":id,"text":text,"name":id});
+        result = resource_observe_input(p, input, "", None)?;
+    }
+    if let Some(usage) = usage {
+        let numbers: Value = serde_json::from_str(usage).context("-Usage is a JSON object of numbers")?;
+        let input = json!({"schema_version":1,"op":"usage","resource":key,"conversation":id,"usage":numbers});
+        result = resource_observe_input(p, input, "", None)?;
+    } else if evidence.is_some() && conversation_usage(p, id)?.is_null() {
+        // Evidence without usage: the run's result stated no token usage, so the usage is recorded as
+        // unavailable (R345) instead of left absent; the report counts the run as missing.
+        let input = json!({"schema_version":1,"op":"usage_unavailable","resource":key,"conversation":id,"reason":"the run's result stated no token usage"});
+        result = resource_observe_input(p, input, "", None)?;
+    }
+    if result.is_null() {
+        bail!("-EvidenceFor needs -Evidence, -Usage, or both");
+    }
+    Ok(result)
+}
+
+/// The one line an agent-facing record command (`-RegisterId`, `-Settle`, `-SettleWorkspace`, `-EvidenceFor`)
+/// prints: its top-level facts with `recorded: true`, never the resource views. A `-SettleWorkspace` on the
+/// shared hub workspace printed about 260 KB (every resource of the run), and on grossman2002integration
+/// trial 10 its cleanup agent could not see that the records had succeeded and reported all six unrecorded.
+fn record_brief(result: &Value) -> Value {
+    let mut brief = serde_json::Map::new();
+    if let Some(fields) = result.as_object() {
+        for (key, value) in fields {
+            // The prepared run's id is not the recorded id: on grossman2002integration trial 11 a brief manager
+            // read `run_id` in the short answer and reported that registration had stored the wrong id.
+            if key == "run_id" {
+                continue;
+            }
+            if !value.is_object() && !value.is_array() {
+                brief.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    brief.insert("recorded".into(), json!(true));
+    Value::Object(brief)
+}
+
+/// The usage record one recorded conversation retains, or null.
+fn conversation_usage(p: &Prepared, id: &str) -> Result<Value> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    for resource in recorded_resources(&conn, None)? {
+        for conversation in resource["conversations"].as_array().into_iter().flatten() {
+            if conversation["id"] == json!(id) {
+                return Ok(conversation["usage"].clone());
+            }
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// The recorded resource that holds one conversation id.
+fn resource_holding(p: &Prepared, id: &str) -> Result<String> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let resource = recorded_resources(&conn, None)?
+        .into_iter()
+        .find(|resource| {
+            resource["conversations"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|c| c["id"] == json!(id)))
+        })
+        .with_context(|| format!("unknown conversation: no recorded resource holds `{id}`"))?;
+    Ok(field(&resource, "id")?.to_string())
+}
+
+/// Whether a recorded resource retains its run's usage: a resource-wide reading, a per-run reading, or an
+/// explicit unavailable record (R345: the run's result stated no token usage, and the report counts it
+/// as a missing run). Only a resource with none of these is `cleanup_evidence_missing`. On
+/// grossman2002integration trial 10 no manager passed `-Usage`, nothing recorded the usage as unavailable,
+/// and cleanup-finish refused every digest cleanup unit although its conversation was deleted with evidence.
+fn usage_retained(resource: &Value) -> bool {
+    !resource["usage"].is_null()
+        || resource["conversations"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|conversation| conversation["usage"].is_object()))
+}
+
+/// `ledger resource -Settle <id> -State <state> -Deleted <result> [-Message <text>]`: the cleanup agent
+/// records, with plain arguments and right after it acted, the provider's terminal state of one
+/// recorded conversation and the result of its deletion (R323, R326). A conversation that is already
+/// gone (`absent`) is recorded as finished with the outcome `absent`.
+fn resource_settle(p: &Prepared, id: &str, state: &str, deleted: &str, message: &str) -> Result<Value> {
+    let id = id.trim();
+    let key = resource_holding(p, id)?;
+    let state = state.trim().to_ascii_lowercase();
+    let (terminal, outcome) = match state.as_str() {
+        "finished" | "error" | "cancelled" | "failed" => (state.clone(), state.clone()),
+        "absent" => ("finished".to_string(), "absent".to_string()),
+        _ => bail!("-State is finished, error, cancelled, failed or absent, not `{state}`"),
+    };
+    resource_observe_input(p, json!({"schema_version":1,"op":"terminal","resource":key,"conversation":id,"state":terminal,"outcome":outcome}), "", None)?;
+    match deleted.trim().to_ascii_lowercase().as_str() {
+        result @ ("confirmed" | "already_absent") => resource_observe_input(
+            p,
+            json!({"schema_version":1,"op":"deleted","resource":key,"conversation":id,"result":result}),
+            "",
+            None,
+        ),
+        "failed" => resource_observe_input(
+            p,
+            json!({"schema_version":1,"op":"delete_failed","resource":key,"conversation":id,"code":"provider","message":message.chars().take(300).collect::<String>()}),
+            "",
+            None,
+        ),
+        other => bail!("-Deleted is confirmed, already_absent or failed, not `{other}`"),
+    }
+}
+
+/// `ledger resource -SettleWorkspace <path> -Removed true|false [-Remaining <ids>] [-Unknown <ids>]`: the
+/// cleanup agent's own listing of one workspace after its deletions (the recorded ids still present,
+/// the ids no resource recorded) and whether it removed the workspace, for every resource there.
+fn resource_settle_workspace(p: &Prepared, path: &str, removed: bool, remaining: &str, unknown: &str) -> Result<Value> {
+    let path = path.trim();
+    let keys: Vec<String> = {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        recorded_resources(&conn, None)?
+            .into_iter()
+            .filter(|resource| resource["workspace"]["path"].as_str().is_some_and(|known| known.eq_ignore_ascii_case(path)))
+            .filter_map(|resource| resource["id"].as_str().map(str::to_string))
+            .collect()
+    };
+    if keys.is_empty() {
+        bail!("unknown workspace: no recorded resource uses `{path}`");
+    }
+    let ids = |list: &str| -> Vec<String> {
+        list.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect()
+    };
+    let listed: Vec<Value> = ids(remaining).into_iter().map(|id| json!({"id":id,"state":"unknown"})).collect();
+    let strays: Vec<Value> = ids(unknown).into_iter().map(|id| json!({"id":id,"title":""})).collect();
+    let mut result = Value::Null;
+    for key in keys {
+        resource_observe_input(p, json!({"schema_version":1,"op":"listing","resource":key,"conversations":listed,"unknown":strays}), "", None)?;
+        result = resource_observe_input(p, json!({"schema_version":1,"op":"workspace","resource":key,"removed":removed}), "", None)?;
+    }
+    Ok(result)
+}
+
+fn resource_register_input(p: &Prepared, input: Value) -> Result<Value> {
     if input["schema_version"] != 1 {
         bail!("a resource registration declares schema_version 1");
     }
@@ -13829,7 +14413,97 @@ fn resource_register(p: &Prepared, path: &str) -> Result<Value> {
 
 /// The recorded resources and their durable state; the workflow drives deletion from this list
 /// instead of guessing at titles across the user's account (R322).
-fn resource_list(p: &Prepared, unit: &str) -> Result<Value> {
+/// `ledger resource -List -Brief`: the recorded conversations per DeepSeek workspace, ids only: every recorded
+/// id, the ones not deleted yet (`open`) and the ones without retained evidence (`bare`). It is what the cleanup
+/// stage acts on, small enough to relay (the full listing was about 52 KB for an eight-group paper on
+/// grossman2002integration trial 8, came back as prose, and the cleanup settled nothing).
+fn resource_brief(view: &[Value]) -> Value {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::BTreeMap<String, (Value, Vec<Value>, Vec<Value>, Vec<Value>)> = std::collections::BTreeMap::new();
+    for resource in view {
+        let path = resource["workspace"]["path"].as_str().unwrap_or_default().to_string();
+        if !groups.contains_key(&path) {
+            order.push(path.clone());
+            groups.insert(path.clone(), (resource["workspace"]["id"].clone(), Vec::new(), Vec::new(), Vec::new()));
+        }
+        let entry = groups.get_mut(&path).expect("the group was just inserted");
+        for conversation in resource["conversations"].as_array().into_iter().flatten() {
+            let id = &conversation["id"];
+            if id.is_null() {
+                continue;
+            }
+            let lost = conversation["lost"] == json!(true);
+            entry.1.push(id.clone());
+            if !lost && conversation["deleted"] != json!(true) {
+                entry.2.push(id.clone());
+            }
+            if !lost && !conversation["evidence"].is_object() {
+                entry.3.push(id.clone());
+            }
+        }
+    }
+    let workspaces: Vec<Value> = order
+        .iter()
+        .map(|path| {
+            let (id, recorded, open, bare) = &groups[path];
+            json!({"id": id, "path": path, "recorded": recorded, "open": open, "bare": bare})
+        })
+        .collect();
+    json!({"schema_version": 1, "action": "list", "brief": true, "resources": view.len(), "workspaces": workspaces})
+}
+
+/// `ledger resource -List -Counts`: the brief listing as numbers only, per workspace (recorded, open, bare). A
+/// relay passes it unchanged; on grossman2002integration trial 11 the brief listing's id arrays (about 120 ids) came
+/// back abridged ("8 ids (none open)") and without the two model workspaces, so their 83 conversations were never
+/// deleted and the run-level cleanup could not settle.
+fn resource_counts(brief: &Value) -> Value {
+    let workspaces: Vec<Value> = ps::ps_items(&brief["workspaces"])
+        .into_iter()
+        .map(|w| {
+            let n = |key: &str| w[key].as_array().map_or(0, Vec::len);
+            json!({"id": w["id"], "path": w["path"], "recorded": n("recorded"), "open": n("open"), "bare": n("bare")})
+        })
+        .collect();
+    json!({"schema_version": 1, "action": "list", "counts": true, "resources": brief["resources"], "workspaces": workspaces})
+}
+
+/// `ledger resource -List -Workspace <path>`: the brief entry of one workspace, which the agent that deletes its
+/// conversations reads itself (its ids never pass through a relay).
+fn resource_brief_of(brief: &Value, path: &str) -> Value {
+    let entry = ps::ps_items(&brief["workspaces"])
+        .into_iter()
+        .find(|w| ps::eq(&ps::s(&w["path"]), path.trim()))
+        .unwrap_or_else(|| json!({"path": path.trim(), "recorded": [], "open": [], "bare": []}));
+    json!({"schema_version": 1, "action": "list", "workspace": entry})
+}
+
+/// `ledger resource -SweepEvidence <answers folder>`: the retained evidence of every recorded conversation that has
+/// none yet, from `<folder>\<id>.txt` where the manager wrote it; the ledger reads the ids itself, so no id list
+/// passes through a relay. Prints how many it recorded and how many have no answer file (with the first eight).
+fn resource_sweep_evidence(p: &Prepared, answers: &str) -> Result<Value> {
+    let bare: Vec<String> = {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        recorded_resources(&conn, None)?
+            .iter()
+            .flat_map(|resource| resource["conversations"].as_array().cloned().unwrap_or_default())
+            .filter(|c| c["lost"] != json!(true) && !c["id"].is_null() && !c["evidence"].is_object())
+            .map(|c| ps::s(&c["id"]))
+            .collect()
+    };
+    let mut recorded = 0;
+    let mut missing = Vec::new();
+    for id in &bare {
+        let file = Path::new(answers.trim()).join(format!("{id}.txt"));
+        if file.is_file() && resource_evidence_for(p, id, Some(file.to_string_lossy().as_ref()), None).is_ok() {
+            recorded += 1;
+        } else {
+            missing.push(id.clone());
+        }
+    }
+    Ok(json!({"schema_version": 1, "action": "sweep_evidence", "recorded": recorded, "missing": missing.len(), "first_missing": missing.iter().take(8).collect::<Vec<_>>()}))
+}
+
+fn resource_list(p: &Prepared, unit: &str, brief: bool) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_binding(&tx, p)?;
@@ -13839,6 +14513,9 @@ fn resource_list(p: &Prepared, unit: &str) -> Result<Value> {
         .map(|resource| resource["label"].clone())
         .unwrap_or(Value::Null);
     tx.commit()?;
+    if brief {
+        return Ok(resource_brief(&resource_view(&resources)));
+    }
     Ok(json!({
         "schema_version":1,
         "action":"list",
@@ -13925,6 +14602,10 @@ fn usage_facts(record: &Value) -> Result<Value> {
 /// cleanup unit is claimed, only its current token may record another fact (T13).
 fn resource_observe(p: &Prepared, path: &str, unit: &str, token: Option<i64>) -> Result<Value> {
     let input = canon::read_json(path).context("invalid resource observation")?;
+    resource_observe_input(p, input, unit, token)
+}
+
+fn resource_observe_input(p: &Prepared, input: Value, unit: &str, token: Option<i64>) -> Result<Value> {
     if input["schema_version"] != 1 {
         bail!("a resource observation declares schema_version 1");
     }
@@ -14569,12 +15250,7 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
                 ));
             }
         }
-        let has_run_usage = resource["conversations"].as_array().is_some_and(|list| {
-            list.iter().any(|conversation| {
-                conversation["usage"].is_object() && conversation["usage"]["unavailable"].is_null()
-            })
-        });
-        if resource["usage"].is_null() && !has_run_usage {
+        if !usage_retained(resource) {
             issues.push(cleanup_issue(
                 "operator",
                 "cleanup_evidence_missing",
@@ -14859,6 +15535,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "gate"
                 | "next"
                 | "renew"
+                | "hold"
                 | "done"
                 | "fail"
                 | "rerun-list"
@@ -14873,7 +15550,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "resume"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource, report or adopt"
+                "ledger requires init, status, gate, next, renew, hold, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource, report or adopt"
             );
         }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
@@ -14881,6 +15558,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Layer", "Take", "Owner", "Wait", "Lease"]
         } else if command == "renew" {
             vec!["Out", "Unit", "Token"]
+        } else if command == "hold" {
+            vec!["Out", "Units", "Seconds", "Every"]
         } else if command == "fail" {
             vec!["Out", "Unit", "Token", "Class", "Fault"]
         } else if command == "done" {
@@ -14898,17 +15577,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else if command == "job" {
             vec!["Out", "Unit", "Token", "Register", "Observe", "Cancel"]
         } else if command == "resource" {
-            vec!["Out", "Unit", "Token", "Register", "Observe", "Recover"]
+            vec!["Out", "Unit", "Token", "Register", "Observe", "Recover", "RegisterId", "Workspace", "EvidenceFor", "Evidence", "Usage", "Settle", "State", "Deleted", "Message", "SettleWorkspace", "Removed", "Remaining", "Unknown", "SweepEvidence"]
+        } else if command == "status" {
+            vec!["Out", "Layer", "Units", "Held"]
         } else {
             vec!["Out", "Layer"]
         };
         let a = Args::parse(
             &argv[1..],
             &params,
-            if command == "job" || command == "resource" {
+            if command == "job" {
                 &["List"]
+            } else if command == "resource" {
+                &["List", "Brief", "Counts"]
             } else if command == "status" {
-                &["Verify"]
+                &["Verify", "Summary"]
+            } else if command == "reclaim" {
+                &["Release"]
+            } else if command == "next" || command == "gate" {
+                &["Brief"]
             } else {
                 &[]
             },
@@ -15011,13 +15698,32 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .filter(|n| *n > 0)
                     .context("-Token must be a positive integer")?;
             }
-            let actions = ["Register", "Observe", "Recover"]
+            // -SweepEvidence is an action of its own (grossman2002integration trial 19: it was left out of this count, so
+            // the cleanup stage's evidence sweep was always refused).
+            let actions = ["Register", "Observe", "Recover", "RegisterId", "EvidenceFor", "Settle", "SettleWorkspace", "SweepEvidence"]
                 .iter()
                 .filter(|name| a.has(name))
                 .count()
                 + usize::from(a.flag("List"));
             if actions != 1 {
-                bail!("resource takes exactly one of -Register, -Observe, -Recover or -List");
+                bail!("resource takes exactly one of -Register, -Observe, -Recover, -RegisterId, -EvidenceFor, -Settle, -SettleWorkspace, -SweepEvidence or -List");
+            }
+            if a.has("Settle") && (a.required("State")?.trim().is_empty() || a.required("Deleted")?.trim().is_empty()) {
+                bail!("-Settle needs -State and -Deleted");
+            }
+            if a.has("SettleWorkspace") && !matches!(a.required("Removed")?.trim(), "true" | "false") {
+                bail!("-SettleWorkspace needs -Removed true or false");
+            }
+            if a.has("RegisterId") {
+                if a.required("RegisterId")?.trim().is_empty() || a.required("Workspace")?.trim().is_empty() {
+                    bail!("-RegisterId needs a conversation id and -Workspace");
+                }
+                if a.required("Unit")?.trim() != "run" {
+                    a.required("Token")?;
+                }
+            }
+            if a.has("EvidenceFor") && !a.has("Evidence") && !a.has("Usage") {
+                bail!("-EvidenceFor needs -Evidence, -Usage, or both");
             }
             for name in ["Register", "Observe", "Recover"] {
                 if a.has(name) && a.required(name)?.trim().is_empty() {
@@ -15082,7 +15788,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
         let only = a.has("Unit").then(|| a.str("Unit"));
-        reclaim(&p, only.as_deref(), a.int_or("Take", 64)?)?
+        reclaim(&p, only.as_deref(), a.int_or("Take", 64)?, a.flag("Release"))?
     } else if command == "job" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
@@ -15096,19 +15802,76 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else {
             job_list(&p, &unit)?
         }
+    } else if command == "resource" && ["RegisterId", "Settle", "SettleWorkspace", "EvidenceFor"].iter().any(|name| a.has(name)) {
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        let recorded = if a.has("RegisterId") {
+            let token = a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?;
+            resource_register_id(&p, &a.str("Unit"), token, &a.str("RegisterId"), &a.str("Workspace"))?
+        } else if a.has("Settle") {
+            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"))?
+        } else if a.has("SettleWorkspace") {
+            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"))?
+        } else {
+            let evidence = a.has("Evidence").then(|| a.str("Evidence"));
+            let usage = a.has("Usage").then(|| a.str("Usage"));
+            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref())?
+        };
+        let (key, value) = if a.has("RegisterId") {
+            ("conversation", a.str("RegisterId"))
+        } else if a.has("Settle") {
+            ("conversation", a.str("Settle"))
+        } else if a.has("SettleWorkspace") {
+            ("workspace", a.str("SettleWorkspace"))
+        } else {
+            ("conversation", a.str("EvidenceFor"))
+        };
+        let mut brief = record_brief(&recorded);
+        brief[key] = json!(value.trim());
+        brief
     } else if command == "resource" {
         if a.has("Register") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             resource_register(&p, &a.str("Register"))?
+        } else if a.has("RegisterId") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            let token = a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?;
+            resource_register_id(&p, &a.str("Unit"), token, &a.str("RegisterId"), &a.str("Workspace"))?
+        } else if a.has("Settle") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"))?
+        } else if a.has("SettleWorkspace") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"))?
+        } else if a.has("EvidenceFor") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            let evidence = a.has("Evidence").then(|| a.str("Evidence"));
+            let usage = a.has("Usage").then(|| a.str("Usage"));
+            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref())?
         } else if a.has("Observe") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             resource_observe(&p, &a.str("Observe"), &a.str("Unit"), a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?)?
+        } else if a.has("SweepEvidence") {
+            let mut zt = crate::zt::start()?;
+            let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+            resource_sweep_evidence(&p, &a.str("SweepEvidence"))?
         } else {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
-            resource_list(&p, &a.str("Unit"))?
+            let listed = resource_list(&p, &a.str("Unit"), a.flag("Brief") || a.flag("Counts") || a.has("Workspace"))?;
+            if a.flag("Counts") {
+                resource_counts(&listed)
+            } else if a.has("Workspace") {
+                resource_brief_of(&listed, &a.str("Workspace"))
+            } else {
+                listed
+            }
         }
     } else if command == "notes" {
         let mut zt = crate::zt::start()?;
@@ -15124,7 +15887,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         math_register(&p, &mut zt)?
     } else if matches!(
         command.as_str(),
-        "init" | "next" | "renew" | "done" | "fail"
+        "init" | "next" | "renew" | "hold" | "done" | "fail"
     ) {
         let mut zt = crate::zt::start()?;
         let preparing = matches!(command.as_str(), "done" | "renew" | "fail")
@@ -15134,6 +15897,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             init(&p)?
         } else if command == "renew" {
             renew(&p, &a.str("Unit"), a.str("Token").parse()?)?
+        } else if command == "hold" {
+            let bounded = |name: &str, default: u64, max: u64| -> Result<u64> {
+                if !a.has(name) {
+                    return Ok(default);
+                }
+                a.str(name).parse::<u64>().ok().filter(|n| (1..=max).contains(n)).with_context(|| format!("-{name} must be a whole number of seconds from 1 through {max}"))
+            };
+            hold(&p, &hold_targets(&a.str("Units"))?, bounded("Seconds", 540, 580)?, bounded("Every", 60, 120)?)?
         } else if command == "done" {
             let path = a.str("Outputs");
             if preparing {
@@ -15319,7 +16090,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 &fault,
             )?
         } else {
-            next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?, a.int_or("Lease", 0)?)?
+            {
+                let mut claimed = next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?, a.int_or("Lease", 0)?)?;
+                if a.flag("Brief") {
+                    let units = brief_units(claimed["units"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                    claimed["units"] = json!(units);
+                }
+                claimed
+            }
         }
     } else if command == "rerun-list" {
         rerun_list(Path::new(&a.str("Out")))?
@@ -15372,7 +16150,19 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             close_enumerations(&tx)?;
             tx.commit()?;
         }
-        status(Path::new(&a.str("Out")), &a.str("Layer"), verified)?
+        let full = status(Path::new(&a.str("Out")), &a.str("Layer"), verified)?;
+        if command == "gate" && a.flag("Brief") {
+            gate_brief(&full, &a.str("Layer"))
+        } else if command == "status" && a.has("Units") {
+            let ids: Vec<String> = a.str("Units").split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect();
+            unit_view(full["units"].as_array().map(Vec::as_slice).unwrap_or(&[]), &ids)
+        } else if command == "status" && a.has("Held") {
+            held_view(full["units"].as_array().map(Vec::as_slice).unwrap_or(&[]), &a.str("Held"))
+        } else if command == "status" && a.flag("Summary") {
+            status_summary(&full)
+        } else {
+            full
+        }
     };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(if command == "gate" && result["settled"] != true {
@@ -15386,6 +16176,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 mod tests {
     use super::*;
 
+    // A card split appends the new Card to its group's owned manifest (`add_owned`): a manifest whose leading
+    // lines still hash to the frozen value is the frozen enumeration plus split Cards; any other change is not
+    // (grossman2002integration trial 19: the whole-book cycle split a Card of group 8 and link-start refused
+    // `owned-g08.txt` with a hash mismatch).
+    #[test]
+    fn an_owned_manifest_extended_by_split_cards_keeps_its_frozen_prefix() {
+        let frozen = "B/8\nB/8|a\n";
+        let sha = canon::sha256_hex(frozen.as_bytes());
+        assert!(frozen_prefix_holds("B/8\nB/8|a\nB/8|b\n", &sha));
+        assert!(frozen_prefix_holds(frozen, &sha));
+        assert!(!frozen_prefix_holds("B/8\nB/8|c\nB/8|b\n", &sha), "a changed line is not an extension");
+        assert!(!frozen_prefix_holds("B/8\n", &sha), "a shortened manifest is not an extension");
+    }
+
     // #92: a claim that starts a provider run asks for that run's cap, and the base lease never
     // shortens the request.
     #[test]
@@ -15394,6 +16198,299 @@ mod tests {
         assert_eq!(claim_lease(120, 1500), 1500);
         assert_eq!(claim_lease(2, 60), 60);
         assert_eq!(LEASE_MAX, 7200);
+    }
+
+    // A claim reply is relayed whole by one manager, so it carries only the claimed units and the
+    // layer's scheduling state. The full status (the dependency graph of a 171-group book) made the
+    // reply tens of kilobytes, and a relay that could not return it lost the claimed unit.
+    #[test]
+    fn a_claim_reply_carries_the_units_and_the_scheduling_state_only() {
+        let status = json!({
+            "schema_version":1,"run_id":"r1","invocation":2,"citation_key":"K","variant":"econ","layer":"digest",
+            "sealed":true,"settled":false,"complete":false,"counts":{"open":3},
+            "dependencies":[{"unit":"audit/book@1"}],"unresolved":["digest/g001@1"],"units":[{"id":"x"}],
+            "archive_identity":{"id":"a"},"publications":[],"coverage_faults":[],
+        });
+        let reply = claim_reply(&status, &[json!({"id":"digest/g001@1","token":1})]);
+        assert_eq!(reply["units"], json!([{"id":"digest/g001@1","token":1}]));
+        for key in ["schema_version", "run_id", "invocation", "citation_key", "variant", "layer", "sealed", "settled", "complete", "counts"] {
+            assert_eq!(reply[key], status[key], "{key}");
+        }
+        for key in ["dependencies", "unresolved", "archive_identity", "publications", "coverage_faults"] {
+            assert!(reply.get(key).is_none(), "{key} is not part of a claim reply");
+        }
+    }
+
+    // A group's completion registers its child units and makes the book units wait on them (#69/#70:
+    // cards-book on cards/gNNN, link-check on link/gNNN). The preparation registration check accepts exactly
+    // those child prerequisites on top of the frozen ones; any other change is still a mismatch.
+    #[test]
+    fn the_registration_check_accepts_the_child_prerequisites_of_book_units() {
+        use std::collections::BTreeSet;
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let needs: BTreeSet<_> = [pair("digest/g001@1", "settled")].into();
+        let children: BTreeSet<_> = [pair("cards/g001@1", "cards"), pair("link/g001@1", "link")].into();
+        let with_cards: BTreeSet<_> = [pair("digest/g001@1", "settled"), pair("cards/g001@1", "settled")].into();
+        assert!(registration_deps_ok("cards-book/book@1", &needs, &with_cards, &children));
+        assert!(registration_deps_ok("cards-book/book@1", &needs, &needs, &children));
+        let with_link: BTreeSet<_> = [pair("digest/g001@1", "settled"), pair("link/g001@1", "settled")].into();
+        assert!(!registration_deps_ok("cards-book/book@1", &needs, &with_link, &children), "a Link child is not a cards-book prerequisite");
+        assert!(registration_deps_ok("link-check/book@1", &needs, &with_link, &children));
+        let missing: BTreeSet<_> = [pair("cards/g001@1", "settled")].into();
+        assert!(!registration_deps_ok("cards-book/book@1", &needs, &missing, &children), "a frozen prerequisite may not disappear");
+        let foreign: BTreeSet<_> = [pair("digest/g001@1", "settled"), pair("audit/book@1", "settled")].into();
+        assert!(!registration_deps_ok("organize/book@1", &needs, &foreign, &children));
+    }
+
+    // A brief gate lists the coverage faults of its own layer; `complete` keeps its run-wide meaning (the
+    // layer's own completion is `settled` with nothing open, failed or blocked).
+    #[test]
+    fn a_brief_gate_lists_only_its_own_layers_coverage_faults() {
+        let faults = vec![
+            json!({"code":"required_unit_missing_or_changed","unit":"cards-book/book@1"}),
+            json!({"code":"prepared_group_missing_or_changed","unit":"digest/g002@1"}),
+        ];
+        assert!(layer_faults(&faults, "events").is_empty());
+        assert_eq!(layer_faults(&faults, "digest").len(), 1);
+        assert_eq!(layer_faults(&faults, "").len(), 2);
+    }
+
+    // `ledger gate -Brief`: the gate line a layer driver relays (the full status was about 49 KB on an
+    // eight-group paper, and a relay that summarized it left the driver with no gate at all).
+    #[test]
+    fn a_brief_gate_keeps_the_layer_decision_only() {
+        let full = json!({
+            "schema_version":1,"run_id":"r","invocation":1,"layer":"events","sealed":true,"settled":true,"complete":true,
+            "counts":{"open":0,"done":8,"failed":0,"per_layer":{"digest":{"total":8}}},
+            "unresolved":["events/g001@1","cards-book/book@1"],
+            "coverage_faults":[{"code":"required_unit_missing_or_changed","unit":"cards-book/book@1"}],
+            "units":[{"id":"x"}],"dependencies":[{"unit":"y"}],
+        });
+        let brief = gate_brief(&full, "events");
+        for key in ["schema_version", "run_id", "invocation", "layer", "sealed", "settled"] {
+            assert_eq!(brief[key], full[key], "{key}");
+        }
+        assert_eq!(brief["counts"], json!({"open":0,"done":8,"failed":0}));
+        assert_eq!(brief["unresolved"], json!(["events/g001@1"]));
+        assert_eq!(brief["coverage_faults"], json!([]));
+        assert!(brief.get("units").is_none() && brief.get("dependencies").is_none());
+        assert_eq!(brief["complete"], json!(false), "a layer with an unresolved unit of its own is not complete");
+    }
+
+    // A layer gate decides `complete` from the layer's own facts; the run-wide decision also waits on later
+    // layers (grossman2002integration trial 4: events 8/8 done, settled, reported active).
+    #[test]
+    fn a_brief_gate_is_complete_when_its_own_layer_is() {
+        let full = json!({
+            "schema_version":1,"layer":"events","sealed":true,"settled":true,"complete":false,
+            "counts":{"declared":8,"done":8,"noop":0,"refused":0,"failed":0,"blocked":0,"registered":0,"ready":0,"claimed":0,"retry":0,"open":0,"total":8},
+            "unresolved":["cards-book/book@1"],
+            "coverage_faults":[{"code":"required_unit_missing_or_changed","unit":"cards-book/book@1"}],
+        });
+        assert_eq!(gate_brief(&full, "events")["complete"], json!(true));
+        // explain on trial 7: no unit at all, sealed and settled, is complete; an unsealed empty queue is not.
+        let empty = json!({"layer":"explain","sealed":true,"settled":true,"complete":false,"counts":{"open":0,"failed":0,"total":0},"unresolved":[],"coverage_faults":[]});
+        assert_eq!(gate_brief(&empty, "explain")["complete"], json!(true));
+        let mut unsealed = empty.clone();
+        unsealed["sealed"] = json!(false);
+        assert_eq!(gate_brief(&unsealed, "explain")["complete"], json!(false));
+        assert_eq!(gate_brief(&full, "")["complete"], json!(false), "the run-wide gate keeps the run-wide decision");
+        let mut failed = full.clone();
+        failed["counts"]["failed"] = json!(1);
+        assert_eq!(gate_brief(&failed, "events")["complete"], json!(false));
+        let mut unsettled = full.clone();
+        unsettled["settled"] = json!(false);
+        assert_eq!(gate_brief(&unsettled, "events")["complete"], json!(false));
+        let mut faulted = full.clone();
+        faulted["coverage_faults"] = json!([{"code":"prepared_group_missing_or_changed","unit":"events/g002@1"}]);
+        assert_eq!(gate_brief(&faulted, "events")["complete"], json!(false));
+    }
+
+    // `ledger next -Brief`: a block manager relays the claim line, so each claimed unit keeps only what the
+    // commands it runs need (id, token, input hash, lease); the frozen inputs stay in the ledger.
+    #[test]
+    fn a_brief_claim_drops_the_unit_inputs() {
+        let claimed = vec![json!({"id":"digest/g001@1","owner":"lane","token":1,"lease_until":9,"lease_seconds":5,"input_hash":"ih","inputs":{"sections":[1,2,3]}})];
+        let brief = brief_units(&claimed);
+        assert_eq!(brief, vec![json!({"id":"digest/g001@1","owner":"lane","token":1,"lease_until":9,"lease_seconds":5,"input_hash":"ih"})]);
+        let model = vec![json!({"id":"models/g001-m0000@1","token":1,"input_hash":"hm","inputs":{"fingerprint":"f","header":"Key/1|b","producer":{"group":{"sections":[1]}}}})];
+        assert_eq!(brief_units(&model), vec![json!({"id":"models/g001-m0000@1","token":1,"input_hash":"hm","inputs":{"header":"Key/1|b"}})], "a brief claim keeps the Model address only");
+    }
+
+    // `ledger status -Units`: the outcome of named units, small enough to relay, so a block driver decides
+    // each unit from the ledger instead of a manager's report.
+    #[test]
+    fn a_unit_view_is_the_state_of_the_named_units_only() {
+        let units = vec![
+            json!({"id":"digest/g001@1","layer":"digest","state":"done","attempts":1,"token":1,"owner":"lane","fault_class":null,"result":{"disposition":"verified","owned":["a","b"]},"inputs":{"big":1}}),
+            json!({"id":"digest/g002@1","layer":"digest","state":"claimed","attempts":1,"token":2,"owner":"lane","input_hash":"h2","fault_class":null,"result":null}),
+            json!({"id":"digest/g003@1","layer":"digest","state":"ready"}),
+        ];
+        let view = unit_view(&units, &["digest/g002@1".to_string(), "digest/g001@1".to_string(), "digest/g009@1".to_string()]);
+        assert_eq!(view["units"][0], json!({"id":"digest/g002@1","state":"claimed","token":2,"input_hash":"h2","attempts":1,"fault_class":null,"disposition":null}));
+        assert_eq!(view["units"][1], json!({"id":"digest/g001@1","state":"done","token":1,"input_hash":null,"attempts":1,"fault_class":null,"disposition":"verified"}));
+        assert_eq!(view["units"][2], json!({"id":"digest/g009@1","state":"unknown"}));
+    }
+
+    // model-deps: a reference to a model this batch planned (in its order, with a plan hash) is the
+    // compiler's to resolve; a model of another batch, a deferred one, or the model itself is not.
+    #[test]
+    fn a_reference_inside_the_batch_needs_no_ledger_wait() {
+        // The compiler has no plan hash yet at model-deps time; the plan files decide.
+        let batch = std::env::temp_dir().join(format!("planned-in-batch-{}", std::process::id()));
+        for model in ["K_2_a", "K_3_a", "K_4_a"] {
+            std::fs::create_dir_all(batch.join(model)).unwrap();
+            std::fs::write(batch.join(model).join("plan.json"), "{}").unwrap();
+        }
+        let compiler = json!({"order":["K/2|a","K/3|a"],"models":{"K/2|a":{"status":"brief"},"K/3|a":{"status":"brief"},"K/4|a":{"status":"deferred"}}});
+        assert!(planned_in_batch(&compiler, &batch, "K/2|a", "K/3|a"));
+        assert!(!planned_in_batch(&compiler, &batch, "K/3|a", "K/3|a"));
+        assert!(!planned_in_batch(&compiler, &batch, "K/4|a", "K/3|a"));
+        assert!(!planned_in_batch(&compiler, &batch, "K/7|a", "K/3|a"));
+        std::fs::remove_dir_all(&batch).unwrap();
+    }
+
+    // The counts listing keeps numbers only; the one-workspace listing holds that workspace's ids.
+    #[test]
+    fn the_cleanup_listings_carry_no_id_list_through_a_relay() {
+        let brief = json!({"schema_version":1,"action":"list","brief":true,"resources":2,"workspaces":[
+            {"id":"W1","path":"D:/w1","recorded":["a","b"],"open":["b"],"bare":[]},
+            {"id":"W2","path":"D:/w2","recorded":["c"],"open":["c"],"bare":["c"]}]});
+        assert_eq!(resource_counts(&brief)["workspaces"][1], json!({"id":"W2","path":"D:/w2","recorded":1,"open":1,"bare":1}));
+        assert_eq!(resource_brief_of(&brief, "D:/w1")["workspace"]["open"], json!(["b"]));
+        assert_eq!(resource_brief_of(&brief, "D:/none")["workspace"]["open"], json!([]));
+    }
+
+    // relocate: the owned and source manifests follow a recorded move; other lines and files stay as they are.
+    #[test]
+    fn a_recorded_move_rewrites_the_owned_and_source_manifests() {
+        let out = std::env::temp_dir().join(format!("relocate-manifests-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("owned-g01.txt"), "K/1|a\r\n374/1|b\r\n374/1|c\r\n").unwrap();
+        std::fs::write(out.join("src-g01.txt"), "374/1|b\tsections/s01.md:3-4\nK/1|a\tsections/s01.md:1-2\n").unwrap();
+        std::fs::write(out.join("allow-g01.txt"), "374/1|b\n").unwrap();
+        let mapping: std::collections::BTreeMap<String, String> = [("374/1|b".to_string(), "374/1|a|a".to_string())].into_iter().collect();
+        let rewritten = relocate_manifests(&out, &mapping).unwrap();
+        assert_eq!(rewritten, vec!["owned-g01.txt".to_string(), "src-g01.txt".to_string()]);
+        assert_eq!(std::fs::read_to_string(out.join("owned-g01.txt")).unwrap(), "K/1|a\r\n374/1|a|a\r\n374/1|c\r\n");
+        assert_eq!(std::fs::read_to_string(out.join("src-g01.txt")).unwrap(), "374/1|a|a\tsections/s01.md:3-4\nK/1|a\tsections/s01.md:1-2\n");
+        assert_eq!(std::fs::read_to_string(out.join("allow-g01.txt")).unwrap(), "374/1|b\n");
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    // An agent-facing record command answers its top-level facts only, never the resource views.
+    #[test]
+    fn a_record_command_answers_one_short_line() {
+        let brief = record_brief(&json!({"schema_version":1,"run_id":"r1","action":"observe","op":"workspace","cleanup_unit":"cleanup/run-t1@1","resources":[{"conversations":[1,2,3]}],"view":{"a":1}}));
+        assert_eq!(brief, json!({"schema_version":1,"action":"observe","op":"workspace","cleanup_unit":"cleanup/run-t1@1","recorded":true}));
+    }
+
+    // cleanup-finish: a resource retains its usage as a reading or as an explicit unavailable record; only a
+    // resource with neither is missing its evidence.
+    #[test]
+    fn an_unavailable_usage_record_is_retained_usage() {
+        assert!(usage_retained(&json!({"usage":{"total":{"input_tokens":1}},"conversations":[]})));
+        assert!(usage_retained(&json!({"usage":null,"conversations":[{"id":"a","usage":{"total":{"input_tokens":1}}}]})));
+        assert!(usage_retained(&json!({"usage":null,"conversations":[{"id":"a","usage":{"unavailable":"the run's result stated no token usage"}}]})));
+        assert!(!usage_retained(&json!({"usage":null,"conversations":[{"id":"a","usage":null}]})));
+    }
+
+    // `ledger resource -List -Brief`: per workspace, every recorded id, the ones still to delete, and the ones
+    // without evidence; a lost creation response is neither open nor bare.
+    #[test]
+    fn a_brief_resource_list_groups_the_ids_by_workspace() {
+        let view = vec![
+            json!({"workspace":{"id":"W1","path":"D:/w1"},"conversations":[{"id":"a","lost":false,"deleted":false,"evidence":{"answer":{}}},{"id":"b","lost":false,"deleted":true,"evidence":null}]}),
+            json!({"workspace":{"id":"W2","path":"D:/w2"},"conversations":[{"id":"c","lost":true,"deleted":false,"evidence":null}]}),
+            json!({"workspace":{"id":"W1","path":"D:/w1"},"conversations":[{"id":"d","lost":false,"deleted":false,"evidence":null}]}),
+        ];
+        let brief = resource_brief(&view);
+        assert_eq!(brief["resources"], json!(3));
+        assert_eq!(brief["workspaces"][0], json!({"id":"W1","path":"D:/w1","recorded":["a","b","d"],"open":["a","d"],"bare":["b","d"]}));
+        assert_eq!(brief["workspaces"][1], json!({"id":"W2","path":"D:/w2","recorded":["c"],"open":[],"bare":[]}));
+    }
+
+    // An owned Card the frozen gap set left out needs no kinded Link of its own; a writer's already_linked does.
+    #[test]
+    fn only_a_claimed_already_linked_must_show_its_kinded_link() {
+        assert!(!already_linked_needs_kind(&json!(NO_GAP_REASON)));
+        assert!(already_linked_needs_kind(&json!("本卡已有对照句")));
+        assert!(already_linked_needs_kind(&Value::Null));
+    }
+
+    // A Link target is the whole address inside [[...]]: ZT addresses carry '|'.
+    #[test]
+    fn a_paragraph_target_keeps_the_whole_address() {
+        assert_eq!(
+            paragraph_targets("依赖 [[b/2|a|a|17]] 的均衡条件，对应 [[b/3]] 与 [[ b/3|c ]]。").unwrap(),
+            vec!["b/2|a|a|17".to_string(), "b/3".to_string(), "b/3|c".to_string()]
+        );
+    }
+
+    // `ledger hold -Units`: the claims a long step keeps current, named <unit id>:<token>.
+    #[test]
+    fn a_hold_names_each_claim_by_unit_and_token() {
+        assert_eq!(
+            hold_targets(" models/g001-m0000@1:1, models/g002-m0001@1:3 ").unwrap(),
+            vec![("models/g001-m0000@1".to_string(), 1), ("models/g002-m0001@1".to_string(), 3)]
+        );
+        assert!(hold_targets("models/g001-m0000@1").is_err(), "a claim needs its token");
+        assert!(hold_targets("models/g001-m0000@1:0").is_err(), "a token is positive");
+        assert!(hold_targets(" , ").is_err(), "a hold names at least one claim");
+    }
+
+    // `ledger status -Held <owner>`: the units one claim owner holds, with their tokens and inputs, so a
+    // driver whose claim line came back summarized takes its units from the ledger.
+    #[test]
+    fn a_held_view_lists_only_the_owners_current_claims() {
+        let units = vec![
+            json!({"id":"cards/g005@1","layer":"cards","state":"claimed","token":3,"owner":"cards claim 2","lease_until":9,"input_hash":"h5","inputs":{"group":5}}),
+            json!({"id":"cards/g006@1","layer":"cards","state":"claimed","token":4,"owner":"cards claim 1","lease_until":9,"input_hash":"h6","inputs":{"group":6}}),
+            json!({"id":"cards/g007@1","layer":"cards","state":"done","token":5,"owner":"cards claim 2","lease_until":null,"input_hash":"h7","inputs":{"group":7}}),
+        ];
+        let view = held_view(&units, "cards claim 2");
+        assert_eq!(view["owner"], json!("cards claim 2"));
+        assert_eq!(view["units"], json!([{"id":"cards/g005@1","owner":"cards claim 2","token":3,"lease_until":9,"input_hash":"h5","inputs":null}]));
+        let models = vec![json!({"id":"models/g001-m0000@1","state":"claimed","token":1,"owner":"models claim 1","lease_until":9,"input_hash":"hm","inputs":{"header":"Key/1|b","producer":{"big":1}}})];
+        assert_eq!(held_view(&models, "models claim 1")["units"][0]["inputs"], json!({"header":"Key/1|b"}));
+    }
+
+    // `ledger reclaim -Release` takes a claim before its lease ends only when nothing happened to it
+    // for the quiet window: a live holder renews every 30 seconds (a heartbeat) or with every wait
+    // round (a manager), so a quiet claim belongs to a stopped run.
+    #[test]
+    fn a_release_takes_only_a_quiet_claim() {
+        assert!(quiet_claim(Some(1_000_000), 1_000_000 + 121_000, 120));
+        assert!(!quiet_claim(Some(1_000_000), 1_000_000 + 119_000, 120));
+        assert!(quiet_claim(None, 5, 120), "a claim with no recorded activity is quiet");
+    }
+
+    // `ledger status -Summary` keeps the run's identity, settings and counts and replaces the units
+    // with their number per layer and state, so a workflow can read it through one relayed line
+    // (the full status of a 171-group book is about 450 KB).
+    #[test]
+    fn a_status_summary_counts_the_units_per_layer() {
+        let full = json!({
+            "schema_version":1,"run_id":"r1","invocation":2,"resume_count":1,"citation_key":"Key",
+            "variant":"econ","settings":{"max_attempts":3,"dsh_run_cap":1200},
+            "counts":{"declared":4},"settled":false,"complete":false,
+            "dependencies":[{"unit":"audit/book@1","needs":"digest/g001@1"}],
+            "units":[
+                {"id":"digest/g001@1","layer":"digest","state":"ready","progress":{"big":"x"}},
+                {"id":"digest/g002@1","layer":"digest","state":"registered"},
+                {"id":"terms/book@1","layer":"terms","state":"ready"},
+                {"id":"prepare/book@1","layer":"prepare","state":"done"},
+            ],
+        });
+        let s = status_summary(&full);
+        assert_eq!(s["citation_key"], json!("Key"));
+        assert_eq!(s["variant"], json!("econ"));
+        assert_eq!(s["settings"]["dsh_run_cap"], json!(1200));
+        assert_eq!(s["invocation"], json!(2));
+        assert_eq!(s["counts"]["declared"], json!(4));
+        assert_eq!(s["layers"]["digest"], json!({"ready":1,"registered":1,"total":2}));
+        assert_eq!(s["layers"]["terms"]["total"], json!(1));
+        assert!(s.get("units").is_none() && s.get("dependencies").is_none());
     }
 
     // A start step (terms plan, group start, link start) refreshes the claim's lease but never

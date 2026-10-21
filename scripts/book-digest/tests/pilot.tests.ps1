@@ -143,8 +143,10 @@ try {
     Assert ($plan.exit -eq 0) "plan accepts a complete authorization record ($($plan.text))"
     $planRecord = Get-Content -LiteralPath (Join-Path $work 'pilot-plan.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($planRecord.decision -eq 'pending-human') 'the plan records the pending human decision, never an approval'
-    Assert ($planRecord.identity.citation_key -eq 'PilotGate' -and $planRecord.identity.contracts.variant_version -eq '5.0.0') 'the plan names the prepared book and the frozen variant version (S26-AC01)'
-    Assert ($planRecord.identity.workflow.version -eq '5.0.0' -and $planRecord.identity.workflow.script_sha256 -eq $planRecord.identity.workflow.recorded_sha256) 'the plan names the installed frozen Workflow and verifies its script hash'
+    # The frozen variant version is the econ blueprint's own, never a number copied into the test.
+    $variantVersion = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\workflow\zt-econ-digest.blueprint.json') | ConvertFrom-Json).version
+    Assert ($planRecord.identity.citation_key -eq 'PilotGate' -and $planRecord.identity.contracts.variant_version -eq $variantVersion) 'the plan names the prepared book and the frozen variant version (S26-AC01)'
+    Assert ($planRecord.identity.workflow.version -eq $variantVersion -and $planRecord.identity.workflow.script_sha256 -eq $planRecord.identity.workflow.recorded_sha256) 'the plan names the installed frozen Workflow and verifies its script hash'
     Assert (@($planRecord.binaries).Count -eq 3 -and ($planRecord.binaries | Where-Object { $_.name -eq 'zt-digest' }).sha256) 'the plan names all three installed binaries with their SHA-256'
     Assert ($planRecord.protected.count -ge 2 -and $planRecord.protected.prepared -ge 4 -and $planRecord.protected.old_digest.Length -eq 64) 'the plan fixes the protected scope with one digest over every old Card and names the prepared placeholders in the approved scope (S26-AC03)'
     Assert ($planRecord.identity.settings.max_attempts -eq 3 -and $planRecord.identity.settings.dsh_run_cap -eq 1200) 'the plan names the caps the run will use'

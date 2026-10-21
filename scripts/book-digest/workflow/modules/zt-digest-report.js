@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v12 ====
+// ==== module zt-digest-report v14 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models or hubs with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -15,7 +15,7 @@
 // of the run's own term table and the scoped restatement resolution, with their report ids, completeness and
 // counts, so the integrated digest path reports what it reviewed and what it left pending (S23/#115).
 defineModule({
-  id: 'zt-digest-report', version: '12', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '14', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the concept and restatement reviews, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -54,7 +54,8 @@ defineModule({
     // exact per-run usage and one supported resume. It never substitutes for a stage's own checked output.
     const runReport = (p.cleanup && p.cleanup.report) || null
     const runUsage = (p.cleanup && p.cleanup.usage) || (runReport && runReport.usage) || null
-    // The group stage is a per-item chain pipeline now: each item's Digest chain is its own report.
+    // The group stage reports one entry per digest unit (blocks of up to eight per manager); an older
+    // per-item stage output (items) is still read the same way.
     const digestReports = Array.isArray(p.digest && p.digest.items)
       ? p.digest.items.map(i => ({ group: (i.item && i.item.n) ?? null, ...(i.steps && i.steps.group ? i.steps.group : {}), status: i.ok ? ((i.steps && i.steps.group && i.steps.group.status) || 'done') : 'failed', errors: i.error || null }))
       : (p.digest && p.digest.reports) || []
@@ -63,7 +64,7 @@ defineModule({
       : null
     const schedule = {
       settings: { maxAttempts: Z.MAX_ATTEMPTS, dshRunCap: Z.DSH_RUN_CAP },
-      digest: Array.isArray(p.digest && p.digest.items) ? { verified: digestReports.filter(r => r.status === 'done').length, failed: digestReports.filter(r => r.status !== 'done').length } : null,
+      digest: p.digest && (Array.isArray(p.digest.items) || Array.isArray(p.digest.reports)) ? { verified: digestReports.filter(r => r.status === 'done').length, failed: digestReports.filter(r => r.status !== 'done').length } : null,
       cards: layerSummary(p.cards),
       models: layerSummary(p.models),
       explain: layerSummary(p.explain),
@@ -93,7 +94,7 @@ defineModule({
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
       digest: digestReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, disposition: r.disposition || null, owned: r.owned ?? null, errors: r.errors || null })),
-      models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: (r.parts || []).length, relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
+      models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: Array.isArray(r.parts) ? r.parts.length : (Number(r.parts) || 0), relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
       model_cleanup: (p.models && p.models.model_cleanup) || null,
       link: linkReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, gaps: r.gaps ?? null, skipped: r.skipped ?? null, scheduled: r.scheduled ?? null, linked: r.linked ?? null, linked_from: r.linked_from ?? null, already_linked: r.already_linked ?? null, no_link: r.no_link ?? null, provider_runs: r.provider_runs ?? null, changed: r.changed || [], quality: r.quality || null, errors: r.errors || null })),
       link_gaps: linkGaps,

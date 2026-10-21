@@ -603,17 +603,12 @@ fn proposals_from_rows(rows: &[zt_check::check::TermRow]) -> Vec<Value> {
         } else {
             format!("本书的「{title}」：{meaning}")
         };
-        let mut terms: Vec<String> = vec![title.clone()];
-        for word in &row.avoid {
-            let word = line(word, MAX_LINE);
-            if !word.is_empty() && !terms.contains(&word) {
-                terms.push(word);
-            }
-        }
+        // Only the row's own term: `prepare` refuses a name the table does not define, and the
+        // matched row carries the words not to use into the review.
         out.push(json!({
             "title": title,
             "question": line(&question, MAX_LINE),
-            "terms": terms,
+            "terms": [row.term.trim()],
         }));
         if out.len() == MAX_PROPOSALS {
             break;
@@ -2305,11 +2300,16 @@ mod tests {
             proposals[0]["question"],
             "本书的「多重均衡」：同一个经济里存在不止一个均衡"
         );
-        assert_eq!(
-            proposals[0]["terms"],
-            json!(["多重均衡", "均衡多重性", "多个均衡"])
-        );
-        assert_eq!(proposals[1]["terms"], json!(["学习", "学习效应"]));
+        // A proposal names only its row's term: `prepare` accepts a name only when the table defines
+        // it, and it carries the row's words not to use along with the matched row (stiglitz2014learning
+        // refused 学习型社会 because its avoided word 学习社会 was named as a term).
+        assert_eq!(proposals[0]["terms"], json!(["多重均衡"]));
+        assert_eq!(proposals[1]["terms"], json!(["学习"]));
+        for proposal in &proposals {
+            for name in ps::ps_items(&proposal["terms"]) {
+                assert!(rows.iter().any(|row| ps::eq(&row.term, &ps::s(&name))), "{name} is not a defined term");
+            }
+        }
         // The frozen file is one the existing `prepare` step accepts: exactly these fields.
         for proposal in &proposals {
             let map = proposal.as_object().unwrap();

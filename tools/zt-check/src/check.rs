@@ -39,6 +39,7 @@ pattern!(INLINE_MATH, r"\$[^$\n]+\$");
 pattern!(LINK, r"\[\[[^\]]+\]\]");
 pattern!(LINK_TARGET, r"\[\[([^\]]+)\]\]");
 pattern!(CODE, r"`[^`\n]*`");
+pattern!(FENCED, r"```[\s\S]*?```");
 pattern!(BOLD, r"\*\*|__");
 pattern!(HIDE, r"\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\[\[[^\]]+\]\]");
 pattern!(HIDDEN, r"§(\d+)§");
@@ -90,6 +91,11 @@ pattern!(
 pattern!(BOOK_CARD, r"^[^\d/|][^/|]*$");
 pattern!(BOOK_ANCHOR, r"^[^\d/|][^/|]*/\d+$");
 pattern!(SOURCE_LINE, r"(?i)^\s*(来源|出处|Source)\s*[：:]");
+// The Literature Card's document line (`原书文档：[原书 PDF](scholar:78) · …`): a row of document links, a
+// locator like the source line, never a prose sentence.
+pattern!(DOCUMENT_LINE, r"^\s*原书文档\s*[：:]");
+// A book title in 《…》 is one name: a long title of an English book must not make a short sentence long.
+pattern!(BOOK_TITLE, r"《[^》\n]{1,200}》");
 pattern!(REASON_STRIP, r"[\s\p{P}\p{S}]");
 pattern!(NOT_LETTER_OR_NUMBER, r"[^\p{L}\p{N}]");
 pattern!(
@@ -166,7 +172,7 @@ const DEICTIC: [&str; 6] = ["那里", "那儿", "那张卡", "这张卡", "该�
 
 /// The rules self-check.ps1 reports by default: every hard rule but R6.
 const DEFAULT_RULES: &str =
-    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3";
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3";
 
 const USAGE: &str = "usage:
   zt-check --version
@@ -419,6 +425,7 @@ impl Measure {
 /// A sentence's size: characters when it holds Chinese, else words.
 fn measure(sentence: &str) -> Measure {
     let plain = plain(sentence);
+    let plain = BOOK_TITLE.replace_all(&plain, "书").into_owned();
     if CJK.is_match(sentence) {
         let stripped = MEASURE_STRIP.replace_all(&plain, "");
         let stripped = PLACEHOLDERS.replace_all(&stripped, "");
@@ -436,12 +443,48 @@ fn measure(sentence: &str) -> Measure {
     }
 }
 
+/// Whether a title keeps R12's length limit (40 characters, or 25 words).
+pub fn title_fits(title: &str) -> bool {
+    let m = measure(title);
+    m.size <= if m.words { 25 } else { 40 }
+}
+
+/// Whether one prose sentence that is not a step keeps R2's length limit (40 characters, or 25 words).
+pub fn sentence_fits(sentence: &str) -> bool {
+    let m = measure(sentence);
+    m.size <= if m.words { 25 } else { 40 }
+}
+
 struct ProseLine {
     text: String,
     step: bool,
 }
 
 /// The lines of prose in a body, each with whether it is a numbered step.
+/// The list lines of a body's `**结构**` section (each with a Link), as `prose_lines` gives their text.
+fn structure_lines(body: &str) -> HashSet<String> {
+    let mut lines = HashSet::new();
+    let mut inside = false;
+    for raw in body.split('\n') {
+        let trim = raw.trim();
+        if trim.starts_with("**结构**") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if trim.starts_with("**") || HEADING.is_match(trim) {
+            inside = false;
+            continue;
+        }
+        if trim.contains("[[") {
+            lines.insert(MARKER.replace(trim, "").trim().to_string());
+        }
+    }
+    lines
+}
+
 fn prose_lines(body: &str) -> Vec<ProseLine> {
     let mut out = Vec::new();
     let mut fence = false;
@@ -482,6 +525,25 @@ fn prose_lines(body: &str) -> Vec<ProseLine> {
 
 /// Exact structural checks retain authored text and original body line numbers.
 /// They do not rewrite Chinese characters or compare paraphrases.
+/// R22: whether a text leaves an inline formula open, an odd number of unescaped `$` once its
+/// `$$` display blocks and its code are set aside. A writer that builds a Card in a PowerShell
+/// double-quoted string loses `$A_I` (an unset variable) and leaves `当且仅当 <A_O$`: on
+/// grossman2002integration trial 8 two titles of group 4 reached the archive that way.
+pub(crate) fn open_math(text: &str) -> bool {
+let probe = FENCED.replace_all(text, "");
+let probe = DISPLAY_MATH.replace_all(&probe, "");
+let probe = CODE.replace_all(&probe, "");
+let mut count = 0usize;
+let mut escaped = false;
+for c in probe.chars() {
+    if c == '$' && !escaped {
+        count += 1;
+    }
+    escaped = c == '\\' && !escaped;
+}
+count % 2 == 1
+}
+
 fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
     fn whole_quote(text: &str) -> bool {
         [
@@ -1001,6 +1063,9 @@ impl Check {
     fn language(&self, card: &Value, address: &str, faults: &mut Faults) -> i64 {
         let title = text(prop(card, "title"));
         corruption(&text(prop(card,"body")),&title,address,faults);
+        if open_math(&text(prop(card, "body"))) {
+            faults.add(address, "R22", "the body leaves an inline formula open (an odd number of $; write a currency as 美元 or \\$)");
+        }
         let facet = text(prop(card, "facet"));
         // A root, an anchor's section index, a hub's navigation list, and a register part's term
         // rows are not claims; the standalone rules read the authored prose that states one
@@ -1024,6 +1089,9 @@ impl Check {
             if SEMICOLON.is_match(&plain(&title)) {
                 faults.add(address, "R12", &format!("two claims: {title}"));
             }
+            if open_math(&title) {
+                faults.add(address, "R22", &format!("the title leaves an inline formula open (an odd number of $): {title}"));
+            }
             // A title names its content, so a bare local number is the same fault there.
             local_reference(faults, address, &title);
             unnamed_referent(faults, address, &title);
@@ -1039,7 +1107,15 @@ impl Check {
         let mut thought = 0;
         let mut reading = 0;
         let mut notes = BTreeMap::new();
+        // A Model Card's `**结构**` list is the compiler's navigation over its parts (a facet, a Link and the
+        // part's title per line), not authored prose: each title is checked as its part's own title. On
+        // grossman2002integration trials 10 and 11 a long Derivation facet made a 结构 line an R2 fault in a done
+        // Model Card that the bounded correction may not reopen.
+        let structure = structure_lines(&text(prop(card, "body")));
         for line in prose_lines(&text(prop(card, "body"))) {
+            if structure.contains(line.text.trim()) {
+                continue;
+            }
             if derivation && let Some(caps) = SECTION.captures(&line.text) {
                 section = caps[1].to_string();
                 order.push(section.clone());
@@ -1079,6 +1155,11 @@ impl Check {
                     );
                 }
                 notes.insert(steps, 0);
+            }
+            // grossman2002integration trial 10: the generated document line and the index line naming the book
+            // were the Literature Card's two R2 faults, and the bounded correction may not reopen a root.
+            if DOCUMENT_LINE.is_match(&line_text) {
+                continue;
             }
             for sentence in split_sentences(&line_text) {
                 self.sentence(faults, address, shared, &sentence, is_step);
@@ -2678,6 +2759,46 @@ mod tests {
                 "checked text it must skip: {line}"
             );
         }
+    }
+
+    // R22: a formula a lost `$A_I` left open is a fault in a title or a body; closed inline math, a
+    // display block, code, and an escaped dollar are not.
+    #[test]
+    fn an_open_inline_formula_is_r22() {
+        assert!(open_math("普遍纵向一体化均衡稳定当且仅当 <A_O$"));
+        assert!(open_math("当 $A_I<A_O 时稳定"));
+        assert!(!open_math("均衡稳定当且仅当 $A_I<A_O$"));
+        assert!(!open_math("$$\na=b$c\n$$ 之后 $x$"));
+        assert!(!open_math("代码 `$x` 与价格 \\$5"));
+        let cards = json!([{ "address": "K/4", "title": "均衡稳定当且仅当 <A_O$", "body": "成立条件是 $A_I<A_O$。\n\n来源：[[K]] §4" },
+            { "address": "K/4|a", "title": "两个门槛决定稳定性", "body": "稳定要求 $A_I<A_O。\n\n来源：[[K]] §4" }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert!(lines.iter().any(|l| l.starts_with("K/4 R22 the title leaves an inline formula open")), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.starts_with("K/4|a R22 the body leaves an inline formula open")), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.starts_with("K/4 R22 the body")), "{lines:#?}");
+    }
+
+    // R2: a book title in 《…》 counts as one name, and the Literature Card's document line is a locator; a
+    // long prose sentence stays a fault.
+    #[test]
+    fn a_book_title_and_the_document_line_do_not_make_r2() {
+        let cards = json!([{ "address": "K/1|f", "title": "结构卡给出全书的论证顺序",
+            "body": "本卡是《Integration versus Outsourcing in Industry Equilibrium》的结构卡：按阅读顺序列出论证。\n\n原书文档：[原书 PDF](scholar:78) · [中英对照 Markdown](scholar:75) · [原文 Markdown](scholar:76)\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业。\n\n来源：[[K]] §1" }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        let r2: Vec<&String> = lines.iter().filter(|l| l.contains(" R2 ")).collect();
+        assert_eq!(r2.len(), 1, "{lines:#?}");
+        assert!(r2[0].contains("企业在进入阶段"), "{lines:#?}");
+    }
+
+    // A Model Card's 结构 list is navigation: its long part lines raise no prose fault; prose after it still does.
+    #[test]
+    fn the_structure_list_of_a_model_card_is_not_prose() {
+        let cards = json!([{ "address": "K/7|a", "type": "model", "title": "匹配规模报酬递增模型", "level": "formal",
+            "body": "问题：经济规模怎样改变均衡组织模式？\n\n**结构**\n\n- 推导：μL 增大时两个交点的移动（2/2） [[K/7|a|a|15]]：推导：μL 增大，两个交点沿 VV 线移动，外包均衡出现\n- 设定 [[K/7|a|a]]：设定\n\n**来源**\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业。\n\n来源：[[K]] §7" }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        let r2: Vec<&String> = lines.iter().filter(|l| l.contains(" R2 ")).collect();
+        assert_eq!(r2.len(), 1, "{lines:#?}");
+        assert!(r2[0].contains("企业在进入阶段"), "{lines:#?}");
     }
 
     fn small() -> Value {

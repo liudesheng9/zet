@@ -378,6 +378,10 @@ fn prepare(p: &Params) -> Result<i32> {
     }
     let cards = read_cards_file(&p.cards, &p.staging)?;
     std::fs::create_dir_all(ps::join(&p.work, "endpoints"))?;
+    // The frozen evidence, the judged verdicts and the resolution live in the staging folder's own
+    // `restate` folder whatever -Work names (the review module passes `<out>/review/restate`): create it too
+    // (grossman2002integration trial 7: "系统找不到指定的路径" on evidence.json).
+    std::fs::create_dir_all(work_dir(&p.staging))?;
     let mut zt = crate::zt::start()?;
     let mut attempt = 0;
     let (evidence, job) = loop {

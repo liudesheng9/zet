@@ -1,8 +1,11 @@
-// ==== module zt-dsh-cleanup v3 ====
+// ==== module zt-dsh-cleanup v9 ====
 // R231/R322–R330: the run's cleanup is settled from ledger evidence, never from a workspace listing's
-// titles. The module reads every resource this run recorded, asks one Haiku agent to delete exactly those
-// conversation ids (an unknown member is reported, never removed wholesale), records each provider fact
-// in the ledger, and settles every cleanup unit through its checked verifier. The accepted answers were
+// titles. The module reads every resource this run recorded and hands the conversations not yet settled to
+// cleanup agents in chunks (at most eight agents at once). Each agent deletes exactly its recorded ids and
+// records each fact itself, right after it acted, with a plain `ledger resource -Settle` command; one agent
+// per workspace batch then records the workspace listing and its removal with `-SettleWorkspace` (an
+// unknown member is reported, never removed). No relay restates another agent's observation. Every cleanup
+// unit then settles through its checked verifier. The accepted answers were
 // retained when the ids were recorded; a disposable model folder is removed by the verifier only after
 // its accepted plan sits under the durable evidence path. A partial cleanup keeps the run partial; a
 // provider fault stays retryable and rebuilds no content.
@@ -11,7 +14,7 @@
 // the ledger recorded from each run's own result; this module never reads or differences the account-wide
 // usage ledger, because the difference of two rolling totals is not a run's cost (R344).
 defineModule({
-  id: 'zt-dsh-cleanup', version: '3', requires: ['zt-digest-lib'],
+  id: 'zt-dsh-cleanup', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence, then render the verified run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -21,111 +24,96 @@ defineModule({
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
     const OUT = Z.OUT
-    const listed = await Z.resourceList('cleanup: list the recorded resources')
-    if (!listed.ok) return { status: 'failed', cleanup: null, usage: null, report: null, error: listed.error }
-    const resources = listed.resources || []
-    const workspaces = [...new Set(resources.map((r) => r.workspace && r.workspace.id).filter(Boolean))]
+    // The recorded conversations come as the brief listing (`ledger resource -List -Brief`): per workspace, the
+    // recorded ids, the ones still to delete and the ones without evidence. The full listing was about 52 KB on
+    // grossman2002integration trial 8; its relay answered in prose, and the cleanup settled nothing and rendered
+    // no run report.
+    // No id list passes through a relay (zt-dsh-cleanup v8): the stage reads the counts per workspace, the ledger records
+    // the missing evidence itself, and each agent reads the ids of its own workspace from the ledger. On
+    // grossman2002integration trial 11 the relay abridged the brief listing's id arrays and left out the two model
+    // workspaces, so their 83 conversations were never deleted and the run-level cleanup could not settle.
+    const listed = await Z.runScript('cleanup: list the recorded resources', 'Cleanup', `${Z.LEDGER} resource -Out "${OUT}" -List -Counts`, ' (it counts the recorded DeepSeek conversations per workspace; it changes nothing)')
+    const brief = listed.json && Array.isArray(listed.json.workspaces) ? listed.json : null
+    if (!brief) return { status: 'failed', cleanup: null, usage: null, report: null, error: String((listed.run && listed.run.output) || 'no readable resource listing') }
+    // A workspace's id is its folder path; a relay that dropped `path` (trial 20) still names each workspace by its id,
+    // and dropping those left the stage nothing to settle, so the run-level cleanup refused every unit.
+    const spaces = brief.workspaces.filter((w) => w && (w.path || w.id)).map((w) => ({ ...w, path: w.path || w.id }))
+    const workspaces = spaces.map((w) => w.id || w.path)
     let report = { workspaces: [] }
-    if (resources.length) {
-      const plan = resources.map((r) => ({
-        resource: r.id,
-        cleanup_unit: r.cleanup_unit,
-        workspace: r.workspace,
-        conversations: (r.conversations || []).map((c) => ({ id: c.id, lost: !!c.lost })),
-      }))
-      const asked = await Z.zAgent(
-        `Settle the DeepSeek Harness (DSH) conversations this digest run recorded. Work only with the recorded ids below: never delete a conversation because its title looks like this run's, and never delete one that is not recorded here.
-Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_delete,mcp__deepseek__deepseek_remove_workspace".
-For each workspace below, in order:
-1. deepseek_list with cwd = that workspace path. If the workspace is not found, treat every recorded conversation of it as absent.
-2. For each recorded conversation id of that workspace:
-   - Listed and "running": deepseek_wait (session_id, wait_seconds 600) once, then delete it.
-   - Listed and finished or error: deepseek_delete (session_id). deleted="confirmed". Its state and outcome are what deepseek_list reported.
-   - Not listed: deleted="already_absent"; state="absent".
-   - deepseek_delete fails: deleted="failed" and record the error text in outcome. Never retry it more than twice.
-   Never archive a conversation. Count every conversation the listing shows that is NOT recorded for that workspace as "unknown" (id and title, if shown): those belong to the user and must stay.
-3. When no recorded id of that workspace remains and there is no unknown member, deepseek_remove_workspace with cwd = that workspace path and delete_conversations true. removed=true only when it succeeded. Otherwise removed=false.
-Recorded resources (JSON):
-${JSON.stringify(plan)}
-Return one entry per workspace with its id, removed, unknown (the unrecorded members) and conversations (id, state, outcome, deleted). Do not read or sum account-wide usage totals: the run's per-run usage was recorded with each run.`,
-        {
-          label: 'cleanup DeepSeek', phase: 'Cleanup', model: 'haiku',
-          schema: {
-            type: 'object',
-            properties: {
-              workspaces: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    id: { type: 'string' },
-                    removed: { type: 'boolean' },
-                    unknown: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } }, required: ['id'] } },
-                    conversations: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: { id: { type: 'string' }, state: { type: 'string' }, outcome: { type: 'string' }, deleted: { type: 'string' } },
-                        required: ['id', 'deleted'],
-                      },
-                    },
-                  },
-                  required: ['id', 'removed', 'conversations'],
-                },
-              },
-            },
-            required: ['workspaces'],
-          },
-        },
-      )
-      if (!asked) return { status: 'failed', cleanup: null, usage: null, report: null, error: 'no report from the cleanup agent' }
-      report = asked
-      // Record the provider's own facts, then settle each cleanup unit through its checked verifier.
-      const seen = new Map()
-      for (const workspace of asked.workspaces || []) {
-        for (const conversation of workspace.conversations || []) seen.set(conversation.id, { workspace: workspace.id, ...conversation })
-      }
-      for (const resource of resources) {
-        for (const conversation of resource.conversations || []) {
-          const said = seen.get(conversation.id) || { state: 'absent', deleted: 'already_absent', outcome: '' }
-          const state = String(said.state || 'absent').toLowerCase()
-          await Z.observeResource(`cleanup: terminal ${conversation.id}`, {
-            op: 'terminal', resource: resource.id, conversation: conversation.id,
-            state: ['finished', 'error', 'cancelled', 'failed', 'absent'].includes(state) ? state : 'finished',
-            outcome: String(said.outcome || state).slice(0, 180),
-          })
-          const deleted = String(said.deleted || '').toLowerCase()
-          if (deleted === 'failed') {
-            await Z.observeResource(`cleanup: failed deletion ${conversation.id}`, {
-              op: 'delete_failed', resource: resource.id, conversation: conversation.id,
-              code: 'provider', message: String(said.outcome || 'the provider refused the deletion').slice(0, 300),
-            })
-          } else {
-            await Z.observeResource(`cleanup: delete ${conversation.id}`, {
-              op: 'deleted', resource: resource.id, conversation: conversation.id,
-              result: deleted === 'confirmed' ? 'confirmed' : 'already_absent',
-            })
-          }
-        }
-        const workspace = (asked.workspaces || []).find((w) => w.id === resource.workspace.id) || { removed: false, unknown: [] }
-        await Z.observeResource(`cleanup: workspace ${resource.workspace.id}`, {
-          op: 'listing', resource: resource.id,
-          conversations: (workspace.conversations || []).map((c) => ({ id: c.id, state: String(c.state || 'unknown') })),
-          unknown: workspace.unknown || [],
-        })
-        await Z.observeResource(`cleanup: workspace removed ${resource.workspace.id}`, {
-          op: 'workspace', resource: resource.id, removed: workspace.removed === true,
-        })
-      }
+    const LEDGER = Z.LEDGER
+    const SETTLE_CHUNK = 40
+    const count = (w, key) => Number(w[key]) || 0
+    // A manager may write a job's answer to <out>\answers and skip its `-EvidenceFor` record (trial 6: two of
+    // three review jobs), and the cleanup verifier refuses a conversation with no evidence
+    // (`cleanup_evidence_missing`). Before anything is deleted, one bounded command per 40 ids records the
+    // evidence of every such conversation from its own answer file (a deleted one too: the verifier asks every recorded conversation for its evidence); a conversation with no answer file stays
+    // without evidence and the verifier names it.
+    if (spaces.some((w) => count(w, 'bare') > 0)) {
+      const swept = await Z.runScript('cleanup: evidence', 'Cleanup', `${LEDGER} resource -Out "${OUT}" -SweepEvidence "${Z.ANSWERS}"`, ' (it records answers already on disk; it changes no Card)')
+      const s = swept.json || {}
+      log(`Cleanup: recorded the evidence of ${s.recorded || 0} conversation(s) from their answer files${s.missing ? `; ${s.missing} without an answer file: ${(s.first_missing || []).join(', ')}` : ''}.`)
     }
+    // One agent per 40 open conversations of a workspace; it reads that workspace's ids from the ledger itself.
+    const chunks = []
+    for (const w of spaces) for (let from = 0; from < count(w, 'open'); from += SETTLE_CHUNK) chunks.push({ path: w.path, from, to: Math.min(count(w, 'open'), from + SETTLE_CHUNK) - 1 })
+    const SETTLED = {
+      type: 'object',
+      properties: { settled: { type: 'number' }, unrecorded: { type: 'array', items: { type: 'string' } } },
+      required: ['settled'],
+    }
+    const settledChunks = await Promise.all(chunks.map((chunk, k) => dsmpSlot(() => Z.zAgent(
+      `Settle these DeepSeek Harness (DSH) conversations of one digest run. Work only with the recorded ids you read in step 0: never delete a conversation because its title looks like this run's, and never delete one the ledger does not list.
+Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
+Workspace: "${chunk.path}". Your share: the entries ${chunk.from} to ${chunk.to} (counting from 0) of its open ids.
+0. Run this command (it changes nothing): ${LEDGER} resource -Out "${OUT}" -List -Workspace "${chunk.path}". Its last line is JSON; take workspace.open and keep only the entries ${chunk.from} to ${chunk.to}. These are your ids.
+1. deepseek_list with cwd = that workspace path (once). If the workspace is not found, every id is absent.
+2. For each id, in order:
+   - Listed and "running": deepseek_cancel (session_id), then delete it as below with -State cancelled.
+   - Listed: deepseek_delete (session_id). Then record it with this command (it changes no Card): ${LEDGER} resource -Out "${OUT}" -Settle <id> -State <finished or error, as listed> -Deleted confirmed
+   - Not listed: record it: ${LEDGER} resource -Out "${OUT}" -Settle <id> -State absent -Deleted already_absent
+   - deepseek_delete fails (try at most twice): record it: ${LEDGER} resource -Out "${OUT}" -Settle <id> -State finished -Deleted failed -Message '<the error, without quotes>'
+   Never archive a conversation.
+Return settled = how many of your ids you recorded, and unrecorded = the ids whose record command failed (usually none).`,
+      { label: `cleanup chunk ${k + 1} of ${chunks.length}`, phase: 'Cleanup', model: 'haiku', schema: SETTLED },
+    ))))
+    const unrecorded = settledChunks.flatMap((got, k) => (got && typeof got.settled === 'number' ? (got.unrecorded || []) : [`${chunks[k].path} entries ${chunks[k].from}–${chunks[k].to}`]))
+    if (unrecorded.length) log(`Cleanup: ${unrecorded.length} conversation(s) or shares without a recorded settlement: ${unrecorded.slice(0, 12).join(', ')}${unrecorded.length > 12 ? ', …' : ''}`)
+    // The workspaces: list each one after its deletions, remove it only when nothing recorded or unknown
+    // remains, and record the listing and the removal with one plain command per workspace.
+    const paths = spaces.map((w) => w.path)
+    const WORKSPACES = {
+      type: 'object',
+      properties: { workspaces: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, removed: { type: 'boolean' }, unknown: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } }, required: ['id'] } }, remaining: { type: 'array', items: { type: 'string' } }, recorded: { type: 'boolean' } }, required: ['id', 'removed'] } } },
+      required: ['workspaces'],
+    }
+    const batches = []
+    for (let i = 0; i < paths.length; i += 8) batches.push(paths.slice(i, i + 8))
+    const listedBatches = await Promise.all(batches.map((batch, k) => dsmpSlot(() => Z.zAgent(
+      `Settle the DeepSeek Harness (DSH) workspaces of one digest run, after their recorded conversations were deleted.
+Load the tools with one ToolSearch call: query "select:mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace".
+Workspaces (JSON): ${JSON.stringify(batch)}
+For each workspace:
+0. Run this command (it changes nothing): ${LEDGER} resource -Out "${OUT}" -List -Workspace "<path>". Its last line is JSON; workspace.recorded holds the ids this run recorded there.
+1. deepseek_list with cwd = that path. remaining = the recorded ids still listed; unknown = every listed conversation that is NOT recorded there (id and title): those belong to the user and must stay.
+2. When remaining and unknown are both empty: deepseek_remove_workspace with cwd = that path and delete_conversations true. removed = true only when it succeeded. Otherwise do not remove it; removed = false.
+3. Record it with this command (it changes no Card): ${LEDGER} resource -Out "${OUT}" -SettleWorkspace "<path>" -Removed <true or false> -Remaining '<remaining ids, comma-separated>' -Unknown '<unknown ids, comma-separated>'
+Return workspaces: one entry per workspace with id (its path), removed, unknown, remaining and recorded (true when the record command succeeded). Do not read or sum account-wide usage totals.`,
+      { label: `cleanup workspaces ${k + 1} of ${batches.length}`, phase: 'Cleanup', model: 'haiku', schema: WORKSPACES },
+    ))))
+    report = { workspaces: listedBatches.flatMap((got) => (got && got.workspaces) || []) }
     // Every cleanup unit this run recorded: claim the ready ones in bounded rounds, settle each through
     // its own checked verifier, and record a retryable fault when a provider fact still blocks it.
+    // The rounds go on until no ready unit is left or every unit a claim offers has already failed three times
+    // here: on grossman2002integration trial 10 three rounds of eight claims went to the same failing units and the
+    // eight link cleanup units were never claimed. The book unit settles last, after the units it reports on.
     const settled = []
-    for (let round = 0; round < 3; round++) {
+    const tries = new Map()
+    for (let round = 0; round < 60; round++) {
       const claimed = await Z.claim(`cleanup: claim round ${round + 1}`, 'cleanup', 8, 0)
       const units = (claimed.units || []).slice().sort((a, b) => (a.id === 'cleanup/book@1') - (b.id === 'cleanup/book@1'))
-      if (!units.length) break
+      if (!units.length || units.every((u) => (tries.get(u.id) || 0) >= 3)) break
       for (const unit of units) {
+        tries.set(unit.id, (tries.get(unit.id) || 0) + 1)
         const done = await Z.finishCleanup(`cleanup ${unit.id}`, unit.id, unit.token)
         if (done.ok) {
           settled.push({ unit: unit.id, status: (done.json && done.json.status) || 'done', json: done.json })
@@ -138,9 +126,12 @@ Return one entry per workspace with its id, removed, unknown (the unrecorded mem
         settled.push({ unit: unit.id, status: 'retry', error: done.error })
       }
     }
+    const last = [...new Map(settled.map((s) => [s.unit, s])).values()]
+    settled.length = 0
+    settled.push(...last)
     const run = settled.find((s) => s.unit === 'cleanup/book@1' && s.json) || settled.find((s) => s.json) || null
     const cleanup = {
-      resources: resources.length,
+      resources: brief.resources,
       workspaces: workspaces.length,
       units: settled.map((s) => ({ unit: s.unit, status: s.status, cleanup_complete: s.json ? s.json.cleanup_complete : null, content_complete: s.json ? s.json.content_complete : null, reconciliation: s.json ? s.json.reconciliation : null })),
       workspace_removed: (report.workspaces || []).every((w) => w.removed === true),

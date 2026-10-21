@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "4.0.1",
+  "version": "4.10.2",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards; mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -125,7 +125,7 @@
     "perSonnet": {
       "type": "number",
       "min": 1,
-      "description": "formal models per architect batch (default 6)"
+      "description": "formal models per architect batch (default 8)"
     },
     "perConcept": {
       "type": "number",
@@ -740,28 +740,19 @@
     {
       "id": "digest",
       "title": "Digest",
-      "detail": "one ready group per manager chain: claim digest/gNNN@1, snapshot and frozen job, one DeepSeek run, checked group-finish (R250/R252/R253)",
+      "detail": "the group cycle in blocks: one manager claims up to 8 digest/gNNN@1 units, a snapshot and frozen job per group, their DeepSeek runs side by side, each conversation recorded and deleted by that manager, checked group-finish (R250/R252/R253); at most 8 lanes",
       "after": [
         "concepts"
       ],
-      "foreach": {
-        "items": {
-          "$ref": "stages.prepare.output.groupList"
-        },
-        "itemFail": "collect",
-        "maxItems": 500,
-        "chain": [
-          {
-            "id": "group",
-            "module": "zt-group-cycle",
-            "params": {
-              "args": "{{args}}",
-              "mode": "{{mode}}",
-              "group": "{{item.n}}",
-              "profile": "{{consts.profile}}"
-            }
-          }
-        ]
+      "module": "zt-group-cycle",
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "groups": "{{stages.prepare.output.groups}}",
+        "profile": "{{consts.profile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -976,6 +967,11 @@
                   "value": false
                 }
               ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
             }
           ]
         }
@@ -1273,6 +1269,11 @@
                   "value": false
                 }
               ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
             }
           ]
         }
@@ -1724,6 +1725,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "4.0.1"
+    "version": "4.10.2"
   }
 }

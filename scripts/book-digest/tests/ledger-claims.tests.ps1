@@ -205,6 +205,30 @@ db.close();if(changed.changes!==1)throw new Error('the current claim was not exp
         if ($LASTEXITCODE) { throw 'isolated lease expiry injection failed' }
         $expiredLease = Run-Digest @('ledger','reclaim','-Out',$leaseOut,'-Unit',$slowClaim.id)
         Assert (@($expiredLease.reclaimed).Count -eq 1 -and $expiredLease.reclaimed[0].previous_token -eq $slowClaim.token) 'an expired claim is the only one the guarded reclaim takes'
+        # A stopped run's claims need not wait out their lease: -Release takes a live-lease claim once
+        # nothing happened to it for the quiet window, and fences the old token like any reclaim.
+        $held = (Run-Digest @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','stopped-run','-Lease','600')).units[0]
+        Refuses @('ledger','reclaim','-Out',$leaseOut,'-Unit',$held.id,'-Release') 'claim_recent'
+        $savedQuiet = $env:ZT_LEDGER_RELEASE_QUIET_SECONDS
+        $env:ZT_LEDGER_RELEASE_QUIET_SECONDS = '1'
+        try {
+            Start-Sleep -Seconds 2
+            $released = Run-Digest @('ledger','reclaim','-Out',$leaseOut,'-Release')
+            Assert (@($released.reclaimed).Count -eq 1 -and $released.reclaimed[0].previous_token -eq $held.token -and $released.reclaimed[0].released) 'a quiet claim of a stopped run is released before its lease ends'
+            Refuses @('ledger','renew','-Out',$leaseOut,'-Unit',$held.id,'-Token',"$($held.token)") 'stale_claim'
+        } finally {
+            $env:ZT_LEDGER_RELEASE_QUIET_SECONDS = $savedQuiet
+        }
+        # A long step keeps its claims current with one bounded command: `ledger hold` renews each listed claim
+        # every -Every seconds and releases one that is no longer held (here a fenced, reclaimed token).
+        $kept = (Run-Digest @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','long-step','-Lease','60')).units[0]
+        $hold = Run-Digest @('ledger','hold','-Out',$leaseOut,'-Units',"$($kept.id):$($kept.token),$($held.id):$($held.token)",'-Seconds','3','-Every','1')
+        Assert (@($hold.held).Count -eq 1 -and $hold.held[0].unit -eq $kept.id -and $hold.renewals -ge 2) "a hold renews the claim it still holds (renewals $($hold.renewals))"
+        Assert (@($hold.released).Count -eq 1 -and $hold.released[0].unit -eq $held.id -and $hold.released[0].token -eq $held.token) 'a hold releases a claim whose token is no longer current'
+        $afterHold = Run-Digest @('ledger','status','-Out',$leaseOut,'-Units',$kept.id)
+        Assert ($afterHold.units[0].state -eq 'claimed' -and $afterHold.units[0].token -eq $kept.token) 'the held claim is still the same claim'
+        Refuses @('ledger','hold','-Out',$leaseOut,'-Units',"$($kept.id)") 'each entry is <unit id>:<token>'
+        Refuses @('ledger','hold','-Out',$leaseOut,'-Units',"$($kept.id):$($kept.token)",'-Seconds','9999') '-Seconds must be a whole number of seconds from 1 through 580'
         Refuses @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','out-of-range','-Lease','0') '-Lease must be a whole number of seconds from 1 through 7200' 2
         Refuses @('ledger','next','-Out',$leaseOut,'-Layer','terms','-Take','1','-Owner','out-of-range','-Lease','99999') '-Lease must be a whole number of seconds from 1 through 7200' 2
     } finally {

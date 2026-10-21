@@ -41,7 +41,8 @@ function Read-Json($path) { Get-Content -LiteralPath $path -Raw -Encoding utf8 |
 function Write-Json($path, $value) { [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 20), $utf8) }
 function New-Staging([string]$name, [string[]]$cards) {
     $staging = Join-Path $scratch $name
-    New-Item -ItemType Directory -Force (Join-Path $staging 'restate') | Out-Null
+    # No restate folder: prepare creates the folders it writes (trial 7 failed on a missing one).
+    New-Item -ItemType Directory -Force $staging | Out-Null
     Write-Json (Join-Path $staging 'manifest.json') @{ citation_key = $script:key; book_title = '重述复核'; groups = @(@{ n = 1; chapter = '第一章'; headings = @('斯卢茨基') }) }
     $file = Join-Path $staging 'new-cards.txt'
     [IO.File]::WriteAllText($file, (($cards -join "`n") + "`n"), $utf8)
@@ -103,6 +104,12 @@ try {
     [IO.File]::WriteAllText((Join-Path $onlyHub.staging 'owned-g01.txt'), "$hub`n", $utf8)
     $noClaimOwned = Invoke-Restate @('-Step', 'prepare', '-Staging', $onlyHub.staging)
     Assert ($noClaimOwned.code -ne 0 -and $noClaimOwned.text -match 'staged manifests.*Topic Idea Card') 'a population of no Topic Idea Card is refused, not reported as a clean comparison'
+    # The review module passes its own -Work (<out>\review\restate): prepare still creates the staging
+    # folder's restate folder, where it freezes evidence.json (trial 7 failed with a missing path).
+    $elsewhere = New-Staging 'staging-elsewhere' @($first)
+    $moduleWork = Join-Path $elsewhere.staging 'review\restate'
+    $separate = Invoke-Restate @('-Step', 'prepare', '-Staging', $elsewhere.staging, '-Cards', $elsewhere.cards, '-Work', $moduleWork)
+    Assert ($separate.code -eq 0 -and (Test-Path -LiteralPath (Join-Path $elsewhere.staging 'restate\evidence.json'))) "prepare with the review module's -Work freezes evidence.json in the staging folder's restate folder: $($separate.text)"
     $prepare = Invoke-Restate @('-Step', 'prepare', '-Staging', $staging, '-Cards', $work.cards)
     Assert ($prepare.code -eq 0) "prepare runs: $($prepare.text)"
     $p = $prepare.last

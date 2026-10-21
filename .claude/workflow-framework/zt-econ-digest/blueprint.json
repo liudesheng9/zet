@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "5.0.1",
+  "version": "5.10.2",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree plus Topic trees, with Idea, Event, and Model Cards (economic models at concept or formal level). Modes link, models, cards, explain, hubs, figures, and audit re-run single stages on an existing digest.",
   "preflight": {
@@ -125,7 +125,7 @@
     "perSonnet": {
       "type": "number",
       "min": 1,
-      "description": "formal models per architect batch (default 6)"
+      "description": "formal models per architect batch (default 8)"
     },
     "perConcept": {
       "type": "number",
@@ -679,7 +679,7 @@
         {
           "path": "mode",
           "op": "matches",
-          "value": "^(full|events)$"
+          "value": "^(full|events|resume)$"
         },
         {
           "path": "args.events",
@@ -710,7 +710,7 @@
         {
           "path": "mode",
           "op": "matches",
-          "value": "^(full|findings)$"
+          "value": "^(full|findings|resume)$"
         },
         {
           "path": "args.findings",
@@ -735,28 +735,19 @@
     {
       "id": "digest",
       "title": "Digest",
-      "detail": "one ready group per manager chain: claim digest/gNNN@1, snapshot and frozen job, one DeepSeek run, checked group-finish (R250/R252/R253)",
+      "detail": "the group cycle in blocks: one manager claims up to 8 digest/gNNN@1 units, a snapshot and frozen job per group, their DeepSeek runs side by side, each conversation recorded and deleted by that manager, checked group-finish (R250/R252/R253); at most 8 lanes",
       "after": [
         "concepts"
       ],
-      "foreach": {
-        "items": {
-          "$ref": "stages.prepare.output.groupList"
-        },
-        "itemFail": "collect",
-        "maxItems": 500,
-        "chain": [
-          {
-            "id": "group",
-            "module": "zt-group-cycle",
-            "params": {
-              "args": "{{args}}",
-              "mode": "{{mode}}",
-              "group": "{{item.n}}",
-              "profile": "{{consts.profile}}"
-            }
-          }
-        ]
+      "module": "zt-group-cycle",
+      "params": {
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "groups": "{{stages.prepare.output.groups}}",
+        "profile": "{{consts.profile}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        }
       }
     },
     {
@@ -909,6 +900,11 @@
                   "value": false
                 }
               ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
             }
           ]
         }
@@ -1176,6 +1172,11 @@
                   "value": false
                 }
               ]
+            },
+            {
+              "path": "mode",
+              "op": "==",
+              "value": "resume"
             }
           ]
         }
@@ -1572,6 +1573,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "4.0.1"
+    "version": "4.10.2"
   }
 }

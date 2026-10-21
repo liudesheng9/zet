@@ -10,7 +10,7 @@
   "answers": [
     {
       "label": "^bridge: plan$",
-      "prompt": "Run every job below",
+      "prompt": "Run the jobs with these ids",
       "answer": {
         "ok": true,
         "output": "",

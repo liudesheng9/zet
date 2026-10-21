@@ -1,4 +1,4 @@
-// ==== module zt-finalize v1 ====
+// ==== module zt-finalize v2 ====
 // The declared finite finalization branch (R299/R300, #86): the read-only audit plan, at most ONE
 // correction cycle scoped to the plan's Cards, the exact changed-Card/touched-tree manifest, the
 // dependency-scoped refresh of the affected publications this branch re-derives, and the final
@@ -7,7 +7,7 @@
 // of being republished from an artifact this branch did not re-derive. A residual hard fault leaves
 // the result partial, with the fault named, and never republishes the audit that scheduled it.
 defineModule({
-  id: 'zt-finalize', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-finalize', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the finite finalization (audit plan, one scoped correction cycle, the changed-Card manifest, dependency-scoped publication refresh, final read-only audit).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -16,6 +16,7 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
+    if (await Z.settledOnResume('finalize', ['audit', 'link-check'])) return { status: 'done', reused: true }
     const step = (name, more = '') => `${Z.DIGEST} finalize -Step ${name} -Out "${Z.OUT}"${more}`
     const plan = await Z.runScript('finalize plan', 'Finalize', step('plan'), ' (the audit plan: at most one correction cycle)')
     if (!plan.json) return { status: 'failed', error: (plan.run && plan.run.output) || 'the audit plan was not derived' }

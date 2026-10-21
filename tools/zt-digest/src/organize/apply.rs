@@ -295,9 +295,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     for (k, v) in o.map.iter() {
         moved.insert(k.clone(), Value::String(v.clone()));
     }
+    // The staging manifests that name owned Cards (owned-gNN.txt, src-gNN.txt) follow the moves, so a later card
+    // cycle reads every owned Card by its present address. On grossman2002integration trial 11 a moved Topic Card kept
+    // its old address there and the notes cycle stopped at "incomplete Card read". The ledger's recorded outputs keep
+    // the addresses their completions were checked at.
+    let manifests = if !dry_run && !o.map.is_empty() {
+        let mapping: std::collections::BTreeMap<String, String> = o.map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        match std::path::Path::new(&work).parent() {
+            Some(staging) => crate::ledger::relocate_manifests(staging, &mapping)?,
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
     let count = |what: &str| done.iter().filter(|d| eq(&field(d, "decision"), what)).count();
     let summary = json!({ "merges": count("merge"), "moves": count("move"), "refused": refused.len(), "renamed": o.map.len() });
-    let result = json!({ "dry_run": dry_run, "done": done, "refused": refused, "moved": moved, "notes_translated": translated });
+    let result = json!({ "dry_run": dry_run, "done": done, "refused": refused, "moved": moved, "notes_translated": translated, "manifests": manifests });
     util::write_text(ps::join(&work, "applied.json"), &ps::json_pretty(&result))?;
     util::print_line(&ps::json_compact(&summary))?;
     Ok(0)

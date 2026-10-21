@@ -103,7 +103,7 @@ try {
     Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $derivation; body = "**起点**`n- 依赖 [[$setting]] 的结果：清算价值为 `$L`$。`n`n**步骤**`n1. 还款不超过清算价值。`n`n**结果**`n`$`$P\le L`$`$" } }) | Out-Null
     Refused $finish 'the last report names unwritten parts' 'a report older than the fill cannot complete the model'
     $report = & $step 'report'
-    Assert ($report.models[0].todo.Count -eq 0 -and $report.models[0].parts.Count -eq 5) 'the fresh report names five parts and no unwritten placeholder'
+    Assert ($report.models[0].todo.Count -eq 0 -and $report.models[0].parts -eq 5) 'the fresh report names five parts and no unwritten placeholder'
     Refused $finish 'missing derive evidence' 'a formal model without a commanded derive step cannot complete'
     $derive = & $step 'derive'
     Assert (@($derive.jobs).Count -eq 1) 'the derive step commands the derivation job'

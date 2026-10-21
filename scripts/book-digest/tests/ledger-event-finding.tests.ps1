@@ -92,7 +92,7 @@ try {
     Assert ($planned.candidates -eq 2 -and $planned.groups -eq 2 -and @($planned.jobs).Count -eq 2 -and $planned.expected_jobs -eq 2) "plan: two dated candidates of two groups in two jobs ($($planned.candidates), $($planned.groups))"
     $planPath=Join-Path $out 'events\plan.json'
     $plan=Get-Content -LiteralPath $planPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    Assert ($plan.layer -eq 'events' -and $plan.tool -eq 'event' -and $plan.jobs[0].id -eq 'ev-01' -and $plan.jobs[0].groups[0] -eq 1 -and $plan.jobs[1].id -eq 'ev-02' -and $plan.jobs[1].groups[0] -eq 2) 'plan: the accepted manifest names each job and the groups it covers'
+    Assert ($plan.layer -eq 'events' -and $plan.tool -eq 'event' -and $plan.jobs[0].id -eq 'ev-g001' -and $plan.jobs[0].groups[0] -eq 1 -and $plan.jobs[1].id -eq 'ev-g002' -and $plan.jobs[1].groups[0] -eq 2) 'plan: the accepted manifest names each job and the groups it covers'
     Assert ($plan.candidates.g001[0].id -eq 'g001/c001' -and $plan.candidates.g001[0].src -eq 'sections/s01.md:3' -and $plan.candidates.g002[0].id -eq 'g002/c001' -and -not $plan.candidates.ContainsKey('g003')) 'plan: candidates carry stable ids and source spans, and the candidate-less group is not invented'
     Assert ($plan.candidate_source.kind -eq 'artifact' -and $plan.candidate_source.path -like '*events.json' -and $plan.candidate_source.sha256.Length -eq 64) 'plan: the manifest names the prepared events artifact'
 
@@ -107,13 +107,13 @@ try {
         (Event-Answer 1 $ideas[1] 'sections/s01.md:3' '§1' '1976 年阿尔钦和德姆塞茨发表团队生产理论' '两人发表团队生产理论。'),
         (Event-Answer 2 $ideas[2] 'sections/s02.md:3' '§2' '1919 年通用汽车与费雪公司签订十年合同' '两家公司签订十年合同。')
     )
-    Save-Json (Join-Path $out 'events\out\ev-01.json') @{events=@($answers[0])}
-    Save-Json (Join-Path $out 'events\out\ev-02.json') @{events=@($answers[1])}
+    Save-Json (Join-Path $out 'events\out\ev-g001.json') @{events=@($answers[0])}
+    Save-Json (Join-Path $out 'events\out\ev-g002.json') @{events=@($answers[1])}
     $applied=Run-Digest @('event','-Step','apply','-Staging',$out,'-Apply')
     Assert ($applied.ok -and $applied.created -eq 2 -and $applied.linked -eq 2 -and $applied.pending_jobs -eq 0) "apply: two Event Cards and their Links ($($applied | ConvertTo-Json -Compress))"
     $state=Get-Content -LiteralPath (Join-Path $out 'events\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    $entry=$state.applied['ev-01'].entries[0]
-    Assert ($state.applied['ev-01'].answer.sha256 -and $entry.candidate -eq 'g001/c001' -and $entry.src -eq 'sections/s01.md:3' -and $entry.card -eq $state.applied['ev-01'].created[0] -and $entry.supports[0] -eq $ideas[1]) 'apply: the accepted job keeps its answer, candidate, Card and supports'
+    $entry=$state.applied['ev-g001'].entries[0]
+    Assert ($state.applied['ev-g001'].answer.sha256 -and $entry.candidate -eq 'g001/c001' -and $entry.src -eq 'sections/s01.md:3' -and $entry.card -eq $state.applied['ev-g001'].created[0] -and $entry.supports[0] -eq $ideas[1]) 'apply: the accepted job keeps its answer, candidate, Card and supports'
 
     # --- The checked completion --------------------------------------------------------------
     $before=Revision
@@ -125,7 +125,7 @@ try {
     Assert ($done.state -eq 'done' -and $done.complete -and $done.disposition -eq 'verified' -and $done.reused -eq $false -and $done.trees -contains $key) 'the Events unit completes as verified with its touched tree'
     Assert ((@($done.files.Keys | Sort-Object) -join ',') -eq 'check,completion,inputs,list,source' -and (Exists $done.files.list.path) -and (Exists $done.files.source.path) -and (Exists $done.files.inputs.path) -and (Exists $done.files.check.path)) 'the completion registers its list, source, Link/Organize inputs and check evidence'
     $list=Read-Json $done.files.list.path
-    Assert ($list.candidates[0].outcome -eq 'card' -and $list.candidates[0].card -eq $done.accepted[0].card -and $list.jobs[0].answer.sha256 -eq $state.applied['ev-01'].answer.sha256) 'the Event list records the accepted candidate, its Card and the applied answer'
+    Assert ($list.candidates[0].outcome -eq 'card' -and $list.candidates[0].card -eq $done.accepted[0].card -and $list.jobs[0].answer.sha256 -eq $state.applied['ev-g001'].answer.sha256) 'the Event list records the accepted candidate, its Card and the applied answer'
     $inputs=Read-Json $done.files.inputs.path
     Assert ($inputs.organize.anchor -eq "$key/1" -and $inputs.link.links[0].kind -eq '案例' -and $inputs.link.links[0].idea -eq $ideas[1] -and $inputs.hubs.touched_trees -contains $key) 'the registered inputs name the Organize anchor, the kinded Link and the touched hub tree'
     $unit=@((Run-Digest @('ledger','status','-Out',$out,'-Layer','events')).units | Where-Object id -EQ 'events/g001@1')
@@ -140,12 +140,12 @@ try {
         (Finding-Answer 1 $ideas[1] 'sections/s01.md:5' '§1' '42% 的受访企业设有监督者' '42% 的企业采用监督者。' '原书未写明抽样方法。'),
         (Finding-Answer 2 $ideas[2] 'sections/s02.md:5' '§2' '48 家受访企业中 31 家推迟投资' '31 家企业推迟投资。' '原因由企业自报。')
     )
-    Save-Json (Join-Path $out 'findings\out\fd-01.json') @{findings=@($findingAnswers[0])}
-    Save-Json (Join-Path $out 'findings\out\fd-02.json') @{findings=@($findingAnswers[1])}
+    Save-Json (Join-Path $out 'findings\out\fd-g001.json') @{findings=@($findingAnswers[0])}
+    Save-Json (Join-Path $out 'findings\out\fd-g002.json') @{findings=@($findingAnswers[1])}
     $findingsApplied=Run-Digest @('finding','-Step','apply','-Staging',$out,'-Apply')
     Assert ($findingsApplied.ok -and $findingsApplied.created -eq 2 -and $findingsApplied.linked -eq 2 -and $findingsApplied.pending_jobs -eq 0) "finding apply: two Finding Cards and their Links ($($findingsApplied | ConvertTo-Json -Compress))"
     $findingsState=Get-Content -LiteralPath (Join-Path $out 'findings\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    $findingCard=$findingsState.applied['fd-01'].created[0]
+    $findingCard=$findingsState.applied['fd-g001'].created[0]
     $findingClaim=Claim $out 'findings'
     $findingChecked=Run-Digest @('findings-finish','-Out',$out,'-Group','1','-Token',"$($findingClaim.token)",'-CheckOnly')
     Assert ($findingChecked.disposition -eq 'verified' -and $findingChecked.self_check.rules -eq 'F1,F2,F3,F4' -and $findingChecked.self_check.count -eq 0 -and $findingChecked.accepted[0].card -eq $findingCard) 'CheckOnly passes the Finding rules for the accepted result'
@@ -178,7 +178,7 @@ try {
     Save-Json $planPath $emptyJobs
     Refused @('events-finish','-Out',$out,'-Group','2','-Token',"$($second.token)",'-CheckOnly') 'cover' 'a candidate manifest with no planned job cannot complete (T18: unexpected empty job list)'
     [IO.File]::WriteAllBytes($planPath,$planBytes)
-    $answerPath=Join-Path $out 'events\out\ev-02.json'; $answerBytes=[IO.File]::ReadAllBytes($answerPath)
+    $answerPath=Join-Path $out 'events\out\ev-g002.json'; $answerBytes=[IO.File]::ReadAllBytes($answerPath)
     $tampered=@{events=@($answers[1])}; $tampered.events[0].title='1919 年通用汽车收购费雪公司'
     Save-Json $answerPath $tampered
     Refused @('events-finish','-Out',$out,'-Group','2','-Token',"$($second.token)",'-CheckOnly') 'changed after it was accepted' 'a changed answer cannot complete (T18: wrong accepted manifest)'
@@ -216,8 +216,8 @@ try {
     $null=Run-Digest @('event','-Step','plan','-Staging',$out2,'-GroupsPerJob','1')
     $good=Event-Answer 1 $ideas2[1] 'sections/s01.md:3' '§1' '1976 年第二册报告团队生产理论' '两人发表团队生产理论。'
     $bad=$good.Clone(); $bad.group=2; $bad.src='sections/s02.md:3'; $bad.title='第 2 组；坏标题'; $bad.supports=@($ideas2[2]); $bad.role="本事件例示 [[$($ideas2[2])]] 的论点：长期契约约束抬价。"
-    Save-Json (Join-Path $out2 'events\out\ev-01.json') @{events=@($good)}
-    Save-Json (Join-Path $out2 'events\out\ev-02.json') @{events=@($bad)}
+    Save-Json (Join-Path $out2 'events\out\ev-g001.json') @{events=@($good)}
+    Save-Json (Join-Path $out2 'events\out\ev-g002.json') @{events=@($bad)}
     $firstApply=Run-Digest @('event','-Step','apply','-Staging',$out2,'-Apply')
     Assert (-not $firstApply.ok -or @($firstApply.refused).Count -ge 1) "apply: an entry that breaks the Event rules is refused, not written ($($firstApply | ConvertTo-Json -Compress))"
     $firstClaim=Claim $out2 'events'
@@ -227,7 +227,7 @@ try {
     Refused @('events-finish','-Out',$out2,'-Group','2','-Token',"$($secondClaim.token)",'-CheckOnly') 'refused' 'the group whose only entry was refused cannot complete (T18: refused work is not a no-op)'
     $fixed=$good.Clone(); $fixed.group=2; $fixed.src='sections/s02.md:3'; $fixed.title='1919 年第二册记录通用汽车的长期合同'; $fixed.course='两家公司签订十年合同。'
     $fixed.section='§2'; $fixed.supports=@($ideas2[2]); $fixed.role="本事件例示 [[$($ideas2[2])]] 的论点：长期契约约束抬价。"
-    Save-Json (Join-Path $out2 'events\out\ev-02.json') @{events=@($fixed)}
+    Save-Json (Join-Path $out2 'events\out\ev-g002.json') @{events=@($fixed)}
     $retried=Run-Digest @('event','-Step','apply','-Staging',$out2,'-Apply')
     Assert ($retried.ok -and $retried.applied_jobs -eq 1 -and $retried.created -eq 1 -and $retried.refused.Count -eq 0) "the revised answer re-opens its applied job and writes the missing Card ($($retried | ConvertTo-Json -Compress))"
     $secondDone=Run-Digest @('events-finish','-Out',$out2,'-Group','2','-Token',"$($secondClaim.token)")
@@ -238,8 +238,8 @@ try {
     $null=Run-Digest @('finding','-Step','plan','-Staging',$out2,'-GroupsPerJob','1')
     $finding1=Finding-Answer 1 $ideas2[1] 'sections/s01.md:5' '§1' '42% 的第二册受访企业设有监督者' '42% 的企业采用监督者。' '原书未写明抽样方法。'
     $finding2=Finding-Answer 2 $ideas2[2] 'sections/s02.md:5' '§2' '第二册访谈的 31 家企业推迟投资' '31 家企业推迟投资。' '原因由企业自报。'
-    Save-Json (Join-Path $out2 'findings\out\fd-01.json') @{findings=@($finding1)}
-    Save-Json (Join-Path $out2 'findings\out\fd-02.json') @{findings=@($finding2)}
+    Save-Json (Join-Path $out2 'findings\out\fd-g001.json') @{findings=@($finding1)}
+    Save-Json (Join-Path $out2 'findings\out\fd-g002.json') @{findings=@($finding2)}
     $env:ZT_RACE_TARGET=$ideas2[1]
     $env:ZT_RACE_FLAG=Join-Path $scratch 'raced-findings'
     $env:ZT_RACE_LINE='事件阶段在这里补了一句。'
@@ -279,8 +279,8 @@ try {
     $null=Run-Digest @('event','-Step','plan','-Staging',$out3,'-GroupsPerJob','1')
     $merged=Event-Answer 1 $ideas3[1] 'sections/s01.md:3' '§1' '1976 年第二册报告团队生产理论' '两人发表团队生产理论。'
     $merged.existing=$foreignEvent[0]; $merged.role="本事件例示 [[$($ideas3[1])]] 的论点：监督减少偷懒。"
-    Save-Json (Join-Path $out3 'events\out\ev-01.json') @{events=@($merged)}
-    Save-Json (Join-Path $out3 'events\out\ev-02.json') @{events=@()}
+    Save-Json (Join-Path $out3 'events\out\ev-g001.json') @{events=@($merged)}
+    Save-Json (Join-Path $out3 'events\out\ev-g002.json') @{events=@()}
     $ruledOut=Run-Digest @('event','-Step','apply','-Staging',$out3,'-Apply')
     Assert ($ruledOut.ok -and $ruledOut.applied_jobs -eq 2 -and $ruledOut.created -eq 0 -and $ruledOut.merged -eq 1 -and $ruledOut.pending_jobs -eq 0) "apply: one merged Event and one applied answer with no entry ($($ruledOut | ConvertTo-Json -Compress))"
     $mergeClaim=Claim $out3 'events'

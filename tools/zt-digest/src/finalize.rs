@@ -1059,6 +1059,89 @@ fn run_refresh(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     complete_publication(p, zt, &layer, scope, &artifacts, &coverage)
 }
 
+/// The Figures coverage a stage publication supplies: every figure the prepared run recognized,
+/// `shown` when a Card of the figures report names it (by its alt text `图 III` or `图 ` + a label),
+/// otherwise `unmatched` with its reason. The prepared figures file and the stage's own report are the
+/// only sources; nothing is asserted by a caller.
+fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
+    let shown: BTreeSet<String> = ps::ps_items(&report["cards"])
+        .into_iter()
+        .flat_map(|card| ps::ps_items(&card["figures"]).into_iter().map(|label| ps::s(&label).trim().to_string()))
+        .collect();
+    recognized
+        .iter()
+        .map(|figure| {
+            let mut names: Vec<String> = Vec::new();
+            let alt = ps::s(&figure["alt"]).trim().to_string();
+            if !alt.is_empty() {
+                names.push(alt);
+            }
+            for label in ps::ps_items(&figure["labels"]) {
+                names.push(format!("图 {}", ps::s(&label).trim()));
+            }
+            let is_shown = names.iter().any(|name| shown.contains(name));
+            if is_shown {
+                json!({"ref": figure["name"], "outcome": "shown", "path": figure["path"], "sha256": figure["sha256"]})
+            } else {
+                json!({
+                    "ref": figure["name"],
+                    "outcome": "unmatched",
+                    "reason": if names.is_empty() { "the source gives this figure no label, so no Card names it".to_string() } else { format!("no Card of the digest names {}", names[0]) },
+                })
+            }
+        })
+        .collect()
+}
+
+/// `-Step stage`: a stage-owned publication (Organize, the skeleton, Figures, Bridge) completed by its own
+/// stage, through the same verified boundary as a refresh: its declared artifacts are bound by hash and
+/// its coverage is derived from what the run recorded. Before this step nothing completed these
+/// revisions: finalize leaves them to their stages, and no stage published, so every run kept
+/// `organize/book@1`, `skeleton/book@1`, `figures/book@1` and `bridge/book@1` ready and could never be
+/// content-complete (grossman2002integration trial 8).
+fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
+    let layer = a.layer.trim().to_string();
+    if !["organize", "skeleton", "figures", "bridge"].contains(&layer.as_str()) {
+        bail!("`{layer}` is not a stage-owned publication (organize, skeleton, figures, bridge)");
+    }
+    if !prepared_layers(p)?.contains(&layer) {
+        return Ok(json!({"layer": layer, "state": "excluded", "reason": "the prepared run excluded this layer"}));
+    }
+    let artifacts = artifact_paths(&layer, a)?;
+    let coverage = if !a.coverage.trim().is_empty() {
+        util::read_json(&a.coverage)?.as_array().context("coverage must be a JSON array")?.clone()
+    } else {
+        match layer.as_str() {
+            "organize" | "skeleton" => derived_coverage(p, zt, &layer, &a.applied)?,
+            "figures" => {
+                let prepared = util::read_json(must(&p.contract["artifacts"]["figures_file"], "path")?)?;
+                let recognized = ps::ps_items(&prepared["figures"]);
+                let report = util::read_json(&a.report).context("the figures report is not readable")?;
+                figures_coverage(&recognized, &report)
+            }
+            // Every proposal of the immutable Bridge report stays open: accepting one is the user's
+            // review decision (mode bridge with -bridgeApply), never digest work left undone.
+            "bridge" => {
+                let report = util::read_json(&a.report).context("the Bridge report is not readable")?;
+                ps::ps_items(&report["proposals"])
+                    .into_iter()
+                    .map(|proposal| json!({"ref": proposal["id"], "outcome": "open"}))
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    };
+    // The stage reads this line through a relay, so the checked coverage comes back as counts per
+    // outcome; the evidence file and the ledger keep every entry.
+    let mut done = complete_publication(p, zt, &layer, Value::Null, &artifacts, &coverage)?;
+    let mut counts = BTreeMap::<String, u64>::new();
+    for entry in ps::ps_items(&done["coverage"]) {
+        *counts.entry(ps::s(&entry["outcome"])).or_default() += 1;
+    }
+    done["coverage"] = json!(counts);
+    Ok(done)
+}
+
 // --- final -------------------------------------------------------------------------------------
 
 /// Whether the layer's current revision is a finalization refresh revision.
@@ -1325,7 +1408,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Step", "Out", "Report", "FixWork", "Layer", "Changes", "Coverage", "Scope", "Decisions", "Applied", "Skeleton",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
-    let step = a.choice("Step", &["plan", "scope", "refresh", "final"])?;
+    let step = a.choice("Step", &["plan", "scope", "refresh", "stage", "final"])?;
     let p = Params {
         step: step.to_ascii_lowercase(),
         out: a.required("Out")?,
@@ -1350,10 +1433,37 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "plan" => run_plan(&prepared, &mut zt, &p)?,
         "scope" => run_scope(&prepared, &mut zt, &p)?,
         "refresh" => run_refresh(&prepared, &mut zt, &p)?,
+        "stage" => run_stage(&prepared, &mut zt, &p)?,
         _ => run_final(&prepared, &mut zt, &p)?,
     };
     util::print_line(&ps::json_compact(&result))?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::figures_coverage;
+    use serde_json::json;
+
+    // A stage publication's Figures coverage: a figure a Card names is shown (by its alt text or a label),
+    // one no Card names, or with no label, is unmatched with its reason.
+    #[test]
+    fn figures_coverage_classifies_every_recognized_figure() {
+        let recognized = vec![
+            json!({"name":"a.jpg","labels":["III","三"],"alt":"图 III","path":"p/a.jpg","sha256":"aa"}),
+            json!({"name":"b.jpg","labels":["VI"],"alt":"","path":"p/b.jpg","sha256":"bb"}),
+            json!({"name":"c.jpg","labels":[],"alt":"","path":"p/c.jpg","sha256":"cc"}),
+            json!({"name":"d.jpg","labels":["IV"],"alt":"图 IV","path":"p/d.jpg","sha256":"dd"}),
+        ];
+        let report = json!({"cards":[{"figures":["图 III"]},{"figures":["图 VI"]}]});
+        let coverage = figures_coverage(&recognized, &report);
+        assert_eq!(coverage[0], json!({"ref":"a.jpg","outcome":"shown","path":"p/a.jpg","sha256":"aa"}));
+        assert_eq!(coverage[1]["outcome"], json!("shown"));
+        assert_eq!(coverage[2]["outcome"], json!("unmatched"));
+        assert!(coverage[2]["reason"].as_str().unwrap().contains("no label"));
+        assert_eq!(coverage[3]["outcome"], json!("unmatched"));
+        assert!(coverage[3]["reason"].as_str().unwrap().contains("图 IV"));
+    }
 }
 
 #[cfg(test)]

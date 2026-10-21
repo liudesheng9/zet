@@ -60,12 +60,12 @@ try {
 
     $plan = Last @(pwsh -NoProfile -File $compiler -Step plan -Staging $staging 2>&1)
     Assert ($plan.candidates -eq 2 -and $plan.groups -eq 2 -and @($plan.jobs).Count -eq 1) "plan: two candidates of two groups in one job ($($plan.candidates), $($plan.groups), $(@($plan.jobs).Count))"
-    $jobText = Get-Content (Join-Path $staging 'events\ev-01.md') -Raw -Encoding utf8
+    $jobText = Get-Content (Join-Path $staging 'events\ev-g001-g002.md') -Raw -Encoding utf8
     Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match '纵向一体化消除供应商的敲竹杠' -and $jobText -match 'sections/s01.md:3') 'plan: the job lists each group''s Idea Cards with titles and its candidates'
-    Assert ($jobText.Contains("SELF-CHECK: zt-digest event -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'events')`" -Job ev-01")) 'plan: the job carries its SELF-CHECK line (zt-digest event, no pwsh)'
+    Assert ($jobText.Contains("SELF-CHECK: zt-digest event -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'events')`" -Job ev-g001-g002")) 'plan: the job carries its SELF-CHECK line (zt-digest event, no pwsh)'
     Assert ((Get-Content (Join-Path $staging 'events\dsh-event-instructions.zh.md') -Raw -Encoding utf8) -match "\[\[$key\]\]") 'plan: the instructions name the book'
 
-    $answer = Join-Path $staging 'events\out\ev-01.json'
+    $answer = Join-Path $staging 'events\out\ev-g001-g002.json'
     $good = @(
         @{ group = 1; src = 'sections/s01.md:3'; title = '1926 年通用汽车收购费雪车身公司'; time = '1926 年'; place = '美国'; actors = '通用汽车、费雪车身公司'
             course = '通用汽车买下费雪车身公司的全部股份。'; section = '§1'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点：一体化消除敲竹杠。"; existing = '' },
@@ -78,7 +78,7 @@ try {
     $noYear = @{ group = 1; src = 'sections/s01.md:3'; title = '通用汽车买下费雪车身公司'; time = '原书未写明'; place = '美国'; actors = '通用汽车、费雪车身公司'
         course = '通用汽车买下费雪车身公司。'; section = '§1'; supports = @($ideas[0]); role = "本事件例示 [[$($ideas[0])]] 的论点。"; existing = '' }
     @{ events = @($good + $wrong + $noYear) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $answer -Encoding utf8
-    $pre = @(pwsh -NoProfile -File $compiler -Step precheck -Staging $staging -Job ev-01 2>&1 | ForEach-Object { [string]$_ })
+    $pre = @(pwsh -NoProfile -File $compiler -Step precheck -Staging $staging -Job ev-g001-g002 2>&1 | ForEach-Object { [string]$_ })
     Assert ($pre[-1] -match '^faults: [1-9]' -and @($pre | Where-Object { $_ -match '^event:3 EV2 .* is not a Card of group 2' }).Count -eq 1) "precheck: an event naming another group's Card is a fault ($($pre -join ' | '))"
     Assert (@($pre | Where-Object { $_ -match '^event:4 E1 ' }).Count -eq 1) "precheck: zt-check E1 catches a draft title with no year ($($pre -join ' | '))"
     Assert (-not @($pre | Where-Object { $_ -match '^event:[12] ' }).Count) "precheck: the two good events pass ($($pre -join ' | '))"
@@ -86,7 +86,7 @@ try {
     $applied = Last @(pwsh -NoProfile -File $compiler -Step apply -Staging $staging -Apply 2>&1)
     Assert ($applied.ok -and $applied.created -eq 1 -and $applied.merged -eq 1 -and $applied.linked -eq 2 -and @($applied.refused).Count -eq 2) "apply: one created, one merged, two links, two refused (one by zt-check) ($($applied | ConvertTo-Json -Compress))"
     $state = Get-Content (Join-Path $staging 'events\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    $made = @($state.applied['ev-01'].created)[0]
+    $made = @($state.applied['ev-g001-g002'].created)[0]
     $event = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $made } }))[0]
     Assert ($event.type -eq 'event' -and $event.parent.address -eq $ideas[0] -and $event.body -match '^时间：1926 年' -and $event.body -match "来源：\[\[$key\]\] §1") "apply: the new Event Card sits beside its Idea Card with the labels ($made)"
     $idea = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ideas[0] } }))[0]

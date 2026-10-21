@@ -51,10 +51,11 @@ const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const os = require('node:os');
 const ledger = path.resolve(process.argv[1]);
+const keep = (process.argv[2] || '').split(',').filter(Boolean);
 if (!ledger.startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(path.dirname(path.dirname(ledger))).startsWith('finalize-test-')) throw new Error('not the isolated ledger');
 const db = new DatabaseSync(ledger);
 for (const row of db.prepare("select id,layer,state from units").all()) {
-  if (row.layer === 'cleanup' || row.layer === 'audit') continue;
+  if (row.layer === 'cleanup' || row.layer === 'audit' || keep.includes(row.layer)) continue;
   if (row.state === 'done') continue;
   const result = row.layer === 'digest'
     ? { schema_version: 1, kind: 'digest_completion', disposition: 'verified', emitted: [], owned: [], receipt_keys: [] }
@@ -63,8 +64,8 @@ for (const row of db.prepare("select id,layer,state from units").all()) {
 }
 db.close();
 '@
-function Complete-Upstream($Out) {
-    & node --no-warnings -e $markDone (Join-Path $Out 'ledger.sqlite3')
+function Complete-Upstream($Out, [string]$Keep = '') {
+    & node --no-warnings -e $markDone (Join-Path $Out 'ledger.sqlite3') $Keep
     if ($LASTEXITCODE) { throw 'fixture: failing to complete the upstream units' }
 }
 
@@ -264,6 +265,30 @@ try {
     Assert (@($blockedPlan.faults.list | Where-Object { $_.outcome -ceq 'blocked' }).Count -ge 1) 'unresolved: the blocked fault names the reason the bounded branch may not rewrite it'
     $blockedFinal = Finalize 'final' $blockedOut
     Assert ($blockedFinal.status -ceq 'partial' -and @($blockedFinal.faults.list | Where-Object { $_.class -ceq 'hard' }).Count -ge 1) "unresolved: the final report keeps the hard fault as partial ($($blockedFinal.status))"
+
+    # --- stage: a stage-owned publication is completed by its own stage ----------------------------------
+    # grossman2002integration trial 8: no stage published its revision, so organize/skeleton/figures/bridge
+    # book@1 stayed ready and no run could be content-complete.
+    $stageKey = 'FinalizeStage'
+    $stageOut = New-Prepared $stageKey
+    Complete-Upstream $stageOut 'organize,skeleton'
+    $stageWork = Join-Path $stageOut 'stage-artifacts'
+    Save-Json (Join-Path $stageWork 'decisions.json') @{ thesis = '所有权决定剩余控制权'; merges = @(); moves = @(); notes = @() }
+    Save-Json (Join-Path $stageWork 'applied.json') @{ merges = 0; moves = 0; refused = 0 }
+    Save-Json (Join-Path $stageWork 'skeleton.json') @{ thesis = '所有权决定剩余控制权' }
+    $stageOrganize = Finalize 'stage' $stageOut @('-Layer', 'organize', '-Decisions', (Join-Path $stageWork 'decisions.json'), '-Applied', (Join-Path $stageWork 'applied.json'))
+    Assert ($stageOrganize.unit -match '^organize/book@\d+$' -and $stageOrganize.state -ceq 'done') "stage: Organize publishes its own revision ($($stageOrganize.unit) $($stageOrganize.state))"
+    $stageSkeleton = Finalize 'stage' $stageOut @('-Layer', 'skeleton', '-Skeleton', (Join-Path $stageWork 'skeleton.json'))
+    Assert ($stageSkeleton.unit -match '^skeleton/book@\d+$' -and $stageSkeleton.state -ceq 'done' -and $stageSkeleton.coverage.indexed -eq 3) "stage: the skeleton publishes its revision with its coverage counted per outcome ($($stageSkeleton.coverage | ConvertTo-Json -Compress))"
+    $stageAgain = Finalize 'stage' $stageOut @('-Layer', 'skeleton', '-Skeleton', (Join-Path $stageWork 'skeleton.json'))
+    Assert ($stageAgain.revision -eq $stageSkeleton.revision -and $stageAgain.reused -eq $true) 'stage: publishing the same stage again reuses its revision'
+    $stageFigures = Finalize 'stage' $stageOut @('-Layer', 'figures', '-Report', (Join-Path $stageWork 'applied.json'))
+    Assert ($stageFigures.state -ceq 'excluded') "stage: an excluded layer publishes nothing ($($stageFigures.state))"
+    $stageWrong = Try-Digest @('finalize', '-Step', 'stage', '-Out', $stageOut, '-Layer', 'link-check', '-Report', (Join-Path $stageWork 'applied.json'))
+    Assert ($stageWrong.code -eq 1 -and $stageWrong.text -match 'not a stage-owned publication') "stage: a layer no stage owns is refused ($($stageWrong.code))"
+    $stageStatus = Run-Digest @('ledger', 'status', '-Out', $stageOut, '-Layer', 'skeleton')
+    $stageRow = @($stageStatus.publications | Where-Object { $_.layer -eq 'skeleton' })[0]
+    Assert ($stageRow.current -eq $true -and $stageRow.revision -eq $stageSkeleton.revision) 'stage: the published skeleton revision is the current publication'
 
     Write-Output 'all finalization checks passed'
 } finally {

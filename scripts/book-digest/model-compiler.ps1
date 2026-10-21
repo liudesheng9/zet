@@ -37,6 +37,12 @@
     split [-Need a=N;b=M]       applies review-*.json verdicts (split, fix) and composer requests
                                 (`need` Cards for one part): inserts the new parts, re-points the
                                 next member, updates the 结构 list, and prints follow-up jobs.
+    close                       for each model, every build fault get_model still reports (closure,
+                                forward, reach-in, unanchored) goes back once as a 修正 note to the
+                                conversation that wrote its Card; prints {jobs, faults, unowned}.
+    defer                       -Models "a,b": the models model-deps released to wait leave the
+                                batch order (no later step writes or reports them) and their
+                                plan.json is set aside as plan-deferred.json.
     report                      one report per model: parts, relations, charts, Derivation chains,
                                 build faults, style faults, parts still `待写`, and how many
                                 Derivation parts have both 思路 and 解读 (explained).

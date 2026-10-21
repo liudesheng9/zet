@@ -1,6 +1,6 @@
-// ==== module zt-bridge v5 ====
+// ==== module zt-bridge v7 ====
 defineModule({
-  id: 'zt-bridge', version: '5', requires: ['zt-digest-lib'],
+  id: 'zt-bridge', version: '7', requires: ['zt-digest-lib'],
   summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -11,9 +11,18 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z=zdMake(ctx,p), A=Z.A, work=`${Z.OUT}\\bridge`
+    if (await Z.settledOnResume('bridge', ['bridge'])) return { status: 'done', reused: true }
     for(const [key,low,high] of [['bridgeMax',1,120],['bridgeCandidates',1,8]])if(A[key]!==undefined&&(!Number.isInteger(A[key])||A[key]<low||A[key]>high))return {status:'failed',error:`${key} must be an integer in ${low}..${high}.`}
     if((A.bridgeBooks!==undefined&&typeof A.bridgeBooks!=='string')||(A.bridgeReport!==undefined&&typeof A.bridgeReport!=='string'))return {status:'failed',error:'bridgeBooks and bridgeReport must be strings.'}
     const q=v=>`'${String(v).replace(/'/g,"''")}'`
+    // The stage publishes its own book revision (`zt-digest finalize -Step stage`): the ledger binds its artifacts
+    // by hash and checks the coverage it derives. On grossman2002integration trial 8 no stage published, so the
+    // revision stayed ready and the run could never be content-complete.
+    const publish = async (layer, more) => {
+      const { run, json } = await Z.runScript(`${layer}: publish`, 'Bridge', `${Z.DIGEST} finalize -Step stage -Out "${Z.OUT}" -Layer ${layer}${more}`, ' (it records the stage publication in the ledger)')
+      log(json && json.state ? `${layer}: publication ${json.unit || ''} ${json.state}${json.disposition ? ` (${json.disposition})` : ''}.` : `${layer}: the publication failed: ${(run && run.output) || 'no output'}`)
+      return json || { layer, state: 'failed', error: (run && run.output) || 'no output' }
+    }
     const selection=v=>{
       if(v===undefined)return ''
       if(v==='all')return 'all'
@@ -49,7 +58,9 @@ defineModule({
     const summary=zdLastJson((reported&&reported.output)||'')
     if(error)return {status:'failed',error}
     if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}
-    return summary
+    // The report's proposals stay open for the user's review; the publication records the report itself.
+    const publication=await publish('bridge',` -Report "${work}\\proposals.json"`)
+    return {...summary,publication}
   },
 })
 // ==== end module zt-bridge ====

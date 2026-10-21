@@ -367,10 +367,37 @@ fn valid_terms(raw: &Value, max: i64) -> Vec<Term> {
     terms
 }
 
+/// The ways the term table can name its book, longest first: the full title, the main title
+/// before a colon, and none (the Card then says 本书).
+fn book_names(book_title: &str) -> Vec<String> {
+    let full = book_title.trim().to_string();
+    let main = full.split([':', '：']).next().unwrap_or("").trim().to_string();
+    let mut names = vec![full];
+    if !main.is_empty() && main != names[0] {
+        names.push(main);
+    }
+    names
+}
+
+/// The Card's title: 术语表：《…》的 N 个术语, with the longest book name R12 allows.
+fn term_title(book_title: &str, count: usize) -> String {
+    book_names(book_title)
+        .into_iter()
+        .map(|name| format!("术语表：《{name}》的 {count} 个术语"))
+        .find(|title| zt_check::check::title_fits(title))
+        .unwrap_or_else(|| format!("术语表：本书的 {count} 个术语"))
+}
+
 /// The body of the Card 术语表 (and terms.md).
 fn table(book_title: &str, key: &str, terms: &[Term]) -> String {
     let mut sb = Sb::new();
-    sb.line(format!("本卡是《{book_title}》的术语表。本书的卡片用左列的术语，不用右列的词。检查脚本按本表检查规则 R6（一个术语一个意思）。")).blank();
+    // The first sentence names the book by the longest name R2 allows.
+    let opening = book_names(book_title)
+        .into_iter()
+        .map(|name| format!("本卡是《{name}》的术语表。"))
+        .find(|sentence| zt_check::check::sentence_fits(sentence))
+        .unwrap_or_else(|| "本卡是本书的术语表。".to_string());
+    sb.line(format!("{opening}本书的卡片用左列的术语，不用右列的词。检查脚本按本表检查规则 R6（一个术语一个意思）。")).blank();
     sb.line("术语表").blank().line("| 术语 | 不用 | 意思 | 首次定义 |").line("| --- | --- | --- | --- |");
     for t in terms {
         let avoid = if t.avoid.is_empty() { "—".to_string() } else { t.avoid.join("、") };
@@ -438,7 +465,7 @@ pub(crate) fn claimed_table(raw: &Value, max: i64, book_title: &str, key: &str) 
         bail!("Terms answer contains an invalid or skipped row");
     }
     Ok(
-        json!({"terms":terms.len(),"with_avoid":terms.iter().filter(|t|!t.avoid.is_empty()).count(),"title":format!("术语表：《{book_title}》的 {} 个术语",terms.len()),"body":table(book_title,key,&terms)}),
+        json!({"terms":terms.len(),"with_avoid":terms.iter().filter(|t|!t.avoid.is_empty()).count(),"title":term_title(book_title,terms.len()),"body":table(book_title,key,&terms)}),
     )
 }
 
@@ -456,7 +483,7 @@ fn apply(p: &Params, manifest: &Value, key: &str, out: &str) -> Result<i32> {
     let body = table(&book_title, key, &terms);
     let terms_md = ps::join(&p.staging, "terms.md");
     util::write_text(&terms_md, &body)?;
-    let title = format!("术语表：《{book_title}》的 {} 个术语", terms.len());
+    let title = term_title(&book_title, terms.len());
     let mut address = Value::Null;
     let mut receipt_keys = Vec::new();
     if p.apply {
@@ -568,6 +595,25 @@ mod tests {
         assert!(body.contains(&format!("| 剩余控制权 | 残余控制权 | 权利/定义 | §1 |{nl}")));
         assert!(body.contains(&format!("| GDP | — |  |  |{nl}")));
         assert!(body.ends_with(&format!("{nl}{nl}来源：[[K]]")));
+    }
+
+    // The term table names its book in its title and first sentence. A long English title
+    // (stiglitz2014learning: 86 characters with its subtitle) broke R12 and R2, so the Card
+    // names the book by the longest form that fits: the full title, the main title, or 本书.
+    #[test]
+    fn the_term_table_names_its_book_within_the_card_limits() {
+        let long = "Creating a Learning Society: A New Approach to Growth, Development, and Social Progress";
+        let (title, body) = (term_title(long, 60), table(long, "K", &[]));
+        let first = body.split('。').next().unwrap().to_string() + "。";
+        assert!(zt_check::check::title_fits(&title), "{title}");
+        assert!(zt_check::check::sentence_fits(&first), "{first}");
+        assert!(title.contains("Creating a Learning Society"), "{title}");
+        assert_eq!(term_title("企业、合同与财务结构", 12), "术语表：《企业、合同与财务结构》的 12 个术语");
+        assert!(table("书", "K", &[]).starts_with("本卡是《书》的术语表。"));
+        let huge = "An Extraordinarily Long Main Title Without Any Subtitle That Never Ends Here";
+        assert!(zt_check::check::title_fits(&term_title(huge, 60)));
+        // zt-check counts a book title in 《…》 as one name, so even a very long title fits the first sentence.
+        assert!(table(huge, "K", &[]).starts_with(&format!("本卡是《{huge}》的术语表。")));
     }
 
     #[test]

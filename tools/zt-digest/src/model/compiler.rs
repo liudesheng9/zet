@@ -3,7 +3,7 @@
 //! DeepSeek writes briefs, Card bodies, charts, Derivation parts, and reviews;
 //! this tool does everything between them without a model.
 //!
-//!   zt-digest model -Step brief|validate|apply|derive|review|split|report|resume
+//!   zt-digest model -Step brief|validate|apply|derive|review|split|close|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
 //!                   [-Changed] [-Rebuild] [-Level concept|formal] [-MaxSentences 12] [-MaxChars 400]
@@ -27,7 +27,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
 macro_rules! pattern {
@@ -54,8 +54,8 @@ pattern!(REFUSED, r"(?i)^(\S+): ");
 pattern!(LIST_ITEM, r"(?i)^\s*-");
 pattern!(COMMA, r",");
 
-const STEPS: [&str; 12] = [
-    "brief", "validate", "apply", "derive", "review", "split", "report", "resume", "explain", "explain-check",
+const STEPS: [&str; 14] = [
+    "brief", "validate", "apply", "derive", "review", "split", "close", "defer", "report", "resume", "explain", "explain-check",
     "explain-apply", "explain-report",
 ];
 /// One model's folder and artifact stem: the address with `\`, `/` and `|` replaced by `_`.
@@ -145,6 +145,236 @@ struct Follow {
     job: Option<String>,
     text: String,
     ids: Vec<String>,
+}
+
+/// Adds one follow-up to the conversation it belongs to (`new:<model>` when no job wrote it yet).
+fn add_follow(follow: &mut CiMap<Follow>, r: Follow) {
+    let key = r.job.clone().unwrap_or_else(|| format!("new:{}", r.model));
+    let (text, mut ids) = match follow.get(&key) {
+        Some(was) => (was.text.clone(), was.ids.clone()),
+        None => (String::new(), Vec::new()),
+    };
+    for i in r.ids {
+        if !ids.contains(&i) {
+            ids.push(i);
+        }
+    }
+    let entry = Follow { model: r.model, job: r.job, text: format!("{text}{}\n", r.text), ids };
+    follow.insert(&key, entry);
+}
+
+/// The 修正 notes for one model's build faults that a writer can repair in the Card it wrote:
+/// (the Card the fault sits in, the note). A closure or forward fault is almost always a sentence
+/// that says 依赖 in the wrong direction or about a Card outside the model (grossman2002integration
+/// trial 6: a Model Card that "依赖" four Idea Cards of its group, and a 解读 line
+/// "依赖这两个方向的 [[later part]] …" meaning the later part uses this one).
+/// `-Step defer`: the models of a batch that `model-deps` released to wait leave the batch's order, so no
+/// later step (apply, derive, review, split, close, report) writes or reports them, and their status is
+/// `deferred`. Their plans are the caller's to set aside. Returns the models it deferred, in order.
+fn defer_models(state: &mut Value, models: &[String]) -> Vec<String> {
+    let order: Vec<String> = list(&state["order"]).into_iter().map(s).collect();
+    let deferred: Vec<String> = order.iter().filter(|m| models.iter().any(|d| ps::eq(d, m))).cloned().collect();
+    state["order"] = json!(order.iter().filter(|m| !deferred.contains(m)).collect::<Vec<_>>());
+    for model in &deferred {
+        state["models"][model]["status"] = json!("deferred");
+    }
+    deferred
+}
+
+fn close_entries(model: &str, build: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let keep = "不要增删其余内容，不要移动卡片。改完照常运行 CHECK。";
+    for f in list(&build["closure"]) {
+        let (from, to) = (s(&f["from"]), s(&f["to"]));
+        out.push((from.clone(), format!(
+            "## 修正：[[{from}]]\n\n构建检查（闭合）：这张卡有一句话写它依赖 [[{to}]]，而 [[{to}]] 不在本模型 [[{model}]] 里。原句：{}\n把这句改成不表示依赖的说法，句首用「参照」「对应」「对照」或「例示」，意思不变。这句话里不要留下任何读作依赖的词：依赖、依据、基于、建立在、取自、沿用、承接、用到、借用、代入、推导自。模型只依赖自己的分卡。{keep}\n",
+            s(&f["note"])
+        )));
+    }
+    for f in list(&build["forward"]) {
+        let (from, to) = (s(&f["from"]), s(&f["to"]));
+        out.push((from.clone(), format!(
+            "## 修正：[[{from}]]\n\n构建检查（顺序）：这张卡有一句话以「依赖」指向构建顺序在后的 [[{to}]]，读作本卡依赖后面的卡。原句：{}\n若意思是后面的卡用到本卡，把句子改成「[[{to}]] 用到本卡的……」（链接放在句首）或「引出 [[{to}]]：……」。若本卡确实要用 [[{to}]] 的内容，改为依赖前面给出这项内容的那张分卡。{keep}\n",
+            s(&f["note"])
+        )));
+    }
+    for f in list(&build["reach_in"]) {
+        let from = s(&f["from"]);
+        out.push((from.clone(), format!(
+            "## 修正：[[{from}]]\n\n构建检查（越界引用）：{}\n原句：{}\n按这个建议只改这句话。{keep}\n",
+            s(&f["fix"]),
+            s(&f["note"])
+        )));
+    }
+    let setting = s(&build["setting"]);
+    for f in list(&build["unanchored"]) {
+        let at = s(&f["address"]);
+        let anchor = if setting.is_empty() { String::new() } else { format!("，例如「依赖 [[{setting}]]：用到……」") };
+        out.push((at.clone(), format!(
+            "## 修正：[[{at}]]\n\n构建检查（未接上）：这张分卡没有依赖本模型里在它之前的任何分卡。{}\n加一句依赖它真正用到的前面那张分卡的话{anchor}，说明用到什么。{keep}\n",
+            s(&f["fix"])
+        )));
+    }
+    out
+}
+
+/// The 修正 notes for the supplied-step markers `model-finish` refuses: a marker is exactly
+/// （补：书中未写） or （补：书中略去）; a writer that appends a note inside it (grossman2002integration
+/// trial 7: 「（补：书中略去：两式相除）」) gets the Card back with the two allowed forms.
+/// The planned Links a written part does not author: for each planned part this build wrote (not taken,
+/// not existing), every `rests` and `of` reference that resolves to a part of this model must appear as a
+/// relation from that part. `model-finish` refuses the model for each missing one (`does not author the
+/// Link to … its accepted plan requires`), and before this nothing sent them back: on
+/// grossman2002integration trial 10 close reported no fault and model-finish refused `7|a` because
+/// `7|a|a|5` lacked its Link to `3|a|a|2`.
+fn planned_link_entries(
+    model: &str,
+    plan_parts: &[Value],
+    ids: &Value,
+    models: &Value,
+    resolve: &dyn Fn(&str) -> Option<String>,
+    parts: &BTreeSet<String>,
+    pairs: &BTreeSet<(String, String)>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in plan_parts {
+        let id = s(&part["id"]);
+        if id.is_empty() || truthy(&part["take"]) || truthy(&part["existing"]) {
+            continue;
+        }
+        let address = s(&ids[&id]);
+        if address.is_empty() || address.contains('#') {
+            continue;
+        }
+        let mut wanted: Vec<(String, String)> = Vec::new();
+        for rest in list(&part["rests"]) {
+            let reference = s(&ps::at(&pipe(rest), 0));
+            if !reference.is_empty() {
+                wanted.push((reference, s(&ps::at(&pipe(rest), 1))));
+            }
+        }
+        if truthy(&part["of"]) {
+            wanted.push((s(&part["of"]), String::new()));
+        }
+        for (reference, why) in wanted {
+            let Some(target) = resolve(&reference) else { continue };
+            if ps::eq(&target, model) || !parts.contains(&target) {
+                continue;
+            }
+            let mut pieces = reference_pieces(ids, models, &reference);
+            if pieces.is_empty() {
+                pieces.push(target.clone());
+            }
+            if pieces.iter().any(|piece| pairs.contains(&(address.clone(), piece.clone()))) {
+                continue;
+            }
+            let reason = if why.is_empty() { String::new() } else { format!("计划写的关系：{why}。") };
+            let split = if pieces.len() > 1 {
+                let named: Vec<String> = pieces.iter().map(|p| format!("[[{p}]]")).collect();
+                format!("[[{target}]] 已拆成 {}，Link 到给出所用结果的那一张即可。", named.join("、"))
+            } else {
+                String::new()
+            };
+            out.push((address.clone(), format!(
+                "## 修正：[[{address}]]\n\n构建检查（计划的关系）：模型 [[{model}]] 的计划要求这张分卡写出它与 [[{target}]] 的关系，正文里还没有这条 Link。{reason}{split}\n在用到 [[{target}]] 的那句话里放上这条 Link，关系词紧贴在 Link 前（例如「依赖 [[{target}]]：用到……」），说明用到什么。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n"
+            )));
+        }
+    }
+    out
+}
+
+/// The addresses of a planned part and of the pieces `split` cut it into (`D11`, `D11~2`, `D11~3`, and a piece
+/// split again, `D11~2~2`), in id order; empty for an id this model does not map (a taken `K/3|a#X`). A
+/// planned relation to a split part is authored by a Link to any of its pieces: the last one holds the result.
+pub(crate) fn split_pieces(ids: &Value, id: &str) -> Vec<String> {
+    let prefix = format!("{id}~");
+    let Some(map) = ids.as_object() else { return Vec::new() };
+    let mut keys: Vec<&String> = map.keys().filter(|k| *k == id || k.starts_with(&prefix)).collect();
+    keys.sort();
+    keys.into_iter().map(|k| s(&map[k])).filter(|a| !a.is_empty() && !a.contains('#')).collect()
+}
+
+/// The pieces of a planned reference: an own id reads this model's map, `<model>#<id>` reads that model's map in
+/// the compiler state (`models`); empty when neither maps it (a reference to an earlier batch keeps its one address).
+pub(crate) fn reference_pieces(own: &Value, models: &Value, reference: &str) -> Vec<String> {
+    match reference.split_once('#') {
+        Some((other, part)) => split_pieces(&models[other]["ids"], part),
+        None => split_pieces(own, reference),
+    }
+}
+
+/// The text of one 结构 line: the plan's use or title with each semicolon written as a comma. The compiler
+/// writes these lines itself, so a `；` the architect put into a part's use would be an R3 fault in a done Model
+/// Card that the bounded correction may not reopen (grossman2002integration trial 10: `8|a`'s 共用 line).
+fn structure_text(text: &str) -> String {
+    text.replace('；', "，").replace(';', ",")
+}
+
+fn marker_entries(st: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut cards: Vec<(String, String)> = vec![(s(&st["head"]["address"]), s(&st["head"]["body"]))];
+    for p in list(&st["parts"]) {
+        cards.push((s(&p["address"]), s(&p["body"])));
+    }
+    for (at, body) in cards {
+        if at.is_empty() || crate::model::source_review::markers_ok(&body) {
+            continue;
+        }
+        out.push((at.clone(), format!(
+            "## 修正：[[{at}]]\n\n构建检查（补出标记）：这张卡有一个以「（补」开头的标记写错了。标记只能原样写成「{}」或「{}」，括号里不加别的字；要说明的话写在标记前面的句子里。只改标记，不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n",
+            crate::model::source_review::MARKERS[0],
+            crate::model::source_review::MARKERS[1]
+        )));
+    }
+    out
+}
+
+/// A Model Card's 结构 list with every 共用 line rebuilt, in order, from the taken parts' current lines;
+/// `None` when the list does not carry exactly one 共用 line per taken part (it is then left as it is).
+fn shared_lines(section: &str, wanted: &[String]) -> Option<String> {
+    let have = section.lines().filter(|l| l.contains("（共用）")).count();
+    if have != wanted.len() || wanted.is_empty() {
+        return None;
+    }
+    let mut k = 0;
+    let lines: Vec<String> = section
+        .lines()
+        .map(|l| {
+            if l.contains("（共用）") {
+                k += 1;
+                wanted[k - 1].clone()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
+/// The 修正 notes for the parts the source review records as `supplied` (a step the book does not
+/// give) whose body carries neither established marker: `model-finish` refuses them (grossman2002integration
+/// trial 7: 8|a part `D1`). `review` is the model's source-review artifact, `ids` the plan-id → address map.
+fn supplied_entries(review: &Value, ids: &Value, st: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in list(&review["parts"]) {
+        if !ps::eq(&s(&part["outcome"]), "supplied") {
+            continue;
+        }
+        let at = s(&ids[s(&part["part"]).as_str()]);
+        if at.is_empty() {
+            continue;
+        }
+        let body = list(&st["parts"]).into_iter().find(|p| ps::eq(&s(&p["address"]), &at)).map(|p| s(&p["body"])).unwrap_or_default();
+        if crate::model::source_review::supplied_marked(&body) {
+            continue;
+        }
+        out.push((at.clone(), format!(
+            "## 修正：[[{at}]]\n\n构建检查（补出标记）：来源复核把这张分卡记为书中没有、由本模型补出的步骤，但正文里没有补出标记。在补出的那一句后面加「{}」（书里没有写）或「{}」（书里略过了），标记原样写，括号里不加别的字。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n",
+            crate::model::source_review::MARKERS[0],
+            crate::model::source_review::MARKERS[1]
+        )));
+    }
+    out
 }
 
 /// One split or fix verdict, by model and plan id.
@@ -249,6 +479,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "derive" => c.step_derive(),
         "review" => c.step_review(),
         "split" => c.step_split(),
+        "close" => c.step_close(),
+        "defer" => c.step_defer(),
         "report" => c.step_report(),
         "resume" => c.step_resume(),
         "explain" => c.step_explain(),
@@ -833,11 +1065,11 @@ impl Compiler {
             let m = self.m(model);
             if truthy(&p["take"]) {
                 let facet = if truthy(&p["facet"]) { s(&p["facet"]) } else { "共用".into() };
-                lines.push(format!("- {facet} [[{address}]]（共用）：{}", s(&p["use"])));
+                lines.push(format!("- {facet} [[{address}]]（共用）：{}", structure_text(&s(&p["use"]))));
             } else {
                 let id = s(&p["id"]);
                 let core = if ps::eq(&s(&p["emphasis"]), "core") { "（核心）" } else { "" };
-                lines.push(format!("- {} [[{address}]]{core}：{}", s(&m["facets"][&id]), s(&m["titles"][&id])));
+                lines.push(format!("- {} [[{address}]]{core}：{}", s(&m["facets"][&id]), structure_text(&s(&m["titles"][&id]))));
             }
         }
         Ok(format!("**结构**\n\n{}", lines.join("\n")))
@@ -1871,20 +2103,7 @@ impl Compiler {
         // job id (or new:<model>) -> what its conversation must do next
         let mut follow: CiMap<Follow> = CiMap::new();
         let mut orphans: Vec<Value> = Vec::new();
-        let add = |follow: &mut CiMap<Follow>, r: Follow| {
-            let key = r.job.clone().unwrap_or_else(|| format!("new:{}", r.model));
-            let (text, mut ids) = match follow.get(&key) {
-                Some(was) => (was.text.clone(), was.ids.clone()),
-                None => (String::new(), Vec::new()),
-            };
-            for i in r.ids {
-                if !ids.contains(&i) {
-                    ids.push(i);
-                }
-            }
-            let entry = Follow { model: r.model, job: r.job, text: format!("{text}{}\n", r.text), ids };
-            follow.insert(&key, entry);
-        };
+        let add = add_follow;
         // Name every target by its model and id first: a split renumbers the addresses after it.
         let mut actions: Vec<Action> = Vec::new();
         for pair in self.p.need.split(';').filter(|p| !p.trim().is_empty()).map(str::to_string).collect::<Vec<_>>() {
@@ -1958,6 +2177,189 @@ impl Compiler {
                 self.update_chain_lines(&model)?;
             }
         }
+        // A split renumbers the parts after it: the 共用 lines of the other models follow.
+        self.refresh_shared()?;
+        let jobs = self.follow_jobs(&follow)?;
+        self.save_state()?;
+        self.out_last(&json!({ "jobs": jobs, "orphans": orphans }))
+    }
+
+    /// `close`: the build faults each model of the batch still has after its last fill, derive or
+    /// split (closure, forward, reach-in, unanchored) go back once, as 修正 notes, to the conversation
+    /// that wrote the Card they sit in: the Model Card's own job for the Model Card, the part's job for a
+    /// part. `model-finish` refuses a model with any of these faults, and before this step nothing
+    /// sent them back (a concept model has no review round at all). A fault in a Card no job of this
+    /// batch wrote (a shared part of another model) is listed under `unowned`.
+    /// `-Step defer -Models "a,b"`: a model `model-deps` released to wait (a part it takes from a model of
+    /// another batch is not built yet) leaves this batch before the fill, and its plan.json is set aside as
+    /// plan-deferred.json, so the batch that claims it again plans it afresh and the ledger finds one plan.
+    /// On grossman2002integration trial 9 the fill held jobs for all four models of a batch after three of
+    /// them had been released to wait: they would have been written without a claim and built again later.
+    fn step_defer(&mut self) -> Result<()> {
+        let wanted = self.model_list();
+        let deferred = defer_models(&mut self.state, &wanted);
+        for model in &deferred {
+            let plan = ps::join(&self.dir(model), "plan.json");
+            if ps::exists(&plan) {
+                let aside = ps::join(&self.dir(model), "plan-deferred.json");
+                std::fs::rename(&plan, &aside).with_context(|| format!("set aside the plan of {model}"))?;
+            }
+            let at = crate::canon::utc_now_o();
+            self.state["models"][model]["deferred_at"] = json!(at);
+        }
+        self.save_state()?;
+        self.out_last(&json!({"ok": true, "step": "defer", "deferred": deferred, "order": self.state["order"]}))
+    }
+
+    fn step_close(&mut self) -> Result<()> {
+        let refreshed = self.refresh_shared()?;
+        self.snapshot_structures()?;
+        let mut follow: CiMap<Follow> = CiMap::new();
+        let mut unowned: Vec<Value> = Vec::new();
+        let mut faults = 0usize;
+        for model in self.order() {
+            let st = self.model_of(&json!(model))?;
+            let mut entries = close_entries(&model, &st["build"]);
+            entries.extend(marker_entries(&st));
+            let plan_path = ps::join(&self.dir(&model), "plan.json");
+            if ps::exists(&plan_path)
+                && let Ok(plan) = util::read_json(&plan_path)
+            {
+                let own = self.m(&model)["ids"].clone();
+                let refs = self.m(&model)["refs"].clone();
+                let models = self.state["models"].clone();
+                let resolve = |reference: &str| -> Option<String> {
+                    if let Some((other, part)) = reference.split_once('#') {
+                        let from_state = s(&models[other]["ids"][part]);
+                        if !from_state.is_empty() {
+                            return Some(from_state);
+                        }
+                        let from_refs = s(&refs[reference]["address"]);
+                        return (!from_refs.is_empty()).then_some(from_refs);
+                    }
+                    let own_id = s(&own[reference]);
+                    if !own_id.is_empty() {
+                        return if own_id.contains('#') { None } else { Some(own_id) };
+                    }
+                    Some(reference.to_string())
+                };
+                let parts: BTreeSet<String> = list(&st["parts"]).into_iter().map(|p| s(&p["address"])).filter(|a| !a.is_empty()).collect();
+                let pairs: BTreeSet<(String, String)> = list(&st["relations"]).into_iter().map(|r| (s(&r["from"]), s(&r["to"]))).collect();
+                let plan_parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
+                entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs));
+            }
+            let review_path = ps::join(&self.dir(&model), "source-review.json");
+            if ps::exists(&review_path)
+                && let Ok(review) = util::read_json(&review_path)
+            {
+                let ids = self.m(&model)["ids"].clone();
+                entries.extend(supplied_entries(&review, &ids, &st));
+            }
+            for (at, text) in entries {
+                faults += 1;
+                let (job, ids) = if ps::eq(&at, &model) {
+                    (self.head_job(&model), Vec::new())
+                } else {
+                    match self.find_owner(&at)? {
+                        Some((owner, id)) if ps::eq(&owner, &model) => {
+                            let job = self.find_job(&model, &id);
+                            (job, vec![id])
+                        }
+                        _ => (None, Vec::new()),
+                    }
+                };
+                match job {
+                    Some(job) => add_follow(&mut follow, Follow { model: model.clone(), job: Some(job), text, ids }),
+                    None => unowned.push(json!({ "model": model, "card": at })),
+                }
+            }
+        }
+        let jobs = self.follow_jobs(&follow)?;
+        self.save_state()?;
+        self.out_last(&json!({ "jobs": jobs, "faults": faults, "unowned": unowned, "refreshed": refreshed }))
+    }
+
+    /// Rebuilds the 共用 lines of every Model Card of the batch from its plan's taken parts and the
+    /// current address map. A split in one model renumbers its later parts, and the 结构 list of another
+    /// model that takes one of them in kept the old address (grossman2002integration trial 7: 3|a named
+    /// `2|a|a|12` for π_m after a split in 2|a moved it to `2|a|a|13`, and model-finish refused 3|a).
+    fn refresh_shared(&mut self) -> Result<usize> {
+        let mut edits = Vec::new();
+        for model in self.order() {
+            if !ps::exists(&ps::join(&self.dir(&model), "plan.json")) {
+                continue;
+            }
+            let plan = self.plan(&model)?;
+            let mut wanted = Vec::new();
+            for p in list(&plan["parts"]).into_iter().filter(|p| truthy(&p["take"])).cloned().collect::<Vec<_>>() {
+                let address = self.resolve(&p["id"], &model)?;
+                let facet = if truthy(&p["facet"]) { s(&p["facet"]) } else { "共用".into() };
+                wanted.push(format!("- {facet} [[{address}]]（共用）：{}", structure_text(&s(&p["use"]))));
+            }
+            if wanted.is_empty() {
+                continue;
+            }
+            let card = self.card(&json!(model))?;
+            let body = s(&card["body"]);
+            let Some(section) = text::get_section(&body, "结构") else { continue };
+            if let Some(rebuilt) = shared_lines(&section, &wanted)
+                && rebuilt != section
+            {
+                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &rebuilt) } }));
+            }
+        }
+        let n = edits.len();
+        self.edits(edits)?;
+        Ok(n)
+    }
+
+    /// Keeps each Model Card's 结构 list as the compiler wrote it across a close round: `close` records the
+    /// list, and `report` puts it back when a writer re-sent the whole body from an older copy.
+    fn snapshot_structures(&mut self) -> Result<()> {
+        for model in self.order() {
+            let card = self.card(&json!(model))?;
+            if let Some(section) = text::get_section(&s(&card["body"]), "结构") {
+                self.m_mut(&model)["structure_close"] = json!(section);
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_structures(&mut self) -> Result<usize> {
+        let mut edits = Vec::new();
+        for model in self.order() {
+            let kept = s(&self.m(&model)["structure_close"]);
+            if kept.is_empty() {
+                continue;
+            }
+            let card = self.card(&json!(model))?;
+            let body = s(&card["body"]);
+            if text::get_section(&body, "结构").as_deref() != Some(kept.as_str()) {
+                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &kept) } }));
+            }
+            self.m_mut(&model)["structure_close"] = Value::Null;
+        }
+        let n = edits.len();
+        self.edits(edits)?;
+        Ok(n)
+    }
+
+    /// The job that wrote a model's Model Card (`fill_head_job`): the last job whose addresses name it.
+    fn head_job(&self, model: &str) -> Option<String> {
+        let mut found = None;
+        for k in ps::keys(&self.state["jobs"]) {
+            let j = &self.state["jobs"][&k];
+            if ps::eq(&s(&j["model"]), model) && strings(&j["addresses"]).iter().any(|a| ps::eq(a, model)) {
+                found = Some(k);
+            }
+        }
+        found
+    }
+
+    /// The follow-up jobs of a split or close round: a note for a conversation that is still known
+    /// continues it (its ALLOW file, a fresh-conversation fallback); a note with no job yet becomes a
+    /// new job with the parts' blocks.
+    fn follow_jobs(&mut self, follow: &CiMap<Follow>) -> Result<Vec<Value>> {
         let mut jobs = Vec::new();
         for (key, f) in follow.iter().map(|(k, f)| (k.clone(), (f.model.clone(), f.text.clone(), f.ids.clone()))).collect::<Vec<_>>() {
             let (model, text, ids) = f;
@@ -1996,11 +2398,14 @@ impl Compiler {
                 "prompt": "按以上补充说明修改和续写你的分卡，最后每张分卡回复一行 JSON。",
             }));
         }
-        self.save_state()?;
-        self.out_last(&json!({ "jobs": jobs, "orphans": orphans }))
+        Ok(jobs)
     }
 
     fn step_report(&mut self) -> Result<()> {
+        // A close writer may have re-sent a whole Model Card from an older copy: its 结构 list goes back
+        // to the one the compiler wrote, and the 共用 lines follow the current addresses.
+        self.restore_structures()?;
+        self.refresh_shared()?;
         let mut reports = Vec::new();
         for model in self.order() {
             let st = self.model_of(&json!(model))?;
@@ -2104,7 +2509,24 @@ impl Compiler {
             );
         }
         self.save_state()?;
-        self.out_last(&json!({ "models": reports }))
+        // The full report (every part with its facet) goes to report.json; the printed line is relayed
+        // by an agent and carries counts only. On grossman2002integration trial 12 the relay cut three
+        // models' part lists to a note, and the models stage threw on it.
+        let file = ps::join(&self.p.work, "report.json");
+        util::write_text(&file, &ps::json_pretty(&json!({ "models": reports })))?;
+        let brief: Vec<Value> = reports.iter().map(Self::brief_report).collect();
+        self.out_last(&json!({ "models": brief, "file": file }))
+    }
+
+    /// One model's report line for the relay: the part list becomes its count and its core count,
+    /// the moved Cards their count.
+    fn brief_report(report: &Value) -> Value {
+        let mut brief = report.clone();
+        let parts = list(&report["parts"]);
+        brief["parts"] = json!(parts.len());
+        brief["core"] = json!(parts.iter().filter(|p| ps::eq(&s(&p["emphasis"]), "core")).count());
+        brief["moved"] = json!(list(&report["moved"]).len());
+        brief
     }
 
     // --- resume ---------------------------------------------------------------------------------
@@ -2311,7 +2733,7 @@ impl Compiler {
             .collect();
         let mut card_text = format!("## 模型卡：[[{model}]]\n\n- 要写：问题、概要（三到五句）、结构、关联、来源。保留 **结构** 一节原样。\n- 内容：{}\n", s(&plan["card"]));
         if !outside.is_empty() {
-            card_text += &format!("- 保留这些模型外的链接，每个放进一句说明关系的话：\n{}\n", outside.join("\n"));
+            card_text += &format!("- 保留这些模型外的链接，每个放进一句说明关系的话，句首用「参照」「对应」「对照」或「例示」，不用「依赖」「基于」（模型只依赖自己的分卡）：\n{}\n", outside.join("\n"));
         }
         if ps::eq(&s(&plan["level"]), "concept") {
             card_text += "- 概念模型：用文字说清问题、机制和结论，不写推导。\n";
@@ -2832,8 +3254,157 @@ fn lacks_main_line(structure: &Value, current_main: &[String], main: &[&Value]) 
 
 #[cfg(test)]
 mod tests {
-    use super::lacks_main_line;
+    use super::{close_entries, lacks_main_line, marker_entries, shared_lines, supplied_entries};
     use serde_json::json;
+
+    // `close`: each build fault becomes one 修正 note for the Card it sits in.
+    #[test]
+    fn each_build_fault_becomes_a_note_for_its_own_card() {
+        let build = json!({
+            "setting": "B/1|a|a",
+            "closure": [{ "from": "B/1|a", "to": "B/1|e", "note": "依赖 「B/1|e」：部门多。", "fix": "move it in" }],
+            "forward": [{ "from": "B/1|a|a|6", "to": "B/1|a|a|13", "note": "依赖这两个方向的 「x」 比较利润。", "fix": "reorder" }],
+            "unanchored": [{ "address": "B/1|a|a|3", "title": "t", "fix": "rest on an earlier part" }],
+            "reach_in": [], "beyond_level": [{ "address": "B/1|a|a|9", "fix": "not a build fault close repairs" }],
+        });
+        let notes = close_entries("B/1|a", &build);
+        let cards: Vec<&str> = notes.iter().map(|(at, _)| at.as_str()).collect();
+        assert_eq!(cards, vec!["B/1|a", "B/1|a|a|6", "B/1|a|a|3"]);
+        assert!(notes[0].1.starts_with("## 修正：[[B/1|a]]") && notes[0].1.contains("[[B/1|e]]") && notes[0].1.contains("参照"));
+        // grossman2002integration trial 17: a writer turned 「时序沿用 [[2|a]]」 into 「信息沿用 [[2|a]]」, still a
+        // rests-on sentence; the note names the words that read as rests-on, so the writer drops them.
+        assert!(notes[0].1.contains("沿用") && notes[0].1.contains("用到") && notes[0].1.contains("基于"), "{}", notes[0].1);
+        assert!(notes[1].1.contains("[[B/1|a|a|13]] 用到本卡") && notes[1].1.contains("依赖这两个方向"));
+        assert!(notes[2].1.contains("依赖 [[B/1|a|a]]"));
+        assert!(close_entries("B/1|a", &json!({})).is_empty(), "a model with no build faults gets no note");
+    }
+
+    // `close`: a supplied-step marker with a note inside it goes back to its Card; a clean one does not.
+    #[test]
+    fn a_malformed_marker_becomes_a_note_for_its_card() {
+        let st = json!({
+            "head": { "address": "B/1|a", "body": "问题。（补：书中未写）" },
+            "parts": [
+                { "address": "B/1|a|a", "body": "步骤。（补：书中略去：两式相除）" },
+                { "address": "B/1|a|a|1", "body": "步骤。（补：书中略去）" }
+            ]
+        });
+        let notes = marker_entries(&st);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "B/1|a|a");
+        assert!(notes[0].1.contains("（补：书中未写）") && notes[0].1.contains("（补：书中略去）"));
+    }
+
+    // `close`: a part the source review records as supplied needs a marker; one that has it, or a part
+    // reviewed as supported, gets no note.
+    #[test]
+    fn a_supplied_part_without_a_marker_becomes_a_note() {
+        let review = json!({ "parts": [
+            { "part": "D1", "outcome": "supplied" },
+            { "part": "D2", "outcome": "supplied" },
+            { "part": "S", "outcome": "supported" }
+        ] });
+        let ids = json!({ "D1": "B/8|a|a|1", "D2": "B/8|a|a|2", "S": "B/8|a|a" });
+        let st = json!({ "parts": [
+            { "address": "B/8|a|a|1", "body": "补出的一步。" },
+            { "address": "B/8|a|a|2", "body": "补出的一步（补：书中略去）。" },
+            { "address": "B/8|a|a", "body": "设定。" }
+        ] });
+        let notes = supplied_entries(&review, &ids, &st);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "B/8|a|a|1");
+        assert!(notes[0].1.contains("补出标记"));
+    }
+
+    // The 共用 lines of a 结构 list follow the taken parts' current addresses, in order; a list whose
+    // 共用 lines do not match the plan's taken parts one for one is left alone.
+    #[test]
+    fn shared_lines_follow_the_taken_parts() {
+        let section = "**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n- 共用 [[B/2|a|a|12]]（共用）：π_m (6)\n- 推导 [[B/3|a|a|1]]：推导";
+        let wanted = vec!["- 共用 [[B/2|a|a|13]]（共用）：π_m (6)".to_string()];
+        assert_eq!(
+            shared_lines(section, &wanted).unwrap(),
+            "**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n- 共用 [[B/2|a|a|13]]（共用）：π_m (6)\n- 推导 [[B/3|a|a|1]]：推导"
+        );
+        assert!(shared_lines(section, &[]).is_none());
+        assert!(shared_lines(section, &[wanted[0].clone(), wanted[0].clone()]).is_none());
+    }
+
+    // -Step defer: the released models leave the order (every later step iterates it) and read deferred;
+    // a model the batch does not hold is ignored.
+    #[test]
+    fn deferred_models_leave_the_batch_order() {
+        let mut state = json!({"order": ["K/2|a", "K/3|a", "K/4|a"], "models": {"K/2|a": {"status": "planned"}, "K/3|a": {"status": "planned"}, "K/4|a": {"status": "planned"}}});
+        let deferred = super::defer_models(&mut state, &["k/3|A".to_string(), "K/4|a".to_string(), "K/9|a".to_string()]);
+        assert_eq!(deferred, vec!["K/3|a".to_string(), "K/4|a".to_string()]);
+        assert_eq!(state["order"], json!(["K/2|a"]));
+        assert_eq!(state["models"]["K/3|a"]["status"], json!("deferred"));
+        assert_eq!(state["models"]["K/2|a"]["status"], json!("planned"));
+    }
+
+    // close: a planned rests-on Link a written part does not author goes back to its writer; one the part
+    // authors, one to a target outside the model, and a taken part ask for nothing.
+    #[test]
+    fn a_missing_planned_link_is_a_close_entry() {
+        use std::collections::BTreeSet;
+
+        let plan_parts = vec![
+            json!({"id":"E","rests":[["F","用到均衡条件"],["G","用到定义"]]}),
+            json!({"id":"H","take":"K/3|a#X"}),
+            json!({"id":"F"}),
+        ];
+        let ids = json!({"E":"K/7|a|a|5","F":"K/3|a|a|2","G":"K/7|a|a|1","H":"K/3|a#X"});
+        let resolve = |r: &str| -> Option<String> { let v = ids[r].as_str().unwrap_or_default().to_string(); if v.is_empty() || v.contains('#') { None } else { Some(v) } };
+        let parts: BTreeSet<String> = ["K/7|a|a|5", "K/7|a|a|1", "K/3|a|a|2"].into_iter().map(String::from).collect();
+        let pairs: BTreeSet<(String, String)> = [("K/7|a|a|5".to_string(), "K/7|a|a|1".to_string())].into_iter().collect();
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &pairs);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].0, "K/7|a|a|5");
+        assert!(entries[0].1.contains("[[K/3|a|a|2]]") && entries[0].1.contains("用到均衡条件"));
+    }
+
+    // A split Derivation part is one planned target in several pieces (`D11`, `D11~2`, `D11~3`): a Link to
+    // any piece authors the planned relation. grossman2002integration trial 16: `7|a|a|19` rested on the
+    // chain's last piece `7|a|a|18` (it holds the result it uses), close sent it back for `7|a|a|16`, and
+    // model-finish refused `7|a`; `8|a` the same way. A prefix of another id (`D1` for `D11`) is no piece.
+    #[test]
+    fn a_link_to_any_piece_of_a_split_part_authors_its_planned_link() {
+        use std::collections::BTreeSet;
+
+        let ids = json!({"D1":"K/7|a|a|1","D11":"K/7|a|a|16","D11~2":"K/7|a|a|17","D11~3":"K/7|a|a|18","SC":"K/7|a|a|19"});
+        assert_eq!(super::split_pieces(&ids, "D11"), vec!["K/7|a|a|16", "K/7|a|a|17", "K/7|a|a|18"]);
+        assert_eq!(super::split_pieces(&ids, "D1"), vec!["K/7|a|a|1"]);
+        assert!(super::split_pieces(&ids, "K/3|a#X").is_empty());
+
+        let plan_parts = vec![json!({"id":"SC","rests":[["D11","用到交点的移动"]]}), json!({"id":"D11"})];
+        let resolve = |r: &str| -> Option<String> { ids[r].as_str().map(str::to_string) };
+        let parts: BTreeSet<String> = ["K/7|a|a|16", "K/7|a|a|17", "K/7|a|a|18", "K/7|a|a|19"].into_iter().map(String::from).collect();
+        let to_last: BTreeSet<(String, String)> = [("K/7|a|a|19".to_string(), "K/7|a|a|18".to_string())].into_iter().collect();
+        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &to_last).is_empty());
+        let none = BTreeSet::new();
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &none);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(entries[0].1.contains("[[K/7|a|a|16]]") && entries[0].1.contains("[[K/7|a|a|18]]"), "{}", entries[0].1);
+    }
+
+    // A reference to another model's part (`K/2|a#D`) whose part `split` cut into pieces is met by a Link to any
+    // piece, read from that model's own map (grossman2002integration trial 19: model-finish refused `3|a` because
+    // `3|a|a|4` linked a later piece of `2|a`'s split derivation, not `2|a|a|14`).
+    #[test]
+    fn a_reference_to_another_models_split_part_takes_any_piece() {
+        let own = json!({"P":"K/3|a|a|4"});
+        let models = json!({"K/2|a": {"ids": {"D":"K/2|a|a|14","D~2":"K/2|a|a|15","D1":"K/2|a|a|2"}}});
+        assert_eq!(super::reference_pieces(&own, &models, "K/2|a#D"), vec!["K/2|a|a|14", "K/2|a|a|15"]);
+        assert_eq!(super::reference_pieces(&own, &models, "P"), vec!["K/3|a|a|4"]);
+        assert!(super::reference_pieces(&own, &models, "K/9|a#D").is_empty());
+    }
+
+    // A 结构 line never carries a semicolon (R3 in a done Model Card).
+    #[test]
+    fn a_structure_line_writes_a_semicolon_as_a_comma() {
+        assert_eq!(super::structure_text("用到议价份额 ω；本模型放宽其假设"), "用到议价份额 ω，本模型放宽其假设");
+        assert_eq!(super::structure_text("a; b"), "a, b");
+    }
 
     #[test]
     fn linked_parts_do_not_need_a_main_line() {

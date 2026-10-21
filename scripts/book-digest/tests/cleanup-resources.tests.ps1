@@ -118,6 +118,10 @@ try {
     Assert ($runLevelUnit.state -eq 'registered') 'the run-level cleanup waits for the last content layer'
     $deps = @((Run-Digest @('ledger','status','-Out',$out,'-Layer','cleanup')).dependencies | Where-Object { $_.unit -eq $registered.cleanup_unit })
     Assert ($deps.Count -eq 1 -and $deps[0].needs -eq $first.id -and $deps[0].condition -eq 'settled') 'the cleanup unit is released when its owner settles, not before'
+    # grossman2002integration trial 19: the CLI counted its actions without -SweepEvidence and refused the sweep alone.
+    $answers = Join-Path $out 'answers'; New-Item -ItemType Directory -Force $answers | Out-Null
+    $swept = Run-Digest @('ledger','resource','-Out',$out,'-SweepEvidence',$answers)
+    Assert ($null -ne $swept) 'ledger resource -SweepEvidence runs as an action of its own'
 
     # --- R329/T13: a scratch target resolves inside the staging root; a stale attempt cannot register ---
     $bad = Fail-Register ([ordered]@{ schema_version = 1; unit = $first.id; token = $first.token; workspace = @{ id = 'ws'; path = $workspace }; conversations = @(@{ id = 'conv-x' }); scratch = @(@{ path = (Join-Path $scratch 'outside') }) }) $out

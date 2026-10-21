@@ -57,9 +57,9 @@ try {
 
     $plan = Last @(pwsh -NoProfile -File $compiler -Step plan -Staging $staging 2>&1)
     Assert ($plan.candidates -eq 3 -and $plan.groups -eq 2 -and @($plan.jobs).Count -eq 1) "plan: three result candidates (with a number and an empirical cue) in two groups, one job ($($plan.candidates), $($plan.groups))"
-    $jobText = Get-Content (Join-Path $staging 'findings\fd-01.md') -Raw -Encoding utf8
+    $jobText = Get-Content (Join-Path $staging 'findings\fd-g001-g002.md') -Raw -Encoding utf8
     Assert ($jobText -match 'sections/s01.md:5' -and $jobText -match '42%' -and $jobText -notmatch '风险中性') 'plan: the job lists the result sentences, not the model assumption'
-    Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match "锚点：``$key/1``" -and $jobText.Contains("SELF-CHECK: zt-digest finding -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'findings')`" -Job fd-01")) 'plan: the job names the anchors, the Idea Cards, and its SELF-CHECK line'
+    Assert ($jobText -match [regex]::Escape($ideas[0]) -and $jobText -match "锚点：``$key/1``" -and $jobText.Contains("SELF-CHECK: zt-digest finding -Step precheck -Staging `"$staging`" -Work `"$(Join-Path $staging 'findings')`" -Job fd-g001-g002")) 'plan: the job names the anchors, the Idea Cards, and its SELF-CHECK line'
 
     $good = @(
         @{ group = 1; src = 'sections/s01.md:5'; title = '31 家受访企业因为缺少保险市场推迟了投资'; measure = '企业推迟投资的原因。'; data = '48 家企业的访谈，原书未写明年份。'
@@ -70,9 +70,9 @@ try {
     $noLimits = $good[0].Clone(); $noLimits.title = '受访企业的投资推迟了'; $noLimits.limits = ''
     $foreign = $good[1].Clone(); $foreign.title = '小企业放弃扩张的比例接近一半'; $foreign.supports = @($ideas[0]); $foreign.role = "这一结果印证 [[$($ideas[0])]] 的判断。"
     $semicolon = $good[0].Clone(); $semicolon.title = '31 家企业推迟投资；原因是缺少保险'
-    $answer = Join-Path $staging 'findings\out\fd-01.json'
+    $answer = Join-Path $staging 'findings\out\fd-g001-g002.json'
     @{ findings = @($good + $noLimits + $foreign + $semicolon) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $answer -Encoding utf8
-    $pre = @(pwsh -NoProfile -File $compiler -Step precheck -Staging $staging -Job fd-01 2>&1 | ForEach-Object { [string]$_ })
+    $pre = @(pwsh -NoProfile -File $compiler -Step precheck -Staging $staging -Job fd-g001-g002 2>&1 | ForEach-Object { [string]$_ })
     Assert (@($pre | Where-Object { $_ -match '^finding:3 FD1 missing field: limits' }).Count -eq 1) "precheck: a missing field is a fault ($($pre -join ' | '))"
     Assert (@($pre | Where-Object { $_ -match '^finding:4 FD2 .* is not a Card of group 2' }).Count -eq 1) 'precheck: a supported Card of another group is a fault'
     Assert (@($pre | Where-Object { $_ -match '^finding:5 R' }).Count -ge 1) "precheck: zt-check flags the title with ； ($($pre -join ' | '))"
@@ -81,7 +81,7 @@ try {
     $applied = Last @(pwsh -NoProfile -File $compiler -Step apply -Staging $staging -Apply 2>&1)
     Assert ($applied.ok -and $applied.created -eq 2 -and $applied.linked -eq 2 -and @($applied.refused).Count -eq 3) "apply: two created, two links, three refused ($($applied | ConvertTo-Json -Compress))"
     $state = Get-Content (Join-Path $staging 'findings\state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    $made = @($state.applied['fd-01'].created)
+    $made = @($state.applied['fd-g001-g002'].created)
     $card = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $made[0] } }))[0]
     Assert ($card.type -eq 'finding' -and $card.parent.address -eq "$key/1" -and $card.body -match '^测量：' -and $card.body -match "来源：\[\[$key/1\]\] §1") "apply: the Finding Card sits beside its group's anchor with the six labels ($($made[0]))"
     $idea = @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ideas[0] } }))[0]

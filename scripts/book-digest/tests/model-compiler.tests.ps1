@@ -176,7 +176,82 @@ try {
     $r = $report.models[0]
     Assert ($r.status -eq 'done' -and $r.derivations.total -eq 4 -and $r.derivations.longest -eq 4 -and $r.split -eq 2) "report: 4 Derivation parts, longest chain 4, 2 splits ($($r | ConvertTo-Json -Compress -Depth 3))"
     Assert ($r.todo.Count -ge 3) 'report: lists the parts still 待写'
+    # The relayed line carries counts; the part list is in report.json (trial 12: a relay cut the lists).
+    Assert ($r.parts -is [long] -or $r.parts -is [int]) "report: the line gives the part count, not the list ($($r.parts))"
+    $full = Get-Content -LiteralPath $report.file -Raw -Encoding utf8 | ConvertFrom-Json
+    Assert (@($full.models[0].parts).Count -eq $r.parts -and $full.models[0].parts[0].facet) "report: report.json holds every part with its facet"
     Assert ($r.derivations.explained -eq 0) "report: no Derivation part has both 思路 and 解读 yet ($($r.derivations.explained))"
+
+    # close: a Model Card that rests on an Idea Card outside the model (closure) and a part whose sentence
+    # rests on a later part (forward) go back, as 修正 notes, to the conversations that wrote them
+    # (grossman2002integration trial 6: model-finish refused all four models for these faults).
+    $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
+    $ids = $state.models[$model].ids
+    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; title = '外部条件：市场利率固定' } })
+    $outside = 'Test2020/1|c'
+    Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $outside } })).title -match '外部条件') 'close: the outside Idea Card is the third side successor'
+    # Planned Links the fill left out go back first, as model-finish refuses them (grossman2002integration trial 10:
+    # `7|a|a|5` lacked its Link to `3|a|a|2` and close had reported no fault). The fixture's fill wrote P and E
+    # without their planned relations to D2 and to P.
+    $planned = Last (Run 'close')
+    $plannedText = (@($planned.jobs) | ForEach-Object { Get-Content -LiteralPath $_.files[0] -Raw -Encoding utf8 }) -join "`n"
+    Assert ($plannedText.Contains("修正：[[$($ids['P'])]]") -and $plannedText.Contains('计划的关系') -and $plannedText.Contains("[[$($ids['D2'])]]")) "close: a planned rests-on Link the part does not author goes back to its writer ($($planned.faults) faults)"
+    $pPlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['P'] } })).body
+    $ePlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['E'] } })).body
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = "$pPlain`n依赖 [[$($ids['D2'])]]：用到 (5.10)。" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['E']; body = "$ePlain`n例示 [[$($ids['P'])]]：代入数字。" } }
+    )
+    $headBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
+    $aBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['A'] } })).body
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $model; body = "$headBefore`n`n依赖 [[$outside]]：利率固定。" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = "$aBefore`n依赖 [[$($ids['P'])]]：用到命题。" } }
+    )
+    $close = Last (Run 'close')
+    $headJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].addresses) -contains $model })[-1]
+    $aJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].ids) -contains 'A' })[-1]
+    Assert ($close.faults -eq 2 -and @($close.jobs).Count -eq 2 -and @($close.unowned).Count -eq 0) "close: two build faults, two follow-ups ($($close | ConvertTo-Json -Compress -Depth 4))"
+    $toHead = @($close.jobs | Where-Object { $_.continue -eq $headJob })[0]
+    $toA = @($close.jobs | Where-Object { $_.continue -eq $aJob })[0]
+    Assert ($toHead -and $toA) "close: each note continues the conversation that wrote its Card (head $headJob, A $aJob)"
+    $headNote = Get-Content -LiteralPath $toHead.files[0] -Raw -Encoding utf8
+    $aNote = Get-Content -LiteralPath $toA.files[0] -Raw -Encoding utf8
+    Assert ($headNote.Contains("修正：[[$model]]") -and $headNote.Contains("[[$outside]]") -and $headNote -match '参照') "close: the Model Card's note names the outside Card and the wording to use ($headNote)"
+    Assert ($aNote.Contains("修正：[[$($ids['A'])]]") -and $aNote.Contains("[[$($ids['P'])]] 用到本卡")) "close: the part's note says how to turn the forward sentence around ($aNote)"
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headBefore } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = $aBefore } }
+    )
+    $closed = Last (Run 'close')
+    Assert ($closed.faults -eq 0 -and @($closed.jobs).Count -eq 0) "close: a model with no build faults gets no follow-up ($($closed | ConvertTo-Json -Compress -Depth 4))"
+    # close also repairs what a split or a writer left behind (trial 7): a 共用 line with an old address
+    # is rebuilt from the plan, a malformed supplied-step marker goes back to its part, and report puts
+    # back a 结构 list that a close writer re-sent from an older copy.
+    $headNow = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
+    $sharedLine = @($headNow -split "`n" | Where-Object { $_ -match '（共用）' })
+    Assert ($sharedLine.Count -eq 1 -and $sharedLine[0].Contains("[[$shared]]")) "close: the Model Card takes the other model's part in with one 共用 line ($($sharedLine -join ' / '))"
+    $pBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['P'] } })).body
+    Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headNow.Replace("[[$shared]]（共用）", "[[Test2020/1|b]]（共用）") } },
+        @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = "$pBefore`n两式相除。（补：书中略去：两式相除）" } }
+    )
+    $close3 = Last (Run 'close')
+    $headFixed = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
+    Assert ($close3.refreshed -eq 1 -and $headFixed.Contains("[[$shared]]（共用）")) "close: a 共用 line with an old address is rebuilt from the plan ($($close3 | ConvertTo-Json -Compress -Depth 4))"
+    $pJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].ids) -contains 'P' })[-1]
+    $toP = @($close3.jobs | Where-Object { $_.continue -eq $pJob })[0]
+    Assert ($close3.faults -eq 1 -and $toP -and ((Get-Content -LiteralPath $toP.files[0] -Raw -Encoding utf8) -match '补出标记')) "close: a malformed marker goes back to its part's conversation ($($close3.faults) faults)"
+    $eLine = [regex]::Escape("[[$($ids['E'])]]")
+    Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $model; body = (($headFixed -split "`n") | Where-Object { $_ -notmatch $eLine }) -join "`n" } })
+    Assert (-not (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body.Contains("[[$($ids['E'])]]")) 'close: (stand-in) a writer re-sends the Model Card without one 结构 line'
+    $null = Run 'report'
+    $headAfter = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
+    Assert ($headAfter.Contains("[[$($ids['E'])]]") -and $headAfter.Contains("[[$shared]]（共用）")) 'report: the 结构 list the compiler wrote is put back after a close round'
+    Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = $pBefore } })
+    $null = Invoke-Zt @(@{ tool = 'delete_card'; arguments = @{ at = $outside; confirm = 'delete' } })
+    $cardJob = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
+    Assert ($cardJob -notmatch '保留这些模型外的链接' -or $cardJob -match '不用「依赖」「基于」') 'apply: the Model Card job says outside links never rest on'
 
     # explain: the four parts of the chain lack 思路 or 解读 (D2 is an older three-section part)
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable

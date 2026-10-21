@@ -212,6 +212,17 @@ pub fn set_section(body: &str, heading: &str, content: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// `Get-Section`: one section of a Card body (its heading line through the line before the next
+/// heading), as `set_section` finds it; `None` when the body has no such section.
+pub fn get_section(body: &str, heading: &str) -> Option<String> {
+    let lines: Vec<String> = body.replace('\r', "").split('\n').map(str::to_string).collect();
+    let h = regex::escape(heading);
+    let start_re = Regex::new(&format!(r"(?i)^\s*(\*\*{h}\*\*|#+\s*{h}|{h}[：:])")).unwrap();
+    let start = lines.iter().position(|l| start_re.is_match(l))?;
+    let end = (start + 1..lines.len()).find(|&i| NEXT_HEAD.is_match(&lines[i])).unwrap_or(lines.len());
+    Some(lines[start..end].join("\n").trim().to_string())
+}
+
 pub fn is_setting_facet(facet: &str) -> bool {
     SETTING_FACET.is_match(facet)
 }

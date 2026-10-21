@@ -139,7 +139,7 @@ try {
     $ownedPath=$view.units[0].inputs.owned.path
     $ownedBytes=[IO.File]::ReadAllBytes($ownedPath)
     [IO.File]::AppendAllText($ownedPath,"LinkBook/999`n",$utf8)
-    Refused $finishArgs 'owned manifest' 'completion replay refuses a changed owned enumeration'
+    Refused $finishArgs 'owned enumeration changed' 'completion replay refuses a changed owned enumeration'
     [IO.File]::WriteAllBytes($ownedPath,$ownedBytes)
     Assert ((Run-Digest $finishArgs).reused) 'the restored owned enumeration recovers the same completion'
 

@@ -64,7 +64,7 @@ try {
     $done=Run-Digest $finishArgs
     Assert ($done.schema_version -eq 1 -and $done.kind -eq 'cards_completion' -and $done.unit -eq 'cards/g001@1' -and $done.state -eq 'done' -and $done.complete -and -not $done.reused) 'the offline check completes the Cards/group unit with typed evidence'
     Assert ($done.disposition -eq 'verified' -and @($done.deferred).Count -eq 0) 'a group whose owned Cards pass the offline check completes as verified'
-    Assert ($done.self_check.ran -and $done.self_check.count -eq 0 -and $done.self_check.reported_count -eq 0 -and $done.self_check.rules -eq 'R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2') 'the SELF-CHECK runs the whole-book Card rules over the exact owned set'
+    Assert ($done.self_check.ran -and $done.self_check.count -eq 0 -and $done.self_check.reported_count -eq 0 -and $done.self_check.rules -eq 'R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2') 'the SELF-CHECK runs the whole-book Card rules over the exact owned set'
     Assert (@($done.owned).Count -eq 2 -and @($done.owned | Where-Object {$_ -in $owned}).Count -eq 2) 'the completion enumerates exactly the group''s owned Cards'
     Assert (@($done.card_fingerprints.Keys).Count -eq 2 -and @($done.card_fingerprints.Keys | Where-Object {$_ -in $owned}).Count -eq 2) 'completion evidence records the checked authoring fingerprint of every owned Card'
     Assert ($done.archive_revision -eq $revision) 'the offline check reads one consistent archive revision'
@@ -95,7 +95,7 @@ try {
     $ownedPath=$view.units[0].inputs.owned.path
     $ownedBytes=[IO.File]::ReadAllBytes($ownedPath)
     [IO.File]::AppendAllText($ownedPath,"CardsBook/999`n",$utf8)
-    Refused $finishArgs 'owned manifest' 'a changed owned enumeration cannot be checked as the group scope'
+    Refused $finishArgs 'owned enumeration changed' 'a changed owned enumeration cannot be checked as the group scope'
     [IO.File]::WriteAllBytes($ownedPath,$ownedBytes)
     Assert ((Run-Digest $finishArgs).reused) 'the restored owned enumeration recovers the same completion'
 

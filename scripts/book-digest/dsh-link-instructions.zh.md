@@ -25,7 +25,7 @@
 任务文件已经给出带绑定字段的空草稿。只填 `calls` 和 `dispositions`，其余字段原样保留：
 
 - `calls`：每项 `{"tool":"edit_card","arguments":{"at":"缺口卡片地址","base_receipt":"该卡的写入凭据","owned_paragraph":{"text":"一句带关系词的链接句"}}}`。这句就是这张卡补的链接句；不要改正文的其余部分。
-- `dispositions`：每项 `{"at":"缺口卡片地址","outcome":"no_link","reason":"一句话理由"}`。没有真实关系时用 `no_link`（即 none），不要编造关系。卡片自己已经有有效关系、只是缺口已由别处补上时，用 `already_linked`。
+- `dispositions`：每项 `{"at":"缺口卡片地址","outcome":"no_link","reason":"一句话理由"}`。没有真实关系时用 `no_link`（即 none），不要编造关系。卡片自己已经有有效关系、只是缺口已由别处补上时，用 `already_linked`。`already_linked` 只在这张卡**自己的正文**里已经有一句带关系词（依赖、基于、例示、印证、对照、区别、放宽、推广、对应、类比、参照、反驳、批评）的链接句、并且链接指向本组以外的卡时才成立；别的卡链接到它、它的后继卡或子卡、来源行里的链接都不算。拿不准时给这张缺口卡写一句链接句。只处理缺口清单里的卡片。
 - 锚点卡：它的 `在全书中的位置` 段由本任务写，段落必须以“在全书中的位置”开头。任务文件写明锚点当前状态：`anchor_position_missing` 才写这一段；`anchor_position_duplicate` 或 `anchor_position_unlinked` 只记 `no_link` 并写明原因。锚点已有这一段时绝不追加第二段。
 - 每个缺口卡片恰好一个结果。清单之外的卡片会被脚本拒绝。
 

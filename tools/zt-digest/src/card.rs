@@ -79,6 +79,33 @@ struct Params {
 }
 
 /// The audit's view: faults per Card and the Cards the layer rules read (audit-cards.json).
+/// The Idea Cards whose advisory I6 fault names a Model part (a Card of category `model` with a facet): each Idea
+/// Card with the part it repeats.
+fn model_part_duplicates(audit: &AuditView) -> Vec<(String, String)> {
+    let target = regex::Regex::new(r"\[\[([^\]]+)\]\]").expect("a valid link pattern");
+    let mut out = Vec::new();
+    for card in &audit.cards {
+        let at = field(card, "address");
+        if field(card, "category") != "idea" {
+            continue;
+        }
+        for (rule, text) in audit.all_faults(&at) {
+            if rule != "I6" {
+                continue;
+            }
+            for caps in target.captures_iter(&text) {
+                let part = caps[1].trim().to_string();
+                if audit.card(&part).is_some_and(|p| field(p, "category") == "model" && !field(p, "facet").is_empty()) {
+                    out.push((at.clone(), part));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 struct AuditView {
     faults: HashMap<String, Vec<(String, String)>>,
     cards: Vec<Value>,
@@ -1213,6 +1240,22 @@ impl Compiler {
                 self.state["rules"] = json!(format!("{rules},N1"));
             }
         }
+        // D1: an Idea Card whose title the advisory I6 finds very similar to a Model part's states that part's claim a
+        // second time (slip-box practice: one idea, one Card). The fix job gives the Idea Card the angle the part does not
+        // have and links the part, or proposes the merge. On grossman2002integration trial 11 `6|f` and the part
+        // `6|a|a|13` had the same title, and the restatement review never paired an Idea Card with a Model part.
+        let duplicates = model_part_duplicates(&audit);
+        if !duplicates.is_empty() {
+            for (at, part) in &duplicates {
+                audit.faults.entry(ci(at)).or_default().push(("D1".into(), format!(
+                    "本卡与模型分卡 [[{part}]] 陈述同一论断。改写本卡：写出模型分卡没有的内容（直觉、含义、适用条件或例子），并用一句「对应 [[{part}]]：……」链接它；本卡没有新内容时判 merge，并在 note 里写明并入 [[{part}]]。"
+                )));
+            }
+            let rules = field(&self.state, "rules");
+            if !is_in("D1", &RULE_SPLIT.split(&rules).collect::<Vec<_>>()) {
+                self.state["rules"] = json!(format!("{rules},D1"));
+            }
+        }
         let p = &self.p;
         let mut owned: Option<HashSet<String>> = None;
         if !p.groups.is_empty() {
@@ -2132,7 +2175,7 @@ fn push(list: &mut Value, item: Value) {
 /// The rules the whole-book Card cycle checks an owned scope with. The Cards/group
 /// completion runs the same set, so the work it hands to the book cycle is exactly
 /// the work that cycle will see (R216).
-pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,I1,I2,I3,I4,I7,L1,L2,E1,E2";
+pub const DEFAULT_CARD_RULES: &str = "R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2";
 
 /// `zt-digest card`.
 pub fn cli(argv: &[String]) -> Result<i32> {
@@ -2209,6 +2252,23 @@ mod tests {
         std::fs::write(dir.join("restate-resolution.json"), "{not json").unwrap();
         assert_eq!(restate_summary(&json!({"staging": staging}))["read"], json!(false));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // D1: an Idea Card that I6 finds near a Model part repeats it; one near another Idea Card does not count.
+    #[test]
+    fn an_idea_card_near_a_model_part_is_a_duplicate() {
+        let cards = vec![
+            json!({"address":"K/6|f","category":"idea"}),
+            json!({"address":"K/6|a|a|13","category":"model","facet":"ω：三条渠道"}),
+            json!({"address":"K/6|g","category":"idea"}),
+            json!({"address":"K/6|h","category":"idea"}),
+        ];
+        let by: HashMap<String, usize> = cards.iter().enumerate().map(|(i, c)| (ci(&field(c, "address")), i)).collect();
+        let mut faults: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        faults.insert(ci("K/6|f"), vec![("I6".into(), "(advisory) a title very similar to [[K/6|a|a|13]]".into())]);
+        faults.insert(ci("K/6|g"), vec![("I6".into(), "(advisory) a title very similar to [[K/6|h]]".into())]);
+        let audit = AuditView { faults, cards, by, orphan_check: json!({}), archive_revision: json!(1) };
+        assert_eq!(super::model_part_duplicates(&audit), vec![("K/6|f".to_string(), "K/6|a|a|13".to_string())]);
     }
 
     #[test]

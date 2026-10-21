@@ -98,6 +98,16 @@ pub(crate) fn supports(e: &Value) -> Vec<String> {
 }
 
 /// `'{0:d2}' -f $n`.
+/// A job's name: its layer prefix and the groups it covers (`fd-g001`, `fd-g002-g005`). The step's
+/// state.json lives across claims, so a name must never be taken again by another set of groups.
+pub(crate) fn job_id(prefix: &str, groups: &[i64]) -> String {
+    match (groups.first(), groups.last()) {
+        (Some(first), Some(last)) if first != last => format!("{prefix}-g{first:03}-g{last:03}"),
+        (Some(first), _) => format!("{prefix}-g{first:03}"),
+        _ => format!("{prefix}-g000"),
+    }
+}
+
 pub(crate) fn d2(n: i64) -> String {
     if n < 0 { format!("-{:02}", n.unsigned_abs()) } else { format!("{n:02}") }
 }
@@ -548,11 +558,11 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
     let per = per_job.max(1) as usize;
     let mut j = 0usize;
     while j * per < groups.len() {
-        let id = format!("{}-{}", spec.prefix, d2(j as i64 + 1));
         let start = j * per;
         j += 1;
         let end = (start + per).min(groups.len());
         let job_groups: Vec<i64> = groups[start..end].to_vec();
+        let id = job_id(spec.prefix, &job_groups);
         // The answer does not exist yet at the first plan; its folder does, so the accepted
         // plan records a stable path. A job is recorded even after it was applied, so a plan
         // pass that follows an apply still states which groups each answer covers.
@@ -970,5 +980,16 @@ mod tests {
         assert_eq!(supports(&json!({ "supports": "c" })), ["c"]);
         assert!(supports(&json!({})).is_empty());
         assert_eq!(ps::s(prop(&json!({ "Citation_Key": "K" }), "citation_key")), "K");
+    }
+
+    // A job is named by the groups it covers. The step's state.json lives across claims, so a positional
+    // name (fd-01) taken again by a later claim's plan was read as already applied and its jobs were never
+    // printed (grossman2002integration trial 1: 3 Finding jobs expected, none run, the unit recorded done).
+    #[test]
+    fn a_job_is_named_by_the_groups_it_covers() {
+        assert_eq!(job_id("fd", &[1]), "fd-g001");
+        assert_eq!(job_id("fd", &[2, 3, 4, 5]), "fd-g002-g005");
+        assert_eq!(job_id("ev", &[12, 13]), "ev-g012-g013");
+        assert_ne!(job_id("fd", &[1]), job_id("fd", &[2, 3]));
     }
 }

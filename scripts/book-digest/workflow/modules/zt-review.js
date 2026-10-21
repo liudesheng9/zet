@@ -1,4 +1,4 @@
-// ==== module zt-review v1 ====
+// ==== module zt-review v2 ====
 // The scoped restatement review of the run's own new Cards, placed where §13.1 orders it: inside the
 // scoped Card cycle, after the whole-book Card cycle and before the gap-only Link pass. The review is
 // #107's compiler (zt-digest restate); this module only drives it, and it creates no second job store:
@@ -12,7 +12,7 @@
 // older Card: only the run's own new claims are candidates, and a changed one is a conflict, never
 // permission to overwrite it (S23 / #115).
 defineModule({
-  id: 'zt-review', version: '1', requires: ['zt-digest-lib'],
+  id: 'zt-review', version: '2', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the run\'s scoped restatement review and resolution (zt-digest restate prepare → judge → apply → report), recorded from the frozen files.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -36,7 +36,7 @@ defineModule({
         // Card is a Topic Idea claim this review may compare.
         { name: 'prepare', command: step('prepare'), jobs: true },
         { name: 'judge', command: step('judge', ` -File "${work}\\out\\rj-01.json"`), optional: true },
-        { name: 'apply', command: step('apply', ` -OperationPrefix "${Z.KEY}/review/restate"${merges}`), optional: true },
+        { name: 'apply', command: step('apply', ` -OperationPrefix "${Z.KEY}/restate/1/apply"${merges}`), optional: true },
         { name: 'report', command: step('report'), optional: true },
       ],
       cleanup: true, keep: true,

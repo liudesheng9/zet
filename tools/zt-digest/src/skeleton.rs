@@ -255,6 +255,16 @@ fn check(sk: &Value, b: &Book) -> Checked {
         if is_in(&anchor, &b.anchors) && !text.trim().is_empty() {
             says.insert(&anchor, text.trim().to_string());
             test_text(&mut problems, &anchor, &text);
+            // The index line puts the group label before the text (`- 第 N 组（chapter）：…`), so its first sentence
+            // is measured with the label: on grossman2002integration trial 11 one line came to 41 characters, an R2 fault
+            // in the Literature Card that the bounded correction may not reopen.
+            if let Some(g) = b.groups.iter().find(|g| ps::eq(&format!("{}/{}", b.key, pstr(g, "n")), &anchor)) {
+                let first = text.trim().split('。').next().unwrap_or_default();
+                let line = format!("第 {} 组（{}）：{first}。", pstr(g, "n"), pstr(g, "chapter"));
+                if !zt_check::check::sentence_fits(&line) {
+                    problems.push(format!("{anchor}: the index line's first sentence is longer than 40 characters with its group label (`{line}`); shorten says"));
+                }
+            }
         }
     }
     let mut argument = Vec::new();
@@ -476,6 +486,15 @@ mod tests {
             events: vec![json!({ "address": "K/2|a", "category": "event", "book": "K" })],
             topic_rows: vec![json!({ "tree": "5", "title": "主题", "size": 3, "cards": 2 })],
         }
+    }
+
+    // The index line's first sentence is measured with its group label, so the writer shortens says itself.
+    #[test]
+    fn an_index_line_is_measured_with_its_group_label() {
+        let fits = check(&json!({ "chapters": [{ "anchor": "K/1", "says": "简单模型决定企业边界。第二句可以很长很长很长很长很长很长很长很长很长很长很长。" }] }), &book());
+        assert!(!fits.problems.iter().any(|p| p.contains("group label")), "{:?}", fits.problems);
+        let long = check(&json!({ "chapters": [{ "anchor": "K/2", "says": "简单模型用敲竹杠扭曲、搜寻摩擦与纵向一体化的治理成本共同决定企业的边界与组织模式。" }] }), &book());
+        assert!(long.problems.iter().any(|p| p.starts_with("K/2: the index line's first sentence")), "{:?}", long.problems);
     }
 
     #[test]
