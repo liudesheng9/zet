@@ -2887,7 +2887,7 @@ mod tests {
         assert!(api.contains("ZtLock.refusalText(data.refusal, data.error)"));
         let editor = app_function("openEditor");
         let refused = editor.find("if (error.refusal) {").expect("refusal branch");
-        assert!(editor[refused..].contains("lockPanel()"));
+        assert!(editor[refused..].contains("lockPanel(ZtLock.refusalTree(error.refusal))"), "the panel opens at the refused tree");
         let catch = &editor[..refused];
         assert!(catch.rfind("setMsg(error.message, 'err');").is_some());
         // The panel is an integrity check point: it reads the Locks every time it opens.
@@ -2991,6 +2991,261 @@ mod tests {
         assert!(rail.contains("(tree.locked ? ' locked' : '')"), "a Locked tree's drawer is marked");
         assert!(rail.contains("`${tree.count} · locked`"), "in words, not only by colour");
         assert!(!rail.contains("filter((tree) => !tree.locked"), "a Locked tree is never hidden");
+    }
+
+    /// S05 (#128, S05-AC04/AC05): a Card in a Locked tree (its root included) offers no write, and
+    /// each explanation names the Locked tree and its unlock. A Pinned target keeps editing, type
+    /// changes and new successors; only moving, inserting in its place and deleting are refused,
+    /// naming the pinning tree and the source Cards that hold the Links.
+    #[test]
+    fn a_locked_card_offers_no_write_and_a_pin_refuses_only_movement() {
+        let Some(value) = lock_js(
+            "(() => {
+               const exported = { locks: [{ lock_id: 2, root: '3/0', seal: 'ab'.repeat(32), unlocked_at: null,
+                 members: [{ address: '3/0', row_id: 30 }, { address: '3/1', row_id: 31 }, { address: '3/2', row_id: 32 }],
+                 pins: [{ target: '5/1', target_row: 51, source_row: 31 }, { target: '5/1', target_row: 51, source_row: 32 }] }] };
+               const member = { address: '3/1', lock: { lock_id: 2, tree: '3/0', since: 'x' }, pinned_by: [] };
+               const root = { address: '3/0', lock: { lock_id: 2, tree: '3/0', since: 'x' }, pinned_by: [] };
+               const pinned = { address: '5/1', lock: null, pinned_by: ['3/0'] };
+               const free = { address: '6/1', lock: null, pinned_by: [] };
+               const all = Object.keys(ZtLock.WRITES);
+               const each = (card) => Object.fromEntries(all.map((action) => [action, ZtLock.writeGate(card, action, exported)]));
+               let unknown = null;
+               try { ZtLock.writeGate(free, 'publish', exported); } catch (error) { unknown = error.message; }
+               return {
+                 all, member: each(member), root: each(root), pinned: each(pinned), free: each(free),
+                 unread: ZtLock.writeGate(pinned, 'delete', null),
+                 commands: ZtLock.COMMAND_WRITES, unknown,
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        let all: Vec<&str> = value["all"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            all,
+            ["edit", "bibtex", "type", "level", "form", "direct", "side", "insert", "move", "delete"],
+            "every write the reader, the keys and the command bar offer"
+        );
+        for action in &all {
+            for card in ["member", "root"] {
+                let gate = &value[card][action];
+                assert_eq!(gate["allowed"], false, "{card} {action}");
+                assert_eq!(gate["code"], "locked");
+                assert_eq!(gate["tree"], "3/0");
+                let why = gate["why"].as_str().unwrap();
+                assert!(why.contains("locked with tree 3/0") && why.contains("Unlock it from the tree's lock panel"), "{why}");
+            }
+            assert_eq!(value["free"][action]["allowed"], true, "an unlocked, unpinned Card keeps {action}");
+        }
+        for open in ["edit", "bibtex", "type", "level", "form", "direct", "side"] {
+            assert_eq!(value["pinned"][open]["allowed"], true, "a pin is not a whole-tree Lock: {open} stays open");
+        }
+        for refused in ["insert", "move", "delete"] {
+            let gate = &value["pinned"][refused];
+            assert_eq!(gate["allowed"], false, "{refused}");
+            assert_eq!(gate["code"], "pinned");
+            assert_eq!(gate["holders"], json!([{"tree": "3/0", "lockId": 2, "sources": ["3/1", "3/2"]}]));
+            let why = gate["why"].as_str().unwrap();
+            assert!(why.contains("pinned by locked tree 3/0 (Links from 3/1, 3/2)"), "{why}");
+            assert!(why.contains("Editing it and adding successors stay open"), "{why}");
+        }
+        assert_eq!(value["unread"]["allowed"], false, "the Card's own pin facts decide, even before the Locks are read");
+        assert_eq!(value["unread"]["holders"], json!([{"tree": "3/0", "lockId": null, "sources": []}]));
+        assert_eq!(
+            value["commands"],
+            json!({"e": "edit", "ty": "type", "lv": "level", "mf": "form", "n": "direct", "b": "side", "ins": "insert", "mv": "move", "del": "delete"})
+        );
+        assert_eq!(value["unknown"], "unknown write `publish`");
+    }
+
+    /// S05 (#128, S05-AC04): every entry point to a write asks the same gate — the reader's buttons
+    /// (visible but disabled, titled with the reason), the keys, the command bar (listed, marked and
+    /// explained) and the functions they all reach — and a refused write offers the tree's lock
+    /// panel. Reading, the Table and Reply are never gated (S05-AC06).
+    #[test]
+    fn every_write_entry_point_asks_the_same_lock_gate() {
+        for (name, action) in [
+            ("editCard", "gateWrite(card, 'edit');"),
+            ("editMetadata", "gateWrite(card, 'bibtex');"),
+            ("setCardType", "gateWrite(card, 'type');"),
+            ("deleteCard", "gateWrite(card, 'delete');"),
+            ("moveCard", "gateWrite(card, 'move');"),
+            ("insertCard", "gateWrite(card, 'insert');"),
+            ("newCard", "if (kind !== 'topic') gateWrite(parent, kind);"),
+        ] {
+            let body = app_function(name);
+            let gate = body.find(action).unwrap_or_else(|| panic!("{name} asks the gate: {body}"));
+            if let Some(write) = body.find("api(") {
+                assert!(gate < write, "{name} asks before any request");
+            }
+            if let Some(desk) = body.find("openEditor(") {
+                assert!(gate < desk, "{name} asks before the writing desk opens");
+            }
+        }
+        let command = app_function("runCommand");
+        let gate = command
+            .find("if (state.card && ZtLock.COMMAND_WRITES[name]) gateWrite(state.card, ZtLock.COMMAND_WRITES[name]);")
+            .expect("the command bar asks the gate for every write word");
+        assert!(gate < command.find("switch (name) {").unwrap(), "before any usage check");
+        assert!(command.contains("gateWrite(state.card, 'level');") && command.contains("gateWrite(state.card, 'form');"));
+        let keys = app_function("installKeys");
+        for key in [
+            "case 'n': return run(() => runCommand('n'));",
+            "case 'b': return run(() => runCommand('b'));",
+            "case 'e': return run(() => runCommand('e'));",
+            "case 'm': return card ? run(() => moveCard()) : undefined;",
+            "case 'i': return card && card.context === 'regular' ? run(insertCard) : undefined;",
+            "case 'Delete': return card ? run(deleteCard) : undefined;",
+        ] {
+            assert!(keys.contains(key), "each write key reaches a gated function: {key}");
+        }
+        let reader = app_function("renderReader");
+        assert!(reader.contains("const gate = ZtLock.writeGate(card, action, state.locks);"));
+        assert!(reader.contains("{ ...base, disabled: true, title: gate.why, cls: [base.cls, 'gated'].filter(Boolean).join(' ') }"));
+        for button in [
+            "actionButton('Edit', 'e', editCard, writeOpts('edit', { primary: true })),",
+            "actionButton('Direct', 'n', () => newCard('direct'), writeOpts('direct',",
+            "actionButton('Side', 'b', () => newCard('side'), regular ? writeOpts('side',",
+            "actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert',",
+            "actionButton('Move', 'm', () => moveCard(), regular ? writeOpts('move',",
+            "actionButton('Delete', 'del', deleteCard, writeOpts('delete', { danger: true })),",
+        ] {
+            assert!(reader.contains(button), "the button stays visible and asks the gate: {button}");
+        }
+        assert!(reader.contains("actionButton('Reply', 'r', replyTo, {"), "Reply is never gated");
+        assert!(reader.contains("actionButton(spreads.has(card.address) ? 'On the Table ✓' : 'To the Table', 'p'"), "the Table is never gated");
+        assert_eq!(APP_JS.matches("writeOpts(").count(), 6, "the six write buttons, and no other");
+        // The command bar lists a gated write, marks it and explains it at once.
+        let bar = app_function("installCommandBar");
+        assert!(bar.contains("desc: gated ? `unavailable — ${gated.short}` : desc"));
+        assert!(bar.contains("fail(Object.assign(new Error(item.gate.why), { gate: item.gate }));"));
+        // A refusal — the page's own gate or the server's — offers the tree's lock panel.
+        let fail = &APP_JS[APP_JS.find("const fail = (error) => {").expect("fail")..];
+        let fail = &fail[..fail.find("\n  };").expect("fail ends")];
+        assert!(fail.contains("error.gate ? error.gate.tree : error.refusal ? ZtLock.refusalTree(error.refusal) : null"), "{fail}");
+        assert!(fail.contains("{ label: 'Lock panel', run: () => lockPanel(tree).catch(fail) }"));
+        assert!(APP_CSS.contains(".btn.gated:disabled { border-style: dashed; }"), "a held slot, not only a paler colour");
+    }
+
+    /// S05 (#128, S05-AC06/AC07): a human Topic inside a Locked tree is shown and explained but
+    /// not choosable for a Reply; a remembered locked Topic stays chosen with the reason, never
+    /// replaced. A Save refused because the destination was locked meanwhile keeps the draft, names
+    /// the refusal, offers the lock panel and is never retried on its own.
+    #[test]
+    fn a_locked_reply_destination_is_explained_and_never_replaced() {
+        let Some(value) = lock_js(
+            "{
+               locked: ZtLock.destinationLock({ address: '1/0', lock: { lock_id: 3, tree: '1/0', since: 'x' }, pinned_by: [] }),
+               pinned: ZtLock.destinationLock({ address: '2/0', lock: null, pinned_by: ['3/0'] }),
+               free: ZtLock.destinationLock({ address: '4/0', lock: null, pinned_by: [] }),
+             }",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["locked"]["tree"], "1/0");
+        let why = value["locked"]["why"].as_str().unwrap();
+        assert!(why.contains("Topic 1/0 is in locked tree 1/0") && why.contains("your draft stays"), "{why}");
+        assert_eq!(value["pinned"], Value::Null, "a pin leaves a Topic open for a reply");
+        assert_eq!(value["free"], Value::Null);
+        let editor = app_function("openEditor");
+        assert!(editor.contains("value: String(index), disabled: Boolean(locked), title: locked ? locked.why : null,"));
+        assert!(editor.contains("text: `${topic.title || '(untitled)'} · ${topic.address}${locked ? ' · locked' : ''}`"));
+        assert!(editor.contains("paintDestination();"), "a remembered locked Topic is explained as the desk opens");
+        assert!(
+            !app_function("replyDestinations").contains("lock"),
+            "the destination list is not filtered, so the chosen Topic is never silently replaced"
+        );
+        let reply = app_function("replyTo");
+        assert!(reply.contains("if (result.reason === 'locked_destination' && result.refusal) error.refusal = result.refusal;"));
+        assert!(
+            !reply.contains("unlockTree(") && !reply.contains("api('unlock'") && !reply.contains("api('lock"),
+            "a refused destination never unlocks anything"
+        );
+        // The desk saves only on Save or Ctrl+S: no retry after a refusal or an unlock.
+        assert_eq!(editor.matches("doSave").count(), 3, "defined once, wired to the button and to Ctrl+S");
+        assert!(editor.contains("saveBtn.addEventListener('click', doSave);"));
+        let refused = editor.find("if (error.refusal) {").expect("the refusal branch");
+        assert!(editor[refused..].contains("text: 'Lock panel'"));
+    }
+
+    /// S05 (#128, S05-AC01/AC03): each tree's cabinet menu offers Lock tree, or the active Lock's
+    /// panel, note and unlock; a Locked tree wears a paper band with its seal in words on the desk
+    /// and a strap in the cabinet; a Lock action repaints through the normal refresh (R222).
+    #[test]
+    fn the_cabinet_menu_and_band_follow_each_trees_lock() {
+        let Some(value) = lock_js(
+            "(() => {
+               const exported = { locks: [{ lock_id: 5, root: '3/0', seal: '0123456789abcdef'.repeat(4), unlocked_at: null, members: [], pins: [] },
+                                           { lock_id: 1, root: '7/0', seal: 'f'.repeat(64), unlocked_at: '2026-10-21T10:00:00Z', members: [], pins: [] }] };
+               const ids = (items) => items.map((item) => item.id);
+               return {
+                 locked: ZtLock.treeActions('3/0', true, exported),
+                 ended: ids(ZtLock.treeActions('7/0', false, exported)),
+                 unread: ids(ZtLock.treeActions('3/0', true, null)),
+                 free: ids(ZtLock.treeActions('9/0', false, exported)),
+                 band: ZtLock.bandText(exported.locks[0]),
+                 bare: ZtLock.bandText(null),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        let locked: Vec<&str> = value["locked"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
+        assert_eq!(locked, ["open", "panel", "note", "unlock"]);
+        assert_eq!(value["locked"][1]["note"], "seal 0123456789ab");
+        assert_eq!(value["locked"][3]["label"], "Unlock tree…");
+        assert_eq!(value["ended"], json!(["open", "lock"]), "an ended Lock leaves the tree unlocked");
+        assert_eq!(value["unread"], json!(["open", "panel"]), "unread Locks: the panel reads them");
+        assert_eq!(value["free"], json!(["open", "lock"]));
+        assert_eq!(value["band"], "locked · seal 0123456789ab", "the band says it in words");
+        assert_eq!(value["bare"], "locked");
+        // The menu opens the same dialogs as the lock line and the panel, on drawers and stacks.
+        let menu = &APP_JS[APP_JS.find("const treeMenu = (() => {").expect("tree menu")..];
+        let menu = &menu[..menu.find("\n  })();").expect("menu end")];
+        for call in ["await lockTree(tree.root);", "await lockPanel(tree.root);", "await editLockNote(lock);", "await unlockTree(lock);"] {
+            assert!(menu.contains(call), "{call}");
+        }
+        for entry in ["'contextmenu'", "event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')", "}, 500);"] {
+            assert!(menu.contains(entry), "right-click, the menu key and a long press: {entry}");
+        }
+        let arrows = menu.find("if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {").expect("the menu's arrows");
+        let walk = menu[arrows..].find("items[(at").expect("walk");
+        assert!(
+            menu[arrows..arrows + walk].contains("event.stopPropagation();"),
+            "the menu's arrows never reach the page's keys, which would walk the Map"
+        );
+        let rail = app_function("renderRail");
+        assert!(rail.contains("lockBand('drawer', tree, lock),") && rail.contains("treeMenu.wire(el, tree);"));
+        let desk = app_function("renderDesk");
+        assert!(desk.contains("const stack = (tree) => treeMenu.wire(h('button', {"));
+        assert!(desk.contains("lockBand('desk', tree, tree.locked ? ZtLock.activeLock(state.locks, tree.root) : null),"));
+        let band = app_function("lockBand");
+        assert!(band.contains("h('span', { class: 'lbl', text: 'locked' })"), "visible text, not colour alone");
+        assert!(
+            band.contains("class: `lock-band band-${where}` + (motion ? ` band-${motion}` : '')"),
+            "the band's own class names: `.drawer`, `.desk`, `.on` and `.off` belong to the cabinet and desk"
+        );
+        assert!(!APP_CSS.contains(".lock-band.drawer") && !APP_CSS.contains(".lock-band.desk"));
+        assert!(band.contains("text: `seal ${ZtLock.sealShort(lock.seal)}`"));
+        assert!(app_function("paintLocks").contains("bands.take(state.locks);"), "motion only for a changed Lock");
+        let bands = &APP_JS[APP_JS.find("const bands = {").expect("bands")..];
+        let bands = &bands[..bands.find("\n  };").expect("bands end")];
+        assert!(
+            bands.contains("requestAnimationFrame(") && bands.contains("for (const done of this.painting) this.played.add(done);"),
+            "a refresh paints the rail twice in one frame; the motion survives to the frame the eye sees"
+        );
+        let after = app_function("afterLock");
+        assert!(after.contains("await refresh().catch(fail);"), "the normal refresh repaints every copy: {after}");
+        assert!(!after.contains("renderReader"));
+        for rule in [".lock-band.band-desk {", ".lock-band.band-drawer {", ".stack.locked:hover .face { transform: none;", "@keyframes band-wrap", "@keyframes band-off"] {
+            assert!(APP_CSS.contains(rule), "{rule}");
+        }
+        assert_eq!(APP_CSS.matches("--band: ").count(), 3, "light and both dark blocks");
+        assert_eq!(APP_CSS.matches("--wax: ").count(), 3);
     }
 
     #[test]

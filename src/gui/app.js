@@ -73,12 +73,41 @@
   const isTyping = (target) =>
     target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
-  function toast(message, kind) {
+  /** A short note in the corner; `action` adds one button to it (`{label, run}`). */
+  function toast(message, kind, action) {
     const node = h('div', { class: 'toast' + (kind === 'err' ? ' err' : ''), text: message });
+    if (action) {
+      node.append(h('button', {
+        class: 'toast-act', type: 'button', text: action.label,
+        onclick: () => { node.remove(); action.run(); },
+      }));
+    }
     $('#toasts').append(node);
-    setTimeout(() => node.remove(), kind === 'err' ? 6000 : 3200);
+    setTimeout(() => node.remove(), action ? 9000 : kind === 'err' ? 6000 : 3200);
   }
-  const fail = (error) => toast(error.message || String(error), 'err');
+  /**
+   * Show an error. A write the Lock state refuses (the page's own gate, S05 #128, or a server
+   * refusal) names its tree, so the note carries the way to that tree's lock panel.
+   */
+  const fail = (error) => {
+    const tree = error && (error.gate ? error.gate.tree : error.refusal ? ZtLock.refusalTree(error.refusal) : null);
+    toast((error && error.message) || String(error), 'err',
+      tree ? { label: 'Lock panel', run: () => lockPanel(tree).catch(fail) } : null);
+  };
+
+  /**
+   * Refuse a write the open Card's Lock state does not allow (S05, #128), before any dialog
+   * opens: throws the explanation, which names the Locked tree (or the pinning trees and their
+   * source Cards). Every entry point — button, key, command bar, menu — reaches its write through
+   * a function that calls this, so they all honour the same state. The server still decides.
+   */
+  function gateWrite(card, action) {
+    const gate = ZtLock.writeGate(card, action, state.locks);
+    if (gate.allowed) return;
+    const error = new Error(gate.why);
+    error.gate = gate;
+    throw error;
+  }
 
   /** Mirrors `parent_location` in the backend. */
   function parentOf(address) {
@@ -339,6 +368,9 @@
     const needCard = () => {
       if (!state.card) throw new Error(`${name} needs a Card; use go <target> first`);
     };
+    // S05 (#128): a write word on a Card whose Lock state refuses it says why before its own usage
+    // check; the write's function checks the same gate again.
+    if (state.card && ZtLock.COMMAND_WRITES[name]) gateWrite(state.card, ZtLock.COMMAND_WRITES[name]);
     switch (name) {
       case 'q': return quit();
       case 'root': return go(null);
@@ -396,6 +428,7 @@
       case 'lv': {
         needCard();
         if (rest.length !== 1) throw new Error('usage: lv <level|none>');
+        gateWrite(state.card, 'level');
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
         return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`);
@@ -403,6 +436,7 @@
       case 'mf': {
         needCard();
         if (rest.length !== 1) throw new Error('usage: mf <form|none>');
+        gateWrite(state.card, 'form');
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, form: none ? '' : rest[0] });
         return afterChange(result.address, none ? `${result.address} states no mathematical unit` : `${result.address} is a ${rest[0]}`);
@@ -1108,17 +1142,29 @@
   function renderRail() {
     renderWorkspaceSwitch();
     const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
-    // A Locked tree keeps its drawer and its place (S03, #126); its count tab says `locked` in words.
-    const drawer = (tree) => h('button', {
-      class: 'drawer ' + tree.kind + (tree.locked ? ' locked' : '') + (state.card && state.card.tree === tree.tree ? ' on' : ''),
-      title: tree.locked ? `${tree.title || tree.root} — locked tree: readable and linkable; its Cards wait for an unlock` : tree.title,
-      onclick: () => { go(tree.root); openRail(false); },
-    },
-      h('span', { class: 'addr', text: tree.root }),
-      h('span', { class: 't', text: tree.title || '(untitled)' }),
-      h('span', { class: 'n', text: tree.locked ? `${tree.count} · locked` : String(tree.count) }),
-      tree.excerpt ? h('span', { class: 'x', text: tree.excerpt }) : null,
-    );
+    // A Locked tree keeps its drawer and its place (S03, #126); its count tab says `locked` in words,
+    // and a paper strap with its seal holds the drawer shut (S05, #128). Right-click, a long press,
+    // Shift+F10 or the menu key opens the tree menu: Open tree, then Lock tree… or the Lock's panel,
+    // note and unlock.
+    const drawer = (tree) => {
+      const lock = tree.locked ? ZtLock.activeLock(state.locks, tree.root) : null;
+      const el = h('button', {
+        class: 'drawer ' + tree.kind + (tree.locked ? ' locked' : '') + (state.card && state.card.tree === tree.tree ? ' on' : ''),
+        title: (tree.locked
+          ? `${tree.title || tree.root} — locked tree${lock ? ` (seal ${ZtLock.sealShort(lock.seal)})` : ''}: readable and linkable; its Cards wait for an unlock`
+          : tree.title) + ' · right-click for the tree menu',
+        'aria-haspopup': 'menu',
+        onclick: () => { go(tree.root); openRail(false); },
+      },
+        h('span', { class: 'addr', text: tree.root }),
+        h('span', { class: 't', text: tree.title || '(untitled)' }),
+        h('span', { class: 'n', text: tree.locked ? `${tree.count} · locked` : String(tree.count) }),
+        tree.excerpt ? h('span', { class: 'x', text: tree.excerpt }) : null,
+        lockBand('drawer', tree, lock),
+      );
+      treeMenu.wire(el, tree);
+      return el;
+    };
     const fill = (id, kind, hint) => {
       const list = trees.filter((tree) => tree.kind === kind);
       $(id).replaceChildren(...(list.length ? list.map(drawer) : [h('div', { class: 'empty-hint', text: hint })]));
@@ -1240,9 +1286,12 @@
     const tally = (type, count) => (count
       ? h('span', { class: 'tally' }, typeStamp(type, `${count} ${CARD_TYPES[type].label} Card${count === 1 ? '' : 's'}`), count > 1 ? `×${count}` : null)
       : null);
-    // A bigger tree is a thicker stack: up to four sheets under the face.
-    const stack = (tree) => h('button', {
-      class: 'stack ' + tree.kind, onclick: () => go(tree.root), title: tree.title,
+    // A bigger tree is a thicker stack: up to four sheets under the face. A Locked tree's stack wears
+    // a paper band with its seal across every sheet and the root's face (S05, #128); the band says
+    // `locked` and the seal's 12 characters in words. The stack opens the same tree menu as its drawer.
+    const stack = (tree) => treeMenu.wire(h('button', {
+      class: 'stack ' + tree.kind + (tree.locked ? ' locked' : ''), onclick: () => go(tree.root),
+      title: `${tree.title}${tree.locked ? ' — locked tree' : ''} · right-click for the tree menu`, 'aria-haspopup': 'menu',
     },
       tree.count > 6 ? h('span', { class: 'sheet s4' }) : null,
       tree.count > 2 ? h('span', { class: 'sheet s3' }) : null,
@@ -1262,7 +1311,8 @@
             h('i', { style: `width: ${Math.max(6, Math.round(100 * tree.count / largest))}%` })),
         ),
       ),
-    );
+      lockBand('desk', tree, tree.locked ? ZtLock.activeLock(state.locks, tree.root) : null),
+    ), tree);
     const newStack = (label, key, action) => h('button', { class: 'stack new', onclick: action },
       h('span', { class: 'face' }, h('span', { class: 'plus', text: '+' }), h('span', { text: label }), h('kbd', { text: key })));
     const zoneSection = (kind, label, newLabel, key, action) => [
@@ -3278,6 +3328,14 @@
     wireMarkdown(md);
     wireUnitReader(md, card);
     const regular = card.context === 'regular';
+    // S05 (#128): a write the Card's Lock state refuses stays in its place but disabled, its title
+    // naming the Locked tree (or the pinning trees and their source Cards); the lock line under
+    // the actions says it in words and offers the lock panel. Reading, linking, the Table and
+    // Reply are never gated.
+    const writeOpts = (action, base = {}) => {
+      const gate = ZtLock.writeGate(card, action, state.locks);
+      return gate.allowed ? base : { ...base, disabled: true, title: gate.why, cls: [base.cls, 'gated'].filter(Boolean).join(' ') };
+    };
     // The article is the physical index card; links and tools lie on the desk below it.
     // Back brings the card in from the left, forward from the right; one carried from the
     // search tray is already in the hand and just lands.
@@ -3326,7 +3384,7 @@
           title: isUnit(card.model) ? 'Take the unit out onto the study desk: one station at a time, in the reading mode you chose' : 'Study the whole theory on the desk: orient, each main result after what it needs, connect, recall',
           cls: 'study-btn',
         }) : null,
-        actionButton('Edit', 'e', editCard, { primary: true }),
+        actionButton('Edit', 'e', editCard, writeOpts('edit', { primary: true })),
         card.workspace === 'agent' && ZtFeatures.allows(state.features, 'reply') ? actionButton('Reply', 'r', replyTo, {
           title: 'Answer this agent Card with a human Card: 印证, 反驳, 放宽, or 对应, then the Link back',
           cls: 'reply-btn',
@@ -3335,11 +3393,11 @@
           title: 'Use one existing Bridge report as the distant slot’s first source; it is read only and no proposal is applied',
           cls: 'bridge-btn',
         }) : null,
-        actionButton('Direct', 'n', () => newCard('direct'), { title: 'New direct successor' }),
-        actionButton('Side', 'b', () => newCard('side'), { disabled: !regular, title: regular ? 'New side successor' : 'Tree roots have no side successors' }),
-        actionButton('Insert', 'i', insertCard, { disabled: !regular, title: regular ? 'Insert a new card in this place; this card and its successors move down' : 'Nothing goes before a tree root' }),
-        actionButton('Move', 'm', () => moveCard(), { disabled: !regular, title: regular ? 'Move with successors, alone, or into another card’s place' : 'Tree roots cannot move' }),
-        actionButton('Delete', 'del', deleteCard, { danger: true }),
+        actionButton('Direct', 'n', () => newCard('direct'), writeOpts('direct', { title: 'New direct successor' })),
+        actionButton('Side', 'b', () => newCard('side'), regular ? writeOpts('side', { title: 'New side successor' }) : { disabled: true, title: 'Tree roots have no side successors' }),
+        actionButton('Insert', 'i', insertCard, regular ? writeOpts('insert', { title: 'Insert a new card in this place; this card and its successors move down' }) : { disabled: true, title: 'Nothing goes before a tree root' }),
+        actionButton('Move', 'm', () => moveCard(), regular ? writeOpts('move', { title: 'Move with successors, alone, or into another card’s place' }) : { disabled: true, title: 'Tree roots cannot move' }),
+        actionButton('Delete', 'del', deleteCard, writeOpts('delete', { danger: true })),
       ),
       card.context === 'tree-root' ? lockLine(card) : null,
       cardLockLine(card),
@@ -4714,6 +4772,7 @@
     const line = ZtLock.faultLine(state.locks);
     pill.hidden = !line;
     pill.textContent = line || '';
+    bands.take(state.locks);
   }
 
   /** The seal stamp: the first 12 characters of the digest, struck through when a fault was found. */
@@ -4909,10 +4968,15 @@
     ];
   }
 
+  /**
+   * After a committed Lock action, the normal refresh (S05, #128, R222): it reads the overview,
+   * the Cards and the Locks again, so the cabinet's drawer, the desk's stack band and every open
+   * copy of the tree's Cards show the new state. An open writing desk keeps its draft: a refresh
+   * repaints the page under the dialogs and never closes one.
+   */
   async function afterLock(message) {
     toast(message);
-    await loadLocks().catch(fail);
-    if (state.card) renderReader();
+    await refresh().catch(fail);
   }
 
   /** Lock tree: review the whole tree's plan, then freeze it. */
@@ -5020,6 +5084,144 @@
     await paint();
   }
 
+  /**
+   * When a Locked tree's band moves (S05, #128). `paintLocks` hands every new Locks read to `take`;
+   * a band that arrived with it is wrapped round the drawer or stack by motion the first time each
+   * one is painted, and a released band slides off once. Any other repaint shows the band still.
+   * The first read of the page sets the baseline, so nothing moves at boot.
+   */
+  const bands = {
+    was: null,
+    now: null,
+    played: new Set(),
+    painting: new Set(),
+    frame: null,
+    take(locks) {
+      if (!locks) return;
+      this.was = this.now;
+      this.now = new Set(ZtLock.panel(locks).active.map((lock) => lock.root));
+      this.played = new Set();
+    },
+    motion(where, root) {
+      if (!this.was || !this.now) return null;
+      const move = this.now.has(root) && !this.was.has(root) ? 'on' : !this.now.has(root) && this.was.has(root) ? 'off' : null;
+      const key = `${where} ${root}`;
+      if (!move || this.played.has(key)) return null;
+      // A refresh may paint the rail twice before the screen shows it: the motion counts as played
+      // only once a frame has been drawn, so the band that reaches the screen still moves.
+      this.painting.add(key);
+      this.frame = this.frame || requestAnimationFrame(() => {
+        for (const done of this.painting) this.played.add(done);
+        this.painting.clear();
+        this.frame = null;
+      });
+      return move;
+    },
+  };
+
+  /**
+   * The paper band of a Locked tree: on the desk a band across the whole stack with `locked` and
+   * the seal's 12 characters and a wax seal on the root's face; in the cabinet a strap across the
+   * drawer's end (its count tab already says `locked`). A released band slides off, then goes.
+   */
+  function lockBand(where, tree, lock) {
+    const motion = bands.motion(where, tree.root);
+    // Without motion a released band has no slide to finish; it is simply gone.
+    if (!tree.locked && (motion !== 'off' || reduceMotion())) return null;
+    // `band-*` names only: `.drawer`, `.desk`, `.on` and `.off` are taken by the cabinet and desk.
+    const band = h('span', { class: `lock-band band-${where}` + (motion ? ` band-${motion}` : ''), 'aria-hidden': where === 'drawer' ? 'true' : null },
+      where === 'desk' ? [
+        h('span', { class: 'lbl', text: 'locked' }),
+        lock ? h('span', { class: 'v', text: `seal ${ZtLock.sealShort(lock.seal)}` }) : null,
+      ] : null,
+      h('span', { class: 'wax', 'aria-hidden': 'true' }));
+    if (motion === 'off') {
+      // A page that draws no frames (a hidden window) never ends the animation; the timer still
+      // takes the released band away.
+      band.addEventListener('animationend', () => band.remove());
+      setTimeout(() => band.remove(), 600);
+    }
+    return band;
+  }
+
+  /**
+   * One tree's cabinet menu (S05, #128): Open tree, then Lock tree…, or the active Lock's panel,
+   * note and unlock — the same dialogs the root's lock line and the panel open. It opens on a
+   * drawer or a desk stack by right-click, a long press, Shift+F10 or the menu key, beside the
+   * pointer, in the history menu's paper; arrows walk it, Esc and a click elsewhere close it.
+   */
+  const treeMenu = (() => {
+    let menu = null;
+    const close = () => { if (menu) menu.remove(); menu = null; };
+    document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) close(); }, true);
+    window.addEventListener('blur', close);
+
+    async function run(id, tree) {
+      if (id === 'open') { go(tree.root); openRail(false); return; }
+      if (id === 'lock') { await lockTree(tree.root); return; }
+      if (id === 'panel') { await lockPanel(tree.root); return; }
+      // Note and unlock act on the exact active Lock, read fresh if the page has none in hand.
+      let lock = ZtLock.activeLock(state.locks, tree.root);
+      if (!lock) lock = ZtLock.activeLock(await loadLocks(), tree.root);
+      if (!lock) throw new Error(`tree ${tree.root} is not locked any more`);
+      if (id === 'note') await editLockNote(lock);
+      else if (id === 'unlock') await unlockTree(lock);
+    }
+
+    function open(tree, x, y) {
+      close();
+      const rows = ZtLock.treeActions(tree.root, tree.locked, state.locks).map((item) => h('button', {
+        class: 'nav-row' + (item.danger ? ' danger' : ''), role: 'menuitem', dataset: { act: item.id },
+        onclick: () => { close(); run(item.id, tree).catch(fail); },
+      }, h('span', { class: 't', text: item.label }), item.note ? h('span', { class: 'addr', text: item.note }) : null));
+      menu = h('div', { class: 'nav-menu tree-menu', role: 'menu', 'aria-label': `Tree ${tree.root}` },
+        h('div', { class: 'nav-menu-head', text: `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.root}${tree.locked ? ' · locked' : ''}` }),
+        rows);
+      menu.addEventListener('keydown', (event) => {
+        const items = [...menu.querySelectorAll('.nav-row')];
+        const at = items.indexOf(document.activeElement);
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          // The menu's arrows walk the menu only, never the Map behind it.
+          event.preventDefault();
+          event.stopPropagation();
+          items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+        } else if (event.key === 'Escape' || event.key === 'Tab') {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+        }
+      });
+      document.body.append(menu);
+      // Beside the pointer, kept inside the window.
+      const box = menu.getBoundingClientRect();
+      menu.style.left = `${Math.round(Math.max(8, Math.min(x, innerWidth - box.width - 8)))}px`;
+      menu.style.top = `${Math.round(Math.max(8, Math.min(y, innerHeight - box.height - 8)))}px`;
+      menu.querySelector('.nav-row').focus();
+    }
+
+    /** Give one drawer or stack its menu; answers the element. */
+    function wire(el, tree) {
+      let held = null;
+      let opened = false;
+      const at = () => { const box = el.getBoundingClientRect(); return [box.left + 14, box.bottom + 4]; };
+      el.addEventListener('contextmenu', (event) => { event.preventDefault(); open(tree, event.clientX, event.clientY); });
+      el.addEventListener('keydown', (event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); open(tree, ...at()); }
+      });
+      el.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        opened = false;
+        held = setTimeout(() => { opened = true; open(tree, ...at()); }, 500);
+      });
+      for (const name of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(name, () => clearTimeout(held));
+      // A long press opened the menu: the click that ends it does not also open the tree.
+      el.addEventListener('click', (event) => { if (opened) { opened = false; event.stopImmediatePropagation(); event.preventDefault(); } }, true);
+      return el;
+    }
+
+    return { wire, close, open };
+  })();
+
   /** The tree root's lock line in the reader: its state in words, and the one action that fits it. */
   function lockLine(card) {
     if (!state.locks) {
@@ -5034,7 +5236,7 @@
     }
     const faults = ZtLock.panel(state.locks).faultsOf[lock.lock_id] || [];
     return h('div', { class: 'lock-line locked' },
-      h('span', { class: 'lock-state', text: `Locked since ${dateOf(lock.locked_at)}` }),
+      h('span', { class: 'lock-state', title: 'Edit, type, move, delete, insert and new cards wait for an unlock; reading, linking, the Table and Reply stay open', text: `Locked since ${dateOf(lock.locked_at)} · writing waits for an unlock` }),
       sealStamp(lock.seal, faults.length > 0),
       actionButton('Lock panel', null, () => lockPanel(card.address), { cls: 'lock-btn' }),
       actionButton('Unlock tree…', null, () => unlockTree(lock), { cls: 'lock-btn', danger: true }));
@@ -5050,15 +5252,21 @@
     if (!facts) return null;
     const member = facts.locked && !facts.root;
     if (!member && !facts.pinnedBy.length) return null;
+    // A quiet link to one Card: the Locked root, or a source Card that holds a pinning Link.
+    const quiet = (address) => h('button', { class: 'lock-open', text: address, title: `Open ${address}`, onclick: () => go(address) });
+    // S05 (#128): the pinning Links' source Cards, from the Locks the page last read.
+    const holders = facts.pinnedBy.length ? ZtLock.pinHolders(state.locks, card.address, facts.pinnedBy) : [];
     return h('div', { class: 'lock-line card-lock' },
       member ? h('span', { class: 'lock-state', title: facts.lockedWhy },
-        'Locked with tree ', h('button', { class: 'lock-open', text: facts.tree, title: `Open tree ${facts.tree}`, onclick: () => go(facts.tree) }),
-        facts.since ? ` since ${dateOf(facts.since)}` : '') : null,
-      member ? actionButton('Lock panel', null, () => lockPanel(facts.tree), { cls: 'lock-btn' }) : null,
-      facts.pinnedBy.length ? h('span', { class: 'lock-pinned', title: facts.pinnedWhy },
-        `Pinned by locked ${facts.pinnedBy.length === 1 ? 'tree' : 'trees'} `,
-        facts.pinnedBy.flatMap((root, index) => [index ? ', ' : null,
-          h('button', { class: 'lock-open', text: root, title: `Open tree ${root}`, onclick: () => go(root) })])) : null);
+        'Locked with tree ', quiet(facts.tree),
+        facts.since ? ` since ${dateOf(facts.since)}` : '',
+        ' · writing waits for its unlock') : null,
+      member ? actionButton('Lock panel', null, () => lockPanel(facts.tree), { cls: 'lock-btn', title: `Open the lock panel at tree ${facts.tree}; Unlock tree is there` }) : null,
+      holders.length ? h('span', { class: 'lock-pinned', title: facts.pinnedWhy },
+        `Pinned by locked ${holders.length === 1 ? 'tree' : 'trees'} `,
+        holders.flatMap((holder, index) => [index ? '; ' : null, quiet(holder.tree),
+          holder.sources.length ? [' via ', holder.sources.flatMap((source, at) => [at ? ', ' : null, quiet(source)])] : null]),
+        ' · move, insert and delete wait; editing stays open') : null);
   }
 
   function showHelp() {
@@ -5277,19 +5485,35 @@
             update();
           },
         }, kinds.map(([word, note], index) => h('option', { value: String(index), text: word, title: note })));
+        // S05 (#128): a human Topic inside a Locked tree takes no reply. It stays listed, marked
+        // `locked` and not choosable; when it is the Topic the reader chose last, it stays chosen and
+        // the note says why, so the page never silently files the reply somewhere else.
+        const paintDestination = () => {
+          const locked = draft.destination ? ZtLock.destinationLock(draft.destination) : null;
+          draft.note.textContent = locked ? locked.why : '';
+          draft.note.className = 'reply-note' + (locked ? ' err dest-locked' : '');
+          return locked;
+        };
         const destinationPick = h('select', {
           class: 'reply-dest', 'aria-label': 'Destination Topic',
           title: 'The human Topic this reply is filed in: a side successor of its last card, or the first direct successor of an empty Topic',
           onchange: (event) => {
             draft.destinationIndex = Number(event.target.value);
             draft.destination = destinations[draft.destinationIndex] || null;
-            setMsg(draft.destination ? `filed in ${draft.destination.title} (${draft.destination.address})` : `filed in a new Topic ${reply.fallback}`);
+            if (!paintDestination()) setMsg(draft.destination ? `filed in ${draft.destination.title} (${draft.destination.address})` : `filed in a new Topic ${reply.fallback}`);
           },
         },
-          destinations.map((topic, index) => h('option', { value: String(index), text: `${topic.title || '(untitled)'} · ${topic.address}` })),
+          destinations.map((topic, index) => {
+            const locked = ZtLock.destinationLock(topic);
+            return h('option', {
+              value: String(index), disabled: Boolean(locked), title: locked ? locked.why : null,
+              text: `${topic.title || '(untitled)'} · ${topic.address}${locked ? ' · locked' : ''}`,
+            });
+          }),
           h('option', { value: '-1', text: `new Topic ${reply.fallback}` }),
         );
         destinationPick.value = String(draft.destination ? Math.max(0, destinations.indexOf(draft.destination)) : -1);
+        paintDestination();
         relationPick.value = String(draft.relation);
         return h('div', { class: 'reply-bar' },
           h('span', { class: 'lbl', text: `Reply to ${target.address}` }),
@@ -5497,7 +5721,8 @@
             msg.append(' ', h('button', {
               class: 'lock-open', type: 'button', text: 'Lock panel',
               title: 'Open the lock panel over this desk; your text stays here',
-              onclick: () => lockPanel().catch(fail),
+              // The panel opens at the refused tree's Lock (S05, #128), its Unlock tree in reach.
+              onclick: () => lockPanel(ZtLock.refusalTree(error.refusal)).catch(fail),
             }));
           }
         } finally { saveBtn.disabled = hub ? !(hubCheck && hubCheck.ok) : false; }
@@ -5601,6 +5826,7 @@
     if (kind === 'side' && parent.context !== 'regular') {
       throw new Error(`side successors cannot start from a ${parent.kind === 'literature' ? 'Literature' : 'Topic'} Card`);
     }
+    if (kind !== 'topic') gateWrite(parent, kind);
     const heading = kind === 'topic' ? `New Topic · ${wsLabel(state.workspace)} workspace`
       : kind === 'direct' ? `New direct successor of ${parent.address}` : `New side successor of ${parent.address}`;
     // Same template as the terminal: heading, blank line, body line, marker.
@@ -5696,7 +5922,12 @@
         }
         draft.note.textContent = result.detail || 'the reply was not saved';
         draft.note.className = 'reply-note err';
-        throw new Error(result.detail || 'the reply was not saved');
+        // A destination locked since the desk opened (S05, #128): the draft and the chosen Topic
+        // stay as they are; the refusal names the Locked tree, so the desk offers its lock panel.
+        // Nothing retries on its own and nothing is unlocked.
+        const error = new Error(result.detail || 'the reply was not saved');
+        if (result.reason === 'locked_destination' && result.refusal) error.refusal = result.refusal;
+        throw error;
       },
     });
     if (!address) return;
@@ -5722,6 +5953,7 @@
   async function editCard() {
     const card = state.card;
     if (!card) throw new Error('e needs a Card; use go <target> first');
+    gateWrite(card, 'edit');
     if (card.kind === 'literature') {
       const part = await choosePart();
       if (part === 'metadata') return editMetadata(card);
@@ -5750,6 +5982,7 @@
     if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, or hub`);
     if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, or Hub Cards');
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
+    gateWrite(card, 'type');
     const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
     await afterChange(result.address, facet
       ? `${result.address} is the ${facetLabel(facet)} part of its model`
@@ -5785,6 +6018,7 @@
   }
 
   async function editMetadata(card) {
+    gateWrite(card, 'bibtex');
     const address = await openEditor({
       heading: `Edit metadata · ${card.address}`,
       initial: card.text,
@@ -5815,6 +6049,7 @@
   async function deleteCard() {
     const card = state.card;
     if (!card) throw new Error('del needs a Card; use go <target> first');
+    gateWrite(card, 'delete');
     const plan = await api('delete', { at: card.address });
     const ok = await confirmPlan(`Delete ${card.address}`, plan.lines, plan.confirm);
     if (!ok) return;
@@ -5835,6 +6070,7 @@
     if (card.context !== 'regular') throw new Error(card.kind === 'literature'
       ? 'Literature Card cannot be moved; edit metadata to change its Citation key'
       : 'Topic Cards cannot be moved');
+    gateWrite(card, 'move');
     let where = target;
     if (!where) {
       const answer = await promptValue(`Move ${card.address}`,
@@ -5864,6 +6100,7 @@
     const card = state.card;
     if (!card) throw new Error('ins needs a Card; use go <target> first');
     if (card.context !== 'regular') throw new Error('cannot insert before a tree root; insert before its Direct successor instead');
+    gateWrite(card, 'insert');
     const plan = await api('insert', { before: card.address, text: '# (new card)\n' });
     const ok = await confirmPlan(`Insert before ${card.address}`, plan.lines, plan.confirm);
     if (!ok) return;
@@ -5918,7 +6155,15 @@
           const name = syntax.split(' ')[0];
           if (!word || name.startsWith(word)) {
             const takesArg = syntax.includes('<');
-            list.push({ syntax, desc, group: 'Commands', fill: takesArg && !trimmed.includes(' ') ? name + ' ' : null, run: takesArg ? null : name });
+            // S05 (#128): a write the open Card's Lock state refuses stays listed, marked and
+            // explained; choosing it shows why and offers the tree's lock panel.
+            const write = ZtLock.COMMAND_WRITES[name];
+            const gate = write && state.card ? ZtLock.writeGate(state.card, write, state.locks) : null;
+            const gated = gate && !gate.allowed ? gate : null;
+            list.push({
+              syntax, desc: gated ? `unavailable — ${gated.short}` : desc, gated: gated ? gated.why : null, gate: gated, group: 'Commands',
+              fill: takesArg && !trimmed.includes(' ') && !gated ? name + ' ' : null, run: takesArg && !gated ? null : name,
+            });
           }
         }
         if (ZtFeatures.allows(state.features, 'search') && trimmed && !list.some((item) => item.syntax.split(' ')[0] === word) && trimmed.length > 1) {
@@ -5937,7 +6182,8 @@
       items.forEach((item, index) => {
         if (item.group !== lastGroup) { nodes.push(h('div', { class: 'group', text: item.group })); lastGroup = item.group; }
         nodes.push(h('button', {
-          class: index === selected ? 'on' : '', role: 'option',
+          class: (index === selected ? 'on' : '') + (item.gated ? ' gated' : ''), role: 'option',
+          title: item.gated, 'aria-disabled': item.gated ? 'true' : null,
           onmousedown: (event) => { event.preventDefault(); choose(item); },
         }, h('span', { class: 'syntax', text: item.syntax }), h('span', { class: 'desc', text: item.desc })));
       });
@@ -5953,6 +6199,14 @@
     };
 
     const choose = (item) => {
+      if (item.gate) {
+        // A gated write says why at once, whatever arguments it would take.
+        input.value = '';
+        menu.hidden = true;
+        input.blur();
+        fail(Object.assign(new Error(item.gate.why), { gate: item.gate }));
+        return;
+      }
       if (item.search !== undefined) {
         input.value = '';
         menu.hidden = true;

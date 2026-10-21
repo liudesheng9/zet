@@ -1,4 +1,5 @@
-/* zt gui lock — pure, DOM-free rules for the Tree Lock panel and its dialogs (S01, #124).
+/* zt gui lock — pure, DOM-free rules for the Tree Lock panel and its dialogs (S01, #124), and
+ * for which writes a locked or pinned Card offers (S05, #128).
  *
  * The owner locks a whole tree, edits a Lock's note, and unlocks it only through the GUI routes
  * `POST /api/lock`, `POST /api/lock/note` and `POST /api/unlock`: each answers a plan first and
@@ -193,5 +194,115 @@
     };
   }
 
-  return { NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine, cardState };
+  /**
+   * The writes a Card offers (S05, #128), each with the words an explanation uses. Every entry
+   * point — the reader's buttons, the keys, the command bar and the menus — asks `writeGate` with
+   * one of these names, so they all honour the same state.
+   */
+  const WRITES = {
+    edit: 'edit it',
+    bibtex: 'edit its BibTeX',
+    type: 'change its type',
+    level: 'set its level',
+    form: 'set its Math form',
+    direct: 'add a direct successor to it',
+    side: 'add a side successor to it',
+    insert: 'insert a card in its place (that moves it down)',
+    move: 'move it',
+    delete: 'delete it',
+  };
+
+  /** The writes that move or remove the Card itself: the only ones a pin refuses. */
+  const PIN_REFUSES = ['insert', 'move', 'delete'];
+
+  /** The command-bar words that write the open Card, by the write they ask for. */
+  const COMMAND_WRITES = { e: 'edit', ty: 'type', lv: 'level', mf: 'form', n: 'direct', b: 'side', ins: 'insert', mv: 'move', del: 'delete' };
+
+  /**
+   * Which active Locks pin one target, and through which of their source Cards (from a
+   * `GET /api/locks` answer). A root the answer does not list keeps its name with no sources.
+   */
+  function pinHolders(exported, target, roots) {
+    const locks = (exported && exported.locks) || [];
+    return (roots || []).map((root) => {
+      const lock = locks.find((item) => item.root === root && !item.unlocked_at);
+      const group = lock ? pinGroups(lock).find((item) => item.target === target) : null;
+      return { tree: root, lockId: lock ? lock.lock_id : null, sources: group ? group.sources : [] };
+    });
+  }
+
+  /**
+   * Whether the page offers one write on one Card, and if not, why in words (S05, #128). A Card in
+   * a Locked tree (its root included) refuses every write until that tree is unlocked. A Pinned
+   * target keeps editing and new successors (the server checks what a successor would really
+   * move); only moving, inserting in its place and deleting it are refused, naming the Locked
+   * trees that pin it and the source Cards that hold the Links. The server still decides; this
+   * only keeps the page from offering what it would refuse.
+   */
+  function writeGate(card, action, exported) {
+    const verb = WRITES[action];
+    if (!verb) throw new Error(`unknown write \`${action}\``);
+    const facts = cardState(card);
+    if (!facts) return { allowed: true };
+    if (facts.locked) {
+      return {
+        allowed: false, code: 'locked', tree: facts.tree, lockId: facts.lockId, holders: [],
+        short: `locked with tree ${facts.tree}`,
+        why: `${card.address} is locked with tree ${facts.tree}: you cannot ${verb} until that tree is unlocked. Unlock it from the tree's lock panel.`,
+      };
+    }
+    if (facts.pinnedBy.length && PIN_REFUSES.includes(action)) {
+      const holders = pinHolders(exported, card.address, facts.pinnedBy);
+      const one = holders.length === 1;
+      const named = holders.map((item) => (item.sources.length ? `${item.tree} (Links from ${item.sources.join(', ')})` : item.tree)).join('; ');
+      return {
+        allowed: false, code: 'pinned', tree: holders[0].tree, lockId: holders[0].lockId, holders,
+        short: `pinned by locked ${one ? 'tree' : 'trees'} ${facts.pinnedBy.join(', ')}`,
+        why: `${card.address} is pinned by locked ${one ? 'tree' : 'trees'} ${named}: you cannot ${verb} while ${one ? 'that tree holds' : 'those trees hold'} Links to it. Editing it and adding successors stay open; unlocking a pinning tree in its lock panel releases its pin.`,
+      };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * Whether a reply may be filed in one human Topic: `null` when it may, else why not. A Topic
+   * inside a Locked tree takes no new Card; a pin alone leaves it open. The page never picks
+   * another Topic in its place and never unlocks one.
+   */
+  function destinationLock(topic) {
+    const facts = cardState(topic);
+    if (!facts || !facts.locked) return null;
+    return {
+      tree: facts.tree,
+      why: `Topic ${topic.address} is in locked tree ${facts.tree}: a reply cannot be filed there until it is unlocked. Choose another Topic; your draft stays.`,
+    };
+  }
+
+  /**
+   * The actions of one tree's cabinet menu, in order: open it, then what its Lock state allows.
+   * An active Lock offers its panel, its note and its unlock; an unlocked tree offers Lock tree. A
+   * tree the overview calls locked while the Locks are unread offers only the panel, which reads them.
+   */
+  function treeActions(root, locked, exported) {
+    const open = { id: 'open', label: 'Open tree' };
+    const lock = exported ? activeLock(exported, root) : null;
+    if (lock) {
+      return [open,
+        { id: 'panel', label: 'Lock panel', note: `seal ${sealShort(lock.seal)}` },
+        { id: 'note', label: 'Edit lock note…' },
+        { id: 'unlock', label: 'Unlock tree…', danger: true }];
+    }
+    if (locked) return [open, { id: 'panel', label: 'Lock panel', note: 'locked' }];
+    return [open, { id: 'lock', label: 'Lock tree…', note: 'review, then freeze' }];
+  }
+
+  /** The words on a Locked tree's band: the state first, then the seal's 12 characters. */
+  function bandText(lock) {
+    return lock && lock.seal ? `locked · seal ${sealShort(lock.seal)}` : 'locked';
+  }
+
+  return {
+    NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine, cardState,
+    WRITES, COMMAND_WRITES, pinHolders, writeGate, destinationLock, treeActions, bandText,
+  };
 });

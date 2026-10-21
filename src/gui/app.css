@@ -26,6 +26,11 @@
   --topic-soft: #dcefea;
   --lit: #a2432a;
   --lit-soft: #f6e2da;
+  /* A Locked tree's paper band (S05, #128): kraft paper, its ink, and the wax of its seal. */
+  --band: #d9c39a;
+  --band-edge: rgba(110, 80, 30, .35);
+  --band-ink: #5a4220;
+  --wax: #9c3424;
   --regular: #4a5568;
   --accent: #b4572a;
   --accent-2: #cf7442;
@@ -79,6 +84,10 @@
   --topic-soft: #18302c;
   --lit: #ec8e6c;
   --lit-soft: #36241e;
+  --band: #6b5a3c;
+  --band-edge: rgba(0, 0, 0, .5);
+  --band-ink: #f1e2c2;
+  --wax: #b8513c;
   --regular: #a7b0c0;
   --accent: #e88d55;
   --accent-2: #f2a673;
@@ -128,6 +137,10 @@
     --topic-soft: #18302c;
     --lit: #ec8e6c;
     --lit-soft: #36241e;
+    --band: #6b5a3c;
+    --band-edge: rgba(0, 0, 0, .5);
+    --band-ink: #f1e2c2;
+    --wax: #b8513c;
     --regular: #a7b0c0;
     --accent: #e88d55;
     --accent-2: #f2a673;
@@ -2285,6 +2298,63 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .lock-history { opacity: .8; }
 .lock-history > .lock-list > li.lock-ended { display: block; margin-bottom: 6px; color: var(--ink-faint); }
 .lock-ended .a { margin-right: 8px; }
+/* ---------- S05 (#128): the band, the gated writes, the tree menu ----------
+   A Locked tree wears a kraft-paper band with a wax seal, the way a reviewed bundle of cards is
+   tied up on a real desk. On the desk the band runs across every sheet and the root's face and
+   says `locked` and the seal's 12 characters in words; in the cabinet a strap closes the drawer's
+   end while its count tab says `locked`. A banded stack moves as one block: no sheet fans out. The
+   band arrives by wrapping round and leaves by sliding off; nothing else about it moves. */
+.lock-band {
+  position: absolute; pointer-events: none; background: var(--band); color: var(--band-ink);
+  box-shadow: 0 1px 0 var(--band-edge), 0 -1px 0 var(--band-edge), 0 2px 4px -1px rgba(60, 45, 20, .25);
+}
+.lock-band .wax {
+  position: absolute; width: 18px; height: 18px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--wax) 65%, #fff), var(--wax) 62%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+}
+.lock-band.band-desk {
+  left: -7px; right: -7px; top: 92px; height: 24px; z-index: 2; border-radius: 2px;
+  display: flex; align-items: center; gap: 10px; padding: 0 44px 0 16px;
+  font: 600 10.5px var(--mono); letter-spacing: .03em; white-space: nowrap; overflow: hidden;
+  transform-origin: left center;
+}
+.lock-band.band-desk .lbl { font: 700 9.5px var(--sans); letter-spacing: .16em; text-transform: uppercase; }
+.lock-band.band-desk .wax { right: 20px; top: 3px; }
+.stack.locked .face .x { visibility: hidden; }
+.stack.locked { transition: transform .35s var(--ease); }
+.stack.locked:hover { transform: translateY(-3px); }
+.stack.locked:hover .sheet.s2 { transform: rotate(-2deg) translate(-3px, 4px); }
+.stack.locked:hover .sheet.s3 { transform: rotate(1.6deg) translate(4px, 2px); }
+.stack.locked:hover .sheet.s4 { transform: rotate(-.7deg) translate(2px, 8px); }
+.stack.locked:hover .face { transform: none; box-shadow: var(--card-shadow-lift); }
+.drawer.locked { padding-right: 34px; }
+.lock-band.band-drawer { right: 12px; top: -3px; bottom: -3px; width: 11px; border-radius: 1px; transform-origin: center top; }
+.lock-band.band-drawer .wax { width: 13px; height: 13px; left: -1px; top: calc(50% - 6.5px); }
+.lock-band.band-desk.band-on { animation: band-wrap .42s cubic-bezier(.45, 0, .25, 1) both; }
+.lock-band.band-drawer.band-on { animation: strap-wrap .36s cubic-bezier(.45, 0, .25, 1) both; }
+.lock-band.band-on .wax { animation: wax-press .3s .32s cubic-bezier(.45, 0, .25, 1) both; }
+.lock-band.band-off { animation: band-off .36s cubic-bezier(.45, 0, .55, 1) both; }
+@keyframes band-wrap { from { transform: scaleX(0); opacity: .4; } to { transform: none; opacity: 1; } }
+@keyframes strap-wrap { from { transform: scaleY(0); } to { transform: none; } }
+@keyframes wax-press { from { transform: scale(1.6); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes band-off { to { transform: translateX(28px); opacity: 0; } }
+/* A write the Lock state refuses stays in its place, disabled, its edge dashed like a held slot. */
+.btn.gated:disabled { border-style: dashed; }
+.command-menu button.gated .syntax, .command-menu button.gated .desc { opacity: .55; }
+.command-menu button.gated .desc { font-style: italic; }
+.tree-menu { min-width: 220px; }
+.tree-menu .nav-row { justify-content: space-between; }
+.tree-menu .nav-row .t { font: 13.5px var(--sans); }
+.tree-menu .nav-row .addr { font: 11px var(--mono); }
+.tree-menu .nav-row.danger .t { color: var(--broken); }
+.tree-menu .nav-row:focus-visible { outline: none; background: var(--accent-soft); }
+.toast-act {
+  margin-left: 10px; padding: 2px 9px; border: 1px solid rgba(255, 255, 255, .6); border-radius: 7px;
+  background: none; color: inherit; font: 600 12px var(--sans); cursor: pointer;
+}
+.toast-act:hover { background: rgba(255, 255, 255, .16); }
 @media (prefers-reduced-motion: reduce) {
   .lock-plan, .lock-card { transition: none; }
+  .lock-band, .lock-band .wax, .stack.locked { animation: none !important; transition: none; }
 }
