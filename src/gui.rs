@@ -2883,6 +2883,31 @@ mod tests {
         assert!(app_function("lockPanel").contains("await loadLocks();"));
     }
 
+    /// S02 (#125, S02-AC06): the lock plan dialog says, right under what the Lock freezes, what
+    /// the seal promise does not cover, in the same words as the plan's own last line; the
+    /// already-broken-links fold stays as it was.
+    #[test]
+    fn the_lock_plan_names_what_the_seal_promise_leaves_out() {
+        let exclusion = "its meaning, and any external document, artifact or cache availability, stay outside the seal promise";
+        assert!(
+            include_str!("tree_lock.rs").contains(&format!("pins keep a target's address and existence only: {exclusion}")),
+            "the API's plan lines carry the same exclusion"
+        );
+        let view = app_function("lockPlanView");
+        let what = view.find("class: 'lock-what', text: `Freezes the root and").expect("the freeze line");
+        let limit = view
+            .find(&format!("class: 'lock-limit', text: 'Pins keep a target\\'s address and existence only: {exclusion}.'"))
+            .expect("the exclusion sentence");
+        let digest = view.find("digestFold(plan.seal)").expect("the digest fold");
+        assert!(what < limit && limit < digest, "the exclusion sits right under the freeze line: {view}");
+        assert!(
+            view.contains("h('summary', { text: `Already broken links · ${plan.warnings.length} — they create no pin; if one resolves later, unlock and lock again to include it` })"),
+            "the broken-link fold is unchanged"
+        );
+        assert!(APP_CSS.contains(".lock-limit { margin: 0 0 4px; font-size: 12px;"), "the limit recedes below the freeze line");
+        assert_eq!(APP_JS.matches("lock-limit").count(), 1);
+    }
+
     /// The text of one top-level `function <name>` of `app.js`, up to its closing brace (the
     /// first line that starts with two spaces and `}`), so a page test can say where in that
     /// function a guard stands.

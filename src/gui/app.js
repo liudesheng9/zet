@@ -4872,6 +4872,7 @@
         count: plan.member_count, pins: plan.pin_count, seal: plan.seal,
       }),
       h('p', { class: 'lock-what', text: `Freezes the root and ${regular} regular card${regular === 1 ? '' : 's'}: no edit, move, insert, delete or new card in this tree, for you as for agents, until you unlock it here. Its pinned targets keep their addresses.` }),
+      h('p', { class: 'lock-limit', text: 'Pins keep a target\'s address and existence only: its meaning, and any external document, artifact or cache availability, stay outside the seal promise.' }),
       digestFold(plan.seal),
       lockFold('Pinned targets', pinRows(ZtLock.pinGroups(plan))),
       plan.warnings.length ? h('details', { class: 'lock-fold warn' },
