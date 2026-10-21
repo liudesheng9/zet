@@ -50,7 +50,14 @@
     }
     let data = {};
     try { data = await response.json(); } catch { /* empty body */ }
-    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (!response.ok) {
+      // A Tree Lock refusal (409) keeps its structured facts: the message leads with its code, and
+      // the error carries the refusal, so a dialog can name the Locked tree and keep its draft.
+      const error = new Error(ZtLock.refusalText(data.refusal, data.error) || data.error || response.statusText);
+      error.status = response.status;
+      if (data.refusal) error.refusal = data.refusal;
+      throw error;
+    }
     return data;
   }
 
@@ -113,6 +120,9 @@
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
     editing: false,
     landing: false,       // a card carried from the search tray is landing in the reader
+    // The last `GET /api/locks` answer (S01, #124): every Lock, its history and the integrity
+    // result. Read at boot, when the lock panel opens, and after each Lock action.
+    locks: null,
   };
 
   const WORKSPACES = {
@@ -3324,6 +3334,7 @@
         actionButton('Move', 'm', () => moveCard(), { disabled: !regular, title: regular ? 'Move with successors, alone, or into another card’s place' : 'Tree roots cannot move' }),
         actionButton('Delete', 'del', deleteCard, { danger: true }),
       ),
+      card.context === 'tree-root' ? lockLine(card) : null,
       h('details', { class: 'raw-toggle' }, h('summary', { text: 'Stored Markdown' }), h('pre', { text: card.text })),
     ));
     reader.scrollTop = 0;
@@ -4666,6 +4677,360 @@
       : h('p', { text: 'no broken links' })));
   }
 
+  // ------------------------------------------------------------ tree locks
+  // S01 (#124): the owner freezes a whole tree, edits a Lock's note, and unlocks it here and only
+  // here. Every action is two steps: the route answers a plan, the owner reviews it and types the
+  // confirmation word, and the confirmed request sends the plan's `plan_hash` back. The server
+  // recomputes the plan under the edit lock; a stale hash answers the renewed plan and writes
+  // nothing. Cancel sends nothing. The pure rules are `ZtLock` (`lock.js`).
+
+  /** Read every Lock and the integrity result, then repaint the cabinet's lock button and the fault pill. */
+  async function loadLocks() {
+    try {
+      state.locks = await api('locks');
+    } catch (error) {
+      state.locks = null;
+      throw error;
+    } finally {
+      paintLocks();
+    }
+    return state.locks;
+  }
+
+  /** The cabinet's Locks button counts the active Locks; one page-level pill names integrity faults. */
+  function paintLocks() {
+    const read = ZtLock.panel(state.locks);
+    const open = $('#locks-open');
+    open.textContent = read.active.length ? `Locks · ${read.active.length}` : 'Locks';
+    const pill = $('#lock-pill');
+    const line = ZtLock.faultLine(state.locks);
+    pill.hidden = !line;
+    pill.textContent = line || '';
+  }
+
+  /** The seal stamp: the first 12 characters of the digest, struck through when a fault was found. */
+  function sealStamp(seal, broken) {
+    return h('span', {
+      class: 'lock-seal' + (broken ? ' broken' : ''),
+      title: (broken ? 'Integrity fault: the tree no longer matches this seal. ' : '') + `Full seal: ${seal}`,
+    }, h('span', { class: 'lbl', text: broken ? 'seal broken' : 'seal' }), h('span', { class: 'v', text: ZtLock.sealShort(seal) }));
+  }
+
+  /** The full digest, folded: it is evidence, not something to read every time. */
+  function digestFold(seal) {
+    return h('details', { class: 'lock-fold' },
+      h('summary', { text: 'Full seal (SHA-256)' }),
+      h('code', { class: 'lock-digest', text: seal || '' }));
+  }
+
+  /** A folded list: the summary counts it, the rows show only when opened. */
+  function lockFold(label, rows, extra) {
+    if (!rows.length) return null;
+    return h('details', { class: 'lock-fold' + (extra ? ' ' + extra : '') },
+      h('summary', { text: `${label} · ${rows.length}` }),
+      h('ul', { class: 'lock-list' }, rows));
+  }
+
+  const pinRows = (groups) => groups.map((pin) => h('li', {},
+    h('span', { class: 'a', text: pin.target }), h('span', { class: 'arrow', text: '←' }),
+    h('span', { class: 'b', text: pin.sources.join(', ') })));
+
+  const dateOf = (at) => String(at || '').replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, ' UTC');
+
+  /**
+   * The tree as an index card in the dialog: what the owner freezes. Its address stamp sits in the
+   * corner, the seal beside the count, and the rest folds away below.
+   */
+  function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since }) {
+    return h('div', { class: 'lock-card' + (kind === 'literature' ? ' literature' : ' topic') },
+      h('div', { class: 'lock-card-head' },
+        h('span', { class: 'kind-tag ' + (kind || ''), text: `${kind === 'literature' ? 'Literature' : 'Topic'} tree` }),
+        h('span', { class: 'ws-tag ' + workspace, text: wsLabel(workspace) }),
+        h('span', { class: 'lock-addr', text: root })),
+      h('div', { class: 'lock-card-body' },
+        h('div', { class: 'lock-title' }, titleNodes(title || root)),
+        h('div', { class: 'lock-facts' },
+          h('span', { class: 'lock-count' }, h('b', { text: String(count) }), ` card${count === 1 ? '' : 's'}`),
+          h('span', { class: 'lock-sub', text: `${pins} pinned target${pins === 1 ? '' : 's'}` }),
+          since ? h('span', { class: 'lock-sub', text: `locked ${dateOf(since)}` }) : null,
+          sealStamp(seal, broken)),
+        note ? h('p', { class: 'lock-note-text', text: note }) : null));
+  }
+
+  /**
+   * The two-step dialog every Lock action shares. `body(note)` builds the route's request; the
+   * plan is fetched on open, again on "Review again" after the note changed, and replaced by the
+   * renewed plan a stale confirmation answers. The note field and the typed word are never cleared
+   * by a refusal. Resolves with the committed Lock, or `null` on Cancel (nothing is sent).
+   */
+  function lockDialog({ action, path, heading, verb, body, note: initialNote, noteField, view }) {
+    return new Promise((resolve) => {
+      let plan = null;
+      let busy = false;
+      let closed = false;
+      const summary = h('div', { class: 'lock-plan' }, h('p', { class: 'hint', text: 'Reading the plan…' }));
+      const note = noteField ? h('textarea', {
+        class: 'lock-note', rows: '3', spellcheck: 'false', 'aria-label': 'Lock note',
+        placeholder: 'Why this tree is frozen (optional, at most 500 characters)',
+      }) : null;
+      if (note) note.value = initialNote || '';
+      const counter = h('span', { class: 'lock-counter' });
+      const review = h('button', { class: 'btn', type: 'button', text: 'Review again', hidden: true });
+      const input = h('input', { autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Confirmation' });
+      const ok = h('button', { class: 'btn primary' + (action === 'unlock' ? ' danger-fill' : ''), type: 'button', disabled: true, text: verb });
+      const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
+      const msg = h('span', { class: 'msg' });
+      const setMsg = (text, kind) => { msg.textContent = text || ''; msg.className = 'msg' + (kind ? ' ' + kind : ''); };
+      const dialog = h('div', { class: 'sheet-dlg narrow lock-dlg', role: 'dialog', 'aria-label': heading },
+        h('div', { class: 'dlg-head' }, h('h3', { text: heading })),
+        h('div', { class: 'confirm-body lock-body' },
+          summary,
+          note ? h('label', { class: 'lock-note-field' },
+            h('span', { class: 'lock-note-label' }, h('span', { text: action === 'note' ? 'New note' : 'Note' }), counter),
+            note) : null,
+          h('div', { class: 'lock-confirm' },
+            h('p', {}, 'Type ', h('code', { text: action }), ` to ${verb.toLowerCase()}:`),
+            input),
+        ),
+        h('div', { class: 'dlg-foot' }, msg, review, cancel, ok),
+      );
+      const close = openOverlay(dialog);
+      const noteValue = () => (note ? note.value : null);
+      const sync = () => {
+        if (closed) return;
+        const checked = ZtLock.noteCheck(noteValue());
+        if (note) {
+          counter.textContent = `${checked.count} / ${ZtLock.NOTE_LIMIT}`;
+          counter.classList.toggle('over', !checked.ok);
+        }
+        const fresh = ZtLock.planCurrent(plan, action, noteValue());
+        dialog.classList.toggle('stale', !!plan && !fresh);
+        review.hidden = !plan || fresh || !checked.ok;
+        ok.disabled = busy || !fresh || input.value.trim() !== action;
+      };
+      const show = (answer) => {
+        plan = answer.plan;
+        // replaceChildren would print a folded-away `null` as text, so empty folds are dropped.
+        summary.replaceChildren(...view(plan, answer.lines || []).filter(Boolean));
+      };
+      const fetchPlan = async () => {
+        const checked = ZtLock.noteCheck(noteValue());
+        if (!checked.ok) { setMsg(checked.error, 'err'); sync(); return; }
+        busy = true;
+        sync();
+        try {
+          show(await api(path, body(noteValue())));
+          setMsg('');
+        } catch (error) {
+          setMsg(error.message, 'err');
+        } finally { busy = false; sync(); }
+      };
+      const finish = (lock) => { closed = true; close(); resolve(lock); };
+      ok.addEventListener('click', async () => {
+        if (ok.disabled) return;
+        busy = true;
+        sync();
+        try {
+          const answer = await api(path, { ...body(noteValue()), confirm: action, plan_hash: plan.plan_hash });
+          if (ZtLock.answer(answer) === 'applied') { finish(answer.lock); return; }
+          // The tree, the Lock or the archive moved since this plan: nothing was written. The
+          // renewed plan replaces the old one; the note stays as typed and the owner reviews again.
+          show(answer);
+          input.value = '';
+          setMsg('The plan changed since you read it, so nothing was written. Review the new plan and confirm again.', 'err');
+        } catch (error) {
+          setMsg(error.message, 'err');
+        } finally { busy = false; sync(); }
+      });
+      cancel.addEventListener('click', () => finish(null));
+      review.addEventListener('click', () => fetchPlan());
+      input.addEventListener('input', sync);
+      if (note) {
+        note.addEventListener('input', () => {
+          sync();
+          if (plan && !ZtLock.planCurrent(plan, action, noteValue())) {
+            const checked = ZtLock.noteCheck(noteValue());
+            setMsg(checked.ok ? 'The note changed: review the plan again before you confirm.' : checked.error, 'err');
+          } else setMsg('');
+        });
+      }
+      dialog.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') { event.preventDefault(); cancel.click(); }
+        if (event.key === 'Enter' && event.target === input) { event.preventDefault(); ok.click(); }
+      });
+      sync();
+      fetchPlan().then(() => { if (!closed) (note || input).focus(); });
+    });
+  }
+
+  /** The Lock plan: the tree card, then what the promise covers, folded by degree of interest. */
+  function lockPlanView(plan) {
+    const regular = plan.regular_count;
+    return [
+      lockCardView({
+        root: plan.root, title: plan.title, kind: plan.zone, workspace: plan.workspace,
+        count: plan.member_count, pins: plan.pin_count, seal: plan.seal,
+      }),
+      h('p', { class: 'lock-what', text: `Freezes the root and ${regular} regular card${regular === 1 ? '' : 's'}: no edit, move, insert, delete or new card in this tree, for you as for agents, until you unlock it here. Its pinned targets keep their addresses.` }),
+      digestFold(plan.seal),
+      lockFold('Pinned targets', pinRows(ZtLock.pinGroups(plan))),
+      plan.warnings.length ? h('details', { class: 'lock-fold warn' },
+        h('summary', { text: `Already broken links · ${plan.warnings.length} — they create no pin; if one resolves later, unlock and lock again to include it` }),
+        h('ul', { class: 'lock-list' }, plan.warnings.map((warning) => h('li', {},
+          h('span', { class: 'a', text: warning.source }), h('span', { class: 'arrow', text: '→' }),
+          h('span', { class: 'b broken', text: `${warning.target} (missing)` }))))) : null,
+      lockFold('Members', plan.members.map((member) => h('li', {},
+        h('span', { class: 'a', text: member.address }),
+        h('span', { class: 'b fp', title: member.fingerprint, text: String(member.fingerprint).slice(0, 12) })))),
+    ];
+  }
+
+  /** An existing Lock's plan (unlock or note): the same tree card, built from the Lock's facts. */
+  function existingLockView(plan, extra) {
+    const card = state.byAddress.get(plan.root);
+    const faults = ZtLock.panel(state.locks).faultsOf[plan.lock_id] || [];
+    return [
+      lockCardView({
+        root: plan.root, title: card ? card.title : plan.root, kind: card ? card.kind : (/^\d+\//.test(plan.root) ? 'topic' : 'literature'),
+        workspace: plan.workspace, count: plan.member_count, pins: plan.pin_count, seal: plan.seal, broken: faults.length > 0,
+        note: plan.previous_note, since: plan.locked_at,
+      }),
+      ...extra,
+      digestFold(plan.seal),
+    ];
+  }
+
+  async function afterLock(message) {
+    toast(message);
+    await loadLocks().catch(fail);
+    if (state.card) renderReader();
+  }
+
+  /** Lock tree: review the whole tree's plan, then freeze it. */
+  async function lockTree(rootAddress) {
+    const lock = await lockDialog({
+      action: 'lock', path: 'lock', verb: 'Lock tree', noteField: true, note: '',
+      heading: `Lock tree ${rootAddress}`,
+      body: (note) => ({ root: rootAddress, note: ZtLock.noteCheck(note).note }),
+      view: (plan) => lockPlanView(plan),
+    });
+    if (lock) await afterLock(`locked ${lock.root} · seal ${ZtLock.sealShort(lock.seal)}`);
+    return lock;
+  }
+
+  /** Unlock tree: review exactly this Lock's release, then end it. */
+  async function unlockTree(lock) {
+    const done = await lockDialog({
+      action: 'unlock', path: 'unlock', verb: 'Unlock tree',
+      heading: `Unlock tree ${lock.root}`,
+      body: () => ({ lock_id: lock.lock_id, tree: lock.root }),
+      view: (plan) => existingLockView(plan, [
+        h('p', { class: 'lock-what', text: `Ends lock ${plan.lock_id} only. Its ${plan.member_count} cards can be edited, moved and deleted again, the tree takes new cards, and its ${plan.pin_count} pinned target${plan.pin_count === 1 ? '' : 's'} are released unless another Lock pins them. The history stays in the archive.` }),
+      ]),
+    });
+    if (done) await afterLock(`unlocked ${done.root}`);
+    return done;
+  }
+
+  /** Edit lock note: a note change has its own confirmation and never reseals the tree. */
+  async function editLockNote(lock) {
+    const done = await lockDialog({
+      action: 'note', path: 'lock/note', verb: 'Change note', noteField: true, note: lock.note || '',
+      heading: `Lock note on ${lock.root}`,
+      body: (note) => ({ lock_id: lock.lock_id, tree: lock.root, note: ZtLock.noteCheck(note).note }),
+      view: (plan) => existingLockView(plan, [
+        h('p', { class: 'lock-what', text: 'Changes only the note. The members, the pins and the seal stay as they are.' }),
+      ]),
+    });
+    if (done) await afterLock(`note changed on ${done.root}`);
+    return done;
+  }
+
+  /**
+   * The lock panel: every active Lock as a card with its seal, faults and actions, and the ended
+   * Locks folded below. Opening it is an integrity check point (the server records new faults).
+   * A fault is shown beside its Lock; it hides nothing and never updates the shown seal.
+   */
+  async function lockPanel(focusRoot) {
+    const body = h('div', { class: 'confirm-body lock-panel-body' }, h('p', { class: 'hint', text: 'Reading the locks…' }));
+    const status = h('span', { class: 'lock-status' });
+    let close = null;
+    close = openOverlay(h('div', { class: 'sheet-dlg lock-panel', role: 'dialog', 'aria-label': 'Tree locks' },
+      h('div', { class: 'dlg-head' }, h('h3', { text: 'Tree locks' }), status),
+      body,
+      h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), h('button', { class: 'btn primary', text: 'Close', onclick: () => close() })),
+    ));
+    const act = (fn) => () => fn().then((done) => { if (done) paint(); }).catch(fail);
+    const faultRows = (faults) => faults.map((fault) => h('li', {},
+      h('span', { class: 'a', text: fault.kind }),
+      h('span', { class: 'b', text: [fault.card, fault.detail].filter(Boolean).join(' · ') })));
+    const entry = (lock, faults) => {
+      const card = state.byAddress.get(lock.root);
+      return h('section', { class: 'lock-entry' + (faults.length ? ' faulted' : '') + (lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
+        lockCardView({
+          root: lock.root, title: card ? card.title : `${lock.root} (root missing)`, kind: card ? card.kind : (/^\d+\//.test(lock.root) ? 'topic' : 'literature'),
+          workspace: lock.workspace, count: lock.member_count, pins: ZtLock.pinGroups(lock).length,
+          seal: lock.seal, broken: faults.length > 0, note: lock.note, since: lock.locked_at,
+        }),
+        faults.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(faults)) : null,
+        h('div', { class: 'lock-entry-actions' },
+          card ? h('button', { class: 'btn', text: 'Open tree', onclick: () => { close(); go(lock.root); } }) : null,
+          h('button', { class: 'btn', text: 'Edit note…', onclick: act(() => editLockNote(lock)) }),
+          h('button', { class: 'btn danger', text: 'Unlock tree…', onclick: act(() => unlockTree(lock)) })),
+        digestFold(lock.seal),
+        lockFold('Pinned targets', pinRows(ZtLock.pinGroups(lock))),
+        lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) }))),
+      );
+    };
+    const ended = (lock) => h('li', { class: 'lock-ended' },
+      h('span', { class: 'a', text: `${lock.root} · lock ${lock.lock_id}` }),
+      h('span', { class: 'b', text: `seal ${ZtLock.sealShort(lock.seal)} · ${dateOf(lock.locked_at)} → ${dateOf(lock.unlocked_at)}` }),
+      lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) }))));
+    async function paint() {
+      try {
+        await loadLocks();
+      } catch (error) {
+        body.replaceChildren(h('p', { class: 'msg err', text: error.message }));
+        return;
+      }
+      const read = ZtLock.panel(state.locks);
+      status.className = 'lock-status' + (read.ok ? ' ok' : ' bad');
+      status.textContent = read.ok ? 'all intact' : ZtLock.faultLine(state.locks);
+      body.replaceChildren(...[
+        read.loose.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(read.loose)) : null,
+        read.active.length
+          ? read.active.map((lock) => entry(lock, read.faultsOf[lock.lock_id] || []))
+          : h('p', { class: 'hint', text: 'No tree is locked. Open a Topic or Literature root and choose Lock tree to freeze it.' }),
+        read.ended.length ? h('details', { class: 'lock-fold lock-history' },
+          h('summary', { text: `Ended locks · ${read.ended.length}` }),
+          h('ul', { class: 'lock-list' }, read.ended.map(ended))) : null,
+      ].flat().filter(Boolean));
+      const focus = body.querySelector('.lock-entry.focus');
+      if (focus) focus.scrollIntoView({ block: 'nearest' });
+    }
+    await paint();
+  }
+
+  /** The tree root's lock line in the reader: its state in words, and the one action that fits it. */
+  function lockLine(card) {
+    if (!state.locks) {
+      return h('div', { class: 'lock-line' },
+        actionButton('Lock tree…', null, () => lockTree(card.address), { cls: 'lock-btn', title: 'Review this whole tree, then freeze it' }));
+    }
+    const lock = ZtLock.activeLock(state.locks, card.address);
+    if (!lock) {
+      return h('div', { class: 'lock-line' },
+        h('span', { class: 'lock-state', text: 'Unlocked tree' }),
+        actionButton('Lock tree…', null, () => lockTree(card.address), { cls: 'lock-btn', title: 'Review this whole tree, then freeze it' }));
+    }
+    const faults = ZtLock.panel(state.locks).faultsOf[lock.lock_id] || [];
+    return h('div', { class: 'lock-line locked' },
+      h('span', { class: 'lock-state', text: `Locked since ${dateOf(lock.locked_at)}` }),
+      sealStamp(lock.seal, faults.length > 0),
+      actionButton('Lock panel', null, () => lockPanel(card.address), { cls: 'lock-btn' }),
+      actionButton('Unlock tree…', null, () => unlockTree(lock), { cls: 'lock-btn', danger: true }));
+  }
+
   function showHelp() {
     const rows = COMMANDS.filter(([syntax, , scope]) => offered(syntax, scope));
     const on = (feature) => ZtFeatures.allows(state.features, feature);
@@ -5096,7 +5461,15 @@
           const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '');
           if (address !== undefined) finish(address);
         } catch (error) {
+          // The draft stays in the desk: a refused Save (a Tree Lock refusal included) only says why.
           setMsg(error.message, 'err');
+          if (error.refusal) {
+            msg.append(' ', h('button', {
+              class: 'lock-open', type: 'button', text: 'Lock panel',
+              title: 'Open the lock panel over this desk; your text stays here',
+              onclick: () => lockPanel().catch(fail),
+            }));
+          }
         } finally { saveBtn.disabled = hub ? !(hubCheck && hubCheck.ok) : false; }
       };
       const doCancel = () => {
@@ -5762,6 +6135,8 @@
     }
     $('#quit').addEventListener('click', () => quit().catch(fail));
     $('#broken-pill').addEventListener('click', () => showBroken().catch(fail));
+    $('#lock-pill').addEventListener('click', () => lockPanel().catch(fail));
+    $('#locks-open').addEventListener('click', () => lockPanel().catch(fail));
     $('#search-open').addEventListener('click', () => finder.open());
     nav.install();
     for (const button of document.querySelectorAll('[data-action]')) {
@@ -5773,12 +6148,16 @@
     setInterval(watchForChanges, 4000);
     setInterval(heartbeat, 2000);
     try {
-      const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
+      // The Locks come with the first read, so a locked root opens with its state; a failed lock
+      // read never keeps the page from booting (the panel says why when it is opened).
+      const [overview, graph, kept, locks] = await Promise.all([api('overview'), api('graph'), api('spreads'), api('locks').catch(() => null)]);
       state.overview = overview;
       state.fingerprint = overview.fingerprint;
       applyFeatures(overview);
       setNodes(graph.nodes);
       spreads.take(kept);
+      state.locks = locks;
+      paintLocks();
       route();
     } catch (error) {
       fail(error);

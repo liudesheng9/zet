@@ -1,0 +1,166 @@
+/* zt gui lock — pure, DOM-free rules for the Tree Lock panel and its dialogs (S01, #124).
+ *
+ * The owner locks a whole tree, edits a Lock's note, and unlocks it only through the GUI routes
+ * `POST /api/lock`, `POST /api/lock/note` and `POST /api/unlock`: each answers a plan first and
+ * commits only with the plan's confirmation word and `plan_hash`. `GET /api/locks` answers every
+ * Lock with its members, pins, history and the current integrity result. These rules decide what
+ * the page shows from those answers and when a dialog's plan is still the one the owner reviews.
+ * The server recomputes every fact; nothing here is authoritative. `draft.js`, `ask.js` and
+ * `features.js` export the same way, so this module runs in the page and under Node.
+ */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.ZtLock = api;
+})(typeof self !== 'undefined' ? self : this, () => {
+  'use strict';
+
+  /** The longest note a Lock keeps, in Unicode scalar values (the server's own bound). */
+  const NOTE_LIMIT = 500;
+
+  /** The seal as the page shows it: the first 12 characters of the full lowercase digest. */
+  function sealShort(seal) {
+    return String(seal || '').slice(0, 12);
+  }
+
+  /**
+   * A note as the owner typed it, checked the way the server checks it: at most 500 Unicode scalar
+   * values (counted by code point, so one emoji is one), no NUL character, and a blank note means
+   * no note (`null`). `count` is what the counter under the field shows.
+   */
+  function noteCheck(raw) {
+    const text = raw == null ? '' : String(raw);
+    const count = Array.from(text).length;
+    if (text.includes('\u0000')) return { ok: false, note: null, count, error: 'a Lock note cannot contain a NUL character' };
+    if (count > NOTE_LIMIT) return { ok: false, note: null, count, error: `a Lock note is at most ${NOTE_LIMIT} characters` };
+    return { ok: true, note: text.trim() ? text : null, count, error: null };
+  }
+
+  /**
+   * Whether the plan in a dialog is still the one the owner may confirm for the note now in the
+   * field. A Lock or note plan binds its note, so any change to the note needs a new plan first;
+   * an unlock plan carries no note of its own, so only a missing plan is stale.
+   */
+  function planCurrent(plan, action, rawNote) {
+    if (!plan || !plan.plan_hash) return false;
+    if (action === 'unlock') return true;
+    const checked = noteCheck(rawNote);
+    if (!checked.ok) return false;
+    return (plan.note == null ? null : plan.note) === checked.note;
+  }
+
+  /**
+   * What one answer of a Lock route means for its dialog: `applied` (committed), `changed` (the
+   * hash was stale; the answer holds the renewed plan and nothing was written) or `plan` (a plan to
+   * review).
+   */
+  function answer(response) {
+    if (response && response.applied === true) return 'applied';
+    if (response && response.plan_changed === true) return 'changed';
+    return 'plan';
+  }
+
+  const CODES = {
+    locked: 'locked card',
+    locked_tree: 'locked tree',
+    pinned: 'pinned target',
+    index_integrity: 'link index mismatch',
+  };
+
+  /**
+   * The line a refused write shows: the refusal code first, so the page names why, then the
+   * server's own message, which names the Locked tree, the Lock and the pinning source Cards.
+   * `null` when the error is not a Lock refusal.
+   */
+  function refusalText(refusal, message) {
+    if (!refusal || !refusal.code) return null;
+    const said = message || refusal.error || '';
+    return `${refusal.code} (${CODES[refusal.code] || 'lock refusal'}): ${said}`;
+  }
+
+  /** The tree a refusal names, so the page can open its lock panel; `null` when none. */
+  function refusalTree(refusal) {
+    if (!refusal) return null;
+    if (refusal.locked_tree) return refusal.locked_tree;
+    const first = (refusal.pinned_by || [])[0];
+    return first ? first.tree : null;
+  }
+
+  /** The active Lock of one Tree root in a `GET /api/locks` answer, else `null`. */
+  function activeLock(exported, rootAddress) {
+    const locks = (exported && exported.locks) || [];
+    return locks.find((lock) => lock.root === rootAddress && !lock.unlocked_at) || null;
+  }
+
+  /**
+   * The panel's reading of a `GET /api/locks` answer: active Locks and ended ones, each in
+   * creation order (Lock id); the integrity faults of each Lock; and the faults that belong to no
+   * listed Lock (a schema fault). A fault never hides a Lock or a Card; it is shown beside it.
+   */
+  function panel(exported) {
+    const locks = ((exported && exported.locks) || []).slice().sort((a, b) => a.lock_id - b.lock_id);
+    const integrity = (exported && exported.integrity) || { ok: true, faults: [] };
+    const faults = integrity.faults || [];
+    const ids = new Set(locks.map((lock) => lock.lock_id));
+    const faultsOf = {};
+    const loose = [];
+    for (const fault of faults) {
+      if (fault.lock_id != null && ids.has(fault.lock_id)) (faultsOf[fault.lock_id] ||= []).push(fault);
+      else loose.push(fault);
+    }
+    return {
+      ok: integrity.ok !== false && !faults.length,
+      active: locks.filter((lock) => !lock.unlocked_at),
+      ended: locks.filter((lock) => lock.unlocked_at),
+      faultsOf,
+      loose,
+      faultCount: faults.length,
+    };
+  }
+
+  /** The one page-level line for integrity faults, or `null` when every Lock is intact. */
+  function faultLine(exported) {
+    const read = panel(exported);
+    if (!read.faultCount) return null;
+    return `${read.faultCount} lock fault${read.faultCount === 1 ? '' : 's'}`;
+  }
+
+  /**
+   * A Lock's pins grouped by distinct target, each with the locked source Cards that link it. The
+   * stored pin rows name source rows; the Lock's own members name their addresses.
+   */
+  function pinGroups(lock) {
+    const addressOf = new Map(((lock && lock.members) || []).map((member) => [member.row_id, member.address]));
+    const groups = new Map();
+    for (const pin of (lock && lock.pins) || []) {
+      const group = groups.get(pin.target) || { target: pin.target, target_row: pin.target_row, sources: [] };
+      // A plan's pin names its sources; a stored pin row names one source row.
+      const sources = Array.isArray(pin.sources) ? pin.sources : [addressOf.get(pin.source_row) || `row ${pin.source_row}`];
+      for (const item of sources) if (!group.sources.includes(item)) group.sources.push(item);
+      groups.set(pin.target, group);
+    }
+    return [...groups.values()];
+  }
+
+  /** One history line for a Lock event: its time, its action and the facts that matter. */
+  function eventLine(event) {
+    const detail = (event && event.detail && typeof event.detail === 'object') ? event.detail : {};
+    const at = String((event && event.at) || '').replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    switch (event && event.action) {
+      case 'lock':
+        return `${at} · locked ${detail.member_count ?? '?'} cards · seal ${sealShort(detail.seal)}`;
+      case 'unlock':
+        return `${at} · unlocked · released ${detail.member_count ?? '?'} cards and ${detail.pin_count ?? '?'} pinned targets`;
+      case 'note':
+        return `${at} · note: ${detail.previous_note ?? 'none'} → ${detail.note ?? 'none'}`;
+      case 'reseal':
+        return `${at} · resealed · seal ${sealShort(detail.seal)}`;
+      case 'integrity-fault':
+        return `${at} · integrity fault · ${detail.fault || ''}`;
+      default:
+        return `${at} · ${(event && event.action) || 'event'}`;
+    }
+  }
+
+  return { NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine };
+});

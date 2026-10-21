@@ -13,6 +13,7 @@
 <script src="/draft.js" defer></script>
 <script src="/ask.js" defer></script>
 <script src="/features.js" defer></script>
+<script src="/lock.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
@@ -39,6 +40,7 @@
     </div>
     <div class="topbar-actions">
       <button class="pill" id="broken-pill" hidden title="Broken links (lsbk)"></button>
+      <button class="pill" id="lock-pill" hidden title="Tree Lock integrity faults: open the lock panel"></button>
       <span class="stats" id="stats"></span>
       <button class="icon-btn" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle theme">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
@@ -69,6 +71,7 @@
       </section>
     </div>
     <footer class="rail-footer">
+      <button class="mini-btn" id="locks-open" title="Tree locks: the frozen trees, their seals and history">Locks</button>
       <span id="archive-root" class="archive-root"></span>
     </footer>
   </aside>

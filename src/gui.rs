@@ -37,6 +37,7 @@ const APP_JS: &str = include_str!("gui/app.js");
 const DRAFT_JS: &str = include_str!("gui/draft.js");
 const ASK_JS: &str = include_str!("gui/ask.js");
 const FEATURES_JS: &str = include_str!("gui/features.js");
+const LOCK_JS: &str = include_str!("gui/lock.js");
 const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
@@ -834,6 +835,15 @@ impl App {
                     200,
                     "text/javascript; charset=utf-8",
                     FEATURES_JS.to_string(),
+                );
+                return;
+            }
+            (Method::Get, "/lock.js") => {
+                respond_text(
+                    request,
+                    200,
+                    "text/javascript; charset=utf-8",
+                    LOCK_JS.to_string(),
                 );
                 return;
             }
@@ -2666,6 +2676,213 @@ mod tests {
         page_module_js("features.js", FEATURES_JS, "ZtFeatures", expression)
     }
 
+    /// S01 (#124): the Tree Lock page rules — the seal's short form, the note bound, when a dialog's
+    /// plan is still current, what a route's answer means, how a refusal reads, and the panel's
+    /// grouping — are the page's own DOM-free code (`src/gui/lock.js`), run here rather than described.
+    fn lock_js(expression: &str) -> Option<Value> {
+        page_module_js("lock.js", LOCK_JS, "ZtLock", expression)
+    }
+
+    #[test]
+    fn the_lock_page_shows_twelve_seal_characters_and_checks_the_note_like_the_server() {
+        let Some(value) = lock_js(
+            "(() => {
+               const seal = 'abcdef0123456789'.repeat(4);
+               return {
+                 short: ZtLock.sealShort(seal),
+                 none: ZtLock.sealShort(null),
+                 blank: ZtLock.noteCheck('   '),
+                 kept: ZtLock.noteCheck(' reviewed 2026-10-21 '),
+                 limit: ZtLock.noteCheck('x'.repeat(500)),
+                 over: ZtLock.noteCheck('x'.repeat(501)),
+                 emoji: ZtLock.noteCheck('\\u{1F512}'.repeat(500)),
+                 nul: ZtLock.noteCheck('a\\u0000b'),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["short"], "abcdef012345");
+        assert_eq!(value["none"], "");
+        assert_eq!(value["blank"]["ok"], true);
+        assert_eq!(value["blank"]["note"], Value::Null, "a blank note is no note");
+        assert_eq!(value["kept"]["note"], " reviewed 2026-10-21 ", "an accepted note is kept as typed");
+        assert_eq!(value["limit"]["ok"], true);
+        assert_eq!(value["over"]["ok"], false);
+        assert_eq!(value["over"]["count"], 501);
+        assert_eq!(value["emoji"]["ok"], true, "a note is counted in Unicode scalar values");
+        assert_eq!(value["emoji"]["count"], 500);
+        assert_eq!(value["nul"]["ok"], false);
+    }
+
+    #[test]
+    fn a_lock_dialog_confirms_only_the_plan_for_the_note_in_its_field() {
+        let Some(value) = lock_js(
+            "(() => {
+               const plan = { plan_hash: 'h', note: 'checked' };
+               const bare = { plan_hash: 'h', note: null };
+               return {
+                 same: ZtLock.planCurrent(plan, 'lock', 'checked'),
+                 edited: ZtLock.planCurrent(plan, 'lock', 'checked twice'),
+                 cleared: ZtLock.planCurrent(plan, 'note', ''),
+                 blank: ZtLock.planCurrent(bare, 'lock', '   '),
+                 missing: ZtLock.planCurrent(null, 'lock', ''),
+                 unhashed: ZtLock.planCurrent({ note: null }, 'unlock', null),
+                 unlock: ZtLock.planCurrent({ plan_hash: 'u' }, 'unlock', null),
+                 over: ZtLock.planCurrent({ plan_hash: 'h', note: null }, 'lock', 'x'.repeat(501)),
+                 applied: ZtLock.answer({ applied: true, lock: {} }),
+                 changed: ZtLock.answer({ applied: false, plan_changed: true, plan: {} }),
+                 planned: ZtLock.answer({ applied: false, confirm: 'lock', plan: {} }),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["same"], true);
+        assert_eq!(value["edited"], false, "a changed note needs a renewed plan");
+        assert_eq!(value["cleared"], false);
+        assert_eq!(value["blank"], true, "a blank field is the plan's null note");
+        assert_eq!(value["missing"], false);
+        assert_eq!(value["unhashed"], false, "a plan without its hash is never confirmable");
+        assert_eq!(value["unlock"], true);
+        assert_eq!(value["over"], false);
+        assert_eq!(value["applied"], "applied");
+        assert_eq!(value["changed"], "changed");
+        assert_eq!(value["planned"], "plan");
+    }
+
+    #[test]
+    fn a_lock_refusal_reads_with_its_code_and_names_its_tree() {
+        let Some(value) = lock_js(
+            "{
+               locked: ZtLock.refusalText({ code: 'locked', error: 'card `3/1` is in locked tree `3/0` (lock 2); unlock the tree in the GUI first', locked_tree: '3/0', lock_id: 2, pinned_by: [] }),
+               given: ZtLock.refusalText({ code: 'locked_tree', locked_tree: '3/0' }, 'outer message'),
+               plain: ZtLock.refusalText(null, 'missing `text` field'),
+               tree: ZtLock.refusalTree({ code: 'locked', locked_tree: '3/0' }),
+               pinned: ZtLock.refusalTree({ code: 'pinned', locked_tree: null, pinned_by: [{ tree: 'Smith2024', lock_id: 4, sources: ['Smith2024/1'] }] }),
+               none: ZtLock.refusalTree(null),
+             }",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        let locked = value["locked"].as_str().expect("refusal text");
+        assert!(locked.starts_with("locked (locked card): card `3/1`"), "{locked}");
+        assert!(locked.contains("unlock the tree in the GUI first"), "{locked}");
+        assert_eq!(value["given"], "locked_tree (locked tree): outer message");
+        assert_eq!(value["plain"], Value::Null, "an ordinary error is not dressed as a refusal");
+        assert_eq!(value["tree"], "3/0");
+        assert_eq!(value["pinned"], "Smith2024");
+        assert_eq!(value["none"], Value::Null);
+    }
+
+    #[test]
+    fn the_lock_panel_shows_faults_beside_their_lock_without_hiding_any() {
+        let Some(value) = lock_js(
+            "(() => {
+               const exported = {
+                 version: 1, schema_version: '1',
+                 locks: [
+                   { lock_id: 3, root: '3/0', seal: 'c'.repeat(64), unlocked_at: null,
+                     members: [{ address: '3/0', row_id: 30 }, { address: '3/1', row_id: 31 }],
+                     pins: [{ target: '5/1', target_row: 51, source_row: 30 }, { target: '5/1', target_row: 51, source_row: 31 }, { target: 'Smith2024', target_row: 70, source_row: 31 }],
+                     events: [] },
+                   { lock_id: 1, root: '3/0', seal: 'a'.repeat(64), unlocked_at: '2026-10-21T10:00:00.000Z', members: [], pins: [], events: [] },
+                   { lock_id: 2, root: 'Smith2024', seal: 'b'.repeat(64), unlocked_at: null, members: [], pins: [], events: [] },
+                 ],
+                 integrity: { ok: false, faults: [
+                   { id: 'lock-3:changed:3/1', lock_id: 3, kind: 'changed', card: '3/1', detail: 'fingerprint differs' },
+                   { id: 'lock-schema:x', lock_id: null, kind: 'schema', card: 'tree_lock', detail: '' },
+                 ] },
+               };
+               const read = ZtLock.panel(exported);
+               return {
+                 active: read.active.map((lock) => lock.lock_id),
+                 ended: read.ended.map((lock) => lock.lock_id),
+                 faultsOf3: (read.faultsOf[3] || []).map((fault) => fault.card),
+                 faultsOf2: read.faultsOf[2] || [],
+                 loose: read.loose.map((fault) => fault.kind),
+                 ok: read.ok,
+                 line: ZtLock.faultLine(exported),
+                 healthy: ZtLock.faultLine({ locks: [], integrity: { ok: true, faults: [] } }),
+                 empty: ZtLock.panel(null),
+                 active3: ZtLock.activeLock(exported, '3/0').lock_id,
+                 noneActive: ZtLock.activeLock(exported, '9/0'),
+                 pins: ZtLock.pinGroups(exported.locks[0]),
+                 planPins: ZtLock.pinGroups({ pins: [{ target: '5/1', target_row: 51, sources: ['3/0', '3/1'] }] }),
+                 lockEvent: ZtLock.eventLine({ action: 'lock', at: '2026-10-21T09:00:00.123Z', detail: { member_count: 2, seal: 'c'.repeat(64) } }),
+                 noteEvent: ZtLock.eventLine({ action: 'note', at: '2026-10-21T09:05:00Z', detail: { previous_note: null, note: 'final' } }),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["active"], json!([2, 3]), "active Locks in creation order");
+        assert_eq!(value["ended"], json!([1]), "an ended Lock stays in the history");
+        assert_eq!(value["faultsOf3"], json!(["3/1"]));
+        assert_eq!(value["faultsOf2"], json!([]));
+        assert_eq!(value["loose"], json!(["schema"]), "a fault of no listed Lock is still shown");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["line"], "2 lock faults");
+        assert_eq!(value["healthy"], Value::Null);
+        assert_eq!(value["empty"]["ok"], true);
+        assert_eq!(value["active3"], 3, "the active Lock, not the ended one of the same root");
+        assert_eq!(value["noneActive"], Value::Null);
+        assert_eq!(
+            value["pins"],
+            json!([
+                {"target": "5/1", "target_row": 51, "sources": ["3/0", "3/1"]},
+                {"target": "Smith2024", "target_row": 70, "sources": ["3/1"]}
+            ]),
+            "pins are counted by distinct target, with every locked source"
+        );
+        assert_eq!(value["planPins"], json!([{"target": "5/1", "target_row": 51, "sources": ["3/0", "3/1"]}]));
+        assert_eq!(value["lockEvent"], "2026-10-21 09:00:00Z · locked 2 cards · seal cccccccccccc");
+        assert_eq!(value["noteEvent"], "2026-10-21 09:05:00Z · note: none → final");
+    }
+
+    /// S01 (#124): the page's Lock dialogs send nothing on Cancel, confirm only with the plan's own
+    /// word and hash, keep the note through a renewed plan, and a refused Save keeps the draft.
+    #[test]
+    fn the_lock_dialogs_confirm_with_the_plan_hash_and_cancel_writes_nothing() {
+        let lock_js = INDEX_HTML.find("<script src=\"/lock.js\" defer></script>").expect("lock.js");
+        let app = INDEX_HTML.find("<script src=\"/app.js\" defer></script>").expect("app.js");
+        assert!(lock_js < app, "the rules load before the page");
+        assert!(GUI_RS.contains("(Method::Get, \"/lock.js\") => {"));
+        let dialog = app_function("lockDialog");
+        assert!(
+            dialog.contains("api(path, { ...body(noteValue()), confirm: action, plan_hash: plan.plan_hash })"),
+            "a confirmation carries the word and the reviewed plan's hash: {dialog}"
+        );
+        assert!(dialog.contains("cancel.addEventListener('click', () => finish(null));"), "Cancel only closes");
+        assert!(dialog.contains("ok.disabled = busy || !fresh || input.value.trim() !== action;"));
+        assert!(dialog.contains("const fresh = ZtLock.planCurrent(plan, action, noteValue());"));
+        assert_eq!(dialog.matches("note.value =").count(), 1, "only the opening sets the note");
+        assert_eq!(dialog.matches("api(").count(), 2, "one plan read and one confirmation");
+        let changed = dialog.find("show(answer);").expect("a renewed plan replaces the old one");
+        assert!(changed > dialog.find("ZtLock.answer(answer) === 'applied'").expect("applied check"));
+        // Every Lock route is reached only through the dialog; nothing else confirms a Lock.
+        assert_eq!(APP_JS.matches("plan_hash: ").count(), 1, "one place sends a plan hash");
+        assert!(APP_JS.contains("path: 'lock', verb: 'Lock tree'"));
+        assert!(APP_JS.contains("path: 'unlock', verb: 'Unlock tree'"));
+        assert!(APP_JS.contains("path: 'lock/note', verb: 'Change note'"));
+        assert!(APP_JS.contains("body: () => ({ lock_id: lock.lock_id, tree: lock.root })"), "an unlock names its exact Lock");
+        // A refusal keeps its facts on the error, and the writing desk keeps the draft.
+        let api = app_function("api");
+        assert!(api.contains("if (data.refusal) error.refusal = data.refusal;"), "{api}");
+        assert!(api.contains("ZtLock.refusalText(data.refusal, data.error)"));
+        let editor = app_function("openEditor");
+        let refused = editor.find("if (error.refusal) {").expect("refusal branch");
+        assert!(editor[refused..].contains("lockPanel()"));
+        let catch = &editor[..refused];
+        assert!(catch.rfind("setMsg(error.message, 'err');").is_some());
+        // The panel is an integrity check point: it reads the Locks every time it opens.
+        assert!(app_function("lockPanel").contains("await loadLocks();"));
+    }
+
     /// The text of one top-level `function <name>` of `app.js`, up to its closing brace (the
     /// first line that starts with two spaces and `}`), so a page test can say where in that
     /// function a guard stands.
@@ -2841,6 +3058,7 @@ mod tests {
             ("draft.js", DRAFT_JS),
             ("ask.js", ASK_JS),
             ("features.js", FEATURES_JS),
+            ("lock.js", LOCK_JS),
         ] {
             let file = dir.path().join(name);
             fs::write(&file, source).expect("write the script");

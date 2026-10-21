@@ -50,6 +50,7 @@ The service also answers a **question** (S15, #114, design §9.3-§9.5): the aut
 | | `src/gui/app.js` — the whole front end (state, routing, history, search tray, cabinet, desk, Map, Table, Constellation, reader, model board, theory board, study desk, dialogs, writing desk and its hub-draft mode, command bar, keys, heartbeat) |
 | | `src/gui/layout.js` — pure, DOM-free geometry (`ZtLayout`): outline, focus lens, Constellation rings, Table placements, threads, theory rows, study stations |
 | | `src/gui/draft.js` — pure, DOM-free writing-desk text rules (`ZtDraft`): the Reply draft skeleton, the relation-prefix swap, the destination Topic choice |
+| | `src/gui/lock.js` — pure, DOM-free Tree Lock page rules (`ZtLock`): the 12-character seal, the note bound, when a dialog's plan is current, refusal text, the lock panel's grouping |
 | | `src/gui/chart-frame.js` — the script inlined into every chart page: palette tokens, `[[address]]` links, TeX, height reports |
 | | `src/gui/doc.js` — the reading page's script: lazy KaTeX and centring a `#fig-…` target |
 | | `src/gui/app.css` — the whole look (index-card paper, light and dark themes) |
@@ -82,6 +83,7 @@ The service also answers a **question** (S15, #114, design §9.3-§9.5): the aut
 - `Theory board` / `Study desk` — the views of a Theory Card's units by dependency and of a unit's study order, station by station (`theoryBoard`, `study`; layout in `ZtLayout.theoryRows`, `studyStations`, `theoryRun`).
 - `Reading mode` — `learn`, `review`, or `lookup` (`READING` in `app.js`), kept in `localStorage` `zt-reading`.
 - `Writing desk` — the editor dialog: raw Markdown on the left, a server-rendered preview on the right (`openEditor`).
+- `Lock panel` / `Lock dialog` — the owner's Tree Lock controls (S01, #124; `lockPanel`, `lockDialog`, `lockTree`, `unlockTree`, `editLockNote`, `lockLine`): every Lock with its seal, faults and history, and the two-step plan-then-confirm dialog each Lock action shares.
 - `Relation kind` — what a Link says (CONTEXT.md); the page reads it from summary `kinds` and model `relations` and names it with `KINDS` in `app.js`.
 
 ## Architecture
@@ -169,7 +171,7 @@ Every request first passes `host_allowed`: the `Host` header must be exactly `12
 | Method and path | Answer | Headers |
 |---|---|---|
 | `GET /`, `GET /index.html` | `index.html` with `__ZT_TOKEN__` replaced by the token | `respond_text` policy (below) |
-| `GET /app.css`, `/app.js`, `/layout.js`, `/draft.js`, `/ask.js`, `/doc.js` | the embedded file | `respond_text` policy |
+| `GET /app.css`, `/app.js`, `/layout.js`, `/draft.js`, `/ask.js`, `/features.js`, `/lock.js`, `/doc.js` | the embedded file | `respond_text` policy |
 | `GET /vendor/katex/katex.min.js`, `/vendor/katex/katex.min.css` | embedded KaTeX | `Cache-Control: max-age=86400` |
 | `GET /vendor/katex/fonts/<name>` | one of the 20 embedded WOFF2 fonts (`font/woff2`), else 404 | `max-age=86400` |
 | `GET /artifact/<sha256>` | the artifact bytes from `artifact::read`, with its media type; 404 `artifact not in this archive` | `max-age=31536000, immutable`; CSP `sandbox; default-src 'none'; style-src 'unsafe-inline'` |
@@ -300,6 +302,24 @@ Exported as `window.ZtFeatures` or `module.exports`; served at `/features.js` an
 | `forKey(key, modified)` | `'search'` for `/` and Ctrl/Cmd+K, `'reply'` for a bare `r`, else `null` (Ctrl+R still reloads) |
 | `allows(state, feature)` | `false` only when that feature is off; `null` is always allowed |
 | `offNote(feature)` | the toast for a typed command of an off feature, naming `zt config set gui_<feature> on` |
+
+### `ZtLock` (`src/gui/lock.js`)
+
+Exported as `window.ZtLock` or `module.exports`; served at `/lock.js` and loaded before `app.js` (after `features.js`). All functions are pure, so the Tree Lock page rules run under Node without a browser (S01, #124). Nothing here is authoritative: the server recomputes every plan.
+
+| Function | Inputs → output |
+|---|---|
+| `sealShort(seal)` | the first 12 characters of the full lowercase SHA-256 seal (`""` for none) |
+| `noteCheck(raw)` | `{ok, note, count, error}`: at most `NOTE_LIMIT` (500) Unicode scalar values counted by code point, no NUL, and a blank note is `null` — the server's own rules |
+| `planCurrent(plan, action, rawNote)` | whether the dialog's plan may be confirmed: it has a `plan_hash`, and for `lock`/`note` its `note` equals the field's checked note; an `unlock` plan binds no note |
+| `answer(response)` | `applied`, `changed` (a stale hash: the renewed plan, nothing written) or `plan` |
+| `refusalText(refusal, message)` | `"<code> (<words>): <message>"` for a Tree Lock refusal, else `null` |
+| `refusalTree(refusal)` | the Locked tree a refusal names (`locked_tree`, else the first `pinned_by` tree), else `null` |
+| `activeLock(exported, root)` | the active Lock of one Tree root in a `GET /api/locks` answer, else `null` |
+| `panel(exported)` | `{ok, active, ended, faultsOf:{lock_id:[fault]}, loose:[fault], faultCount}`; Locks in Lock-id order; a fault of no listed Lock (a schema fault) is `loose`, never dropped |
+| `faultLine(exported)` | the page-level line (`N lock fault(s)`) or `null` |
+| `pinGroups(lockOrPlan)` | pins grouped by distinct target, each with every locked source address (a plan's pin names its sources; a stored pin row's `source_row` is mapped through the Lock's members) |
+| `eventLine(event)` | one history line for a `lock`, `unlock`, `note`, `reseal` or `integrity-fault` event |
 
 ### Keys and command bar
 
@@ -458,6 +478,15 @@ Every change the page makes goes through `api()` to a write route, which calls t
 6. While a proposal lies on the Table the Table is a closed set: `pull`, put-back, the box, "File as card", the Spreads picker, and the neighbour/distant box are refused (each says to Keep or Cancel first), while moving a proposed Card is allowed and its place is what Keep saves. The held Card stays the visual focus: the proposed Cards carry `.proposed`, and each reason sits in a readable band along its Card's bottom edge over the ruled paper (its link counts stand down), in both themes. The bar is one slim row of the stage bar rather than a dialog over the Cards.
 7. The MCP server has no keep route: `ask_box` still returns the unsaved proposal only, and it cannot replace the user's saved Table (S16-AC06).
 8. A kept Spread shows its **whole question** on the Table (S24, #120; CONTEXT "Spread"), not only its 80-character name in the Spreads picker. `tableView`'s `paintQuestion` lays `#spread-question` on the Table plane at the head of the Cards: left-aligned with the leftmost Card, at most 640 px wide (at least two Cards wide), and grown upward from 14 px above the top row (`transform: translateY(-100%)`), so it never covers a Card and moves with the Cards (`left`/`top`/`width` ease in and out over 320 ms) when they are dragged or arranged. It is a heading, not a card: a `?` mark and italic serif text in `--ink-soft`, no stock, no shadow, no blur, so the held Card keeps the most ink (light: 6.6:1 against the desk, the held title 16.8:1 on its paper; dark: 8.5:1 and 12.4:1). A long question folds to three lines; the slip is a button that unfolds it (`aria-expanded`) and carries the whole question in `title`. It settles in (300 ms fade and drop) when a Spread with a question is opened or kept, stands down while a proposal lies on the Table (the ask bar names that question), and `fit` takes its height (`questionRoom`) in with the Cards.
+
+### Tree Lock panel and dialogs (S01, #124; `lockPanel`, `lockDialog`, `src/gui/lock.js`)
+
+1. The page reads `GET /api/locks` with its first read at boot (a failed read leaves `state.locks` null and never stops the boot), whenever the lock panel opens (the route is an integrity check point), and after each committed Lock action. It is not read on the 4 s poll: lock state in Card summaries and the browser fingerprint is S03 (#126).
+2. Entry points: a tree root's reader shows one quiet lock line under its actions (`lockLine`): `Unlocked tree · Lock tree…`, or `Locked since … · seal <12> · Lock panel · Unlock tree…`. The cabinet's footer has `Locks` (`Locks · N` while N Locks are active), and the topbar's `#lock-pill` (`N lock faults`) appears only while the integrity result has faults; both open the panel.
+3. Every action uses `lockDialog`: it posts the unconfirmed request on open and shows the plan as the tree's index card (Zone and Workspace, the address stamp, the card count, the pin count, the seal stamp) with the full digest, the pinned targets with their sources, the already-broken Links (with the exception: they create no pin; relock after one resolves) and the members folded below. `Lock tree` and `Edit note…` have a note field with a 500 counter. Editing the note makes the plan stale: it fades, Confirm is disabled, and `Review again` posts the plan for the new note. Confirm is enabled only for a current plan with its word typed (`lock`, `unlock`, `note`), and sends `{...request, confirm, plan_hash}`.
+4. A confirmation answered `plan_changed` shows the renewed plan in place, clears the typed word, keeps the note, and says nothing was written. An error (a `409` refusal included) is shown in the dialog's foot, and the note stays. Cancel and Esc close the dialog and send nothing.
+5. The panel lists the active Locks in Lock-id order as index cards (the root's own card is lifted when the panel was opened from it), each with `Open tree` (absent when the root is missing), `Edit note…`, `Unlock tree…`, the full seal, its pinned targets and its history, folded; ended Locks fold under `Ended locks · N` with their history. Integrity faults stand beside their Lock as red lines and strike its seal stamp (`seal broken`); the shown seal is never updated, and no Card or Lock is hidden. A fault of no listed Lock is listed at the top.
+6. `api()` keeps a refusal's facts: a non-OK answer throws an `Error` whose message is `ZtLock.refusalText` (the code first) and which carries `status` and `refusal`. The writing desk shows that message in its foot with a `Lock panel` button that opens the panel over the desk; the draft stays and is never retried.
 
 ### Rules the code keeps
 
@@ -765,7 +794,8 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 
 ## Change history
 
-- `2026-10-21` — #124 S01 backend: the owner-only Tree Lock routes `GET /api/locks`, `POST /api/lock`, `POST /api/unlock` and `POST /api/lock/note`. Each write route plans first and commits only with its confirmation word and stateless `plan_hash`; the plan is recomputed under the edit lock, a stale hash answers `plan_changed` with the renewed plan, and no browser-supplied count or member array is ever authoritative. A Lock refusal on any route answers `409` with `refusal:{code,card,lock_id,locked_tree,pinned_by}`. Opening the panel is an integrity check point that records each new fault once. The page's panel, seal band and disabled controls belong to the GUI half of this issue and are recorded with the page code.
+- `2026-10-21` — #124 S01 page half: the lock panel and the two-step Lock dialogs. New DOM-free `src/gui/lock.js` (`ZtLock`, served at `/lock.js`). A tree root's reader gains a lock line (`Lock tree…`, or the Lock's date, seal stamp, `Lock panel` and `Unlock tree…`); the cabinet footer gains `Locks`, and the topbar gains `#lock-pill` for integrity faults. `lockDialog` shows each plan as the tree's index card with its 12-character seal, the full digest, the pins with their sources, the already-broken Links with their relock exception and the members, folded; a note edit makes the plan stale until reviewed again, a stale hash answer shows the renewed plan and keeps the note, Cancel and Esc send nothing. The panel shows faults beside their Lock with a struck seal and hides nothing; ended Locks keep their history. `api()` now throws the refusal code first and carries `refusal`/`status`; the writing desk keeps the draft and offers the lock panel. New page tests: `the_lock_page_shows_twelve_seal_characters_and_checks_the_note_like_the_server`, `a_lock_dialog_confirms_only_the_plan_for_the_note_in_its_field`, `a_lock_refusal_reads_with_its_code_and_names_its_tree`, `the_lock_panel_shows_faults_beside_their_lock_without_hiding_any`, `the_lock_dialogs_confirm_with_the_plan_hash_and_cancel_writes_nothing`.
+- `2026-10-21` — #124 S01 backend: the owner-only Tree Lock routes `GET /api/locks`, `POST /api/lock`, `POST /api/unlock` and `POST /api/lock/note`. Each write route plans first and commits only with its confirmation word and stateless `plan_hash`; the plan is recomputed under the edit lock, a stale hash answers `plan_changed` with the renewed plan, and no browser-supplied count or member array is ever authoritative. A Lock refusal on any route answers `409` with `refusal:{code,card,lock_id,locked_tree,pinned_by}`. Opening the panel is an integrity check point that records each new fault once. The page's panel and dialogs are recorded in the next entry; the stack band and the disabled Card controls are S05 (#128).
 - `2026-10-20` — #121 S28 page half: the page honours the three reader feature switches. The new DOM-free `src/gui/features.js` (`ZtFeatures`, served at `/features.js`) reads `/api/overview.features`; `applyFeatures` takes them at boot, on every refresh and on every 4 s overview poll (before the fingerprint check), so a switch turned off or back on shows without a reload. Search off removes the rail's search row, `/`, Ctrl+K and the command bar's search suggestion, and the tray asks no `/api/search`; Ask off removes `Ask the box` and the `ask` command and sends no `/api/ask` (a kept question's hub draft then opens without reasons); Reply off removes the reader's and the distant slot's `Reply`, `r` and the `reply` command and sends no `/api/reply`. Each control goes whole, so no empty slot is left, and Cards, the Map and the Table are unchanged. New page tests: `the_page_reads_each_feature_switch_from_the_overview_and_keeps_it_on_by_default`, `each_command_and_key_belongs_to_its_own_feature`, `a_switch_turned_back_on_shows_on_the_next_overview_poll`, `the_front_end_removes_a_switched_off_feature_whole_and_asks_nothing`.
 
 - `2026-10-20` — #121 S28: the three reader features can be turned off independently. `src/features.rs` reads `gui_search`, `gui_ask`, `gui_reply` from the config file on every request (only the exact word `off` disables one; a missing or malformed line leaves it on), `zt config set <key> on|off` writes one line without stopping the service and `zt config show` prints all three, `/api/overview` gains `features:{search,ask,reply}` outside the memoized Snapshot, and `App::handle` answers `409 {"error":…,"disabled":"gui_search|gui_ask|gui_reply"}` on that feature's own route. Cards, trees, the graph, the register, the distant slot, the Table and saved Spreads are not gated; the MCP server keeps its tools. New coverage: `src/features.rs` unit tests and `tests/reader_release.rs` (3 tests).

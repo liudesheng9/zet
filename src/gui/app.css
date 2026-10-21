@@ -2180,3 +2180,102 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   transform: translateY(100%); transition: transform .2s var(--ease);
 }
 .pullout.up .pullout-lip { transform: none; }
+
+/* ---------- tree locks (S01, #124) ----------
+   A Lock is shown as what it is on a real desk: the tree's root as an index card with its
+   address stamp in the corner, and a seal stamp beside the card count. The seal shows its first
+   12 characters; the full digest folds below. A stale plan recedes until it is reviewed again. */
+.rail-footer { display: flex; align-items: center; gap: 10px; }
+.rail-footer .archive-root { flex: 1; min-width: 0; }
+.lock-seal {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 8px; border-radius: 4px;
+  border: 1.5px solid var(--lit); color: var(--lit); background: none;
+  font: 600 12px var(--mono); transform: rotate(-2deg); white-space: nowrap;
+}
+.lock-seal .lbl { font: 700 9px var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+.lock-seal.broken { border-style: dashed; color: var(--broken); }
+.lock-seal.broken .v { text-decoration: line-through; }
+.lock-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--ink-faint); }
+.lock-line .btn { font-size: 12px; padding: 4px 10px; }
+.lock-line.locked .lock-state { color: var(--ink-soft); }
+.lock-dlg { width: min(620px, 100%); }
+.lock-body, .lock-panel-body { overflow: auto; max-height: calc(100vh - 170px); }
+.lock-plan { transition: opacity .3s var(--ease), filter .3s var(--ease); }
+.lock-dlg.stale .lock-plan { opacity: .5; filter: saturate(.4); }
+.lock-card {
+  position: relative; padding: 0 18px 14px; border-radius: 3px;
+  background-color: var(--stock);
+  box-shadow: var(--card-shadow);
+  transition: box-shadow .3s var(--ease), transform .3s var(--ease);
+}
+.lock-card-head {
+  display: flex; align-items: center; gap: 8px; margin: 0 -18px; padding: 12px 18px 8px;
+  border-bottom: 1.5px solid var(--paper-margin);
+}
+.lock-addr {
+  margin-left: auto; font: 600 12px var(--mono); padding: 2px 8px; border-radius: 5px;
+  border: 1.5px solid var(--accent); color: var(--accent); transform: rotate(-2deg);
+}
+/* The card's writing area: every line sits on one 30px blue rule. */
+.lock-card-body {
+  background-image: repeating-linear-gradient(to bottom, transparent 0 29px, var(--paper-rule) 29px 30px);
+}
+.lock-title { font: 600 19px/30px var(--serif); margin: 0; overflow-wrap: anywhere; }
+.lock-facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 14px; line-height: 30px; }
+.lock-count { font-size: 13px; color: var(--ink-soft); }
+.lock-count b { font: 600 20px/30px var(--serif); color: var(--ink); }
+.lock-sub { font-size: 12.5px; color: var(--ink-soft); }
+.lock-facts .lock-seal { margin-left: auto; }
+.lock-note-text { margin: 0; font: italic 14px/30px var(--serif); color: var(--ink-soft); overflow-wrap: anywhere; }
+.lock-what { margin: 12px 0 4px; font-size: 13px; color: var(--ink-soft); }
+.lock-fold { margin-top: 8px; }
+.lock-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ink-soft); }
+.lock-fold > summary:hover { color: var(--ink); }
+.lock-fold.warn > summary { color: color-mix(in srgb, var(--broken) 80%, var(--ink-soft)); }
+.lock-digest {
+  display: block; margin-top: 6px; padding: 6px 9px; border-radius: 6px; background: var(--line-soft);
+  font: 11.5px/1.5 var(--mono); color: var(--ink); word-break: break-all; user-select: all;
+}
+.lock-list { list-style: none; margin: 6px 0 0; padding: 0 0 0 14px; font: 12px/1.6 var(--mono); }
+.lock-list > li { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.lock-list .a { color: var(--ink); }
+.lock-list .arrow { color: var(--ink-faint); }
+.lock-list .b { color: var(--ink-soft); overflow-wrap: anywhere; min-width: 0; }
+.lock-list .b.broken { color: var(--broken); }
+.lock-list .b.fp { color: var(--ink-faint); }
+.lock-faults { padding-left: 0; margin: 10px 0 0; }
+.lock-faults > li { color: var(--broken); }
+.lock-faults .a, .lock-faults .b { color: var(--broken); }
+.lock-note-field { display: block; margin-top: 16px; }
+.lock-note-label {
+  display: flex; justify-content: space-between; margin-bottom: 6px;
+  font: 600 10.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint);
+}
+.lock-counter { font: 11px var(--mono); letter-spacing: 0; text-transform: none; }
+.lock-counter.over { color: var(--broken); }
+.lock-note {
+  display: block; width: 100%; min-height: 64px; resize: vertical; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink);
+  font: 14px/1.5 var(--sans); outline: none; transition: border-color .2s, box-shadow .2s;
+}
+.lock-note:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent); }
+.lock-confirm { margin-top: 16px; }
+.btn.primary.danger-fill { background: linear-gradient(180deg, color-mix(in srgb, var(--broken) 85%, #fff), var(--broken)); }
+.lock-open {
+  border: 0; padding: 0; background: none; font: inherit; color: var(--link);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.lock-panel { width: min(720px, 100%); }
+.lock-status { padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.lock-status.ok { color: var(--topic); background: var(--topic-soft); }
+.lock-status.bad { color: var(--broken); background: var(--broken-soft); }
+.lock-entry { margin: 4px 0 22px; }
+.lock-entry.focus .lock-card { box-shadow: var(--card-shadow-lift); transform: translateY(-2px); }
+.lock-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 2px; }
+.lock-entry-actions .btn { font-size: 12.5px; padding: 5px 11px; }
+.lock-history { opacity: .8; }
+.lock-history > .lock-list > li.lock-ended { display: block; margin-bottom: 6px; color: var(--ink-faint); }
+.lock-ended .a { margin-right: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  .lock-plan, .lock-card { transition: none; }
+}
