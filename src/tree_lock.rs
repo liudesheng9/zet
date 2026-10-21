@@ -4561,6 +4561,15 @@ mod tests {
         assert!(!after.ok(), "the latch keeps the Lock unhealthy");
         assert_eq!(after.latched.len(), 2);
         assert_eq!(lock_events_with(&conn, lock.lock_id, "integrity-fault"), 2);
+        // A faulted Lock stays active and keeps protecting its retained facts: the owner's review
+        // is the only way out, never an automatic refresh or unlock (S06-AC05).
+        let member = crate::load_card(&conn, &first).expect("member");
+        let refusal = ensure_unlocked(&conn, Change::Edit(member.row_id))
+            .expect_err("a faulted Lock still refuses its member's write");
+        assert_eq!(
+            refusal.downcast_ref::<Refusal>().expect("typed").kind,
+            RefusalKind::Locked
+        );
         // The panel shows the broken seal beside the same seal the owner reviewed.
         let panel = export_with(&conn, &after).expect("export");
         let listed = &panel["locks"][0];
