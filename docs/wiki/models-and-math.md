@@ -7,7 +7,7 @@ paths:
   - "tests/model_*.rs"
   - "tests/self_sufficient_models.rs"
   - "tests/math_units.rs"
-synced: 9de9651969ed
+synced: 1185a06ed810
 updated: 2026-10-21
 ---
 

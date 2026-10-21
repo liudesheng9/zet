@@ -8,7 +8,7 @@ paths:
   - "src/workspace.rs"
   - "src/link.rs"
   - "tests/card_types.rs"
-synced: fe5d77864def
+synced: 1185a06ed810
 updated: 2026-10-21
 ---
 

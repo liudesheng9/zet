@@ -10,7 +10,7 @@ paths:
   - "src/features.rs"
   - "tests/integrated_release.rs"
   - "tests/reader_release.rs"
-synced: 423bfceb935b
+synced: 1185a06ed810
 updated: 2026-10-21
 ---
 
