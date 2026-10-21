@@ -7,7 +7,7 @@ paths:
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
 synced: 4f927e818560
-updated: 2026-10-19
+updated: 2026-10-21
 ---
 
 # MCP server
@@ -466,6 +466,8 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+
+- `2026-10-21` — #124 S01: a Tree Lock refusal reaches MCP as the existing `isError` result whose structured content carries `code` (`locked`/`locked_tree`/`pinned`/`index_integrity`), the affected `card`, `lock_id`, `locked_tree` and `pinned_by` sources, using the same downcast chain as `Limit` and `Conflict`. No Lock control tool exists; owner authority stays on the GUI routes.
 - `2026-10-19` — #106 S13 re-verification: `get_register` takes an optional `at` and answers `terms_at`/`terms`, the accepted register terms that one Card carries — the rows that name it plus the accepted labels its own substantive title and prose state (§9.1 D196). The derivation reads that one Card's authored body inside the register's read transaction, so the indexed read keeps its economy and `terms_by_card` (the explicit destinations) keeps its size; the tool description states both, and `tests/register_entries.rs` covers a non-target Card, a `来源` line, a navigation list, a Hub Card, a tree root, and a scoped label.
 - `2026-10-19` — #105 S12: the hub reads carry the entry-section exception and the cross-book advice. `read::hubs` now keeps Topic Card bodies in its one-pass read (a Topic body holds the `## 入口` section), `list_hubs` reports those sections under `entries` and stops reporting a topic hub a valid section replaces, and `get_hub` adds `one_book` (with the bounded member and register-target bodies it needs) as advice, never a fault. The `get_hub` and `list_hubs` descriptions state both. The projection shapes are otherwise unchanged.
 - `2026-10-19` — #104 S11: `get_register`'s view adds the declared `词条分册` parts' accepted labels, the `duplicates` list (an equivalent row left behind by an interrupted publication, counted once), and the `part-label`/`part-unlisted` faults. `read::register` loads every immediate Side successor of the register in its read transaction, so a part the root no longer declares is reported instead of becoming invisible; `read::card` loads the register of a Card whose term row lives in a declared part, so `hubs_of` reports that part's term and target index as membership. The tool descriptions of `get_register` and `get_hub` name the new fields and faults. The projection shape is otherwise unchanged: `entries`, `entry_total`, `entry_next_offset`, `parts`, `faults`, `complete`, `terms_by_card`, `restatements`, `bounds`, `archive_revision`, `archive_identity`.

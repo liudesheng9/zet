@@ -8,7 +8,7 @@ paths:
   - "tests/self_sufficient_models.rs"
   - "tests/math_units.rs"
 synced: 9de9651969ed
-updated: 2026-10-18
+updated: 2026-10-21
 ---
 
 # Model structure and math units
@@ -523,6 +523,8 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+
+- `2026-10-21` — #124 S01: `model::set`, `model::set_level` and `math::set_form` call the Tree Lock gate before their UPDATE, so a type, facet, emphasis, level or Math form change on a locked member is refused with the shared typed `Refusal`.
 
 - `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65): the `specializes` kind is asserted once from the full parser (`get_tree`) and once from the derived Link index (`get_cards` text `kinds`), so both readers keep every current relation kind.
 - `2026-10-16` — `a_delete_names_the_links_it_breaks_and_into_re_points_them` expects the plan line that keeps later Side successors in place when Links to the deleted part break.

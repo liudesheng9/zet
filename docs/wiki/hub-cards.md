@@ -12,7 +12,7 @@ paths:
   - "tests/ask_spread.rs"
   - "tests/hub_draft.rs"
 synced: bc12871a9ac7
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 # Hub Cards
@@ -1034,6 +1034,8 @@ Gaps: no test for field hubs (their range, `unanchored` with the register), `dup
 - **The question path reads the whole Card set once.** `read::ask` uses `Snapshot::load` in one transaction because the walk may need any authored body it reaches; the GUI's cached Snapshot is not used, so the two transports answer from the same revision. That is the difference from the hub read (`hub_read` loads only hub and Topic bodies) and is why the ask path's bounding is done in `entry::gather`.
 
 ## Change history
+
+- `2026-10-21` — #124 S01: `hub::set_level` now calls the Tree Lock gate before its UPDATE, so a Hub level change on a locked member is refused with the same typed `Refusal` as every other authored metadata change; nothing else in this block changed.
 
 - `2026-10-20` — #120 S24: the integrated release contract that joins this block's reads with the GUI's routes is `tests/integrated_release.rs`, owned by [GUI](gui.md#testing). On one scratch archive it proves the entry ranking and the register projection byte-identical over MCP and the GUI, the three-target term opening exactly its targets, a broken register row reported and left out of retrieval while the other term still enters, and the hub report following an insert and a Citation-key rename. No production code in this block changed; the one edit here is a test function in `src/entry.rs` renamed to snake case, which removed the crate's last build warning.
 - `2026-10-19` — #118 S17: the same rules now judge a hub that is not saved yet (design §9.6, D235-D237). The body rules of `Graph::check` were extracted into `body_faults` (with `anchors` and `lower_in`), so the report of a saved hub and `hub::precheck` of a draft are one function: `level`, `anchor-title`, `oversize`/`flat`, `bare`, `broken` and `upward`, judged against the Card the draft would hang under (a rewrite keeps the hub's own place and level). `precheck` adds the placement rules — the agent Workspace, a field hub under the Workspace's one register, a topic hub inside a Topic tree and never beside its topic hub, a line hub where its line starts, and a tree root as no side parent — and reports `destination`, `workspace` and `placement` faults; `graph`-only rules (`cycle`, `unanchored`, `unlisted`, `isolated`) are not judged for a Card that does not exist. `hub::draft` plans one draft from a Spread kept from a question (its Cards, question and reasons): Trees in natural order, the design's default placement (several Trees → `field` under the register; one agent Topic → its topic hub rewrite or a new `topic` hub under its first Card; otherwise ask), every legal destination for the desk's placement controls, and the Markdown the composing desk opens with. `entry::register_addresses` became `pub(crate)` so the placement reads the same one-register policy as the entry view. New coverage: six unit tests in `src/hub.rs` (`DraftArchive`) and `tests/hub_draft.rs` through `POST /api/hub/draft`, `POST /api/hub/check`, `/api/create` and `/api/edit`; the GUI's composer and its page test are documented in [GUI](gui.md#filing-a-kept-spread-as-a-hub-draft-s17-118-filespread-fileaskspread-askreasons-openeditors-hub).
