@@ -2641,6 +2641,86 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_refuses_membership_in_a_second_workspace() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        // A raw write can leave a member in the other Workspace; the plan must refuse, not guess.
+        conn.execute(
+            "UPDATE cards SET workspace = 'agent' WHERE location = ?1",
+            [first_address(&root)],
+        )
+        .expect("mixed workspace membership");
+        let error = resolve_plan(&conn, &root, None).expect_err("inconsistent membership");
+        assert!(
+            error.to_string().contains("one Workspace"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn moving_an_ancestor_of_a_pinned_target_is_refused() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        crate::insert_card(
+            &mut conn,
+            "2/0",
+            true,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Far", "far"),
+        )
+        .expect("far topic");
+        crate::insert_card(
+            &mut conn,
+            "2/1",
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Ancestor", "ancestor"),
+        )
+        .expect("ancestor");
+        crate::insert_card(
+            &mut conn,
+            "2/1|a",
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Target", "target"),
+        )
+        .expect("pinned target");
+        let side = crate::load_card(&conn, &side_address(&root)).expect("side");
+        crate::update_card_text(
+            &mut conn,
+            &side,
+            &card_text("Side", &format!("links [[2/1|a]]")),
+        )
+        .expect("link the pinned child");
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        // The mapping moves the pinned Card's parent, so the target's own address changes even
+        // though the owner selected the ancestor.
+        let mapping = BTreeMap::from([
+            ("2/1".to_string(), "3/1".to_string()),
+            ("2/1|a".to_string(), "3/1|a".to_string()),
+        ]);
+        let error = ensure_unlocked(&conn, Change::Mapping(&mapping)).expect_err("ancestor move");
+        let refusal = error.downcast_ref::<Refusal>().expect("typed refusal");
+        assert_eq!(refusal.kind, RefusalKind::Pinned);
+        assert_eq!(refusal.pinned_by[0].tree, plan.root);
+        assert!(
+            refusal.pinned_by[0]
+                .sources
+                .iter()
+                .any(|source| source == &side.address)
+        );
+    }
+
+    #[test]
     fn a_note_change_advances_the_revision_only_when_it_changes() {
         let (_temp, mut conn) = archive();
         let root = topic_tree(&mut conn);
