@@ -3189,3 +3189,426 @@ fn a_damaged_lock_baseline_refuses_writable_startup() {
     assert_eq!(json!(seal), lock["seal"], "the reviewed seal is unchanged");
 }
 
+// --- S07 (#130): first installation, generation validation and Card rebuilds -----------------
+
+/// The six canonical trigger statements and the `cards` unique index, so a hand rebuild can put the
+/// archive back the way the previous release left it.
+fn protection_sql(conn: &Connection) -> (Vec<String>, String) {
+    let mut triggers = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN
+             ('lock_no_delete','lock_no_change','lock_no_insert','lock_no_move_in',
+              'lock_pin_no_delete','lock_pin_no_move') ORDER BY name",
+        )
+        .expect("trigger catalog");
+    for sql in stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("trigger rows")
+    {
+        triggers.push(sql.expect("trigger sql"));
+    }
+    assert_eq!(triggers.len(), 6, "every canonical trigger exists");
+    let index: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'
+               AND name = 'cards_citation_key_nocase'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the citation index");
+    (triggers, index)
+}
+
+/// Replace the `cards` table with the previous release's definition: the same columns and rules but
+/// no Finding Card type. Every row keeps its row id, and the canonical protection is re-created the
+/// way that release left it, so the next boot performs an authorized Card rebuild (R051, R304).
+fn previous_release_cards(conn: &Connection) {
+    let (triggers, index) = protection_sql(conn);
+    let definition: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the cards table");
+    let previous = definition
+        .replacen("cards", "cards_previous", 1)
+        .replace("'finding', ", "");
+    assert!(!previous.contains("'finding'"), "{previous}");
+    // The stored definition carries no trailing semicolon of its own.
+    let previous = format!("{};", previous.trim_end_matches(';'));
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {previous}
+         INSERT INTO cards_previous ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_previous RENAME TO cards;
+         {index};
+         COMMIT;"
+    ))
+    .expect("rebuild the cards table into the previous release's definition");
+    for sql in &triggers {
+        conn.execute_batch(sql).expect("re-create a canonical trigger");
+    }
+    let triggers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("triggers");
+    assert_eq!(triggers, 6, "the previous release left its protection in place");
+}
+
+/// Erase the whole Tree Lock schema, the way the archive before this feature looked.
+fn erase_lock_schema(conn: &Connection) {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS lock_no_delete;
+         DROP TRIGGER IF EXISTS lock_no_change;
+         DROP TRIGGER IF EXISTS lock_no_insert;
+         DROP TRIGGER IF EXISTS lock_no_move_in;
+         DROP TRIGGER IF EXISTS lock_pin_no_delete;
+         DROP TRIGGER IF EXISTS lock_pin_no_move;
+         DROP INDEX IF EXISTS locks_active_tree;
+         DROP INDEX IF EXISTS lock_members_by_row;
+         DROP INDEX IF EXISTS lock_pins_by_target;
+         DROP INDEX IF EXISTS lock_events_by_lock;
+         DROP TABLE IF EXISTS lock_events;
+         DROP TABLE IF EXISTS lock_pins;
+         DROP TABLE IF EXISTS lock_members;
+         DROP TABLE IF EXISTS locks;
+         DELETE FROM metadata WHERE key = 'tree_lock_schema_version';",
+    )
+    .expect("erase the Tree Lock schema");
+}
+
+/// Every Card's row identity and address, in row order.
+fn card_rows(conn: &Connection) -> Vec<(i64, String)> {
+    let mut stmt = conn
+        .prepare("SELECT row_id, COALESCE(location, citation_key) FROM cards ORDER BY row_id")
+        .expect("cards");
+    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("rows")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("card rows")
+}
+
+/// The stored member baselines of one Lock.
+fn member_rows(conn: &Connection, lock_id: i64) -> Vec<(i64, String, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT row_id, address, authored_fp FROM lock_members
+              WHERE lock_id = ?1 ORDER BY address",
+        )
+        .expect("members");
+    stmt.query_map([lock_id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })
+    .expect("member rows")
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .expect("members")
+}
+
+/// The `zt.sqlite3.pre-tree-lock-<s>.bak` files of one archive root.
+fn tree_lock_backups(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut names = fs::read_dir(root)
+        .expect("archive root")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("zt.sqlite3.pre-tree-lock-") && name.ends_with(".bak")
+                })
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn lock_schema_version(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'tree_lock_schema_version'",
+        [],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// R302/S07-AC01/AC09: the first upgrade of an archive that has no lock schema backs it up through
+/// SQLite, installs version 1 with all six triggers, keeps every Card row identity, and installs
+/// nothing on the next start.
+#[test]
+fn a_first_upgrade_backs_the_archive_up_and_installs_protection_once() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    home.cmd().arg("down").assert().success();
+    // The archive the previous release left: Cards and their history, no Tree Lock at all.
+    let rows_before = {
+        let conn = home.db();
+        erase_lock_schema(&conn);
+        assert_eq!(lock_schema_version(&conn), None);
+        card_rows(&conn)
+    };
+    assert_eq!(rows_before.len(), 2, "the Topic root and one Card");
+
+    home.cmd().arg("up").assert().success();
+
+    let backups = tree_lock_backups(&home.archive_root);
+    assert_eq!(backups.len(), 1, "one backup per first installation: {backups:?}");
+    // The backup is the archive before the installation, taken through SQLite.
+    let saved =
+        Connection::open_with_flags(&backups[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open the backup read-only");
+    let integrity: String = saved
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity check");
+    assert_eq!(integrity, "ok", "the backup is a consistent SQLite database");
+    assert_eq!(card_rows(&saved), rows_before, "the backup holds every prior Card");
+    let saved_locks: bool = saved
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'locks')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("lock table");
+    assert!(!saved_locks, "the backup is the archive before the installation");
+    // The archive itself is installed, with every row identity intact.
+    let installed = home.db();
+    assert_eq!(lock_schema_version(&installed).as_deref(), Some("1"));
+    let triggers: i64 = installed
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN
+             ('lock_no_delete','lock_no_change','lock_no_insert','lock_no_move_in',
+              'lock_pin_no_delete','lock_pin_no_move')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("triggers");
+    assert_eq!(triggers, 6);
+    assert_eq!(card_rows(&installed), rows_before, "the installation kept every row id");
+    let log = fs::read_to_string(home.archive_root.join("zt.log")).unwrap_or_default();
+    assert!(
+        log.contains("installing tree lock protection; backup"),
+        "the operator sees which backup the upgrade took: {log}"
+    );
+    // A second start installs nothing and takes no second backup.
+    drop(installed);
+    home.restart();
+    assert_eq!(
+        tree_lock_backups(&home.archive_root).len(),
+        1,
+        "only the first installation backs the archive up"
+    );
+    assert_eq!(card_rows(&home.db()), rows_before);
+}
+
+/// R303/S07-AC02/AC04: an archive that declares an unsupported lock generation refuses writable
+/// startup before any Card migration, and keeps its promise, its rows and the marker as they are.
+#[test]
+fn an_unsupported_lock_generation_refuses_startup_before_a_card_migration() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.cmd().arg("down").assert().success();
+    let (rows_before, members_before) = {
+        let conn = home.db();
+        // The previous release's Card table, and a generation this binary does not know.
+        previous_release_cards(&conn);
+        conn.execute(
+            "UPDATE metadata SET value = '2' WHERE key = 'tree_lock_schema_version'",
+            [],
+        )
+        .expect("mark an unsupported generation");
+        (card_rows(&conn), member_rows(&conn, lock_id))
+    };
+    assert!(!members_before.is_empty());
+
+    let up = home.cmd().arg("up").output().expect("run zt up");
+    assert!(
+        !up.status.success(),
+        "an unsupported generation refuses writable startup: {}",
+        String::from_utf8_lossy(&up.stdout)
+    );
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&up.stdout),
+        String::from_utf8_lossy(&up.stderr)
+    );
+    assert!(
+        said.contains("unsupported Tree Lock schema version `2`"),
+        "{said}"
+    );
+    assert!(said.contains("archive was not modified"), "{said}");
+    // No Card migration ran before the refusal, so the old Card table is still there.
+    let conn = home.db();
+    let definition: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the Card table");
+    assert!(
+        !definition.contains("'finding'"),
+        "the Card migration must not run before the generation is accepted: {definition}"
+    );
+    assert_eq!(lock_schema_version(&conn).as_deref(), Some("2"));
+    assert_eq!(card_rows(&conn), rows_before, "every Card row identity is untouched");
+    assert_eq!(
+        member_rows(&conn, lock_id),
+        members_before,
+        "the promise is retained, never repaired"
+    );
+    let seal: String = conn
+        .query_row("SELECT range_fingerprint FROM locks WHERE lock_id = ?1", [lock_id], |row| {
+            row.get(0)
+        })
+        .expect("the retained Lock");
+    assert_eq!(json!(seal), lock["seal"], "the reviewed seal is unchanged");
+    drop(conn);
+    // No service is up, so every write path is refused.
+    let status = home.cmd().arg("status").output().expect("zt status");
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("state: down"),
+        "a refused startup leaves no service: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    let _ = first;
+}
+
+/// R051/R304/S07-AC05: an authorized Card rebuild keeps every row identity and all Lock evidence,
+/// reinstalls the six canonical triggers without recording a fault, and leaves the tree protected.
+#[test]
+fn an_authorized_card_rebuild_keeps_the_promise_and_its_protection() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, Some("survives a rebuild"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.cmd().arg("down").assert().success();
+    let (rows_before, members_before) = {
+        let conn = home.db();
+        previous_release_cards(&conn);
+        (card_rows(&conn), member_rows(&conn, lock_id))
+    };
+    let events_before = {
+        let conn = home.db();
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1", [lock_id], |row| {
+                row.get(0)
+            })
+            .expect("events");
+        events
+    };
+
+    home.cmd().arg("up").assert().success();
+
+    let gui = home.gui();
+    let panel = gui.panel();
+    // The rebuild happened, and it is not tampering: the guarded comparison is healthy.
+    let definition: String = home
+        .db()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the rebuilt table");
+    assert!(definition.contains("'finding'"), "{definition}");
+    assert_eq!(
+        panel["integrity"]["faults"],
+        json!([]),
+        "an authorized rebuild records no current fault: {panel}"
+    );
+    assert_eq!(
+        panel["integrity"]["latched"],
+        json!([]),
+        "the rebuild's own trigger loss is not evidence of tampering: {panel}"
+    );
+    assert_eq!(panel["integrity"]["ok"], true);
+    let listed = panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the Lock");
+    assert_eq!(listed["seal_intact"], true);
+    assert_eq!(listed["seal"], lock["seal"], "the reviewed seal survives");
+    assert_eq!(
+        fault_events(&panel, lock_id).len(),
+        0,
+        "no integrity-fault event for an authorized rebuild"
+    );
+    // Every row identity, member baseline and history event survived, and the six triggers are back.
+    let conn = home.db();
+    assert_eq!(card_rows(&conn), rows_before, "every row id is preserved");
+    assert_eq!(member_rows(&conn, lock_id), members_before);
+    let triggers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN
+             ('lock_no_delete','lock_no_change','lock_no_insert','lock_no_move_in',
+              'lock_pin_no_delete','lock_pin_no_move')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("triggers");
+    assert_eq!(triggers, 6, "the six canonical triggers are reinstalled");
+    let events_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1", [lock_id], |row| {
+            row.get(0)
+        })
+        .expect("events");
+    assert_eq!(events_after, events_before, "the history is unchanged");
+    // The reinstalled backstop protects the rebuilt table again.
+    let refused = conn
+        .execute(
+            "UPDATE cards SET text = '# First\n\nrewritten\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [&first],
+        )
+        .expect_err("the reinstalled trigger protects the rebuilt row");
+    assert!(refused.to_string().contains("locked tree"), "{refused}");
+    drop(conn);
+    // The row ids really are the same Cards: the service still refuses the member's write.
+    let mut mcp = home.mcp();
+    let refusal = mcp.refused("edit_card", json!({ "at": first, "body": "x" }));
+    assert_eq!(refusal["code"], "locked", "{refusal}");
+    // `zt status --check-locks` agrees with the panel and exits 0.
+    let checked = home
+        .cmd()
+        .args(["status", "--check-locks"])
+        .output()
+        .expect("zt status --check-locks");
+    assert_eq!(checked.status.code(), Some(0));
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(said.contains("integrity: ok"), "{said}");
+    assert!(!said.contains("latched:"), "{said}");
+    // A second start rebuilds nothing and records nothing.
+    home.restart();
+    let gui = home.gui();
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], true);
+    assert_eq!(fault_events(&panel, lock_id).len(), 0);
+    let conn = home.db();
+    let definition_again: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the table");
+    assert_eq!(definition_again, definition, "the second start rebuilds nothing");
+    assert_eq!(card_rows(&conn), rows_before);
+    gui.unlock(lock_id);
+}
+

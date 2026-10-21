@@ -1251,6 +1251,9 @@ fn stop_for_system(root: &Path, pid: &str, end: shutdown::SystemEnd) {
 }
 
 fn initialize_database(root: &Path) -> Result<()> {
+    // R302: an archive that already existed is backed up before this binary first installs the
+    // Tree Lock schema, and a fresh one has nothing to preserve.
+    let archive_existed = db_path(root).exists();
     let conn = Connection::open(db_path(root))
         .with_context(|| format!("failed to open {}", db_path(root).display()))?;
     tree_lock::register_sql_functions(&conn)?;
@@ -1317,6 +1320,12 @@ fn initialize_database(root: &Path) -> Result<()> {
         cards_table("IF NOT EXISTS cards")
     ))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // R303 (S07-AC02/AC04): the generation this archive declares is validated before anything is
+    // repaired or migrated, so an unsupported version or a damaged lock table changes nothing.
+    tree_lock::check_generation(&conn)?;
+    // R051/R304 (S07-AC05): remember which canonical protection exists now, so the triggers a Card
+    // rebuild below drops with the table are re-created instead of being reported as tampering.
+    let protection = tree_lock::canonical_protection(&conn)?;
     // R293: a migration here can rebuild `cards`, change row identity or drop the protection
     // triggers, so an existing promise is compared and its evidence recorded before it runs.
     {
@@ -1340,6 +1349,30 @@ fn initialize_database(root: &Path) -> Result<()> {
     let conn = open_db(root)?;
     {
         let _lock = acquire_edit_lock(root, "startup integrity check")?;
+        // R051/R304 (S07-AC05): the rebuilds above dropped the triggers that belong to `cards`.
+        // They are re-created here, after the final rename and before the guarded comparison, so an
+        // authorized rebuild is not recorded as tampering. A trigger already missing before the
+        // rebuild keeps its recorded evidence and is left to the guarded comparison.
+        let restored = tree_lock::restore_rebuilt_protection(&conn, &protection)?;
+        if !restored.is_empty() {
+            log_event(
+                root,
+                &format!(
+                    "tree lock rebuild: protection reinstalled after the Card rebuild: {}",
+                    restored.join(", ")
+                ),
+            )
+            .ok();
+        }
+        // R302 (S07-AC01): one consistent SQLite backup before the first installation. It is taken
+        // before the guarded transaction, so a failed installation still leaves it for rollback.
+        if let Some(backup) = tree_lock::backup_before_install(&conn, root, archive_existed)? {
+            log_event(
+                root,
+                &format!("installing tree lock protection; backup {}", backup.display()),
+            )
+            .ok();
+        }
         let guard = tree_lock::startup_guard(&conn)?;
         let integrity = &guard.integrity;
         if guard.recorded > 0 || !guard.repaired.is_empty() {
@@ -2058,7 +2091,7 @@ fn card_counts(root: &Path) -> Result<Counts> {
     if !db_path(root).exists() {
         return Ok(Counts::default());
     }
-    let conn = Connection::open(db_path(root))?;
+    let conn = open_db(root)?;
     let total = conn
         .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
         .unwrap_or(0);

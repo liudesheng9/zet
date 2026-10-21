@@ -16,6 +16,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::Workspace;
 
@@ -345,6 +346,51 @@ fn install_or_repair(conn: &Connection) -> Result<Vec<String>> {
     Ok(repaired)
 }
 
+/// The structural generation check the boot sequence runs before any repair or Card migration
+/// (R303, S07-AC02/AC04). A missing lock schema is a first installation and passes; a supported
+/// generation must still hold the four tables with the columns this binary reads; any other stored
+/// generation refuses startup, so no migration ever runs against an archive whose promise this
+/// binary cannot interpret. It creates, repairs and records nothing.
+pub(crate) fn check_generation(conn: &Connection) -> Result<()> {
+    match schema_version(conn)? {
+        None => Ok(()),
+        Some(version) if version == SCHEMA_VERSION => validate_schema(conn),
+        Some(other) => bail!(
+            "unsupported Tree Lock schema version `{other}`; archive was not modified"
+        ),
+    }
+}
+
+/// R302 (S07-AC01/AC09): one consistent SQLite backup of the archive before the first installation
+/// of the Tree Lock schema, following the repository's existing migration backup pattern. `VACUUM
+/// INTO` writes a committed copy, so a live WAL database is never file-copied. A fresh archive and a
+/// start that finds the schema already installed are not backed up, and the backup is kept even when
+/// the installation that follows fails. Answers the path it wrote.
+pub(crate) fn backup_before_install(
+    conn: &Connection,
+    root: &Path,
+    archive_existed: bool,
+) -> Result<Option<std::path::PathBuf>> {
+    if !archive_existed || schema_version(conn)?.is_some() {
+        return Ok(None);
+    }
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // A retry in the same second must not collide with the backup the failed attempt retained;
+    // `VACUUM INTO` refuses an existing output file.
+    let mut backup = root.join(format!("zt.sqlite3.pre-tree-lock-{seconds}.bak"));
+    let mut attempt = 1;
+    while backup.exists() {
+        backup = root.join(format!("zt.sqlite3.pre-tree-lock-{seconds}-{attempt}.bak"));
+        attempt += 1;
+    }
+    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+        .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    Ok(Some(backup))
+}
+
 fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = stmt
@@ -420,6 +466,15 @@ fn same_definition(stored: &str, canonical: &str) -> bool {
     normalized(stored) == normalized(canonical)
 }
 
+/// Whether one schema object exists with its canonical definition. A name present with another
+/// definition is a different promise, not a compatibility success (R287).
+fn is_canonical(conn: &Connection, kind: &str, name: &str, sql: &str) -> Result<bool> {
+    Ok(matches!(
+        stored_sql(conn, kind, name)?,
+        Some(stored) if same_definition(&stored, sql)
+    ))
+}
+
 fn trigger_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(stored_sql(conn, "trigger", name)?.is_some())
 }
@@ -462,11 +517,7 @@ fn validate_indexes(conn: &Connection) -> Result<()> {
 fn reinstall_triggers(conn: &Connection) -> Result<Vec<String>> {
     let mut repaired = Vec::new();
     for (name, sql) in TRIGGER_DEFS {
-        let canonical = match stored_sql(conn, "trigger", name)? {
-            Some(stored) => same_definition(&stored, sql),
-            None => false,
-        };
-        if canonical {
+        if is_canonical(conn, "trigger", name, sql)? {
             continue;
         }
         conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
@@ -482,11 +533,7 @@ fn reinstall_triggers(conn: &Connection) -> Result<Vec<String>> {
 fn reinstall_indexes(conn: &Connection) -> Result<Vec<String>> {
     let mut repaired = Vec::new();
     for (name, sql) in INDEX_DEFS {
-        let canonical = match stored_sql(conn, "index", name)? {
-            Some(stored) => same_definition(&stored, sql),
-            None => false,
-        };
-        if canonical {
+        if is_canonical(conn, "index", name, sql)? {
             continue;
         }
         conn.execute_batch(&format!("DROP INDEX IF EXISTS {name};"))
@@ -496,6 +543,67 @@ fn reinstall_indexes(conn: &Connection) -> Result<Vec<String>> {
         repaired.push(name.to_string());
     }
     Ok(repaired)
+}
+
+/// The canonical protection that is present and exact right now, so the boot sequence can tell what
+/// its own authorized Card rebuild dropped. Empty when no supported lock schema is installed, which
+/// is also the answer that makes the restoration a no-op (R051, R304).
+pub(crate) fn canonical_protection(conn: &Connection) -> Result<BTreeSet<&'static str>> {
+    let mut present = BTreeSet::new();
+    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+        return Ok(present);
+    }
+    for (name, sql) in INDEX_DEFS {
+        if is_canonical(conn, "index", name, sql)? {
+            present.insert(name);
+        }
+    }
+    for (name, sql) in TRIGGER_DEFS {
+        if is_canonical(conn, "trigger", name, sql)? {
+            present.insert(name);
+        }
+    }
+    Ok(present)
+}
+
+/// Re-create the canonical protection a rebuild of `cards` dropped, before the guarded startup
+/// comparison, so an authorized Card rebuild is not recorded as tampering (R051, R304, S07-AC05). An
+/// object that was canonical before the rebuild and is missing or altered after it was lost by this
+/// boot's own rebuild; one that was already missing before keeps its recorded evidence and is left
+/// to the guarded comparison. A damaged table or an unsupported generation is never repaired here.
+/// Answers the objects it re-created, in catalog order.
+pub(crate) fn restore_rebuilt_protection(
+    conn: &Connection,
+    before: &BTreeSet<&'static str>,
+) -> Result<Vec<String>> {
+    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+        return Ok(Vec::new());
+    }
+    validate_schema(conn)?;
+    let mut restored = Vec::new();
+    for (name, sql) in INDEX_DEFS {
+        if before.contains(name) && !is_canonical(conn, "index", name, sql)? {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS {name};"))
+                .with_context(|| format!("failed to replace Tree Lock index `{name}`"))?;
+            conn.execute_batch(sql)
+                .with_context(|| format!("failed to install Tree Lock index `{name}`"))?;
+            restored.push(name.to_string());
+        }
+    }
+    for (name, sql) in TRIGGER_DEFS {
+        if before.contains(name) && !is_canonical(conn, "trigger", name, sql)? {
+            conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
+                .with_context(|| format!("failed to replace Tree Lock trigger `{name}`"))?;
+            conn.execute_batch(sql)
+                .with_context(|| format!("failed to install Tree Lock trigger `{name}`"))?;
+            restored.push(name.to_string());
+        }
+    }
+    if !restored.is_empty() {
+        validate_indexes(conn)?;
+        validate_triggers(conn)?;
+    }
+    Ok(restored)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -800,7 +908,9 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
 /// prompts, even on a damaged archive.
 pub(crate) fn active_roots(conn: &Connection) -> Result<Vec<String>> {
     let Some(state) = load_state(conn)? else {
-        bail!("the Tree Lock schema is not installed; restart the service before deleting cards");
+        bail!(
+            "the Tree Lock schema is not installed or is not a supported generation; restart the service before deleting cards"
+        );
     };
     let mut roots = state.roots.keys().cloned().collect::<Vec<_>>();
     roots.sort();
@@ -1638,7 +1748,9 @@ pub(crate) enum Change<'a> {
 /// writer calls this before its SQL; the triggers remain the backstop for a forgotten path.
 pub(crate) fn ensure_unlocked(conn: &Connection, change: Change<'_>) -> Result<()> {
     let Some(state) = load_state(conn)? else {
-        bail!("the Tree Lock schema is not installed; restart the service before writing cards");
+        bail!(
+            "the Tree Lock schema is not installed or is not a supported generation; restart the service before writing cards"
+        );
     };
     check_change(conn, &state, change)
 }
@@ -4324,6 +4436,33 @@ mod tests {
             rebuild < guarded,
             "the guarded comparison sees the protection catalog after the Card rebuilds"
         );
+        // S07-AC04/AC05/R303: the declared generation and the protection catalog are read before
+        // the first migration, a rebuild's dropped triggers are re-created after the final rename,
+        // and both the first-install backup and the guarded comparison come last.
+        let generation = boot
+            .find("tree_lock::check_generation")
+            .expect("the pre-migration generation check");
+        let protection = boot
+            .find("tree_lock::canonical_protection")
+            .expect("the catalog read before the rebuilds");
+        let restore = boot
+            .find("tree_lock::restore_rebuilt_protection")
+            .expect("the post-rebuild restoration");
+        let backup = boot
+            .find("tree_lock::backup_before_install")
+            .expect("the first-install backup");
+        assert!(
+            generation < first_migration && protection < rebuild,
+            "the generation and the existing protection are validated before a migration"
+        );
+        assert!(
+            rebuild < restore && restore < guarded,
+            "the protection a rebuild dropped is re-created before the guarded comparison"
+        );
+        assert!(
+            backup < guarded,
+            "the consistent backup is taken before the guarded installation"
+        );
         assert!(
             source.contains("cmd == \"status\" && flag == \"--check-locks\""),
             "`zt status --check-locks` reaches the full comparison"
@@ -4576,6 +4715,1016 @@ mod tests {
         assert_eq!(listed["seal"], json!(lock.seal));
         assert_eq!(listed["seal_intact"], false);
         assert_eq!(listed["latched_faults"].as_array().expect("latched").len(), 2);
+    }
+
+    /// The trigger statements of the six canonical protection triggers, in catalog order, plus the
+    /// citation-key index, so a hand rebuild can put the archive back the way a boot finds it.
+    fn protection_statements(conn: &Connection) -> (Vec<String>, String) {
+        let mut triggers = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN
+                 ('lock_no_delete','lock_no_change','lock_no_insert','lock_no_move_in',
+                  'lock_pin_no_delete','lock_pin_no_move') ORDER BY name",
+            )
+            .expect("trigger catalog");
+        for sql in stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("trigger rows")
+        {
+            triggers.push(sql.expect("trigger sql"));
+        }
+        assert_eq!(triggers.len(), 6, "every canonical trigger exists");
+        let index: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index'
+                   AND name = 'cards_citation_key_nocase'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the citation index");
+        (triggers, index)
+    }
+
+    /// An archive as the previous release left it: the Tree Lock schema 1 with one active Lock, but
+    /// a `cards` table whose type constraint predates the Finding Card type, so a boot rebuilds the
+    /// table. Every column is present, so the promise can still be compared. The six canonical
+    /// triggers and the unique index are re-created after the hand rebuild, so a boot finds the
+    /// promise intact and must keep it across its own authorized Card rebuild (R051/R304,
+    /// S07-AC05).
+    fn previous_release_archive(conn: &mut Connection) -> (String, Lock) {
+        let (root, lock) = locked_topic(conn);
+        let (triggers, index) = protection_statements(conn);
+        let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+        let previous_table = crate::cards_table("cards_previous").replace("'finding', ", "");
+        conn.execute_batch(&format!(
+            "BEGIN IMMEDIATE;
+             {previous_table}
+             INSERT INTO cards_previous ({columns}) SELECT {columns} FROM cards;
+             DROP TABLE cards;
+             ALTER TABLE cards_previous RENAME TO cards;
+             {index};
+             COMMIT;"
+        ))
+        .expect("rebuild the archive into the previous release's generation");
+        for sql in &triggers {
+            conn.execute_batch(sql).expect("re-create a canonical trigger");
+        }
+        validate_triggers(conn).expect("the previous release left canonical triggers");
+        (root, lock)
+    }
+
+    /// R303/S07-AC02/AC04: the boot sequence validates the stored generation before it repairs or
+    /// migrates, so an unsupported generation changes nothing at all.
+    #[test]
+    fn an_unsupported_generation_refuses_before_any_repair_or_card_migration() {
+        let (temp, mut conn) = archive();
+        previous_release_archive(&mut conn);
+        conn.execute(
+            "UPDATE metadata SET value = '2' WHERE key = 'tree_lock_schema_version'",
+            [],
+        )
+        .expect("mark an unsupported generation");
+        drop(conn);
+        let error = crate::initialize_database(temp.path()).expect_err("unsupported generation");
+        let said = format!("{error:#}");
+        assert!(
+            said.contains("unsupported Tree Lock schema version `2`"),
+            "{said}"
+        );
+        assert!(said.contains("archive was not modified"), "{said}");
+        let conn = crate::open_db(temp.path()).expect("open the archive again");
+        // No repair and no Card migration ran: the `cards` table keeps its old generation, the
+        // version marker still names the unsupported one, and the promise is untouched.
+        let definition: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the table");
+        assert!(
+            !definition.contains("'finding'"),
+            "the Card migration must not run before the generation is accepted: {definition}"
+        );
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'tree_lock_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the retained marker");
+        assert_eq!(version, "2");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM locks", [], |row| row.get::<_, i64>(0))
+                .expect("locks"),
+            1,
+            "the promise is retained, never repaired"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM lock_members", [], |row| row
+                .get::<_, i64>(0))
+                .expect("members"),
+            3
+        );
+        let error = ensure_unlocked(&conn, Change::CreateAt("9/0"))
+            .expect_err("an unsupported generation refuses every write");
+        assert!(
+            error.to_string().contains("not a supported generation"),
+            "{error}"
+        );
+    }
+
+    /// Erase the whole Tree Lock schema the way the archive before this feature looked: no four
+    /// tables, no indexes, no triggers, no version marker. The Cards stay untouched.
+    fn without_lock_schema(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS lock_no_delete;
+             DROP TRIGGER IF EXISTS lock_no_change;
+             DROP TRIGGER IF EXISTS lock_no_insert;
+             DROP TRIGGER IF EXISTS lock_no_move_in;
+             DROP TRIGGER IF EXISTS lock_pin_no_delete;
+             DROP TRIGGER IF EXISTS lock_pin_no_move;
+             DROP INDEX IF EXISTS locks_active_tree;
+             DROP INDEX IF EXISTS lock_members_by_row;
+             DROP INDEX IF EXISTS lock_pins_by_target;
+             DROP INDEX IF EXISTS lock_events_by_lock;
+             DROP TABLE IF EXISTS lock_events;
+             DROP TABLE IF EXISTS lock_pins;
+             DROP TABLE IF EXISTS lock_members;
+             DROP TABLE IF EXISTS locks;
+             DELETE FROM metadata WHERE key = 'tree_lock_schema_version';",
+        )
+        .expect("erase the Tree Lock schema");
+    }
+
+    /// The `zt.sqlite3.pre-tree-lock-<s>.bak` files of one archive root, newest name first.
+    fn first_install_backups(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut names = std::fs::read_dir(root)
+            .expect("archive root")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("zt.sqlite3.pre-tree-lock-") && name.ends_with(".bak")
+                    })
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// R302/S07-AC01/AC09: the first installation of the lock schema backs the prior archive up
+    /// through SQLite first, so a failed upgrade can roll back to the archive it found.
+    #[test]
+    fn the_first_install_backs_up_the_prior_archive_consistently() {
+        let (temp, mut conn) = archive();
+        topic_tree(&mut conn);
+        let rows_before: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        without_lock_schema(&conn);
+        assert!(schema_version(&conn).expect("version").is_none());
+        let definition_before: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the Card table");
+        drop(conn);
+
+        crate::initialize_database(temp.path()).expect("first installation");
+
+        let backups = first_install_backups(temp.path());
+        assert_eq!(backups.len(), 1, "one backup per first installation: {backups:?}");
+        // The backup is the archive before the installation: a consistent SQLite copy with the
+        // Cards and no Tree Lock schema.
+        let saved = Connection::open_with_flags(
+            &backups[0],
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open the backup read-only");
+        let integrity: String = saved
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok", "the backup is a consistent SQLite database");
+        let saved_rows: Vec<(i64, String)> = {
+            let mut stmt = saved
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        assert_eq!(saved_rows, rows_before, "the backup holds every prior Card");
+        let saved_locks: bool = saved
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'locks')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("lock table");
+        assert!(!saved_locks, "the backup is the archive before the installation");
+        // The archive itself is installed, and every Card kept its row identity.
+        let conn = crate::open_db(temp.path()).expect("open the installed archive");
+        assert_eq!(
+            schema_version(&conn).expect("version").as_deref(),
+            Some(SCHEMA_VERSION)
+        );
+        validate_triggers(&conn).expect("the canonical triggers are installed");
+        let rows_after: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        assert_eq!(rows_after, rows_before, "the installation kept every row id");
+        // S07-AC01: the feature adds tables, indexes and triggers; it never rebuilds `cards` or
+        // changes its accepted column generations.
+        let definition_after: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the Card table");
+        assert_eq!(
+            definition_after, definition_before,
+            "the first installation rebuilds no Card table"
+        );
+        // A second start installs nothing and adds no backup.
+        drop(conn);
+        crate::initialize_database(temp.path()).expect("second start");
+        assert_eq!(
+            first_install_backups(temp.path()).len(),
+            1,
+            "only the first installation backs the archive up"
+        );
+    }
+
+    /// R302/S07-AC02/AC09: a failed installation changes nothing, keeps its consistent backup, and
+    /// the same archive installs once the obstruction is gone.
+    #[test]
+    fn a_failed_install_keeps_the_prior_archive_retryable_and_its_backup() {
+        let (temp, mut conn) = archive();
+        topic_tree(&mut conn);
+        without_lock_schema(&conn);
+        // An obstruction the installation cannot share the namespace with: a `locks` table with a
+        // column set this binary cannot read.
+        conn.execute_batch("CREATE TABLE locks (obstruction TEXT NOT NULL);")
+            .expect("obstruct the installation");
+        drop(conn);
+        let error = crate::initialize_database(temp.path()).expect_err("the installation fails");
+        assert!(
+            error.to_string().contains("unsupported column set"),
+            "{error:#}"
+        );
+        let conn = crate::open_db(temp.path()).expect("the prior archive stays usable");
+        assert!(
+            schema_version(&conn).expect("version").is_none(),
+            "no version marker is written for a failed installation"
+        );
+        let tables: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+                     ('locks','lock_members','lock_pins','lock_events') ORDER BY name",
+                )
+                .expect("tables");
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .expect("table rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("table names")
+        };
+        assert_eq!(tables, vec!["locks".to_string()], "the installation rolled back");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
+                .expect("cards"),
+            3,
+            "the Cards are untouched"
+        );
+        // The consistent backup is retained and holds the archive before the attempt.
+        let backups = first_install_backups(temp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        let saved = Connection::open_with_flags(
+            &backups[0],
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open the backup");
+        let integrity: String = saved
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok");
+        assert_eq!(
+            saved
+                .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
+                .expect("saved cards"),
+            3
+        );
+        // The obstruction removed, the same archive installs.
+        conn.execute_batch("DROP TABLE locks;")
+            .expect("remove the obstruction");
+        drop(conn);
+        crate::initialize_database(temp.path()).expect("the retry installs");
+        let conn = crate::open_db(temp.path()).expect("open the installed archive");
+        assert_eq!(
+            schema_version(&conn).expect("version").as_deref(),
+            Some(SCHEMA_VERSION)
+        );
+        validate_triggers(&conn).expect("the canonical triggers are installed");
+    }
+
+    /// R051/R304/S07-AC05 (T21): a Card-table rebuild keeps every row identity and all Lock
+    /// evidence, and the canonical protection it drops with the table is re-created after the final
+    /// rename, so an authorized rebuild records no fault and still refuses a member write.
+    #[test]
+    fn an_authorized_card_rebuild_restores_protection_without_recording_a_fault() {
+        let (temp, mut conn) = archive();
+        let (root, lock) = previous_release_archive(&mut conn);
+        let members_before = stored_members(&conn, lock.lock_id).expect("members");
+        let pins_before = stored_pins(&conn, lock.lock_id).expect("pins");
+        let rows_before: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        let revision_before = crate::link_index::revision(&conn).expect("revision");
+        // The old generation needs the rebuild this boot performs.
+        let definition: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the table");
+        assert!(!definition.contains("'finding'"), "{definition}");
+        drop(conn);
+
+        crate::initialize_database(temp.path()).expect("the boot rebuilds the Card table");
+
+        let conn = crate::open_db(temp.path()).expect("open the rebuilt archive");
+        // The rebuild happened and produced today's table with one backup, as every rebuild does.
+        let definition: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the rebuilt table");
+        assert!(definition.contains("'finding'"), "{definition}");
+        let rebuild_backups = std::fs::read_dir(temp.path())
+            .expect("archive root")
+            .filter(|entry| {
+                entry.as_ref().expect("entry").file_name().to_string_lossy()
+                    .starts_with("zt.sqlite3.pre-finding-cards-")
+            })
+            .count();
+        assert_eq!(rebuild_backups, 1, "the rebuild backed the archive up first");
+        // Every row identity and the whole Lock evidence survived the table rebuild.
+        let rows_after: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        assert_eq!(rows_after, rows_before, "every row id is preserved");
+        assert_eq!(
+            stored_members(&conn, lock.lock_id).expect("members"),
+            members_before
+        );
+        assert_eq!(stored_pins(&conn, lock.lock_id).expect("pins"), pins_before);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM locks", [], |row| row.get::<_, i64>(0))
+                .expect("locks"),
+            1
+        );
+        // The six canonical triggers are back, and the guarded comparison is clean: the loss this
+        // boot caused is an authorized rebuild, not tampering.
+        validate_triggers(&conn).expect("the canonical triggers are installed");
+        validate_indexes(&conn).expect("the canonical indexes are installed");
+        let integrity = check(&conn).expect("check");
+        assert!(
+            integrity.faults.is_empty(),
+            "{:?}",
+            fault_ids(&integrity)
+        );
+        assert!(
+            integrity.latched.is_empty(),
+            "an authorized rebuild records no fault: {:?}",
+            integrity
+                .latched
+                .iter()
+                .map(|latched| latched.id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(integrity.ok(), "{}", integrity.summary());
+        assert_eq!(
+            lock_events_with(&conn, lock.lock_id, "integrity-fault"),
+            0,
+            "no integrity-fault event for an authorized rebuild"
+        );
+        assert_eq!(
+            crate::link_index::revision(&conn).expect("revision"),
+            revision_before,
+            "the rebuild of an unchanged Card table changes no authored fact"
+        );
+        // The reinstalled backstop protects the promise again.
+        let refused = conn
+            .execute("DELETE FROM cards WHERE location = ?1", [&root])
+            .expect_err("the reinstalled trigger protects the root again");
+        assert!(refused.to_string().contains("locked tree"), "{refused}");
+        // The promise still matches the rebuilt rows, so the owner keeps reading locked Cards with
+        // the same intact seal.
+        let reloaded = load_lock(&conn, lock.lock_id)
+            .expect("read back")
+            .expect("the Lock");
+        assert_eq!(reloaded.seal, lock.seal);
+        assert_eq!(reloaded.member_count, lock.member_count);
+        let panel = export_with(&conn, &integrity).expect("export");
+        assert_eq!(panel["locks"][0]["seal_intact"], true);
+        // A second start rebuilds nothing and records nothing.
+        let cards_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the rebuilt table");
+        drop(conn);
+        crate::initialize_database(temp.path()).expect("second start");
+        let conn = crate::open_db(temp.path()).expect("open again");
+        let cards_sql_again: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the table");
+        assert_eq!(cards_sql_again, cards_sql, "the second start rebuilds nothing");
+        assert_eq!(
+            lock_events_with(&conn, lock.lock_id, "integrity-fault"),
+            0
+        );
+        assert!(
+            check(&conn).expect("check").ok(),
+            "the second start stays healthy"
+        );
+    }
+
+    /// One function's source text, from its signature to the closing brace of the function, with
+    /// the checkout's line ending normalized so the search works in either one.
+    fn function_body(source: &str, signature: &str) -> String {
+        let normalized = source.replace("\r\n", "\n");
+        let start = normalized
+            .find(signature)
+            .unwrap_or_else(|| panic!("`{signature}` is part of the boot sequence"));
+        let rest = &normalized[start..];
+        let end = rest.find("\n}\n").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// Every `.rs` file of the crate, so an audit cannot miss a module by forgetting it.
+    fn source_files() -> Vec<(std::path::PathBuf, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+            for entry in std::fs::read_dir(dir).expect("source directory") {
+                let path = entry.expect("source entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    out.push((path.clone(), std::fs::read_to_string(&path).expect("source")));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        files
+    }
+
+    /// R050/S07-AC03: every connection that can write the archive is opened by the one opener that
+    /// registers the SQL wrappers, or by the bootstrap path that registers them itself; a read-only
+    /// diagnostic says so in its flags. A forgotten opener could write a Card whose trigger has no
+    /// fingerprint function.
+    #[test]
+    fn every_connection_that_can_write_is_opened_by_the_registered_opener() {
+        let files = source_files();
+        assert!(files.len() > 20, "the audit sees the crate's modules");
+        for (path, text) in &files {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown.rs");
+            if name == "main.rs" {
+                continue;
+            }
+            let production = text.split("#[cfg(test)]").next().unwrap_or(text);
+            assert_eq!(
+                production.matches("Connection::open(").count(),
+                0,
+                "`{name}` must open the archive through crate::open_db: {}",
+                path.display()
+            );
+            let flagged = production.matches("Connection::open_with_flags(").count();
+            assert_eq!(
+                production.matches("SQLITE_OPEN_READ_ONLY").count(),
+                flagged,
+                "`{name}` opens a connection without read-only flags: {}",
+                path.display()
+            );
+        }
+        let main = include_str!("main.rs");
+        assert_eq!(
+            main.matches("Connection::open(").count(),
+            2,
+            "only `open_db` and `initialize_database` open the archive directly"
+        );
+        // Opening a connection registers the wrappers and does nothing else: no schema, no
+        // migration, no writer lock, so opening never recurses into it.
+        let open_db = function_body(main, "fn open_db(root: &Path)");
+        assert!(
+            open_db.contains("tree_lock::register_sql_functions"),
+            "the one opener registers the SQL wrappers"
+        );
+        for forbidden in ["CREATE", "ALTER", "VACUUM", "acquire_edit_lock", "ensure_"] {
+            assert!(
+                !open_db.contains(forbidden),
+                "opening a connection must not run `{forbidden}`: {open_db}"
+            );
+        }
+        let register = function_body(include_str!("tree_lock.rs"), "fn register_sql_functions");
+        for forbidden in ["acquire_edit_lock", "execute", "execute_batch", "transaction"] {
+            assert!(
+                !register.contains(forbidden),
+                "registering the SQL wrappers must not run `{forbidden}`"
+            );
+        }
+        // The bootstrap path registers the wrappers before a Card migration can reach a trigger.
+        let boot = function_body(main, "fn initialize_database(root: &Path)");
+        let registered = boot
+            .find("tree_lock::register_sql_functions")
+            .expect("the bootstrap registers the wrappers");
+        let first_migration = boot
+            .find("ensure_workspace_column(&conn, root)")
+            .expect("the first Card migration");
+        assert!(
+            registered < first_migration,
+            "the wrappers are registered before a Card migration runs"
+        );
+        assert!(function_body(main, "fn card_counts").contains("open_db(root)"));
+        assert!(function_body(main, "fn archive_facts").contains("SQLITE_OPEN_READ_ONLY"));
+    }
+
+    /// The trusted authored-representation reseal of design §14.2, as a test-only fixture: this
+    /// release ships no reseal migration and exposes no reseal path (R305–R312, S07-AC06/AC07). It
+    /// names the migration, takes a consistent SQLite backup under the caller's edit lock, verifies
+    /// the old baselines and refuses a preexisting fault, transforms each member's representation
+    /// and writes that member's candidate baseline immediately before its own Card row inside one
+    /// transaction, recomputes the affected range seal, appends `reseal` with the old and new
+    /// evidence, restores and verifies the canonical protection, and advances the revision once
+    /// before commit.
+    fn trusted_reseal(
+        conn: &mut Connection,
+        root: &std::path::Path,
+        migration: &str,
+        transform: &dyn Fn(&str) -> String,
+    ) -> Result<Vec<Lock>> {
+        // R306/R307: the migration is named and one consistent backup is taken before it.
+        let backup = root.join(format!("zt.sqlite3.pre-{migration}-{}.bak", std::process::id()));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("back up before `{migration}`"))?;
+        // R308: verify the old baselines before the transformation; a preexisting fault refuses.
+        let integrity = check(conn)?;
+        if !integrity.ok() {
+            bail!(
+                "`{migration}` refuses a preexisting integrity fault: {}",
+                integrity.summary()
+            );
+        }
+        let tx = conn.unchecked_transaction()?;
+        // The authored rows change inside one transaction, so the statement triggers that protect
+        // authored bytes are removed here and restored before the commit (R311).
+        for (name, _) in TRIGGER_DEFS {
+            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
+        }
+        let mut resealed = Vec::new();
+        for lock_id in active_lock_ids(&tx)? {
+            let before = load_lock(&tx, lock_id)?.context("the active Lock")?;
+            let rows = stored_cards(&tx)?;
+            let mut changed = Vec::new();
+            for (row_id, address, old_fp) in stored_members(&tx, lock_id)? {
+                let card = rows
+                    .iter()
+                    .find(|card| card.row_id == row_id)
+                    .with_context(|| format!("member `{address}` is missing"))?;
+                let text = transform(&card.text);
+                // R309: the candidate baseline is computed from the transformed representation and
+                // written immediately before that row's own transformation.
+                let candidate = fingerprint_of_raw(
+                    &text,
+                    card.bibtex.as_deref(),
+                    &card.card_type,
+                    card.facet.as_deref(),
+                    card.emphasis.as_deref(),
+                    card.level.as_deref(),
+                    card.hub_level.as_deref(),
+                    card.form.as_deref(),
+                )?;
+                tx.execute(
+                    "UPDATE lock_members SET authored_fp = ?1 WHERE lock_id = ?2 AND row_id = ?3",
+                    params![candidate, lock_id, row_id],
+                )?;
+                tx.execute(
+                    "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+                    params![text, row_id],
+                )?;
+                changed.push(json!({
+                    "row_id": row_id,
+                    "address": address,
+                    "old": old_fp,
+                    "new": candidate,
+                }));
+            }
+            // R310/R311: the addresses and row ids are untouched, the range seal is recomputed from
+            // the new baselines, and the old and new evidence is retained as one `reseal` event.
+            let members = stored_members(&tx, lock_id)?
+                .into_iter()
+                .map(|(_, address, fingerprint)| (address, fingerprint))
+                .collect::<BTreeMap<_, _>>();
+            let seal = seal_of(&members);
+            tx.execute(
+                "UPDATE locks SET range_fingerprint = ?1 WHERE lock_id = ?2",
+                params![seal, lock_id],
+            )?;
+            append_event(
+                &tx,
+                lock_id,
+                "reseal",
+                &json!({
+                    "migration": migration,
+                    "old_seal": before.seal,
+                    "new_seal": seal,
+                    "changed": changed,
+                }),
+            )?;
+            resealed.push(lock_id);
+        }
+        reinstall_triggers(&tx)?;
+        validate_indexes(&tx)?;
+        validate_triggers(&tx)?;
+        // R311: one revision for the whole trusted migration.
+        crate::link_index::bump_revision(&tx)?;
+        tx.commit()?;
+        resealed
+            .into_iter()
+            .map(|lock_id| load_lock(conn, lock_id)?.context("the resealed Lock"))
+            .collect()
+    }
+
+    /// The one authored-representation migration the contract test models: each body gains one
+    /// restatement block, before the generated Reverse-link section that is not authored.
+    fn restated_representation(text: &str) -> String {
+        const MARKER: &str = "<!-- zt:reverse-links -->";
+        match text.find(MARKER) {
+            Some(index) => format!(
+                "{}{}",
+                text[..index].replacen("\n\n", "\n\n> restated\n\n", 1),
+                &text[index..]
+            ),
+            None => text.replacen("\n\n", "\n\n> restated\n\n", 1),
+        }
+    }
+
+    /// R305–R311/S07-AC06: the trusted authored-representation reseal keeps every address, row id
+    /// and pin meaning, recomputes a matching seal, retains the old/new evidence as one `reseal`
+    /// event, restores the canonical protection and advances the revision exactly once.
+    #[test]
+    fn a_trusted_authored_reseal_keeps_the_promise_and_records_its_evidence() {
+        let (temp, mut conn) = archive();
+        let (_root, lock) = locked_topic(&mut conn);
+        let members_before = stored_members(&conn, lock.lock_id).expect("members");
+        let pins_before = stored_pins(&conn, lock.lock_id).expect("pins");
+        let rows_before: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        let revision_before = crate::link_index::revision(&conn).expect("revision");
+        assert!(check(&conn).expect("check").ok());
+
+        let resealed = trusted_reseal(
+            &mut conn,
+            temp.path(),
+            "restated-body-v2",
+            &restated_representation,
+        )
+        .expect("the trusted reseal");
+        assert_eq!(resealed.len(), 1);
+        assert_eq!(resealed[0].lock_id, lock.lock_id);
+
+        // The promise is healthy under the new representation: the baselines and the seal agree.
+        let integrity = check(&conn).expect("check");
+        assert!(
+            integrity.ok(),
+            "the resealed promise is healthy: {:?}",
+            fault_ids(&integrity)
+        );
+        let after = load_lock(&conn, lock.lock_id)
+            .expect("read back")
+            .expect("the Lock");
+        assert_ne!(after.seal, lock.seal, "the range seal names the new representation");
+        let members_after = stored_members(&conn, lock.lock_id).expect("members");
+        assert_eq!(
+            members_after
+                .iter()
+                .map(|(_, address, _)| address.clone())
+                .collect::<Vec<_>>(),
+            members_before
+                .iter()
+                .map(|(_, address, _)| address.clone())
+                .collect::<Vec<_>>(),
+            "every address is preserved"
+        );
+        assert_eq!(
+            members_after
+                .iter()
+                .map(|(row_id, _, _)| *row_id)
+                .collect::<Vec<_>>(),
+            members_before
+                .iter()
+                .map(|(row_id, _, _)| *row_id)
+                .collect::<Vec<_>>(),
+            "every row id is preserved"
+        );
+        assert!(
+            members_after
+                .iter()
+                .zip(members_before.iter())
+                .all(|(new, old)| new.2 != old.2),
+            "every member baseline was recomputed"
+        );
+        assert_eq!(
+            seal_of(
+                &members_after
+                    .iter()
+                    .map(|(_, address, fingerprint)| (address.clone(), fingerprint.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            ),
+            after.seal,
+            "the seal is the recomputed range of the new baselines"
+        );
+        assert_eq!(
+            stored_pins(&conn, lock.lock_id).expect("pins"),
+            pins_before,
+            "pin meaning is preserved"
+        );
+        // Addresses and row identities of the Cards themselves are untouched.
+        let rows_after: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT row_id, location FROM cards ORDER BY row_id")
+                .expect("cards");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("card rows")
+        };
+        assert_eq!(rows_after, rows_before);
+        // One `reseal` event carries the old and new seal and which members changed.
+        let (detail, events): (String, i64) = conn
+            .query_row(
+                "SELECT (SELECT detail FROM lock_events WHERE lock_id = ?1 AND action = 'reseal'),
+                        (SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1 AND action = 'reseal')",
+                [lock.lock_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the reseal evidence");
+        assert_eq!(events, 1, "one reseal event");
+        let evidence: Value = serde_json::from_str(&detail).expect("reseal detail is JSON");
+        assert_eq!(evidence["migration"], "restated-body-v2");
+        assert_eq!(evidence["old_seal"], json!(lock.seal));
+        assert_eq!(evidence["new_seal"], json!(after.seal));
+        let changed = evidence["changed"].as_array().expect("changed members");
+        assert_eq!(changed.len(), 3, "every member's representation changed");
+        assert!(
+            changed
+                .iter()
+                .all(|member| member["old"].as_str() != member["new"].as_str()
+                    && member["old"].as_str().is_some_and(|fp| fp.len() == 64)),
+            "{evidence}"
+        );
+        // One revision for the whole trusted migration.
+        assert_eq!(
+            crate::link_index::revision(&conn).expect("revision"),
+            revision_before + 1
+        );
+        // The canonical protection is back and refuses an ordinary edit again.
+        validate_triggers(&conn).expect("the canonical triggers are restored");
+        let refused = conn
+            .execute(
+                "UPDATE cards SET text = '# Topic\n\nedited\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+                ["0/0"],
+            )
+            .expect_err("an ordinary edit is refused after the reseal");
+        assert!(refused.to_string().contains("locked tree"), "{refused}");
+        // The panel keeps the reseal in the Lock's history.
+        let panel = export_with(&conn, &integrity).expect("export");
+        assert!(
+            panel["locks"][0]["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .any(|event| event["action"] == "reseal"),
+            "{panel}"
+        );
+        assert_eq!(panel["locks"][0]["seal_intact"], true);
+    }
+
+    /// R308/S07-AC06: a preexisting integrity fault refuses the reseal, so a trusted migration never
+    /// seals over evidence it did not explain.
+    #[test]
+    fn a_trusted_authored_reseal_refuses_a_preexisting_fault() {
+        let (temp, mut conn) = archive();
+        let (_root, lock) = locked_topic(&mut conn);
+        let root = "0/0";
+        let original: String = conn
+            .query_row("SELECT text FROM cards WHERE location = ?1", [root], |row| {
+                row.get(0)
+            })
+            .expect("the root text");
+        conn.execute_batch("DROP TRIGGER lock_no_change;")
+            .expect("tamper as an outside hand");
+        conn.execute(
+            "UPDATE cards SET text = '# Topic\n\ntampered\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [root],
+        )
+        .expect("tamper");
+        let error = trusted_reseal(
+            &mut conn,
+            temp.path(),
+            "restated-body-v2",
+            &restated_representation,
+        )
+        .expect_err("a preexisting fault refuses the reseal");
+        assert!(
+            error.to_string().contains("preexisting integrity fault"),
+            "{error}"
+        );
+        // The refused migration changed nothing: no reseal evidence, no new seal, no revision.
+        assert_eq!(lock_events_with(&conn, lock.lock_id, "reseal"), 0);
+        assert_eq!(
+            load_lock(&conn, lock.lock_id)
+                .expect("read back")
+                .expect("the Lock")
+                .seal,
+            lock.seal
+        );
+        assert_eq!(
+            conn.query_row("SELECT text FROM cards WHERE location = ?1", [root], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("the tampered text"),
+            "# Topic\n\ntampered\n\n<!-- zt:reverse-links -->\n"
+        );
+        // The owner's repair, not a reseal, is what makes the promise healthy again.
+        conn.execute("UPDATE cards SET text = ?1 WHERE location = ?2", params![original, root])
+            .expect("restore the authored text");
+        conn.execute_batch(
+            "CREATE TRIGGER lock_no_change BEFORE UPDATE ON cards
+             WHEN EXISTS (
+                 SELECT 1 FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
+                 WHERE m.row_id = OLD.row_id AND l.unlocked_at IS NULL
+             ) AND (
+                 NEW.row_id IS NOT OLD.row_id
+              OR NEW.location IS NOT OLD.location
+              OR NEW.citation_key IS NOT OLD.citation_key
+              OR NEW.workspace IS NOT OLD.workspace
+              OR NEW.is_topic IS NOT OLD.is_topic
+              OR NEW.is_lit IS NOT OLD.is_lit
+              OR NEW.bibtex IS NOT OLD.bibtex
+              OR NEW.card_type IS NOT OLD.card_type
+              OR NEW.model_facet IS NOT OLD.model_facet
+              OR NEW.model_emphasis IS NOT OLD.model_emphasis
+              OR NEW.model_level IS NOT OLD.model_level
+              OR NEW.hub_level IS NOT OLD.hub_level
+              OR NEW.math_form IS NOT OLD.math_form
+              OR (CASE WHEN instr(NEW.text, '<!-- zt:reverse-links -->') = 0 THEN NEW.text
+                       ELSE substr(NEW.text, 1, instr(NEW.text, '<!-- zt:reverse-links -->') - 1) END)
+                 IS NOT
+                 (CASE WHEN instr(OLD.text, '<!-- zt:reverse-links -->') = 0 THEN OLD.text
+                       ELSE substr(OLD.text, 1, instr(OLD.text, '<!-- zt:reverse-links -->') - 1) END)
+             )
+             BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
+        )
+        .expect("restore the canonical trigger");
+        assert!(check(&conn).expect("check").ok());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM lock_events WHERE action = 'reseal'", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("reseal events"),
+            0
+        );
+    }
+
+    /// R312/S07-AC07: no public reseal command and no guard-disable flag ship with this release. The
+    /// `reseal` action exists only as the retained event kind, and the writer gate reads no
+    /// environment switch or bypass.
+    #[test]
+    fn no_public_reseal_command_or_guard_bypass_is_shipped() {
+        for (name, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("gui.rs", include_str!("gui.rs")),
+            ("mcp.rs", include_str!("mcp.rs")),
+            ("session/command.rs", include_str!("session/command.rs")),
+        ] {
+            assert!(
+                !source.contains("\"reseal\""),
+                "`{name}` must not dispatch a reseal"
+            );
+            assert!(
+                !source.contains("--reseal"),
+                "`{name}` must not offer a reseal flag"
+            );
+            assert!(
+                !source.contains("ZT_LOCK_BYPASS") && !source.contains("without_guard"),
+                "`{name}` must not offer a guard bypass"
+            );
+        }
+        let tree_lock = include_str!("tree_lock.rs");
+        let gate = tree_lock.split("#[cfg(test)]").next().unwrap_or(tree_lock);
+        assert!(
+            gate.contains("'reseal'") && gate.contains("'integrity-fault'"),
+            "the stored event vocabulary keeps the reseal action"
+        );
+        for switch in ["env::var", "var_os", "std::env", "ignore_check_constraints"] {
+            assert!(
+                !gate.contains(switch),
+                "the writer gate and the reseal vocabulary read no `{switch}` switch"
+            );
+        }
+        assert!(
+            !include_str!("main.rs").contains("\"--lock\"")
+                && include_str!("main.rs").contains("\"--check-locks\""),
+            "the only Lock comparison the CLI offers is `--check-locks`"
+        );
+    }
+
+    /// R313/S07-AC08: an older client's connection has no SQL wrappers. It can still read the
+    /// archive, and the built-in triggers still refuse its locked Card write, so an upgraded archive
+    /// is never handed back to an old executable as a supported writer.
+    #[test]
+    fn a_connection_without_the_sql_wrappers_reads_but_cannot_write_a_locked_card() {
+        let (_temp, mut conn) = archive();
+        let (root, _lock) = locked_topic(&mut conn);
+        let path = conn.path().expect("database path").to_string();
+        // The connection an older binary opens: plain SQLite, no registered wrappers.
+        let old = Connection::open(&path).expect("an older client's connection");
+        let cards: i64 = old
+            .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
+            .expect("Cards stay readable without the wrappers");
+        assert_eq!(cards, 3);
+        let missing = old
+            .query_row("SELECT zt_tree_root('1/0')", [], |row| row.get::<_, String>(0))
+            .expect_err("an older client has no fingerprint or tree-root wrapper");
+        assert!(
+            missing
+                .to_string()
+                .to_lowercase()
+                .contains("no such function"),
+            "{missing}"
+        );
+        // The six triggers use built-in SQL, so they still refuse the old client's authored write.
+        let refused = old
+            .execute(
+                "UPDATE cards SET text = '# Topic\n\nrewritten\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+                [&root],
+            )
+            .expect_err("the built-in trigger refuses the older client's write");
+        assert!(refused.to_string().contains("locked tree"), "{refused}");
     }
 
     /// R278/R027: the comparison uses the caller's transaction when there is one, so a tamper
