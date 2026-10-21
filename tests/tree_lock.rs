@@ -1160,3 +1160,982 @@ fn the_panel_records_a_new_integrity_fault_once() {
     let gui = home.gui();
     assert_eq!(gui.panel()["integrity"]["ok"], true);
 }
+
+// ---------------------------------------------------------------------------------------------
+// S02 (#125): keep locked Cards readable and linkable while preserving external pins.
+// ---------------------------------------------------------------------------------------------
+
+
+/// Delete a Card through both steps of its confirmation.
+fn delete(mcp: &mut Mcp, at: &str) {
+    let plan = mcp.ok("delete_card", json!({ "at": at }));
+    let word = plan["confirm"].as_str().expect("delete confirmation word").to_string();
+    let done = mcp.ok("delete_card", json!({ "at": at, "confirm": word }));
+    assert_eq!(done["applied"], true, "delete {at}: {done}");
+}
+
+/// Move a Card to `to` through both steps of its confirmation.
+fn move_card(mcp: &mut Mcp, at: &str, to: &str) {
+    let plan = mcp.ok("move_card", json!({ "at": at, "to": to }));
+    let word = plan["confirm"].as_str().expect("move confirmation word").to_string();
+    let done = mcp.ok("move_card", json!({ "at": at, "to": to, "confirm": word }));
+    assert_eq!(done["applied"], true, "move {at}: {done}");
+}
+/// The member facts a Lock promised: address, row identity and authored fingerprint.
+fn member_facts(panel: &Value) -> Vec<(String, i64, String)> {
+    let mut facts = panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .find(|lock| lock["unlocked_at"].is_null())
+        .expect("one active Lock")["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .map(|member| {
+            (
+                member["address"].as_str().expect("address").to_string(),
+                member["row_id"].as_i64().expect("row id"),
+                member["fingerprint"].as_str().expect("fingerprint").to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    facts.sort();
+    facts
+}
+
+/// T05 / AC03: a pinned target keeps its authored meaning editable; only its address and row
+/// identity are frozen, so a Citation-key rename is the one edit that is refused.
+#[test]
+fn a_pinned_target_stays_editable_without_renaming_it() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let side = side_card(&mut mcp, &first, "Side", "keeps the reference");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    let part = card(&mut mcp, &pinned, "Part", "part body");
+    let book = address(mcp.ok(
+        "create_literature",
+        json!({ "bibtex": "@book{Smith2024, title={Book}}", "body": "该书。" }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": side, "body": format!("links [[{pinned}]] and [[{part}]] and [[{book}]]") }),
+    );
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+    let before = member_facts(&gui.panel());
+
+    // Body, title and every authored type field of the pinned target stay editable.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": pinned, "body": "the meaning may change while the address does not" }),
+    );
+    mcp.ok("edit_card", json!({ "at": pinned, "title": "A better title" }));
+    mcp.ok("edit_card", json!({ "at": pinned, "type": "event" }));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": part, "type": "model", "facet": "setting", "emphasis": "core" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": pinned, "type": "model", "level": "formal" }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": pinned, "type": "model", "form": "theorem" }),
+    );
+    // BibTeX without a Citation-key rename is an authored edit of the pinned target.
+    mcp.ok(
+        "edit_literature_metadata",
+        json!({ "at": book, "bibtex": "@book{Smith2024, title={Book, second edition}}" }),
+    );
+    let edited = mcp.ok("get_card", json!({ "at": book }));
+    assert!(
+        edited["bibtex"].as_str().unwrap_or_default().contains("second edition"),
+        "{edited}"
+    );
+
+    // The one pinned edit that moves a Card: a Citation-key rename.
+    let refusal = mcp.refused(
+        "edit_literature_metadata",
+        json!({ "at": book, "bibtex": "@book{Smith2025, title={Book}}" }),
+    );
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(refusal["pinned_by"][0]["tree"], root);
+
+    // The locked source's promise did not move: same seal, same member fingerprints.
+    let panel = gui.panel();
+    assert_eq!(member_facts(&panel), before);
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lock| lock["unlocked_at"].is_null())
+        .expect("the Lock");
+    assert_eq!(active["seal"], seal);
+    assert_eq!(panel["integrity"]["ok"], true);
+}
+
+/// T07 / AC04: two active Locks can pin one target. Releasing one keeps the other protection;
+/// the target is free only after the last pinning Lock ends.
+#[test]
+fn two_locks_pin_one_target_and_release_one_at_a_time() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let first_tree = topic(&mut mcp, "FirstPromise");
+    let a = card(&mut mcp, &first_tree, "A", "first promise");
+    let second_tree = topic(&mut mcp, "SecondPromise");
+    let b = card(&mut mcp, &second_tree, "B", "second promise");
+    let targets = topic(&mut mcp, "Targets");
+    let shared = card(&mut mcp, &targets, "Shared", "one target, two promises");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": a, "body": format!("promises [[{shared}]]") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": b, "body": format!("promises [[{shared}]]") }),
+    );
+
+    let lock_a = gui.lock(&first_tree, Some("first"));
+    let lock_b = gui.lock(&second_tree, Some("second"));
+    let id_a = lock_a["lock_id"].as_i64().expect("lock a");
+    let id_b = lock_b["lock_id"].as_i64().expect("lock b");
+    assert_ne!(id_a, id_b);
+    let pins: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM lock_pins WHERE target_address = ?1",
+            [&shared],
+            |row| row.get(0),
+        )
+        .expect("pin rows");
+    assert_eq!(pins, 2, "one pin row for each Lock");
+
+    // Both promises protect the shared target.
+    let refusal = mcp.refused(
+        "move_card",
+        json!({ "at": shared, "to": format!("{a}|a") }),
+    );
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    let trees = refusal["pinned_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pin| pin["lock_id"].as_i64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(trees, vec![id_a, id_b], "both Locks explain the refusal");
+
+    // Releasing one Lock releases exactly its own pins.
+    gui.unlock(id_a);
+    let refusal = mcp.refused(
+        "move_card",
+        json!({ "at": shared, "to": format!("{a}|a") }),
+    );
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    let remaining = refusal["pinned_by"].as_array().unwrap();
+    assert_eq!(remaining.len(), 1, "{refusal}");
+    assert_eq!(remaining[0]["lock_id"].as_i64(), Some(id_b));
+    assert_eq!(remaining[0]["sources"][0], b);
+    let left: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM lock_pins WHERE target_address = ?1",
+            [&shared],
+            |row| row.get(0),
+        )
+        .expect("pin rows");
+    assert_eq!(left, 1, "the ended Lock removed only its own pin");
+
+    // The last release frees the target again, and the derived index still matches every body.
+    gui.unlock(id_b);
+    move_card(&mut mcp, &shared, &format!("{a}|a"));
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .output()
+        .expect("zt status --check-links");
+    let report = String::from_utf8_lossy(&checked.stdout);
+    assert!(checked.status.success(), "{report}");
+    assert!(report.contains("\"ok\":true"), "{report}");
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// T08 / AC02: an unlocked source may add or remove an incoming Link, and a Reply may answer a
+/// locked agent Card. Only the generated Reverse section moves; every authored fingerprint and the
+/// seal stay, and the derived Link index still matches the bodies.
+#[test]
+fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+    let before = member_facts(&gui.panel());
+    let member = gui.get(&format!("/api/card?at={first}"));
+    let member_fingerprint = member["authored_fingerprint"]
+        .as_str()
+        .expect("member fingerprint")
+        .to_string();
+
+    // An unlocked source adds an incoming Link.
+    let outside = topic(&mut mcp, "Outside");
+    let source = card(&mut mcp, &outside, "Source", "no link yet");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": source, "body": format!("now cites [[{first}]]") }),
+    );
+    let cited = gui.get(&format!("/api/card?at={first}"));
+    assert_eq!(
+        cited["authored_fingerprint"].as_str(),
+        Some(member_fingerprint.as_str()),
+        "an incoming Link changes no authored identity"
+    );
+    assert!(
+        cited["text"]
+            .as_str()
+            .expect("stored text")
+            .contains(&source),
+        "the generated Reverse section names the unlocked source: {}",
+        cited["text"]
+    );
+    let indexed: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM links WHERE source = ?1 AND target = ?2",
+            [&source, &first],
+            |row| row.get(0),
+        )
+        .expect("links row");
+    assert_eq!(indexed, 1, "the derived Link row is written");
+
+    // The same unlocked source removes the Link; the generated section shrinks again.
+    mcp.ok("edit_card", json!({ "at": source, "body": "no link now" }));
+    let uncited = gui.get(&format!("/api/card?at={first}"));
+    assert_eq!(
+        uncited["authored_fingerprint"].as_str(),
+        Some(member_fingerprint.as_str())
+    );
+    assert!(
+        !uncited["text"].as_str().expect("stored text").contains(&source),
+        "the Reverse section no longer names the source: {}",
+        uncited["text"]
+    );
+
+    // The other side of the same promise: a locked source authors no new Link, and a request that
+    // would change nothing is refused like any other (R082).
+    let refusal = mcp.refused(
+        "edit_card",
+        json!({ "at": first, "body": format!("now cites [[{source}]]") }),
+    );
+    assert_eq!(refusal["code"], "locked", "{refusal}");
+    let refusal = mcp.refused("edit_card", json!({ "at": first, "body": "first body" }));
+    assert_eq!(refusal["code"], "locked", "{refusal}");
+
+    // A Reply writes one human Card and updates only the locked target's generated section.
+    let reply = gui.post(
+        "/api/reply",
+        &json!({
+            "at": first,
+            "base": member_fingerprint,
+            "text": format!("# 回应：条件与边界\n\n印证 [[{first}]]：这条回应补充了条件与适用边界。\n"),
+        }),
+    );
+    assert_eq!(reply["saved"], true, "{reply}");
+    assert_eq!(reply["target"]["workspace"], "agent");
+    let reply_at = reply["address"].as_str().expect("reply address").to_string();
+    let answered = gui.get(&format!("/api/card?at={first}"));
+    assert_eq!(
+        answered["authored_fingerprint"].as_str(),
+        Some(member_fingerprint.as_str()),
+        "a Reply changes no authored identity of its target"
+    );
+    assert!(
+        answered["text"].as_str().expect("stored text").contains(&reply_at),
+        "the Reply is visible in the locked Card's Reverse section: {}",
+        answered["text"]
+    );
+    let reply_indexed: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM links WHERE source = ?1 AND target = ?2",
+            [&reply_at, &first],
+            |row| row.get(0),
+        )
+        .expect("reply link row");
+    assert_eq!(reply_indexed, 1);
+
+    // The whole promise is unmoved, and the derived index still matches every body.
+    let panel = gui.panel();
+    assert_eq!(member_facts(&panel), before);
+    assert_eq!(panel["integrity"]["ok"], true);
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lock| lock["unlocked_at"].is_null())
+        .expect("the Lock");
+    assert_eq!(active["seal"], seal);
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .output()
+        .expect("zt status --check-links");
+    let report = String::from_utf8_lossy(&checked.stdout);
+    assert!(checked.status.success(), "{report}");
+    assert!(report.contains("\"ok\":true"), "{report}");
+}
+
+/// AC05: only an authored Link macro recognized by the existing parser pins a Card. Fenced and
+/// inline code, a chart's `data-zt` navigation, a Document link and generated Reverse text do not.
+#[test]
+fn only_authored_link_macros_pin_a_target() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let targets = topic(&mut mcp, "Targets");
+    let real = card(&mut mcp, &targets, "Real", "truly linked");
+    let fenced_topic = topic(&mut mcp, "FencedTopic");
+    let fenced = card(&mut mcp, &fenced_topic, "Fenced", "named in a code fence");
+    let inline_topic = topic(&mut mcp, "InlineTopic");
+    let inline = card(&mut mcp, &inline_topic, "Inline", "named in inline code");
+    let chart_topic = topic(&mut mcp, "ChartTopic");
+    let chart = card(&mut mcp, &chart_topic, "Chart", "named by a chart");
+    let doc_topic = topic(&mut mcp, "DocTopic");
+    let doc = card(&mut mcp, &doc_topic, "Doc", "named by a Document link");
+    let body = format!(
+        "real: [[{real}]]\n\n```text\n[[{fenced}]]\n```\n\ninline `[[{inline}]]` here\n\n\
+         ```chart\n<svg data-zt=\"{chart}\"></svg>\n```\n\n\
+         <figure data-zt=\"{chart}\"></figure>\n\n[the document](scholar:12)"
+    );
+    let member = card(&mut mcp, &root, "Member", &body);
+
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    assert_eq!(plan["plan"]["pin_count"], 1, "{plan}");
+    assert_eq!(plan["plan"]["pins"][0]["target"], real);
+    assert_eq!(
+        plan["plan"]["pins"][0]["sources"][0], member,
+        "the member is the one authored source"
+    );
+    assert_eq!(
+        plan["plan"]["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "a fenced or inline example is no authored Link at all: {plan}"
+    );
+    let applied = gui.post(
+        "/api/lock",
+        &json!({ "root": root, "confirm": "lock", "plan_hash": plan["plan"]["plan_hash"] }),
+    );
+    assert_eq!(applied["applied"], true, "{applied}");
+
+    // The one authored Link is pinned.
+    let refusal = mcp.refused("delete_card", json!({ "at": real }));
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(refusal["pinned_by"][0]["sources"][0], member);
+
+    // Everything the parser does not read as a Link stays free.
+    for target in [&fenced, &inline, &chart, &doc] {
+        delete(&mut mcp, target);
+    }
+    let remaining: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_pins", [], |row| row.get(0))
+        .expect("pin rows");
+    assert_eq!(remaining, 1, "only the authored macro made a pin");
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// T19 / AC06: a Broken Link present at lock time is retained as a warning with its source and
+/// target, creates no pin, and joins the promise only when the owner unlocks and locks again.
+#[test]
+fn a_broken_link_is_a_warning_that_a_relock_captures() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let targets = topic(&mut mcp, "Targets");
+    let doomed = card(&mut mcp, &targets, "Doomed", "the target that goes away");
+    let member = card(&mut mcp, &root, "Member", &format!("refers to [[{doomed}]]"));
+    delete(&mut mcp, &doomed);
+    let broken: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE COALESCE(location,citation_key) = ?1",
+            [&doomed],
+            |row| row.get(0),
+        )
+        .expect("doomed row");
+    assert_eq!(broken, 0, "the Link is broken before the Lock");
+
+    // The plan shows the Broken Link with both addresses, and explains the limits of the promise.
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    let warnings = plan["plan"]["warnings"].as_array().expect("warnings");
+    assert_eq!(warnings.len(), 1, "{plan}");
+    assert_eq!(warnings[0]["source"], member);
+    assert_eq!(warnings[0]["target"], doomed);
+    assert_eq!(plan["plan"]["pin_count"], 0, "a Broken Link pins nothing");
+    let lines = plan["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        lines.contains("unlock and lock again"),
+        "the exception is explained: {lines}"
+    );
+    assert!(
+        lines.contains("outside the seal promise"),
+        "the promise excludes target meaning and external availability: {lines}"
+    );
+
+    let applied = gui.post(
+        "/api/lock",
+        &json!({ "root": root, "confirm": "lock", "plan_hash": plan["plan"]["plan_hash"] }),
+    );
+    assert_eq!(applied["applied"], true, "{applied}");
+    let lock_id = applied["lock"]["lock_id"].as_i64().expect("lock id");
+
+    // The retained record still names the warning's source and target.
+    let panel = gui.panel();
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lock| lock["lock_id"] == lock_id)
+        .expect("the Lock");
+    let retained = active["warnings"].as_array().expect("retained warnings");
+    assert_eq!(retained.len(), 1, "{active}");
+    assert_eq!(retained[0]["source"], member);
+    assert_eq!(retained[0]["target"], doomed);
+    assert_eq!(
+        active["events"][0]["detail"]["warnings"][0]["target"],
+        doomed
+    );
+
+    // The target appears later at the same address: the baseline does not silently grow a pin.
+    let revived = card(&mut mcp, &targets, "Revived", "the old address, a new target");
+    assert_eq!(revived, doomed, "the same address is live again");
+    mcp.ok("edit_card", json!({ "at": revived, "body": "edited freely" }));
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+    let pins: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_pins", [], |row| row.get(0))
+        .expect("pin rows");
+    assert_eq!(pins, 0, "no pin was added");
+    // It is free like any unpinned Card: it can be edited and deleted, then the address is reused.
+    delete(&mut mcp, &revived);
+    let revived = card(&mut mcp, &targets, "Revived again", "live when the owner relocks");
+    assert_eq!(revived, doomed, "the same address is live again");
+
+    // Unlocking and locking again captures the now-resolving Link.
+    gui.unlock(lock_id);
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    assert_eq!(plan["plan"]["pin_count"], 1, "{plan}");
+    assert_eq!(plan["plan"]["pins"][0]["target"], doomed);
+    assert_eq!(plan["plan"]["warnings"].as_array().map(Vec::len), Some(0));
+    let relocked = gui.lock(&root, None);
+    assert_ne!(relocked["lock_id"].as_i64(), Some(lock_id));
+    let refusal = mcp.refused("delete_card", json!({ "at": revived }));
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// The whole set of stored addresses, so a refused write can prove it left no Card behind.
+fn stored_addresses(home: &TestHome) -> Vec<String> {
+    let conn = home.db();
+    let mut stmt = conn
+        .prepare("SELECT COALESCE(location,citation_key) FROM cards ORDER BY 1")
+        .expect("cards query");
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .expect("cards")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("cards")
+}
+
+/// T09 / AC07: a Reply or a hub/Spread draft aimed at a locked destination refuses atomically and
+/// keeps its draft, with no fallback Topic and no partial Card left behind.
+#[test]
+fn a_draft_into_a_locked_destination_leaves_no_partial_card() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+
+    // An agent Card to answer, and an agent Topic that the owner locks.
+    let agent_topic = topic(&mut mcp, "AgentTree");
+    let agent_card = card(&mut mcp, &agent_topic, "AgentCard", "the agent's statement");
+    let agent_member = card(&mut mcp, &agent_card, "AgentMember", "agent body");
+
+    // A locked human Topic as the reply destination, and an open one beside it.
+    let human = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "topic", "text": "# HumanHome\n\nhuman body\n" }),
+    ));
+    let locked_member = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "direct", "at": human, "text": "# HumanFirst\n\nfirst human card\n" }),
+    ));
+    let open_topic = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "topic", "text": "# OpenHome\n\nopen body\n" }),
+    ));
+    let human_lock = gui.lock(&human, None);
+    let agent_lock = gui.lock(&agent_topic, None);
+    assert_ne!(human_lock["lock_id"], agent_lock["lock_id"]);
+    let seal = agent_lock["seal"].clone();
+
+    let base = gui.get(&format!("/api/card?at={agent_card}"))["authored_fingerprint"]
+        .as_str()
+        .expect("fingerprint")
+        .to_string();
+    let before = stored_addresses(&home);
+
+    // A Reply aimed at the locked human Topic: a refusal that names the Lock, not an error.
+    let (status, refused) = gui.post_with(
+        "/api/reply",
+        &gui.token,
+        &json!({
+            "at": agent_card,
+            "base": base,
+            "topic": human,
+            "text": format!("# 回应：条件\n\n印证 [[{agent_card}]]：这条回应落在被锁的目的地里。\n"),
+        }),
+    );
+    assert_eq!(status, 200, "a locked destination is a kept refusal: {refused}");
+    assert_eq!(refused["saved"], false, "{refused}");
+    assert_eq!(refused["reason"], "locked_destination", "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&human),
+        "the refusal names the locked destination: {refused}"
+    );
+    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_eq!(refused["target"]["address"], agent_card);
+
+    // Nothing was written: no partial Reply Card and no fallback Topic.
+    assert_eq!(
+        stored_addresses(&home),
+        before,
+        "a refused draft writes no Card at all"
+    );
+    let reply_topic: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE text LIKE '# 回应%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("reply topics");
+    assert_eq!(reply_topic, 0, "no fallback Topic was created");
+
+    // The same Reply into an unlocked human Topic saves, so only the destination blocked it.
+    let saved = gui.post(
+        "/api/reply",
+        &json!({
+            "at": agent_card,
+            "base": base,
+            "topic": open_topic,
+            "text": format!("# 回应：条件\n\n印证 [[{agent_card}]]：这条回应落在开放的目的地里。\n"),
+        }),
+    );
+    assert_eq!(saved["saved"], true, "{saved}");
+    assert_eq!(saved["destination"]["topic"], open_topic);
+
+    // The hub draft plan still reads Cards of a locked tree, and the writing route it files with
+    // refuses to add a Card inside that tree.
+    let cards_before = stored_addresses(&home);
+    let plan = gui.post(
+        "/api/hub/draft",
+        &json!({ "cards": [agent_card, agent_member], "question": "how does it work", "title": "Draft" }),
+    );
+    assert!(plan["draft"]["text"].as_str().is_some(), "{plan}");
+    let (status, refused) = gui.post_with(
+        "/api/create",
+        &gui.token,
+        &json!({
+            "kind": "side",
+            "at": agent_member,
+            "type": "hub",
+            "text": format!("# Draft hub\n\n- [[{agent_card}]]\n"),
+        }),
+    );
+    assert_eq!(status, 409, "a locked tree takes no filed draft: {refused}");
+    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_eq!(
+        stored_addresses(&home),
+        cards_before,
+        "the refused filing left no Card"
+    );
+    let (status, refused) = gui.post_with(
+        "/api/create",
+        &gui.token,
+        &json!({ "kind": "side", "at": locked_member, "text": "# Draft inside\n\nbody\n" }),
+    );
+    assert_eq!(status, 409, "the locked human tree takes no Card: {refused}");
+    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_eq!(stored_addresses(&home), cards_before);
+
+    // A Spread is not an authored Card change, so keeping one over locked Cards is allowed.
+    let spreads = gui.post(
+        "/api/spreads",
+        &json!({ "current": "s1", "spreads": [{
+            "id": "s1",
+            "name": "Locked set",
+            "cards": [
+                { "at": agent_card, "x": 0, "y": 0 },
+                { "at": agent_member, "x": 40, "y": 20 }
+            ]
+        }] }),
+    );
+    assert!(
+        spreads["spreads"].as_array().map(Vec::len) == Some(1),
+        "{spreads}"
+    );
+
+    // Only the human destination refused; the locked agent source is readable and replied to above.
+    assert_eq!(gui.active_lock()["lock_id"], human_lock["lock_id"]);
+    let agent_panel = gui.panel();
+    let active = agent_panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lock| lock["lock_id"] == agent_lock["lock_id"])
+        .expect("the agent Lock");
+    assert_eq!(active["seal"], seal);
+    assert_eq!(agent_panel["integrity"]["ok"], true);
+}
+
+/// AC04: a pin crosses Workspaces, and it does not propagate: the locked tree's own Links pin their
+/// immediate targets only.
+#[test]
+fn a_pin_is_cross_workspace_and_does_not_propagate() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+
+    // A human Card, named by a Link authored in the agent Workspace.
+    let human_topic = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "topic", "text": "# HumanTopic\n\nhuman body\n" }),
+    ));
+    let human_card = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "direct", "at": human_topic, "text": "# HumanCard\n\nhuman thought\n" }),
+    ));
+
+    let root = topic(&mut mcp, "Frozen");
+    let member = card(&mut mcp, &root, "Member", &format!("cites [[{human_card}]]"));
+    // The pinned target links onward, and that second target is not itself promised.
+    let bridge_topic = topic(&mut mcp, "Bridge");
+    let bridge = card(&mut mcp, &bridge_topic, "Bridge", "the pinned target");
+    let farther_topic = topic(&mut mcp, "Farther");
+    let farther = card(&mut mcp, &farther_topic, "Farther", "one Link beyond the promise");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": bridge, "body": format!("continues to [[{farther}]]") }),
+    );
+    mcp.ok(
+        "edit_card",
+        json!({ "at": member, "body": format!("cites [[{human_card}]] and [[{bridge}]]") }),
+    );
+
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    let targets = plan["plan"]["pins"]
+        .as_array()
+        .expect("pins")
+        .iter()
+        .map(|pin| pin["target"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(targets, vec![human_card.clone(), bridge.clone()], "{plan}");
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+
+    // The human Card is pinned even though the Lock lives in the agent Workspace.
+    let (status, refused) = gui.post_with(
+        "/api/delete",
+        &gui.token,
+        &json!({ "at": human_card }),
+    );
+    assert_eq!(status, 409, "a pinned human Card cannot be deleted: {refused}");
+    assert_eq!(refused["refusal"]["code"], "pinned", "{refused}");
+    assert_eq!(refused["refusal"]["pinned_by"][0]["tree"], root);
+    assert_eq!(refused["refusal"]["pinned_by"][0]["sources"][0], member);
+    // Its authored meaning still changes freely.
+    gui.post(
+        "/api/edit",
+        &json!({ "at": human_card, "text": "# HumanCard\n\nthe human thought may change\n" }),
+    );
+
+    // One Link beyond the promise: the farther Card is not pinned.
+    mcp.ok("edit_card", json!({ "at": farther, "body": "free to change" }));
+    delete(&mut mcp, &farther);
+
+    // The bridge itself stays pinned.
+    let refusal = mcp.refused("delete_card", json!({ "at": bridge }));
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(
+        gui.panel()["locks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["unlocked_at"].is_null())
+            .expect("the Lock")["seal"],
+        seal
+    );
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// Every Card address a read payload names, in document order, from its own `address`/`at` fields.
+fn read_addresses(value: &Value) -> Vec<String> {
+    fn walk(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, item) in map {
+                    if (key == "address" || key == "at")
+                        && let Some(text) = item.as_str()
+                    {
+                        out.push(text.to_string());
+                    }
+                    walk(item, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out);
+    out
+}
+
+/// S02-AC01: every read path keeps a locked tree, with the same selection and ranking semantics.
+#[test]
+fn every_read_path_still_serves_locked_cards() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "the quokka equilibrium");
+    let model = side_card(&mut mcp, &first, "Quokka model", "a quokka model");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": model, "type": "model", "level": "concept" }),
+    );
+    let hub = side_card(&mut mcp, &model, "Quokka hub", "hubs the quokka cards");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": hub, "type": "hub", "level": "line" }),
+    );
+    let outside = topic(&mut mcp, "Outside");
+    let other = card(&mut mcp, &outside, "Other", "quokka appears here too");
+    let tree = root.split_once('/').unwrap().0.to_string();
+
+    // One Spread keeps the Table's placement over Cards of both trees.
+    let spread = json!({ "current": "s1", "spreads": [{
+        "id": "s1",
+        "name": "Quokka set",
+        "cards": [
+            { "at": first, "x": 0, "y": 0 },
+            { "at": model, "x": 30, "y": 10 },
+            { "at": other, "x": 60, "y": 20 }
+        ]
+    }] });
+    gui.post("/api/spreads", &spread);
+
+    // Reads before the Lock.
+    let before = json!({
+        "search_plain": read_addresses(&gui.get("/api/search?ws=agent&q=quokka")),
+        "search_entry": read_addresses(&gui.get("/api/search?ws=agent&q=quokka&mode=entry")),
+        "tree": read_addresses(&gui.get(&format!("/api/tree?id={tree}"))),
+        "graph": read_addresses(&gui.get("/api/graph")),
+        "ask": read_addresses(&gui.post("/api/ask", &json!({ "question": "quokka" }))),
+        "register": read_addresses(&gui.get("/api/register?ws=agent")),
+        "overview": gui.get("/api/overview")["stats"].clone(),
+        "card": gui.get(&format!("/api/card?at={first}"))["body"].clone(),
+        "mcp_search": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent" }))),
+        "mcp_search_entry": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent", "mode": "entry" }))),
+        "mcp_tree": read_addresses(&mcp.ok("get_tree", json!({ "tree": tree, "bodies": true }))),
+        "mcp_model": read_addresses(&mcp.ok("get_model", json!({ "at": model }))),
+        "mcp_hub": read_addresses(&mcp.ok("get_hub", json!({ "at": hub }))),
+        "mcp_hubs": read_addresses(&mcp.ok("list_hubs", json!({ "workspace": "agent" }))),
+        "mcp_register": read_addresses(&mcp.ok("get_register", json!({ "workspace": "agent" }))),
+        "mcp_ask": read_addresses(&mcp.ok("ask_box", json!({ "question": "quokka", "workspace": "agent" }))),
+        "mcp_titles": read_addresses(&mcp.ok("export_titles", json!({ "workspace": "agent" }))),
+        "spreads": gui.get("/api/spreads")["spreads"].clone(),
+    });
+    let plain = before["search_plain"].as_array().expect("search rows");
+    assert!(plain.len() >= 3, "all three quokka Cards are found: {before}");
+    assert!(
+        before["ask"].as_array().map(Vec::len).unwrap_or(0) >= 1,
+        "the question still proposes a Card: {before}"
+    );
+    assert!(
+        before["mcp_model"].as_array().map(Vec::len).unwrap_or(0) >= 1,
+        "the model report names its Cards: {before}"
+    );
+
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+
+    // The same reads after the Lock: the same Cards, in the same order, with unchanged facts.
+    let after = json!({
+        "search_plain": read_addresses(&gui.get("/api/search?ws=agent&q=quokka")),
+        "search_entry": read_addresses(&gui.get("/api/search?ws=agent&q=quokka&mode=entry")),
+        "tree": read_addresses(&gui.get(&format!("/api/tree?id={tree}"))),
+        "graph": read_addresses(&gui.get("/api/graph")),
+        "ask": read_addresses(&gui.post("/api/ask", &json!({ "question": "quokka" }))),
+        "register": read_addresses(&gui.get("/api/register?ws=agent")),
+        "overview": gui.get("/api/overview")["stats"].clone(),
+        "card": gui.get(&format!("/api/card?at={first}"))["body"].clone(),
+        "mcp_search": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent" }))),
+        "mcp_search_entry": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent", "mode": "entry" }))),
+        "mcp_tree": read_addresses(&mcp.ok("get_tree", json!({ "tree": tree, "bodies": true }))),
+        "mcp_model": read_addresses(&mcp.ok("get_model", json!({ "at": model }))),
+        "mcp_hub": read_addresses(&mcp.ok("get_hub", json!({ "at": hub }))),
+        "mcp_hubs": read_addresses(&mcp.ok("list_hubs", json!({ "workspace": "agent" }))),
+        "mcp_register": read_addresses(&mcp.ok("get_register", json!({ "workspace": "agent" }))),
+        "mcp_ask": read_addresses(&mcp.ok("ask_box", json!({ "question": "quokka", "workspace": "agent" }))),
+        "mcp_titles": read_addresses(&mcp.ok("export_titles", json!({ "workspace": "agent" }))),
+        "spreads": gui.get("/api/spreads")["spreads"].clone(),
+    });
+    for field in [
+        "search_plain",
+        "search_entry",
+        "tree",
+        "graph",
+        "ask",
+        "register",
+        "overview",
+        "card",
+        "mcp_search",
+        "mcp_search_entry",
+        "mcp_tree",
+        "mcp_model",
+        "mcp_hub",
+        "mcp_hubs",
+        "mcp_register",
+        "mcp_ask",
+        "mcp_titles",
+        "spreads",
+    ] {
+        assert_eq!(after[field], before[field], "`{field}` changed when the tree locked");
+    }
+    // The locked Cards are still selectable, readable and on the Table.
+    assert!(after["search_plain"].as_array().unwrap().iter().any(|at| at == &first));
+    assert_eq!(after["card"], before["card"]);
+    assert_eq!(
+        after["spreads"][0]["cards"].as_array().map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(gui.active_lock()["seal"], seal);
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// R084 / AC03: a target that also belongs to a locked tree obeys that stronger Lock, and the pin
+/// still protects its address from the other tree's promise.
+#[test]
+fn a_target_in_another_locked_tree_obeys_its_own_lock() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let first_tree = topic(&mut mcp, "FirstPromise");
+    let member = card(&mut mcp, &first_tree, "Member", "promises an outside target");
+    let second_tree = topic(&mut mcp, "SecondPromise");
+    let target = card(&mut mcp, &second_tree, "Target", "a locked target");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": member, "body": format!("promises [[{target}]]") }),
+    );
+    let first_lock = gui.lock(&first_tree, None);
+    let second_lock = gui.lock(&second_tree, None);
+
+    // The target's own Lock is the stronger rule: no authored edit of its own.
+    let refusal = mcp.refused(
+        "edit_card",
+        json!({ "at": target, "body": "the second promise refuses this" }),
+    );
+    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_eq!(refusal["locked_tree"], second_tree);
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+
+    // Once its own Lock ends, the pin still keeps the address and row: edits pass, moves do not.
+    gui.unlock(second_lock["lock_id"].as_i64().expect("lock id"));
+    mcp.ok("edit_card", json!({ "at": target, "body": "free to mean something else" }));
+    let refusal = mcp.refused("delete_card", json!({ "at": target }));
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(refusal["pinned_by"][0]["lock_id"], first_lock["lock_id"]);
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// AC08: the derived Link index and every generated Reverse section are still exact after an
+/// allowed write inside a locked archive and after a rebuild the owner runs while it is locked.
+#[test]
+fn a_locked_archive_keeps_its_link_index_and_reverse_sections_exact() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let source_topic = topic(&mut mcp, "Outside");
+    let source = card(&mut mcp, &source_topic, "Source", "no link yet");
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+    let before = member_facts(&gui.panel());
+
+    // The allowed incoming Link, then a rebuild while the tree is locked.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": source, "body": format!("cites [[{first}]]") }),
+    );
+    let reindexed = home.cmd().arg("reindex").output().expect("zt reindex");
+    let report = String::from_utf8_lossy(&reindexed.stdout);
+    assert!(reindexed.status.success(), "{report}");
+    assert!(report.contains("\"ok\":true"), "{report}");
+    let checked = home
+        .cmd()
+        .args(["status", "--check-links"])
+        .output()
+        .expect("zt status --check-links");
+    assert!(checked.status.success());
+    let report = String::from_utf8_lossy(&checked.stdout);
+    assert!(report.contains("\"ok\":true"), "{report}");
+
+    // The authored promise is untouched by the generated refresh.
+    let panel = gui.panel();
+    assert_eq!(member_facts(&panel), before);
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["unlocked_at"].is_null())
+        .expect("the Lock");
+    assert_eq!(active["seal"], seal);
+    assert_eq!(panel["integrity"]["ok"], true);
+    let reverse: String = home
+        .db()
+        .query_row(
+            "SELECT text FROM cards WHERE location = ?1",
+            [&first],
+            |row| row.get(0),
+        )
+        .expect("stored text");
+    assert!(
+        reverse.contains(&source),
+        "the generated Reverse section names its source: {reverse}"
+    );
+}

@@ -43,21 +43,26 @@ impl Outcome {
     }
 }
 
-/// Write one reply Card. Owner access only: the human Workspace is the person's own.
+/// Write one reply Card. Owner access only: the human Workspace is the person's own. A refused
+/// reply writes nothing at all: the transaction is rolled back rather than committed, so a fallback
+/// Topic created on the way is not left behind.
 pub(crate) fn write(root: &Path, request: &Request) -> Result<Outcome> {
     let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20), "reply")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let outcome = write_tx(&tx, request)?;
-    if let Outcome::Saved(value) = &outcome {
-        crate::link_index::source_changed(
-            &tx,
-            value["address"]
-                .as_str()
-                .context("reply result names no address")?,
-        )?;
+    match &outcome {
+        Outcome::Saved(value) => {
+            crate::link_index::source_changed(
+                &tx,
+                value["address"]
+                    .as_str()
+                    .context("reply result names no address")?,
+            )?;
+            tx.commit()?;
+        }
+        Outcome::Refused(_) => tx.rollback()?,
     }
-    tx.commit()?;
     Ok(outcome)
 }
 
@@ -123,7 +128,9 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
     }
     let destination = destination(conn, request.topic)?;
     let (parent, edge) = placement(conn, &destination.address)?;
-    let address = crate::ops::create_successor_tx(
+    // A locked human destination is a kept refusal, not an error: the reader's draft stays in the
+    // desk, the refusal names the Locked tree, and the transaction is rolled back (R061, T09).
+    let address = match crate::ops::create_successor_tx(
         conn,
         Access::Owner,
         edge,
@@ -131,7 +138,28 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
         CardType::Idea,
         None,
         request.text,
-    )?;
+    ) {
+        Ok(address) => address,
+        Err(error) => match error.downcast_ref::<crate::tree_lock::Refusal>() {
+            Some(refusal) => {
+                return Ok(Outcome::Refused(json!({
+                    "saved": false,
+                    "reason": "locked_destination",
+                    "detail": format!(
+                        "the reply was not saved: {}; choose another human Topic",
+                        refusal
+                    ),
+                    "refusal": refusal.value(),
+                    "target": context,
+                    "destination": {
+                        "topic": destination.address,
+                        "title": destination.title,
+                    },
+                })));
+            }
+            None => return Err(error),
+        },
+    };
     Ok(Outcome::Saved(json!({
         "saved": true,
         "address": address,

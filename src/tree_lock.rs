@@ -850,9 +850,13 @@ impl LockPlan {
                 pin.source_addresses().join(", ")
             ));
         }
+        lines.push(
+            "pins keep a target's address and existence only: its meaning, and any external document, artifact or cache availability, stay outside the seal promise"
+                .to_string(),
+        );
         if !self.warnings.is_empty() {
             lines.push(format!(
-                "already broken links: {} (they create no pin; relock after they resolve)",
+                "already broken links: {} (they create no pin; if one resolves later, unlock and lock again to capture it)",
                 self.warnings.len()
             ));
             for warning in &self.warnings {
@@ -996,14 +1000,18 @@ pub(crate) fn plan(
             if crate::is_tree_member(&target_card.address, &tree) {
                 continue;
             }
-            pins.entry(target_card.address.clone())
+            // One pin per distinct `(locked source row, existing target row)` pair: a repeated macro
+            // in one body is the same promise, not a second row (R083).
+            let pin = pins
+                .entry(target_card.address.clone())
                 .or_insert_with(|| Pin {
                     target: target_card.address.clone(),
                     target_row: target_card.row_id,
                     sources: Vec::new(),
-                })
-                .sources
-                .push((card.row_id, card.address.clone()));
+                });
+            if !pin.sources.iter().any(|(row_id, _)| *row_id == card.row_id) {
+                pin.sources.push((card.row_id, card.address.clone()));
+            }
         }
     }
     let seal = seal_of(&fingerprints);
@@ -1919,6 +1927,8 @@ pub(crate) fn export(conn: &Connection) -> Result<Value> {
         let object = value.as_object_mut().expect("Lock value is an object");
         object.insert("members".into(), Value::Array(members));
         object.insert("pins".into(), Value::Array(pins));
+        let warnings = retained_warnings(conn, lock.lock_id)?;
+        object.insert("warnings".into(), Value::Array(warnings));
         object.insert("events".into(), Value::Array(events));
         locks.push(value);
     }
@@ -1928,6 +1938,39 @@ pub(crate) fn export(conn: &Connection) -> Result<Value> {
         "locks": locks,
         "integrity": check(conn)?.value(),
     }))
+}
+
+/// The Broken Links the owner saw when the Lock was accepted, read back from its retained `lock`
+/// event, so the panel shows the same source and target addresses after any later change.
+fn retained_warnings(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
+    let detail = conn
+        .query_row(
+            "SELECT detail FROM lock_events WHERE lock_id = ?1 AND action = 'lock'
+             ORDER BY event_id LIMIT 1",
+            [lock_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(detail) = detail else {
+        return Ok(Vec::new());
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&detail) else {
+        return Ok(Vec::new());
+    };
+    Ok(value["warnings"]
+        .as_array()
+        .map(|warnings| {
+            warnings
+                .iter()
+                .map(|warning| {
+                    json!({
+                        "source": warning["source"],
+                        "target": warning["target"],
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2302,6 +2345,62 @@ mod tests {
         assert_ne!(second.lock_id, lock.lock_id);
     }
 
+    /// S02 (#125, R083): one pin per distinct `(locked source row, existing target row)` pair, so a
+    /// repeated macro in one body still locks and still stores one row.
+    #[test]
+    fn a_repeated_macro_produces_one_pin_row_for_its_source() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        crate::insert_card(
+            &mut conn,
+            "2/0",
+            true,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Far", "far body"),
+        )
+        .expect("far topic");
+        crate::insert_card(
+            &mut conn,
+            "2/1",
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("Pinned", "pinned body"),
+        )
+        .expect("pinned card");
+        let side = crate::load_card(&conn, &side_address(&root)).expect("side");
+        crate::update_card_text(
+            &mut conn,
+            &side,
+            &card_text(
+                "Side",
+                "names [[2/1]] once, then [[2/1]] again and [[2/1]] a third time",
+            ),
+        )
+        .expect("rewrite side");
+
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        assert_eq!(plan.pins.len(), 1, "one distinct target");
+        assert_eq!(plan.pins[0].target, "2/1");
+        assert_eq!(
+            plan.pins[0].sources.len(),
+            1,
+            "one distinct source row for a repeated macro: {:?}",
+            plan.pins[0].sources
+        );
+
+        let tx = conn.transaction().expect("transaction");
+        lock_tx(&tx, &plan).expect("a repeated macro still locks");
+        tx.commit().expect("commit");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lock_pins", [], |row| row.get(0))
+            .expect("pin rows");
+        assert_eq!(rows, 1, "one pin row");
+    }
+
     #[test]
     fn a_note_is_bounded_has_no_nul_and_an_empty_note_is_null() {
         assert_eq!(validate_note(None).expect("none"), None);
@@ -2484,6 +2583,72 @@ mod tests {
         assert_eq!(record_faults_tx(&tx, &integrity).expect("record again"), 0);
         tx.commit().expect("commit");
         let _ = temp;
+    }
+
+    /// R079, R080 and R082: the seal hashes authored identity only. Address, Workspace and the
+    /// `is_topic`/`is_lit` flags are compared separately, and even a no-op request is refused.
+    #[test]
+    fn the_seal_checks_address_workspace_and_kind_separately_and_refuses_no_ops() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+
+        // The authored fingerprint ignores the facts the Lock checks separately.
+        let card = crate::load_card(&conn, &root).expect("root card");
+        let fingerprint = crate::card::authored_fingerprint(&card).expect("fingerprint");
+        let mut elsewhere = card.clone();
+        elsewhere.row_id = 999;
+        elsewhere.address = "9/0".into();
+        elsewhere.workspace = Workspace::Agent;
+        elsewhere.is_topic = false;
+        elsewhere.is_lit = true;
+        assert_eq!(
+            crate::card::authored_fingerprint(&elsewhere).expect("other fingerprint"),
+            fingerprint,
+            "address, row, Workspace and kind are outside the authored fingerprint"
+        );
+
+        // A kind change is refused by the statement trigger while the Lock is active.
+        let error = conn
+            .execute(
+                "UPDATE cards SET is_topic = 0 WHERE row_id = ?1",
+                [card.row_id],
+            )
+            .expect_err("the trigger refuses a kind change");
+        assert!(error.to_string().contains("locked tree"), "{error}");
+
+        // Even a request that would change nothing is a Lock refusal (R082).
+        let refusal = ensure_unlocked(&conn, Change::Edit(card.row_id)).expect_err("no-op edit");
+        assert_eq!(
+            refusal.downcast_ref::<Refusal>().expect("typed").kind,
+            RefusalKind::Locked
+        );
+
+        // With the statement trigger removed, the same kind change is an exact integrity fault
+        // even though the authored fingerprint still matches its snapshot.
+        conn.execute_batch("DROP TRIGGER lock_no_change")
+            .expect("drop trigger");
+        conn.execute(
+            "UPDATE cards SET is_topic = 0 WHERE row_id = ?1",
+            [card.row_id],
+        )
+        .expect("tamper");
+        let integrity = check(&conn).expect("check");
+        assert!(!integrity.ok());
+        let kinds = integrity
+            .faults
+            .iter()
+            .map(|fault| fault.kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"member-changed"), "{kinds:?}");
+        assert!(kinds.contains(&"trigger-missing"), "{kinds:?}");
+        assert!(
+            !kinds.contains(&"fingerprint-changed"),
+            "the authored identity did not change: {kinds:?}"
+        );
     }
 
     #[test]
