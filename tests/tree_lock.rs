@@ -3076,6 +3076,72 @@ fn the_session_refuses_a_locked_literature_edit_before_the_part_choice() {
     assert_eq!(stored_texts(&home), before);
 }
 
+/// R217/R232/S08-AC03: a pinned target is not a member. The Session keeps its body editable, while
+/// moving or deleting it is refused before the prompt and names the Locked tree and the source Card
+/// that holds the Link, so the pin is explained and the promise stays intact.
+#[test]
+fn the_session_allows_a_pinned_body_edit_and_refuses_its_move_or_delete() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside_root = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside_root, "Pinned", "pinned body");
+    let targets_root = topic(&mut mcp, "Targets");
+    let other = card(&mut mcp, &targets_root, "Other", "other body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("links [[{pinned}]]") }),
+    );
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+
+    let output = home
+        .cmd()
+        .write_stdin(format!(
+            "go {pinned}\ne\n# Pinned\n\npinned body edited\n\n<!-- zt:reverse-links -->\n\x13\nmv before {other}\ndel\nq\n"
+        ))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let said = String::from_utf8(output).expect("session output is UTF-8");
+    // The pinned Card is marked as pinned, not as locked.
+    assert!(
+        said.contains(&format!("location: {pinned} [pinned]")),
+        "{said}"
+    );
+    // Its authored body stays editable.
+    assert!(said.contains("# Pinned"), "the editor opened: {said}");
+    let edited = mcp.ok("get_card", json!({ "at": pinned }));
+    assert!(
+        edited["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pinned body edited"),
+        "the pinned body edit landed: {edited}"
+    );
+    // Moving or deleting it is refused before the prompt, and the refusal explains the source.
+    let refusal = format!(
+        "card `{pinned}` is a pinned target of locked tree `{root}` (lock {lock_id}); locked source cards {first} link it"
+    );
+    assert_eq!(said.matches(&refusal).count(), 2, "{said}");
+    assert!(!said.contains("to confirm"), "no prompt opened: {said}");
+    // The promise is untouched: the Locked tree's seal still verifies.
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+    assert_eq!(
+        gui.panel()["locks"]
+            .as_array()
+            .expect("locks")
+            .iter()
+            .find(|item| item["lock_id"] == json!(lock_id))
+            .expect("the Lock")["seal_intact"],
+        true
+    );
+}
+
 /// R034/R044/S08-AC03: the shell and the Session offer no Lock control. A terminal user sees the
 /// marks, the refusal hint and the status counts, and the only Lock command anywhere is the GUI.
 #[test]
