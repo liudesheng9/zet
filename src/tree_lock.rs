@@ -549,6 +549,8 @@ struct State {
     locks: BTreeMap<i64, Lock>,
     member_by_row: BTreeMap<i64, (i64, String)>,
     member_by_address: BTreeMap<String, (i64, String)>,
+    /// Each promised row's own address, so a refusal names the Card it refused (R217, S05-AC04).
+    member_address_by_row: BTreeMap<i64, String>,
     pins_by_target: BTreeMap<i64, Vec<PinSource>>,
     roots: BTreeMap<String, i64>,
 }
@@ -587,6 +589,7 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
         locks.insert(lock.lock_id, lock);
     }
     let mut member_by_row = BTreeMap::new();
+    let mut member_address_by_row = BTreeMap::new();
     let mut member_by_address = BTreeMap::new();
     let mut stmt = conn.prepare(
         "SELECT m.lock_id, m.row_id, m.address FROM lock_members m
@@ -606,6 +609,7 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
             .map(|lock| lock.root.clone())
             .unwrap_or_default();
         member_by_row.insert(row_id, (lock_id, root.clone()));
+        member_address_by_row.insert(row_id, address.clone());
         member_by_address.insert(address, (lock_id, root));
     }
     let mut pins_by_target: BTreeMap<i64, Vec<PinSource>> = BTreeMap::new();
@@ -650,6 +654,7 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
         locks,
         member_by_row,
         member_by_address,
+        member_address_by_row,
         pins_by_target,
         roots,
     }))
@@ -1506,11 +1511,12 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
     match change {
         Change::Edit(row_id) => {
             if let Some((lock_id, root)) = state.member_by_row.get(&row_id) {
+                // The refused Card's own address, never another member's: the owner's refusal names
+                // the exact Card whose write the Lock stopped (R217, S05-AC04).
                 let address = state
-                    .member_by_address
-                    .iter()
-                    .find(|(_, (id, _))| id == lock_id)
-                    .map(|(address, _)| address.clone())
+                    .member_address_by_row
+                    .get(&row_id)
+                    .cloned()
                     .unwrap_or_default();
                 return Err(anyhow::Error::new(Refusal::locked(
                     &address, *lock_id, root,

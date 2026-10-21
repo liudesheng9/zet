@@ -316,6 +316,11 @@ fn first_address(root: &str) -> String {
     format!("{tree}/1")
 }
 
+/// The tree id of one address: the text before the first `/`.
+fn tree_of(address: &str) -> String {
+    address.split_once('/').map(|(tree, _)| tree).unwrap_or(address).to_string()
+}
+
 #[test]
 fn an_owner_lock_freezes_a_topic_tree_for_every_writer() {
     let home = TestHome::new();
@@ -2343,4 +2348,389 @@ fn every_read_projection_names_the_same_lock_facts_at_one_revision() {
     }
     assert_eq!(gui.active_lock(), Value::Null);
     assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+// ---------------------------------------------------------------------------------------------
+// S05 (#128): the owner-facing interaction around plans, refusals, drafts and pins.
+// ---------------------------------------------------------------------------------------------
+
+/// R217 / S05-AC04 / S05-AC07: a refusal names the exact Card it refused, its Locked tree and its
+/// Lock. The reading desk's disabled-control explanation and a refused Save both name that Card, so
+/// a refusal about one regular Card never reports the tree's root or another member.
+#[test]
+fn a_refusal_names_the_card_it_refused_and_its_locked_tree() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let alpha = card(&mut mcp, &root, "Alpha", "alpha body");
+    let beta = card(&mut mcp, &alpha, "Beta", "beta body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+
+    // The last regular Card of the tree, through the MCP writer.
+    let refusal = mcp.refused("edit_card", json!({ "at": beta, "body": "changed beta" }));
+    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_eq!(refusal["card"], json!(beta), "the refusal names the Card it refused: {refusal}");
+    assert_eq!(refusal["locked_tree"], json!(root));
+    assert_eq!(refusal["lock_id"], json!(lock_id));
+    assert!(
+        refusal["error"].as_str().unwrap_or_default().contains(&beta),
+        "the message names the Card it refused: {refusal}"
+    );
+
+    // The owner's own route answers the same facts under `refusal`.
+    let (status, refused) = gui.post_with(
+        "/api/edit",
+        &gui.token,
+        &json!({ "at": beta, "text": "# Beta\n\nchanged\n" }),
+    );
+    assert_eq!(status, 409, "a Lock refusal is a structured 409: {refused}");
+    assert_eq!(refused["refusal"]["card"], json!(beta), "{refused}");
+    assert_eq!(refused["refusal"]["locked_tree"], json!(root));
+    assert_eq!(refused["refusal"]["lock_id"], json!(lock_id));
+    assert!(
+        refused["error"].as_str().unwrap_or_default().contains(&beta),
+        "the desk reads one message that names the Card: {refused}"
+    );
+
+    // An earlier Card of the same tree names itself, not the root and not another member.
+    let refusal = mcp.refused("edit_card", json!({ "at": alpha, "type": "event" }));
+    assert_eq!(refusal["card"], json!(alpha), "{refusal}");
+    // A Literature root inside its own Locked tree names itself too.
+    let book = address(mcp.ok(
+        "create_literature",
+        json!({ "bibtex": "@book{Smith2024, title={Book}}", "body": "该书。" }),
+    ));
+    gui.lock(&book, None);
+    let (status, refused) = gui.post_with(
+        "/api/metadata",
+        &gui.token,
+        &json!({ "at": book, "bibtex": "@book{Smith2024, title={Book, second edition}}" }),
+    );
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["refusal"]["card"], json!(book), "{refused}");
+    assert_eq!(refused["refusal"]["locked_tree"], json!(book));
+
+    // Nothing was written, and the Lock is intact.
+    let stored = mcp.ok("get_card", json!({ "at": beta }));
+    assert!(stored["body"].as_str().unwrap_or_default().contains("beta body"), "{stored}");
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// R367 / T13 / S05-AC02: an unlock dialog that saw one Lock, one revision or one archive state
+/// cannot release a later Lock. The plan hash binds the Lock id, its seal, the root and the current
+/// revision, so every stale dialog answers `plan_changed` and writes nothing.
+#[test]
+fn a_stale_unlock_dialog_cannot_release_a_later_lock() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let first_lock = gui.lock(&root, Some("keep this"));
+    let first_id = first_lock["lock_id"].as_i64().expect("first lock id");
+    let seal = first_lock["seal"].clone();
+
+    // A dialog opened on the first Lock. The owner then releases that Lock and locks the tree again;
+    // the second promise is a new Lock id over the same untouched content, so its seal is the same.
+    let old_plan = gui.post("/api/unlock", &json!({ "lock_id": first_id }));
+    let old_hash = old_plan["plan"]["plan_hash"]
+        .as_str()
+        .expect("old plan hash")
+        .to_string();
+    gui.unlock(first_id);
+    let second = gui.lock(&root, Some("keep this"));
+    let second_id = second["lock_id"].as_i64().expect("second lock id");
+    assert_ne!(second_id, first_id);
+    assert_eq!(second["seal"], seal, "the same content promises the same seal");
+
+    // The old dialog names the new Lock: the hashes differ by Lock id and revision, nothing is written.
+    let (status, stale) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({
+            "lock_id": second_id,
+            "tree": root,
+            "confirm": "unlock",
+            "plan_hash": old_hash,
+        }),
+    );
+    assert_eq!(status, 200, "{stale}");
+    assert_eq!(stale["applied"], false, "{stale}");
+    assert_eq!(stale["plan_changed"], true, "{stale}");
+    assert_eq!(stale["plan"]["lock_id"], json!(second_id));
+    assert_eq!(
+        gui.active_lock()["lock_id"],
+        json!(second_id),
+        "the stale dialog released nothing"
+    );
+
+    // The old dialog names the ended Lock: an ended Lock cannot be changed at all.
+    let (status, ended) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({
+            "lock_id": first_id,
+            "tree": root,
+            "confirm": "unlock",
+            "plan_hash": old_hash,
+        }),
+    );
+    assert_eq!(status, 400, "{ended}");
+    assert!(
+        ended["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already ended"),
+        "{ended}"
+    );
+
+    // A changed archive revision renews the plan too: a write outside the tree moves the revision.
+    let plan = gui.post("/api/unlock", &json!({ "lock_id": second_id, "tree": root }));
+    let fresh_hash = plan["plan"]["plan_hash"]
+        .as_str()
+        .expect("fresh plan hash")
+        .to_string();
+    let outside = topic(&mut mcp, "Outside");
+    card(&mut mcp, &outside, "Later", "added after the plan");
+    let (status, stale) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({
+            "lock_id": second_id,
+            "tree": root,
+            "confirm": "unlock",
+            "plan_hash": fresh_hash,
+        }),
+    );
+    assert_eq!(status, 200, "{stale}");
+    assert_eq!(stale["plan_changed"], true, "a new revision renews the plan: {stale}");
+    assert!(
+        stale["plan"]["revision"].as_u64() > plan["plan"]["revision"].as_u64(),
+        "the renewed plan reads the newer revision: {stale}"
+    );
+    assert_eq!(gui.active_lock()["lock_id"], json!(second_id));
+
+    // A dialog naming another tree is refused before it can act on this Lock.
+    let (status, wrong) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({ "lock_id": second_id, "tree": outside }),
+    );
+    assert_eq!(status, 400, "{wrong}");
+    assert!(
+        wrong["error"].as_str().unwrap_or_default().contains("belongs to tree"),
+        "{wrong}"
+    );
+    assert_eq!(gui.active_lock()["lock_id"], json!(second_id));
+
+    // A confirmed unlock without its hash is invalid, and the renewed plan releases exactly this Lock.
+    let (status, bare) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({ "lock_id": second_id, "tree": root, "confirm": "unlock" }),
+    );
+    assert_eq!(status, 400, "{bare}");
+    assert!(
+        bare["error"].as_str().unwrap_or_default().contains("plan_hash"),
+        "{bare}"
+    );
+    let plan = gui.post("/api/unlock", &json!({ "lock_id": second_id, "tree": root }));
+    let applied = gui.post(
+        "/api/unlock",
+        &json!({
+            "lock_id": second_id,
+            "tree": root,
+            "confirm": "unlock",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert_eq!(applied["applied"], true, "{applied}");
+    assert_eq!(applied["lock"]["lock_id"], json!(second_id));
+    assert!(applied["lock"]["unlocked_at"].is_string());
+    let stored = mcp.ok("get_card", json!({ "at": first }));
+    assert!(stored["lock"].is_null(), "the release reaches every read: {stored}");
+}
+
+/// R217 / S05-AC02: the server recomputes every plan fact. A browser that sends its own counts,
+/// seal, member array or pins changes nothing, because only the plan hash and the server's own plan
+/// decide what commits.
+#[test]
+fn a_lock_plan_recomputes_every_fact_the_browser_sends() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    card(&mut mcp, &first, "Second", "second body");
+    let forged_members = json!([{ "address": root, "row_id": 1, "fingerprint": "0", "root": true }]);
+
+    // A plan request that names a forged member count, seal and member list still plans the tree.
+    let forged = gui.post(
+        "/api/lock",
+        &json!({
+            "root": root,
+            "member_count": 1,
+            "regular_count": 0,
+            "seal": "0".repeat(64),
+            "members": forged_members,
+            "pins": [],
+            "revision": 1,
+        }),
+    );
+    assert_eq!(forged["applied"], false, "{forged}");
+    let plan = &forged["plan"];
+    assert_eq!(plan["member_count"], 3, "the server counts the tree: {forged}");
+    assert_eq!(plan["regular_count"], 2);
+    assert_ne!(plan["seal"], json!("0".repeat(64)));
+    assert_eq!(plan["members"].as_array().map(Vec::len), Some(3));
+    assert!(plan["revision"].as_u64() > Some(1));
+
+    // The confirmation carries the same forged facts: only the hash decides, and the stored member
+    // snapshot is the server's.
+    let applied = gui.post(
+        "/api/lock",
+        &json!({
+            "root": root,
+            "confirm": "lock",
+            "plan_hash": plan["plan_hash"],
+            "member_count": 1,
+            "seal": "0".repeat(64),
+            "members": forged_members,
+        }),
+    );
+    assert_eq!(applied["applied"], true, "{applied}");
+    let lock = &applied["lock"];
+    assert_eq!(lock["member_count"], 3);
+    assert_eq!(lock["seal"], plan["seal"]);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let members: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM lock_members WHERE lock_id = ?1",
+            [lock_id],
+            |row| row.get(0),
+        )
+        .expect("member rows");
+    assert_eq!(members, 3, "the stored snapshot is the server's");
+    let panel = gui.panel();
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the Lock");
+    assert_eq!(active["seal"], plan["seal"]);
+    assert_eq!(active["member_count"], 3);
+}
+
+/// R226 / S05-AC05: a pin is not a whole-tree Lock. A successor filed under a pinned target moves no
+/// promised address, so the server allows it; only an actual mapping that moves a pinned Card, such
+/// as an insertion before it, is refused.
+#[test]
+fn a_pinned_target_takes_new_successors_but_cannot_be_moved_into_place() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let side = side_card(&mut mcp, &first, "Side", "the reference");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": side, "body": format!("links [[{pinned}]]") }),
+    );
+    gui.lock(&root, None);
+
+    // Continuations of the pinned target change no promised address: they are ordinary writes.
+    let tree = tree_of(&pinned);
+    let child = card(&mut mcp, &pinned, "Child", "a harmless continuation");
+    let branch = side_card(&mut mcp, &pinned, "Branch", "another harmless continuation");
+    assert_eq!(tree_of(&child), tree, "a direct successor continues the line: {child}");
+    assert_eq!(tree_of(&branch), tree, "a side successor branches: {branch}");
+    // So is a new continuation filed under that child: the pin covers the target's own address.
+    card(&mut mcp, &child, "Grandchild", "one step further");
+
+    // An insertion before the pinned target would move its address, so the mapping is refused before
+    // any temporary Location is written.
+    let before = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
+        .expect("cards");
+    let refusal = mcp.refused(
+        "insert_card",
+        json!({ "before": pinned, "title": "Before", "body": "body" }),
+    );
+    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_eq!(refusal["pinned_by"][0]["tree"], root);
+    assert_eq!(refusal["pinned_by"][0]["sources"][0], side);
+    assert!(
+        refusal["error"].as_str().unwrap_or_default().contains(&side),
+        "the refusal names the locked source Card: {refusal}"
+    );
+    let after = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
+        .expect("cards");
+    assert_eq!(after, before, "a refused insertion writes no Card");
+
+    // Moving the pinned target itself stays refused, through the GUI route too.
+    let targets = topic(&mut mcp, "Targets");
+    let (status, moved) = gui.post_with(
+        "/api/move",
+        &gui.token,
+        &json!({ "at": pinned, "to": format!("{}/1", tree_of(&targets)) }),
+    );
+    assert_eq!(status, 409, "{moved}");
+    assert_eq!(moved["refusal"]["code"], "pinned", "{moved}");
+    assert_eq!(moved["refusal"]["pinned_by"][0]["tree"], root);
+}
+
+/// R212 / R230 / S05-AC08: the Lock has GUI routes only. The MCP server offers no Lock-control tool,
+/// and every Lock route keeps the existing GUI token check.
+#[test]
+fn the_lock_has_gui_routes_only_and_no_mcp_control_tool() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+
+    // No MCP tool names a Lock action; the read projections remain.
+    let listed = mcp.request("tools/list", json!({}));
+    let names = listed["result"]["tools"]
+        .as_array()
+        .expect("the MCP server lists its tools")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| name == "get_card"), "{names:?}");
+    assert!(names.iter().any(|name| name == "list_trees"), "{names:?}");
+    for name in &names {
+        let lower = name.to_lowercase();
+        assert!(
+            !lower.contains("lock") && !lower.contains("unlock"),
+            "a Lock action is GUI only (R212): {name}"
+        );
+    }
+
+    // The four routes keep the ordinary token check: without it they answer 403 and change nothing.
+    let open = gui.post("/api/lock", &json!({ "root": root }));
+    assert_eq!(open["applied"], false);
+    for (path, body) in [
+        ("/api/lock", json!({ "root": root })),
+        ("/api/unlock", json!({ "lock_id": 1 })),
+        ("/api/lock/note", json!({ "lock_id": 1, "note": "x" })),
+    ] {
+        let (status, refused) = gui.post_with(path, "not-the-token", &body);
+        assert_eq!(status, 403, "{path}: {refused}");
+        assert!(
+            refused["error"].as_str().unwrap_or_default().contains("token"),
+            "{path}: {refused}"
+        );
+    }
+    let (status, refused) = gui.get_with("/api/locks", "not-the-token");
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(gui.panel()["locks"].as_array().map(Vec::len), Some(0));
 }
