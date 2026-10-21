@@ -187,6 +187,22 @@ The GUI returns `Outcome::into_value()` as it is: `{confirm, lines}` or the resu
 
 ## Behaviour
 
+### The Lock gate
+
+A Lock is the owner's promise about one whole tree ([Service, CLI and storage](service-and-cli.md#tree-lock-storage-src_tree_lockrs)). Every `ops` change calls `tree_lock::ensure_unlocked` before it writes, with the effect it is about to apply:
+
+| `Change` | Used by | Refused when |
+|---|---|---|
+| `Edit(row_id)` | `edit_tx` (and so every metadata setter), `edit_metadata`, `update_card_text`/`update_literature_text` | the row is a member of an active Locked tree |
+| `CreateAt(final address)` | `create_topic_tx`, `create_successor_tx`, `create_literature_tx`, `insert_card` | the final address belongs to an active Locked tree (including an orphaned Lock whose root is gone) |
+| `Mapping(final old→new)` | `move_card`, `insert_card`, every `apply_location_mapping_tx` caller (moves, side compaction, Citation-key rename) | a source row is a member or a pinned target, a destination is inside a Locked tree, or the mapping would rewrite a `[[target]]` in a Locked source |
+| `Delete(plan)` | `delete` | the delete set names a member or a pinned target; its `into` re-pointing or Side compaction hits the same rules |
+| `LinkRewrites(map)` | inside `Mapping` and `Delete` | a Locked source's authored body contains a `[[target]]` that the rewrite would change |
+
+The order is fixed: take the edit lock, load the Card, run the Workspace `Access` checks, then the Lock gate, then plan, then the two-step confirmation, then apply the transaction-level writers, which repeat the same gate. A no-op edit request is still refused, because the request itself is the change the owner promised to forbid. Owner Access has no exemption; an opponent Agent Access check still refuses first. A typed refusal carries the kind (`locked`, `locked_tree`, `pinned`, `index_integrity`), the Lock id, the Locked tree's root address and, for a pin, every Locked source Card holding the Link; `ops` returns it as an `anyhow` error wrapping `tree_lock::Refusal`, the GUI answers `409` with a `refusal` object, and the MCP server returns the same JSON with `isError`.
+
+Every writer path that does not pass through `ops` calls the gate itself: `main::insert_card_tx`, `insert_literature_card_tx`, `update_card_text`, `update_literature_text`, `update_literature_metadata`, `apply_delete_plan`, `apply_location_mapping_tx`, the four metadata setters (`model::set`, `model::set_level`, `hub::set_level`, `math::set_form`), `batch::owned_paragraph`, and `zt clear` (which refuses while any Lock is active). The shell commands and the GUI check before an editor or a confirmation prompt opens. Reverse-link regeneration and the Link-index rebuild are generated-only writes and deliberately skip the gate; the SQL triggers allow them because the authored part of the text is unchanged.
+
 ### Gated write (every `ops` change)
 
 1. Take `zt.edit.lock` with `acquire_edit_lock_within(root, EDIT_PATIENCE, <operation>)`, where `<operation>` is the function's own name (`create_topic`, `create_successor`, `edit`, `apply_batch`, …). While the lock is held the call retries with a pause that doubles from 20 ms to at most 400 ms, for up to 20 s, then fails with `edit in progress`. Only contention is retried: a fault (access denied, a full disk, an unreadable lock file) returns at once ([Service, CLI and storage](service-and-cli.md)). A wait past five seconds writes one `edit wait:` line and its completion records both the queue wait and the lock-held duration; a wait whose last poll crosses the five seconds reports itself too, because the crossing is checked both after a refusal and when the lock finally arrives. A Session holds the lock while its editor is open.
@@ -418,6 +434,8 @@ cargo test --test card_types --test model_structure --test model_levels --test h
 | `src/session/command.rs` `ins_and_mv_before_put_a_card_between_two_cards` | Session `ins` and `mv alone before`, Link rewrite in the new Card, the usage error |
 | `tests/self_sufficient_models.rs` `insert_and_move_between_refuse_what_they_cannot_do_and_reorder_one_step`, `the_gui_inserts_a_card_and_moves_one_between_two_cards`, `a_delete_names_the_links_it_breaks_and_into_re_points_them` | MCP and GUI insert/move/delete with plans, `into` re-pointing with compaction, Agent refusal through a human Link |
 | `tests/workspaces_mcp.rs` `mcp_refuses_agent_changes_that_would_rewrite_links_in_human_cards`, `cards_never_move_between_workspaces_even_for_the_owner`, `mcp_reads_both_workspaces_but_changes_only_the_agent_workspace` | `ensure_link_rewrites_allowed` for move, compaction, and rename; the Workspace boundary; `base` refusal |
+| `tests/tree_lock.rs` `every_public_writer_path_is_refused_before_it_writes` | every `ops` and shell path above: edit text/type/facet/emphasis/level/hub level/form, owned paragraph, create direct/side, insert, move and delete are refused before a write, with the Card count and revision unchanged |
+| `tests/tree_lock.rs` `an_owner_lock_freezes_a_topic_tree_for_every_writer` | Owner Access through the GUI route refused with `409` and a structured `refusal`; a pinned target keeps its body editable; an incoming Link is allowed and keeps the seal |
 | `tests/cli_service.rs` `delete_side_successor_compacts_later_sides_and_rewrites_links`, `move_subtree_validates_target_and_rewrites_links`, `citation_key_rename_requires_move_and_rewrites_links_from_every_card_kind`, `literature_tree_grows_links_compacts_moves_and_renames_inside_its_boundary` | the `src/main.rs` plans that `ops` reuses, through the shell |
 | `tests/card_types.rs`, `tests/model_structure.rs`, `tests/model_levels.rs`, `tests/hub_cards.rs`, `tests/math_units.rs` | type, facet, level, hub level, and form through `create_successor` + `edit` from MCP and the GUI |
 
@@ -450,6 +468,7 @@ Pitfalls:
 ## Change history
 
 
+- `2026-10-21` — Tree Lock S01 (#124): every `ops` change and every transaction-level writer calls `tree_lock::ensure_unlocked` with a typed `Change` before it writes; `Refusal` reaches the GUI as a `409` and MCP as a structured `isError` result; the shell commands precheck before an editor or prompt.
 - `2026-10-19` - #93 S13 (entry-first search): the block's code now carries the shared entry ranking used by MCP search and the GUI, with plain search and empty-query listings unchanged.
 - `2026-10-18` — Reverify [issue #68](https://github.com/liudesheng9/zet/issues/68): the receipt boundary is driven by `zt-digest call -OperationPrefix` in deterministic chunks and by the retained `terms` accepted plan, with public process-failure recovery; a rolled-back batch keeps no receipt.
 

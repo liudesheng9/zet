@@ -230,6 +230,7 @@ fn owned_paragraph(
     let address = args["at"].as_str().context("missing paragraph at")?;
     let card = crate::load_card(conn, address)?;
     crate::Access::Agent.ensure_writable(card.workspace)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     let range = crate::card::authored_body_range(&card.text)?;
     let original_body = &card.text[range.clone()];
     let spec = args["owned_paragraph"]

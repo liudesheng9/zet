@@ -93,27 +93,46 @@ fn parse(text: &str, require_title: bool) -> Result<ParsedCard> {
 /// captured fingerprint stays valid exactly while the authored text does.
 pub(crate) fn authored_fingerprint(card: &crate::Card) -> Result<String> {
     let parsed = parse_card_text(&card.text)?;
-    let authored = [
-        parsed.title,
-        parsed.body,
-        card.bibtex.clone().unwrap_or_default(),
-        card.card_type.id().to_string(),
-        card.facet.as_ref().map_or(String::new(), |facet| facet.id().to_string()),
-        card.emphasis
-            .map_or(String::new(), |emphasis| emphasis.id().to_string()),
-        card.level_id().unwrap_or_default().to_string(),
-        card.form.map_or(String::new(), |form| form.id().to_string()),
-    ];
+    Ok(authored_fingerprint_framed(
+        &parsed.title,
+        &parsed.body,
+        card.bibtex.as_deref().unwrap_or_default(),
+        card.card_type.id(),
+        card.facet.as_ref().map_or("", |facet| facet.id()),
+        card.emphasis.map_or("", |emphasis| emphasis.id()),
+        card.level_id().unwrap_or_default(),
+        card.form.map_or("", |form| form.id()),
+    ))
+}
+
+/// The authored fingerprint's byte framing (S01, #124): the eight authored fields in a fixed order,
+/// each followed by one NUL byte, hashed with SHA-256. `card::authored_fingerprint` and the SQL
+/// `zt_authored_fp` wrapper share this helper, so the trigger baseline and the Rust baseline are the
+/// same value. The caller has already normalized the fields: the parsed title and body, the raw
+/// BibTeX, and the stored enum ids (`""` when a field is absent).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn authored_fingerprint_framed(
+    title: &str,
+    body: &str,
+    bibtex: &str,
+    card_type: &str,
+    facet: &str,
+    emphasis: &str,
+    level: &str,
+    form: &str,
+) -> String {
     let mut hasher = sha2::Sha256::new();
-    for field in &authored {
+    for field in [
+        title, body, bibtex, card_type, facet, emphasis, level, form,
+    ] {
         hasher.update(field.as_bytes());
         hasher.update([0u8]);
     }
-    Ok(hasher
+    hasher
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .collect()
 }
 
 /// The exact statement fingerprint of one authored body (§4.5, D087): two Cards whose statements

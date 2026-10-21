@@ -131,6 +131,8 @@ pub(crate) fn apply_insert_plan(
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     crate::validate_card_text(conn, &plan.location, text, None)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
     let text = crate::replace_link_locations(text, &plan.mapping)?;
     let tx = conn.transaction()?;
     crate::apply_location_mapping_tx(&tx, &plan.mapping)?;

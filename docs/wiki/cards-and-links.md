@@ -9,7 +9,7 @@ paths:
   - "src/link.rs"
   - "tests/card_types.rs"
 synced: fe5d77864def
-updated: 2026-10-17
+updated: 2026-10-21
 ---
 
 # Cards, Workspaces and Links
@@ -285,6 +285,12 @@ A Card with no inbound Links ends at the marker line: `# T\n\n<!-- zt:reverse-li
 
 The table definition and its migrations are in `cards_table`, `ensure_card_type_column`, `ensure_workspace_column`, `ensure_finding_cards`, and `ensure_markdown_cards` in `src/main.rs` ([Service, CLI and storage](service-and-cli.md)). `metadata.card_format = 'markdown'` records that `from_legacy_text` has run.
 
+### Authored identity and a Lock (`card::authored_fingerprint`)
+
+`card::authored_fingerprint(card)` hashes the parsed title, the parsed body, the raw BibTeX, the Card type, the Model facet, the emphasis, the effective Model or Hub level, and the Math form, each field followed by one NUL byte, with SHA-256. It is the identity a Tree Lock promises and the value its seal is computed from. The byte framing lives in one helper, `card::authored_fingerprint_framed`, so the SQL `zt_authored_fp` wrapper on every `zt` connection produces exactly the same digest; the wrapper validates a stored enum instead of falling back to a default, and a parse or hash failure aborts the statement. The generated Reverse section is not authored, so refreshing it changes neither value.
+
+A Lock is a separate promise layered beside `Access`: the Workspace rules still decide whether a client may change a Card at all, and the Lock gate then decides whether the owner has frozen its tree ([Service, CLI and storage](service-and-cli.md#tree-lock-storage-src_tree_lockrs), [Card operations](card-operations.md#the-lock-gate)). Owner Access has no exemption. The pins a Lock takes come from the authored `[[target]]` occurrences of its members, resolved by the ordinary Link parser: a target inside the same tree is not a pin, a target in another tree is, and a target that does not resolve is a warning only. A pinned target keeps its body, title, BibTeX without a Citation-key rename, type, and model/hub/math fields editable; its address, row identity, Workspace and Tree kind are frozen. Pins do not propagate: A links B and B links C pins only B.
+
 ### Dump
 
 `archive.json` in a `zt dp` dump lists every Card's Workspace and every non-Idea Card's type (from `tests/card_types.rs`):
@@ -378,6 +384,7 @@ What they cover:
 - `src/literature.rs`: identity and title normalization, refusal of `@comment` / `@preamble` / `@string`, two entries, no or empty title, macro title; Citation key grammar and reserved stems.
 - `src/workspace.rs`: name parsing (`ai`), `from_stored` fallback, Access matrix and error text.
 - `src/link.rs`: exact ranges, strict errors, rendering classification, old-versus-new Broken targets, byte-exact rewriting and counts, Reverse link dedupe and order, code spans and fences (unclosed fence, unmatched backtick), Broken link source lines.
+- `src/tree_lock.rs`: the SQL `zt_authored_fp` digest equals `card::authored_fingerprint` for every authored field (Idea, Event, Model part, Model Card with a level and a Math form, Hub Card), an invalid stored enum aborts, and the seal hashes address-sorted `<address>\t<fingerprint>\n` lines ([Service, CLI and storage](service-and-cli.md)).
 - `tests/card_types.rs`: the `card_type` column added to a 0.4 archive once; MCP create/edit/get/tree/search by type and the root and human-Workspace refusals; types kept through moves and Citation-key renames; Session `ty`; GUI `/api/create`, `/api/edit`, `/api/overview` counts; the dump `archive.json`; Finding Cards through MCP (`insert_card`, `list_trees` counts); the one-time rebuild of a 0.17 archive for `finding` with its backup. The dump test returns early when no zip backend is found (`tar` on Windows, `zip` elsewhere).
 
 Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspace`, `ensure_same_workspace`, or `counts` directly (they are covered end to end in `tests/workspaces_mcp.rs`); no test covers a stray `]]` before a later Link, indented code blocks, a marker line inside a code fence, or Reverse link order with `0/10` beside `0/2`.
@@ -410,6 +417,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ## Change history
 
+- `2026-10-21` — #124 S01: the authored fingerprint's byte framing becomes `card::authored_fingerprint_framed`, shared with the SQL `zt_authored_fp` wrapper, so a Lock's seal and its SQL baseline are one algorithm; the MCP and shell writers answer a Lock refusal with the stored kind, Lock id, root address and pinning sources.
 - `2026-10-19` — #107 S08: add `card::statement_fingerprint` (design §4.5, D087), the exact statement hash that later search folding may use. It ignores only line endings, outer whitespace and separately labelled source lines, and keeps formulas, values, signs, variable names, negation, assumptions and scope in the hash; formula text is never renamed or shortened. Its unit test covers CRLF, outer blank lines and another source line, and a changed sign, value, variable or assumption.\n- `2026-10-19` — Add `card::authored_fingerprint` (S18, #99): the SHA-256 of a Card's title, body, BibTeX and type fields, with the generated Reverse section left out, so the GUI's Reply can capture a target and refuse a Save when its authored text changed while its own generated Reverse links may change freely.
 - `2026-10-17` — Expose the existing `line_around` helper to the indexed Broken-link reader so repeated occurrences retain the original source-line rendering.
 

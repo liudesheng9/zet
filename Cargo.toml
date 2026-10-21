@@ -1,6 +1,6 @@
 [package]
 name = "zt"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 default-run = "zt"
 
@@ -12,7 +12,7 @@ getrandom = "0.4"
 hmac = "0.12"
 nom-bibtex = "0.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.14"

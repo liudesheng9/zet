@@ -272,6 +272,7 @@ impl Server {
                             .downcast_ref::<crate::read::Limit>()
                             .map(crate::read::Limit::value)
                             .or_else(||error.downcast_ref::<crate::batch::Conflict>().map(crate::batch::Conflict::value))
+                            .or_else(|| error.downcast_ref::<crate::tree_lock::Refusal>().map(crate::tree_lock::Refusal::value))
                             .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
                         true,
                     ),

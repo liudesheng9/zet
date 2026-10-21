@@ -100,6 +100,18 @@ _Avoid_: Section, folder
 **Access**:
 Which Workspaces a client may change. Every client may read both Workspaces. The human's own tools (the Session, the GUI, and shell commands) may change both; the MCP server may change only the agent Workspace, and refuses any change that would rewrite the body of a human Card. Regenerating a human Card's Reverse links is not a change to it.
 
+**Lock**:
+One owner promise about one whole tree: until the owner unlocks it in the GUI, the tree takes no new Cards, none of its Cards changes its authored identity, address, Workspace or Card kind, and every Card its Links name outside the tree keeps its address and row identity. A Lock belongs to exactly one real Topic or Literature root, and one tree has at most one active Lock. Its history — the note, the end of the Lock, any integrity fault — stays in the archive after it ends.
+_Avoid_: Freeze, read-only flag, archive lock
+
+**Locked tree**:
+A tree whose active Lock still governs it. Its Cards stay readable, selectable, linkable, and usable in a Spread or as the target of a Reply; an authored write is refused for the owner and the agent alike, and the refusal names the Lock and its root.
+_Avoid_: Read-only tree, frozen note, closed topic
+
+**Pinned target**:
+A Card outside a Locked tree that one or more of its Cards name with a Link. Its authored body and metadata stay editable, but its address, row identity, Workspace and Card kind are frozen while any active Lock pins it. A Link to a Card that was already broken when the owner accepted the Lock is a warning and pins nothing, so a target that resolves later joins the promise only when the owner unlocks and locks again.
+_Avoid_: Frozen Card, referenced note, dependent Card
+
 **Reply**:
 One human Card an owner writes to answer one agent Card. It opens with a relation word (`印证`, `反驳`, `放宽`, or `对应`) and a Link to that agent Card, carries the owner's own thought, and is filed in a human Topic, not beneath the agent Card. Its Link and the generated Reverse link carry the connection across the Workspaces; the agent Card's authored text never changes.
 _Avoid_: Comment, response Card, human note

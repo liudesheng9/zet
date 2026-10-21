@@ -201,6 +201,7 @@ pub(crate) const LEVEL_NEEDS_MODEL_CARD: &str =
 
 /// Store a Model Card's elaboration level; `None` clears it.
 pub(crate) fn set_level(conn: &Connection, card: &Card, level: Option<Level>) -> Result<()> {
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     if level.is_some() && (card.card_type != CardType::Model || card.facet.is_some()) {
         bail!(LEVEL_NEEDS_MODEL_CARD);
     }
@@ -357,6 +358,7 @@ pub(crate) fn set(
     facet: Option<&Facet>,
     emphasis: Option<Emphasis>,
 ) -> Result<()> {
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     crate::card_type::ensure_allowed(card, card_type)?;
     ensure_allowed(conn, Some(card), card_type, facet, emphasis)?;
     conn.execute(

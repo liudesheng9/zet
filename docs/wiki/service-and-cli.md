@@ -4,17 +4,19 @@ title: Service, CLI and storage
 paths:
   - "src/main.rs"
   - "src/link_index.rs"
+  - "src/tree_lock.rs"
   - "src/shutdown.rs"
   - "src/autostart.rs"
   - "src/bin/**"
   - "src/dump.rs"
   - "tests/cli_service.rs"
+  - "tests/tree_lock.rs"
   - "tests/autostart.rs"
   - "tests/closed_stdout.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
 synced: 006c5c67e5a8
-updated: 2026-10-19
+updated: 2026-10-21
 ---
 
 # Service, CLI and storage
@@ -33,18 +35,20 @@ This block is the `zt` binary's front door and its storage base. It parses every
 |---|---|
 | Entry points | `main()` / `run()` in `src/main.rs` (every `zt` command line); `zt __daemon <root>` (`cmd_daemon`, the service process); `zt __boot` (`cmd_boot`, run by `zt-boot`); `main()` in `src/bin/zt-boot.rs` (the sign-in command); `autostart::run` in `src/autostart.rs`; `dump::run` in `src/dump.rs`; `shutdown::watch` in `src/shutdown.rs` |
 | Key files | `src/main.rs` — dispatch, config, archive-root paths, daemon lifecycle, schema and migrations, Location helpers, Card storage helpers, shell commands, edit lock |
+| | `src/tree_lock.rs` — the four Tree Lock tables, `zt_authored_fp`/`zt_tree_root` connection functions, the six triggers, plans, seals, integrity checks and the application gate |
 | | `src/shutdown.rs` — keeps the daemon alive until `zt down` or until Windows ends the session (hidden `ztDaemon` window) |
 | | `src/autostart.rs` — `zt autostart [on\|off]`, the HKCU Run key value, `autostart.log` |
 | | `src/bin/zt-boot.rs` — window-less login program that runs `zt __boot` |
 | | `src/dump.rs` — `zt dp` payload, `archive.json` manifest, compressor detection, archive cleanup |
 | | `tests/cli_service.rs` — end-to-end CLI, schema, dump, clear, Session-over-pipe, GUI lifecycle, and the GUI Reply route tests |
+| | `tests/tree_lock.rs` — the real GUI Lock routes, MCP and shell refusals, pin protection, restart survival, history and the recorded-fault path |
 | | `tests/autostart.rs` — Windows-only sign-in, shutdown, sign-out, and dead-daemon tests |
 | | `tests/support/pty.rs`, `tests/support/mod.rs` — PTY harness (`PtySession`, `Key`) shared with `tests/pty_session.rs` |
 | | `tests/support/host_tools.rs` — `host_tar()`: the tar that reads every dump format |
 | | `tests/fixtures/fake_tar.rs`, `tests/fixtures/fake_7z.rs` — fake compressors compiled by tests |
 | Depends on | [Cards, Workspaces and Links](cards-and-links.md) (`card::parse_card_text`, `compose_card_text`, templates, `from_legacy_text`; `link::LinkLifecycle`, `LinkBody`; `literature::validate_citation_key`, `parse_metadata`; `workspace::tree_workspace`, `ensure_same_workspace`, `counts`), [Card operations](card-operations.md) (`place::move_plan`, `insert_plan`, `apply_insert_plan`), [Models and math](models-and-math.md) (`model::Facet::MAX_CHARS`, `model::ensure_allowed`, `math::MathForm::ALL`), [Hub Cards](hub-cards.md) (`hub::HubLevel`), [Terminal Session](session.md) (`run_session`, `session_count`, `process_exists`), [GUI](gui.md) (`gui::start`, `Running::stop`, `recorded_url`, `clear_record`, `gui::run`; `spread::follow`), [MCP server](mcp-server.md) (`mcp::run`), [Scholar bridge](scholar-bridge.md) (`scholar::run_cli`, `artifact::references`, `artifact::path`). Libraries: `rusqlite` (bundled SQLite), `anyhow`, `tempfile`, `sha2`, `getrandom`, `serde_json`, `windows-sys` (process creation, registry, window messages). Host programs: the `EDITOR` command, and `tar.exe` / `zip` / `gzip` / `zstd` / `7z` / `7zz` for dumps |
 | Used by | Every other Rust block calls the crate-root helpers: [Terminal Session](session.md) (`use crate::*`), [Card operations](card-operations.md) (`move_plan`, `apply_move_plan`, `delete_plan`, `apply_delete_plan`, `insert_card`), [GUI](gui.md) (`require_service_up`, `log_event`, `load_cards`, `ensure_markdown_cards`), [MCP server](mcp-server.md) (`require_service_up`, `acquire_edit_lock_within`), [Models and math](models-and-math.md) and [Hub Cards](hub-cards.md) (`load_card`, `tree_id`, `parent_location`), [Scholar bridge](scholar-bridge.md) (`config_file`) |
-| Tests | `tests/cli_service.rs`, `tests/autostart.rs`, `tests/workspaces_mcp.rs` (lock contention, fault classification, wait diagnostics), unit tests in `src/main.rs`, `src/dump.rs`, `src/autostart.rs`; harness in `tests/support/`, `tests/fixtures/` |
+| Tests | `tests/cli_service.rs`, `tests/tree_lock.rs`, `tests/autostart.rs`, `tests/workspaces_mcp.rs` (lock contention, fault classification, wait diagnostics), unit tests in `src/main.rs`, `src/tree_lock.rs`, `src/dump.rs`, `src/autostart.rs`; harness in `tests/support/`, `tests/fixtures/` |
 
 ## Concepts
 
@@ -430,6 +434,14 @@ Command plans (`command_plan`):
 
 The Link-index migration already records `metadata.archive_id` as 16 OS-random bytes encoded by 32 hexadecimal characters. This persistent archive identity is reused by the prepared-run ledger contract and exposed through `get_cards`, alongside the canonical directory path. It survives Card clearing and consistent SQLite backups/restores. A fresh database at the same directory gets another identity. Readers never substitute a new value for missing/corrupt identity metadata; doing that would silently rebind pending work.
 
+### Tree Lock storage (`src/tree_lock.rs`)
+
+The archive holds four Tree Lock tables beside `cards` and `metadata`: `locks` (one row per Lock, with `root_row`, `root_address`, `tree`, `workspace`, optional `note`, `locked_at`, the full `range_fingerprint` seal, `member_count` and optional `unlocked_at`), `lock_members` (the promised row identity, exact address and authored fingerprint per member), `lock_pins` (each locked source's external target row and address) and `lock_events` (the owner's `lock`/`unlock`/`note`/`reseal`/`integrity-fault` history as canonical-JSON `detail`). A partial unique index `locks_active_tree` permits one active Lock per root address; `lock_members_by_row`, `lock_pins_by_target` and `lock_events_by_lock` serve the gate and the panel. There are deliberately no foreign keys to `cards`, so a Card-table rebuild or an ordinary delete never destroys the Lock's evidence.
+
+`tree_lock::ensure_tx` runs once at the end of `initialize_database`, after every Card-table rebuild: with no `metadata.tree_lock_schema_version` it creates the tables and indexes, installs the six canonical triggers, and only then writes version `1`; with version `1` it validates the table columns and recreates any missing trigger with `IF NOT EXISTS`; any other version refuses to write instead of repairing. `initialize_database` and `open_db` both call `register_sql_functions`, which adds the deterministic `zt_authored_fp(text, bibtex, card_type, model_facet, model_emphasis, model_level, hub_level, math_form)` and `zt_tree_root(address)` wrappers to that connection. The fingerprint wrapper shares `card::authored_fingerprint_framed` with the Rust baseline and aborts on an invalid stored enum; `zt_tree_root` returns the final Topic or Literature root address and SQL `NULL` for the internal `__moving__` placeholders. Registration installs no schema and runs no migration, so opening a connection never recurses into the writer lock.
+
+The six triggers are the SQL backstop, not a second permission system: `lock_no_delete` and `lock_no_change` protect a member's row identity, address, Workspace, kind flags and authored bytes; `lock_no_insert` and `lock_no_move_in` compare the destination's Tree id with the active `locks.tree`; `lock_pin_no_delete` and `lock_pin_no_move` protect a pin's target. A new Card's destination Tree id is the text before the first `/` (or the whole Citation key), which is the canonical `locks.tree` value, so an orphaned Lock blocks recreating its address. `lock_no_change` compares the authored part of the stored Markdown, meaning everything before the `<!-- zt:reverse-links -->` marker, plus every authored metadata column: a Reverse-link-only refresh keeps that prefix and passes, while any authored edit changes it. The predicates use only built-in SQL on purpose. A trigger that called `zt_authored_fp` would fail to compile on an external connection that opened the database with a plain SQLite client, which would make every `cards` write from that client fail even on an archive with no Lock; the repo's own fixtures and maintenance tools rely on such writes. The registered SQL wrappers remain the shared fingerprint implementation for direct checks (§5.3: an external connection cannot rewrite a locked Card's text, and is not an alternate client of a Locked archive). Every trigger joins `locks` with `unlocked_at IS NULL`, so historical rows never protect a reused row number. A client that reaches a trigger message has missed the application gate; SQLite `RAISE(ABORT)` aborts the statement, so the caller must abandon its enclosing transaction.
+
 ### Config directory
 
 | File | Written by | Content |
@@ -637,8 +649,9 @@ pty.wait_for_exit();
 
 | Suite | Command | Covers |
 |---|---|---|
-| Unit tests in `src/main.rs`, `src/dump.rs`, `src/autostart.rs` | `cargo test --bin zt` | Location grammar for both tree kinds, tree ids and membership, Literature roots' successors and parents, the move boundary; dump hash input, collision salts, manifest key order and content, the compressor matrix, detection fallback and pinning (GNU tar vs bsdtar), Windows tar naming, format signatures, command plans, artifact cleanup guard, Literature YAML round-trip; `program_of`. |
+| Unit tests in `src/main.rs`, `src/tree_lock.rs`, `src/dump.rs`, `src/autostart.rs` | `cargo test --bin zt` | Location grammar for both tree kinds, tree ids and membership, Literature roots' successors and parents, the move boundary; the Tree Lock schema/functions/triggers (SQL fingerprint equals the Rust baseline for every field, `zt_tree_root` for both tree kinds and `__moving__` placeholders, seal framing, plan members/pins/warnings, note rules, gate predicates, member/pin/fault detection, exact-set integrity, event deduplication, raw-connection abort and generated-refresh pass); dump hash input, collision salts, manifest key order and content, the compressor matrix, detection fallback and pinning (GNU tar vs bsdtar), Windows tar naming, format signatures, command plans, artifact cleanup guard, Literature YAML round-trip; `program_of`. |
 | `tests/cli_service.rs` | `cargo test --test cli_service` | Service bootstrap, schema columns and WAL, Literature CHECKs and case-insensitive keys, legacy and corrupted databases left untouched, every shell write (`t l n b e del mv`) including editor cancel and temp-file cleanup, Link and Broken link rules, Citation-key rename, Side compaction, subtree moves, the Literature tree boundary, Session over a pipe (navigation, help, writes), the service-down/help/edit-lock rules, `zt dp` (empty, mapping and order, Literature files, tar.gz, tar.zst, 7z via fake compressors, prompt validation, edit lock, failed compression cleanup, existing archive protection), `zt clear` (gating, confirmation, rollback), Session exit on disconnect, killed-Session pruning, pre-Markdown conversion with backups and a matching Link index, and the GUI's lifecycle with the service (record, token, stop with `zt down`, a killed daemon restarted by `zt gui`, the token-guarded API, GUI writes keeping the derived Link index exact through `status --check-links`, a Spread following a Side-successor compaction, and the GUI Reply route: the served `draft.js`, the fingerprint and four relation words, the refusal reasons, a failed Save rolling back the default Topic it created, a reply to a Side-successor agent Card whose address carries a pipe, the destination fallback, and the human Card's Reverse link — [GUI](gui.md#reply-srcreplyrs)). |
+| `tests/tree_lock.rs` | `cargo test --test tree_lock` | The real token-guarded Lock routes (plan, `plan_changed`, commit, note, unlock, history, integrity), MCP and shell refusals for every writer path (edit text/type/facet/emphasis/level/hub level/form, owned paragraph, create, insert, move, delete), pin protection and the allowed pinned-body edit, an allowed incoming Link, the raw-connection backstop, restart survival with one installed schema, and the single recorded integrity fault. |
 | `tests/autostart.rs` (Windows only) | `cargo test --test autostart` | Run-key registration under a scratch key, `zt-boot` is a GUI-subsystem PE, sign-in start and repeat, failed sign-in recorded, shutdown with an open Session, sign-out, cancelled shutdown, machine restart, a killed daemon restarted by the next command (and `zt down` still keeps it down), four parallel commands causing one restart, and a zt 0.7 record. |
 | All | `cargo test --all-targets` (earlier release gates ran `cargo test --all-targets -- --test-threads=1`) | Every suite. |
 
@@ -702,6 +715,7 @@ Gaps:
 
 - `2026-10-17` — Windows service launch calls `CreateProcessW` directly, preserving archive-path arguments and isolating caller handles. The public no-shell/path regression replaces the hidden PowerShell execution-policy override. Defender scans and the classifier limitations are recorded in [the build investigation](../windows-defender-build-investigation.md).
 
+- `2026-10-21` — Tree Lock S01 (#124): the four lock tables, the versioned schema, the `zt_authored_fp`/`zt_tree_root` connection functions, the six function-free triggers, and the startup install after every Card rebuild.
 - `2026-10-17` — Share the Card row decoder across full, targeted and hub-policy projections; MCP read selection is in `src/read.rs`.
 
 - `2026-10-17` — Add the derived transactional Link index, consistent migration/backup, scoped ordinary updates, archive revisions and public integrity/reindex commands. Stale-lock Windows sharing violations are retried through their typed I/O cause; cleanup closes its own handle before deletion. Public MCP/CLI tests cover rebuild preservation, locality, metadata revisions, failed migration/retry, and a held Windows sharing handle.

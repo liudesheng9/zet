@@ -136,6 +136,7 @@ pub(crate) fn parse_optional_form(value: &str) -> Result<Option<MathForm>> {
 
 /// Store a Model Card's Math form; `None` clears it.
 pub(crate) fn set_form(conn: &Connection, card: &Card, form: Option<MathForm>) -> Result<()> {
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     if form.is_some() && (card.card_type != CardType::Model || card.facet.is_some()) {
         bail!(FORM_NEEDS_MODEL_CARD);
     }

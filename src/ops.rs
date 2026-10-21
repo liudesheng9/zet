@@ -16,7 +16,7 @@ use crate::model::{Emphasis, Facet, Level, Part};
 pub(crate) use crate::place::Target;
 
 /// How long a change waits for another client's short write to finish.
-const EDIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+pub(crate) const EDIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 use crate::{Access, Card, CardType, Workspace};
 
 /// The result of a change that may need a typed confirmation first.
@@ -296,6 +296,7 @@ pub(crate) fn edit_tx(
 ) -> Result<(String, bool)> {
     let card = unchanged_card(conn, at, base)?;
     access.ensure_writable(card.workspace)?;
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     let (card_type, facet, emphasis) = change.resolve(&card);
     let level = change.resolve_level(&card)?;
     let hub_level = change.resolve_hub_level(&card)?;
@@ -378,6 +379,7 @@ pub(crate) fn edit_metadata(
         }
         let mapping = crate::citation_rename_mapping(&conn, &old_key, &metadata.citation_key)?;
         access.ensure_link_rewrites_allowed(&conn, &mapping)?;
+        crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&mapping))?;
         if confirm != Some("move") {
             let lines = crate::citation_rename_lines(&conn, &old_key, &metadata.citation_key)?;
             return Ok(Outcome::Confirm {
@@ -414,6 +416,7 @@ pub(crate) fn delete(
         access.ensure_link_rewrites_allowed(&conn, &plan.repoint_mapping())?;
     }
     access.ensure_link_rewrites_allowed(&conn, &plan.compaction())?;
+    crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Delete(&plan))?;
     if confirm != Some(plan.confirmation.as_str()) {
         return Ok(Outcome::Confirm {
             confirm: plan.confirmation.clone(),
@@ -447,6 +450,7 @@ pub(crate) fn move_card(
     access.ensure_writable(card.workspace)?;
     let plan = crate::place::move_plan(&conn, at, target, alone)?;
     access.ensure_link_rewrites_allowed(&conn, &plan.mapping)?;
+    crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     if confirm != Some("move") {
         return Ok(Outcome::Confirm {
             confirm: "move".to_string(),
@@ -490,6 +494,8 @@ pub(crate) fn insert_card(
         part.as_ref().and_then(|part| part.emphasis),
     )?;
     crate::validate_card_text(&conn, &plan.location, text, None)?;
+    crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
+    crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
     if confirm != Some("insert") {
         return Ok(Outcome::Confirm {
             confirm: "insert".to_string(),

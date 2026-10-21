@@ -78,6 +78,7 @@ pub(crate) fn names_hub_level(value: &str) -> bool {
 
 /// Store a Hub Card's level; `None` clears it.
 pub(crate) fn set_level(conn: &Connection, card: &Card, level: Option<HubLevel>) -> Result<()> {
+    crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
     if level.is_some() && card.card_type != CardType::Hub {
         bail!(LEVEL_NEEDS_HUB_CARD);
     }

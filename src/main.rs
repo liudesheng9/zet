@@ -35,6 +35,7 @@ mod scholar;
 mod session;
 mod shutdown;
 mod spread;
+mod tree_lock;
 mod workspace;
 
 pub(crate) use card::{
@@ -1251,6 +1252,7 @@ fn stop_for_system(root: &Path, pid: &str, end: shutdown::SystemEnd) {
 fn initialize_database(root: &Path) -> Result<()> {
     let conn = Connection::open(db_path(root))
         .with_context(|| format!("failed to open {}", db_path(root).display()))?;
+    tree_lock::register_sql_functions(&conn)?;
     let integrity: String = conn
         .query_row("PRAGMA quick_check", [], |row| row.get(0))
         .context("failed to run SQLite integrity check")?;
@@ -1323,7 +1325,13 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_math_form_column(&conn, root)?;
     ensure_finding_cards(&conn, root)?;
     drop(conn);
-    ensure_markdown_cards(root)
+    ensure_markdown_cards(root)?;
+    // The Tree Lock tables and triggers are installed after every Card-table rebuild, so a
+    // migration never drops the SQL backstop it just installed.
+    let conn = open_db(root)?;
+    tree_lock::ensure_tx(&conn)?;
+    drop(conn);
+    Ok(())
 }
 
 /// `CREATE TABLE <name> (…)` for the current cards schema. A Model facet is a
@@ -1839,6 +1847,14 @@ fn cmd_clear() -> Result<()> {
         bail!("cannot clear while {sessions} session(s) are open");
     }
     let _lock = acquire_edit_lock(&root, "clear")?;
+    let mut conn = open_db(&root)?;
+    let locked = tree_lock::active_roots(&conn)?;
+    if !locked.is_empty() {
+        bail!(
+            "cannot clear while a locked tree exists: {}; unlock it in the GUI first",
+            locked.join(", ")
+        );
+    }
     print!("type clear to confirm: ");
     io::stdout().flush()?;
     let mut confirmation = String::new();
@@ -1847,9 +1863,11 @@ fn cmd_clear() -> Result<()> {
         println!("clear canceled");
         return Ok(());
     }
-    let mut conn = open_db(&root)?;
     let tx = conn.transaction()?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if count > 0 {
+        tree_lock::ensure_unlocked(&tx, tree_lock::Change::DeleteAll)?;
+    }
     tx.execute("DELETE FROM cards", [])?;
     if link_index::ready(&tx) {
         link_index::rebuild(&tx)?;
@@ -1953,8 +1971,10 @@ fn card_counts(root: &Path) -> Result<Counts> {
 }
 
 fn open_db(root: &Path) -> Result<Connection> {
-    Connection::open(db_path(root))
-        .with_context(|| format!("failed to open {}", db_path(root).display()))
+    let conn = Connection::open(db_path(root))
+        .with_context(|| format!("failed to open {}", db_path(root).display()))?;
+    tree_lock::register_sql_functions(&conn)?;
+    Ok(conn)
 }
 
 #[derive(Clone, Debug)]
@@ -2472,6 +2492,7 @@ fn insert_literature_card_tx(
         bail!("Literature Card `{citation_key}` already exists");
     }
     validate_card_text(conn, citation_key, text, None)?;
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::CreateAt(citation_key))?;
     let parsed = parse_card_text(text)?;
     let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
@@ -2906,6 +2927,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
     if location_exists(&conn, &location)? {
         bail!("direct successor already exists: {location}");
     }
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::CreateAt(&location))?;
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
@@ -2931,6 +2953,7 @@ fn shell_create_side(at: &str) -> Result<()> {
     let parent = load_card(&conn, at)?;
     ensure_side_parent(&parent)?;
     let location = next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::CreateAt(&location))?;
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
@@ -2954,6 +2977,8 @@ fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     let _lock = acquire_edit_lock(&root, "edit")?;
     let mut conn = open_db(&root)?;
     let card = load_card(&conn, at)?;
+    // The Lock refuses before an editor opens; the transaction writers check again.
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::Edit(card.row_id))?;
     if card.is_lit {
         return match part {
             Some(EditPart::Metadata) => shell_edit_literature_metadata(&mut conn, &card),
@@ -2978,6 +3003,7 @@ fn shell_edit_literature_text(conn: &mut Connection, card: &Card) -> Result<()> 
 }
 
 fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> Result<()> {
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
     let metadata = literature::parse_metadata(
         card.bibtex
             .as_deref()
@@ -3090,6 +3116,7 @@ fn update_literature_metadata(
     bibtex: &str,
     title: &str,
 ) -> Result<()> {
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
     let parsed = parse_card_text(&card.text)?;
     if citation_key == card.address
         && card.bibtex.as_deref() == Some(bibtex)
@@ -3104,6 +3131,7 @@ fn update_literature_metadata(
     } else {
         BTreeMap::new()
     };
+    tree_lock::ensure_unlocked(&tx, tree_lock::Change::Mapping(&mapping))?;
     tx.execute(
         "UPDATE cards SET citation_key = ?1, bibtex = ?2, text = ?3 WHERE row_id = ?4",
         params![citation_key, bibtex, text, card.row_id],
@@ -3168,6 +3196,7 @@ fn insert_card_tx(
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     validate_card_text(conn, location, text, None)?;
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::CreateAt(location))?;
     let parsed = parse_card_text(text)?;
     let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
@@ -3197,6 +3226,7 @@ fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Resu
 }
 
 fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()> {
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
     validate_card_text(conn, &card.address, text, Some(&card.text))?;
     let before = parse_card_text(&card.text)?;
     let after = parse_card_text(text)?;
@@ -3422,6 +3452,7 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
     let tx = conn.transaction()?;
+    tree_lock::ensure_unlocked(&tx, tree_lock::Change::Delete(&plan))?;
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
         for card in load_cards(&tx)? {
@@ -3458,6 +3489,7 @@ where
     F: FnMut(&str) -> Result<()>,
 {
     let plan = delete_plan(conn, at)?;
+    tree_lock::ensure_unlocked(&*conn, tree_lock::Change::Delete(&plan))?;
     print_delete_verification(&plan);
     confirm(&plan.confirmation)?;
     apply_delete_plan(conn, plan)
@@ -3526,6 +3558,7 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
     if mapping.is_empty() {
         return Ok(());
     }
+    tree_lock::ensure_unlocked(conn, tree_lock::Change::Mapping(mapping))?;
     for old in mapping.keys() {
         conn.execute(
             "UPDATE cards SET location = ?1 WHERE location = ?2",
@@ -3558,6 +3591,7 @@ fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let plan = place::move_plan(&conn, at, target, alone)?;
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::Mapping(&plan.mapping))?;
     print_move_verification(&plan);
     read_confirmation(&mut input, "move")?;
     apply_move_plan(&mut conn, &plan)?;
@@ -3574,6 +3608,8 @@ fn shell_insert(at: &str) -> Result<()> {
     let _lock = acquire_edit_lock(&root, "insert")?;
     let mut conn = open_db(&root)?;
     let plan = place::insert_plan(&conn, at)?;
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::Mapping(&plan.mapping))?;
+    tree_lock::ensure_unlocked(&conn, tree_lock::Change::CreateAt(&plan.location))?;
     for line in place::insert_verification_lines(&plan) {
         println!("{line}");
     }

@@ -28,6 +28,9 @@ mod document;
 /// The GUI is the human's own tool and may change both Workspaces.
 const ACCESS: Access = Access::Owner;
 
+/// How long a GUI request waits for the edit lock before it reports contention.
+const EDIT_PATIENCE: Duration = crate::ops::EDIT_PATIENCE;
+
 const INDEX_HTML: &str = include_str!("gui/index.html");
 const APP_CSS: &str = include_str!("gui/app.css");
 const APP_JS: &str = include_str!("gui/app.js");
@@ -723,17 +726,37 @@ impl Charts {
     }
 }
 
-struct ApiError(String);
+/// One failed GUI request. A Tree Lock refusal keeps its structured facts, so the page can name the
+/// Locked tree, the Lock and the pinned sources instead of printing one opaque line.
+struct ApiError {
+    message: String,
+    refusal: Option<Value>,
+}
+
+impl ApiError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            refusal: None,
+        }
+    }
+}
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
-        Self(format!("{error:#}"))
+        if let Some(refusal) = error.downcast_ref::<crate::tree_lock::Refusal>() {
+            return Self {
+                message: refusal.to_string(),
+                refusal: Some(refusal.value()),
+            };
+        }
+        Self::new(format!("{error:#}"))
     }
 }
 
 impl From<rusqlite::Error> for ApiError {
     fn from(error: rusqlite::Error) -> Self {
-        Self(error.to_string())
+        Self::new(error.to_string())
     }
 }
 
@@ -941,7 +964,17 @@ impl App {
         let result = self.route(&method, &path, &query, &body);
         match result {
             Ok(value) => respond_json(request, 200, &value),
-            Err(ApiError(message)) => respond_json(request, 400, &json!({ "error": message })),
+            Err(error) => {
+                let mut value = json!({ "error": error.message });
+                let status = match error.refusal {
+                    Some(refusal) => {
+                        value["refusal"] = refusal;
+                        409
+                    }
+                    None => 400,
+                };
+                respond_json(request, status, &value);
+            }
         }
     }
 
@@ -973,7 +1006,7 @@ impl App {
             query
                 .get(name)
                 .cloned()
-                .ok_or_else(|| ApiError(format!("missing `{name}` parameter")))
+                .ok_or_else(|| ApiError::new(format!("missing `{name}` parameter")))
         };
         match (method, path) {
             // The page's heartbeat: this service is still up and its token still holds.
@@ -1008,6 +1041,10 @@ impl App {
             (Method::Post, "/api/move") => self.move_card(body),
             (Method::Post, "/api/insert") => self.insert_card(body),
             (Method::Post, "/api/reply") => self.reply(body),
+            (Method::Get, "/api/locks") => self.locks(),
+            (Method::Post, "/api/lock") => self.lock(body),
+            (Method::Post, "/api/unlock") => self.unlock(body),
+            (Method::Post, "/api/lock/note") => self.lock_note(body),
             (Method::Get, "/api/artifact") => self.artifact(&param("sha")?),
             (Method::Get, "/api/scholar/works") => self.scholar_works(&param("q")?),
             (Method::Get, "/api/scholar/artifacts") => self.scholar_artifacts(&param("work_id")?),
@@ -1016,7 +1053,7 @@ impl App {
             (Method::Post, "/api/scholar/artifact") => self.scholar_keep(body),
             (Method::Get, "/api/spreads") => self.spreads(),
             (Method::Post, "/api/spreads") => self.save_spreads(body),
-            _ => Err(ApiError(format!("unknown endpoint {path}"))),
+            _ => Err(ApiError::new(format!("unknown endpoint {path}"))),
         }
     }
 
@@ -1066,7 +1103,7 @@ impl App {
         let snapshot = self.snapshot()?;
         let root = crate::tree_root_address(tree);
         let Some(root_card) = snapshot.by_address.get(&root) else {
-            return Err(ApiError(format!("tree `{tree}` does not exist")));
+            return Err(ApiError::new(format!("tree `{tree}` does not exist")));
         };
         let cards = snapshot
             .cards
@@ -1103,14 +1140,14 @@ impl App {
             .filter(|value| !value.is_empty() && *value != "all")
             .map(|value| crate::Workspace::parse(value))
             .transpose()?
-            .ok_or_else(|| ApiError("missing `ws` parameter (human or agent)".into()))?;
+            .ok_or_else(|| ApiError::new("missing `ws` parameter (human or agent)"))?;
         let number = |name: &str| -> Result<Option<u64>, ApiError> {
             match query.get(name) {
                 None => Ok(None),
                 Some(value) => value
                     .parse::<u64>()
                     .map(Some)
-                    .map_err(|_| ApiError(format!("`{name}` must be a whole number"))),
+                    .map_err(|_| ApiError::new(format!("`{name}` must be a whole number"))),
             }
         };
         let args = json!({
@@ -1190,7 +1227,7 @@ impl App {
         let card = snapshot
             .by_address
             .get(target)
-            .ok_or_else(|| ApiError(format!("card `{target}` does not exist")))?;
+            .ok_or_else(|| ApiError::new(format!("card `{target}` does not exist")))?;
         let parsed = &snapshot.parsed[&card.address];
         let context = if crate::is_tree_root(card) {
             "tree-root"
@@ -1311,7 +1348,7 @@ impl App {
     fn scholar_artifacts(&self, work_id: &str) -> ApiResult {
         let work_id = work_id
             .parse::<u64>()
-            .map_err(|_| ApiError("work_id must be a number".into()))?;
+            .map_err(|_| ApiError::new("work_id must be a number"))?;
         let mut bridge = crate::scholar::Bridge::connect()?;
         Ok(bridge.call("list_work_artifacts", &json!({ "work_id": work_id }))?)
     }
@@ -1322,7 +1359,7 @@ impl App {
     fn scholar_files(&self, work_id: &str) -> ApiResult {
         let work_id = work_id
             .parse::<u64>()
-            .map_err(|_| ApiError("work_id must be a number".into()))?;
+            .map_err(|_| ApiError::new("work_id must be a number"))?;
         let mut bridge = crate::scholar::Bridge::connect()?;
         let rows = bridge.sql(
             "SELECT id, relative_path, kind, size_bytes, shown, chinese_bilingual FROM work_files \
@@ -1359,7 +1396,7 @@ impl App {
         let file_id = body
             .get("file_id")
             .and_then(Value::as_u64)
-            .ok_or_else(|| ApiError("missing `file_id`".into()))?;
+            .ok_or_else(|| ApiError::new("missing `file_id`"))?;
         Ok((file_id, str_field(body, "path")?))
     }
 
@@ -1370,7 +1407,7 @@ impl App {
         let (bytes, _) = bridge.artifact(file_id, &path)?;
         let media_type = crate::artifact::sniff(&bytes)
             .map(|(_, media_type)| media_type)
-            .ok_or_else(|| ApiError("the artifact is not an image".into()))?;
+            .ok_or_else(|| ApiError::new("the artifact is not an image"))?;
         Ok(json!({ "data_url": format!("data:{media_type};base64,{}", base64(&bytes)) }))
     }
 
@@ -1433,7 +1470,7 @@ impl App {
         )?;
         let card_type = match (type_field(body)?, &part) {
             (Some(card_type), Some(_)) if card_type != CardType::Model => {
-                return Err(ApiError(
+                return Err(ApiError::new(
                     "only Model Cards can have a Model facet".to_string(),
                 ));
             }
@@ -1443,18 +1480,18 @@ impl App {
         let (level, hub_level) = ops::parse_level_arg(body.get("level"))?;
         let (level, hub_level) = (level.flatten(), hub_level.flatten());
         if level.is_some() && (card_type != CardType::Model || part.is_some()) {
-            return Err(ApiError(crate::model::LEVEL_NEEDS_MODEL_CARD.to_string()));
+            return Err(ApiError::new(crate::model::LEVEL_NEEDS_MODEL_CARD.to_string()));
         }
         if hub_level.is_some() && card_type != CardType::Hub {
-            return Err(ApiError(crate::hub::LEVEL_NEEDS_HUB_CARD.to_string()));
+            return Err(ApiError::new(crate::hub::LEVEL_NEEDS_HUB_CARD.to_string()));
         }
         let form = form_field(body)?.flatten();
         if form.is_some() && (card_type != CardType::Model || part.is_some()) {
-            return Err(ApiError(crate::math::FORM_NEEDS_MODEL_CARD.to_string()));
+            return Err(ApiError::new(crate::math::FORM_NEEDS_MODEL_CARD.to_string()));
         }
         let location = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
-                return Err(ApiError(
+                return Err(ApiError::new(
                     "only Regular Cards can be Event, Finding, Model, or Hub Cards".to_string(),
                 ));
             }
@@ -1477,7 +1514,7 @@ impl App {
                 part,
                 &text,
             )?,
-            other => return Err(ApiError(format!("unknown card kind `{other}`"))),
+            other => return Err(ApiError::new(format!("unknown card kind `{other}`"))),
         };
         if level.is_some() || hub_level.is_some() || form.is_some() {
             let change = TypeChange {
@@ -1592,6 +1629,169 @@ impl App {
         Ok(outcome.into_value())
     }
 
+    /// The Lock panel: every Lock, its retained history and the current integrity result. Opening
+    /// the panel is one of the design's integrity check points, so newly observed faults are recorded
+    /// once under the edit lock; a healthy archive is only read.
+    fn locks(&self) -> ApiResult {
+        let mut conn = crate::open_db(&self.root)?;
+        let integrity = crate::tree_lock::check(&conn)?;
+        if !integrity.ok() {
+            let _lock =
+                crate::acquire_edit_lock_within(&self.root, EDIT_PATIENCE, "locks")?;
+            let tx = conn.transaction()?;
+            let fresh = crate::tree_lock::check(&tx)?;
+            crate::tree_lock::record_faults_tx(&tx, &fresh)?;
+            tx.commit()?;
+        }
+        Ok(crate::tree_lock::export(&conn)?)
+    }
+
+    /// Plan a Lock (`{root, note?}`) and commit it only with the matching `confirm: "lock"` word,
+    /// its stateless `plan_hash` and a freshly recomputed plan.
+    fn lock(&self, body: &Value) -> ApiResult {
+        let root = str_field(body, "root")?;
+        let note = body.get("note").and_then(Value::as_str);
+        let _lock = crate::acquire_edit_lock_within(&self.root, EDIT_PATIENCE, "lock")?;
+        let mut conn = crate::open_db(&self.root)?;
+        let tx = conn.transaction()?;
+        let plan = crate::tree_lock::plan(&tx, &root, note)?;
+        let confirmed = body.get("confirm").and_then(Value::as_str);
+        let Some(confirmed) = confirmed else {
+            drop(tx);
+            return Ok(json!({
+                "applied": false,
+                "confirm": "lock",
+                "plan": plan.value(),
+                "lines": plan.lines(),
+            }));
+        };
+        if confirmed != "lock" {
+            return Err(ApiError::new(format!(
+                "the lock confirmation word is `lock`, not `{confirmed}`"
+            )));
+        }
+        let Some(hash) = body.get("plan_hash").and_then(Value::as_str) else {
+            return Err(ApiError::new("a confirmed lock needs its plan_hash"));
+        };
+        if hash != plan.plan_hash {
+            drop(tx);
+            let fresh = crate::tree_lock::plan(&conn, &root, note)?;
+            return Ok(json!({
+                "applied": false,
+                "plan_changed": true,
+                "confirm": "lock",
+                "plan": fresh.value(),
+                "lines": fresh.lines(),
+            }));
+        }
+        let lock = crate::tree_lock::lock_tx(&tx, &plan)?;
+        tx.commit()?;
+        let mut answer = json!({ "applied": true, "lock": lock.value() });
+        if let Err(error) = crate::log_event(
+            &self.root,
+            &format!(
+                "tree locked: {} (lock {}, seal {})",
+                lock.root,
+                lock.lock_id,
+                lock.seal_display()
+            ),
+        ) {
+            answer["log_error"] = json!(format!("{error:#}"));
+        }
+        Ok(answer)
+    }
+
+    /// Plan the release of one active Lock and end exactly that Lock on confirmation.
+    fn unlock(&self, body: &Value) -> ApiResult {
+        let lock_id = lock_id_field(body)?;
+        let _lock = crate::acquire_edit_lock_within(&self.root, EDIT_PATIENCE, "unlock")?;
+        let mut conn = crate::open_db(&self.root)?;
+        let tx = conn.transaction()?;
+        let plan = crate::tree_lock::existing_plan(&tx, lock_id, "unlock", None)?;
+        check_lock_tree(body, &plan)?;
+        let Some(confirmed) = body.get("confirm").and_then(Value::as_str) else {
+            drop(tx);
+            return Ok(json!({
+                "applied": false,
+                "confirm": "unlock",
+                "plan": plan,
+                "lines": unlock_lines(&plan),
+            }));
+        };
+        if confirmed != "unlock" {
+            return Err(ApiError::new(format!(
+                "the unlock confirmation word is `unlock`, not `{confirmed}`"
+            )));
+        }
+        let Some(hash) = body.get("plan_hash").and_then(Value::as_str) else {
+            return Err(ApiError::new("a confirmed unlock needs its plan_hash"));
+        };
+        if Some(hash) != plan["plan_hash"].as_str() {
+            drop(tx);
+            let fresh = crate::tree_lock::existing_plan(&conn, lock_id, "unlock", None)?;
+            return Ok(json!({
+                "applied": false,
+                "plan_changed": true,
+                "confirm": "unlock",
+                "plan": fresh,
+                "lines": unlock_lines(&plan),
+            }));
+        }
+        let lock = crate::tree_lock::unlock_tx(&tx, lock_id)?;
+        tx.commit()?;
+        let mut answer = json!({ "applied": true, "lock": lock.value() });
+        if let Err(error) = crate::log_event(
+            &self.root,
+            &format!("tree unlocked: {} (lock {})", lock.root, lock.lock_id),
+        ) {
+            answer["log_error"] = json!(format!("{error:#}"));
+        }
+        Ok(answer)
+    }
+
+    /// Plan a note change for one active Lock and apply it on confirmation. A changed note never
+    /// reseals the tree.
+    fn lock_note(&self, body: &Value) -> ApiResult {
+        let lock_id = lock_id_field(body)?;
+        let note = body.get("note").and_then(Value::as_str);
+        let _lock = crate::acquire_edit_lock_within(&self.root, EDIT_PATIENCE, "lock note")?;
+        let mut conn = crate::open_db(&self.root)?;
+        let tx = conn.transaction()?;
+        let plan = crate::tree_lock::existing_plan(&tx, lock_id, "note", note)?;
+        check_lock_tree(body, &plan)?;
+        let Some(confirmed) = body.get("confirm").and_then(Value::as_str) else {
+            drop(tx);
+            return Ok(json!({
+                "applied": false,
+                "confirm": "note",
+                "plan": plan,
+                "lines": note_lines(&plan),
+            }));
+        };
+        if confirmed != "note" {
+            return Err(ApiError::new(format!(
+                "the note confirmation word is `note`, not `{confirmed}`"
+            )));
+        }
+        let Some(hash) = body.get("plan_hash").and_then(Value::as_str) else {
+            return Err(ApiError::new("a confirmed note change needs its plan_hash"));
+        };
+        if Some(hash) != plan["plan_hash"].as_str() {
+            drop(tx);
+            let fresh = crate::tree_lock::existing_plan(&conn, lock_id, "note", note)?;
+            return Ok(json!({
+                "applied": false,
+                "plan_changed": true,
+                "confirm": "note",
+                "plan": fresh,
+                "lines": note_lines(&plan),
+            }));
+        }
+        let lock = crate::tree_lock::note_tx(&tx, lock_id, note)?;
+        tx.commit()?;
+        Ok(json!({ "applied": true, "lock": lock.value() }))
+    }
+
     /// Move a Card to a free Location (`to`) or into another Card's place
     /// (`before`), with its successors or `alone`.
     fn move_card(&self, body: &Value) -> ApiResult {
@@ -1601,7 +1801,7 @@ impl App {
         ) {
             (Some(to), None) => ops::Target::To(to.to_string()),
             (None, Some(before)) => ops::Target::Before(before.to_string()),
-            _ => return Err(ApiError("give either `to` or `before`".to_string())),
+            _ => return Err(ApiError::new("give either `to` or `before`".to_string())),
         };
         let alone = body.get("alone").and_then(Value::as_bool).unwrap_or(false);
         Ok(ops::move_card(
@@ -1623,7 +1823,7 @@ impl App {
         )?;
         let card_type = match (type_field(body)?, &part) {
             (Some(card_type), Some(_)) if card_type != CardType::Model => {
-                return Err(ApiError(
+                return Err(ApiError::new(
                     "only Model Cards can have a Model facet".to_string(),
                 ));
             }
@@ -2147,6 +2347,61 @@ fn str_field(body: &Value, name: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .with_context(|| format!("missing `{name}` field"))
+}
+
+/// The exact Lock a Lock action names. A Lock id is required; a server-side Lock id is never guessed.
+fn lock_id_field(body: &Value) -> Result<i64> {
+    body.get("lock_id")
+        .and_then(Value::as_i64)
+        .with_context(|| "missing `lock_id` field".to_string())
+}
+
+/// A Lock action may name its tree; when it does, it must name the Lock's own tree.
+fn check_lock_tree(body: &Value, plan: &Value) -> Result<()> {
+    let Some(tree) = body.get("tree").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if plan["root"].as_str() == Some(tree) {
+        Ok(())
+    } else {
+        bail!(
+            "lock {} belongs to tree `{}`, not `{tree}`",
+            plan["lock_id"],
+            plan["root"].as_str().unwrap_or_default()
+        )
+    }
+}
+
+fn unlock_lines(plan: &Value) -> Vec<String> {
+    vec![
+        format!(
+            "unlock `{}` (lock {})",
+            plan["root"].as_str().unwrap_or_default(),
+            plan["lock_id"]
+        ),
+        format!("seal: {}", plan["seal_display"].as_str().unwrap_or_default()),
+        format!(
+            "releases {} cards and {} pinned targets",
+            plan["member_count"], plan["pin_count"]
+        ),
+        "history stays in the archive; the tree takes new cards again".to_string(),
+    ]
+}
+
+fn note_lines(plan: &Value) -> Vec<String> {
+    vec![
+        format!(
+            "note on `{}` (lock {})",
+            plan["root"].as_str().unwrap_or_default(),
+            plan["lock_id"]
+        ),
+        format!(
+            "previous note: {}",
+            plan["previous_note"].as_str().unwrap_or("none")
+        ),
+        format!("new note: {}", plan["note"].as_str().unwrap_or("none")),
+        "a note change never reseals the tree".to_string(),
+    ]
 }
 
 fn base_field(body: &Value) -> Option<&str> {
