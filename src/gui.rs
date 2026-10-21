@@ -2921,6 +2921,67 @@ mod tests {
         &APP_JS[start..start + end]
     }
 
+    /// S03 (#126): a Card's own `lock` and `pinned_by` read as one quiet line. A member names its
+    /// Locked tree and since; a Pinned target names each pinning root once and keeps editing open;
+    /// a Card can be both; an unlocked, unpinned Card has no line.
+    #[test]
+    fn a_cards_lock_facts_read_as_one_quiet_line_with_its_tree_and_pins() {
+        let Some(value) = lock_js(
+            "(() => {
+               const since = '2026-10-21T09:00:00Z';
+               return {
+                 free: ZtLock.cardState({ address: '3/1', lock: null, pinned_by: [] }),
+                 old: ZtLock.cardState({ address: '3/1' }),
+                 member: ZtLock.cardState({ address: '3/1', lock: { lock_id: 2, tree: '3/0', since }, pinned_by: [] }),
+                 root: ZtLock.cardState({ address: '3/0', lock: { lock_id: 2, tree: '3/0', since }, pinned_by: [] }),
+                 pinned: ZtLock.cardState({ address: '5/1', lock: null, pinned_by: ['3/0', '3/0'] }),
+                 both: ZtLock.cardState({ address: '7/1', lock: { lock_id: 4, tree: '7/0', since }, pinned_by: ['3/0', 'Smith2024'] }),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["free"], Value::Null, "an unlocked, unpinned Card has no lock line");
+        assert_eq!(value["old"], Value::Null, "a Card read without the fields has no lock line");
+        assert_eq!(value["member"]["locked"], true);
+        assert_eq!(value["member"]["root"], false);
+        assert_eq!(value["member"]["tree"], "3/0");
+        assert_eq!(value["member"]["since"], "2026-10-21T09:00:00Z");
+        assert!(value["member"]["lockedWhy"].as_str().unwrap().contains("until tree 3/0 is unlocked"));
+        assert_eq!(value["member"]["pinnedBy"], json!([]));
+        assert_eq!(value["root"]["root"], true, "the root's own lock line already says it");
+        assert_eq!(value["pinned"]["locked"], false);
+        assert_eq!(value["pinned"]["pinnedBy"], json!(["3/0"]), "one root once");
+        assert_eq!(value["pinned"]["pinnedText"], "Pinned by locked tree 3/0");
+        assert!(value["pinned"]["pinnedWhy"].as_str().unwrap().starts_with("Editing stays open."));
+        assert_eq!(value["both"]["locked"], true);
+        assert_eq!(value["both"]["pinnedBy"], json!(["3/0", "Smith2024"]));
+        assert_eq!(value["both"]["pinnedText"], "Pinned by locked trees 3/0, Smith2024");
+    }
+
+    /// S03 (#126): a Lock-only change repaints through the existing refresh. The 4 s watch compares
+    /// the overview's fingerprint (which now carries the archive revision) and calls `refresh`;
+    /// `refresh` reads the Locks with the overview, so no second poll exists. The reader shows the
+    /// Card's own lock facts, and the cabinet keeps a Locked tree's drawer and says `locked`.
+    #[test]
+    fn a_lock_only_change_repaints_through_the_existing_refresh() {
+        let refresh = app_function("refresh");
+        assert!(refresh.contains("api('locks').catch(() => null)"), "refresh reads the Locks");
+        assert!(refresh.contains("state.locks = locks;"));
+        assert!(refresh.contains("paintLocks();"));
+        let watch = app_function("watchForChanges");
+        assert!(watch.contains("if (overview.fingerprint !== state.fingerprint) await refresh();"));
+        assert!(!watch.contains("api('locks')"), "the 4 s poll itself reads only the overview");
+        assert_eq!(APP_JS.matches("setInterval(").count(), 2, "no new polling loop");
+        assert!(APP_JS.contains("setInterval(watchForChanges, 4000);"));
+        assert!(APP_JS.contains("      cardLockLine(card),"), "the reader shows the Card's lock line");
+        let rail = app_function("renderRail");
+        assert!(rail.contains("(tree.locked ? ' locked' : '')"), "a Locked tree's drawer is marked");
+        assert!(rail.contains("`${tree.count} · locked`"), "in words, not only by colour");
+        assert!(!rail.contains("filter((tree) => !tree.locked"), "a Locked tree is never hidden");
+    }
+
     #[test]
     fn the_page_reads_each_feature_switch_from_the_overview_and_keeps_it_on_by_default() {
         let Some(value) = features_js(

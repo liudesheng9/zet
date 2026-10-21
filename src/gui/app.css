@@ -2198,6 +2198,14 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .lock-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--ink-faint); }
 .lock-line .btn { font-size: 12px; padding: 4px 10px; }
 .lock-line.locked .lock-state { color: var(--ink-soft); }
+/* S03 (#126): a Card's own Lock facts recede under its actions: one faint line, the tree names
+   as quiet links, nothing that competes with the card's text. The cabinet's drawer keeps its
+   place; only its count tab says `locked`. */
+.lock-line.card-lock { margin-top: 10px; gap: 6px 12px; }
+.lock-line.card-lock .lock-state, .lock-line.card-lock .lock-pinned { color: var(--ink-faint); }
+.lock-line.card-lock .lock-open { color: var(--ink-soft); font: 600 12px var(--mono); }
+.lock-line.card-lock .lock-open:hover { color: var(--link); }
+.drawer.locked .n { color: var(--ink-soft); background: color-mix(in srgb, var(--lit) 12%, var(--line-soft)); }
 .lock-dlg { width: min(620px, 100%); }
 .lock-body, .lock-panel-body { overflow: auto; max-height: calc(100vh - 170px); }
 .lock-plan { transition: opacity .3s var(--ease), filter .3s var(--ease); }

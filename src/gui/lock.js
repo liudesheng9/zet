@@ -162,5 +162,36 @@
     }
   }
 
-  return { NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine };
+  /**
+   * The quiet Lock facts one Card carries (S03, #126). Every Card projection answers `lock` (null,
+   * or `{lock_id, tree, since}` with `tree` the Locked tree's root address) and `pinned_by` (the
+   * sorted Locked roots whose Cards link it, `[]` when none). Answers `null` for a Card with
+   * neither, else what the reader's lock line says: a Locked Card's tree and since, with why its
+   * text waits for an unlock; a Pinned target's roots, with what the pin leaves open. A Card can be
+   * both. `root` is true when the Card is its own Locked tree's root, whose own line (the seal and
+   * the unlock action) already says it.
+   */
+  function cardState(card) {
+    if (!card || typeof card !== 'object') return null;
+    const lock = card.lock && typeof card.lock === 'object' && card.lock.tree ? card.lock : null;
+    const pinnedBy = Array.isArray(card.pinned_by) ? [...new Set(card.pinned_by.map(String))] : [];
+    if (!lock && !pinnedBy.length) return null;
+    const one = pinnedBy.length === 1;
+    const roots = pinnedBy.join(', ');
+    return {
+      locked: Boolean(lock),
+      root: Boolean(lock) && lock.tree === card.address,
+      tree: lock ? String(lock.tree) : null,
+      lockId: lock ? lock.lock_id : null,
+      since: lock ? lock.since || null : null,
+      lockedWhy: lock ? `Its text waits until tree ${lock.tree} is unlocked; it stays readable, selectable and linkable.` : null,
+      pinnedBy,
+      pinnedText: pinnedBy.length ? `Pinned by locked ${one ? 'tree' : 'trees'} ${roots}` : null,
+      pinnedWhy: pinnedBy.length
+        ? `Editing stays open. Moving or deleting it is refused while ${one ? 'that Locked tree holds a Link' : 'those Locked trees hold Links'} to it.`
+        : null,
+    };
+  }
+
+  return { NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, panel, faultLine, pinGroups, eventLine, cardState };
 });

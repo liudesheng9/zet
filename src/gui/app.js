@@ -467,10 +467,16 @@
   async function refresh() {
     // The server may have moved Cards on a Spread: read the Spreads back, after saving ours.
     await spreads.flush();
-    const [overview, graph, kept] = await Promise.all([api('overview'), api('graph'), api('spreads')]);
+    // The Locks come with every refresh (S03, #126): a Lock, unlock, note or recorded fault changes
+    // the archive revision and so the fingerprint the 4 s watch compares, even when no Card text
+    // changed; reading them here repaints the cabinet, the root's lock line and the fault pill. A
+    // failed lock read never stops the refresh, as at boot.
+    const [overview, graph, kept, locks] = await Promise.all([api('overview'), api('graph'), api('spreads'), api('locks').catch(() => null)]);
     spreads.take(kept);
     state.overview = overview;
     state.fingerprint = overview.fingerprint;
+    state.locks = locks;
+    paintLocks();
     applyFeatures(overview);
     setNodes(graph.nodes);
     state.tree = null;
@@ -1102,14 +1108,15 @@
   function renderRail() {
     renderWorkspaceSwitch();
     const trees = state.overview.trees.filter((tree) => (tree.workspace || 'human') === state.workspace);
+    // A Locked tree keeps its drawer and its place (S03, #126); its count tab says `locked` in words.
     const drawer = (tree) => h('button', {
-      class: 'drawer ' + tree.kind + (state.card && state.card.tree === tree.tree ? ' on' : ''),
-      title: tree.title,
+      class: 'drawer ' + tree.kind + (tree.locked ? ' locked' : '') + (state.card && state.card.tree === tree.tree ? ' on' : ''),
+      title: tree.locked ? `${tree.title || tree.root} — locked tree: readable and linkable; its Cards wait for an unlock` : tree.title,
       onclick: () => { go(tree.root); openRail(false); },
     },
       h('span', { class: 'addr', text: tree.root }),
       h('span', { class: 't', text: tree.title || '(untitled)' }),
-      h('span', { class: 'n', text: String(tree.count) }),
+      h('span', { class: 'n', text: tree.locked ? `${tree.count} · locked` : String(tree.count) }),
       tree.excerpt ? h('span', { class: 'x', text: tree.excerpt }) : null,
     );
     const fill = (id, kind, hint) => {
@@ -3335,6 +3342,7 @@
         actionButton('Delete', 'del', deleteCard, { danger: true }),
       ),
       card.context === 'tree-root' ? lockLine(card) : null,
+      cardLockLine(card),
       h('details', { class: 'raw-toggle' }, h('summary', { text: 'Stored Markdown' }), h('pre', { text: card.text })),
     ));
     reader.scrollTop = 0;
@@ -5030,6 +5038,27 @@
       sealStamp(lock.seal, faults.length > 0),
       actionButton('Lock panel', null, () => lockPanel(card.address), { cls: 'lock-btn' }),
       actionButton('Unlock tree…', null, () => unlockTree(lock), { cls: 'lock-btn', danger: true }));
+  }
+
+  /**
+   * A Card's own Lock facts under its actions, quiet (S03, #126): the Locked tree it belongs to and
+   * since when, and the Locked trees that pin it. The server's `lock` and `pinned_by` come with the
+   * Card itself, so they repaint with every refresh. A tree root's own Lock is its lock line above.
+   */
+  function cardLockLine(card) {
+    const facts = ZtLock.cardState(card);
+    if (!facts) return null;
+    const member = facts.locked && !facts.root;
+    if (!member && !facts.pinnedBy.length) return null;
+    return h('div', { class: 'lock-line card-lock' },
+      member ? h('span', { class: 'lock-state', title: facts.lockedWhy },
+        'Locked with tree ', h('button', { class: 'lock-open', text: facts.tree, title: `Open tree ${facts.tree}`, onclick: () => go(facts.tree) }),
+        facts.since ? ` since ${dateOf(facts.since)}` : '') : null,
+      member ? actionButton('Lock panel', null, () => lockPanel(facts.tree), { cls: 'lock-btn' }) : null,
+      facts.pinnedBy.length ? h('span', { class: 'lock-pinned', title: facts.pinnedWhy },
+        `Pinned by locked ${facts.pinnedBy.length === 1 ? 'tree' : 'trees'} `,
+        facts.pinnedBy.flatMap((root, index) => [index ? ', ' : null,
+          h('button', { class: 'lock-open', text: root, title: `Open tree ${root}`, onclick: () => go(root) })])) : null);
   }
 
   function showHelp() {
