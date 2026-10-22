@@ -75,7 +75,7 @@
 
   /** A short note in the corner; `action` adds one button to it (`{label, run}`). */
   function toast(message, kind, action) {
-    const node = h('div', { class: 'toast' + (kind === 'err' ? ' err' : ''), text: message });
+    const node = h('div', { class: 'toast' + (kind === 'err' ? ' err' : kind === 'warn' ? ' warn' : ''), text: message });
     if (action) {
       node.append(h('button', {
         class: 'toast-act', type: 'button', text: action.label,
@@ -83,7 +83,7 @@
       }));
     }
     $('#toasts').append(node);
-    setTimeout(() => node.remove(), action ? 9000 : kind === 'err' ? 6000 : 3200);
+    setTimeout(() => node.remove(), action ? 9000 : kind === 'err' || kind === 'warn' ? 6000 : 3200);
   }
   /**
    * Show an error. A write the Lock state refuses (the page's own gate, S05 #128, or a server
@@ -4802,13 +4802,26 @@
     h('span', { class: 'a', text: pin.target }), h('span', { class: 'arrow', text: '←' }),
     h('span', { class: 'b', text: pin.sources.join(', ') })));
 
+  /**
+   * The Broken Links a plan or a Lock's retained `lock` event names (`ZtLock.warningsFold`), as one
+   * folded warning list, every row kept (S04, #127). `null` when there are none.
+   */
+  function warningFold(fold) {
+    if (!fold) return null;
+    return h('details', { class: 'lock-fold warn' },
+      h('summary', { text: fold.label }),
+      h('ul', { class: 'lock-list' }, fold.rows.map((warning) => h('li', {},
+        h('span', { class: 'a', text: warning.source }), h('span', { class: 'arrow', text: '→' }),
+        h('span', { class: 'b broken', text: `${warning.target} (missing)` })))));
+  }
+
   const dateOf = (at) => String(at || '').replace('T', ' ').replace(/:\d\d(\.\d+)?Z$/, ' UTC');
 
   /**
    * The tree as an index card in the dialog: what the owner freezes. Its address stamp sits in the
    * corner, the seal beside the count, and the rest folds away below.
    */
-  function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since, lockId }) {
+  function lockCardView({ root, title, kind, workspace, count, pins, seal, broken, note, since, lockId, until, noteless }) {
     return h('div', { class: 'lock-card' + (kind === 'literature' ? ' literature' : ' topic') },
       h('div', { class: 'lock-card-head' },
         h('span', { class: 'kind-tag ' + (kind || ''), text: `${kind === 'literature' ? 'Literature' : 'Topic'} tree` }),
@@ -4822,15 +4835,19 @@
           // S06 (#129): a relock is a new promise, so the card names which Lock it shows.
           lockId != null ? h('span', { class: 'lock-sub', text: `lock ${lockId}` }) : null,
           since ? h('span', { class: 'lock-sub', text: `locked ${dateOf(since)}` }) : null,
+          // S04 (#127): an ended Lock is the same card, dated at both ends.
+          until ? h('span', { class: 'lock-sub', text: `unlocked ${dateOf(until)}` }) : null,
           sealStamp(seal, broken)),
-        note ? h('p', { class: 'lock-note-text', text: note }) : null));
+        note ? h('p', { class: 'lock-note-text', text: note })
+          : noteless ? h('p', { class: 'lock-note-text lock-note-empty', text: 'no note' }) : null));
   }
 
   /**
    * The two-step dialog every Lock action shares. `body(note)` builds the route's request; the
    * plan is fetched on open, again on "Review again" after the note changed, and replaced by the
    * renewed plan a stale confirmation answers. The note field and the typed word are never cleared
-   * by a refusal. Resolves with the committed Lock, or `null` on Cancel (nothing is sent).
+   * by a refusal. Resolves with the committed answer (`lock`, and `log_error` when the after-commit
+   * `zt.log` mirror failed, S04 #127), or `null` on Cancel (nothing is sent).
    */
   function lockDialog({ action, path, heading, verb, body, note: initialNote, noteField, view }) {
     return new Promise((resolve) => {
@@ -4894,14 +4911,14 @@
           setMsg(error.message, 'err');
         } finally { busy = false; sync(); }
       };
-      const finish = (lock) => { closed = true; close(); resolve(lock); };
+      const finish = (done) => { closed = true; close(); resolve(done); };
       ok.addEventListener('click', async () => {
         if (ok.disabled) return;
         busy = true;
         sync();
         try {
           const answer = await api(path, { ...body(noteValue()), confirm: action, plan_hash: plan.plan_hash });
-          if (ZtLock.answer(answer) === 'applied') { finish(answer.lock); return; }
+          if (ZtLock.answer(answer) === 'applied') { finish(answer); return; }
           // The tree, the Lock or the archive moved since this plan: nothing was written. The
           // renewed plan replaces the old one; the note stays as typed and the owner reviews again.
           show(answer);
@@ -4944,11 +4961,7 @@
       h('p', { class: 'lock-limit', text: 'Pins keep a target\'s address and existence only: its meaning, and any external document, artifact or cache availability, stay outside the seal promise.' }),
       digestFold(plan.seal),
       lockFold('Pinned targets', pinRows(ZtLock.pinGroups(plan))),
-      plan.warnings.length ? h('details', { class: 'lock-fold warn' },
-        h('summary', { text: `Already broken links · ${plan.warnings.length} — they create no pin; if one resolves later, unlock and lock again to include it` }),
-        h('ul', { class: 'lock-list' }, plan.warnings.map((warning) => h('li', {},
-          h('span', { class: 'a', text: warning.source }), h('span', { class: 'arrow', text: '→' }),
-          h('span', { class: 'b broken', text: `${warning.target} (missing)` }))))) : null,
+      warningFold(ZtLock.warningsFold(plan.warnings, 'plan')),
       lockFold('Members', plan.members.map((member) => h('li', {},
         h('span', { class: 'a', text: member.address }),
         h('span', { class: 'b fp', title: member.fingerprint, text: String(member.fingerprint).slice(0, 12) })))),
@@ -4975,23 +4988,28 @@
    * After a committed Lock action, the normal refresh (S05, #128, R222): it reads the overview,
    * the Cards and the Locks again, so the cabinet's drawer, the desk's stack band and every open
    * copy of the tree's Cards show the new state. An open writing desk keeps its draft: a refresh
-   * repaints the page under the dialogs and never closes one.
+   * repaints the page under the dialogs and never closes one. A committed answer whose `zt.log`
+   * mirror failed adds one separate warning line (`ZtLock.logWarning`, S04 #127, R105): the action
+   * stays committed, so the first line still says what was done.
    */
-  async function afterLock(message) {
+  async function afterLock(message, answer) {
     toast(message);
+    const warning = ZtLock.logWarning(answer);
+    if (warning) toast(warning, 'warn');
     await refresh().catch(fail);
   }
 
   /** Lock tree: review the whole tree's plan, then freeze it. */
   async function lockTree(rootAddress) {
-    const lock = await lockDialog({
+    const done = await lockDialog({
       action: 'lock', path: 'lock', verb: 'Lock tree', noteField: true, note: '',
       heading: `Lock tree ${rootAddress}`,
       body: (note) => ({ root: rootAddress, note: ZtLock.noteCheck(note).note }),
       view: (plan) => lockPlanView(plan),
     });
-    if (lock) await afterLock(`locked ${lock.root} · seal ${ZtLock.sealShort(lock.seal)}`);
-    return lock;
+    const lock = done && done.lock;
+    if (lock) await afterLock(`locked ${lock.root} · seal ${ZtLock.sealShort(lock.seal)}`, done);
+    return lock || null;
   }
 
   /** Unlock tree: review exactly this Lock's release, then end it. */
@@ -5004,8 +5022,9 @@
         h('p', { class: 'lock-what', text: `Ends lock ${plan.lock_id} only. Its ${plan.member_count} cards can be edited, moved and deleted again, the tree takes new cards, and its ${plan.pin_count} pinned target${plan.pin_count === 1 ? '' : 's'} are released unless another Lock pins them. The history stays in the archive.` }),
       ]),
     });
-    if (done) await afterLock(`unlocked ${done.root}`);
-    return done;
+    const ended = done && done.lock;
+    if (ended) await afterLock(`unlocked ${ended.root}`, done);
+    return ended || null;
   }
 
   /** Edit lock note: a note change has its own confirmation and never reseals the tree. */
@@ -5018,8 +5037,9 @@
         h('p', { class: 'lock-what', text: 'Changes only the note. The members, the pins and the seal stay as they are.' }),
       ]),
     });
-    if (done) await afterLock(`note changed on ${done.root}`);
-    return done;
+    const noted = done && done.lock;
+    if (noted) await afterLock(`note changed on ${noted.root}`, done);
+    return noted || null;
   }
 
   /**
@@ -5046,42 +5066,44 @@
         said.where ? h('span', { class: 'b', text: said.where }) : null,
         h('span', { class: 'fault-when', text: said.when }));
     });
-    const history = (lock) => lockFold('History', (lock.events || []).map((event) => h('li', { class: 'ev ' + event.action, text: ZtLock.eventLine(event) })));
+    const history = (view) => lockFold('History', view.history.map((event) => h('li', { class: 'ev ' + event.action, text: event.text })), 'lock-scroll');
+    // S04 (#127): every Lock, active or ended, is the same index card with the same folds — its
+    // note, seal and full digest, its Broken-link warnings, its members, its pins grouped by
+    // target with their source addresses, and its whole history — each list whole and scrolling
+    // in place. An ended Lock reads the snapshot its `lock` event captured, names its root by the
+    // captured address (never today's Card there, R104), recedes a step and offers no action.
     // Reading, the members, the pins and the whole history stay on a faulted Lock; the seal shown
     // is the one the owner reviewed (`lock.seal`), never one computed from damaged content.
     const entry = (lock, faults, broken) => {
-      const card = state.byAddress.get(lock.root);
+      const view = ZtLock.entryView(lock, false);
+      const card = view.ended ? null : state.byAddress.get(lock.root);
       const run = {
         open: () => { close(); go(lock.root); },
         note: act(() => editLockNote(lock)),
         unlock: act(() => unlockTree(lock)),
       };
-      return h('section', { class: 'lock-entry' + (broken ? ' faulted' : '') + (lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
+      const actions = ZtLock.entryActions(lock, Boolean(card)).map((item) => h('button', {
+        class: 'btn' + (item.danger ? ' danger' : ''), text: item.label, dataset: { act: item.id }, onclick: run[item.id],
+      }));
+      return h('section', { class: 'lock-entry' + (view.ended ? ' lock-ended' : '') + (broken ? ' faulted' : '') + (!view.ended && lock.root === focusRoot ? ' focus' : ''), dataset: { lock: String(lock.lock_id) } },
         lockCardView({
-          root: lock.root, title: card ? card.title : `${lock.root} (root missing)`, kind: card ? card.kind : (/^\d+\//.test(lock.root) ? 'topic' : 'literature'),
-          workspace: lock.workspace, count: lock.member_count, pins: ZtLock.pinGroups(lock).length,
+          root: lock.root, title: card ? card.title : view.ended ? lock.root : `${lock.root} (root missing)`, kind: card ? card.kind : (/^\d+\//.test(lock.root) ? 'topic' : 'literature'),
+          workspace: lock.workspace, count: lock.member_count, pins: view.pins.length,
           seal: lock.seal, broken, note: lock.note, since: lock.locked_at, lockId: lock.lock_id,
+          until: lock.unlocked_at, noteless: true,
         }),
         faults.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(faults)) : null,
-        h('div', { class: 'lock-entry-actions' },
-          ZtLock.entryActions(lock, Boolean(card)).map((item) => h('button', {
-            class: 'btn' + (item.danger ? ' danger' : ''), text: item.label, dataset: { act: item.id }, onclick: run[item.id],
-          }))),
+        view.ended && view.faultsRecorded
+          ? h('p', { class: 'lock-recorded', text: `${view.faultsRecorded} integrity fault${view.faultsRecorded === 1 ? '' : 's'} recorded` }) : null,
+        actions.length ? h('div', { class: 'lock-entry-actions' }, actions) : null,
         digestFold(lock.seal),
-        lockFold('Members', (lock.members || []).map((member) => h('li', {},
+        warningFold(view.warnings),
+        lockFold('Members', view.members.map((member) => h('li', {},
           h('span', { class: 'a', text: member.address }),
-          h('span', { class: 'b fp', title: member.fingerprint, text: String(member.fingerprint || '').slice(0, 12) })))),
-        lockFold('Pinned targets', pinRows(ZtLock.pinGroups(lock))),
-        history(lock),
+          h('span', { class: 'b fp', title: member.fingerprint, text: member.fingerprint.slice(0, 12) }))), 'lock-scroll'),
+        lockFold('Pinned targets', pinRows(view.pins), 'lock-scroll'),
+        history(view),
       );
-    };
-    const ended = (lock) => {
-      const recorded = (lock.events || []).filter((event) => event.action === 'integrity-fault').length;
-      return h('li', { class: 'lock-ended' },
-        h('span', { class: 'a', text: `${lock.root} · lock ${lock.lock_id}` }),
-        h('span', { class: 'b', text: `seal ${ZtLock.sealShort(lock.seal)} · ${dateOf(lock.locked_at)} → ${dateOf(lock.unlocked_at)}`
-          + (recorded ? ` · ${recorded} integrity fault${recorded === 1 ? '' : 's'} recorded` : '') }),
-        history(lock));
     };
     async function paint() {
       try {
@@ -5091,16 +5113,17 @@
         return;
       }
       const read = ZtLock.panel(state.locks);
+      const faultsOf = (lock) => read.faultsOf[lock.lock_id] || [];
       status.className = 'lock-status' + (read.ok ? ' ok' : ' bad');
       status.textContent = read.ok ? 'all intact' : ZtLock.faultLine(state.locks);
       body.replaceChildren(...[
         read.loose.length ? h('ul', { class: 'lock-list lock-faults' }, faultRows(read.loose)) : null,
         read.active.length
-          ? read.active.map((lock) => entry(lock, read.faultsOf[lock.lock_id] || [], Boolean(read.broken[lock.lock_id])))
+          ? read.active.map((lock) => entry(lock, faultsOf(lock), Boolean(read.broken[lock.lock_id])))
           : h('p', { class: 'hint', text: 'No tree is locked. Open a Topic or Literature root and choose Lock tree to freeze it.' }),
         read.ended.length ? h('details', { class: 'lock-fold lock-history' },
           h('summary', { text: `Ended locks · ${read.ended.length}` }),
-          h('ul', { class: 'lock-list' }, read.ended.map(ended))) : null,
+          h('div', { class: 'lock-ended-list' }, read.ended.map((lock) => entry(lock, faultsOf(lock), false)))) : null,
       ].flat().filter(Boolean));
       const focus = body.querySelector('.lock-entry.focus');
       if (focus) focus.scrollIntoView({ block: 'nearest' });

@@ -204,16 +204,19 @@
   }
 
   /**
-   * A Lock's pins grouped by distinct target, each with the locked source Cards that link it. The
-   * stored pin rows name source rows; the Lock's own members name their addresses.
+   * A Lock's pins grouped by distinct target, each with the locked source Cards that link it. A
+   * plan's pin names its `sources`; a stored pin row (active or ended, S04 #127) names its locked
+   * source address as `source`; an older answer names only `source_row`, which the Lock's own
+   * members resolve. The captured address is the record: no row is joined to today's Cards.
    */
   function pinGroups(lock) {
     const addressOf = new Map(((lock && lock.members) || []).map((member) => [member.row_id, member.address]));
     const groups = new Map();
     for (const pin of (lock && lock.pins) || []) {
       const group = groups.get(pin.target) || { target: pin.target, target_row: pin.target_row, sources: [] };
-      // A plan's pin names its sources; a stored pin row names one source row.
-      const sources = Array.isArray(pin.sources) ? pin.sources : [addressOf.get(pin.source_row) || `row ${pin.source_row}`];
+      const sources = Array.isArray(pin.sources) ? pin.sources
+        : pin.source ? [pin.source]
+          : [addressOf.get(pin.source_row) || `row ${pin.source_row}`];
       for (const item of sources) if (!group.sources.includes(item)) group.sources.push(item);
       groups.set(pin.target, group);
     }
@@ -242,6 +245,63 @@
       default:
         return `${at} · ${(event && event.action) || 'event'}`;
     }
+  }
+
+  /**
+   * The Broken Links a Lock plan or a Lock's retained `lock` event names, as one fold: `null` when
+   * there are none, else its summary words and every row (S04, #127). `stage` is `plan` in the
+   * Lock dialog (the links the owner is about to accept) and `lock` in the panel (the links the
+   * owner accepted when locking). Neither creates a pin; the fold says how to include one.
+   */
+  function warningsFold(warnings, stage) {
+    const rows = (Array.isArray(warnings) ? warnings : []).map((warning) => ({
+      source: String((warning && warning.source) ?? ''),
+      target: String((warning && warning.target) ?? ''),
+    }));
+    if (!rows.length) return null;
+    const label = stage === 'plan'
+      ? `Already broken links · ${rows.length} — they create no pin; if one resolves later, unlock and lock again to include it`
+      : `Broken links when locked · ${rows.length} — they hold no pin; unlock and lock again to include one that resolves`;
+    return { label, rows };
+  }
+
+  /**
+   * What one lock-panel entry shows (S04, #127), for an active Lock and an ended one alike: the
+   * note (`null` when none), the seal's 12 characters and its full digest, every member, the pins
+   * grouped by target with their source addresses, the retained Broken-link warnings, and the
+   * whole history in event-id order, none of them cut. An ended Lock reads the snapshot its
+   * retained `lock` event captured and offers no action; an active one offers `entryActions`.
+   */
+  function entryView(lock, rootPresent) {
+    const ended = Boolean(lock && lock.unlocked_at);
+    const events = ((lock && lock.events) || []).slice()
+      .sort((a, b) => Number((a && a.event_id) || 0) - Number((b && b.event_id) || 0));
+    return {
+      ended,
+      note: lock && lock.note != null && String(lock.note) !== '' ? String(lock.note) : null,
+      seal: String((lock && lock.seal) || ''),
+      sealShort: sealShort(lock && lock.seal),
+      members: ((lock && lock.members) || []).map((member) => ({
+        address: String(member.address), fingerprint: String(member.fingerprint || ''),
+      })),
+      pins: pinGroups(lock),
+      warnings: warningsFold(lock && lock.warnings, 'lock'),
+      history: events.map((event) => ({ action: String((event && event.action) || 'event'), text: eventLine(event) })),
+      faultsRecorded: events.filter((event) => event && event.action === 'integrity-fault').length,
+      actions: entryActions(lock, rootPresent),
+    };
+  }
+
+  /**
+   * The one-line warning a committed Lock action carries when its after-commit `zt.log` mirror
+   * failed (S04, #127, R105): `null` when the answer has no `log_error`. The Lock, unlock or note
+   * is committed in the archive either way; only the log line is missing, so the words never say
+   * the action was undone. The server's error is folded onto one line.
+   */
+  function logWarning(answer) {
+    const said = answer && answer.log_error;
+    if (said == null || String(said).trim() === '') return null;
+    return `Saved in the archive, but its zt.log line was not written: ${String(said).replace(/\s+/g, ' ').trim()}`;
   }
 
   /**
@@ -383,7 +443,7 @@
   }
 
   return {
-    NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, sameFault, panel, faultLine, faultText, entryActions, pinGroups, eventLine, cardState,
+    NOTE_LIMIT, sealShort, noteCheck, planCurrent, answer, refusalText, refusalTree, activeLock, sameFault, panel, faultLine, faultText, entryActions, pinGroups, warningsFold, entryView, logWarning, eventLine, cardState,
     WRITES, COMMAND_WRITES, pinHolders, writeGate, destinationLock, treeActions, bandText,
   };
 });

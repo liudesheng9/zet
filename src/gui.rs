@@ -2997,17 +2997,211 @@ mod tests {
         assert!(app_function("existingLockView").contains("card ? card.title : plan.root"), "the unlock plan reads without the root");
         // A faulted entry keeps everything and shows the reviewed seal.
         assert!(panel.contains("seal: lock.seal, broken, note: lock.note, since: lock.locked_at, lockId: lock.lock_id,"));
-        assert!(panel.contains("lockFold('Members', (lock.members || [])"));
-        assert!(panel.contains("lockFold('Pinned targets', pinRows(ZtLock.pinGroups(lock))),"));
+        assert!(panel.contains("lockFold('Members', view.members.map((member) =>"));
+        assert!(panel.contains("lockFold('Pinned targets', pinRows(view.pins), 'lock-scroll'),"));
         assert!(panel.contains("digestFold(lock.seal),"));
-        assert_eq!(panel.matches("history(lock)").count(), 2, "active and ended Locks both keep their history");
-        assert!(panel.contains("event.action === 'integrity-fault'"), "an ended Lock counts its recorded faults");
-        assert!(panel.contains("text: `${lock.root} · lock ${lock.lock_id}`"), "an ended Lock names its own id");
+        // S04 (#127): active and ended Locks are drawn by the one entry, so both keep their history,
+        // and an ended Lock counts its recorded faults and names its own id on the card.
+        assert_eq!(panel.matches("history(view)").count(), 1, "one entry draws every history");
+        assert!(panel.contains("read.ended.map((lock) => entry(lock, faultsOf(lock), false))"), "an ended Lock is the same entry");
+        assert!(panel.contains("view.ended && view.faultsRecorded"), "an ended Lock counts its recorded faults");
+        assert!(LOCK_JS.contains("faultsRecorded: events.filter((event) => event && event.action === 'integrity-fault').length,"));
+        assert!(panel.contains("lockId: lock.lock_id,"), "an ended Lock names its own id");
         assert!(app_function("lockCardView").contains("text: `lock ${lockId}`"), "a relock shows its new Lock id");
         // A latched fault breaks the seal wherever the seal is stamped.
         assert!(app_function("lockLine").contains("sealStamp(lock.seal, broken)"));
         assert!(app_function("existingLockView").contains("ZtLock.panel(state.locks).broken[plan.lock_id]"));
         assert_eq!(APP_JS.matches("faultsOf[").count(), 1, "only the panel list reads the rows; the seal reads `broken`");
+    }
+
+    /// S04 (#127, S04-AC06): an ended Lock reads like an active one in the panel. Its entry shows
+    /// the note, the 12-character seal and the full digest, every member the retained `lock` event
+    /// captured, the pins grouped by target with their source addresses, the Broken-link warnings
+    /// and the whole history in event-id order, none of them cut; it offers no action. The panel
+    /// draws both with one entry, names an ended root by its captured address only, and lets every
+    /// list scroll in its fold instead of truncating it.
+    #[test]
+    fn an_ended_lock_shows_its_retained_snapshot_whole_and_offers_no_action() {
+        let Some(value) = lock_js(
+            "(() => {
+               const members = Array.from({ length: 40 }, (_, i) => ({ address: i ? `3/${i}` : '3/0', row_id: 300 + i, fingerprint: String(i).padStart(2, '0').repeat(32) }));
+               const ended = {
+                 lock_id: 1, root: '3/0', workspace: 'human', note: 'reviewed 2026-10-20', seal: 'a'.repeat(64),
+                 member_count: 40, locked_at: '2026-10-20T08:00:00Z', unlocked_at: '2026-10-21T10:00:00Z',
+                 members,
+                 pins: [{ target: '5/1', target_row: 51, source_row: 301, source: '3/1' }, { target: '5/1', target_row: 51, source_row: 302, source: '3/2' }, { target: 'Smith2024', target_row: 70, source_row: 302, source: '3/2' }],
+                 warnings: [{ source: '3/3', target: '9/9' }],
+                 events: [
+                   { event_id: 12, action: 'unlock', at: '2026-10-21T10:00:00Z', detail: { lock_id: 1, member_count: 40, pin_count: 2 } },
+                   { event_id: 10, action: 'lock', at: '2026-10-20T08:00:00Z', detail: { member_count: 40, seal: 'a'.repeat(64) } },
+                   { event_id: 11, action: 'integrity-fault', at: '2026-10-20T09:00:00Z', detail: { fault: 'lock-1:changed:3/1' } },
+                 ],
+               };
+               const view = ZtLock.entryView(ended, true);
+               const active = ZtLock.entryView({ ...ended, lock_id: 2, unlocked_at: null, note: null, events: [] }, true);
+               return {
+                 ended: view.ended, note: view.note, short: view.sealShort, seal: view.seal,
+                 members: view.members.length, last: view.members[39],
+                 pins: view.pins, warnings: view.warnings,
+                 history: view.history.map((row) => row.action), firstLine: view.history[0].text,
+                 recorded: view.faultsRecorded, actions: view.actions,
+                 activeEnded: active.ended, activeNote: active.note, activeActions: active.actions.map((item) => item.id),
+                 activeWarnings: active.warnings && active.warnings.rows,
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["ended"], true);
+        assert_eq!(value["note"], "reviewed 2026-10-20");
+        assert_eq!(value["short"], "aaaaaaaaaaaa", "the seal's 12 characters");
+        assert_eq!(value["seal"], "a".repeat(64), "and the full digest");
+        assert_eq!(value["members"], 40, "every captured member, none cut");
+        assert_eq!(value["last"], json!({"address": "3/39", "fingerprint": "39".repeat(32)}));
+        assert_eq!(
+            value["pins"],
+            json!([
+                {"target": "5/1", "target_row": 51, "sources": ["3/1", "3/2"]},
+                {"target": "Smith2024", "target_row": 70, "sources": ["3/2"]}
+            ])
+        );
+        assert_eq!(value["warnings"]["rows"], json!([{"source": "3/3", "target": "9/9"}]));
+        assert_eq!(value["history"], json!(["lock", "integrity-fault", "unlock"]), "history in event-id order");
+        assert_eq!(value["firstLine"], "2026-10-20 08:00:00Z · locked 40 cards · seal aaaaaaaaaaaa");
+        assert_eq!(value["recorded"], 1);
+        assert_eq!(value["actions"], json!([]), "an ended Lock exposes its facts without write actions");
+        assert_eq!(value["activeEnded"], false);
+        assert_eq!(value["activeNote"], Value::Null, "no note reads as none");
+        assert_eq!(value["activeActions"], json!(["open", "note", "unlock"]));
+        assert_eq!(value["activeWarnings"], json!([{"source": "3/3", "target": "9/9"}]), "an active entry gains its warnings");
+        // The panel draws every Lock with that one entry: an ended root is its captured address,
+        // never today's Card at it (R104), and it is dated at both ends.
+        let panel = app_function("lockPanel");
+        assert!(panel.contains("const view = ZtLock.entryView(lock, false);"), "{panel}");
+        assert!(panel.contains("const card = view.ended ? null : state.byAddress.get(lock.root);"));
+        assert!(panel.contains("until: lock.unlocked_at, noteless: true,"));
+        assert!(panel.contains("warningFold(view.warnings),"), "active and ended entries show their warnings");
+        assert!(panel.contains("actions.length ? h('div', { class: 'lock-entry-actions' }, actions) : null,"));
+        let card = app_function("lockCardView");
+        assert!(card.contains("until ? h('span', { class: 'lock-sub', text: `unlocked ${dateOf(until)}` }) : null,"));
+        assert!(card.contains("noteless ? h('p', { class: 'lock-note-text lock-note-empty', text: 'no note' }) : null"));
+        // Every list stays whole: it scrolls in its fold, and nothing slices a list.
+        assert_eq!(panel.matches("'lock-scroll'").count(), 3, "members, pins and history scroll");
+        assert!(APP_CSS.contains(".lock-fold.lock-scroll > .lock-list, .lock-fold.warn > .lock-list { max-height: 15em; overflow-y: auto;"));
+        assert_eq!(panel.matches(".slice(0, ").count(), 1, "only a fingerprint is shortened, its whole value in its title");
+        assert!(panel.contains("title: member.fingerprint, text: member.fingerprint.slice(0, 12)"));
+        assert_eq!(LOCK_JS.matches(".slice(0, ").count(), 1, "only the seal's short form cuts, and the digest stays beside it");
+        assert!(APP_CSS.contains(".lock-entry.lock-ended .lock-card {"), "an ended Lock recedes a step");
+    }
+
+    /// S04 (#127): a pin names its source by the most direct fact it carries: a plan's `sources`,
+    /// then a stored row's `source` address (active or ended), and only then the Lock's own member
+    /// rows. A source the members do not name stays visible as its row.
+    #[test]
+    fn lock_pins_prefer_plan_sources_then_the_stored_source_then_the_member_rows() {
+        let Some(value) = lock_js(
+            "(() => {
+               const members = [{ address: '3/0', row_id: 30 }, { address: '3/1', row_id: 31 }];
+               return {
+                 plan: ZtLock.pinGroups({ members, pins: [{ target: '5/1', target_row: 51, sources: ['3/0'], source: '3/1', source_row: 31 }] }),
+                 stored: ZtLock.pinGroups({ members, pins: [{ target: '5/1', target_row: 51, source: '3/7', source_row: 31 }] }),
+                 rows: ZtLock.pinGroups({ members, pins: [{ target: '5/1', target_row: 51, source_row: 31 }, { target: '5/1', target_row: 51, source_row: 99 }] }),
+                 mixed: ZtLock.pinGroups({ members, pins: [{ target: '5/1', target_row: 51, source: '3/0', source_row: 30 }, { target: '5/1', target_row: 51, source_row: 31 }] }),
+                 none: ZtLock.pinGroups(null),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["plan"], json!([{"target": "5/1", "target_row": 51, "sources": ["3/0"]}]), "a plan's sources first");
+        assert_eq!(
+            value["stored"],
+            json!([{"target": "5/1", "target_row": 51, "sources": ["3/7"]}]),
+            "the stored source address, not today's member row"
+        );
+        assert_eq!(value["rows"], json!([{"target": "5/1", "target_row": 51, "sources": ["3/1", "row 99"]}]), "the member row map last");
+        assert_eq!(value["mixed"], json!([{"target": "5/1", "target_row": 51, "sources": ["3/0", "3/1"]}]));
+        assert_eq!(value["none"], json!([]));
+    }
+
+    /// S04 (#127): the Broken Links a Lock accepted fold the same way in the plan and in the
+    /// panel, every row kept; no warnings is no fold.
+    #[test]
+    fn the_lock_warnings_fold_keeps_every_broken_link_in_the_plan_and_the_panel() {
+        let Some(value) = lock_js(
+            "(() => {
+               const warnings = Array.from({ length: 25 }, (_, i) => ({ source: `3/${i + 1}`, target: `9/${i + 1}` }));
+               return {
+                 plan: ZtLock.warningsFold(warnings, 'plan'),
+                 lock: ZtLock.warningsFold(warnings.slice(0, 1), 'lock'),
+                 empty: ZtLock.warningsFold([], 'lock'),
+                 missing: ZtLock.warningsFold(undefined, 'plan'),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        assert_eq!(value["plan"]["rows"].as_array().map(Vec::len), Some(25), "every warning, none cut");
+        assert_eq!(value["plan"]["rows"][24], json!({"source": "3/25", "target": "9/25"}));
+        assert_eq!(
+            value["plan"]["label"],
+            "Already broken links · 25 — they create no pin; if one resolves later, unlock and lock again to include it"
+        );
+        assert_eq!(
+            value["lock"]["label"],
+            "Broken links when locked · 1 — they hold no pin; unlock and lock again to include one that resolves"
+        );
+        assert_eq!(value["empty"], Value::Null);
+        assert_eq!(value["missing"], Value::Null);
+        let fold = app_function("warningFold");
+        assert!(fold.contains("h('details', { class: 'lock-fold warn' },"), "{fold}");
+        assert!(fold.contains("fold.rows.map((warning) =>"));
+        assert!(fold.contains("text: `${warning.target} (missing)`"));
+        assert_eq!(APP_JS.matches("warningFold(").count(), 3, "the helper, the plan and the panel");
+    }
+
+    /// S04 (#127, R105): a committed Lock, unlock or note whose after-commit `zt.log` mirror failed
+    /// shows the action's own line and then one separate warning line that never says the action
+    /// was undone; an answer without `log_error` adds nothing.
+    #[test]
+    fn a_lock_log_error_shows_as_one_separate_warning_line() {
+        let Some(value) = lock_js(
+            "({
+               failed: ZtLock.logWarning({ applied: true, lock: { lock_id: 4 }, log_error: 'open zt.log\\n\\nCaused by:\\n    Access is denied. (os error 5)' }),
+               clean: ZtLock.logWarning({ applied: true, lock: { lock_id: 4 } }),
+               blank: ZtLock.logWarning({ applied: true, lock: {}, log_error: '  ' }),
+               none: ZtLock.logWarning(null),
+             })",
+        ) else {
+            eprintln!("node is not installed; the lock rules were not run");
+            return;
+        };
+        let failed = value["failed"].as_str().expect("a warning");
+        assert_eq!(
+            failed,
+            "Saved in the archive, but its zt.log line was not written: open zt.log Caused by: Access is denied. (os error 5)"
+        );
+        assert!(!failed.contains('\n'), "one line");
+        assert!(!failed.contains("rolled back") && !failed.contains("not saved"), "the committed action is never undone");
+        assert_eq!(value["clean"], Value::Null);
+        assert_eq!(value["blank"], Value::Null);
+        assert_eq!(value["none"], Value::Null);
+        // The dialog hands back the whole committed answer; each flow passes it on, and the
+        // warning is its own toast after the action's line.
+        let dialog = app_function("lockDialog");
+        assert!(dialog.contains("if (ZtLock.answer(answer) === 'applied') { finish(answer); return; }"), "{dialog}");
+        let after = app_function("afterLock");
+        let said = after.find("toast(message);").expect("the action's line");
+        let warned = after.find("if (warning) toast(warning, 'warn');").expect("the separate warning");
+        assert!(said < warned && after.contains("const warning = ZtLock.logWarning(answer);"), "{after}");
+        assert!(app_function("editLockNote").contains("await afterLock(`note changed on ${noted.root}`, done);"));
+        assert!(app_function("lockTree").contains(", done);"));
+        assert!(app_function("unlockTree").contains("await afterLock(`unlocked ${ended.root}`, done);"));
+        assert!(app_function("toast").contains("kind === 'warn' ? ' warn' : ''"));
+        assert!(APP_CSS.contains(".toast.warn { border-left: 4px solid var(--broken); }"));
     }
 
     /// S01 (#124): the page's Lock dialogs send nothing on Cancel, confirm only with the plan's own
@@ -3066,8 +3260,10 @@ mod tests {
             .expect("the exclusion sentence");
         let digest = view.find("digestFold(plan.seal)").expect("the digest fold");
         assert!(what < limit && limit < digest, "the exclusion sits right under the freeze line: {view}");
+        // S04 (#127): the plan and the panel share one warnings fold; the plan's words are unchanged.
+        assert!(view.contains("warningFold(ZtLock.warningsFold(plan.warnings, 'plan')),"), "{view}");
         assert!(
-            view.contains("h('summary', { text: `Already broken links · ${plan.warnings.length} — they create no pin; if one resolves later, unlock and lock again to include it` })"),
+            LOCK_JS.contains("`Already broken links · ${rows.length} — they create no pin; if one resolves later, unlock and lock again to include it`"),
             "the broken-link fold is unchanged"
         );
         assert!(APP_CSS.contains(".lock-limit { margin: 0 0 4px; font-size: 12px;"), "the limit recedes below the freeze line");
