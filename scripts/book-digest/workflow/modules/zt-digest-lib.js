@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v30 ====
+// ==== module zt-digest-lib v31 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -20,6 +20,12 @@
 // result through that family's checked finish command, and seals with the layer gate. Retries are per unit
 // (`maxAttempts`), never a whole-stage rerun. No module reads a clock: the bounded readiness wait lives in
 // zt-digest (`ledger next -Wait`).
+// 31 (Tree Lock S17, #140): a write the owner's Lock refused is a planning error, never a provider fault
+// (R326/R337). `zdLockRefusal` reads the archive's typed `card_locked` JSON out of a relayed line, and the
+// stage stops with it — one failed script command, a failed compiler step, a claimed unit's start or
+// checked finish, or a refused chain step — while the drafts and the receipts already committed stay. The
+// unit keeps the refusal as its content fault (`code: card_locked`), never a retryable one, and nothing is
+// retried, unlocked, or re-pointed through another Access (R338).
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 // The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
 // is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
@@ -64,6 +70,41 @@ function zdJsonIn(line) {
 function zdLastJson(text) {
   for (const line of String(text || '').trim().split('\n').reverse()) { const v = zdJsonIn(line); if (v) return v }
   return null
+}
+
+// --- Tree Lock: the owner's refusal is a planning error, not a provider fault (#140, R326/R337) ------
+// A write into a tree the owner locked is refused by the storage gate with its typed `card_locked`
+// refusal (a preflight prints `{ok:false, code:"card_locked", …}`; the archive's own MCP refusal
+// prints `{error:"card_locked", …}`). The stage reads that JSON, never an English sentence (R338):
+// it stops with the refusal as its error, keeps the drafts and the receipts it already committed,
+// and never retries the refused write or asks for another Access (R326).
+const ZD_LOCK = 'card_locked'
+// The typed refusal inside one relayed line, answer or error text, or null.
+function zdLockRefusal(text) {
+  const said = String(text || '')
+  for (const line of said.split('\n')) {
+    for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
+      for (let j = line.lastIndexOf('}'); j > i; j = line.lastIndexOf('}', j - 1)) {
+        try {
+          const v = JSON.parse(line.slice(i, j + 1))
+          if (v && typeof v === 'object' && (v.code === ZD_LOCK || v.error === ZD_LOCK)) return v
+        } catch (e) { }
+      }
+    }
+  }
+  return null
+}
+// The archive's own sentence about the refusal, for the stage's error line.
+function zdLockSaid(refusal) {
+  const said = refusal && (refusal.message || refusal.error)
+  return typeof said === 'string' && said.trim() ? said.trim() : ZD_LOCK
+}
+// The stop one stage throws: the archive's refusal, its sentence and its JSON. `lock_refusal` lets a
+// caller that records unit faults keep the code instead of reading it as a content or provider fault.
+function zdLockStop(where, refusal) {
+  const error = new Error(`card_locked at ${where}: ${zdLockSaid(refusal)} ${JSON.stringify(refusal)}`)
+  error.lock_refusal = refusal
+  return error
 }
 
 // The DeepSeek source model before (or without) the probe: the given model, the given source, or the official one.
@@ -174,6 +215,14 @@ Return ok (true when it exits without an error) and output = its last output lin
     // A gate prints its JSON and then exits 3 while the layer still has open work, so a caller that asked
     // for it still reads a typed result instead of only prose.
     const json = run && (run.ok || o.always) ? zdLastJson(run.output) : null
+    // R326/R337: a failed command whose answer carries the owner's typed refusal stops the stage here.
+    // A successful read that merely names a retained fault keeps going: only a refusal stops work.
+    const refused = !!(json && (json.code === ZD_LOCK || json.error === ZD_LOCK))
+    const lock = zdLockRefusal(run && run.output) || (refused ? json : null)
+    if (lock && (!(run && run.ok) || refused)) {
+      log(`${label}: the owner locked the destination tree; the stage stops and keeps its drafts and receipts.`)
+      throw zdLockStop(label, lock)
+    }
     return { run, json }
   }
 
@@ -345,6 +394,9 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     const o = { ...o0, jobsFile: `${OUT}\\jobs\\${String(label).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 60)}-${++jobsSeq}.json` }
     const step = await driveAgent(label, o, 'command')
     if (!step || !step.ok) {
+      // R326/R337: the compiler step the owner's Lock refused stops the stage with its own refusal.
+      const lock = zdLockRefusal((step && (step.error || step.output)) || '')
+      if (lock) throw zdLockStop(label, lock)
       return { ok: false, error: (step && step.error) || 'no report from the step', output: (step && step.output) || '', results: [] }
     }
     const parsed = zdLastJson(step.output)
@@ -459,6 +511,15 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const driven = run || { steps: [], results: [] }
     const steps = Array.isArray(driven.steps) ? driven.steps : []
     const results = Array.isArray(driven.results) ? driven.results : []
+    // R326/R337: a chain step whose command the owner's Lock refused stops the stage with the refusal.
+    for (const step of steps) {
+      if (step && step.ok !== false) continue
+      const lock = zdLockRefusal(step && (step.error || step.output))
+      if (lock) {
+        log(`${label}: ${step.name} was refused by the owner's Lock; the stage stops and keeps its drafts and receipts.`)
+        throw zdLockStop(`${label}: ${step.name}`, lock)
+      }
+    }
     // R322: the chain manager recorded its own ids against the unit that owns them (the claim step's unit,
     // the chain's given unit, or the run). Name the jobs whose records failed.
     const claimStep = (o.steps || []).find((s) => s.claim)
@@ -589,6 +650,19 @@ Copy each of those output lines character for character: never summarize, abbrev
     if (said && said.state === 'done') return { status: 'done', parsed: finish.parsed || { disposition: said.disposition || 'checked' } }
     if (said && said.state === 'failed') return { status: 'failed', error: `the ledger holds ${u.unit} failed (${said.fault_class || 'fault'})` }
     if (said && (said.state !== 'claimed' || Number(said.token) !== Number(u.token))) return { status: 'retry', error: `the ledger holds ${u.unit} ${said.state}` }
+    // R326/R337: the unit's own start or checked finish carries the owner's typed refusal. The unit
+    // keeps that refusal as its content fault (never a retryable one), and the stage stops with it.
+    const lock = zdLockRefusal((u.start && (u.start.error || u.start.output)) || '')
+      || zdLockRefusal((u.finish && (u.finish.error || u.finish.output)) || '')
+      || ((finish.parsed && (finish.parsed.code === ZD_LOCK || finish.parsed.error === ZD_LOCK)) ? finish.parsed : null)
+    if (lock) {
+      await failUnit(`${label}: ${u.unit} locked`, u.unit, u.token, 'content', {
+        schema_version: 1, unit: u.unit, input_hash: u.input_hash || (u.ledger && u.ledger.input_hash) || '',
+        code: ZD_LOCK, cause: `${zdLockSaid(lock)} ${JSON.stringify(lock)}`.slice(0, 800),
+      })
+      log(`${label}: ${u.unit} met the owner's Lock; the stage stops and keeps its drafts, errors and receipts.`)
+      throw zdLockStop(`${label}: ${u.unit}`, lock)
+    }
     const cause = (finish.faults[0] || (u.start && u.start.error) || 'the unit did not complete').slice(0, 800)
     const transport = !u.start || u.start.ok === false || !u.finish || u.finish.ok === false
     const refused = !transport && finish.parsed && finish.parsed.state === 'failed'
@@ -715,7 +789,21 @@ Copy each of those output lines character for character: never summarize, abbrev
   // failure keeps the unit failed and visible. Never a whole-stage rerun (R258).
   const finishOrFault = async (label, unit, token, inputs, extra = {}) => {
     const at = `${label}: ${unit}`
-    const got = await finishOf(at, unit, token, { ...extra, inputs }, { inputs })
+    let got
+    try {
+      got = await finishOf(at, unit, token, { ...extra, inputs }, { inputs })
+    } catch (error) {
+      // R326/R337: a checked finish the archive refused because the owner locked the destination keeps
+      // the archive's typed refusal as the unit's content fault, then stops the stage.
+      if (error && error.lock_refusal) {
+        await failUnit(`${at} locked`, unit, token, 'content', {
+          schema_version: 1, unit, input_hash: hashOf(unit, inputs), code: ZD_LOCK,
+          cause: `${zdLockSaid(error.lock_refusal)} ${JSON.stringify(error.lock_refusal)}`.slice(0, 800),
+        })
+        throw error
+      }
+      throw error
+    }
     const done = got.ok && got.json && (got.json.state === 'done' || got.json.complete === true)
     if (done) return { unit, status: got.json.status === 'partial' ? 'partial' : 'done', result: got.json }
     // The ledger decides every finish that is not plainly done before any fault: on trial 5 a relay cut the end
@@ -778,6 +866,15 @@ Copy each of those output lines character for character: never summarize, abbrev
     try {
       outcome = await work({ unit, token, inputs, at: `${layerName}: ${unit}` })
     } catch (error) {
+      // R326/R337: the owner's Lock is not a retryable fault. The unit keeps it as its content fault
+      // and the stage stops, with its drafts and its already committed receipts left where they are.
+      if (error && error.lock_refusal) {
+        await failUnit(`${layerName}: ${unit} locked`, unit, token, 'content', {
+          schema_version: 1, unit, input_hash: hashOf(unit, inputs), code: ZD_LOCK,
+          cause: `${zdLockSaid(error.lock_refusal)} ${JSON.stringify(error.lock_refusal)}`.slice(0, 800),
+        })
+        throw error
+      }
       outcome = { ok: false, retryable: true, error: String((error && error.message) || error) }
     }
     if (outcome && outcome.ok) {
@@ -930,6 +1027,8 @@ Copy each of those output lines character for character: never summarize, abbrev
     chain, block, blockFinish, blockSettle, BLOCK_TAKE, ANSWERS, stepOf, jsonOf, resultLine, claim, gate, settledOnResume, renew, holding, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote,
     // The command that runs a digest script: zt-digest <tool> once ported, else pwsh with the script.
     tool: name => zdTool(name, SCRIPTS),
+    // Tree Lock (#140): the owner's typed refusal, its sentence and the stop a stage throws with it.
+    LOCK: ZD_LOCK, lockRefusal: zdLockRefusal, lockSaid: zdLockSaid, lockStop: zdLockStop,
     // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
     cleanupDsh: () => ({ ok: true, results: [], deleted: 0, deferred: true }),
     // Owned provider resources (R322-R330): record the returned ids, observe the provider's facts, settle the unit.
@@ -940,8 +1039,8 @@ Copy each of those output lines character for character: never summarize, abbrev
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '30', library: true, requires: ['@dsmp'],
-  summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules.',
+  id: 'zt-digest-lib', version: '31', library: true, requires: ['@dsmp'],
+  summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====
 

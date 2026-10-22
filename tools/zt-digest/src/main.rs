@@ -200,6 +200,12 @@ fn main() {
     match result {
         Ok(code) => std::process::exit(code),
         Err(error) => {
+            // R338: a step whose own write the archive refused with its typed Lock refusal answers
+            // that refusal as its last stdout line and exits 2, so the Workflow stops the affected
+            // write stage without reading the refusal as a provider fault or matching English text.
+            if let Some(code) = crate::lockcheck::stopped_exit(&tool, &error) {
+                std::process::exit(code);
+            }
             eprintln!("zt-digest {tool}: {error:#}");
             std::process::exit(1);
         }

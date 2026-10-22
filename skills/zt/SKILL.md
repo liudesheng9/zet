@@ -62,6 +62,8 @@ Nothing here changes the archive. Copy titles, authors, and abstracts verbatim; 
 
 ## Rules
 
+- A Card whose read carries `lock` belongs to a locked tree. Read and link that Card normally: its tree's Cards stay readable, selectable and linkable. The tree takes no new Cards and none of its Cards changes, so continue the thought in another, unlocked tree and link the locked Card from there. Only the owner changes Locks. A Card lock never widens your Access: it grants nothing in the human Workspace and freezes no external document.
+- A `card_locked` error is a planning error, not a transient failure. Do not retry it, do not ask for a different Access, and do not reach for the shell, the GUI API, the archive file or another client's write path. Report which tree stopped the write and plan another destination; show the user the rest of the work.
 - Never change the human Workspace by any route. If the server refuses a change (for example ``the human workspace is read-only for AI agents``, or a change that would rewrite Links inside a human Card), that is the user's policy, not a bug: do not work around it with the `zt` shell commands, the GUI API, or the SQLite database. Tell the user what you wanted to change and let them do it.
 - Write only through the MCP server. Do not edit the archive's `zt.sqlite3` directly.
 - Cite Cards by address (`3/1|a`, `Smith2024`) when you report back.

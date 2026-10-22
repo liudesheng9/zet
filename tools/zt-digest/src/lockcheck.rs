@@ -277,6 +277,15 @@ pub fn stopped_refusal(error: &anyhow::Error) -> Option<Value> {
     error.downcast_ref::<Stopped>().map(|stopped| stopped.0.clone())
 }
 
+/// The exit code a digest step answers when its own write met the archive's typed Lock refusal
+/// (R338, S17-AC03): the refusal's JSON is the step's last stdout line, so the Workflow recognizes
+/// `card_locked` without matching English text, and the step exits 2 instead of failing as a
+/// provider fault. None for every other error, which keeps its ordinary failure path.
+pub fn stopped_exit(tool: &str, error: &anyhow::Error) -> Option<i32> {
+    let refusal = stopped_refusal(error)?;
+    Some(stop(tool, &refusal).unwrap_or(LOCKED_EXIT))
+}
+
 /// Reports a stopped step: the typed refusal as its last stdout line (so a caller reads the same
 /// JSON it reads from every step), the exact sentence on stderr, and the refusal exit code. It
 /// writes no file, allocates no job and changes no Card.
@@ -407,8 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_refusal_sorts_and_deduplicates_its_facts() {
-        let other = Lock { lock_id: 1, tree: "B/0".into(), since: String::new() };
+    fn a_blocked_refusal_sorts_and_deduplicates_its_facts() {        let other = Lock { lock_id: 1, tree: "B/0".into(), since: String::new() };
         let value = blocked(
             "edit",
             &["z/1".to_string(), "a/1".to_string(), "z/1".to_string()],
@@ -424,5 +432,18 @@ mod tests {
 
     fn lock_with(id: i64, tree: &str) -> Lock {
         Lock { lock_id: id, tree: tree.into(), since: String::new() }
+    }
+
+    // --- S17 (#140): the workflow recognizes the refusal without English text ---------------------
+
+    #[test]
+    fn a_typed_refusal_leaves_a_step_with_the_typed_json_and_exit_2() {
+        let refusal = blocked_card("edit", "K/1|a", &lock());
+        let error = anyhow::Error::new(Stopped(refusal.clone()));
+        assert_eq!(stopped_refusal(&error), Some(refusal.clone()));
+        assert_eq!(stopped_exit("group-finish", &error), Some(LOCKED_EXIT));
+        // Every other failure keeps its ordinary path, so a provider fault is never read as a Lock.
+        assert_eq!(stopped_refusal(&anyhow::anyhow!("provider timeout")), None);
+        assert_eq!(stopped_exit("group-finish", &anyhow::anyhow!("provider timeout")), None);
     }
 }

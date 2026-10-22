@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v9 ====
+// ==== module zt-digest-prepare v10 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -10,8 +10,10 @@
 // invocation 2 and spends the one-rerun budget, then reads the retained group enumeration, settings and
 // identity from the ledger (#87, R274-R285). Other modes take the group count from args.groups.
 // The output also carries groupList, the per-group items the digest stage's chains are built from.
+// 10 (Tree Lock S17, #140): a preparation the owner's Lock refused stops the run with the archive's own
+// typed `card_locked` refusal (R326/R337), never as a generic preparation failure.
 defineModule({
-  id: 'zt-digest-prepare', version: '9', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '10', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -88,6 +90,10 @@ Return groups = the number of entries in manifest.groups.`,
       )
       if (!prep || !prep.ok || !prep.groups) {
         log(`Preparation failed: ${prep && prep.error}`)
+        // R326/R329/R337: preparation writes the Literature tree first, so a Lock on that tree stops the
+        // run here with the archive's own typed refusal, never as a generic preparation failure.
+        const lock = Z.lockRefusal((prep && prep.error) || '')
+        if (lock) throw Z.lockStop('prepare', lock)
         throw new Error(`preparation failed: ${(prep && prep.error) || 'no report from the prepare agent'}`)
       }
       groups = prep.groups

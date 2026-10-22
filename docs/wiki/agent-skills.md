@@ -385,17 +385,19 @@ When `src/mcp.rs` gains or changes a tool or argument, change in the same commit
 
 ## Testing
 
-No test reads the skill texts or runs the installer. The helper is tested through scratch archives (each test sets `ZT_CONFIG_DIR`, runs its own `zt up`, and stops it); `zt` must be installed and on PATH. Run from PowerShell:
+No test runs the installer. `scripts/book-digest/tests/agent-lock-guidance.tests.ps1` (S17, #140) reads the two skill texts and a real `zt mcp` handshake's `instructions`, so the Lock policy they must state is checked instead of assumed. The helper is tested through scratch archives (each test sets `ZT_CONFIG_DIR`, runs its own `zt up`, and stops it); `zt` must be installed and on PATH. Run from PowerShell:
 
 ```powershell
 pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1 [-Zt <zt.exe>]
 pwsh -NoProfile -File scripts\book-digest\tests\zt-calls.tests.ps1
 pwsh -NoProfile -File scripts\book-digest\tests\card-compiler.tests.ps1
+pwsh -NoProfile -File scripts\book-digest\tests\agent-lock-guidance.tests.ps1 [-Zt <zt.exe>]
 cargo test mcp::tests
 ```
 
 | Test | Covers |
 |---|---|
+| `scripts/book-digest/tests/agent-lock-guidance.tests.ps1` | The owner's Lock policy as the agents receive it: the `initialize` answer of a real `zt mcp` and both skill texts say a locked Card is readable and linkable, new thought belongs in another unlocked tree, only the owner changes Locks, and `card_locked` is never retried; none names a Lock route, a token or a second write path. |
 | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `src` never reaches zt and goes to `-SrcLog`; the Topic gate refuses the same title (with spaces and punctuation changed) and a near title, with a resume line; a different title passes; without `-TopicGate` nothing is checked; two helpers at once create one Topic. `-Zt` tests another binary. |
 | `scripts/book-digest/tests/requires-version.tests.ps1` | Every script under `scripts/` and `skills/` that uses `-DateKind` or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5`. |
 | `scripts/book-digest/tests/zt-calls.tests.ps1` | A batch of `create_topic`, `create_literature`, and `create_successor` with `@@` chaining through the helper; `list-models.ps1` reads the helper's UTF-8 output under a GBK (936) console. |
@@ -435,6 +437,8 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+
+- `2026-10-22` — #140 S17 (Tree Lock): both skills carry the owner's Lock rule. `skills/zt/SKILL.md` (Rules) and `skills/zettelkasten/SKILL.md` (Maintenance) say a Card whose read carries `lock` belongs to a locked tree, its Cards stay readable, selectable and linkable, the new thought goes into another unlocked tree, only the owner changes Locks, a Card lock never widens Access, and a `card_locked` refusal is a planning error that is never retried, never answered with a different Access and never worked around through the shell, the GUI API, the archive file or another client's path. No route name or token appears. The installer was run after the change: `~/.claude/skills/{zt,zettelkasten,zt-digest-protocol}`, `~/.codex/skills/*` and the `~/.dsh/skills/*` junctions carry the new text, and the freshly installed `zt mcp` answers the handshake with 29 tools. Open conversations keep the instructions they started with, so a new one is needed for the new metadata.
 
 - `2026-10-22` — #137 (Tree Lock S14): the helper's `skills/zt/scripts/zt-mcp.ps1` documentation names the typed-refusal line (`card_locked <compact JSON>` before `resume:`), the Lock facts it keeps, and that a `card_locked` answer is a destination refusal rather than a provider fault. The skill texts themselves stay with S17 (#140).
 - `2026-10-19` — #118 S17 (filing a kept Spread as a hub draft): `skills/zt/SKILL.md` tells an agent that a Spread the human kept from a question can be filed from the GUI's Table as one agent Hub Card draft — the desk opens with the question, the Spread's Links and their reasons, the placement controls choose the hub level and the Card it is filed under, and the precheck must pass before its Save — so the draft is read or finished over MCP like any other agent Card. `skills/zettelkasten/SKILL.md`'s Hub Card rule names the same filing as one way such a draft begins.

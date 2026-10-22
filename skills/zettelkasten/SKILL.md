@@ -212,6 +212,7 @@ Collecting feels like learning; it is not (Christian Tietze). A slip-box fills w
 
 Whenever you work in a tree:
 
+- A Card whose read carries `lock` belongs to a locked tree. Its Cards stay readable and linkable, so read them and Link to them from your own tree; the locked tree itself takes no new Cards and none of its Cards changes, so put the new thought in another, unlocked tree. Only the owner changes Locks. A `card_locked` refusal is a planning error: do not retry it and do not look for another write path.
 - Split a writable Card that holds two ideas: keep one idea in the original and Link the other in a new Card. Use a free Direct slot for its next step, or insert before the existing next step when the line is occupied. Use a Side successor for a different thought. Human Cards stay read-only.
 - Merge a duplicate by editing the weaker agent Card into a pointer to the stronger one. Delete it through the confirm flow only when it has no successors and no Card Links to it; deleting a Side successor also shifts its later siblings' letters, and ZT refuses a shift that would rewrite a Link inside a human Card.
 - Reposition a misplaced Card or branch with `move_card` rather than deleting and recreating it, so its Links and Reverse links survive.

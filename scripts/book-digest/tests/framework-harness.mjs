@@ -495,6 +495,19 @@ function runtime(kind, opts = {}) {
     if (process.env.DBG83 && /resource|cleanup/.test(cmd)) console.log('DBG', cmd.slice(0, 160))
     commands.push(cmd)
     failedStep.push(cmd)
+    // S17 / #140 (Tree Lock): the owner locks the run's destination mid-run. The refused command answers
+    // the archive's own typed refusal (the shape lockcheck::refusal prints) and exits 2, once: a stage that
+    // retried it, or re-pointed the write, would run a second command or show it in `lockedRetries`.
+    // `lockCommandAfter: n` lets the first n matching commands commit, so an earlier receipt is real.
+    if (opts.lockCommand && opts.lockCommand.test(cmd) && !state.locked) {
+      state.lockSeen = (state.lockSeen || 0) + 1
+      if (state.lockSeen > (opts.lockCommandAfter || 0)) {
+        state.locked = cmd
+        state.lockedRetries = 0
+        const tool = (cmd.match(/^zt-digest ([\w-]+)/) || [])[1] || 'call'
+        return { ok: false, exit: 2, output: json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: tool, step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' }) }
+      }
+    } else if (state.locked && opts.lockCommand && opts.lockCommand.test(cmd)) state.lockedRetries = (state.lockedRetries || 0) + 1
     const denied = opts.failWhen && opts.failWhen.test(cmd) ? cmd : null
     if (opts.contentWhen && opts.contentWhen.test(cmd)) return { ok: true, exit: 0, output: json({ schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' }) }
     // A crashed command changes nothing: the stand-in refuses before the ledger applies it.
@@ -725,6 +738,9 @@ function runtime(kind, opts = {}) {
     }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
     if (label === 'prepare book') {
+      // S17 / #140: a preparation the owner's Lock refused answers the tool's typed refusal line and
+      // exits 2, so the stage reads `card_locked` instead of a generic preparation failure.
+      if (opts.lockPrepare) return { ok: false, groups: 0, error: `the Literature tree Key is locked by the owner\nthe command failed (exit 2)\n${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
       state.groups = 2
       led.add('prepare/book@1', 'prepare').state = 'done'
       if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
@@ -803,7 +819,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1507,6 +1523,65 @@ for (const kind of ['econ', 'math']) {
   // stage reads the group count from the digest layer's own brief gate instead of halting the resumed run.
   const { calls, commands, report } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']], rewrittenSummary: true })
   check(report && !report.halted && calls.some((c) => c.label === 'concept review'), `rewritten summary: the resumed run goes on past prepare (${JSON.stringify(report && report.halted)})`)
+}
+
+// ================================================================================================================
+// Tree Lock S17 (#140): the owner's refusal is a planning error that stops the affected write stage
+// ================================================================================================================
+{
+  // A preparation the owner's Lock refused: the run halts at prepare with the archive's own typed refusal,
+  // not with a generic "preparation failed", and nothing after prepare runs.
+  const { calls, report, result } = await run('econ', { ...base, figures: false }, { lockPrepare: true })
+  check(report && report.halted && report.halted.stage === 'prepare', `lock: a refused preparation halts at prepare (${JSON.stringify(report && report.halted)})`)
+  const said = String((report && report.halted && report.halted.error) || result.error || '')
+  check(/card_locked/.test(said) && /Literature tree Key is locked/.test(said) && /"lock_id":3/.test(said), `lock: prepare stops with the typed refusal, its sentence and its Lock id (${said.slice(0, 200)})`)
+  check(!/preparation failed/.test(said), 'lock: a refused preparation is never reported as a generic preparation failure')
+  check(calls.filter((c) => c.label === 'prepare book').length === 1, 'lock: the refused preparation runs once, never retried')
+}
+
+{
+  // The owner locks the book mid-run while the digest stage writes it: the stage stops with the refusal,
+  // records the refused unit's own content fault (code card_locked), and keeps the group it already
+  // committed. Nothing after the digest stage runs, so the stage is not described as complete.
+  const rt = await run('econ', { ...base, figures: false }, { lockCommand: /zt-digest group-finish /, lockCommandAfter: 1 })
+  const halted = rt.report && rt.report.halted
+  check(halted && halted.stage === 'digest', `lock mid-run: the digest stage stops (${JSON.stringify(halted)})`)
+  const message = String((halted && halted.error) || '')
+  check(/card_locked/.test(message) && /Literature tree Key is locked/.test(message), `lock mid-run: the stage error is the archive's typed refusal (${message.slice(0, 200)})`)
+  const order = (rt.report && rt.report.order) || []
+  const after = order.filter((id) => ['cards', 'link', 'organize', 'hubs', 'audit', 'finalize', 'cleanup'].includes(id))
+  check(after.every((id) => !rt.report.stages[id] || rt.report.stages[id].status === 'not-run (halted)' || rt.report.stages[id].status === 'blocked'), `lock mid-run: the later write stages never run (${after.map((id) => `${id}=${(rt.report.stages[id] || {}).status}`).join(', ')})`)
+  const committed = [...rt.led.units.values()].filter((u) => u.layer === 'digest' && u.state === 'done').length
+  check(committed >= 1, `lock mid-run: the group committed before the Lock stays committed (${committed} digest unit(s) done)`)
+  const refusals = rt.commands.filter((c) => /zt-digest group-finish /.test(c))
+  check(refusals.length >= 1 && !rt.state.lockedRetries, `lock mid-run: the refused finish is never retried (${refusals.length} finishes, ${rt.state.lockedRetries || 0} retries)`)
+  const fault = rt.commands.filter((c) => / ledger fail /.test(c) && /card_locked/.test(c))
+  check(fault.length === 1 && /-Class content/.test(fault[0]) && !/-Class retryable/.test(fault[0]), `lock mid-run: the refused unit keeps the Lock as its content fault (${fault.map((c) => c.slice(0, 120)).join(' | ')})`)
+  check(!(rt.report && rt.report.result), 'lock mid-run: a halted run reports no completed result')
+}
+
+{
+  // A write stage whose card cycle the owner's Lock refused: the whole-book Card cycle (the first stage
+  // that applies card edits) stops with the refusal, and the run halts there instead of faulting it.
+  const rt = await run('econ', { ...base, figures: false }, { lockCommand: /zt-digest card -Step apply / })
+  const halted = rt.report && rt.report.halted
+  check(halted && ['cards', 'cards-book'].includes(halted.stage), `lock in a chain: the Card cycle's stage stops (${JSON.stringify(halted && halted.stage)})`)
+  check(/card_locked/.test(String((halted && halted.error) || '')), `lock in a chain: the stage error keeps the typed refusal (${String((halted && halted.error) || '').slice(0, 160)})`)
+  check(!rt.commands.some((c) => / ledger fail /.test(c) && /card_locked/.test(c) && /-Class retryable/.test(c)), 'lock in a chain: the refusal is never recorded as a retryable fault')
+}
+
+{
+  // zt-digest-lib v31 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
+  // the stop marker every stage relies on are in the built script.
+  const { modules, script } = builds.econ
+  check(modules['zt-digest-lib'] === '31' && modules['zt-digest-prepare'] === '10', `lock: the frozen build carries zt-digest-lib v31 and zt-digest-prepare v10 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
+    check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
+  }
+  const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
+  const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
+  check(grow.modules['zt-grow-cycle'] === '7', `lock: the idea-grow build carries zt-grow-cycle v7 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.script.includes('const lockRefusal = (text) =>') && grow.script.includes('card_locked at ${where}') && grow.script.includes('stopOnLock'), 'lock: the idea-grow build carries its own seam')
 }
 
 console.log(`failed: ${failed}`)

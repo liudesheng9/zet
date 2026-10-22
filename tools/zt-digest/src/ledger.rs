@@ -6160,7 +6160,10 @@ fn fault_class(code: &str) -> Result<&'static str> {
         | "unreconciled_move" => "operator",
         "invalid_plan" | "dependency_cycle" | "source_unavailable" | "unsupported_claim"
         | "stale_content" | "check_failed" | "unknown_producer" | "named_part_missing"
-        | "named_part_changed" | "explanation_missing" => "content",
+        | "named_part_changed" | "explanation_missing"
+        // R326/R337: the owner's Lock stops the write its destination asked for. It is the destination's
+        // decision, so it is a content fault and never a retryable one.
+        | "card_locked" => "content",
         _ => bail!("unknown fault code `{code}`"),
     })
 }
@@ -16235,8 +16238,7 @@ mod tests {
 
     // A group's completion registers its child units and makes the book units wait on them (#69/#70:
     // cards-book on cards/gNNN, link-check on link/gNNN). The preparation registration check accepts exactly
-    // those child prerequisites on top of the frozen ones; any other change is still a mismatch.
-    #[test]
+    // those child prerequisites on top of the frozen ones; any other change is still a mismatch.    #[test]
     fn the_registration_check_accepts_the_child_prerequisites_of_book_units() {
         use std::collections::BTreeSet;
         let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
@@ -16256,6 +16258,18 @@ mod tests {
 
     // A brief gate lists the coverage faults of its own layer; `complete` keeps its run-wide meaning (the
     // layer's own completion is `settled` with nothing open, failed or blocked).
+    #[test]
+    fn a_owner_lock_is_a_content_fault_the_ledger_accepts() {
+        // #140: the workflow records the owner's refusal against the unit it stopped (`ledger fail -Class
+        // content -Fault {code: card_locked}`). An unknown code is refused, so the refusal has to be a known
+        // content fault: it is a destination decision, never a retryable provider fault.
+        assert_eq!(fault_class("card_locked").unwrap(), "content");
+        for code in ["provider_transient", "lock_busy", "check_failed", "invalid_plan"] {
+            assert!(fault_class(code).is_ok(), "{code} is a known code");
+        }
+        assert!(fault_class("not_a_code").is_err(), "an unknown code is refused");
+    }
+
     #[test]
     fn a_brief_gate_lists_only_its_own_layers_coverage_faults() {
         let faults = vec![

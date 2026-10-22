@@ -69,7 +69,13 @@ Topic trees (rooted at a Topic such as `3/0`) and Literature trees (rooted at a 
 named by its BibTeX Citation key, such as `Smith2024`). Card addresses are unique across both \
 Workspaces: Locations look like `3/1`, `3/2|a`, or `Smith2024/1`. Link Cards by writing \
 `[[address]]` in Markdown bodies; Links may cross Workspaces, but Cards and trees never move \
-between them. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
+between them. Some trees are locked by their owner: a Card whose `lock` is set belongs to a locked \
+tree. Read and link such a Card normally, and continue the thought in another, unlocked tree, \
+because a locked tree takes no new Cards and none of its Cards changes. Only the owner changes \
+Locks, and a Card lock never widens your Access. A `card_locked` tool error is a destination \
+decision and a planning error, not a transient failure: do not retry it, do not ask for a different \
+Access, do not change the database directly, and do not substitute another client's write path; \
+report it and plan another destination. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
 use get_cards for ordered full/text bulk reads (at most 200 addresses). search_cards `mode: entry` \
 ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and \
 its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching \
@@ -1525,6 +1531,39 @@ mod tests {
             .unwrap();
         let reply: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(reply["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
+    }
+
+    /// S17-AC01/AC02 (#140): the server's instructions carry the owner's Lock policy in the
+    /// agent's own terms — a locked Card stays readable and linkable, the thought continues in
+    /// another tree, only the owner changes Locks — and never a Lock route, a token or a bypass.
+    #[test]
+    fn initialize_states_the_lock_policy_without_a_route_or_a_token() {
+        let mut server = Server::default();
+        let reply = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+            .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        let said = reply["result"]["instructions"].as_str().unwrap();
+        let lower = said.to_lowercase();
+        for expected in [
+            "`lock`",
+            "locked tree",
+            "read and link",
+            "another, unlocked tree",
+            "only the owner changes locks",
+            "`card_locked`",
+            "planning error",
+            "do not retry",
+            "access",
+            "database",
+        ] {
+            assert!(lower.contains(expected), "the instructions never say {expected}: {said}");
+        }
+        // R325: agent-facing material names no Lock route and no way to acquire a token or a
+        // different Access; the owner's own GUI stays out of the agent's instructions.
+        for refused in ["/api/", "X-ZT-Token", "zt-token", "token=", "cannot be bypassed by", "unlock_card", "lock_card"] {
+            assert!(!said.contains(refused), "the instructions mention {refused}: {said}");
+        }
     }
 
     #[test]

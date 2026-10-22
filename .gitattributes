@@ -2,6 +2,7 @@
 # and the harness compares it with a fresh build (LF). Keep them LF in every checkout.
 .claude/workflows/zt-econ-digest.js text eol=lf
 .claude/workflows/zt-math-digest.js text eol=lf
+.claude/workflows/zt-idea-grow.js text eol=lf
 .claude/workflow-framework/** text eol=lf
 scripts/book-digest/workflow/** text eol=lf
 
