@@ -817,6 +817,45 @@ fn terminal_session_clicks_citation_links_refuses_topology_and_deletes_to_root()
     assert!(status.success(), "session exited with {status}");
 }
 
+/// S11 (#134) R263: the TUI accepts `del keep-root`, shows the keep-root plan for a Tree root,
+/// asks for its address, keeps the root and leaves the Pointer on it.
+#[test]
+fn terminal_session_empties_a_tree_and_keeps_its_root() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let mut session = PtySession::spawn(&cargo_bin("zt"), &home.config_dir);
+    session.wait_for_text("ROOT");
+    session.send_text("go 0/0");
+    session.send_enter();
+    session.wait_for_text("location: 0/0");
+    session.send_text("del keep-root");
+    session.send_enter();
+    session.wait_for_text("root kept: 0/0 (Topic, human workspace)");
+    session.wait_for_text("delete regular cards: 1");
+    session.wait_for_text("type `0/0` to confirm:");
+    session.send_text("0/0");
+    session.send_enter();
+    // The Regular Card is gone, the held root is not, and the Pointer stayed on it.
+    session.send_text("go 0/1");
+    session.send_enter();
+    session.wait_for_text("target `0/1` does not exist");
+    session.send_text("up");
+    session.send_enter();
+    session.wait_for_text("ROOT");
+    session.send_text("q");
+    session.send_enter();
+    let status = session.wait_for_exit();
+    assert!(status.success(), "session exited with {status}");
+
+    assert!(!home.location_exists("0/1"));
+    assert!(home.location_exists("0/0"));
+    let root = home.card_text("0/0");
+    assert!(root.contains("description"), "{root}");
+    assert!(!root.contains("- [[0/1]] Base"), "{root}");
+}
+
 #[test]
 fn terminal_session_selects_literature_edit_part_and_confirms_rename() {
     let home = TestHome::new();
