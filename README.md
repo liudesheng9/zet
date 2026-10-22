@@ -492,6 +492,11 @@ system:
   Model part, the emphasis of every core or aside part, and the elaboration level of every Model
   Card that has one, for example
   `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}`.
+- `locks.json`: the Tree Lock evidence of the same captured view — every Lock, active or ended,
+  with its seal; the member snapshots and pins of the active ones with their addresses, row
+  identities and authored fingerprints; every Lock event in order; and the integrity facts. It is
+  written even when the archive holds no Lock, and a fault is recorded as evidence instead of
+  blocking the dump. It records history only: a dump restores nothing and imports no Lock.
 
 `zt dp` offers each format (`zip`, `tar.gz`, `tar.zst`, `7z`) that a tool on the host can
 really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first whose probe

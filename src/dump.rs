@@ -18,6 +18,11 @@ use crate::{CardType, Workspace};
 /// The archive manifest: the archive state that is not Card text.
 const MANIFEST: &str = "archive.json";
 
+/// The versioned Lock history and integrity evidence of the same captured view (R315, S13-AC04). The
+/// dump writes it even when the archive holds no Lock, so a reader never has to guess whether an
+/// archive was inspected for Locks.
+const LOCKS: &str = "locks.json";
+
 pub(crate) struct DumpCard {
     address: String,
     workspace: Workspace,
@@ -517,7 +522,12 @@ impl Drop for DumpArtifacts {
     }
 }
 
-pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result<()> {
+pub(crate) fn run(
+    root: &Path,
+    cards: &[DumpCard],
+    next_topic_id: u64,
+    locks: &serde_json::Value,
+) -> Result<()> {
     let options = require_detected_options(detect_compression_options())?;
 
     println!("compression options:");
@@ -556,12 +566,17 @@ pub(crate) fn run(root: &Path, cards: &[DumpCard], next_topic_id: u64) -> Result
         serde_json::to_vec(&payload.mapping)?,
     )?;
     fs::write(staging.join(MANIFEST), manifest(cards, next_topic_id)?)?;
+    // The Lock history and the integrity evidence of the same captured view travel with the Cards,
+    // immediately after the manifest, so a reader can inspect every Lock promise after old roots
+    // disappear (R315/R316, S13-AC02/S13-AC04).
+    fs::write(staging.join(LOCKS), serde_json::to_vec(locks)?)?;
     for (filename, text) in &payload.files {
         fs::write(staging.join(filename), text.as_bytes())?;
     }
     let mut entries = vec![
         format!("{archive_name}/mapping.json"),
         format!("{archive_name}/{MANIFEST}"),
+        format!("{archive_name}/{LOCKS}"),
     ];
     entries.extend(
         payload
@@ -1349,5 +1364,24 @@ mod tests {
             assert_eq!(metadata["bibtex"].as_str(), Some(bibtex));
             assert_eq!(&markdown[closing + 5..], card_text);
         }
+    }
+
+    /// R314, S13-AC01: the dump module is the serializer/compressor. It receives the lock export with
+    /// its Cards and next Topic id and writes the entry; it never opens a connection of its own to
+    /// discover Locks later, and it owns the entry name and its place after the manifest.
+    #[test]
+    fn the_dump_module_serializes_its_input_and_opens_no_database_of_its_own() {
+        let production = include_str!("dump.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("dump.rs holds its unit tests after the module code");
+        for forbidden in ["rusqlite", "Connection", "open_db", "tree_lock"] {
+            assert!(
+                !production.contains(forbidden),
+                "the dump module must not reach the database through `{forbidden}`: it receives the \
+                 lock export from the caller's captured view"
+            );
+        }
+        assert_eq!(LOCKS, "locks.json");
     }
 }

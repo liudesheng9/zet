@@ -377,6 +377,9 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
   `<citation-key>.bib` 保存 BibTeX 的原始字节。
 - `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event 与 Model Card 的类型，每个 Model part 的 facet，以及每个 core 或 aside part 的 emphasis，例如
   `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"}}`。
+- `locks.json`：同一次读取的 Tree Lock 证据——每个 Lock（生效或已结束）及其封条；生效 Lock 的成员快照与 pin，
+  含地址、行身份与作者指纹；全部 Lock 事件（按顺序）；以及完整性事实。归档没有 Lock 时也会写出；发现故障时只作为
+  证据记录，不会阻止诊断性导出。它只记录历史：导出不会恢复任何内容，也不会导入 Lock。
 
 `zt dp` 只列出主机上的工具真正能写出的格式（`zip`、`tar.gz`、`tar.zst`、`7z`）：它会依次尝试 `PATH` 上的每个
 `tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar

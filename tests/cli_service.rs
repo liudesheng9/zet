@@ -418,6 +418,31 @@ fn expected_literature_dump_filename(citation_key: &str, bibtex: &str, text: &st
     format!("{}.md", &digest[..10])
 }
 
+/// The `locks.json` every dump carries, read from a ZIP archive (S13-AC02/S13-AC04).
+fn zip_dump_locks(archive: &mut zip::ZipArchive<File>, archive_name: &str) -> serde_json::Value {
+    let mut body = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name(&format!("{archive_name}/locks.json"))
+            .expect("locks.json entry"),
+        &mut body,
+    )
+    .expect("locks.json text");
+    serde_json::from_str(&body).expect("locks.json document")
+}
+
+/// One entry of a dump archive in any format the host tar reads.
+fn dump_entry_text(archive_path: &std::path::Path, entry: &str) -> String {
+    let output = StdCommand::new(host_tools::host_tar())
+        .arg("-xOf")
+        .arg(archive_path)
+        .arg(entry)
+        .output()
+        .expect("read dump entry");
+    assert!(output.status.success(), "tar could not read {entry}");
+    String::from_utf8(output.stdout).expect("entry text")
+}
+
 #[cfg(windows)]
 fn build_failing_tar() -> TempDir {
     let output = tempfile::tempdir().expect("fake tar directory");
@@ -2718,7 +2743,9 @@ fn dump_is_shell_only_and_requires_service_up() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("  zt dp\n"));
+        .stdout(predicate::str::contains("  zt dp\n"))
+        // S13-AC05: a dump with Lock evidence is not a restore command; the CLI offers no way back.
+        .stdout(predicate::str::contains("restore").not());
     home.cmd()
         .write_stdin("help\ndp\nq\n")
         .assert()
@@ -2760,7 +2787,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
 
     let mut archive =
         zip::ZipArchive::new(File::open(&archive_path).expect("open ZIP")).expect("read ZIP");
-    assert_eq!(archive.len(), 2);
+    assert_eq!(archive.len(), 3);
     let mut mapping = archive
         .by_name(&format!("{archive_name}/mapping.json"))
         .expect("mapping entry");
@@ -2777,6 +2804,22 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
         body,
         r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
     );
+    drop(manifest);
+    // R315, S13-AC02: a dump of an archive that holds no Lock still carries the version-1 evidence.
+    let locks = zip_dump_locks(&mut archive, archive_name);
+    assert_eq!(locks["schema_version"], serde_json::json!(1));
+    assert_eq!(locks["revision"], serde_json::json!(home.revision()));
+    assert_eq!(locks["locks"], serde_json::json!([]));
+    assert_eq!(locks["events"], serde_json::json!([]));
+    assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
+    assert_eq!(locks["integrity"]["summary"], serde_json::json!("integrity ok"));
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let identity: String = conn
+        .query_row("SELECT value FROM metadata WHERE key='archive_id'", [], |row| {
+            row.get(0)
+        })
+        .expect("archive identity");
+    assert_eq!(locks["archive"], serde_json::json!(identity));
 }
 
 #[test]
@@ -2832,6 +2875,7 @@ fn dump_preserves_card_text_hash_mapping_and_location_order() {
     let expected_entries: Vec<String> = [
         format!("{archive_name}/mapping.json"),
         format!("{archive_name}/archive.json"),
+        format!("{archive_name}/locks.json"),
     ]
     .into_iter()
     .chain(
@@ -2915,6 +2959,7 @@ fn dump_adds_hashed_literature_markdown_and_exact_citation_key_bibtex() {
         vec![
             format!("{archive_name}/mapping.json"),
             format!("{archive_name}/archive.json"),
+            format!("{archive_name}/locks.json"),
             format!("{archive_name}/{markdown_name}"),
             format!("{archive_name}/DumpKey.bib"),
         ]
@@ -3009,6 +3054,7 @@ fn dump_orders_mixed_markdown_by_address_then_bibtex_by_citation_key() {
         vec![
             format!("{archive_name}/mapping.json"),
             format!("{archive_name}/archive.json"),
+            format!("{archive_name}/locks.json"),
             format!("{archive_name}/{topic_md}"),
             format!("{archive_name}/{alpha_md}"),
             format!("{archive_name}/{zebra_md}"),
@@ -3088,7 +3134,16 @@ fn repeated_dumps_keep_payload_order_and_mapping_bytes_stable() {
             let mut mapping = Vec::new();
             std::io::Read::read_to_end(&mut archive.by_name(&mapping_name).unwrap(), &mut mapping)
                 .unwrap();
-            (entries, mapping)
+            let locks_name = archive
+                .file_names()
+                .find(|name| name.ends_with("/locks.json"))
+                .expect("every dump names locks.json")
+                .to_string();
+            let mut locks = Vec::new();
+            std::io::Read::read_to_end(&mut archive.by_name(&locks_name).unwrap(), &mut locks)
+                .unwrap();
+            // S13: a dump changes no archive fact, so two dumps of one state carry the same bytes.
+            (entries, mapping, locks)
         })
         .collect();
     assert_eq!(snapshots[0], snapshots[1]);
@@ -3115,6 +3170,7 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".tar.gz").unwrap();
     let entry = format!("{archive_name}/mapping.json");
+    let locks_entry = format!("{archive_name}/locks.json");
     let listing = StdCommand::new(host_tools::host_tar())
         .arg("-tf")
         .arg(&archive_path)
@@ -3127,16 +3183,35 @@ fn selecting_tar_gz_creates_the_same_timestamped_payload() {
             .lines()
             .map(str::trim)
             .collect::<Vec<_>>(),
-        [entry.clone(), format!("{archive_name}/archive.json")]
+        [
+            entry.clone(),
+            format!("{archive_name}/archive.json"),
+            locks_entry.clone(),
+        ]
     );
-    let mapping = StdCommand::new(host_tools::host_tar())
-        .args(["-xOf"])
-        .arg(&archive_path)
-        .arg(&entry)
-        .output()
-        .expect("read tar.gz mapping");
-    assert!(mapping.status.success());
-    assert_eq!(mapping.stdout, b"{}");
+    assert_eq!(dump_entry_text(&archive_path, &entry), "{}");
+    // S13-AC04/S13-AC06: a tar.gz dump names and holds the same version-1 lock evidence.
+    let locks: serde_json::Value =
+        serde_json::from_str(&dump_entry_text(&archive_path, &locks_entry)).expect("locks.json");
+    assert_eq!(locks["schema_version"], serde_json::json!(1));
+    assert_eq!(locks["locks"], serde_json::json!([]));
+    assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
+    // The same captured state in another archive format carries the same evidence bytes, so the
+    // explicit entry list of every format names one document.
+    home.cmd().arg("dp").write_stdin("1\n").assert().success();
+    let zip_path = single_dump_archive(&home, ".zip");
+    let zip_name = zip_path.file_stem().unwrap().to_str().unwrap();
+    let mut zip_archive =
+        zip::ZipArchive::new(File::open(&zip_path).expect("open ZIP")).expect("read ZIP");
+    let mut zip_locks = String::new();
+    std::io::Read::read_to_string(
+        &mut zip_archive
+            .by_name(&format!("{zip_name}/locks.json"))
+            .expect("ZIP locks.json"),
+        &mut zip_locks,
+    )
+    .expect("ZIP locks.json text");
+    assert_eq!(zip_locks, dump_entry_text(&archive_path, &locks_entry));
 }
 
 #[test]
@@ -3162,6 +3237,7 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".tar.zst").unwrap();
     let entry = format!("{archive_name}/mapping.json");
+    let locks_entry = format!("{archive_name}/locks.json");
     let listing = StdCommand::new(host_tools::host_tar())
         .arg("-tf")
         .arg(&archive_path)
@@ -3174,16 +3250,19 @@ fn selecting_tar_zst_creates_the_same_timestamped_payload() {
             .lines()
             .map(str::trim)
             .collect::<Vec<_>>(),
-        [entry.clone(), format!("{archive_name}/archive.json")]
+        [
+            entry.clone(),
+            format!("{archive_name}/archive.json"),
+            locks_entry.clone(),
+        ]
     );
-    let mapping = StdCommand::new(host_tools::host_tar())
-        .args(["-xOf"])
-        .arg(&archive_path)
-        .arg(&entry)
-        .output()
-        .expect("read tar.zst mapping");
-    assert!(mapping.status.success());
-    assert_eq!(mapping.stdout, b"{}");
+    assert_eq!(dump_entry_text(&archive_path, &entry), "{}");
+    // S13-AC04/S13-AC06: a tar.zst dump names and holds the same version-1 lock evidence.
+    let locks: serde_json::Value =
+        serde_json::from_str(&dump_entry_text(&archive_path, &locks_entry)).expect("locks.json");
+    assert_eq!(locks["schema_version"], serde_json::json!(1));
+    assert_eq!(locks["locks"], serde_json::json!([]));
+    assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
 }
 
 #[test]
@@ -3277,6 +3356,7 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
     let filename = archive_path.file_name().unwrap().to_str().unwrap();
     let archive_name = filename.strip_suffix(".7z").unwrap();
     let entry = format!("{archive_name}/mapping.json");
+    let locks_entry = format!("{archive_name}/locks.json");
     let system_tar = host_tools::host_tar();
     let listing = StdCommand::new(&system_tar)
         .arg("-tf")
@@ -3290,16 +3370,19 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
             .lines()
             .map(str::trim)
             .collect::<Vec<_>>(),
-        [entry.clone(), format!("{archive_name}/archive.json")]
+        [
+            entry.clone(),
+            format!("{archive_name}/archive.json"),
+            locks_entry.clone(),
+        ]
     );
-    let mapping = StdCommand::new(system_tar)
-        .args(["-xOf"])
-        .arg(&archive_path)
-        .arg(&entry)
-        .output()
-        .expect("read 7z mapping");
-    assert!(mapping.status.success());
-    assert_eq!(mapping.stdout, b"{}");
+    assert_eq!(dump_entry_text(&archive_path, &entry), "{}");
+    // S13-AC04/S13-AC06: a 7z dump names and holds the same version-1 lock evidence.
+    let locks: serde_json::Value =
+        serde_json::from_str(&dump_entry_text(&archive_path, &locks_entry)).expect("locks.json");
+    assert_eq!(locks["schema_version"], serde_json::json!(1));
+    assert_eq!(locks["locks"], serde_json::json!([]));
+    assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
 }
 
 #[test]

@@ -5745,3 +5745,352 @@ fn an_oversized_refused_preview_is_rolled_back_before_the_mcp_reply_limit() {
     assert_card_locked(&refusal, "edit", &frozen, &[&frozen_first]);
     assert_eq!(archive_state(&home), state);
 }
+
+// ---------------------------------------------------------------------------------------------
+// S13 (#136): every dump carries the portable Lock history and its integrity evidence.
+// ---------------------------------------------------------------------------------------------
+
+/// The host can write the ZIP dump format these fixtures read.
+fn zip_dump_available() -> bool {
+    #[cfg(windows)]
+    let program = ("tar.exe", &["--version"][..]);
+    #[cfg(not(windows))]
+    let program = ("zip", &["-v"][..]);
+    std::process::Command::new(program.0)
+        .args(program.1)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Run one real `zt dp` with the first offered format (ZIP on every documented host) and return the
+/// archive it wrote.
+fn dump_archive(home: &TestHome) -> std::path::PathBuf {
+    home.cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .assert()
+        .success();
+    let mut archives = fs::read_dir(home.archive_root.join("dump"))
+        .expect("dump directory")
+        .map(|entry| entry.expect("dump entry").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zip"))
+        .collect::<Vec<_>>();
+    archives.sort();
+    assert_eq!(archives.len(), 1, "expected one dump archive");
+    archives.remove(0)
+}
+
+/// One entry of the dump, matched by its suffix, so the archive folder name needs no guessing.
+fn dump_entry(archive_path: &std::path::Path, suffix: &str) -> String {
+    let mut archive =
+        zip::ZipArchive::new(fs::File::open(archive_path).expect("open dump"))
+            .expect("read the dump archive");
+    let name = archive
+        .file_names()
+        .find(|name| name.ends_with(suffix))
+        .unwrap_or_else(|| panic!("the dump holds {suffix}"))
+        .to_string();
+    let mut body = String::new();
+    archive
+        .by_name(&name)
+        .expect("dump entry")
+        .read_to_string(&mut body)
+        .expect("dump entry text");
+    body
+}
+
+/// The parsed `locks.json` of one dump (S13-AC02).
+fn dump_locks(archive_path: &std::path::Path) -> Value {
+    serde_json::from_str(&dump_entry(archive_path, "/locks.json")).expect("locks.json document")
+}
+
+/// The one Card row identity of an address.
+fn card_row_id(home: &TestHome, address: &str) -> i64 {
+    home.db()
+        .query_row(
+            "SELECT row_id FROM cards WHERE COALESCE(location, citation_key) = ?1",
+            [address],
+            |row| row.get(0),
+        )
+        .expect("card row id")
+}
+
+/// The archive revision (S13-AC06: dumps must not change it).
+fn archive_revision(home: &TestHome) -> i64 {
+    home.db()
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key='archive_revision'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("archive revision")
+}
+
+/// S13-AC01/S13-AC02/S13-AC06: a real `zt dp` of one active Lock carries the version-1 export, the
+/// Lock record, its member and pin snapshots with both addresses and both row identities, the
+/// ordered event and the integrity facts — all describing the same revision as the Card files, and
+/// changing no source fact.
+#[test]
+fn a_dump_carries_the_active_lock_member_pin_and_integrity_evidence() {
+    if !zip_dump_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside = topic(&mut mcp, "Outside");
+    let target = card(&mut mcp, &outside, "Target", "target body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("depends on [[{target}]]") }),
+    );
+    let lock = gui.lock(&root, Some("dump this promise"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let revision = archive_revision(&home);
+    let state = archive_state(&home);
+
+    let archive_path = dump_archive(&home);
+    let locks = dump_locks(&archive_path);
+
+    assert_eq!(locks["schema_version"], json!(1));
+    assert_eq!(locks["revision"], json!(revision));
+    let identity: String = home
+        .db()
+        .query_row("SELECT value FROM metadata WHERE key='archive_id'", [], |row| {
+            row.get(0)
+        })
+        .expect("archive identity");
+    assert_eq!(locks["archive"], json!(identity));
+    let exported = locks["locks"].as_array().expect("locks array");
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0]["lock_id"], json!(lock_id));
+    assert_eq!(exported[0]["root"], json!(root));
+    assert_eq!(exported[0]["tree"], json!(tree_of(&root)));
+    assert_eq!(exported[0]["workspace"], json!("agent"));
+    assert_eq!(exported[0]["note"], json!("dump this promise"));
+    assert_eq!(exported[0]["seal"], lock["seal"]);
+    assert_eq!(exported[0]["unlocked_at"], Value::Null);
+    assert_eq!(exported[0]["root_row"], json!(card_row_id(&home, &root)));
+
+    // The member snapshot: portable address, audit row identity and authored baseline.
+    let members = exported[0]["members"].as_array().expect("members");
+    assert_eq!(members.len(), 2);
+    assert_eq!(
+        members
+            .iter()
+            .map(|member| member["address"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        [root.clone(), first.clone()],
+        "members are ordered by address"
+    );
+    let panel = gui.panel();
+    assert_eq!(
+        members
+            .iter()
+            .map(|member| (
+                member["address"].as_str().unwrap().to_string(),
+                member["row_id"].as_i64().unwrap(),
+                member["fingerprint"].as_str().unwrap().to_string(),
+            ))
+            .collect::<Vec<_>>(),
+        member_facts(&panel),
+        "the dump carries the same baseline the owner reviewed"
+    );
+
+    // The pins: both captured addresses and both row identities.
+    assert_eq!(
+        exported[0]["pins"],
+        json!([{
+            "source": first,
+            "source_row": card_row_id(&home, &first),
+            "target": target,
+            "target_row": card_row_id(&home, &target),
+        }])
+    );
+
+    // The ordered event history and the integrity facts of the same view.
+    let events = locks["events"].as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event_id"], json!(1));
+    assert_eq!(events[0]["lock_id"], json!(lock_id));
+    assert_eq!(events[0]["action"], json!("lock"));
+    assert_eq!(events[0]["detail"]["note"], json!("dump this promise"));
+    assert_eq!(locks["integrity"]["ok"], json!(true));
+    assert_eq!(locks["integrity"]["summary"], json!("integrity ok"));
+
+    // Matching Card identities: every member is one of the dumped Cards, and the dump changed
+    // nothing in the source archive.
+    let mapping: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&dump_entry(&archive_path, "/mapping.json")).expect("mapping.json");
+    for member in members {
+        let address = member["address"].as_str().expect("address");
+        assert!(
+            mapping.contains_key(address),
+            "the member {address} is one of the dumped Cards"
+        );
+    }
+    assert_eq!(archive_revision(&home), revision);
+    assert_eq!(archive_state(&home), state, "a dump mutates no source fact");
+}
+
+/// S13-AC03/S13-AC06: after the owner unlocks and deletes the old tree, the dump still holds the
+/// ended Lock, its ordered events and the baseline snapshot its initial `lock` event retained. The
+/// addresses and the Lock id carry the meaning; the captured row numbers stay audit evidence.
+#[test]
+fn a_dump_keeps_an_ended_lock_and_a_deleted_root_as_inspectable_history() {
+    if !zip_dump_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let baseline_row = card_row_id(&home, &first);
+    gui.unlock(lock_id);
+    delete(&mut mcp, &root);
+
+    let archive_path = dump_archive(&home);
+    let locks = dump_locks(&archive_path);
+
+    let exported = locks["locks"].as_array().expect("locks array");
+    assert_eq!(exported.len(), 1, "the ended Lock keeps its record");
+    assert_eq!(exported[0]["lock_id"], json!(lock_id));
+    assert_eq!(exported[0]["root"], json!(root));
+    assert!(
+        exported[0]["unlocked_at"].is_string(),
+        "the record carries the end of the promise"
+    );
+    assert_eq!(exported[0]["members"], json!([]), "unlock removed the live rows");
+    assert_eq!(exported[0]["pins"], json!([]));
+
+    let events = locks["events"].as_array().expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["action"].clone())
+            .collect::<Vec<_>>(),
+        [json!("lock"), json!("unlock")]
+    );
+    let baseline = events[0]["detail"]["members"].as_array().expect("baseline");
+    assert_eq!(baseline.len(), 2);
+    assert!(
+        baseline
+            .iter()
+            .any(|member| member["address"] == json!(first) && member["row_id"] == json!(baseline_row)),
+        "the initial event keeps the captured address and row: {baseline:?}"
+    );
+    let mapping: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&dump_entry(&archive_path, "/mapping.json")).expect("mapping.json");
+    assert_eq!(
+        mapping.len(),
+        0,
+        "the old tree is gone from the Cards, so the export is the only record left"
+    );
+}
+
+/// S13-AC05: a faulted Lock can still be dumped diagnostically, and the dump carries the fault
+/// evidence; the pure scan inside the dump records no event of its own.
+#[test]
+fn a_dump_exports_lock_faults_as_evidence_and_records_nothing() {
+    if !zip_dump_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+    // An outside hand removes one protection and rewrites a promised member's authored text.
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_change")
+        .expect("drop the protection");
+    home.db()
+        .execute(
+            "UPDATE cards SET text = '# First\n\nrewritten by hand\n\n<!-- zt:reverse-links -->\n'
+             WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper the member");
+    let events_before: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+        .expect("lock events");
+
+    let archive_path = dump_archive(&home);
+    let locks = dump_locks(&archive_path);
+
+    assert_eq!(locks["integrity"]["ok"], json!(false));
+    assert_eq!(locks["integrity"]["faulted"], json!(true));
+    let faults = locks["integrity"]["faults"].as_array().expect("faults");
+    let kinds = faults
+        .iter()
+        .map(|fault| fault["kind"].as_str().expect("kind").to_string())
+        .collect::<Vec<_>>();
+    assert!(kinds.iter().any(|kind| kind == "trigger-missing"), "{kinds:?}");
+    assert!(
+        kinds.iter().any(|kind| kind == "fingerprint-changed"),
+        "{kinds:?}"
+    );
+    assert_eq!(
+        locks["locks"].as_array().expect("locks").len(),
+        1,
+        "a fault never hides the Lock record"
+    );
+    let events_after: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+        .expect("lock events");
+    assert_eq!(
+        events_after, events_before,
+        "the dump's comparison records no fault event of its own"
+    );
+}
+
+/// S13-AC05: required lock data that cannot be read fails the dump; no staging folder and no archive
+/// are left behind.
+#[test]
+fn a_dump_fails_without_an_archive_when_the_lock_history_cannot_be_read() {
+    if !zip_dump_available() {
+        return;
+    }
+
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    gui.lock(&root, None);
+    home.db()
+        .execute_batch("DROP TABLE lock_events")
+        .expect("drop the stored history");
+
+    let output = home
+        .cmd()
+        .arg("dp")
+        .write_stdin("1\n")
+        .output()
+        .expect("run zt dp");
+
+    assert!(!output.status.success(), "the dump fails: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lock_events"),
+        "the failure names the unreadable lock data: {stderr}"
+    );
+    assert!(
+        !home.archive_root.join("dump").exists(),
+        "no staging folder and no archive remain after the failed dump"
+    );
+}

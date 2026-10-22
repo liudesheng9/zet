@@ -156,7 +156,7 @@ The digest tooling is a client of the binary. A [Digest workflow](digest-workflo
 
 ### Dump and delete
 
-1. `zt dp` takes the edit lock, loads every Card, and hands them to `src/dump.rs`, which writes one Markdown file per Card, the `archive.json` manifest, and the artifacts, and compresses the folder ([Service, CLI and storage](service-and-cli.md)).
+1. `zt dp` takes the edit lock, reads one captured SQLite view — every Card, `next_topic_id`, the archive identity/revision and the Lock export (`tree_lock::dump_export`) — and hands them to `src/dump.rs`, which writes one Markdown file per Card, the `archive.json` manifest, `locks.json` with the Lock history and integrity evidence, and the artifacts, and compresses the folder ([Service, CLI and storage](service-and-cli.md)).
 2. `zt del --all` asks for `delete all` and empties every Card in one transaction, resetting the Topic allocation ([Service, CLI and storage](service-and-cli.md)).
 
 ## Glossary

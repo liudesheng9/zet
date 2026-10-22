@@ -84,6 +84,41 @@ command of the Tree Lock feature (last section).
 - On Unix-like systems, `7z` is detected through `7z` or `7zz`.
 - `zt dp` may run while interactive Sessions are open.
 - `zt dp` refuses to run while the edit lock exists.
+
+### Lock evidence in the dump (Tree Lock §14.3, #136)
+
+- The dump holds a third named payload entry, `locks.json`, written beside `mapping.json` and
+  `archive.json` in every archive format: staging and the explicit compressed-entry list both name
+  it, immediately after `archive.json`, before the Card files, `.bib` files and artifacts.
+- `locks.json` is always written, including when the archive holds no Lock: it then carries empty
+  `locks` and `events` arrays, so a reader never has to guess whether an archive was inspected for
+  Locks.
+- Its `schema_version` is the export format version `1`. It also carries `archive` (the stored
+  archive identity) and `revision` (the captured archive revision).
+- It lists every Lock, active or ended, in Lock-id order with its seal, root address, root row,
+  tree id, Workspace, note, member count and `unlocked_at`.
+- It lists the live member snapshots of the active Locks (portable address, audit row identity and
+  authored fingerprint) in address order, and their live pins (source and target addresses with
+  both row identities) ordered by target address, target row, source address and source row. An
+  ended Lock exports empty arrays: unlocking deletes its live rows, and its baseline stays in its
+  initial `lock` event.
+- It lists every event of every Lock in event-id order with its stored JSON `detail`, so an ended
+  Lock's initial snapshot stays readable after its old tree is renamed or deleted.
+- It lists the integrity facts of the same captured state: whether the promise holds, the current
+  faults with their expected and observed facts, and the retained latched evidence.
+- Addresses and Lock ids carry the portable meaning. Row numbers are audit evidence inside that
+  captured database; a future restore must resolve them explicitly rather than assuming they are
+  new database row ids.
+- The Lock evidence is read while the dump holds the edit lock, in the same SQLite view as the
+  Card texts, `archive.json` and `next_topic_id`, and is passed to `src/dump.rs` as an explicit
+  value. The dump module stays a serializer/compressor: it opens no second connection to discover
+  Locks later.
+- An integrity fault is exported as evidence and does not prevent a diagnostic dump. Lock data
+  that cannot be read or serialized fails the whole dump, which leaves no staging folder and no
+  archive behind.
+- The dump makes Lock history inspectable. This feature adds no restore command and promises no
+  automatic future import of Locks.
+
 ## Superseded delete decisions (`zt clear` → `zt del --all`)
 
 The Tree Lock feature folded `zt clear` into one delete command ([Tree Lock Implementation

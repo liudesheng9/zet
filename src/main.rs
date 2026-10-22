@@ -2023,7 +2023,11 @@ fn cmd_dump() -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "dump")?;
     let conn = open_db(&root)?;
-    let cards = load_cards(&conn)?
+    // One captured view under the edit lock: the Cards, the next Topic id, the archive identity and
+    // revision, and the Lock history with its integrity evidence all describe the same archive state
+    // (R314, S13-AC01). The dump module only serializes what this view read.
+    let view = conn.unchecked_transaction()?;
+    let cards = load_cards(&view)?
         .into_iter()
         .map(|card| {
             if card.is_lit {
@@ -2045,7 +2049,10 @@ fn cmd_dump() -> Result<()> {
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    dump::run(&root, &cards, next_topic_id(&conn)?)
+    let next_topic_id = next_topic_id(&view)?;
+    let locks = tree_lock::dump_export(&view)?;
+    let _ = view.rollback();
+    dump::run(&root, &cards, next_topic_id, &locks)
 }
 
 /// `zt clear` is now `zt del --all` (R245). The notice needs no service, asks nothing and deletes

@@ -3371,6 +3371,118 @@ fn retained_warnings(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Dump export
+// ---------------------------------------------------------------------------------------------
+
+/// The version-1 `locks.json` a dump writes (R315–R323, S13): every Lock (active or ended), the live
+/// member and pin snapshots of the active ones, every event in event order, and the integrity facts
+/// of one captured read view. Addresses and Lock ids carry the portable meaning; a row id is audit
+/// evidence inside that captured database. An integrity fault is exported as evidence and never
+/// refuses a diagnostic dump; lock data that cannot be read fails the export, so the dump fails.
+pub(crate) fn dump_export(conn: &Connection) -> Result<Value> {
+    if conn.is_autocommit() {
+        let view = conn.unchecked_transaction()?;
+        let export = dump_export_in(&view);
+        let _ = view.rollback();
+        export
+    } else {
+        dump_export_in(conn)
+    }
+}
+
+fn dump_export_in(conn: &Connection) -> Result<Value> {
+    let integrity = scan(conn)?;
+    let mut locks = Vec::new();
+    let mut events = Vec::new();
+    if schema_version(conn)?.as_deref() == Some(SCHEMA_VERSION) {
+        for lock in all_locks(conn)? {
+            let mut value = lock.value();
+            let object = value.as_object_mut().expect("Lock value is an object");
+            object.insert("members".into(), Value::Array(export_members(conn, lock.lock_id)?));
+            object.insert("pins".into(), Value::Array(export_pins(conn, lock.lock_id)?));
+            locks.push(value);
+        }
+        events = export_events(conn)?;
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "archive": archive_identity(conn)?,
+        "revision": crate::link_index::revision(conn)?,
+        "locks": locks,
+        "events": events,
+        "integrity": integrity.value(),
+    }))
+}
+
+/// Every Lock of the archive, in creation order: an ended Lock keeps its record after the unlock, so
+/// the export holds the whole owner history (R318).
+fn all_locks(conn: &Connection) -> Result<Vec<Lock>> {
+    let mut stmt = conn.prepare(&format!("SELECT {LOCK_COLUMNS} FROM locks ORDER BY lock_id"))?;
+    let locks = stmt
+        .query_map([], lock_from_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(locks)
+}
+
+/// One Lock's live member snapshots, ordered by address, each keeping its row identity as audit
+/// evidence and its authored baseline (R319). An ended Lock keeps none live; its initial `lock` event
+/// retains the same addresses, rows and fingerprints (R104, S13-AC03).
+fn export_members(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
+    Ok(stored_members(conn, lock_id)?
+        .into_iter()
+        .map(|(row_id, address, fingerprint)| {
+            json!({"address": address, "row_id": row_id, "fingerprint": fingerprint})
+        })
+        .collect())
+}
+
+/// One Lock's live pins, ordered by target address, target row, source address and source row: both
+/// captured addresses and both row identities (R320). A damaged archive may hold a pin whose source
+/// snapshot is gone; that source address is exported as null evidence instead of failing the dump.
+fn export_pins(conn: &Connection, lock_id: i64) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.source_row, m.address, p.target_row, p.target_address
+           FROM lock_pins p
+           LEFT JOIN lock_members m ON m.lock_id = p.lock_id AND m.row_id = p.source_row
+          WHERE p.lock_id = ?1
+          ORDER BY p.target_address, p.target_row, m.address, p.source_row",
+    )?;
+    let pins = stmt
+        .query_map([lock_id], |row| {
+            Ok(json!({
+                "source": row.get::<_, Option<String>>(1)?,
+                "source_row": row.get::<_, i64>(0)?,
+                "target": row.get::<_, String>(3)?,
+                "target_row": row.get::<_, i64>(2)?,
+            }))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(pins)
+}
+
+/// Every event of every Lock in event-id order, with its stored deterministic JSON detail, so the
+/// initial snapshot of an ended Lock stays readable after the live rows are gone (R321, R104).
+fn export_events(conn: &Connection) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT event_id, lock_id, action, at, detail FROM lock_events ORDER BY event_id",
+    )?;
+    let events = stmt
+        .query_map([], |row| {
+            let detail: String = row.get(4)?;
+            Ok(json!({
+                "event_id": row.get::<_, i64>(0)?,
+                "lock_id": row.get::<_, i64>(1)?,
+                "action": row.get::<_, String>(2)?,
+                "at": row.get::<_, String>(3)?,
+                "detail": serde_json::from_str::<Value>(&detail)
+                    .unwrap_or_else(|_| Value::String(detail.clone())),
+            }))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(events)
+}
+
+// ---------------------------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------------------------
 
@@ -6262,5 +6374,350 @@ mod tests {
         assert_eq!(events, 1, "a pure check records nothing, even inside a transaction");
         tx.rollback().expect("rollback");
         assert!(check(&conn).expect("check after rollback").faults.is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // S13 (#136): the versioned dump export of Lock history and integrity evidence.
+    // -----------------------------------------------------------------------------------------
+
+    /// R315/R317/R322, S13-AC02: an archive that holds no Lock still exports `schema_version` 1, the
+    /// archive identity, the captured revision and empty Lock/event arrays beside the integrity facts,
+    /// and the serialized bytes of two runs of the same view are identical.
+    #[test]
+    fn dump_export_answers_version_one_with_empty_evidence_at_the_archive_identity() {
+        let (_temp, conn) = archive();
+        let export = dump_export(&conn).expect("export");
+        assert_eq!(
+            serde_json::to_string(&export).expect("serialize"),
+            format!(
+                r#"{{"archive":"{}","events":[],"integrity":{{"faulted":false,"faults":[],"latched":[],"ok":true,"summary":"integrity ok"}},"locks":[],"revision":0,"schema_version":1}}"#,
+                archive_identity(&conn).expect("identity")
+            )
+        );
+        assert_eq!(
+            serde_json::to_string(&dump_export(&conn).expect("export")).expect("serialize"),
+            serde_json::to_string(&export).expect("serialize"),
+            "one captured state serializes to one deterministic document"
+        );
+    }
+
+    /// R318–R321, S13-AC02: one active Lock exports its record, the member snapshots with addresses,
+    /// row identities and authored baselines, its pins with both addresses and both rows, the ordered
+    /// event list and the integrity facts — and writing the export changes no archive fact.
+    #[test]
+    fn dump_export_carries_the_active_lock_members_pins_events_and_integrity() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let root = linking_tree(&mut conn, "Frozen", &target);
+        let plan = resolve_plan(&conn, &root, Some("frozen for review")).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        let revision = crate::link_index::revision(&conn).expect("revision");
+
+        let export = dump_export(&conn).expect("export");
+
+        assert_eq!(export["schema_version"], json!(1));
+        assert_eq!(
+            export["archive"],
+            json!(archive_identity(&conn).expect("identity"))
+        );
+        assert_eq!(export["revision"], json!(revision));
+        assert_eq!(export["integrity"]["ok"], json!(true));
+        let locks = export["locks"].as_array().expect("locks array");
+        assert_eq!(locks.len(), 1);
+        assert_eq!(locks[0]["lock_id"], json!(lock.lock_id));
+        assert_eq!(locks[0]["root"], json!(root));
+        assert_eq!(locks[0]["tree"], json!(crate::tree_id(&root)));
+        assert_eq!(locks[0]["workspace"], json!("human"));
+        assert_eq!(locks[0]["note"], json!("frozen for review"));
+        assert_eq!(locks[0]["member_count"], json!(2));
+        assert_eq!(locks[0]["unlocked_at"], Value::Null);
+        assert_eq!(locks[0]["seal"], json!(lock.seal));
+        assert_eq!(locks[0]["root_row"], json!(row_of(&conn, &root)));
+        let member_rows = conn
+            .prepare("SELECT address, row_id, authored_fp FROM lock_members WHERE lock_id = ?1 ORDER BY address")
+            .expect("member query")
+            .query_map([lock.lock_id], |row| {
+                Ok(json!({
+                    "address": row.get::<_, String>(0)?,
+                    "row_id": row.get::<_, i64>(1)?,
+                    "fingerprint": row.get::<_, String>(2)?,
+                }))
+            })
+            .expect("members")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("member rows");
+        assert_eq!(locks[0]["members"], json!(member_rows));
+        assert_eq!(
+            member_rows
+                .iter()
+                .map(|member| member["address"].clone())
+                .collect::<Vec<_>>(),
+            [json!(root), json!(format!("{}/1", crate::tree_id(&root)))],
+            "members are ordered by address"
+        );
+        assert_eq!(
+            locks[0]["pins"],
+            json!([{
+                "source": format!("{}/1", crate::tree_id(&root)),
+                "source_row": row_of(&conn, &format!("{}/1", crate::tree_id(&root))),
+                "target": target,
+                "target_row": row_of(&conn, &target),
+            }])
+        );
+        let events = export["events"].as_array().expect("events array");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event_id"], json!(1));
+        assert_eq!(events[0]["lock_id"], json!(lock.lock_id));
+        assert_eq!(events[0]["action"], json!("lock"));
+        assert_eq!(events[0]["detail"]["member_count"], json!(2));
+        assert_eq!(events[0]["detail"]["seal"], json!(lock.seal));
+        assert_eq!(events[0]["detail"]["warnings"], json!([]));
+
+        assert_eq!(
+            crate::link_index::revision(&conn).expect("revision"),
+            revision,
+            "the export advances no revision and mutates no source fact"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM lock_events", [], |row| row
+                .get::<_, i64>(0))
+                .expect("events"),
+            1
+        );
+    }
+
+    /// R322/R323, S13-AC05: a fault is exported as evidence of the captured state and never refuses a
+    /// diagnostic dump; the Lock record, its baseline and its event stay in the same document.
+    #[test]
+    fn dump_export_exports_a_fault_as_evidence_and_still_answers() {
+        let (_temp, mut conn) = archive();
+        let (root, lock) = locked_topic(&mut conn);
+        let baseline = export_members(&conn, lock.lock_id).expect("baseline");
+        conn.execute_batch("DROP TRIGGER lock_no_change")
+            .expect("drop trigger");
+        conn.execute(
+            "UPDATE cards SET text = '# First\n\nchanged body\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [first_address(&root)],
+        )
+        .expect("tamper");
+
+        let export = dump_export(&conn).expect("a fault is evidence, not a failed export");
+
+        assert_eq!(export["integrity"]["ok"], json!(false));
+        assert_eq!(export["integrity"]["faulted"], json!(true));
+        let faults = export["integrity"]["faults"].as_array().expect("faults");
+        let kinds = faults
+            .iter()
+            .map(|fault| fault["kind"].clone())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&json!("trigger-missing")), "{kinds:?}");
+        assert!(kinds.contains(&json!("fingerprint-changed")), "{kinds:?}");
+        assert!(
+            faults.iter().all(|fault| {
+                fault["lock_id"].is_null() || fault["lock_id"] == json!(lock.lock_id)
+            }),
+            "a fault names the Lock it leaves unprotected, or none when it is a schema fault"
+        );
+        let locks = export["locks"].as_array().expect("locks array");
+        assert_eq!(locks.len(), 1, "a fault never hides the Lock record");
+        assert_eq!(locks[0]["members"], json!(baseline));
+        assert_eq!(
+            export["events"].as_array().expect("events").len(),
+            1,
+            "the history stays readable beside the fault"
+        );
+    }
+
+    /// R323, S13-AC05: lock data that cannot be read fails the export, so the dump fails instead of
+    /// writing a document that claims an archive held no Lock.
+    #[test]
+    fn dump_export_fails_when_required_lock_data_cannot_be_read() {
+        let (_temp, mut conn) = archive();
+        locked_topic(&mut conn);
+        conn.execute_batch("DROP TABLE lock_events")
+            .expect("drop the stored history");
+
+        let error = dump_export(&conn).expect_err("unreadable history fails the export");
+
+        assert!(
+            format!("{error:#}").contains("lock_events"),
+            "the error names the unreadable lock data: {error:#}"
+        );
+    }
+
+    /// R315/R316, S13-AC02: an archive whose Tree Lock schema was never installed exports the same
+    /// version-1 document with empty Lock and event arrays, and its integrity block reports why.
+    #[test]
+    fn dump_export_answers_an_archive_without_the_lock_schema() {
+        let (_temp, conn) = archive();
+        conn.execute_batch(
+            "DELETE FROM metadata WHERE key = 'tree_lock_schema_version';
+             DROP TRIGGER lock_no_delete;
+             DROP TRIGGER lock_no_change;
+             DROP TRIGGER lock_no_insert;
+             DROP TRIGGER lock_no_move_in;
+             DROP TRIGGER lock_pin_no_delete;
+             DROP TRIGGER lock_pin_no_move;
+             DROP TABLE lock_events;
+             DROP TABLE lock_pins;
+             DROP TABLE lock_members;
+             DROP TABLE locks;",
+        )
+        .expect("remove the lock schema");
+
+        let export = dump_export(&conn).expect("an archive without Locks still dumps");
+
+        assert_eq!(export["schema_version"], json!(1));
+        assert_eq!(export["locks"], json!([]));
+        assert_eq!(export["events"], json!([]));
+        assert_eq!(export["integrity"]["ok"], json!(false));
+        assert_eq!(
+            export["integrity"]["faults"][0]["kind"],
+            json!("schema-version")
+        );
+    }
+
+    /// R323, S13-AC02: several Locks export in Lock-id order, their events in one event-id order
+    /// across Locks, and each Lock's pins from both of its sources in source-address order — so two
+    /// runs of one captured state serialize the same bytes.
+    #[test]
+    fn dump_export_orders_several_locks_their_events_and_their_pins_deterministically() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let first_root = linking_tree(&mut conn, "First", &target);
+        let second_root = linking_tree(&mut conn, "Second", &target);
+        for root in [&first_root, &second_root] {
+            crate::insert_card(
+                &mut conn,
+                &side_address(root),
+                false,
+                Workspace::Human,
+                CardType::Idea,
+                None,
+                &card_text("Side", &format!("links [[{target}]]")),
+            )
+            .expect("side card");
+        }
+        let first_lock = lock_rows(&mut conn, &first_root);
+        let second_lock = lock_rows(&mut conn, &second_root);
+        let tx = conn.transaction().expect("transaction");
+        note_tx(&tx, first_lock, Some("reviewed")).expect("note");
+        tx.commit().expect("commit");
+
+        let export = dump_export(&conn).expect("export");
+
+        let locks = export["locks"].as_array().expect("locks array");
+        assert_eq!(
+            locks
+                .iter()
+                .map(|lock| lock["lock_id"].clone())
+                .collect::<Vec<_>>(),
+            [json!(first_lock), json!(second_lock)],
+            "Locks are ordered by Lock id"
+        );
+        for lock in locks {
+            let first = first_address(lock["root"].as_str().expect("root"));
+            assert_eq!(
+                lock["pins"]
+                    .as_array()
+                    .expect("pins")
+                    .iter()
+                    .map(|pin| pin["source"].clone())
+                    .collect::<Vec<_>>(),
+                [json!(first), json!(format!("{first}|a"))],
+                "one target pinned by two sources is ordered by source address"
+            );
+        }
+        let events = export["events"].as_array().expect("events array");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["action"].clone())
+                .collect::<Vec<_>>(),
+            [json!("lock"), json!("lock"), json!("note")]
+        );
+        let ids = events
+            .iter()
+            .map(|event| event["event_id"].as_i64().expect("event id"))
+            .collect::<Vec<_>>();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] < pair[1]),
+            "one event-id order across every Lock: {ids:?}"
+        );
+        assert_eq!(
+            serde_json::to_string(&dump_export(&conn).expect("export")).expect("serialize"),
+            serde_json::to_string(&export).expect("serialize"),
+            "two runs of one captured state serialize the same bytes"
+        );
+    }
+
+    /// R104/R321/R323, S13-AC03: an ended Lock exports its record, its ordered events and its
+    /// baseline snapshot, which the initial `lock` event retains after unlock deletes the live rows
+    /// and the old tree is deleted. Row ids and addresses there are the captured database's evidence.
+    #[test]
+    fn dump_export_keeps_an_ended_locks_baseline_after_its_tree_is_gone() {
+        let (_temp, mut conn) = archive();
+        let (_outside, target) = plain_tree(&mut conn, "Outside");
+        let root = linking_tree(&mut conn, "Frozen", &target);
+        let plan = resolve_plan(&conn, &root, None).expect("plan");
+        let tx = conn.transaction().expect("transaction");
+        let lock = lock_tx(&tx, &plan).expect("lock");
+        tx.commit().expect("commit");
+        let baseline = export_members(&conn, lock.lock_id).expect("baseline");
+        assert_eq!(baseline.len(), 2);
+        let tx = conn.transaction().expect("transaction");
+        unlock_tx(&tx, lock.lock_id).expect("unlock");
+        tx.commit().expect("commit");
+        let plan = crate::delete_plan(&conn, &root).expect("delete plan");
+        crate::apply_delete_plan(&mut conn, plan).expect("delete the old tree");
+
+        let export = dump_export(&conn).expect("export");
+
+        let locks = export["locks"].as_array().expect("locks array");
+        assert_eq!(locks.len(), 1, "the ended Lock keeps its record");
+        assert_eq!(locks[0]["lock_id"], json!(lock.lock_id));
+        assert_eq!(locks[0]["root"], json!(root));
+        assert_eq!(locks[0]["seal"], json!(lock.seal));
+        assert!(
+            locks[0]["unlocked_at"].is_string(),
+            "the record carries the end of the Lock"
+        );
+        assert_eq!(locks[0]["members"], json!([]), "unlock removed the live rows");
+        assert_eq!(locks[0]["pins"], json!([]));
+        let events = export["events"].as_array().expect("events array");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["action"].clone())
+                .collect::<Vec<_>>(),
+            [json!("lock"), json!("unlock")]
+        );
+        assert!(
+            events[0]["event_id"].as_i64() < events[1]["event_id"].as_i64(),
+            "events are in event-id order"
+        );
+        assert_eq!(events[0]["detail"]["members"], json!(baseline));
+        assert_eq!(events[0]["detail"]["seal"], json!(lock.seal));
+        assert_eq!(
+            events[0]["detail"]["pins"][0]["target"],
+            json!(target),
+            "the retained pin keeps both captured addresses"
+        );
+        assert_eq!(
+            events[0]["detail"]["pins"][0]["sources"],
+            json!([format!("{}/1", crate::tree_id(&root))])
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM cards WHERE location LIKE ?1",
+                [format!("{}/%", crate::tree_id(&root))],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("cards"),
+            0,
+            "the old tree really is gone, so the export is the only record left"
+        );
     }
 }
