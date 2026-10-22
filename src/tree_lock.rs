@@ -1815,6 +1815,7 @@ pub(crate) fn unlock_tx(conn: &Connection, lock_id: i64) -> Result<Lock> {
         lock_id,
         "unlock",
         &json!({
+            "lock_id": lock.lock_id,
             "root": lock.root,
             "seal": lock.seal,
             "note": lock.note,
@@ -3239,38 +3240,7 @@ pub(crate) fn export_with(conn: &Connection, integrity: &Integrity) -> Result<Va
     };
     let mut locks = Vec::new();
     for lock in state.locks.values() {
-        let mut members = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT row_id, address, authored_fp FROM lock_members WHERE lock_id = ?1 ORDER BY address",
-        )?;
-        for row in stmt.query_map([lock.lock_id], |row| {
-            Ok(json!({
-                "row_id": row.get::<_, i64>(0)?,
-                "address": row.get::<_, String>(1)?,
-                "fingerprint": row.get::<_, String>(2)?,
-            }))
-        })? {
-            members.push(row?);
-        }
-        let mut pins = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT target_row, target_address, source_row FROM lock_pins WHERE lock_id = ?1
-             ORDER BY target_address, source_row",
-        )?;
-        for row in stmt.query_map([lock.lock_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })? {
-            let (target_row, target_address, source_row) = row?;
-            pins.push(json!({
-                "target_row": target_row,
-                "target": target_address,
-                "source_row": source_row,
-            }));
-        }
+        let (members, pins) = panel_snapshot(conn, lock)?;
         let mut events = Vec::new();
         let mut stmt = conn.prepare(
             "SELECT event_id, action, at, detail FROM lock_events WHERE lock_id = ?1 ORDER BY event_id",
@@ -3335,6 +3305,116 @@ pub(crate) fn export_with(conn: &Connection, integrity: &Integrity) -> Result<Va
         "locks": locks,
         "integrity": integrity.value(),
     }))
+}
+
+/// One Lock's member and pin snapshot for the panel, in one shape and one order for an active and an
+/// ended Lock: members by address, then one pin row per locked source and target address, ordered by
+/// target address and source row (R213, R218). An ended Lock's live rows were deleted by its unlock,
+/// so its retained `lock` event is the record: the addresses, rows and fingerprints the owner
+/// reviewed, never a historical row joined to today's Cards (R104, S04-AC04).
+fn panel_snapshot(conn: &Connection, lock: &Lock) -> Result<(Vec<Value>, Vec<Value>)> {
+    match lock.unlocked_at {
+        None => live_snapshot(conn, lock.lock_id),
+        Some(_) => retained_snapshot(conn, lock.lock_id),
+    }
+}
+
+/// The live `lock_members` and `lock_pins` rows of one active Lock.
+fn live_snapshot(conn: &Connection, lock_id: i64) -> Result<(Vec<Value>, Vec<Value>)> {
+    let mut members = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT row_id, address, authored_fp FROM lock_members WHERE lock_id = ?1 ORDER BY address",
+    )?;
+    for row in stmt.query_map([lock_id], |row| {
+        Ok(json!({
+            "row_id": row.get::<_, i64>(0)?,
+            "address": row.get::<_, String>(1)?,
+            "fingerprint": row.get::<_, String>(2)?,
+        }))
+    })? {
+        members.push(row?);
+    }
+    let mut pins = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT p.target_row, p.target_address, p.source_row, m.address
+           FROM lock_pins p
+           LEFT JOIN lock_members m ON m.lock_id = p.lock_id AND m.row_id = p.source_row
+          WHERE p.lock_id = ?1
+          ORDER BY p.target_address, p.source_row",
+    )?;
+    for row in stmt.query_map([lock_id], |row| {
+        Ok(json!({
+            "target_row": row.get::<_, i64>(0)?,
+            "target": row.get::<_, String>(1)?,
+            "source_row": row.get::<_, i64>(2)?,
+            "source": row.get::<_, Option<String>>(3)?,
+        }))
+    })? {
+        pins.push(row?);
+    }
+    Ok((members, pins))
+}
+
+/// The member and pin snapshot one Lock's own `lock` event retained.
+fn retained_snapshot(conn: &Connection, lock_id: i64) -> Result<(Vec<Value>, Vec<Value>)> {
+    let detail = conn
+        .query_row(
+            "SELECT detail FROM lock_events WHERE lock_id = ?1 AND action = 'lock'
+             ORDER BY event_id LIMIT 1",
+            [lock_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(detail) = detail else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&detail) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let mut members = value["members"]
+        .as_array()
+        .map(|members| {
+            members
+                .iter()
+                .map(|member| {
+                    json!({
+                        "row_id": member["row_id"],
+                        "address": member["address"],
+                        "fingerprint": member["fingerprint"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    members.sort_by(|left, right| left["address"].as_str().cmp(&right["address"].as_str()));
+    let row_of = members
+        .iter()
+        .filter_map(|member| {
+            Some((
+                member["address"].as_str()?.to_string(),
+                member["row_id"].as_i64()?,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut pins = Vec::new();
+    for pin in value["pins"].as_array().into_iter().flatten() {
+        for source in pin["sources"].as_array().into_iter().flatten() {
+            let source = source.as_str().unwrap_or_default();
+            pins.push(json!({
+                "target_row": pin["target_row"],
+                "target": pin["target"],
+                "source_row": row_of.get(source),
+                "source": source,
+            }));
+        }
+    }
+    pins.sort_by(|left, right| {
+        left["target"]
+            .as_str()
+            .cmp(&right["target"].as_str())
+            .then(left["source_row"].as_i64().cmp(&right["source_row"].as_i64()))
+    });
+    Ok((members, pins))
 }
 
 /// The Broken Links the owner saw when the Lock was accepted, read back from its retained `lock`

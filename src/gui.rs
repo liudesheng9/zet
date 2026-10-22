@@ -1817,9 +1817,26 @@ impl App {
                 "lines": note_lines(&fresh),
             }));
         }
+        let changed = plan["note"] != plan["previous_note"];
         let lock = crate::tree_lock::note_tx(&tx, lock_id, note)?;
         tx.commit()?;
-        Ok(json!({ "applied": true, "lock": lock.value() }))
+        let mut answer = json!({ "applied": true, "lock": lock.value() });
+        // R105: one concise line mirrors the committed event, after the commit. An identical note
+        // wrote no event, so it mirrors nothing; a log that cannot be opened is only reported.
+        if changed
+            && let Err(error) = crate::log_event(
+                &self.root,
+                &format!(
+                    "tree lock note changed: {} (lock {}), note {}",
+                    lock.root,
+                    lock.lock_id,
+                    if lock.note.is_some() { "set" } else { "cleared" }
+                ),
+            )
+        {
+            answer["log_error"] = json!(format!("{error:#}"));
+        }
+        Ok(answer)
     }
 
     /// Move a Card to a free Location (`to`) or into another Card's place

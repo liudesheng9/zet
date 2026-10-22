@@ -258,6 +258,26 @@ impl Gui {
         assert_eq!(applied["applied"], true, "unlock applies: {applied}");
         applied["lock"].clone()
     }
+
+    /// Plan a note change and confirm it: the ordinary owner action.
+    fn note(&self, lock_id: i64, note: &str) -> Value {
+        let plan = self.post(
+            "/api/lock/note",
+            &json!({ "lock_id": lock_id, "note": note }),
+        );
+        assert_eq!(plan["applied"], false, "a note change plans first: {plan}");
+        let applied = self.post(
+            "/api/lock/note",
+            &json!({
+                "lock_id": lock_id,
+                "note": note,
+                "confirm": "note",
+                "plan_hash": plan["plan"]["plan_hash"],
+            }),
+        );
+        assert_eq!(applied["applied"], true, "the note change applies: {applied}");
+        applied["lock"].clone()
+    }
 }
 
 fn read_reply(mut stream: std::net::TcpStream) -> (u16, Value) {
@@ -1236,6 +1256,435 @@ fn unlock_releases_exactly_one_lock_and_keeps_its_history() {
         "the edited member makes a new promise with a new seal"
     );
     assert_eq!(relock["member_count"], 2);
+}
+
+// ---------------------------------------------------------------------------------------------
+// S04 (#127): the owner's note and the retained Lock history.
+// ---------------------------------------------------------------------------------------------
+
+/// The panel entry of one Lock, active or ended.
+fn panel_lock(panel: &Value, lock_id: i64) -> Value {
+    panel["locks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no locks: {panel}"))
+        .iter()
+        .find(|lock| lock["lock_id"] == lock_id)
+        .unwrap_or_else(|| panic!("no lock {lock_id}: {panel}"))
+        .clone()
+}
+
+/// The events of one Lock, in stored order, as `(action, detail)`.
+fn events_of(panel: &Value, lock_id: i64) -> Vec<(String, Value)> {
+    panel_lock(panel, lock_id)["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .map(|event| {
+            (
+                event["action"].as_str().expect("action").to_string(),
+                event["detail"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// S04-AC04 / S04-AC06 / R100 / R104: an ended Lock keeps the whole reviewed snapshot in
+/// `GET /api/locks`, and it stays readable after the tree's root itself is deleted. The record is the
+/// captured addresses of its initial `lock` event, never a join to today's Cards.
+#[test]
+fn an_ended_lock_keeps_its_snapshot_after_its_tree_is_deleted() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Reviewed");
+    let first = card(&mut mcp, &root, "First", "first");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("it rests on [[{pinned}]]") }),
+    );
+    let lock = gui.lock(&root, Some("the reviewed draft"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let active = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(active["unlocked_at"], Value::Null);
+    let members = active["members"].clone();
+    let pins = active["pins"].clone();
+    assert_eq!(members.as_array().expect("members").len(), 2, "{active}");
+    assert_eq!(
+        pins.as_array().expect("pins")[0]["source"],
+        json!(first),
+        "a pin names its locked source address as well as its row: {active}"
+    );
+    assert_eq!(pins[0]["target"], json!(pinned));
+
+    // The release keeps the same record although the live member and pin rows are gone.
+    let ended = gui.unlock(lock_id);
+    assert!(ended["unlocked_at"].is_string(), "{ended}");
+    let ended = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(ended["members"], members, "the reviewed members stay: {ended}");
+    assert_eq!(ended["pins"], pins, "the reviewed pins stay: {ended}");
+    assert_eq!(ended["note"], "the reviewed draft");
+    assert_eq!(ended["seal"], lock["seal"]);
+
+    // Deleting the whole tree afterwards still leaves an understandable record: the addresses and
+    // fingerprints the owner accepted, never a row number joined to today's Cards.
+    delete(&mut mcp, &root);
+    for gone in [&root, &first] {
+        let (status, missing) = gui.get_with(&format!("/api/card?at={gone}"), &gui.token);
+        assert_eq!(status, 400, "the Card is gone: {missing}");
+    }
+    let after = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(after["members"], members, "{after}");
+    assert_eq!(after["pins"], pins, "{after}");
+    assert_eq!(after["note"], "the reviewed draft");
+    assert_eq!(
+        after["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["action"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["lock", "unlock"],
+        "the whole event history stays: {after}"
+    );
+}
+
+/// S04-AC03 / R097 / R153: a note is at most 500 Unicode scalar values, holds no NUL, and an empty
+/// or blank one is stored as NULL; an accepted note is stored verbatim. A changed note writes one
+/// `note` event and one revision and leaves the seal, member and pin baselines alone; an identical
+/// note writes nothing; an ended or unknown Lock is refused instead of editing history.
+#[test]
+fn a_lock_note_holds_its_bounds_and_leaves_every_baseline_alone() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Reviewed");
+    let first = card(&mut mcp, &root, "First", "first");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("it rests on [[{pinned}]]") }),
+    );
+
+    // The bound is counted in Unicode scalar values, not bytes or UTF-16 units.
+    let emoji = "🔒".repeat(500);
+    let too_long = format!("{emoji}1");
+    let (status, refused) = gui.post_with("/api/lock", &gui.token, &json!({ "root": root, "note": too_long }));
+    assert_eq!(status, 400, "501 scalar values do not plan: {refused}");
+    assert!(
+        refused["error"].as_str().unwrap_or_default().contains("at most 500"),
+        "{refused}"
+    );
+    let (status, refused) = gui.post_with(
+        "/api/lock",
+        &gui.token,
+        &json!({ "root": root, "note": "a\u{0}b" }),
+    );
+    assert_eq!(status, 400, "a NUL is refused: {refused}");
+    assert!(
+        refused["error"].as_str().unwrap_or_default().contains("NUL"),
+        "{refused}"
+    );
+    assert_eq!(gui.panel()["locks"], json!([]), "no Lock was created");
+
+    // A note of exactly 500 multi-byte scalar values is accepted and kept verbatim.
+    let lock = gui.lock(&root, Some(&emoji));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    assert_eq!(lock["note"], json!(emoji), "the accepted note is preserved");
+    let stored: Option<String> = home
+        .db()
+        .query_row("SELECT note FROM locks WHERE lock_id = ?1", [lock_id], |row| {
+            row.get(0)
+        })
+        .expect("stored note");
+    assert_eq!(stored.as_deref(), Some(emoji.as_str()));
+    let seal = lock["seal"].clone();
+    let before = panel_lock(&gui.panel(), lock_id);
+    let revision = archive_revision(&home);
+    let events = events_of(&gui.panel(), lock_id);
+    assert_eq!(
+        events.iter().map(|(action, _)| action.as_str()).collect::<Vec<_>>(),
+        ["lock"]
+    );
+
+    // A blank note is stored as NULL, never as empty text.
+    let cleared = gui.note(lock_id, "   ");
+    assert_eq!(cleared["note"], Value::Null, "{cleared}");
+    let (edit, detail) = events_of(&gui.panel(), lock_id).pop().expect("the note event");
+    assert_eq!(edit, "note");
+    assert_eq!(detail["previous_note"], json!(emoji));
+    assert_eq!(detail["note"], Value::Null);
+    assert_eq!(
+        detail["members"],
+        Value::Null,
+        "a note event repeats no member snapshot: {detail}"
+    );
+
+    // The same blank note again succeeds without a second event or revision.
+    let revision_after = archive_revision(&home);
+    let again = gui.note(lock_id, " ");
+    assert_eq!(again["note"], Value::Null, "a blank note stays NULL: {again}");
+    assert_eq!(archive_revision(&home), revision_after, "an identical note writes no revision");
+    assert_eq!(
+        events_of(&gui.panel(), lock_id).len(),
+        2,
+        "an identical note writes no second event"
+    );
+
+    // Changing it once more moves the note and nothing else; the accepted text is kept exactly.
+    let changed = gui.note(lock_id, "  padded  ");
+    assert_eq!(changed["note"], "  padded  ", "the accepted note text is preserved");
+    assert_eq!(changed["seal"], seal, "a note never reseals the tree");
+    assert_eq!(archive_revision(&home), revision_after + 1, "one event, one revision");
+    let after = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(after["members"], before["members"], "the member baseline stays");
+    assert_eq!(after["pins"], before["pins"], "the pin baseline stays");
+    assert_eq!(after["member_count"], before["member_count"]);
+    assert_eq!(after["events"].as_array().unwrap().len(), 3);
+    assert!(revision < archive_revision(&home));
+
+    // An ended or unknown Lock does not take a note: history is not editable.
+    let ended = gui.unlock(lock_id);
+    assert_eq!(ended["note"], "  padded  ");
+    let history = events_of(&gui.panel(), lock_id);
+    let revision = archive_revision(&home);
+    for id in [lock_id, 9_999] {
+        let (status, refused) = gui.post_with(
+            "/api/lock/note",
+            &gui.token,
+            &json!({ "lock_id": id, "note": "after the end" }),
+        );
+        assert_eq!(status, 400, "lock {id} is not active: {refused}");
+        assert!(refused["error"].is_string(), "{refused}");
+    }
+    assert_eq!(archive_revision(&home), revision, "the refusals wrote nothing");
+    assert_eq!(events_of(&gui.panel(), lock_id), history);
+    assert_eq!(panel_lock(&gui.panel(), lock_id)["note"], "  padded  ");
+}
+
+/// S04-AC01 / S04-AC04 / R091 / R100: two Lock generations of one tree keep their own groups even
+/// when the second promise has the same root and the same seal, each Lock keeps its own note and
+/// events in Lock-id order, and the `unlock` event retains the released Lock's own evidence.
+#[test]
+fn two_lock_generations_of_one_tree_keep_their_own_history() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Reviewed");
+    let first = card(&mut mcp, &root, "First", "first");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("it rests on [[{pinned}]]") }),
+    );
+
+    let first_lock = gui.lock(&root, Some("first draft"));
+    let first_id = first_lock["lock_id"].as_i64().expect("lock id");
+    gui.note(first_id, "revised draft");
+    gui.unlock(first_id);
+
+    // The same content relocked makes a new generation with the same seal and a new id.
+    let second_lock = gui.lock(&root, Some("second reading"));
+    let second_id = second_lock["lock_id"].as_i64().expect("lock id");
+    assert_ne!(second_id, first_id, "a relock is a new Lock");
+    assert_eq!(
+        second_lock["seal"], first_lock["seal"],
+        "the content did not change, so the seal is the same"
+    );
+    gui.unlock(second_id);
+
+    let panel = gui.panel();
+    let ids = panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .map(|lock| lock["lock_id"].as_i64().expect("lock id"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, [first_id, second_id], "Locks are ordered by identity");
+    let firsts = panel_lock(&panel, first_id);
+    let seconds = panel_lock(&panel, second_id);
+    assert_eq!(firsts["root"], seconds["root"], "one tree, one root address");
+    assert_eq!(firsts["seal"], seconds["seal"]);
+    assert_eq!(firsts["note"], "revised draft", "the earlier note stays");
+    assert_eq!(seconds["note"], "second reading", "each generation keeps its own note");
+    assert_eq!(
+        events_of(&panel, first_id)
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["lock", "note", "unlock"],
+        "{firsts}"
+    );
+    assert_eq!(
+        events_of(&panel, second_id)
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["lock", "unlock"],
+        "{seconds}"
+    );
+
+    // The release names the Lock it released and what that generation promised.
+    let (_, unlock) = events_of(&panel, first_id).pop().expect("the unlock event");
+    assert_eq!(unlock["lock_id"], json!(first_id), "the released Lock id: {unlock}");
+    assert_eq!(unlock["root"], json!(root));
+    assert_eq!(unlock["seal"], first_lock["seal"], "the seal before the release");
+    assert_eq!(unlock["note"], json!("revised draft"), "the note before the release");
+    assert_eq!(unlock["member_count"], json!(2));
+    assert_eq!(unlock["pin_count"], json!(1));
+
+    // A note on the newer generation never rewrites the older one's history.
+    let third = gui.lock(&root, None);
+    let third_id = third["lock_id"].as_i64().expect("lock id");
+    gui.note(third_id, "third reading");
+    let panel = gui.panel();
+    assert_eq!(panel_lock(&panel, first_id)["note"], "revised draft");
+    assert_eq!(panel_lock(&panel, second_id)["note"], "second reading");
+    assert_eq!(panel_lock(&panel, third_id)["note"], "third reading");
+    assert_eq!(
+        panel_lock(&panel, second_id)["events"]
+            .as_array()
+            .expect("events")
+            .len(),
+        2,
+        "the older generation takes no event from the newer one"
+    );
+    assert_eq!(
+        events_of(&panel, third_id)
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["lock", "note"]
+    );
+
+    // A note plan is bound to the active Lock it planned: a confirmation that names another Lock
+    // writes nothing and answers the renewed plan of the Lock it named.
+    let elsewhere = topic(&mut mcp, "Elsewhere");
+    card(&mut mcp, &elsewhere, "Else", "else");
+    let elsewhere_lock = gui.lock(&elsewhere, Some("elsewhere note"));
+    let elsewhere_id = elsewhere_lock["lock_id"].as_i64().expect("lock id");
+    let plan = gui.post(
+        "/api/lock/note",
+        &json!({ "lock_id": third_id, "note": "planned for the third Lock" }),
+    );
+    let (status, crossed) = gui.post_with(
+        "/api/lock/note",
+        &gui.token,
+        &json!({
+            "lock_id": elsewhere_id,
+            "note": "planned for the third Lock",
+            "confirm": "note",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert_eq!(status, 200, "{crossed}");
+    assert_eq!(crossed["plan_changed"], true, "the plan names its own Lock: {crossed}");
+    assert_eq!(crossed["plan"]["lock_id"], json!(elsewhere_id));
+    let panel = gui.panel();
+    assert_eq!(panel_lock(&panel, third_id)["note"], "third reading");
+    assert_eq!(panel_lock(&panel, elsewhere_id)["note"], "elsewhere note");
+}
+
+/// The archive's `zt.log`, which records service events and Lock mirrors.
+fn log_text(home: &TestHome) -> String {
+    fs::read_to_string(home.archive_root.join("zt.log")).unwrap_or_default()
+}
+
+/// S04-AC05 / R105: the authoritative event is written in the change's own SQLite transaction, and
+/// one concise line mirrors it to `zt.log` after the commit. A log that cannot be opened is reported
+/// on the answer and never pretends the committed Lock was rolled back.
+#[test]
+fn a_lock_change_mirrors_one_log_line_and_survives_a_log_failure() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Reviewed");
+    card(&mut mcp, &root, "First", "first");
+    let lock = gui.lock(&root, Some("first draft"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let named = format!("{root} (lock {lock_id}");
+    let lines_before = log_text(&home).lines().filter(|line| line.contains(&named)).count();
+    assert_eq!(lines_before, 1, "the Lock itself mirrored one line: {}", log_text(&home));
+
+    // A changed note mirrors one line; an identical note mirrors none.
+    gui.note(lock_id, "logged note");
+    let lines = log_text(&home)
+        .lines()
+        .filter(|line| line.contains(&named))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "one line per committed change: {lines:?}");
+    let line = lines.last().expect("the note line");
+    assert!(
+        line.contains("note") && line.contains("set"),
+        "the mirror says what changed: {line}"
+    );
+    gui.note(lock_id, "logged note");
+    assert_eq!(
+        log_text(&home)
+            .lines()
+            .filter(|line| line.contains(&named))
+            .count(),
+        2,
+        "an identical note writes no event and no line"
+    );
+
+    // A log that cannot be opened is reported separately: the note still commits, once.
+    fs::remove_file(home.archive_root.join("zt.log")).expect("remove the log");
+    fs::create_dir(home.archive_root.join("zt.log")).expect("block the log");
+    let revision = archive_revision(&home);
+    let plan = gui.post(
+        "/api/lock/note",
+        &json!({ "lock_id": lock_id, "note": "after the log broke" }),
+    );
+    let (status, applied) = gui.post_with(
+        "/api/lock/note",
+        &gui.token,
+        &json!({
+            "lock_id": lock_id,
+            "note": "after the log broke",
+            "confirm": "note",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert_eq!(status, 200, "{applied}");
+    assert_eq!(applied["applied"], true, "the committed Lock stands: {applied}");
+    assert_eq!(applied["lock"]["note"], "after the log broke");
+    assert!(
+        applied["log_error"].as_str().is_some_and(|error| !error.is_empty()),
+        "the log problem is reported on the answer: {applied}"
+    );
+    assert_eq!(archive_revision(&home), revision + 1, "one event, one revision");
+    let panel = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(panel["note"], "after the log broke", "the stored event is authoritative");
+
+    // The same holds for the Lock action itself: the promise commits and the log failure is named.
+    let other = topic(&mut mcp, "Other");
+    card(&mut mcp, &other, "Second", "second");
+    let plan = gui.post("/api/lock", &json!({ "root": other, "note": "a note" }));
+    let (status, committed) = gui.post_with(
+        "/api/lock",
+        &gui.token,
+        &json!({
+            "root": other,
+            "note": "a note",
+            "confirm": "lock",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert_eq!(status, 200, "{committed}");
+    assert_eq!(committed["applied"], true, "the Lock stands: {committed}");
+    assert!(
+        committed["log_error"].as_str().is_some_and(|error| !error.is_empty()),
+        "the log problem is reported on the answer: {committed}"
+    );
+    let other_id = committed["lock"]["lock_id"].as_i64().expect("lock id");
+    let panel = gui.panel();
+    assert_eq!(panel_lock(&panel, other_id)["root"], json!(other));
+    assert_eq!(panel["integrity"]["ok"], true, "a log failure is not an integrity fault");
 }
 
 /// S12 (#135) S12-AC03 / D08: the whole-archive delete refuses every active Lock record before it
