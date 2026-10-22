@@ -1,4 +1,4 @@
-// ==== module zt-grow-cycle v9 ====
+// ==== module zt-grow-cycle v10 ====
 // The idea-grow compiler cycle (docs/idea-grow-design.md): `zt-digest grow` plans the run's Topics first (v2: one
 // DeepSeek job over every section of every book, gt-001; in pilot 1 parallel sections each opened a Topic for one concept),
 // then one DeepSeek job per section; v3 adds a link round (gl-NNN, one job per Topic tree) for Links across trees,
@@ -18,8 +18,15 @@
 // register alone, no new Cards), the hub options (hubTrees for a pilot, hubRebuild, hubLimits, hubEffort,
 // hubFixRounds), and the restatement review of the run's new Topic Cards (zt-digest restate: one judge job per
 // source book, accepted rewrites through the run's own operation prefix).
+// v10 (3.1.0): the two Topic-side jobs the digests had left. The concept review of each source book's term
+// table against the Topics (zt-digest concepts: propose, prepare, one judge job, judge, report; grow -Step
+// concept-books stages one folder per book) becomes the register plan's read-only -Review (hubs-report
+// -Concepts), in mode full and mode hubs. The optional Topic maintenance round (organize: true) runs the
+// old Organize's Topic merges and Card moves on the run's Topics before the hubs: grow -Step organize-plan
+// surveys them (organize-survey -Topics), one DeepSeek job go-001 decides, grow -Step organize-apply checks
+// and carries out the valid decisions (organize-apply -Open) and moves the run's own addresses with them.
 defineModule({
-  id: 'zt-grow-cycle', version: '9', requires: ['script', 'deepseek', '@dsmp'],
+  id: 'zt-grow-cycle', version: '10', requires: ['script', 'deepseek', '@dsmp'],
   summary: 'ZT idea grow: plan sections → DeepSeek ideas with SELF-CHECK → apply Topic Cards → check → fix rounds → report → cleanup; a write the owner\'s Lock refused stops the stage with the tool\'s typed card_locked refusal.',
   params: {
     book: { type: 'string', description: 'one Literature tree to grow from (its Citation key)' },
@@ -43,6 +50,9 @@ defineModule({
     hubEffort: { type: 'string', default: 'high', enum: ['high', 'max'], description: 'v9: DeepSeek reasoning effort of the hub jobs (never below high)' },
     hubFixRounds: { type: 'number', default: 1, min: 0, max: 2, description: 'v9: hub fix rounds after the first hub apply' },
     restate: { type: 'boolean', default: true, description: 'v9: run the restatement review of the run\'s new Topic Cards' },
+    concepts: { type: 'boolean', default: true, description: 'v10: the concept review of each source book\'s term table, read by the register plan as -Review (needs the hubs round and a register)' },
+    organize: { type: 'boolean', default: false, description: 'v10: the Topic maintenance round before the hubs: duplicate-Topic merges and misplaced-Card moves on the run\'s Topics' },
+    organizeTrees: { type: 'string', description: 'v10: the Topic trees the maintenance round surveys (comma-separated Topic numbers); empty: the run\'s own Topics' },
     runner: { type: 'string', default: 'runner', role: true, description: 'the declared role that relays the commands' },
   },
   run: async (ctx, p) => {
@@ -117,10 +127,11 @@ defineModule({
       approve,
     })
     const ids = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}-${String(i + 1).padStart(3, '0')}`)
-    const out = { mode: p.mode === 'hubs' ? 'hubs' : 'full', plan: null, topics: null, rounds: [], restate: null, hubs: null, report: null, workspaces: [] }
+    const out = { mode: p.mode === 'hubs' ? 'hubs' : 'full', plan: null, topics: null, rounds: [], restate: null, organize: null, concepts: null, hubs: null, report: null, workspaces: [] }
     // v9: the hubs round, shared by mode full (after the Cards) and mode hubs (alone). The hub options
-    // reach the hub plan; the hub jobs run at hubEffort; their fix rounds are hubFixRounds.
-    const hubsRound = async () => {
+    // reach the hub plan; the hub jobs run at hubEffort; their fix rounds are hubFixRounds. v10: with
+    // concepts, the register plan reads the run's concept reports (hubs-report -Concepts).
+    const hubsRound = async (concepts) => {
       const limits = p.hubLimits && typeof p.hubLimits === 'object' && Object.keys(p.hubLimits).length ? ` -Limits ${q(JSON.stringify(p.hubLimits))}` : ''
       const trees = p.hubTrees ? ` -Trees ${q(p.hubTrees)}` : ''
       const hp = await sh(`-Step hubs-plan -Work ${q(W)}${limits}${trees}${p.hubRebuild ? ' -Rebuild' : ''}`, 'hubs plan')
@@ -142,7 +153,7 @@ defineModule({
           await sh(`-Step hubs-apply -Work ${q(W)}`, `hubs apply fix${round}`)
         }
       }
-      out.hubs = await sh(`-Step hubs-report -Work ${q(W)} -Register ${q(p.register || 'apply')}`, 'hubs report')
+      out.hubs = await sh(`-Step hubs-report -Work ${q(W)} -Register ${q(p.register || 'apply')}${concepts ? ' -Concepts' : ''}`, 'hubs report')
       log(`Hubs: ${JSON.stringify(out.hubs && out.hubs.hubs)}; ${out.hubs && out.hubs.missing} required hubs missing, ${out.hubs && out.hubs.mirror} mirror hubs; register ${out.hubs && out.hubs.register && out.hubs.register.status} (${out.hubs && out.hubs.register && out.hubs.register.entries} terms).`)
     }
     // v9: the restatement review of the run's new Topic Cards, one review per source book (zt-digest restate:
@@ -186,6 +197,63 @@ defineModule({
       }
       out.restate = { books: reviews.length, reviews: results }
     }
+    // v10: the Topic maintenance round (the old Organize's Topic merges and Card moves). The tool surveys the
+    // run's Topics; one DeepSeek job decides as JSON (its SELF-CHECK is the grow precheck: O1-O8); the tool
+    // checks the answer again, carries out the valid decisions through organize-apply -Open and moves the run's
+    // own addresses with them. A Locked destination stops the stage with the typed refusal (v7).
+    const organizeRound = async () => {
+      const trees = p.organizeTrees ? ` -Trees ${q(p.organizeTrees)}` : ''
+      const op = await sh(`-Step organize-plan -Work ${q(W)}${trees}`, 'organize plan')
+      out.organize = { plan: op, applied: null }
+      log(`Topic maintenance: ${op && op.topics} Topics surveyed; ${op && op.pairs || 0} duplicate candidates, ${op && op.small || 0} small Topics, ${op && op.moves || 0} move candidates.`)
+      if (!(Number(op && op.organize_jobs) > 0)) return
+      started = true
+      const d = await dsDispatch([job('go-001', [`${W}\\jobs\\go-001.md`])], { label: `${ctx.stage} organize`, phase: ctx.phase, keepWorkspaces: true })
+      stopOnLock(`${ctx.stage} organize`, d.results)
+      const oa = await sh(`-Step organize-apply -Work ${q(W)}`, 'organize apply')
+      out.organize.applied = oa
+      out.rounds.push({ round: 'organize', jobs: 1, ok: d.results.filter(r => r && r.ok).length, merges: oa && oa.merges, moves: oa && oa.moves })
+      log(`Topic maintenance: ${oa && oa.merges || 0} Topic merges, ${oa && oa.moves || 0} Card moves, ${oa && oa.refused || 0} refused, ${oa && oa.blocked || 0} blocked, ${oa && oa.invalid || 0} decisions failed the check.`)
+    }
+    // v10: the concept review of each source book's term table against the Topics, one review per book (the
+    // digests' former concepts stage): concept-books stages the folders; per book zt-digest concepts propose ->
+    // prepare -> one DeepSeek judge job -> judge -> report. The rendered reports are the register plan's
+    // read-only evidence. A book whose review fails is reported for that book and the run goes on.
+    const conceptRound = async (which) => {
+      const listed = await sh(`-Step concept-books -Work ${q(W)}${which || ''}`, 'concept books')
+      const reviews = (listed && listed.reviews) || []
+      const results = []
+      const soft = async (args, what) => { try { return await zd('concepts', args, what) } catch (error) { if (error && error.lock_refusal) throw error; return null } }
+      for (const r of reviews) {
+        const st = String(r.staging)
+        const work = `${st}\\work`
+        const step = (name, more = '') => `-Step ${name} -Staging ${q(st)} -Work ${q(work)}${more}`
+        const proposed = await soft(step('propose'), `concepts ${r.id} propose`)
+        if (!proposed || !Number(proposed.proposals)) {
+          results.push({ id: r.id, book: r.book, status: proposed ? 'skipped' : 'failed', reason: proposed ? proposed.reason : 'propose failed' })
+          continue
+        }
+        const prepared = await soft(step('prepare'), `concepts ${r.id} prepare`)
+        const cj = ((prepared && prepared.jobs) || [])[0]
+        if (!prepared) { results.push({ id: r.id, book: r.book, status: 'failed', reason: 'prepare failed' }); continue }
+        if (cj) {
+          started = true
+          const ds = await dsDispatch([{
+            id: `${r.id}-cj`,
+            run: { cwd: W, prompt_files: cj.files, prompt: cj.prompt, model: p.model, reasoning_effort: p.effort === 'max' ? 'max' : 'high', skills: ['asd-ste100-zh'] },
+            expect: '\\{', // the concept prompt asks for one JSON line as the answer
+            approve: `allow only these: the concept self-check "${exe} concepts -Step judge" with -Staging "${st}" (it validates the answer and writes only under "${st}"); a read-only read or search (Read, Get-Content, Select-String) of a file under "${W}"; and writing JSON files under "${work}\\out". Reject anything else that writes, moves, or deletes files, and every other zt-digest step. Answer a question with custom text "按任务说明自行决定，不需要询问。"`,
+          }], { label: `${ctx.stage} concepts ${r.id}`, phase: ctx.phase, keepWorkspaces: true })
+          stopOnLock(`${ctx.stage} concepts ${r.id}`, ds.results)
+        }
+        const judged = cj ? await soft(step('judge', ` -File ${q(cj.answer || `${work}\\out\\cj-01.json`)}`), `concepts ${r.id} judge`) : null
+        const reported = await soft(step('report'), `concepts ${r.id} report`)
+        results.push({ id: r.id, book: r.book, status: reported ? reported.status : 'failed', report_id: reported && reported.report_id, findings: reported ? reported.findings || 0 : 0, judged: judged ? judged.judged || 0 : 0, unjudged: reported ? reported.unjudged || 0 : 0 })
+        log(`Concept review ${r.id} (${r.book}): ${reported ? `${reported.status}; ${reported.findings || 0} findings, ${reported.judged || 0} judged, ${reported.unjudged || 0} unjudged` : 'failed'}.`)
+      }
+      out.concepts = { books: reviews.length, skipped: (listed && listed.skipped) || [], reviews: results }
+      return results.some(r => r.report_id)
+    }
     const range = `${p.from != null ? ` -From ${Number(p.from)}` : ''}${p.to != null ? ` -To ${Number(p.to)}` : ''}`
     // v4: the box is the unit. With no book and no books, every Literature tree of the box is read: the
     // more Literature trees the box holds, the more each section's ideas can relate to.
@@ -197,7 +265,8 @@ defineModule({
       // former mode hubs). Only on the live box: the hub jobs' helper lines name no zt config.
       if (p.ztConfig) throw new Error('mode hubs runs on the live box only (the hub jobs name no zt config)')
       try {
-        await hubsRound()
+        const reviewed = p.concepts !== false && p.register !== 'off' ? await conceptRound(which) : false
+        await hubsRound(reviewed)
         out.report = { mode: 'hubs', hubs: out.hubs && out.hubs.hubs, faults: out.hubs && out.hubs.faults, missing: out.hubs && out.hubs.missing, register: out.hubs && out.hubs.register }
       } finally {
         if (started) out.workspaces = await dsCleanupWorkspaces([W], { ownWorkspaces: true, label: `${ctx.stage} cleanup`, phase: ctx.phase })
@@ -253,11 +322,18 @@ defineModule({
       // The restatement review (v9): each new Topic Card is compared with its book's anchors and models and
       // with the earlier Topic Idea Cards; an accepted 'same' rewrites only the new Card.
       if (p.restate !== false && !p.ztConfig) await restateRound()
+      // The Topic maintenance round (v10, optional): merges and moves on the run's Topics, before the hubs
+      // map them. Only on the live box, like the rounds after it.
+      if (p.organize === true && !p.ztConfig) await organizeRound()
       // The hubs round (v8): the grown Topics get their ways in. The hub compiler writes topic, line and
       // field hubs (DeepSeek writes each hub as JSON, gh-NNN); then the register is rebuilt from the box's
       // term tables so its terms point at the Cards that carry them. Only on the live box: the hub jobs'
-      // helper lines name no zt config.
-      if (p.hubs !== false && !p.ztConfig) await hubsRound()
+      // helper lines name no zt config. v10: first the concept review of each source book, whose reports
+      // the register plan reads.
+      if (p.hubs !== false && !p.ztConfig) {
+        const reviewed = p.concepts !== false && p.register !== 'off' ? await conceptRound('') : false
+        await hubsRound(reviewed)
+      }
       out.report = await sh(`-Step report -Work ${q(W)}`, 'report')
       log(`Grow: report ${out.report && out.report.report}: ${out.report && out.report.created} Cards, Topic share ${out.report && out.report.share_before} → ${out.report && out.report.share_after}, ${out.report && out.report.faults_left} Cards with faults left.`)
     } finally {

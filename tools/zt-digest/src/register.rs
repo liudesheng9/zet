@@ -299,10 +299,67 @@ struct Review {
     findings: usize,
     /// The reviewed spellings that no term table row or model head names.
     unmatched: Vec<String>,
+    /// The summary of each report when several were combined (one concept review per source book,
+    /// zt-idea-grow 3.1.0); empty for one report.
+    reports: Vec<Value>,
+}
+
+/// The report files of `-Review`: one path, or several separated by `;` (one concept review per
+/// source book).
+fn review_paths(given: &str) -> Vec<String> {
+    given.split(';').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
+/// Several reviewed reports as one read-only evidence set: the accepted entries and the distinct
+/// senses of every report, the first uncertain reason of a spelling, and each report's own
+/// summary. One report is returned exactly as it was read.
+fn merge_reviews(list: Vec<Review>) -> Option<Review> {
+    if list.len() <= 1 {
+        return list.into_iter().next();
+    }
+    let mut merged = Review {
+        report_id: list.iter().map(|r| r.report_id.clone()).collect::<Vec<_>>().join(";"),
+        status: if list.iter().all(|r| r.status == list[0].status) { list[0].status.clone() } else { "partial".into() },
+        complete: list.iter().all(|r| r.complete),
+        ..Review::default()
+    };
+    for review in &list {
+        merged.findings += review.findings;
+        for (spelling, entries) in &review.accepted {
+            let known = merged.accepted.entry(spelling.clone()).or_default();
+            for entry in entries {
+                if !known.contains(entry) {
+                    known.push(entry.clone());
+                }
+            }
+        }
+        for (spelling, senses) in &review.distinct {
+            merged.distinct.entry(spelling.clone()).or_default().extend(senses.iter().cloned());
+        }
+        for (spelling, reason) in &review.uncertain {
+            merged.uncertain.entry(spelling.clone()).or_insert_with(|| reason.clone());
+        }
+        merged.reports.push(review.summary());
+    }
+    Some(merged)
 }
 
 impl Review {
     fn summary(&self) -> Value {
+        if !self.reports.is_empty() {
+            return json!({
+                "report_id": self.report_id,
+                "evidence_id": self.evidence_id,
+                "status": self.status,
+                "complete": self.complete,
+                "findings": self.findings,
+                "accepted_spellings": self.accepted.keys().cloned().collect::<Vec<_>>(),
+                "distinct_senses": self.distinct.keys().cloned().collect::<Vec<_>>(),
+                "uncertain_spellings": self.uncertain.keys().cloned().collect::<Vec<_>>(),
+                "unmatched_spellings": self.unmatched.clone(),
+                "reports": self.reports,
+            });
+        }
         json!({
             "report_id": self.report_id,
             "evidence_id": self.evidence_id,
@@ -482,12 +539,21 @@ impl Register {
 
     /// The reviewed concept report, when the caller names one. It is read-only evidence: the
     /// accepted meanings combine spellings, a `different` verdict keeps a sense apart, and the
-    /// report id is recorded so the plan says which review it was read from.
+    /// report id is recorded so the plan says which review it was read from. Several reports (one
+    /// per source book, `a.json;b.json`) are combined into one evidence set (`merge_reviews`).
     fn read_review(&mut self, identity: &Value) -> Result<Option<Review>> {
-        if self.review.is_empty() {
-            return Ok(None);
+        let mut list = Vec::new();
+        for path in review_paths(&self.review) {
+            if let Some(review) = self.read_one_review(&path, identity)? {
+                list.push(review);
+            }
         }
-        let path = full_path(&self.review)?;
+        Ok(merge_reviews(list))
+    }
+
+    /// One reviewed concept report.
+    fn read_one_review(&self, given: &str, identity: &Value) -> Result<Option<Review>> {
+        let path = full_path(given)?;
         let report = canon::read_json(&path)
             .with_context(|| format!("the reviewed concept report `{path}` is not JSON"))?;
         let report_id = crate::ps::s(&report["report_id"]);
@@ -2476,6 +2542,31 @@ mod tests {
             facet: facet.map(str::to_string),
             title: title.to_string(),
         }
+    }
+
+    // zt-idea-grow 3.1.0: one concept review per source book; the register plan reads them all.
+    #[test]
+    fn several_reviews_combine_their_meanings_and_keep_each_report_id() {
+        let mut a = Review { report_id: "r-a".into(), status: "complete".into(), complete: true, findings: 2, ..Review::default() };
+        a.accepted.insert("剩余控制权".into(), vec!["5/1".into()]);
+        a.uncertain.insert("学习".into(), "两个意思".into());
+        let mut b = Review { report_id: "r-b".into(), status: "partial".into(), complete: false, findings: 3, ..Review::default() };
+        b.accepted.insert("剩余控制权".into(), vec!["5/1".into(), "6/1".into()]);
+        b.distinct.insert("学习".into(), BTreeSet::from(["7/0".to_string()]));
+        // One review stays exactly as it was read, so a plan with one review keeps its id.
+        let one = merge_reviews(vec![a.clone()]).unwrap();
+        assert_eq!(one.summary(), a.summary());
+        assert!(merge_reviews(Vec::new()).is_none());
+        let both = merge_reviews(vec![a, b]).unwrap();
+        assert_eq!(both.accepted["剩余控制权"], vec!["5/1", "6/1"]);
+        assert!(both.distinct["学习"].contains("7/0") && both.uncertain.contains_key("学习"));
+        assert_eq!(both.findings, 5);
+        assert!(!both.complete && both.status == "partial");
+        let summary = both.summary();
+        assert_eq!(summary["report_id"], json!("r-a;r-b"));
+        assert_eq!(summary["reports"].as_array().map(Vec::len), Some(2));
+        assert_eq!(summary["reports"][1]["report_id"], json!("r-b"));
+        assert_eq!(review_paths(" a.json ; ;b.json"), vec!["a.json", "b.json"]);
     }
 
     #[test]

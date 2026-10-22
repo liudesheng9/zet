@@ -7,6 +7,11 @@
 //! link each other -CrossLinks times); small Topics (-Small Cards or fewer); merge proposals of the
 //! card cycles and the audit (I6, I2); models with faults and the architect's notes (-Notes);
 //! broken Links and missing hubs. Prints one compact JSON summary line last.
+//!
+//! With `-Topics <n,m,…>` (zt-idea-grow 3.1.0, its Topic maintenance round) it surveys those agent
+//! Topics instead of a book and needs no -Staging: duplicate candidates among all agent Topics,
+//! small Topics, move candidates (Cards that link another Topic more than their own), the Locked
+//! Topics, and the catalogue of every agent Topic-tree Card the decision is checked against.
 
 use super::common::{self, Sb, prop, pstr};
 use crate::args::Args;
@@ -27,6 +32,9 @@ static I2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(\S+) I2 \((\d+)
 
 struct Params {
     staging: String,
+    /// zt-idea-grow 3.1.0: the Topic trees to survey (comma-separated Topic numbers). Given, the
+    /// survey is about these Topics (`topic_survey`), not about one book, and needs no -Staging.
+    topics: String,
     work: String,
     notes: String,
     similar: f64,
@@ -35,10 +43,12 @@ struct Params {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let names = ["Staging", "Work", "Notes", "Similar", "CrossLinks", "Small"];
+    let names = ["Staging", "Work", "Notes", "Similar", "CrossLinks", "Small", "Topics"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &[])?;
+    let topics = a.str("Topics");
     let p = Params {
-        staging: common::mandatory(&a, "Staging")?,
+        staging: if topics.trim().is_empty() { common::mandatory(&a, "Staging")? } else { a.str("Staging") },
+        topics,
         work: common::mandatory(&a, "Work")?,
         notes: a.str("Notes"),
         similar: a.float_or("Similar", 0.5)?,
@@ -46,6 +56,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         small: a.int_or("Small", 3)?,
     };
     std::fs::create_dir_all(&p.work)?;
+    if !p.topics.trim().is_empty() {
+        return topic_survey(&p);
+    }
     let manifest = common::manifest(&p.staging)?;
     let key = pstr(&manifest, "citation_key");
     let audit_dir = ps::join(&p.work, "audit");
@@ -57,13 +70,18 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let faults = ps::read_lines(&ps::join(&audit_dir, "audit-faults.txt"))?;
     let listed = common::read_first(&mut zt, "list_trees", json!({ "workspace": "agent" }))?;
     let trees: Vec<Value> = ps::each(prop(&listed, "trees")).into_iter().filter(|t| eq(&pstr(t, "kind"), "topic")).cloned().collect();
-    // Tree Lock S16 (#139): `list_trees` answers whether an active Lock governs each Topic; the
-    // root's own read gives its Lock id and start, so a planner sees the tree it may not organize
-    // without this step becoming a Lock authority.
+    let locks = read_locks(&mut zt, &trees)?;
+    survey(&p, &manifest, &key, &audit, &book, &cards, &faults, &trees, locks)
+}
+
+/// Tree Lock S16 (#139): `list_trees` answers whether an active Lock governs each Topic; the
+/// root's own read gives its Lock id and start, so a planner sees the tree it may not organize
+/// without this step becoming a Lock authority.
+fn read_locks(zt: &mut crate::zt::Zt, trees: &[Value]) -> Result<Value> {
     let locked: Vec<Value> = trees.iter().filter(|t| ps::truthy(&t["locked"])).map(|t| json!(pstr(t, "root"))).collect();
     let mut locks = serde_json::Map::new();
     if !locked.is_empty() {
-        let read = common::read_first(&mut zt, "get_cards", json!({ "addresses": locked, "view": "text" }))?;
+        let read = common::read_first(zt, "get_cards", json!({ "addresses": locked, "view": "text" }))?;
         for card in ps::each(&read["cards"]) {
             let lock = &card["lock"];
             if lock.is_object() {
@@ -74,7 +92,187 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             }
         }
     }
-    survey(&p, &manifest, &key, &audit, &book, &cards, &faults, &trees, Value::Object(locks))
+    Ok(Value::Object(locks))
+}
+
+// --- the Topic survey (zt-idea-grow 3.1.0) ---------------------------------------------------------
+//
+// Since 3.0.0 the digests write no Topic, and the book survey above finds no Topic of its book (a
+// Topic-tree Card belongs to no book). zt-idea-grow's Topic maintenance round surveys the Topics it
+// names instead: their duplicate candidates among all agent Topics (similar title bigrams, one
+// title inside the other, or -CrossLinks Links between them), the small ones, and the Cards whose
+// Links point into another Topic more than into their own (move candidates). It also lists every
+// agent Topic-tree Card (address, title, type), so a decision can be checked without the archive.
+// Read-only: it writes survey.md (for the decision job) and survey.json.
+
+static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]|\n]+)(?:\|[^\]\n]*)?\]\]").unwrap());
+const REVERSE_MARK: &str = "<!-- zt:reverse-links -->";
+/// The fewest Links into another Topic that make a Card a move candidate.
+const MOVE_LINKS: usize = 2;
+/// The move candidates one survey lists.
+const MAX_MOVES: usize = 30;
+
+/// The Topic trees a Card's own text links, one entry per Link, the reverse-link block excluded.
+fn linked_topics(body: &str) -> Vec<String> {
+    let own = body.split(REVERSE_MARK).next().unwrap_or_default();
+    LINK.captures_iter(own)
+        .map(|m| m[1].trim().split('/').next().unwrap_or_default().to_string())
+        .filter(|tree| DIGITS.is_match(tree))
+        .collect()
+}
+
+/// The Cards whose Links point into one other Topic tree at least MOVE_LINKS times and more often
+/// than into their own tree, strongest first. `cards` holds (address, tree, type, body); a root, a
+/// Hub Card, a Model Card or part never moves.
+fn move_candidates(cards: &[(String, String, String, String)], titles: &HashMap<String, String>) -> Vec<Value> {
+    let mut out: Vec<(usize, Value)> = Vec::new();
+    for (at, tree, kind, body) in cards {
+        if at.ends_with("/0") || !matches!(kind.as_str(), "idea" | "event" | "finding" | "") {
+            continue;
+        }
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for target in linked_topics(body) {
+            *counts.entry(target).or_default() += 1;
+        }
+        let home = counts.get(tree).copied().unwrap_or(0);
+        let best = counts.iter().filter(|(t, _)| *t != tree).max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)));
+        if let Some((to, n)) = best {
+            if *n >= MOVE_LINKS && *n > home {
+                out.push((*n, json!({ "at": at, "title": titles.get(at).cloned().unwrap_or_default(), "tree": tree, "to_tree": to, "links_to": n, "links_home": home })));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| ps::s(&a.1["at"]).cmp(&ps::s(&b.1["at"]))));
+    out.into_iter().take(MAX_MOVES).map(|(_, v)| v).collect()
+}
+
+fn topic_survey(p: &Params) -> Result<i32> {
+    let wanted: Vec<String> = p.topics.split(',').map(|t| t.trim().trim_end_matches("/0").to_string()).filter(|t| !t.is_empty()).collect();
+    let mut zt = crate::zt::start()?;
+    let listed = common::read_first(&mut zt, "list_trees", json!({ "workspace": "agent" }))?;
+    let trees: Vec<Value> = ps::each(prop(&listed, "trees")).into_iter().filter(|t| eq(&pstr(t, "kind"), "topic")).cloned().collect();
+    let locks = read_locks(&mut zt, &trees)?;
+    let exported = common::read_first(&mut zt, "export_titles", json!({ "workspace": "agent" }))?;
+    // Every agent Topic-tree Card: the catalogue a decision is checked against.
+    let mut catalogue = serde_json::Map::new();
+    let mut titles: HashMap<String, String> = HashMap::new();
+    for row in ps::each(&exported["titles"]) {
+        let tree = pstr(row, "tree");
+        if !DIGITS.is_match(&tree) {
+            continue;
+        }
+        let at = pstr(row, "address");
+        titles.insert(at.clone(), pstr(row, "title"));
+        catalogue.insert(at, json!({ "title": pstr(row, "title"), "type": pstr(row, "type"), "tree": tree, "facet": row["facet"].clone() }));
+    }
+    let mut topics: Vec<Value> = Vec::new();
+    let mut mine: CiMap<Value> = CiMap::new();
+    for t in &trees {
+        let tree = pstr(t, "tree");
+        if wanted.iter().any(|w| eq(w, &tree)) {
+            let size = count(t)?;
+            let row = json!({ "root": pstr(t, "root"), "tree": tree, "title": pstr(t, "title"), "size": size, "book_cards": size, "locked": ps::truthy(&t["locked"]) });
+            mine.insert(&tree, row.clone());
+            topics.push(row);
+        }
+    }
+    // The surveyed Cards' own text: their Links between Topics.
+    let addresses: Vec<String> = catalogue.iter().filter(|(_, c)| mine.contains(&ps::s(&c["tree"]))).map(|(at, _)| at.clone()).collect();
+    let mut cards: Vec<(String, String, String, String)> = Vec::new();
+    for chunk in addresses.chunks(200) {
+        let read = common::read_first(&mut zt, "get_cards", json!({ "addresses": chunk, "view": "text" }))?;
+        for card in ps::each(&read["cards"]) {
+            let at = pstr(card, "address");
+            let c = &catalogue[&at];
+            cards.push((at.clone(), ps::s(&c["tree"]), ps::s(&c["type"]), pstr(card, "body")));
+        }
+    }
+    let mut cross: HashMap<String, i64> = HashMap::new();
+    for (_, tree, _, body) in &cards {
+        for to in linked_topics(body) {
+            if !eq(&to, tree) {
+                *cross.entry(pair_key(tree, &to)).or_insert(0) += 1;
+            }
+        }
+    }
+    let pairs = duplicate_pairs(p, &topics, &trees, &mine, &cross)?;
+    let small: Vec<Value> = topics.iter().filter(|t| t["size"].as_i64().unwrap_or(0) <= p.small).cloned().collect();
+    let moves = move_candidates(&cards, &titles);
+
+    let mut sb = Sb::new();
+    sb.line("# 主题调查").blank();
+    sb.line(format!("调查的主题：{} 个；代理工作区共有 {} 个主题。", topics.len(), trees.len())).blank();
+    sb.line("## 1. 调查的主题").blank();
+    sb.line("| 主题 | 名称 | 卡数 |").line("| --- | --- | --- |");
+    for t in &topics {
+        let locked = if ps::truthy(&t["locked"]) { "（已锁定）" } else { "" };
+        sb.line(format!("| `{}` | {}{locked} | {} |", field(t, "root"), field(t, "title"), field(t, "size")));
+    }
+    if let Some(map) = locks.as_object().filter(|m| !m.is_empty()) {
+        sb.blank().line("## 1b. 已锁定的主题（只读：不能合并，卡不能移出或移入）").blank();
+        for t in trees.iter().filter(|t| ps::truthy(&t["locked"])) {
+            let entry = map.get(&ps::key(&pstr(t, "tree"))).cloned().unwrap_or(Value::Null);
+            sb.line(format!("- `{}` {}（Lock {}）", pstr(t, "root"), pstr(t, "title"), ps::s(&entry["lock_id"])));
+        }
+    }
+    sb.blank().line("## 2. 可能重复的主题").blank();
+    if pairs.is_empty() {
+        sb.line("没有。");
+    } else {
+        sb.line("| 主题 A | 主题 B | 标题相似度 | 一个名称包含另一个 | 两者之间的链接 |").line("| --- | --- | --- | --- | --- |");
+        for x in &pairs {
+            sb.line(format!(
+                "| `{}` {}（{} 张） | `{}` {}（{} 张） | {} | {} | {} |",
+                field(x, "a"),
+                field(x, "a_title"),
+                field(x, "a_size"),
+                field(x, "b"),
+                field(x, "b_title"),
+                field(x, "b_size"),
+                field(x, "similarity"),
+                field(x, "inside"),
+                field(x, "links")
+            ));
+        }
+    }
+    sb.blank().line(format!("## 3. 小主题（不超过 {} 张卡）", p.small)).blank();
+    if small.is_empty() {
+        sb.line("没有。");
+    } else {
+        for t in &small {
+            sb.line(format!("- `{}` {}（{} 张）", field(t, "root"), field(t, "title"), field(t, "size")));
+        }
+    }
+    sb.blank().line("## 4. 可能放错主题的卡（链接更多地指向另一个主题）").blank();
+    if moves.is_empty() {
+        sb.line("没有。");
+    } else {
+        for x in &moves {
+            sb.line(format!(
+                "- `{}` {}：在主题 {}，链接主题 {} {} 次、本主题 {} 次",
+                field(x, "at"),
+                field(x, "title"),
+                field(x, "tree"),
+                field(x, "to_tree"),
+                field(x, "links_to"),
+                field(x, "links_home")
+            ));
+        }
+    }
+    let survey_md = ps::join(&p.work, "survey.md");
+    util::write_text(&survey_md, &sb.0)?;
+    let all_trees: Vec<Value> = trees.iter().map(|t| json!({ "root": pstr(t, "root"), "tree": pstr(t, "tree"), "title": pstr(t, "title"), "locked": ps::truthy(&t["locked"]) })).collect();
+    let survey = json!({
+        "mode": "topics", "topics": topics, "pairs": pairs, "small": small, "moves": moves, "locks": locks,
+        "trees": all_trees, "cards": Value::Object(catalogue),
+    });
+    util::write_text(ps::join(&p.work, "survey.json"), &ps::json_pretty(&survey))?;
+    let last = json!({
+        "survey": survey_md, "topics": topics.len(), "pairs": pairs.len(), "small": small.len(), "moves": moves.len(),
+        "locked": survey["locks"].as_object().map_or(0, serde_json::Map::len)
+    });
+    util::print_line(&ps::json_compact(&last))?;
+    Ok(0)
 }
 
 /// `Get-Bigrams`: the set of character bigrams (UTF-16 units, as .NET's Substring) of a title
@@ -398,6 +596,28 @@ mod tests {
         assert_eq!(bigrams("A, b!").len(), 1);
         assert_eq!(pair_key("9", "12"), "12~9");
         assert_eq!(ps::json_compact(&json!(round2(1.0))), "1.0");
+    }
+
+    // zt-idea-grow 3.1.0: the Topic survey's move candidates.
+    #[test]
+    fn a_card_that_links_another_topic_more_than_its_own_is_a_move_candidate() {
+        assert_eq!(linked_topics("对照 [[12/3]] 与 [[12/4|x]]；来源：[[Key/1]]。\n<!-- zt:reverse-links -->\n- [[13/1]]"), vec!["12", "12"]);
+        let card = |at: &str, tree: &str, kind: &str, body: &str| (at.to_string(), tree.to_string(), kind.to_string(), body.to_string());
+        let titles = HashMap::from([("5/2".to_string(), "错放的卡".to_string())]);
+        let cards = vec![
+            card("5/2", "5", "idea", "依赖 [[7/1]]，对照 [[7/2]]，例示 [[5/1]]。"),
+            card("5/3", "5", "idea", "依赖 [[7/1]]，对照 [[5/1]]，例示 [[5/2]]。"),
+            card("5/4", "5", "hub", "[[7/1]] [[7/2]] [[7/3]]"),
+            card("5/0", "5", "idea", "[[7/1]] [[7/2]]"),
+            card("5/5", "5", "idea", "[[7/1]]"),
+        ];
+        let moves = move_candidates(&cards, &titles);
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0]["at"], json!("5/2"));
+        assert_eq!(moves[0]["to_tree"], json!("7"));
+        assert_eq!(moves[0]["links_to"], json!(2));
+        assert_eq!(moves[0]["links_home"], json!(1));
+        assert_eq!(moves[0]["title"], json!("错放的卡"));
     }
 
     #[test]

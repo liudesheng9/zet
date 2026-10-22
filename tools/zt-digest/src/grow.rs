@@ -117,6 +117,11 @@ fn tree_of(address: &str) -> &str {
     address.split('/').next().unwrap_or(address)
 }
 
+/// A Topic tree's id: a number.
+fn topic_number(tree: &str) -> bool {
+    !tree.is_empty() && tree.chars().all(|c| c.is_ascii_digit())
+}
+
 /// A Topic-tree address: its tree part is a number.
 fn in_topic_tree(address: &str) -> bool {
     let tree = tree_of(address);
@@ -894,6 +899,15 @@ fn precheck(a: &Args) -> Result<()> {
     if id.starts_with("gh") {
         return hubs_precheck(&work, &id);
     }
+    if id.starts_with("go") {
+        let path = work.path(&format!("out\\{id}.json"));
+        let faults = match (answer_of(&path), util::read_json(work.path("organize\\survey.json"))) {
+            (Ok(answer), Ok(survey)) => validate_organize(&survey, &answer),
+            (Err(e), _) => vec![("answer".into(), "O1".into(), format!("{path}: {e}"))],
+            (_, Err(e)) => vec![("survey".into(), "O1".into(), format!("no Topic survey (run -Step organize-plan first): {e}"))],
+        };
+        return print_faults(&faults, &[]);
+    }
     let ctx = Ctx::load(&work)?;
     let path = work.path(&format!("out\\{id}.json"));
     let answer = match answer_of(&path) {
@@ -1296,6 +1310,380 @@ fn restate_cards(a: &Args) -> Result<()> {
     util::print_last(&json!({ "books": reviews.len(), "reviews": reviews }))
 }
 
+// --- the concept review (3.1.0) -------------------------------------------------------------------
+//
+// The digests reviewed their book's term table against the Topics (`zt-digest concepts`) before
+// 3.0.0, and the hub stage read that report as the register plan's `-Review`. Here each source book
+// of the run gets its own review: `concept-books` writes one staging folder per book with the book's
+// term-table Card as `terms.md`, the module runs `zt-digest concepts` on it (propose, prepare, one
+// DeepSeek judge job, judge, report), and `hubs-report -Concepts` hands every rendered report to the
+// register plan as read-only evidence.
+
+/// The source books one run reviews at most (three DSMP managers of eight jobs).
+const MAX_CONCEPT_BOOKS: usize = 24;
+
+/// The term-table Card of each agent Literature tree, as the concept review reads it (the first
+/// address whose title starts with 术语表), with the book's title: book → (table, title).
+fn term_tables(titles: &Value) -> BTreeMap<String, (String, String)> {
+    let mut tables: BTreeMap<String, String> = BTreeMap::new();
+    let mut names: HashMap<String, String> = HashMap::new();
+    for row in titles["titles"].as_array().into_iter().flatten() {
+        let tree = s(&row["tree"]);
+        if s(&row["workspace"]) != "agent" || tree.is_empty() || topic_number(&tree) {
+            continue;
+        }
+        let at = s(&row["address"]);
+        if at == tree {
+            names.insert(tree.clone(), s(&row["title"]));
+        }
+        if s(&row["title"]).trim_start().starts_with("术语表") && tables.get(&tree).is_none_or(|known| at < *known) {
+            tables.insert(tree, at);
+        }
+    }
+    tables.into_iter().map(|(book, at)| { let title = names.get(&book).cloned().unwrap_or_default(); (book, (at, title)) }).collect()
+}
+
+/// The books a run reviews: the named ones, else the books the run grew Cards from, else every
+/// agent book with a term table; a book without one, and any over the bound, is skipped with why.
+fn concept_books_of(named: &[String], grown: &[String], tables: &BTreeMap<String, (String, String)>, max: usize) -> (Vec<String>, Vec<Value>) {
+    let wanted: Vec<String> = if !named.is_empty() {
+        named.to_vec()
+    } else if !grown.is_empty() {
+        grown.to_vec()
+    } else {
+        tables.keys().cloned().collect()
+    };
+    let mut books = Vec::new();
+    let mut skipped = Vec::new();
+    for book in wanted {
+        if books.contains(&book) {
+            continue;
+        }
+        if !tables.contains_key(&book) {
+            skipped.push(json!({ "book": book, "reason": "no term-table Card (术语表) in its agent Literature tree" }));
+        } else if books.len() == max {
+            skipped.push(json!({ "book": book, "reason": format!("over the bound of {max} reviews a run") }));
+        } else {
+            books.push(book);
+        }
+    }
+    (books, skipped)
+}
+
+/// `-Step concept-books [-Book k | -Books a,b]`: one staging folder per reviewed book,
+/// `<Work>\concepts\cNN`, with `manifest.json` (Citation key, title) and `terms.md` (the book's
+/// term-table Card), the shape `zt-digest concepts` reads. Earlier folders are removed first, so a
+/// rerun never reads a stale report. Prints `{"books","reviews":[{id,book,staging,table}],"skipped"}`.
+fn concept_books(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let mut state = work.state()?;
+    let named: Vec<String> = a.str("Books").split([',', ';']).chain(std::iter::once(a.str("Book").as_str())).map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
+    let grown: Vec<String> = grown_by_book(&state, usize::MAX).into_iter().map(|(book, _)| book).collect();
+    let mut zt = crate::zt::start()?;
+    let titles = zt.call("export_titles", json!({ "workspace": "agent" }))?;
+    let tables = term_tables(&titles);
+    let (books, skipped) = concept_books_of(&named, &grown, &tables, MAX_CONCEPT_BOOKS);
+    let root = work.path("concepts");
+    if std::path::Path::new(&root).exists() {
+        std::fs::remove_dir_all(&root).with_context(|| format!("remove {root}"))?;
+    }
+    let mut reviews = Vec::new();
+    for (i, book) in books.iter().enumerate() {
+        let (table, title) = &tables[book];
+        let read = zt.call("get_cards", json!({ "addresses": [table], "view": "text" }))?;
+        let body = read["cards"].as_array().and_then(|c| c.first()).map(|c| s(&c["body"])).unwrap_or_default();
+        let id = format!("c{:02}", i + 1);
+        let staging = work.path(&format!("concepts\\{id}"));
+        std::fs::create_dir_all(&staging)?;
+        util::write_text(join_path(&staging, "manifest.json"), &serde_json::to_string_pretty(&json!({ "citation_key": book, "book_title": title, "source": "zt-idea-grow" }))?)?;
+        util::write_text(join_path(&staging, "terms.md"), &body)?;
+        reviews.push(json!({ "id": id, "book": book, "staging": staging, "table": table }));
+    }
+    state["concepts"] = json!({ "reviews": reviews, "skipped": skipped });
+    work.write("state.json", &state)?;
+    util::print_last(&json!({ "books": reviews.len(), "reviews": reviews, "skipped": skipped }))
+}
+
+/// The rendered concept reports of this run's reviews (`<cNN>\concept-review.json`), in review order.
+fn concept_reports(state: &Value) -> Vec<String> {
+    state["concepts"]["reviews"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| join_path(&s(&r["staging"]), "concept-review.json"))
+        .filter(|path| std::path::Path::new(path).exists())
+        .collect()
+}
+
+// --- Topic maintenance (3.1.0) -----------------------------------------------------------------------
+//
+// The old digest Organize merged duplicate Topics and moved misplaced Topic Cards (an Opus decision,
+// `organize-apply`). Since 3.0.0 a digest writes no Topic, so this round does it for the run's
+// Topics: `organize-plan` surveys them (`organize-survey -Topics`), one DeepSeek job (go-001) decides
+// the merges and moves as JSON and checks them with `precheck`, and `organize-apply` checks them
+// again and carries out the valid ones through `organize-apply -Open`; the run's own addresses then
+// follow the moves.
+
+/// The merges and moves one maintenance answer may decide.
+const MAX_MERGES: usize = 10;
+const MAX_MOVES: usize = 30;
+
+/// The Topic trees a maintenance round surveys: the named ones, else the trees the run wrote in and
+/// the run's Topics; sorted, each once.
+fn organize_topics(state: &Value, given: &str) -> Vec<String> {
+    let mut trees: Vec<String> = if given.trim().is_empty() {
+        let cards = state["cards"].as_object().into_iter().flat_map(|m| m.keys().map(|at| tree_of(at).to_string()));
+        let roots = state["run_topics"].as_array().into_iter().flatten().map(|t| tree_of(&s(&t["root"])).to_string());
+        cards.chain(roots).collect()
+    } else {
+        given.split([',', ';']).map(|t| t.trim().trim_end_matches("/0").to_string()).collect()
+    };
+    trees.retain(|t| topic_number(t));
+    trees.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    trees.dedup();
+    trees
+}
+
+/// The faults of a maintenance answer against the survey: O1 shape and reasons, O2 an unknown Card,
+/// O3 not a Topic root or not a surveyed Topic, O4 a Card that never moves, O5 a Locked Topic, O6 a
+/// destination outside the kept Topic or inside the moved Card, O7 Card notes, O8 a Topic dropped
+/// twice or both dropped and kept.
+fn validate_organize(survey: &Value, answer: &Value) -> Vec<Fault> {
+    let mut faults: Vec<Fault> = Vec::new();
+    let mut fault = |id: &str, code: &str, msg: String| faults.push((id.to_string(), code.to_string(), msg));
+    if !answer.is_object() {
+        fault("answer", "O1", "the answer is a JSON object {\"merges\": [...], \"moves\": [...]}".into());
+        return faults;
+    }
+    let cards = &survey["cards"];
+    let surveyed: HashSet<String> = survey["topics"].as_array().into_iter().flatten().map(|t| s(&t["tree"])).collect();
+    let locked: HashSet<String> = survey["trees"].as_array().into_iter().flatten().filter(|t| t["locked"] == true).map(|t| s(&t["tree"])).collect();
+    let roots: HashSet<String> = survey["trees"].as_array().into_iter().flatten().map(|t| s(&t["root"])).collect();
+    if answer["notes"].as_array().is_some_and(|n| !n.is_empty()) {
+        fault("answer", "O7", "idea-grow writes no Card note: leave `notes` out (only merges and moves)".into());
+    }
+    for (name, max) in [("merges", MAX_MERGES), ("moves", MAX_MOVES)] {
+        let v = &answer[name];
+        if !v.is_null() && !v.is_array() {
+            fault("answer", "O1", format!("`{name}` is a list"));
+        }
+        if v.as_array().is_some_and(|l| l.len() > max) {
+            fault("answer", "O1", format!("at most {max} {name}: keep the clearest"));
+        }
+    }
+    let mut dropped: HashSet<String> = HashSet::new();
+    let mut kept: HashSet<String> = HashSet::new();
+    for (i, m) in answer["merges"].as_array().into_iter().flatten().enumerate() {
+        let id = format!("merge{}", i + 1);
+        let (drop, keep) = (s(&m["drop"]), s(&m["keep"]));
+        if s(&m["reason"]).trim().is_empty() {
+            fault(&id, "O1", "every merge gives its reason (one Chinese sentence)".into());
+        }
+        if !roots.contains(&drop) || !roots.contains(&keep) || drop == keep {
+            fault(&id, "O3", format!("`drop` and `keep` are two agent Topic roots `<n>/0` of the survey (got `{drop}`, `{keep}`)"));
+            continue;
+        }
+        let (dt, kt) = (tree_of(&drop).to_string(), tree_of(&keep).to_string());
+        if !surveyed.contains(&dt) && !surveyed.contains(&kt) {
+            fault(&id, "O3", format!("neither `{drop}` nor `{keep}` is a Topic this round surveys"));
+        }
+        for t in [&dt, &kt] {
+            if locked.contains(t) {
+                fault(&id, "O5", format!("Topic `{t}/0` is locked by the owner: read-only, never merged"));
+            }
+        }
+        if !dropped.insert(dt.clone()) || kept.contains(&dt) || dropped.contains(&kt) {
+            fault(&id, "O8", format!("a Topic is dropped once and never both dropped and kept (`{drop}`, `{keep}`)"));
+        }
+        kept.insert(kt.clone());
+        let under = if s(&m["under"]).is_empty() { format!("{kt}/1") } else { s(&m["under"]) };
+        if cards.get(&under).is_none() || tree_of(&under) != kt || under == keep {
+            fault(&id, "O6", format!("`under` is a Card of the kept Topic `{keep}` other than its root (got `{under}`)"));
+        }
+    }
+    for (i, m) in answer["moves"].as_array().into_iter().flatten().enumerate() {
+        let id = format!("move{}", i + 1);
+        let (at, under) = (s(&m["at"]), s(&m["under"]));
+        if s(&m["reason"]).trim().is_empty() {
+            fault(&id, "O1", "every move gives its reason (one Chinese sentence)".into());
+        }
+        let Some(card) = cards.get(&at) else {
+            fault(&id, "O2", format!("`{at}` is no agent Topic-tree Card of the survey"));
+            continue;
+        };
+        if cards.get(&under).is_none() {
+            fault(&id, "O2", format!("`under` `{under}` is no agent Topic-tree Card of the survey"));
+            continue;
+        }
+        let kind = s(&card["type"]);
+        if is_root(&at) || !matches!(kind.as_str(), "idea" | "event" | "finding" | "") || card["facet"].is_string() {
+            fault(&id, "O4", format!("`{at}` never moves: only Idea, Event and Finding Cards move, never a root, a Hub, a Model Card or a Model part"));
+        }
+        if !surveyed.contains(tree_of(&at)) {
+            fault(&id, "O3", format!("`{at}` is not in a Topic this round surveys"));
+        }
+        for t in [tree_of(&at), tree_of(&under)] {
+            if locked.contains(t) {
+                fault(&id, "O5", format!("Topic `{t}/0` is locked by the owner: no Card moves out of it or into it"));
+            }
+        }
+        if under == at || under.starts_with(&format!("{at}|")) || under.starts_with(&format!("{at}/")) {
+            fault(&id, "O6", format!("`under` `{under}` lies inside the moved Card `{at}`"));
+        }
+    }
+    faults
+}
+
+/// An address after the maintenance moves (`organize-apply`'s `moved` map), longest old address
+/// first: a moved Card and every Card below it.
+fn renamed(moved: &BTreeMap<String, String>, at: &str) -> String {
+    let mut olds: Vec<&String> = moved.keys().collect();
+    olds.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    for old in olds {
+        if at == old {
+            return moved[old].clone();
+        }
+        if let Some(rest) = at.strip_prefix(old.as_str()).filter(|r| r.starts_with('|') || r.starts_with('/')) {
+            return format!("{}{rest}", moved[old]);
+        }
+    }
+    at.to_string()
+}
+
+/// The run's own addresses after the moves: the Card keys and each section's created Cards and
+/// their parents. Returns how many Card addresses changed.
+fn rename_state(state: &mut Value, moved: &BTreeMap<String, String>) -> usize {
+    let mut changed = 0;
+    if let Some(cards) = state["cards"].as_object() {
+        let mut next = Map::new();
+        for (at, v) in cards {
+            let now = renamed(moved, at);
+            changed += usize::from(now != *at);
+            next.insert(now, v.clone());
+        }
+        state["cards"] = Value::Object(next);
+    }
+    if let Some(sections) = state["sections"].as_object_mut() {
+        for section in sections.values_mut() {
+            for c in section["created"].as_array_mut().into_iter().flatten() {
+                for key in ["card", "parent"] {
+                    let old = s(&c[key]);
+                    if old.is_empty() {
+                        continue;
+                    }
+                    let now = renamed(moved, &old);
+                    if now != old {
+                        changed += usize::from(key == "card");
+                        c[key] = json!(now);
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// `-Step organize-plan [-Trees a,b]`: the Topic survey of the run's Topics (`organize-survey
+/// -Topics`, into `<Work>\organize`) and, when it lists a candidate, the decision job go-001.
+fn organize_plan(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let plan = work.read("plan.json").unwrap_or(json!({}));
+    let mut state = work.state()?;
+    let topics = organize_topics(&state, &a.str("Trees"));
+    let ow = work.path("organize");
+    std::fs::create_dir_all(&ow)?;
+    for stale in [join_path(&ow, "decisions.json"), join_path(&ow, "applied.json"), work.path("out\\go-001.json")] {
+        let _ = std::fs::remove_file(stale);
+    }
+    if topics.is_empty() {
+        state["organize"] = json!({ "topics": [], "jobs": 0 });
+        work.write("state.json", &state)?;
+        return util::print_last(&json!({ "organize_jobs": 0, "topics": 0, "reason": "the run names no Topic to survey" }));
+    }
+    let list = topics.join(",");
+    let surveyed = sibling_ok(&["organize-survey", "-Work", &ow, "-Topics", &list])?;
+    let n = |k: &str| surveyed[k].as_u64().unwrap_or(0);
+    let jobs = usize::from(n("pairs") + n("small") + n("moves") > 0);
+    if jobs == 1 {
+        let answer = work.path("out\\go-001.json");
+        let allow = work.path("read-only.allow.txt");
+        let text = format!(
+            "# 主题维护任务 go-001\n\n你只做决定，不写卡。脚本检查你的决定，再合并主题、移动卡片。\n\n- 答案文件：`{answer}`\n- 调查：下面附上全文；`{ow}\\survey.json` 是同一份调查的数据。\n\nSELF-CHECK: zt-digest grow -Step precheck -Work \"{}\" -Job go-001\n\n\
+## 决定什么\n\n\
+1. **合并（merges）**：两个代理主题追问同一个问题时，保留更清楚的一个（keep），把另一个（drop）的卡整体移到 keep 的一张卡下面（under，默认 keep 的第一张卡 `<n>/1`）。只合并真正重复的主题：名称相近但追问的问题不同，不合并。小主题只有在它的问题属于另一个主题时才并入。\n\
+2. **移动（moves）**：一张卡放错了主题时（它的内容和链接属于另一个主题），把它连同它后面的卡移到那个主题里最相关的一张卡下面（under）。只移观点卡、事件卡和发现卡；不移主题根、枢纽卡、模型卡和模型分卡。\n\
+3. 已锁定的主题只读：不能 drop、不能 keep，卡不能移出也不能移入。\n\
+4. 不确定就不做。没有要做的事时写两个空列表。最多 {MAX_MERGES} 个合并、{MAX_MOVES} 个移动。每条决定写一句中文理由（reason）。不写卡片笔记（notes）。\n\n\
+读卡片正文时用只读助手（它拒绝一切写入）：\n\n```\n{{{{CALLENV}}}}@'\n[{{\"tool\":\"get_card\",\"arguments\":{{\"at\":\"12/1\"}}}},{{\"tool\":\"get_tree\",\"arguments\":{{\"tree\":\"12\"}}}}]\n'@ | {{{{TOOL}}}} call - -Allow \"{allow}\"\n```\n\n\
+## 答案格式\n\n```json\n{{\"merges\": [{{\"drop\": \"13/0\", \"keep\": \"12/0\", \"under\": \"12/1\", \"reason\": \"两个主题追问同一个问题。\"}}],\n \"moves\": [{{\"at\": \"12/3|a\", \"under\": \"15/2\", \"reason\": \"这张卡讨论的是 15 号主题的问题。\"}}]}}\n```\n\n---\n\n{}",
+            work.dir,
+            util::read_text(join_path(&ow, "survey.md"))?
+        );
+        util::write_text(work.path("jobs\\go-001.md"), &retool(&plan, &text))?;
+    }
+    state["organize"] = json!({ "topics": topics, "jobs": jobs, "survey": surveyed });
+    work.write("state.json", &state)?;
+    util::print_last(&json!({ "organize_jobs": jobs, "topics": topics.len(), "pairs": n("pairs"), "small": n("small"), "moves": n("moves"), "locked": n("locked") }))
+}
+
+/// `-Step organize-apply`: the decision job's answer checked again; the valid merges and moves go
+/// to `<Work>\organize\decisions.json` and `organize-apply -Open` carries them out (Lock-aware: a
+/// Locked destination is blocked or stops the step with the typed refusal, exit 2). The run's own
+/// addresses then follow the moves. A missing answer applies nothing.
+fn organize_apply(a: &Args) -> Result<i32> {
+    let work = Work::open(&a.required("Work")?)?;
+    let ow = work.path("organize");
+    let mut state = work.state()?;
+    let path = work.path("out\\go-001.json");
+    let answer = match answer_of(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            state["organize"]["applied"] = json!({ "skipped": e });
+            work.write("state.json", &state)?;
+            util::print_last(&json!({ "applied": false, "skipped": e, "merges": 0, "moves": 0 }))?;
+            return Ok(0);
+        }
+    };
+    let survey = util::read_json(join_path(&ow, "survey.json")).context("organize survey (run -Step organize-plan first)")?;
+    let faults = validate_organize(&survey, &answer);
+    let bad: HashSet<String> = faults.iter().map(|f| f.0.clone()).collect();
+    let keep = |name: &str, prefix: &str| -> Vec<Value> {
+        answer[name].as_array().into_iter().flatten().enumerate().filter(|(i, _)| !bad.contains(&format!("{prefix}{}", i + 1))).map(|(_, v)| v.clone()).collect()
+    };
+    let (merges, moves) = (keep("merges", "merge"), keep("moves", "move"));
+    let invalid: Vec<String> = faults.iter().map(|f| format!("{} {} {}", f.0, f.1, f.2)).collect();
+    if merges.is_empty() && moves.is_empty() {
+        state["organize"]["applied"] = json!({ "merges": 0, "moves": 0, "invalid": invalid });
+        work.write("state.json", &state)?;
+        util::print_last(&json!({ "applied": false, "merges": 0, "moves": 0, "invalid": invalid.len() }))?;
+        return Ok(0);
+    }
+    util::write_text(join_path(&ow, "decisions.json"), &serde_json::to_string_pretty(&json!({ "thesis": "", "merges": merges, "moves": moves, "notes": [] }))?)?;
+    let (code, out, err) = sibling(&["organize-apply", "-Work", &ow, "-Open"])?;
+    // The moves already made are kept (applied.json is written before a Lock stop), so the run's
+    // addresses follow them in either case.
+    let applied = util::read_json(join_path(&ow, "applied.json")).unwrap_or(Value::Null);
+    let moved: BTreeMap<String, String> = applied["moved"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), s(v))).collect()).unwrap_or_default();
+    let renamed_cards = rename_state(&mut state, &moved);
+    let last = last_object(&out);
+    let summary = json!({
+        "applied": code == 0, "merges": last["merges"], "moves": last["moves"], "refused": last["refused"], "blocked": last["blocked"],
+        "renamed": moved.len(), "complete": last["complete"], "invalid": invalid.len(), "run_cards_renamed": renamed_cards,
+    });
+    state["organize"]["applied"] = json!({ "summary": summary, "invalid": invalid, "done": applied["done"], "refused": applied["refused"], "blocked": applied["blocked"] });
+    work.write("state.json", &state)?;
+    if last["code"] == json!("card_locked") || last["error"] == json!("card_locked") {
+        util::print_last(&last)?;
+        return Ok(2);
+    }
+    if code != 0 {
+        let tail: String = format!("{out}{err}").chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+        bail!("zt-digest organize-apply exited {code}: {tail}");
+    }
+    util::print_last(&summary)?;
+    Ok(0)
+}
+
 /// The hub writer's instructions (the digest's own dsh-hub-instructions.zh.md).
 fn hub_doc() -> String {
     let dir = match std::env::var("ZT_DIGEST_SCRIPTS") {
@@ -1447,8 +1835,16 @@ fn hubs_report(a: &Args) -> Result<()> {
     let mut register = json!({ "status": "off" });
     if mode != "off" {
         let rw = work.path("register");
-        let planned = sibling_ok(&["register", "-Step", "plan", "-Work", &rw])?;
-        register = json!({ "status": "planned", "plan_id": planned["plan_id"], "entries": planned["entries"], "unresolved": planned["unresolved"], "faults": planned["faults"], "before": planned["register"]["entries"] });
+        // 3.1.0: with -Concepts, every concept report the run rendered is the plan's read-only
+        // evidence (`-Review a.json;b.json`, one report per source book).
+        let reviews = if a.flag("Concepts") { concept_reports(&work.state()?) } else { Vec::new() };
+        let joined = reviews.join(";");
+        let mut args = vec!["register", "-Step", "plan", "-Work", &rw];
+        if !reviews.is_empty() {
+            args.extend(["-Review", &joined]);
+        }
+        let planned = sibling_ok(&args)?;
+        register = json!({ "status": "planned", "plan_id": planned["plan_id"], "entries": planned["entries"], "unresolved": planned["unresolved"], "faults": planned["faults"], "before": planned["register"]["entries"], "reviews": reviews.len() });
         if mode == "apply" && planned["ok"] == true && fault_count(&planned["faults"]) == Some(0) {
             let applied = sibling_ok(&["register", "-Step", "apply", "-Work", &rw])?;
             let checked = sibling_ok(&["register", "-Step", "check", "-Work", &rw])?;
@@ -2290,8 +2686,17 @@ fn report(a: &Args) -> Result<()> {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register", "Limits", "Trees"], &["Apply", "Rebuild"])?;
-    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report", "restate-cards"])?.as_str() {
+    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register", "Limits", "Trees"], &["Apply", "Rebuild", "Concepts"])?;
+    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report", "restate-cards", "concept-books", "organize-plan", "organize-apply"])?.as_str() {
+        "concept-books" => {
+            concept_books(&a)?;
+            0
+        }
+        "organize-plan" => {
+            organize_plan(&a)?;
+            0
+        }
+        "organize-apply" => organize_apply(&a)?,
         "restate-cards" => {
             restate_cards(&a)?;
             0
@@ -2467,6 +2872,115 @@ mod tests {
         assert_eq!(grown_by_book(&state, 200), vec![("A".to_string(), vec!["12/1|a".to_string(), "3/2".to_string()]), ("B".to_string(), vec!["12/1|b".to_string()])]);
         assert_eq!(grown_by_book(&state, 1)[0].1, vec!["12/1|a".to_string()]);
         assert!(grown_by_book(&json!({}), 200).is_empty());
+    }
+
+    // 3.1.0: the concept review of each source book's term table (the register plan's -Review).
+    #[test]
+    fn each_agent_book_has_its_first_term_table_card() {
+        let titles = json!({ "titles": [
+            { "address": "Key", "tree": "Key", "workspace": "agent", "title": "书名" },
+            { "address": "Key/1|b", "tree": "Key", "workspace": "agent", "title": "术语表：第二张" },
+            { "address": "Key/1|a", "tree": "Key", "workspace": "agent", "title": " 术语表：《书名》的 3 个术语" },
+            { "address": "Other", "tree": "Other", "workspace": "agent", "title": "无术语表" },
+            { "address": "Human/1|a", "tree": "Human", "workspace": "human", "title": "术语表：人写的" },
+            { "address": "5/1", "tree": "5", "workspace": "agent", "title": "术语表：主题里的卡" }
+        ] });
+        let tables = term_tables(&titles);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables["Key"], ("Key/1|a".to_string(), "书名".to_string()));
+    }
+
+    #[test]
+    fn the_reviewed_books_are_the_named_then_the_grown_then_every_book_with_a_table() {
+        let tables: BTreeMap<String, (String, String)> = [("A", "A/1|a"), ("B", "B/1|a"), ("C", "C/1|a")].iter().map(|(k, t)| (k.to_string(), (t.to_string(), String::new()))).collect();
+        let v = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let (books, skipped) = concept_books_of(&v(&["B", "Z"]), &v(&["A"]), &tables, 24);
+        assert_eq!(books, v(&["B"]));
+        assert_eq!(skipped[0]["book"], json!("Z"));
+        let (books, _) = concept_books_of(&[], &v(&["C", "A"]), &tables, 24);
+        assert_eq!(books, v(&["C", "A"]));
+        let (books, skipped) = concept_books_of(&[], &[], &tables, 2);
+        assert_eq!(books, v(&["A", "B"]));
+        assert!(s(&skipped[0]["reason"]).contains("bound"));
+    }
+
+    // 3.1.0: the Topic maintenance round (the old Organize's merges and moves).
+    #[test]
+    fn the_surveyed_topics_are_the_named_or_the_run_s_own() {
+        let state = json!({ "cards": { "12/1|a": {}, "12/2": {}, "15/1": {} }, "run_topics": [{ "root": "19/0" }, { "root": "12/0" }] });
+        assert_eq!(organize_topics(&state, ""), vec!["12", "15", "19"]);
+        assert_eq!(organize_topics(&state, "7, 8/0"), vec!["7", "8"]);
+        assert!(organize_topics(&json!({}), "").is_empty());
+    }
+
+    fn survey() -> Value {
+        json!({
+            "topics": [{ "root": "12/0", "tree": "12" }, { "root": "13/0", "tree": "13" }],
+            "trees": [{ "root": "12/0", "tree": "12" }, { "root": "13/0", "tree": "13" }, { "root": "14/0", "tree": "14", "locked": true }, { "root": "15/0", "tree": "15" }],
+            "cards": {
+                "12/0": { "type": "idea", "tree": "12" }, "12/1": { "type": "idea", "tree": "12" }, "12/1|a": { "type": "idea", "tree": "12" },
+                "13/0": { "type": "idea", "tree": "13" }, "13/1": { "type": "idea", "tree": "13" }, "13/2": { "type": "model", "tree": "13" },
+                "14/1": { "type": "idea", "tree": "14" }, "15/1": { "type": "hub", "tree": "15" }, "15/2": { "type": "idea", "tree": "15" }
+            }
+        })
+    }
+
+    #[test]
+    fn a_good_maintenance_answer_has_no_fault() {
+        let answer = json!({
+            "merges": [{ "drop": "13/0", "keep": "12/0", "under": "12/1", "reason": "两个主题追问同一个问题。" }],
+            "moves": [{ "at": "12/1|a", "under": "15/2", "reason": "它讨论的是另一个主题的问题。" }]
+        });
+        assert!(validate_organize(&survey(), &answer).is_empty(), "{:?}", validate_organize(&survey(), &answer));
+        // `under` defaults to the kept Topic's first Card.
+        let answer = json!({ "merges": [{ "drop": "13/0", "keep": "12/0", "reason": "同一个问题。" }], "moves": [] });
+        assert!(validate_organize(&survey(), &answer).is_empty());
+    }
+
+    #[test]
+    fn the_maintenance_checks_name_each_fault() {
+        let answer = json!({
+            "merges": [
+                { "drop": "13/1", "keep": "12/0", "reason": "x" },
+                { "drop": "13/0", "keep": "14/0", "reason": "x" },
+                { "drop": "13/0", "keep": "12/0", "under": "13/1", "reason": "x" },
+                { "drop": "15/0", "keep": "12/0" }
+            ],
+            "moves": [
+                { "at": "13/2", "under": "12/1", "reason": "x" },
+                { "at": "12/1", "under": "12/1|a", "reason": "x" },
+                { "at": "12/9", "under": "12/1", "reason": "x" },
+                { "at": "15/2", "under": "12/1", "reason": "x" },
+                { "at": "12/1|a", "under": "14/1", "reason": "x" }
+            ],
+            "notes": [{ "address": "12/1", "note": "x" }]
+        });
+        let faults = validate_organize(&survey(), &answer);
+        let has = |id: &str, code: &str| faults.iter().any(|f| f.0 == id && f.1 == code);
+        assert!(has("merge1", "O3"), "{faults:?}"); // drop is not a Topic root
+        assert!(has("merge2", "O5")); // keep is Locked
+        assert!(has("merge3", "O6")); // under is not in the kept Topic
+        assert!(has("merge4", "O1")); // no reason
+        assert!(has("move1", "O4")); // a Model Card never moves
+        assert!(has("move2", "O6")); // under inside the moved Card
+        assert!(has("move3", "O2")); // unknown Card
+        assert!(has("move4", "O3")); // the Card is not in a surveyed Topic
+        assert!(has("move5", "O5")); // into a Locked Topic
+        assert!(has("answer", "O7")); // no Card notes
+        assert!(has("merge3", "O8")); // 13/0 dropped twice
+    }
+
+    #[test]
+    fn the_run_s_addresses_follow_the_maintenance_moves() {
+        let moved = BTreeMap::from([("13/1".to_string(), "12/1|b".to_string()), ("12/1|a".to_string(), "15/2|a".to_string())]);
+        assert_eq!(renamed(&moved, "13/1/2"), "12/1|b/2");
+        assert_eq!(renamed(&moved, "12/1|a|a"), "15/2|a|a");
+        assert_eq!(renamed(&moved, "12/1|ab"), "12/1|ab");
+        let mut state = json!({ "cards": { "13/1": { "book": "K" }, "12/2": {} }, "sections": { "K/1": { "created": [{ "card": "13/1/2", "parent": "13/1" }] } } });
+        assert_eq!(rename_state(&mut state, &moved), 2);
+        assert!(state["cards"]["12/1|b"]["book"] == json!("K") && state["cards"].get("13/1").is_none());
+        assert_eq!(state["sections"]["K/1"]["created"][0]["card"], json!("12/1|b/2"));
+        assert_eq!(state["sections"]["K/1"]["created"][0]["parent"], json!("12/1|b"));
     }
 
     #[test]
