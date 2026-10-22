@@ -138,6 +138,6 @@ The owner decided on 2026-10-22 that the digests build only Literature trees (`d
 ## Not in this version
 
 - (Since 2.5.0 the hubs round builds the hubs and the register; see the wiki block doc.)
-- The concept review of a term table against the Topics (`zt-digest concepts`, built for a digest staging folder) as the register plan's `-Review`, and the Topic merges and Card moves of the old digest Organize (`organize-survey`, `organize-apply -Open`): follow-ups.
+- (Since 3.1.0 the concept review of each source book's term table feeds the register plan's `-Review`, and the optional Topic maintenance round (`organize: true`) runs the old Organize's Topic merges and Card moves; see the wiki block doc.)
 - Pairing across books: the snapshot and the closest-Cards list find related Cards from any book, but no Bridge review runs.
 - A second pass that re-files whole branches (join, topic-home): `zt-digest join` and `topic-home` remain separate review tools.

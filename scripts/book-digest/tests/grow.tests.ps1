@@ -385,6 +385,73 @@ try {
     Assert (-not (Has-Card "$fullDoor|h") -and $chained -eq "$lastLine|a|1") "full doorway: no eighth line, and the section chains in the new branch ($chained)"
     $fullReport = Last (Grow @('-Step', 'report', '-Work', $fullWork))
     Assert ($fullReport.deeper -eq 1 -and (Get-Content (Join-Path $fullWork 'grow-report.md') -Raw -Encoding utf8).Contains("[[$fullDoor]]")) "full doorway: the report names the full doorway ($($fullReport | ConvertTo-Json -Compress))"
+
+    # --- 3.1.0: the concept review of each source book's term table, read by the register plan --------
+    # The run's own book has no term table: it is skipped with its reason, and no review runs.
+    $cb0 = Last (Grow @('-Step', 'concept-books', '-Work', $work))
+    Assert ($cb0.books -eq 0 -and @($cb0.skipped | Where-Object { $_.book -eq $key -and $_.reason -match '术语表' }).Count -eq 1) "concept-books: a grown book without a term table is skipped with why ($($cb0 | ConvertTo-Json -Compress -Depth 4))"
+    $termKey = 'Terms2025'
+    $null = Write-Calls @(
+        @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = "@book{$termKey, title={Holdup}, author={Klein, Benjamin}, year={2025}}"; body = '全书索引。' } },
+        @{ tool = 'create_successor'; arguments = @{ at = $termKey; kind = 'direct'; title = '第 1 组：专用投资'; body = '§1 - 专用投资' } }
+    )
+    $tableBody = "本卡是《Holdup》的术语表。本书的卡片用左列的术语，不用右列的词。`n`n术语表`n`n| 术语 | 不用 | 意思 | 首次定义 |`n| --- | --- | --- | --- |`n| 敲竹杠 | 套牢 | 专用投资之后对方压低价格 | §1 |`n| 专用投资 | 专有投资 | 只在一段关系里有价值的投资 | §1 |`n`n来源：[[$termKey]]"
+    $tableCard = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$termKey/1"; kind = 'side'; title = '术语表：《Holdup》的 2 个术语'; body = $tableBody } }))[0]
+    $cb = Last (Grow @('-Step', 'concept-books', '-Work', $work, '-Books', "$termKey,Other2020"))
+    $review = @($cb.reviews)[0]
+    Assert ($cb.books -eq 1 -and $review.book -eq $termKey -and $review.table -eq $tableCard -and @($cb.skipped | Where-Object { $_.book -eq 'Other2020' }).Count -eq 1) "concept-books: one review for the named book with a term table, the other skipped ($($cb | ConvertTo-Json -Compress -Depth 4))"
+    $manifest = Get-Content (Join-Path $review.staging 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    $terms = Get-Content (Join-Path $review.staging 'terms.md') -Raw -Encoding utf8
+    Assert ($manifest.citation_key -eq $termKey -and $manifest.book_title -and $terms.Contains('| 敲竹杠 | 套牢 |')) "concept-books: the staging folder holds the book's manifest and its term table ($($manifest | ConvertTo-Json -Compress))"
+    $cw = Join-Path $review.staging 'work'
+    $proposed = @(& $Digest concepts -Step propose -Staging $review.staging -Work $cw 2>&1 | ForEach-Object { [string]$_ })
+    Assert ((Last $proposed).proposals -eq 2) "concepts: the staged term table proposes its two concepts ($($proposed -join ' | '))"
+    $prepared = @(& $Digest concepts -Step prepare -Staging $review.staging -Work $cw 2>&1 | ForEach-Object { [string]$_ })
+    Assert ((Last $prepared).ok -and @((Last $prepared).jobs).Count -eq 1) "concepts: the evidence is frozen with one judge job ($(@($prepared)[-1]))"
+    $reported = @(& $Digest concepts -Step report -Staging $review.staging -Work $cw 2>&1 | ForEach-Object { [string]$_ })
+    Assert ((Test-Path -LiteralPath (Join-Path $review.staging 'concept-review.json')) -and (Last $reported).report_id) "concepts: an unjudged review still renders its (partial) report ($(@($reported)[-1]))"
+    $hrc = Last (Grow @('-Step', 'hubs-report', '-Work', $work, '-Register', 'plan', '-Concepts'))
+    Assert ($hrc.register.status -eq 'planned' -and $hrc.register.reviews -eq 1) "hubs-report -Concepts: the register plan reads the run's concept report ($($hrc.register | ConvertTo-Json -Compress -Depth 4))"
+    $planFile = Get-Content (Join-Path $work 'register\out\register-plan.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    Assert ($planFile.review.report_id -eq (Get-Content (Join-Path $review.staging 'concept-review.json') -Raw -Encoding utf8 | ConvertFrom-Json).report_id) 'hubs-report -Concepts: the staged plan names the review it read'
+    $hrn = Last (Grow @('-Step', 'hubs-report', '-Work', $work, '-Register', 'plan'))
+    Assert ($hrn.register.reviews -eq 0) 'hubs-report: without -Concepts the register plan reads no review'
+
+    # --- 3.1.0: Topic maintenance, the old Organize's Topic merges and Card moves ----------------------
+    $mtA = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '专用投资的回报'; body = '本主题追问：专用投资之后，投资方能拿回多少回报。' } }))[0] -replace '/0$', ''
+    $mtB = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '专用投资的回报问题'; body = '本主题追问：投资方为什么拿不回专用投资的全部回报。' } }))[0] -replace '/0$', ''
+    $mtC = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '纵向一体化'; body = '本主题追问：企业为什么把供应商并进来。' } }))[0] -replace '/0$', ''
+    $aDoor = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$mtA/0"; title = '专用投资让投资方被对方压价'; body = "投资之后，对方可以压低价格。`n`n来源：[[$termKey]]" } }))[0]
+    $bDoor = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$mtB/0"; title = '议价时投资已经沉没'; body = "议价发生在投资之后，投资方无法收回投资。`n`n来源：[[$termKey]]" } }))[0]
+    $cDoor = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$mtC/0"; title = '一体化消除了事后议价'; body = "供应商并入以后，双方不再议价。`n`n来源：[[$termKey]]" } }))[0]
+    $stray = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = $aDoor; kind = 'side'; title = '并购供应商是对付压价的办法'; body = "依赖 [[$cDoor]]：并入以后没有事后议价。对照 [[$mtC/0]]：一体化主题追问同一个办法。`n`n来源：[[$termKey]]" } }))[0]
+    $mw = Join-Path $scratch 'work6'
+    New-Item -ItemType Directory -Force (Join-Path $mw 'out') | Out-Null
+    # The run's own Cards: the stray Card is one, so its address in state.json must follow the move.
+    @{ sections = @{}; cards = @{ $stray = @{ book = $termKey; section = "$termKey/1" } }; fixes = @{}; fixed = @{} } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $mw 'state.json') -Encoding utf8
+    $op = Last (Grow @('-Step', 'organize-plan', '-Work', $mw, '-Trees', "$mtA,$mtB"))
+    Assert ($op.organize_jobs -eq 1 -and $op.topics -eq 2 -and $op.pairs -ge 1 -and $op.moves -eq 1) "organize-plan: the survey finds the duplicate pair and the stray Card ($($op | ConvertTo-Json -Compress))"
+    $go = Get-Content (Join-Path $mw 'jobs\go-001.md') -Raw -Encoding utf8
+    Assert ($go.Contains('# 主题维护任务 go-001') -and $go.Contains("-Job go-001") -and $go.Contains("``$mtA/0`` 专用投资的回报") -and $go.Contains("``$stray``")) 'organize-plan: the decision job holds its rules, its SELF-CHECK and the survey'
+    $survey = Get-Content (Join-Path $mw 'organize\survey.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Assert ($survey.mode -eq 'topics' -and $survey.cards.ContainsKey($cDoor)) 'organize-plan: survey.json lists every agent Topic-tree Card a decision may name'
+    Answer 'go-001' @{ merges = @(@{ drop = "$mtB/0"; keep = "$mtA/0" }); moves = @(@{ at = $stray; under = $stray; reason = 'x' }) } $mw
+    $pre = Grow @('-Step', 'precheck', '-Work', $mw, '-Job', 'go-001')
+    Assert (@($pre | Where-Object { $_.StartsWith('merge1 O1 ') }).Count -eq 1 -and @($pre | Where-Object { $_.StartsWith('move1 O6 ') }).Count -eq 1) "precheck go-001: a merge without its reason and a move into itself are faults ($($pre -join ' | '))"
+    Answer 'go-001' @{ merges = @(@{ drop = "$mtB/0"; keep = "$mtA/0"; under = $aDoor; reason = '两个主题追问同一个问题：投资方拿不回回报。' })
+        moves = @(@{ at = $stray; under = $cDoor; reason = '这张卡讨论的是一体化这个办法。' }) } $mw
+    $pre = Grow @('-Step', 'precheck', '-Work', $mw, '-Job', 'go-001')
+    Assert (@($pre)[-1].Trim() -eq 'faults: 0') "precheck go-001: the answer has no fault ($($pre -join ' | '))"
+    $oa = Last (Grow @('-Step', 'organize-apply', '-Work', $mw))
+    Assert ($oa.applied -and $oa.merges -eq 1 -and $oa.moves -eq 1 -and $oa.complete -and $oa.run_cards_renamed -eq 1) "organize-apply: one merge and one move carried out, the run's Card renamed ($($oa | ConvertTo-Json -Compress))"
+    $titles = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles)
+    Assert (@($titles | Where-Object { $_.tree -eq $mtB }).Count -eq 0 -and @($titles | Where-Object { $_.title -eq '议价时投资已经沉没' -and $_.tree -eq $mtA }).Count -eq 1) "organize-apply: the dropped Topic's Card now sits in the kept Topic and the dropped Topic is gone"
+    $movedTo = @($titles | Where-Object { $_.title -eq '并购供应商是对付压价的办法' })[0].address
+    Assert ($movedTo -like "$cDoor|*") "organize-apply: the stray Card moved under $cDoor ($movedTo)"
+    $mstate = Get-Content (Join-Path $mw 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Assert ($mstate.cards.ContainsKey($movedTo) -and -not $mstate.cards.ContainsKey($stray)) "organize-apply: the run's state follows the move ($(@($mstate.cards.Keys) -join ', '))"
+    $oa2 = Last (Grow @('-Step', 'organize-apply', '-Work', (Join-Path $scratch 'work7')))
+    Assert (-not $oa2.applied -and $oa2.skipped) "organize-apply: no answer applies nothing ($($oa2 | ConvertTo-Json -Compress))"
 } finally {
     zt down 2>&1 | Out-Null
     # GROW_TEST_KEEP=1 keeps the scratch archive for a look at the files a failure left.

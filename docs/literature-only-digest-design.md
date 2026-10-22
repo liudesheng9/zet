@@ -57,9 +57,15 @@ and field hubs and the register (2.5.1). It takes over from the digests:
   `hubFixRounds`;
 - the restatement review of the run's new Topic Idea Cards (`zt-digest restate`, one judge job).
 
-Not moved yet (follow-ups): the concept review of a term table against the Topics (`zt-digest
-concepts`, which reads a digest staging folder) as `-Review` for the register plan, and the Topic
-maintenance of the old Organize (Topic merges and Card moves, `organize-survey`/`organize-apply`).
+The two follow-ups moved in idea-grow 3.1.0 (zt-grow-cycle v10, zt-digest 0.11.0):
+
+- the concept review of each source book's term table against the Topics (`grow -Step
+  concept-books` stages a `zt-digest concepts` folder per book from its term-table Card; one judge
+  job per book), whose reports the register plan reads as `-Review` (`hubs-report -Concepts`;
+  `register -Review` takes several reports), in mode full and mode hubs;
+- the Topic maintenance of the old Organize as an optional round before the hubs (`organize: true`):
+  `organize-survey -Topics` surveys the run's Topics, one DeepSeek job decides the merges and moves,
+  `grow -Step organize-apply` checks them and runs `organize-apply -Open`.
 
 ## Decisions made while building it
 

@@ -1,6 +1,7 @@
 {
   "args": {
-    "out": "D:/zt-grow/box"
+    "out": "D:/zt-grow/box",
+    "organize": true
   },
   "answers": [
     {
@@ -204,6 +205,98 @@
       }
     },
     {
+      "label": "^grow: organize plan$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"organize_jobs\":1,\"topics\":2,\"pairs\":1,\"small\":1,\"moves\":1,\"locked\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow organize mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "go-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s10"
+        ],
+        "deleted": 1,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: organize apply$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"applied\":true,\"merges\":1,\"moves\":1,\"refused\":0,\"blocked\":0,\"renamed\":2,\"complete\":true,\"invalid\":0,\"run_cards_renamed\":1}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: concept books$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"books\":1,\"reviews\":[{\"id\":\"c01\",\"book\":\"Key\",\"staging\":\"D:/zt-grow/box/concepts/c01\",\"table\":\"Key/1|t\"}],\"skipped\":[]}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: concepts c01 propose$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"propose\",\"book\":\"Key\",\"term_rows\":12,\"proposals\":12,\"omitted\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: concepts c01 prepare$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"prepare\",\"evidence_id\":\"e-c1\",\"proposals\":12,\"jobs\":[{\"id\":\"cj-01\",\"files\":[\"D:/zt-grow/box/concepts/c01/work/dsh-concept-instructions.zh.md\",\"D:/zt-grow/box/concepts/c01/work/cj-01.md\"],\"prompt\":\"judge\",\"answer\":\"D:/zt-grow/box/concepts/c01/work/out/cj-01.json\"}]}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow concepts c01 mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "c01-cj",
+            "ok": true,
+            "reply": "{\"judged\":30}",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s11"
+        ],
+        "deleted": 1,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: concepts c01 judge$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"judge\",\"judged_id\":\"j-c1\",\"judged\":30,\"pairs\":30,\"unjudged\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: concepts c01 report$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"r-c1\",\"status\":\"complete\",\"complete\":true,\"findings\":30,\"judged\":30,\"unjudged\":0}",
+        "tail": ""
+      }
+    },
+    {
       "label": "^grow: hubs plan$",
       "answer": {
         "exit_code": 0,
@@ -256,7 +349,7 @@
       "label": "^grow: hubs report$",
       "answer": {
         "exit_code": 0,
-        "last_line": "{\"hubs\":{\"topic\":3,\"field\":1,\"register\":1},\"faults\":{},\"missing\":0,\"mirror\":0,\"register\":{\"status\":\"published\",\"entries\":93}}",
+        "last_line": "{\"hubs\":{\"topic\":3,\"field\":1,\"register\":1},\"faults\":{},\"missing\":0,\"mirror\":0,\"register\":{\"status\":\"published\",\"entries\":93,\"reviews\":1}}",
         "tail": ""
       }
     },
