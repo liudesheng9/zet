@@ -15,7 +15,7 @@
 //!           section not applied yet), instructions.zh.md, read-only.allow.txt (empty: the helper
 //!           then refuses every write), baseline.json and plan.json. It prints a short line; the
 //!           job ids are gw-001 … gw-<jobs>, so no id list passes through a relay.
-//! precheck  read-only: the answer's faults (G1–G9, docs/idea-grow-design.md) and zt-check on the
+//! precheck  read-only: the answer's faults (G1–G13, docs/idea-grow-design.md) and zt-check on the
 //!           drafts, one line each, then `faults: N`.
 //! apply     for every answered job not applied yet, in job order: refuses each idea with a fault,
 //!           makes the new Topics through the topic gate (a near-name refusal files the Cards under
@@ -48,6 +48,9 @@ use std::sync::LazyLock;
 
 /// The ideas one section may keep (the prompt asks for about 3–10).
 pub const MAX_IDEAS: usize = 12;
+/// The lines a doorway `n/1` keeps beside it (the zettelkasten skill's about seven Side successors per
+/// Card); a later root placement goes beside the last line instead (`line_parent`).
+pub const MAX_LINES: usize = 7;
 /// The jobs one run may plan (Haiku managers run 8 each, 8 at once).
 pub const MAX_JOBS: usize = 120;
 /// One Literature Card's body in a section file, in characters.
@@ -717,7 +720,7 @@ fn zt_check_drafts(work: &Work, tag: &str, drafts: Vec<Value>) -> Result<Vec<Str
     Ok(lines.into_iter().filter(|l| !FAULTS.is_match(l) && !l.contains("(advisory)")).collect())
 }
 
-/// The faults of one growth answer (G1–G9). zt-check runs separately on the drafts.
+/// The faults of one growth answer (G1–G13). zt-check runs separately on the drafts.
 fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
     let mut faults: Vec<Fault> = Vec::new();
     let mut add = |id: &str, code: &str, message: String| faults.push((id.to_string(), code.to_string(), message));
@@ -760,6 +763,8 @@ fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
     }
     let mut earlier: Vec<String> = Vec::new();
     let mut titles_here: Vec<(String, String)> = Vec::new();
+    // The idea each Topic root takes in this answer: one per Topic, so a section opens one line there.
+    let mut at_root: HashMap<String, String> = HashMap::new();
     for idea in &ideas {
         let id = s(&idea["id"]);
         if !id.starts_with('I') || !ids.insert(id.clone()) {
@@ -818,6 +823,14 @@ fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
         let side = s(&idea["as"]);
         if !side.is_empty() && side != "direct" && side != "side" {
             add(&id, "G5", "\"as\" is direct or side".into());
+        }
+        if (at.starts_with('T') && !at.contains('/')) || is_root(&at) {
+            match at_root.get(&at) {
+                Some(first) => add(&id, "G13", format!("`{at}` already takes {first} in this answer: a section opens one line in a Topic, so chain this idea from it (`\"at\": \"{first}\"`, or a later idea of that line) or continue a named Card of the Topic")),
+                None => {
+                    at_root.insert(at.clone(), id.clone());
+                }
+            }
         }
         if at.starts_with('T') && !at.contains('/') {
             if !topics.iter().any(|t| s(&t["id"]) == at) {
@@ -1006,7 +1019,7 @@ fn write_section_jobs(work: &Work, plan: &mut Value, run_topics: &[Value]) -> Re
             let n: Vec<String> = t["sections"].as_array().into_iter().flatten().map(|v| format!("第 {} 节", s(v))).collect();
             block.push_str(&format!("- [[{}]] {}（{}）：{}（{}）\n", s(&t["root"]), s(&t["title"]), if t["new"] == true { "本次新建" } else { "已有" }, cut(&s(&t["body"]), 120), n.join("、")));
         }
-        block.push_str("\n放置时优先用这些主题：接在主题里最贴切的卡后面，或写 `\"at\": \"<主题地址>\"`：主题还没有卡时，这张卡成为入口卡；否则脚本把它放在入口卡的旁支上，开出本节在这个主题里的一条思路，本节的其余想法接在它后面（`\"at\": \"I1\"`）。本次运行的其他小节也往这些主题里放卡，所以同一概念不要另建主题。只有这些主题和主题目录里都没有这个概念时，才在 `topics` 里新建。\n\n");
+        block.push_str("\n放置时优先用这些主题：接在主题里最贴切的卡后面，或写 `\"at\": \"<主题地址>\"`：主题还没有卡时，这张卡成为入口卡；否则脚本把它放在入口卡的旁支上，开出本节在这个主题里的一条思路。一节在一个主题的根上只放一个想法：本节放进这个主题的其余想法接在它后面（`\"at\": \"I1\"`），或接在主题里一张点名的卡后面（第二个也写主题地址时自查报 G13）。本次运行的其他小节也往这些主题里放卡，所以同一概念不要另建主题。只有这些主题和主题目录里都没有这个概念时，才在 `topics` 里新建。\n\n");
     }
     let mut planned = Vec::new();
     for (i, at) in pending.iter().enumerate() {
@@ -1202,6 +1215,20 @@ fn write_one(zt: &mut Zt, call: Value, gate: &str) -> Result<Written> {
     Ok(Written::Made(line.split_once(" ok ").map(|(_, a)| a.trim().to_string()).unwrap_or_default()))
 }
 
+/// The Card a root placement is filed beside: the doorway while it holds fewer than `MAX_LINES`
+/// lines (Side successors `n/1|a` …), else its last line, and so on down while that one is full too.
+/// The new line then branches off the doorway's last line instead of widening the doorway's fan.
+fn line_parent(door: &str, exists: &mut dyn FnMut(&str) -> bool) -> String {
+    let mut at = door.to_string();
+    loop {
+        let lines: Vec<String> = ('a'..='z').map(|c| format!("{at}|{c}")).take_while(|a| exists(a)).collect();
+        match lines.last() {
+            Some(last) if lines.len() >= MAX_LINES => at = last.clone(),
+            _ => return at,
+        }
+    }
+}
+
 fn card_exists(zt: &mut Zt, address: &str) -> bool {
     calls::read(zt, "get_card", json!({ "at": address })).is_ok()
 }
@@ -1366,13 +1393,24 @@ fn apply(a: &Args) -> Result<i32> {
             // The parent and the kind.
             let at = s(&idea["at"]);
             let want = if s(&idea["as"]) == "side" { "side" } else { "direct" };
+            let mut full: Option<String> = None;
             let (parent, kind) = if let Some(root) = topic_root.get(&at).cloned().or_else(|| is_root(&at).then(|| at.clone())) {
                 // A Topic root: the first Card is the doorway n/1; any later root placement opens a new
                 // line of the Topic beside the doorway (n/1|a, n/1|b …), and the section's ideas chain in
                 // it. A parallel section cannot see where another section's line ends: in pilot 2 the
-                // main-line append joined five sections into one blind 20-step chain.
+                // main-line append joined five sections into one blind 20-step chain. A doorway with
+                // MAX_LINES lines takes no more: the new line branches off its last line (live run
+                // 2026-10-22: 412/1 gathered nine lines), and the report names the full doorway.
                 let door = next_direct(&root);
-                if !card_exists(zt, &door) { (root, "direct") } else { (door, "side") }
+                if !card_exists(zt, &door) {
+                    (root, "direct")
+                } else {
+                    let beside = line_parent(&door, &mut |a| card_exists(zt, a));
+                    if beside != door {
+                        full = Some(door);
+                    }
+                    (beside, "side")
+                }
             } else if let Some(p) = made.get(&at) {
                 (p.clone(), want)
             } else if at.starts_with('I') && !at.contains('/') {
@@ -1394,7 +1432,11 @@ fn apply(a: &Args) -> Result<i32> {
                     made.insert(iid.clone(), address.clone());
                     let k = s(&idea["kind"]);
                     record["kinds"][&k] = json!(record["kinds"][&k].as_u64().unwrap_or(0) + 1);
-                    record["created"].as_array_mut().unwrap().push(json!({ "id": iid, "card": address, "parent": parent, "as": kind, "kind": k }));
+                    let mut receipt = json!({ "id": iid, "card": address, "parent": parent, "as": kind, "kind": k });
+                    if let Some(door) = &full {
+                        receipt["full"] = json!(door);
+                    }
+                    record["created"].as_array_mut().unwrap().push(receipt);
                     ctx.state["cards"][&address] = json!({ "job": id, "section": section, "book": key, "idea": iid, "title": title, "kind": k });
                 }
                 Written::Refused { error, refusal } => {
@@ -1822,13 +1864,24 @@ fn report(a: &Args) -> Result<()> {
         }
     }
     totals.insert("stopped".into(), json!(stopped.len()));
+    // The root placements a full doorway sent one level down (MAX_LINES): each names the doorway, so
+    // the reader sees where a structure Card or a new Topic would help.
+    let deeper: Vec<Value> = plan["sections"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|x| state["sections"][&s(&x["anchor"])]["created"].as_array().cloned().unwrap_or_default())
+        .filter(|c| !c["full"].is_null())
+        .map(|c| json!({ "card": c["card"], "parent": c["parent"], "door": c["full"] }))
+        .collect();
+    totals.insert("deeper".into(), json!(deeper.len()));
     let mut topics_made: Vec<Value> = state["run_topics"].as_array().into_iter().flatten().filter(|t| t["new"] == true).map(|t| t["root"].clone()).collect();
     topics_made.extend(plan["sections"].as_array().into_iter().flatten().flat_map(|x| state["sections"][&s(&x["anchor"])]["topics"].as_array().cloned().unwrap_or_default()));
     let run_topics: Vec<Value> = state["run_topics"].as_array().cloned().unwrap_or_default();
     totals.insert("topics".into(), json!(topics_made.len()));
     let report = json!({
         "key": key, "title": plan["title"], "sections": rows, "totals": totals, "kinds": kinds,
-        "topics_made": topics_made, "run_topics": run_topics, "faults_left": left, "bridges": bridges, "stopped": stopped,
+        "topics_made": topics_made, "run_topics": run_topics, "faults_left": left, "bridges": bridges, "stopped": stopped, "deeper": deeper,
         "share": { "before": baseline, "after": after },
     });
     work.write("grow-report.json", &report)?;
@@ -1861,6 +1914,12 @@ fn report(a: &Args) -> Result<()> {
             md.push_str(&format!("- [[{at}]]：{}\n", f.join("；")));
         }
     }
+    if !deeper.is_empty() {
+        md.push_str(&format!("\n## 入口卡已满（已有 {MAX_LINES} 条思路：新思路放在最后一条思路的旁支上）\n\n"));
+        for d in &deeper {
+            md.push_str(&format!("- [[{}]]：入口卡 [[{}]] 已满，放在 [[{}]] 的旁支上\n", s(&d["card"]), s(&d["door"]), s(&d["parent"])));
+        }
+    }
     if !stopped.is_empty() {
         md.push_str("\n## 已锁定而停下的写入（解锁后重跑同一个 out 继续）\n\n");
         for stop in &stopped {
@@ -1870,7 +1929,7 @@ fn report(a: &Args) -> Result<()> {
     util::write_text(work.path("grow-report.md"), &md)?;
     util::print_last(&json!({
         "created": report["totals"]["created"], "topics": report["totals"]["topics"], "linked": report["totals"]["linked"], "same": report["totals"]["same"],
-        "refused": report["totals"]["refused"], "duplicates": report["totals"]["duplicates"], "stopped": report["totals"]["stopped"], "faults_left": left.len(),
+        "refused": report["totals"]["refused"], "duplicates": report["totals"]["duplicates"], "stopped": report["totals"]["stopped"], "deeper": report["totals"]["deeper"], "faults_left": left.len(),
         "share_before": baseline["share"], "share_after": after["share"], "books": books.len(), "bridges": bridges.len(), "report": work.path("grow-report.md"),
     }))
 }
@@ -2136,5 +2195,49 @@ mod tests {
         for want in ["T1 G8", "I1 G3", "I1 G4", "I1 G7", "I2 G1", "I2 G2", "I2 G5", "I3 G6", "I4 G9", "I5 G5"] {
             assert!(got.contains(&want.to_string()), "{want} missing in {got:?}");
         }
+    }
+
+    #[test]
+    fn a_section_places_one_idea_at_a_topic_root() {
+        let idea = |id: &str, title: &str, at: &str| {
+            json!({ "id": id, "kind": "核心", "title": title, "body": "外包要先找到伙伴。例示 [[K/3|a]]：本书。", "sources": ["K/3|a"], "at": at })
+        };
+        let topics = json!([{ "id": "T1", "title": "外包合同的定价", "body": "本主题追问：外包价格怎样形成。" }]);
+        // Two ideas at one new Topic: the second opens a second line, so it is G13.
+        let answer = json!({ "section": "K/3", "topics": topics, "ideas": [idea("I1", "议价能力决定外包合同的价格", "T1"), idea("I2", "搜寻摩擦让企业留在自制", "T1")] });
+        let got = codes(&validate(&ctx(), "K/3", &answer));
+        assert!(got.contains(&"I2 G13".to_string()) && !got.contains(&"I1 G13".to_string()), "{got:?}");
+        // The same at an existing Topic root.
+        let answer = json!({ "section": "K/3", "ideas": [idea("I1", "议价能力决定外包合同的价格", "12/0"), idea("I2", "搜寻摩擦让企业留在自制", "12/0"), idea("I3", "厚市场里外包更快成交", "12/0")] });
+        let got = codes(&validate(&ctx(), "K/3", &answer));
+        assert!(got.contains(&"I2 G13".to_string()) && got.contains(&"I3 G13".to_string()) && !got.contains(&"I1 G13".to_string()), "{got:?}");
+        let message = validate(&ctx(), "K/3", &answer).into_iter().find(|f| f.0 == "I2" && f.1 == "G13").unwrap().2;
+        assert!(message.contains("I1") && message.contains("\"at\": \"I1\""), "{message}");
+        // One idea at each of two Topics, the rest chained: no G13.
+        let mut chained = idea("I3", "厚市场里外包更快成交", "I1");
+        chained["as"] = json!("direct");
+        let answer = json!({ "section": "K/3", "topics": topics, "ideas": [idea("I1", "议价能力决定外包合同的价格", "T1"), idea("I2", "搜寻摩擦让企业留在自制", "12/0"), chained] });
+        let got = codes(&validate(&ctx(), "K/3", &answer));
+        assert!(!got.iter().any(|c| c.ends_with("G13")), "{got:?}");
+    }
+
+    #[test]
+    fn a_full_doorway_files_the_next_line_beside_its_last_line() {
+        let have = |cards: &[&str]| cards.iter().map(|c| c.to_string()).collect::<HashSet<String>>();
+        // Fewer than seven lines: the new line goes beside the doorway.
+        let box_ = have(&["9/1", "9/1|a", "9/1|b"]);
+        assert_eq!(line_parent("9/1", &mut |a| box_.contains(a)), "9/1");
+        // Seven lines: beside the last one.
+        let box_ = have(&["9/1", "9/1|a", "9/1|b", "9/1|c", "9/1|d", "9/1|e", "9/1|f", "9/1|g"]);
+        assert_eq!(line_parent("9/1", &mut |a| box_.contains(a)), "9/1|g");
+        // An older doorway with nine lines: its last line, never a tenth beside the doorway.
+        let box_ = have(&["9/1", "9/1|a", "9/1|b", "9/1|c", "9/1|d", "9/1|e", "9/1|f", "9/1|g", "9/1|h", "9/1|i"]);
+        assert_eq!(line_parent("9/1", &mut |a| box_.contains(a)), "9/1|i");
+        // The last line full too: one level further down.
+        let mut cards = vec!["9/1".to_string()];
+        cards.extend(('a'..='g').map(|c| format!("9/1|{c}")));
+        cards.extend(('a'..='g').map(|c| format!("9/1|g|{c}")));
+        let box_: HashSet<String> = cards.into_iter().collect();
+        assert_eq!(line_parent("9/1", &mut |a| box_.contains(a)), "9/1|g|g");
     }
 }

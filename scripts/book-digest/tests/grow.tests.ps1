@@ -121,6 +121,7 @@ try {
     $job1 = Get-Content (Join-Path $work 'jobs\gw-001.md') -Raw -Encoding utf8
     Assert ($job1.Contains("SELF-CHECK: zt-digest grow -Step precheck -Work `"$work`" -Job gw-001") -and $job1.Contains("[[$key/1|b]] 外包价格由事后的纳什议价决定（观点卡）")) 'plan: the job carries its SELF-CHECK and the section''s Cards'
     Assert ($job1.Contains("[[$door]] 事后议价让投资方得不到全部回报（代理，可接续）")) "plan: the job lists the closest existing Topic Card ($door)"
+    Assert ($job1.Contains('一节在一个主题的根上只放一个想法') -and $job1.Contains('G13')) 'plan: the run-topics block asks one root placement per Topic (G13)'
     Assert ($job1.Contains("- [[$runTopic]] 企业组织形式的选择（本次新建）") -and $job1.Contains("[[$topic/0]] 敲竹杠（已有）")) "topics: the section job lists the run's Topics ($runTopic)"
     $instr = Get-Content (Join-Path $work 'instructions.zh.md') -Raw -Encoding utf8
     Assert ($instr.Contains("《Integration》") -and $instr.Contains((Join-Path $work 'read-only.allow.txt')) -and -not $instr.Contains('{{')) 'plan: the instructions name the book and the read-only allow file'
@@ -155,6 +156,13 @@ try {
         ) }
     $pre = Grow @('-Step', 'precheck', '-Work', $work, '-Job', 'gw-002')
     Assert (@($pre | Where-Object { $_.StartsWith('T1 G8 ') -and $_.Contains($runTopic) }).Count -eq 1) "precheck: a section's new Topic near a run Topic is a fault ($($pre -join ' | '))"
+    # Two ideas at one Topic root would open two lines beside its doorway: the second is G13.
+    Answer 'gw-002' @{ section = "$key/2"; ideas = @(
+            @{ id = 'I1'; kind = '有用'; title = '治理成本是一体化的固定代价'; body = "一体化企业要管理更多部门，所以它承担更高的固定成本。例示 [[$key/2|a]]：本书把这项成本写成固定成本。"; sources = @("$key/2|a"); at = $runTopic },
+            @{ id = 'I2'; kind = '直觉'; title = '专业化企业省下管理第二个部门的开销'; body = "专业化企业只管一个部门，不必为第二个部门设管理层，所以它的固定成本更低。例示 [[$key/2|a]]：本书的固定成本只落在一体化企业身上。"; sources = @("$key/2|a"); at = $runTopic }
+        ) }
+    $pre = Grow @('-Step', 'precheck', '-Work', $work, '-Job', 'gw-002')
+    Assert (@($pre | Where-Object { $_.StartsWith('I2 G13 ') -and $_.Contains('"at": "I1"') }).Count -eq 1 -and @($pre | Where-Object { $_.StartsWith('I1 G13 ') }).Count -eq 0) "precheck: a second idea at one Topic root is G13 and names the idea to chain from ($($pre -join ' | '))"
     Answer 'gw-002' @{ section = "$key/2"; ideas = @(
             @{ id = 'I1'; kind = '有用'; title = '治理成本是一体化的固定代价'; body = "一体化企业要管理更多部门，所以它承担更高的固定成本。例示 [[$key/2|a]]：本书把这项成本写成固定成本。"; sources = @("$key/2|a"); at = $runTopic }
         ) }
@@ -339,6 +347,33 @@ try {
     $after = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -like '0/*' }).Count
     $beside = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -eq "$door|b" })
     Assert ($after -eq $before -and $beside.Count -eq 0) "lock: the locked Topic keeps its $before Cards and nothing is placed beside $door"
+
+    # --- A full doorway (seven lines): the next root placement goes beside its last line --------------
+    function Has-Card($at) { @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -eq $at }).Count -gt 0 }
+    $fullTopic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '供应商的专业化程度'; body = '本主题追问：供应商为什么只做一种中间品。' } }))[0] -replace '/0$', ''
+    $fullDoor = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$fullTopic/0"; title = '专业化让供应商的单位成本下降'; body = "只做一种中间品，单位成本更低。`n`n来源：[[$key]]" } }))[0]
+    $lineTitles = @('学习效应来自重复生产', '专用设备只服务一种用途', '规模越大固定成本摊得越薄', '专业化供应商依赖少数买家', '买家少时供应商议价更弱', '多样化是对冲需求风险的办法', '地理集聚降低专业化的风险')
+    $null = Write-Calls @($lineTitles | ForEach-Object { @{ tool = 'create_successor'; arguments = @{ at = $fullDoor; kind = 'side'; title = $_; body = "一条思路的开头。`n`n来源：[[$key]]" } } })
+    $lastLine = "$fullDoor|g"
+    Assert ((Card $lastLine).title -eq '地理集聚降低专业化的风险' -and -not (Has-Card "$fullDoor|h")) "full doorway: $fullDoor has seven lines, the last $lastLine"
+    $fullWork = Join-Path $scratch 'work5'
+    $null = Last (Grow @('-Step', 'plan', '-Book', $key, '-Work', $fullWork))
+    Answer 'gt-001' @{ topics = @(@{ id = 'T1'; existing = "$fullTopic/0"; sections = @(1, 2) }) } $fullWork
+    $null = Last (Grow @('-Step', 'topics', '-Work', $fullWork, '-Apply'))
+    Answer 'gw-001' @{ section = "$key/1"; ideas = @(
+            @{ id = 'I1'; kind = '关联'; title = '找伙伴的难度限制了供应商的专业化'; body = "供应商越专业化，越难找到合适的买家。例示 [[$key/1|a]]：本书用匹配概率刻画找到伙伴的难度。"; sources = @("$key/1|a"); at = "$fullTopic/0" },
+            @{ id = 'I2'; kind = '直觉'; title = '冷清的市场让专业化供应商等得更久'; body = "买家少时，专业化供应商要等更久才成交，等待的时间吞掉了专业化省下的一部分成本。例示 [[$key/1|a]]：本书的匹配函数。"; sources = @("$key/1|a"); at = 'I1'; as = 'direct' }
+        ) } $fullWork
+    $pre = Grow @('-Step', 'precheck', '-Work', $fullWork, '-Job', 'gw-001')
+    Assert (@($pre)[-1].Trim() -eq 'faults: 0') "full doorway: the answer passes ($($pre -join ' | '))"
+    $null = Last (Grow @('-Step', 'apply', '-Work', $fullWork, '-Apply'))
+    $fullState = (Get-Content (Join-Path $fullWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable).sections["$key/1"]
+    $placed = @($fullState.created | Where-Object { $_.id -eq 'I1' })[0]
+    $chained = [string](@($fullState.created | Where-Object { $_.id -eq 'I2' })[0].card)
+    Assert ($placed.card -eq "$lastLine|a" -and $placed.parent -eq $lastLine -and $placed.full -eq $fullDoor) "full doorway: the root placement is a Side successor of the last line, not an eighth line ($($placed | ConvertTo-Json -Compress))"
+    Assert (-not (Has-Card "$fullDoor|h") -and $chained -eq "$lastLine|a|1") "full doorway: no eighth line, and the section chains in the new branch ($chained)"
+    $fullReport = Last (Grow @('-Step', 'report', '-Work', $fullWork))
+    Assert ($fullReport.deeper -eq 1 -and (Get-Content (Join-Path $fullWork 'grow-report.md') -Raw -Encoding utf8).Contains("[[$fullDoor]]")) "full doorway: the report names the full doorway ($($fullReport | ConvertTo-Json -Compress))"
 } finally {
     zt down 2>&1 | Out-Null
     # GROW_TEST_KEEP=1 keeps the scratch archive for a look at the files a failure left.

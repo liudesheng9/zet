@@ -56,7 +56,7 @@ args (gate) → grow (zt-grow-cycle) → report (value)
 
    The printed line is short: `{"jobs":N,...}`. The module builds the job ids itself (`gw-001`…), so no list passes through a relay.
 2. **DeepSeek** (official source, high effort, skills `zettelkasten` and `asd-ste100-zh`) writes `out/gw-NNN.json` and runs its SELF-CHECK, `zt-digest grow -Step precheck -Work <out> -Job gw-NNN`, until `faults: 0`.
-3. **apply** reads every answered job not yet applied, in job order. It refuses each idea with a fault, makes the new Topics through the topic gate (a near-name refusal files the Cards under the existing Topic), and drops a run-level duplicate (a title near one this run already wrote). It creates each Card at its parent (a Direct successor whose slot is taken becomes a Side successor), resolves `@` references to earlier ideas, appends the 来源 line when it is missing, and records `state.json`. A `same` idea appends one sentence to the agent Card (with `base`) or, for a human Card, only records it.
+3. **apply** reads every answered job not yet applied, in job order. It refuses each idea with a fault, makes the new Topics through the topic gate (a near-name refusal files the Cards under the existing Topic), and drops a run-level duplicate (a title near one this run already wrote). It creates each Card at its parent (a Direct successor whose slot is taken becomes a Side successor; a Topic root as parent gives the doorway `n/1`, or a new line beside it, see "Lines beside the doorway"), resolves `@` references to earlier ideas, appends the 来源 line when it is missing, and records `state.json`. A `same` idea appends one sentence to the agent Card (with `base`) or, for a human Card, only records it.
 4. **check** runs zt-check (`--addresses`) on every Card the run wrote. Each hard fault becomes a fix job, `jobs/fxR-NNN.md`: the Card's text, its faults and the fix order. The answer `out/fxR-NNN.json` holds `{"edits":[{at,title,body}]}`, which `apply` writes with `base`. There are at most `fixRounds` (default 1) rounds.
 5. **report** writes `grow-report.json` and `grow-report.md`: ideas per kind and section, the Cards and Topics made, `same`, refused (with reasons), duplicates, remaining faults, and the Topic share before and after. It prints a short line.
 6. The module deletes the DeepSeek conversations and removes the workspace.
@@ -92,7 +92,17 @@ args (gate) → grow (zt-grow-cycle) → report (value)
 | G10 | A Link outside the source line reads as a plain reference: zt's own kind table (a port of `RELATION_KINDS`) finds no kind word before it |
 | G11 | A link-round Link that does not start at a new Card of its job, ends in its own tree or at a root, is not the sentence's only Link, reads as a plain reference, or is the third Link from one Card |
 | G12 | The destination is Locked by the owner: `at` or `same` names a Card of a Locked tree, a new Topic's name would be filed in a Locked Topic, or `existing` names a Locked Topic root. The answer names another destination: the tool never substitutes a tree or a placement |
+| G13 | A second idea of one answer at the same Topic root (`at` the same `n/0` or `T1`): a section opens one line in a Topic, so the idea chains from the first one (`"at": "I1"`) or continues a named Card of the Topic |
 | R…, I1–I4 | zt-check on the drafts (category idea): sentence length, semicolons, book-local numbers (R20), claim titles |
+
+## Lines beside the doorway
+
+A Topic's doorway `n/1` is its way in, and each Side successor beside it (`n/1|a`, `n/1|b` …) opens one line of the Topic. The zettelkasten skill keeps about seven Side successors per Card. On the live run of 2026-10-22, Topic 412 got nine lines beside 412/1: section 1 placed three ideas at the root, and seven more sections opened one line each. Two rules keep the fan small:
+
+- **One root placement per section and Topic (G13).** The precheck refuses a second idea at the same Topic root. The section's other ideas for that Topic chain from its first one, or continue a named Card of the Topic (with G6's first-sentence relation).
+- **A full doorway sends the line down (`MAX_LINES` = 7).** When the doorway already has seven lines, `apply` files the next root placement as a Side successor of the doorway's last line (`n/1|g|a`). If that line has seven too, the same rule goes one level further down. The Card's receipt records `full` (the doorway), and `grow-report.md` lists each such Card under `## 入口卡已满` with its doorway, so the reader sees where a structure Card or a new Topic would help.
+
+The alternative was to report a full doorway as advice and still open an eighth line. It was rejected because advice does not keep the fan small, and a long-lived Topic only grows. The cost of the rule is that a section's line can branch off a line of another section. The report names each case for that reason.
 
 ## Locked trees (S15)
 
